@@ -7,46 +7,25 @@ workflow, dry-runs it against sample data, activates it, and wires up the
 endpoint — while Orion's lifecycle rules (draft → test → activate, immutable
 versions, instant rollback) keep every step reversible.
 
-This page is a 10-minute guided session. It assumes nothing beyond a running
-Orion instance.
+This page is a 10-minute guided session. In it, you will:
+
+- register the Orion MCP server with Claude Code,
+- have Claude build, test, and deploy a service from one paragraph of English,
+- inspect what it deployed using real trace data,
+- change the logic behind a canary rollout, and roll it back.
 
 ## Setup
 
-1. **Run Orion** (see [Install & First Service](../getting-started/install.md)):
+With [Orion and the CLI installed](../getting-started/install.md) and a server
+running, register the MCP server:
 
-   ```bash
-   brew install GoPlasmatic/tap/orion-server && orion-server
-   ```
+```bash
+claude mcp add orion --env ORION_SERVER_URL=http://localhost:8080 -- orion-cli mcp serve
+```
 
-2. **Install the CLI**, which contains the MCP server:
-
-   ```bash
-   brew install GoPlasmatic/tap/orion-cli
-   ```
-
-3. **Register the MCP server with Claude Code** — one command:
-
-   ```bash
-   claude mcp add orion --env ORION_SERVER_URL=http://localhost:8080 -- orion-cli mcp serve
-   ```
-
-   Or, to share the config with your team, commit a `.mcp.json` at the project
-   root instead:
-
-   ```json
-   {
-     "mcpServers": {
-       "orion": {
-         "command": "orion-cli",
-         "args": ["mcp", "serve"],
-         "env": { "ORION_SERVER_URL": "http://localhost:8080" }
-       }
-     }
-   }
-   ```
-
-4. **Verify:** start `claude` and run `/mcp` — you should see `orion` listed
-   with its tools available.
+Start `claude` and run `/mcp` — `orion` should be listed with its tools
+available. To share the setup with your team, commit a `.mcp.json` instead; that
+form and every other client are in [MCP Server Setup](./mcp-setup.md).
 
 ## Build a service by describing it
 
@@ -100,9 +79,11 @@ canary. If anything looks wrong:
 
 ## Where to go next
 
-- The full tool catalog and client configs (Claude Desktop, Cursor, HTTP
-  transport): [MCP Server Setup](./mcp-setup.md)
-- No MCP client available? The [Prompt Pack](../ai/prompt-pack.md)
-  gives any LLM the same powers over the plain REST API.
-- Ready-made prompts for common services (webhook transforms, enrichment,
-  routing): [Use Cases & Patterns](../tutorials/use-cases.md)
+- [MCP Server Setup](./mcp-setup.md) — the tool catalogue, the other clients
+  (Claude Desktop, Cursor), and the HTTP transport for remote ones.
+- [Prompt Pack (any LLM)](./prompt-pack.md) — the same powers over the plain
+  REST API, for assistants without MCP.
+- [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active/immutable
+  rules that make delegating this safe.
+- [Use Cases & Patterns](../tutorials/use-cases.md) — ready-made prompts for
+  webhook transforms, enrichment, and routing.

@@ -7,10 +7,21 @@
 
 # Get Started
 
-- [Install & First Service](./getting-started/install.md)
+- [Install & Run](./getting-started/install.md)
+- [Your First Service](./getting-started/first-service.md)
 - [Your First Connector](./getting-started/first-connector.md)
+- [Test & Promote a Service](./getting-started/test-and-promote.md)
 - [Run the Examples](./getting-started/examples.md)
 - [The Console (Orion UI)](./getting-started/console.md)
+
+# Concepts
+
+- [How Orion Works](./concepts/how-orion-works.md)
+- [Channels](./concepts/channels.md)
+- [Workflows](./concepts/workflows.md)
+- [Connectors](./concepts/connectors.md)
+- [Packages](./concepts/packages.md)
+- [The Entity Lifecycle](./concepts/lifecycle.md)
 
 # Build with AI
 
@@ -20,12 +31,8 @@
 
 # Operate
 
-- [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
-
-# Architecture
-
-- [Overview](./architecture/overview.md)
-- [Architectural Characteristics](./architecture/characteristics.md)
+- [Upgrades](./operate/upgrades.md)
+  - [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
 
 # Deployment & Topology
 

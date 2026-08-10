@@ -14,7 +14,7 @@ The split matters: **design time is human/AI-in-the-loop and write-heavy**, whil
 
 > The building blocks referenced throughout this page — **Channel**, **Workflow**,
 > and **Connector** — are introduced in
-> [Architecture Overview → Three Primitives](../architecture/overview.md#three-primitives).
+> [How Orion Works → Three primitives](../concepts/how-orion-works.md#three-primitives).
 > Every object follows a `draft → active → archived` lifecycle and is independently
 > versioned.
 
@@ -165,7 +165,7 @@ dedup, rate limits, and response caches hold across the fleet.
 
 The data-plane request pipeline (route resolution → channel registry → engine →
 task pipeline → response) is detailed in
-[Architecture Overview → Request Processing Flow](../architecture/overview.md#request-processing-flow).
+[How Orion Works → One request's journey](../concepts/how-orion-works.md#one-requests-journey).
 
 ### Cluster mode: N replicas as one logical system
 

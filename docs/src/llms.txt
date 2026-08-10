@@ -17,13 +17,24 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 ## Getting started
 
 - [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
-- [Install & First Service](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix, first workflow + channel end-to-end
-- [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
+- [Install & Run](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix for server and CLI, first run, health check
+- [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
+- [Test & Promote a Service](https://goplasmatic.github.io/Orion/getting-started/test-and-promote.html): lint, dry-run with stubs, regression cases, then export/plan/apply to a second instance
+- [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html): six deployable example packages, with the step-by-step walkthrough
+- [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
 - [Prompt Pack](https://goplasmatic.github.io/Orion/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
 - [MCP Server Setup](https://goplasmatic.github.io/Orion/ai/mcp-setup.html): MCP tools covering the full admin API, via orion-cli
 - [Orion + Claude Code](https://goplasmatic.github.io/Orion/ai/claude-code.html): driving Orion from Claude Code with the MCP server
-- [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, with the preflight scanner that finds them
+
+## Concepts
+
+- [How Orion Works](https://goplasmatic.github.io/Orion/concepts/how-orion-works.html): the three primitives, one request's journey, sync vs async, dev vs prod topology, extension surface
+- [Channels](https://goplasmatic.github.io/Orion/concepts/channels.html): service endpoints — protocols, sync/async, ingress guards, in-process composition
+- [Workflows](https://goplasmatic.github.io/Orion/concepts/workflows.html): task pipelines, the data context, conditions, how a version is selected
+- [Connectors](https://goplasmatic.github.io/Orion/concepts/connectors.html): named external connections, secrets by reference, operation gates, circuit breakers
+- [Packages](https://goplasmatic.github.io/Orion/concepts/packages.html): the module boundary — tags, closure, artifacts, receipts, rollback
+- [The Entity Lifecycle](https://goplasmatic.github.io/Orion/concepts/lifecycle.html): draft/active/archived, immutability, what reloads the engine, quarantine
 
 ## Reference
 
@@ -36,12 +47,12 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Support & Compatibility](https://goplasmatic.github.io/Orion/reference/support.html): versioning policy, what 1.0 freezes, accepted alternate spellings, platform matrix
 - [OpenAPI 3.1 spec](https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/openapi.json): machine-readable API description
 
-## Architecture & deployment
+## Operations & deployment
 
-- [Architecture Overview](https://goplasmatic.github.io/Orion/architecture/overview.html): request path, engine, registries, storage
-- [Architectural Characteristics](https://goplasmatic.github.io/Orion/architecture/characteristics.html): the -ilities, with the mechanisms behind each
+- [Upgrades](https://goplasmatic.github.io/Orion/operate/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
+- [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
 - [Dev & Prod Environments](https://goplasmatic.github.io/Orion/topology/environments.html): single node to HA topology
-- [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html): the package (channels + workflows + connectors) as the unit of export/import between instances; tag selection, apply, receipts, rollback
+- [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html): exporting, planning, applying and diffing a package between instances; receipts, secrets, rollback
 - [Kubernetes (Helm)](https://goplasmatic.github.io/Orion/topology/kubernetes.html): chart, values, probes, cluster mode
 
 ## Production features

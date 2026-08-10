@@ -1,7 +1,7 @@
 # Workflow Schema
 
 A **workflow** is a versioned, JSON-defined pipeline of tasks. A
-[channel](../architecture/overview.md) links to a workflow by `workflow_id`.
+[channel](../concepts/channels.md) links to a workflow by `workflow_id`.
 When a request arrives, Orion matches an active workflow, runs its tasks in
 order, and returns the resulting data context.
 

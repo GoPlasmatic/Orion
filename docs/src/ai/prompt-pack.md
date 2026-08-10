@@ -9,6 +9,13 @@ LLM** (as a system prompt, a project instruction, or just the first message)
 and it has enough context to write valid workflows and deploy them through
 Orion's plain REST API.
 
+> [!NOTE]
+> **Provenance.** The block is hand-maintained and matches **Orion 1.0.0**. It
+> is deliberately short — a summary an LLM can hold, not a specification — so it
+> tells the model to read `GET /api/v1/admin/functions` for exact input schemas
+> rather than trusting the list it carries. If your instance is newer than this
+> page, that endpoint is the authority; this text is the orientation.
+
 ````text
 You are working with Orion, a runtime that turns JSON definitions into live
 REST/Kafka services. Everything is managed over a REST admin API. No code,
@@ -99,10 +106,11 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
   Never embed real credentials in JSON.
 ````
 
-A worked end-to-end session using exactly these calls is in
-[Install & First Service](../getting-started/install.md#create-your-first-service);
-the deeper references the LLM (or you) may need are the
-[Workflow Reference](../reference/workflows.md),
+A worked end-to-end session using exactly these calls is
+[Your First Service](../getting-started/first-service.md), and the lifecycle
+rules above are explained for humans in
+[The Entity Lifecycle](../concepts/lifecycle.md). The deeper references the LLM
+(or you) may need are the [Workflow Reference](../reference/workflows.md),
 [Function Reference](../reference/functions.md), and
 [Portable Data Dialect](../reference/data-dialect.md).
 

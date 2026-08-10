@@ -15,7 +15,7 @@ channel form, send a request from the Data Console, and see the service on the S
   <video class="media-dark" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-dark.webm"></video>
   <video class="media-light" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-light.webm"></video>
 </div>
-<span class="asciinema-caption">▶ Click to play. The same flow as the <a href="install.html">terminal quickstart</a> — as clicks instead of curl.</span>
+<span class="asciinema-caption">▶ Click to play. The same flow as <a href="first-service.html">Your First Service</a> — as clicks instead of curl.</span>
 
 ## Run it
 

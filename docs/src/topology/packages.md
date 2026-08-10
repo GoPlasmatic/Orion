@@ -6,7 +6,7 @@ connectors that make up one service, named and versioned as a unit so it can
 be exported from one instance and imported into another — dev to QA to
 production, or from a shared template instance into every region that runs it.
 
-The [three primitives](../architecture/overview.md#three-primitives) compose a
+The [three primitives](../concepts/how-orion-works.md#three-primitives) compose a
 service; the package is how a service *ships*. Each package deploys, promotes,
 and rolls back independently, while every package shares one runtime, one
 database, and one operational surface.

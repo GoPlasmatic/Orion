@@ -10,11 +10,15 @@ Every item below is written as **what changed → how you'll notice → what to
 do**. Nothing here requires a workflow or channel rewrite; the changes are in
 the runtime's request path, deployment defaults, and operational surfaces.
 
+The version-independent procedure — back up, preflight, validate config,
+migrate, roll — is on [Upgrades](./upgrades.md), along with the policy on how a
+renamed key fails.
+
 ---
 
 ## Before you start
 
-**Run this first.** It answers the database-backed rows below — 3, 7b, 14, and
+**Run this first.** It answers the database-backed rows below — 3, 7, 14, and
 the two channel-config renames — against your actual estate rather than in the
 abstract, and exits non-zero if it finds anything:
 
@@ -33,26 +37,22 @@ Then work through this list. Each row links to the section with the detail.
 |---|-------|-------------------|
 | 1 | [Set `rate_limit.trusted_proxies`](#1-rate-limiting-behind-a-proxy-or-load-balancer) | You run behind a proxy, LB, or ingress — **whether or not** `rate_limit.enabled` is set, if any channel declares a `rate_limit` block |
 | 2 | [Update dashboards and alerts](#2-metrics-dashboards-and-alerts-will-break) | You scrape `/metrics` — three families changed name or labels, and `/metrics` now 404s when metrics are off |
-| 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load) | Always — this one can stop the server from booting |
-| 3b | [Remove unknown keys from channel configs](#unknown-keys-in-a-channel-config-are-now-refused) | Any stored channel config carries a key Orion does not recognise — including the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
+| 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load), and [remove unknown keys](#unknown-keys-in-a-channel-config-are-now-refused) from them | Always — this one can stop the server from booting. Unknown keys include the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
 | 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic**. Also: the platform `[rate_limit]` budget now [stacks on the channel's own limit](#the-platform-limiter-and-the-channels-now-stack) instead of being bypassed by it |
 | 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
-| 7 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
-| 7b | [Re-point anything reading `workflows.tags` or `channels.methods`](#two-json-columns-were-renamed) | You query Orion's tables directly — dashboards, ETL, reporting views, hand-maintained restores |
+| 7 | [Back up before migrating](#6-database-migrations), and [re-point anything reading `workflows.tags` or `channels.methods`](#two-json-columns-were-renamed) | You are on PostgreSQL, or you query Orion's tables directly — dashboards, ETL, reporting views, hand-maintained restores |
 | 8 | [Stop migrating at boot in a production cluster](#a-production-cluster-may-not-migrate-at-boot) | `environment` starts `prod` **and** `cluster.enabled = true` **and** `storage.auto_migrate = true` — refused at startup now |
 | 9 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
 | 10 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
 | 11 | [Delete `kafka.max_inflight`](#7-config-keys-four-sections-renamed) | You set `kafka.max_inflight` in the config file or `ORION_KAFKA__MAX_INFLIGHT` in the environment — Kafka enabled or not |
 | 12 | [Audit your `ORION_*` environment](#misspelled-environment-overrides-now-stop-the-boot) | You set any `ORION_*` variable containing `__` that is not on the config reference page |
 | 13 | [Check client URL casing](#rest-routes-match-byte-exactly-and-decode-parameters-once) | You call data-plane REST routes with casing that differs from the channel's `route_pattern` |
-| 14 | [Declare a `schema` on every `data_query` / `data_write`](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect — **this one breaks every 0.x dialect task at its first request**; `orion-server preflight` lists them |
-| 14b | [Move the `data_write` envelope under `write`](#data_write-takes-its-envelope-under-write) | Any workflow uses `data_write` — the pre-1.0 flat form is refused, and `preflight` lists the stored tasks still using it |
+| 14 | [Declare a `schema` on every `data_query` / `data_write`](#the-data-dialect-rejects-what-it-used-to-ignore), and [move the `data_write` envelope under `write`](#data_write-takes-its-envelope-under-write) | Any workflow uses the portable data dialect — **this one breaks every 0.x dialect task at its first request**. The pre-1.0 flat `data_write` form is refused too; `orion-server preflight` lists both |
 | 15 | [Stop reading `total` from the trace list](#the-trace-list-no-longer-returns-total-by-default) | You page `GET /api/v1/admin/traces` |
 | 16 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
-| 17 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
-| 17b | [Set `allow_private_urls` on private db/cache/kafka connectors](#connectors-on-private-networks-need-allow_private_urls) | Any `db`, `cache` or `kafka` connector points at a private address — **which is the normal case** |
-| 18 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
+| 17 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned), and [set `allow_private_urls` on private db/cache/kafka connectors](#connectors-on-private-networks-need-allow_private_urls) | You upgrade a Docker or compose deployment with an existing `/app/data` mount, or any `db`, `cache` or `kafka` connector points at a private address — **which is the normal case** |
+| 18 | Review the grouped changes: [renames](#8-renames-and-removals), [security](#9-security-and-access), [API shape](#10-api-and-response-shape), [runtime behaviour](#11-runtime-behaviour) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
 boot unless you set `storage.auto_migrate = false`.
@@ -1069,42 +1069,602 @@ matters.
 
 ---
 
-## How a rename fails, by surface
+## 8. Renames and removals
 
-<!-- Moved from reference/support.md (docs-implementation-plan.md T1.2); the
-standing home becomes operate/upgrades.md in Phase 2. -->
+Old spellings are refused rather than silently accepted, so each of these
+fails loudly at the surface that owns it — see
+[How a rename fails, by surface](./upgrades.md#how-a-rename-fails-by-surface).
 
-The two surfaces fail differently, because they are edited at different times by
-different people:
+### `data_write` takes its envelope under `write`
 
-| Surface | Owner | How a stale name fails |
+**What changed.** The mutation envelope is now nested, mirroring
+`data_query`'s `query`:
+
+```jsonc
+// before — envelope flat, sharing a namespace with the handler keys
+{ "name": "data_write", "input": {
+    "connector": "orders_db", "op": "update", "target": "users",
+    "set": { "status": "inactive" },
+    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+    "params": { "id": { "var": "data.req.id" } },
+    "output": "data.updated" } }
+
+// after — `connector`/`schema`/`params`/`database`/`output` stay at the top
+{ "name": "data_write", "input": {
+    "connector": "orders_db",
+    "params": { "id": { "var": "data.req.id" } },
+    "output": "data.updated",
+    "write": {
+      "op": "update", "target": "users",
+      "set": { "status": "inactive" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
+```
+
+**How you'll notice.** The flat form is **not** accepted. `write` is a required
+input, so a task still in the old shape is refused at create, update, bulk
+import, `POST /admin/workflows/validate` and `orion-server lint`, with an error
+naming `write`. A workflow already stored in the flat shape fails at its first
+request.
+
+Find them before you upgrade:
+
+```bash
+orion-server preflight
+```
+
+**What to do.** Move the eight envelope keys — `op`, `target`, `values`, `set`,
+`filter`, `on_conflict`, `returning`, `all` — into a `write` object, leaving
+`connector`, `schema`, `params`, `database` and `output` where they are. Stale
+flat keys left behind by a half-finished migration are inert — `write` is the
+only envelope — so you can move them one workflow at a time.
+
+**Why.** The two halves of one dialect read differently, and because the
+envelope shared a namespace with the handler it could never grow a field named
+`connector`, `schema`, `params`, `database` or `output`. Nesting also means
+there is one JSON value that *is* the envelope — validation errors now point at
+`…function.input.write.target` instead of a path that could mean either half.
+
+### `response_path` is now called `output`
+
+**What changed.** Eight of the ten connector functions named their destination
+path `output`; `http_call` and `channel_call` named it `response_path`. All ten
+now take `output`.
+
+**How you'll notice.** You won't — `response_path` is still accepted, so
+existing workflows keep running. Unlike the other 1.0 renames it carries no
+removal date: on `http_call` the alias belongs to the `HttpCallConfig` struct in
+`dataflow-rs`, which Orion does not own and cannot remove on its own. It is
+listed under [accepted alternate
+spellings](../reference/support.md#accepted-alternate-spellings) rather than as
+a deprecation. Supplying both keys is a duplicate-field error, not a precedence
+rule.
+
+**What to do.** Rename the key at your leisure:
+
+```json
+// before
+{ "name": "http_call", "input": { "connector": "crm", "response_path": "data.customer" } }
+// after
+{ "name": "http_call", "input": { "connector": "crm", "output": "data.customer" } }
+```
+
+The *defaults* are unchanged and still differ by function: omitting `output` on
+`http_call` discards the response, while every other handler writes to `"data"`.
+
+### A channel's `cors` is now `origin_allow_list`
+
+**What changed.** The per-channel key is renamed and flattened:
+
+```json
+{ "cors": { "allowed_origins": ["https://app.example.com"] } }
+```
+
+becomes
+
+```json
+{ "origin_allow_list": ["https://app.example.com"] }
+```
+
+**The old spelling is refused.** A stored channel still carrying it fails to
+parse and is quarantined at load — refused at every ingress rather than served.
+This is deliberate and it is the security-relevant choice: had the old key been
+parsed and dropped, the channel would have served with **no origin allow-list at
+all**, which is indistinguishable from a channel that deliberately checks
+nothing. Every unlisted origin would have been admitted, silently and
+permanently. A quarantined channel is the loud version of the same event.
+
+Find them before you upgrade:
+
+```bash
+orion-server preflight
+```
+
+or directly:
+
+```sql
+SELECT name FROM current_channels WHERE config_json LIKE '%"cors"%';
+```
+
+**Why it is not cosmetic.** This is a **server-side allow-list**, not CORS: it
+sets no `Access-Control-*` header and takes no part in the preflight handshake,
+which the platform `[cors]` layer performs for every route *before* a channel
+is resolved. The consequence is that a channel's list can only narrow the
+platform policy, never widen it — an origin `[cors] allowed_origins` rejects
+fails the preflight and never reaches the channel, so listing it on the channel
+does nothing. If per-channel origins are not taking effect in a browser, set
+`[cors] allowed_origins` to the union of what your channels accept and narrow
+from there.
+
+### `backpressure.max_concurrent` is now `max_concurrent_per_node`
+
+**What changed.** The limit was always per node (N replicas admit up to N× the
+value); the name now says so, which matters because dedup and rate limiting sit
+in the same config block and *are* cluster-shared.
+
+**What to do.** Rename the key on every stored channel that sets it, **and
+check the value**. The old spelling is refused — a stored config using it fails
+to parse and the channel is quarantined at load.
+
+There is no alias, deliberately. Honouring `max_concurrent` under a field that
+means something else would admit N× the intended concurrency on an N-replica
+deployment, silently, which is a worse outcome than a channel that refuses to
+start. If your 0.3.0 value was sized as a cluster-wide cap, divide it by your
+replica count rather than copying it across.
+
+`orion-server preflight` lists every affected channel.
+
+### `backpressure.queue_depth` was removed
+
+**What changed.** The field was parsed but never read. Backpressure rejects
+immediately at `max_concurrent` via `try_acquire`; there is no wait queue, so
+the field promised behaviour that never existed.
+
+**What to do — delete it.** `ChannelConfig` is `deny_unknown_fields` as of 1.0
+(see [Unknown keys in a channel config are now
+refused](#unknown-keys-in-a-channel-config-are-now-refused)), so a stored
+`config_json` still carrying `queue_depth` **no longer parses**, and the channel
+is quarantined at load. This is the same failure as any other unrecognised key.
+
+`orion-server preflight` lists every affected channel. The direct query, if you
+would rather look yourself:
+
+```sql
+SELECT channel_id, version, name FROM channels
+WHERE config_json LIKE '%queue_depth%';
+```
+
+While you are in there: the field next to it is named
+[`max_concurrent_per_node`](#backpressuremax_concurrent-is-now-max_concurrent_per_node)
+as of this release, and the pre-1.0 `max_concurrent` spelling is not accepted
+either. A `backpressure` block written for 0.3.0 therefore needs both edits.
+
+### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
+
+**What changed.** The live engine was held behind a read-write lock, so every
+request acquired a read guard and a reload waited for a write guard. It is
+published with an atomic store now, so readers never block and a reload never
+waits.
+
+Two things existed only to describe that wait and have been removed:
+
+- **`engine.reload_timeout_secs`** (`ORION_ENGINE__RELOAD_TIMEOUT_SECS`) — how
+  long a reload would wait for the write lock. There is no wait to bound.
+- **`orion_engine_lock_wait_seconds`** — the histogram of that wait. It could
+  now only ever report zero.
+
+The `_orion.profile` debug output loses its `engine_lock_wait` phase and
+`engine_lock_wait_ms` field for the same reason. `engine.health_check_timeout_secs`
+stays — it still bounds the `/readyz` cluster-Redis ping.
+
+**How you'll notice.** Setting `ORION_ENGINE__RELOAD_TIMEOUT_SECS` now **stops
+the boot** with a message naming it as removed, rather than being silently
+ignored. A `reload_timeout_secs` line in a config file is rejected by
+`deny_unknown_fields` the same way.
+
+**What to do.** Delete the setting from any config file, Helm values or
+environment. Drop `orion_engine_lock_wait_seconds` from dashboards and alerts —
+a panel on it will read empty rather than break.
+
+### The trace read endpoints moved to the admin plane
+
+**What changed.** Both trace endpoints moved:
+
+| Before | After |
+|---|---|
+| `GET /api/v1/data/traces` | `GET /api/v1/admin/traces` |
+| `GET /api/v1/data/traces/{id}` | `GET /api/v1/admin/traces/{id}` |
+
+**There is no redirect.** The old paths now resolve as *channel* names on the
+data-plane catch-all, so a request to one returns 404 (or runs a channel you
+happen to have named `traces`) rather than a 308.
+
+**Why.** The list endpoint was already admin-guarded, so its placement on the
+data plane was a naming lie. It was also a functional one: `/traces` and
+`/traces/{id}` were static routes, and axum resolves static segments before the
+`/{*path}` catch-all — so **a channel named `traces` was permanently
+unreachable**, `POST /api/v1/data/traces` returned 405, and the rate limiter
+carried a special case to skip the name. None of that was documented or
+checked; it just silently didn't work.
+
+**How you'll notice.** Any async client that polls `GET /api/v1/data/traces/{id}`
+starts getting 404. Operator tooling hitting the list gets the same.
+
+**What to do.** Update the paths. The access rules are unchanged: the list needs
+an admin credential, and the single-trace GET still takes *either* an admin
+credential or the submission's `trace_token` (see the next section) — despite
+now living under `/api/v1/admin`, which is the one path in that namespace not
+covered by the blanket admin guard.
+
+```bash
+# before
+curl "http://orion:8080/api/v1/data/traces/$id"  -H "x-trace-token: $tok"
+# after
+curl "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
+```
+
+### OpenAPI schema components renamed
+
+Five response schemas in `docs/openapi.json` changed name. For the first four
+**no response body changed** — the JSON field sets are identical — so only
+clients generated from the spec, which take their type names from component
+names, are affected:
+
+| Before | After |
+| --- | --- |
+| `Connector` | `ConnectorResponse` |
+| `AuditLogEntry` | `AuditLogEntryResponse` |
+| `TraceDlqEntry` | `TraceDlqEntryResponse` |
+| `PaginatedEnvelope_TraceDlqEntry` | `PaginatedEnvelope_TraceDlqSummaryResponse` |
+| `PaginatedEnvelope_TraceListItem` | `TracePageEnvelope` |
+
+The fifth is different: the trace-list envelope was renamed because its
+*shape* changed, not its row type. `total` is now conditional and
+`next_cursor` is new — see
+[the trace-list section](#the-trace-list-no-longer-returns-total-by-default).
+
+The generic envelope names follow (`DataEnvelope_Connector` →
+`DataEnvelope_ConnectorResponse`, and so on). Regenerate your client and rename
+the referenced types; no field access changes.
+
+The last row is a correction rather than a rename. `GET /api/v1/admin/trace-dlq`
+has never returned `payload_json` or `metadata_json` — it selects a
+payload-free projection so one request cannot dump every failed request's body
+— but the published schema claimed both fields, because the row struct that
+*did* have them was also the wire type. If you generated a client that modelled
+DLQ list rows as carrying payloads, those fields were always absent at runtime.
+Fetch a single entry with `GET /api/v1/admin/trace-dlq/{id}` for the payload.
+
+**One error code changed with it:** a database failure while listing audit logs
+now returns `{"error": {"code": "STORAGE_ERROR"}}` instead of
+`INTERNAL_ERROR`. The status is still 500. That is what every other list
+endpoint already returned — and what the *count* half of this same query
+already returned.
+
+## 9. Security and access
+
+Changes to what is exposed, what is masked, and what now needs a credential.
+
+### Polling an async trace now requires the token returned with the 202
+
+**What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token`
+alongside `trace_id`, and `GET /api/v1/admin/traces/{id}` requires it — via the
+`x-trace-token` header or a `?token=` query parameter — unless the caller
+presents an admin credential. Previously the endpoint was all-or-nothing admin
+auth: open to everyone on a default config (so any caller could read any other
+caller's payloads by walking trace ids) and closed to the submitter when admin
+auth was on.
+
+The trace *list* (`GET /api/v1/admin/traces`) is unchanged in its auth but now
+returns payload-free rows — `input_json`, `result_json` and `task_trace_json`
+are served only by the single-trace GET, whose `message` also no longer
+includes the submitter's request context (`context.metadata`).
+
+**How you'll notice.** A polling client that ignores `trace_token` starts
+getting `401` on its next poll.
+
+**What to do.** Capture `trace_token` from the 202 and send it on each poll:
+
+```bash
+resp=$(curl -s -X POST http://orion:8080/api/v1/data/orders/async \
+  -H 'Content-Type: application/json' -d '{"data":{"order_id":1}}')
+id=$(jq -r .trace_id <<<"$resp"); tok=$(jq -r .trace_token <<<"$resp")
+curl -s "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
+```
+
+Operator tooling that already sends an admin key needs no change. Traces
+created before the upgrade have no token and stay on the admin trust model.
+The migration adding `traces.access_token_hash` runs automatically on all
+three backends.
+
+### Trace read endpoints require admin auth
+
+**What changed.** `GET /api/v1/admin/traces` and `GET /api/v1/admin/traces/{id}`
+return full input and result payloads but were reachable without a key even
+with `admin_auth.enabled = true`. They are now guarded alongside
+`/api/v1/admin/*` and `/metrics`.
+
+**How you'll notice.** Previously-open callers polling for async results get
+`401`. URLs are unchanged.
+
+**What to do.** Send the admin key on those requests. **No effect if
+`admin_auth.enabled = false`** (still the default) — which is also why enabling
+admin auth is recommended, see the sanitisation gap above.
+
+### `/docs` and the OpenAPI spec are off in production
+
+**What changed.** Swagger UI (`/docs`) and `/api/v1/openapi.json` used to be
+registered unconditionally and unauthenticated, so every deployment published
+the complete admin API surface to anonymous callers. They are now gated by
+`server.docs.enabled`: unset (the default) serves them only when `environment`
+does not start with `prod`; an explicit `true`/`false` always wins.
+
+**How you'll notice.** With `environment = "production"`, `GET /docs` and
+`GET /api/v1/openapi.json` return **404** — not 401. The routes are not
+registered at all, so their existence is not advertised either.
+
+**What to do.** Usually nothing; this is the intended hardening. If production
+tooling reads the served spec, either set `server.docs.enabled = true` (or
+`ORION_SERVER__DOCS__ENABLED=true`) to opt back in, or switch to
+`orion-server dump-openapi > spec.json`, which works offline regardless of this
+setting.
+
+### Data-plane error bodies are sanitised
+
+**What changed.** Workflow task errors returned on the data plane used to carry
+full internal detail — the raw error message, workflow ID, task path, and retry
+state. Each entry in `errors[]` is now reduced to a code, a fixed generic
+message, and (when present) the task ID:
+
+```json
+{
+  "id": "...",
+  "status": "ok",
+  "data": { },
+  "errors": [
+    {
+      "code": "TASK_ERROR",
+      "message": "Task processing failed; full detail is available in the trace",
+      "task_id": "enrich"
+    }
+  ],
+  "request_id": "0f8c…"
+}
+```
+
+**How you'll notice.** Any client parsing `errors[*].message` for detail gets
+the same constant string every time.
+
+**What to do.** Correlate on `request_id` — note it is a **top-level sibling of
+`errors[]`**, not a field inside each entry — and fetch the full detail from
+the persisted trace at `GET /api/v1/admin/traces/{id}`. It is also returned as
+the `x-request-id` response header. Cached responses store the sanitised body,
+so a cache hit is consistent with a miss.
+
+> **This is data-plane only, and it has a gap by default.**
+> `GET /api/v1/admin/traces/{id}` returns the **unsanitised** result. That
+> endpoint is guarded only when `admin_auth.enabled = true`, and the default is
+> `false`. Enable admin auth for the sanitisation to hold end to end.
+
+### Credential headers are masked in workflow metadata
+
+**What changed.** `metadata.headers` now carries `"******"` for
+`authorization`, `cookie`, `proxy-authorization` and `x-api-key`. Their
+plaintext values previously reached `traces.result_json` and
+`trace_dlq.metadata_json`.
+
+**How you'll notice.** `validation_logic` that compares a credential header's
+*value* stops matching. Testing header *presence* still works.
+
+**What to do.** If a channel used `rollout.sticky_header` pointing at a
+credential header, switch it to a non-credential header — otherwise every
+caller now hashes into the same rollout bucket. Rows written before the
+upgrade still contain plaintext headers at rest; the trace-read projection
+hides them from HTTP responses, and `trace_queue.retention_hours` ages them
+out.
+
+### Masking is an allowlist now, and channel auth material is masked too
+
+**What changed.** Connector configs used to be masked by a *denylist* of
+secret-looking key names, so a credential under a name the list never
+anticipated (`signing_cert_pem`, a custom header value) was served in clear by
+`GET /api/v1/admin/connectors`. Masking is inverted: only the structural
+vocabulary the connector types define (endpoints, timeouts, operation gates,
+identity fields) is readable, and every other value answers `"******"`. All
+`headers` *values* are masked — header names stay visible.
+
+Channel configs, which were never masked at all, now mask `auth.keys` and
+`auth.secret`. The update path gained the same round-trip handling connectors
+have: a masked value sent back on `PUT` is restored from the stored config,
+and a sentinel with no stored counterpart is refused with a `400` naming the
+field.
+
+**How you'll notice.** Tooling that read non-secret custom keys out of
+connector configs via the admin API sees `"******"` where it saw values.
+Exports of configs holding *literal* secrets are lossy (they always were for
+denylisted names); `env://` references pass through unmasked and remain the
+portable way to author credentials.
+
+**What to do.** Nothing for configs authored with `env://` references. If a
+custom field must stay readable through the API, it needs to be a real config
+field — or fetch it from your own source of truth rather than the masked
+admin read.
+
+### Connector reads redact credentials inside URLs
+
+**What changed.** `GET /api/v1/admin/connectors` already masked
+secret-named keys (`password`, `token`, `api_key`, …) with `******`. It now
+also strips **userinfo from URL-shaped values at any depth**, so
+`https://elastic:hunter2@es:9200` comes back as `https://elastic:******@es:9200`.
+This is what finally covers `url` and `brokers[]`. A credential-free URL is
+still shown in full — masking it wholesale would hide connector endpoints from
+the admin UI for no security gain.
+
+**Query parameters with secret-looking names are masked too.** `?api_key=…`,
+`?sig=…` and `?X-Amz-Signature=…` used to round-trip in the clear inside a URL
+value. The parameter name is now judged by the same predicate as an object key,
+and that predicate gained `bearer`, `dsn` and `webhook` (substring matches)
+plus `pat` and `sig` (exact matches).
+
+**What to do — nothing, but know the round-trip rules.** `update` replaces
+`config_json` wholesale rather than merging, so a `GET` → edit → `PUT` sends
+masked values back. Each masked position — a masked field, the userinfo
+password, each secret-named query value — is restored from the stored row
+*independently*, so rotating one in-URL secret while returning the other still
+masked does the right thing. A mask with no stored counterpart is refused with
+`400` naming the field rather than silently overwriting a credential, and so is
+a literal `******` sent under a non-secret query parameter name (masking can
+never produce one there). Omit the `config` field from the `PUT` body entirely
+if you do not intend to change it.
+
+**One credential shape is still shown in the clear:** a token embedded in a URL
+*path* — a Slack-style webhook — under a generic key such as `url`, because a
+path segment carries no name to judge. Store it under a secret-looking key
+(`webhook_url`) and the key-name rule masks the whole value.
+
+### Unimplemented secret schemes are rejected
+
+**What changed.** `vault://`, `aws-sm://`, `gcp-sm://`, and `azure-kv://` in
+connector configs were never resolved — the reference string was passed through
+and **used as the literal password**. Those four schemes are now rejected at
+connector load. `env://` still works, and ordinary URLs (`postgres://`,
+`redis://`, `https://`) are untouched.
+
+**How you'll notice.** The connector is **skipped at load** with an `ERROR` log
+— the server still boots, and `POST`/`PUT` of such a connector through the
+admin API still returns `201`/`200`. The connector is simply absent, and
+workflows referencing it fail at request time. Grep for:
+
+```
+Failed to resolve secret reference in connector config, skipping
+```
+
+whose `error=` field reads
+`connector '<name>' config_json: secret scheme 'vault://' is reserved but not supported in this build; supply the value via env:// or a literal instead`.
+
+**What to do.** Find them before upgrading — matching is case-sensitive and
+lowercase-only, as in the code:
+
+```sql
+SELECT id, name, connector_type, enabled
+FROM connectors
+WHERE config_json LIKE '%vault://%'
+   OR config_json LIKE '%aws-sm://%'
+   OR config_json LIKE '%gcp-sm://%'
+   OR config_json LIKE '%azure-kv://%';
+```
+
+Replace each with `env://VAR_NAME` and inject the secret through your
+orchestrator. If such a connector appeared to work before, it was authenticating
+with the literal string `vault://...` as its password — rotate that credential.
+
+### Non-http schemes are refused by SSRF validation
+
+**What changed.** The SSRF validator accepted any URL scheme and only checked
+the resolved addresses; it now rejects anything outside `http`/`https` before
+any DNS work.
+
+**How you'll notice.** An `http_call` or Elasticsearch egress whose URL uses
+another scheme (`gopher://`, `ftp://`, `file://`, …) fails with *"only http and
+https are allowed"*. No supported configuration produced such URLs, so this
+should be invisible.
+
+### Connector operation gates now cover every connector type
+
+Additive and fully backward compatible — existing connectors behave exactly as
+before, since every gate defaults to allowed. If you want the new locks:
+
+```json
+{ "type": "cache", "backend": "redis", "url": "redis://…", "operations": { "write": false } }
+{ "type": "kafka", "brokers": ["…"], "topic": "t", "operations": { "publish": false } }
+{ "type": "http",  "url": "https://partner.example.com/v1", "operations": { "methods": ["GET"] } }
+```
+
+The HTTP allow-list is exhaustive once non-empty and matches
+case-insensitively; a method outside `GET`, `POST`, `PUT`, `PATCH`, `DELETE` is
+rejected with a `400` when the connector is created or updated, as is a gate
+key the type does not have. A gated call fails with the same validation error
+the `db`/`es` gates produce.
+
+One interaction worth knowing: a `cache` connector's `write` gate covers every
+write through it, **including a channel dedup store or response cache backed by
+it** — so gating a shared Redis read-only makes any channel pointing its dedup
+store at that connector fail to load, rather than silently downgrading. There
+is no `delete` gate on `cache`: the backend trait has no delete.
+
+### Audit-log queries reject unknown parameters
+
+**What changed.** `GET /api/v1/admin/audit-logs` used to ignore unrecognised
+query parameters, so a typo silently returned **unfiltered** results that
+looked like a successful narrow query. Unknown parameters now return `400`.
+
+**How you'll notice.**
+
+```json
+{"error": {"code": "VALIDATION_ERROR",
+           "message": "Invalid query string: Failed to deserialize query string: unknown field `resource_types`, expected one of `offset`, `limit`, `action`, `resource_type`, `resource_id`, `principal`, `start_time`, `end_time`"}}
+```
+
+**What to do.** The accepted parameters are exactly those eight. `limit`
+defaults to 50 and is clamped to `[1, 1000]`; `offset` defaults to 0;
+`start_time` is inclusive and `end_time` exclusive, both accepting RFC 3339,
+`%Y-%m-%dT%H:%M:%S`, or `%Y-%m-%d %H:%M:%S`. This strictness applies to this
+endpoint only — no other route changed.
+
+### Audit log: new actor format, new fields, two new settings
+
+**The `principal` column changes format for authenticated callers.** It was the
+first eight characters of the presented API key (or of its `sha256:` digest);
+it is now a derived `key-<16 hex>` — `SHA-256("orion:audit:key-id:v1" ‖
+SHA-256(key))` truncated to 8 bytes. Three things that buys you:
+
+- Two keys sharing a prefix are now two actors. Any generator with a fixed
+  leader (`orion_sk_…`) previously collapsed every key into one.
+- The audit log no longer contains eight literal characters of a live
+  credential.
+- The id is the same whether a key is configured in plaintext or `sha256:`
+  form, so rotating an operator between the two does not rename them in the
+  trail.
+
+Hold the config and you can recompute the id for each key you issued and map a
+row back to it; nobody else can go in either direction. **Rows written before
+the upgrade keep their old values,** so a saved `?principal=` filter matches
+those rows and matches nothing new.
+
+**`details` now carries request context** as a JSON object: `request_id` (the
+same value as the `x-request-id` header and the `error.request_id` the client
+was handed), `client_ip` (resolved with the `rate_limit.trusted_proxies`
+policy, so a forged `X-Forwarded-For` cannot dictate it — and note that policy
+now applies even with `rate_limit.enabled = false`, so a proxied deployment
+records the caller rather than the load balancer) and `user_agent` (truncated
+to 256 bytes). Unavailable fields are omitted rather than recorded empty. It
+previously held `{"request_id": …}` at most.
+
+**Mutations immediately before a restart are now recorded.** The write was a
+detached task nothing awaited, so a mutation accepted moments before `SIGTERM`
+was answered `200` and then lost — the row an investigation of a bad deploy
+most wants. It now goes onto a bounded queue drained at shutdown. Two new
+settings, both with working defaults:
+
+| Setting | Default | Raise it when |
 |---|---|---|
-| Config file and `ORION_*` environment | Operator, edited at deploy time | **Startup error** naming the replacement. Unknown keys are refused (`deny_unknown_fields` throughout), and every renamed environment variable is listed in a retired-names table so the message says what to set instead. |
-| Channel config and workflow JSON | Author, stored in the database | **Refused at create/update**, and **quarantined at load** if already stored — the channel is refused at every ingress rather than served with a guard missing. |
+| `audit.max_pending` | `1000` | A bursty admin plane (large `/import` batches) overruns the writer |
+| `audit.drain_timeout_secs` | `5` | Shutdown reports abandoned rows on a slow database |
 
-Nobody hand-edits stored channel and workflow rows during an upgrade, which is
-why that surface cannot rely on a startup error the way the config file does.
-Quarantine is the equivalent: loud, fail-closed, and visible on `/health` and
-the admin surface.
+Both are refused at `0`. Anything that still does not make it is counted in
+`orion_audit_events_dropped_total{reason}` (`queue_full`, `write_failed`,
+`drain_timeout`, `writer_stopped`) and logged at `error`. **Alert on that
+counter existing at all, not on a threshold** — any non-zero value is a hole in
+the audit trail.
 
-<details><summary>Why old spellings are refused rather than accepted</summary>
+**`POST /admin/workflows/{id}/test` now writes an `action: "test"` row.** It
+reads as a dry run and is not one: it executes the workflow's tasks against
+live connectors. If you have an audit-volume alert, expect it to see traffic
+from this endpoint for the first time.
 
-The cost of a silently-accepted old name decides this. `cors` →
-`origin_allow_list` is the clearest case: had the old key parsed and been
-dropped, every channel using it would have served with no origin allow-list,
-indistinguishable from a channel that deliberately checks nothing. The failure
-would have been silent, permanent, and a security regression. The same argument
-applies to `backpressure.max_concurrent`, whose replacement means something
-different (per node, not per cluster) — accepting it under the new field would
-admit N× the intended concurrency.
+## 10. API and response shape
 
-</details>
-
-Run `orion-server preflight` before upgrading. It reads the stored estate and
-the environment and names every entity that will fail, so the failures above
-are something you see before the rollout rather than during it.
-
-## 8. Smaller behaviour changes
+What a call answers, and what a call is now refused for. Anything that parses
+Orion's responses or writes its JSON belongs here.
 
 ### Every admin response is now wrapped in `data`
 
@@ -1250,217 +1810,38 @@ an `X-Orion-Change-Context` request header is recorded in audit `details`
 consistent snapshot (K12), and the `orion-server package` CLI that composes
 all of it — see [Admin API › Export & Promotion](../reference/admin-api.md#export--promotion).
 
-### Channel names must be unique
+### `db_read` returns values for float and blob columns
 
-**What changed.** A channel name may belong to only one `channel_id` (K7).
-Creating, updating, or importing a channel whose name another channel's
-current version already holds answers **409**, and activation refuses a name
-another *active* channel holds. Before 1.0 the collision stored cleanly and
-was resolved silently at runtime: the data plane and `channel_call` address
-channels by **name**, so one of the two won the registry slot and the other's
-requests ran the winner's workflow.
+**What changed.** `float4` / `REAL` / `FLOAT` columns and blob columns silently
+returned `null`. They now return values, and a column that genuinely cannot be
+decoded raises an error instead of nulling. A `null` in the result now means
+only "SQL NULL".
 
-**What to do.** Run `orion-server preflight` before upgrading — it reports
-every name held by more than one `channel_id` (`channel-names` check). Rename
-all but one (new version with a distinct name, activate it) or delete the
-redundant channels. An estate without duplicates — any estate that worked
-predictably — is unaffected.
+- `Real` → JSON number.
+- `Blob` (`bytea`, SQLite `BLOB`, MySQL `TEXT`/`JSON`) → JSON **string**: the
+  UTF-8 text when the bytes are valid UTF-8, otherwise **lowercase hex** with
+  no `0x` prefix (not base64).
 
-### Channel activation now requires an active workflow
+New errors, all prefixed `db_read:`:
 
-**What changed.** `PATCH /admin/channels/{id}/status` with `{"status":
-"active"}` answers **400** when the channel's `workflow_id` is unset, names a
-workflow that does not exist, or names one with no active version (K8). It
-used to succeed and quarantine the channel at the next engine load — the same
-outcome, discovered later, with no error to the caller. The docs and the
-`/validate` warning always claimed this gate existed; now it does.
-
-**What to do.** Activate in dependency order — connectors → workflows →
-channels — which is what any working deployment script already did, since an
-out-of-order channel never served. A script that relied on activate-then-fix
-ordering must activate the workflow first. `?dry_run=true` on the same
-endpoint pre-flights the gate without writing.
-
-### `data_write` takes its envelope under `write`
-
-**What changed.** The mutation envelope is now nested, mirroring
-`data_query`'s `query`:
-
-```jsonc
-// before — envelope flat, sharing a namespace with the handler keys
-{ "name": "data_write", "input": {
-    "connector": "orders_db", "op": "update", "target": "users",
-    "set": { "status": "inactive" },
-    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
-    "params": { "id": { "var": "data.req.id" } },
-    "output": "data.updated" } }
-
-// after — `connector`/`schema`/`params`/`database`/`output` stay at the top
-{ "name": "data_write", "input": {
-    "connector": "orders_db",
-    "params": { "id": { "var": "data.req.id" } },
-    "output": "data.updated",
-    "write": {
-      "op": "update", "target": "users",
-      "set": { "status": "inactive" },
-      "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
+```
+db_read: column 'x' is unreadable: <sqlx error>
+db_read: column 'x' (Real) failed to decode: <sqlx error>
+db_read: column 'x' holds NaN, which JSON cannot represent
 ```
 
-**How you'll notice.** The flat form is **not** accepted. `write` is a required
-input, so a task still in the old shape is refused at create, update, bulk
-import, `POST /admin/workflows/validate` and `orion-server lint`, with an error
-naming `write`. A workflow already stored in the flat shape fails at its first
-request.
+**How you'll notice.** Workflows that used a `null` check to skip a float or
+blob column now see real data; a query touching an undecodable column now fails
+where it previously returned a row of nulls.
 
-Find them before you upgrade:
+**What to do.** Review JSONLogic that treats these columns as always-null.
+**Scope note:** this affects `db_read`, `data_query` (including nested
+`include` queries), and `data_write`'s `RETURNING` path. It does **not** affect
+`db_write`, which returns `{"rows_affected", "last_insert_id"}`.
 
-```bash
-orion-server preflight
-```
-
-**What to do.** Move the eight envelope keys — `op`, `target`, `values`, `set`,
-`filter`, `on_conflict`, `returning`, `all` — into a `write` object, leaving
-`connector`, `schema`, `params`, `database` and `output` where they are. Stale
-flat keys left behind by a half-finished migration are inert — `write` is the
-only envelope — so you can move them one workflow at a time.
-
-**Why.** The two halves of one dialect read differently, and because the
-envelope shared a namespace with the handler it could never grow a field named
-`connector`, `schema`, `params`, `database` or `output`. Nesting also means
-there is one JSON value that *is* the envelope — validation errors now point at
-`…function.input.write.target` instead of a path that could mean either half.
-
-### `response_path` is now called `output`
-
-**What changed.** Eight of the ten connector functions named their destination
-path `output`; `http_call` and `channel_call` named it `response_path`. All ten
-now take `output`.
-
-**How you'll notice.** You won't — `response_path` is still accepted, so
-existing workflows keep running. Unlike the other 1.0 renames it carries no
-removal date: on `http_call` the alias belongs to the `HttpCallConfig` struct in
-`dataflow-rs`, which Orion does not own and cannot remove on its own. It is
-listed under [accepted alternate
-spellings](../reference/support.md#accepted-alternate-spellings) rather than as
-a deprecation. Supplying both keys is a duplicate-field error, not a precedence
-rule.
-
-**What to do.** Rename the key at your leisure:
-
-```json
-// before
-{ "name": "http_call", "input": { "connector": "crm", "response_path": "data.customer" } }
-// after
-{ "name": "http_call", "input": { "connector": "crm", "output": "data.customer" } }
-```
-
-The *defaults* are unchanged and still differ by function: omitting `output` on
-`http_call` discards the response, while every other handler writes to `"data"`.
-
-### The trace read endpoints moved to the admin plane
-
-**What changed.** Both trace endpoints moved:
-
-| Before | After |
-|---|---|
-| `GET /api/v1/data/traces` | `GET /api/v1/admin/traces` |
-| `GET /api/v1/data/traces/{id}` | `GET /api/v1/admin/traces/{id}` |
-
-**There is no redirect.** The old paths now resolve as *channel* names on the
-data-plane catch-all, so a request to one returns 404 (or runs a channel you
-happen to have named `traces`) rather than a 308.
-
-**Why.** The list endpoint was already admin-guarded, so its placement on the
-data plane was a naming lie. It was also a functional one: `/traces` and
-`/traces/{id}` were static routes, and axum resolves static segments before the
-`/{*path}` catch-all — so **a channel named `traces` was permanently
-unreachable**, `POST /api/v1/data/traces` returned 405, and the rate limiter
-carried a special case to skip the name. None of that was documented or
-checked; it just silently didn't work.
-
-**How you'll notice.** Any async client that polls `GET /api/v1/data/traces/{id}`
-starts getting 404. Operator tooling hitting the list gets the same.
-
-**What to do.** Update the paths. The access rules are unchanged: the list needs
-an admin credential, and the single-trace GET still takes *either* an admin
-credential or the submission's `trace_token` (see the next section) — despite
-now living under `/api/v1/admin`, which is the one path in that namespace not
-covered by the blanket admin guard.
-
-```bash
-# before
-curl "http://orion:8080/api/v1/data/traces/$id"  -H "x-trace-token: $tok"
-# after
-curl "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
-```
-
-### Polling an async trace now requires the token returned with the 202
-
-**What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token`
-alongside `trace_id`, and `GET /api/v1/admin/traces/{id}` requires it — via the
-`x-trace-token` header or a `?token=` query parameter — unless the caller
-presents an admin credential. Previously the endpoint was all-or-nothing admin
-auth: open to everyone on a default config (so any caller could read any other
-caller's payloads by walking trace ids) and closed to the submitter when admin
-auth was on.
-
-The trace *list* (`GET /api/v1/admin/traces`) is unchanged in its auth but now
-returns payload-free rows — `input_json`, `result_json` and `task_trace_json`
-are served only by the single-trace GET, whose `message` also no longer
-includes the submitter's request context (`context.metadata`).
-
-**How you'll notice.** A polling client that ignores `trace_token` starts
-getting `401` on its next poll.
-
-**What to do.** Capture `trace_token` from the 202 and send it on each poll:
-
-```bash
-resp=$(curl -s -X POST http://orion:8080/api/v1/data/orders/async \
-  -H 'Content-Type: application/json' -d '{"data":{"order_id":1}}')
-id=$(jq -r .trace_id <<<"$resp"); tok=$(jq -r .trace_token <<<"$resp")
-curl -s "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
-```
-
-Operator tooling that already sends an admin key needs no change. Traces
-created before the upgrade have no token and stay on the admin trust model.
-The migration adding `traces.access_token_hash` runs automatically on all
-three backends.
-
-### Credential headers are masked in workflow metadata
-
-**What changed.** `metadata.headers` now carries `"******"` for
-`authorization`, `cookie`, `proxy-authorization` and `x-api-key`. Their
-plaintext values previously reached `traces.result_json` and
-`trace_dlq.metadata_json`.
-
-**How you'll notice.** `validation_logic` that compares a credential header's
-*value* stops matching. Testing header *presence* still works.
-
-**What to do.** If a channel used `rollout.sticky_header` pointing at a
-credential header, switch it to a non-credential header — otherwise every
-caller now hashes into the same rollout bucket. Rows written before the
-upgrade still contain plaintext headers at rest; the trace-read projection
-hides them from HTTP responses, and `trace_queue.retention_hours` ages them
-out.
-
-### A closed trace queue answers 503, not 500
-
-**What changed.** `TraceQueue::submit` had two adjacent failure arms for one
-condition — the queue cannot take this message. Queue *full* answered `503
-SERVICE_UNAVAILABLE`; queue *closed* answered `500 QUEUE_ERROR`, which
-`is_retryable()` simultaneously reported as retryable. A retryable 500 is a
-contradiction, and the OpenAPI document had never described it: it lists
-queue-full and queue-closed together under `503`.
-
-Both now answer `503` with code `SERVICE_UNAVAILABLE`. The `QUEUE_ERROR` code is
-gone.
-
-**How you'll notice.** Only during shutdown, which is the one time the queue is
-closed while requests still arrive. A client retrying on 503 now retries this
-too, which is the correct behaviour and was already what the documentation
-promised.
-
-**What to do.** Nothing, unless you match on the literal string `QUEUE_ERROR`.
+> Postgres `timestamptz`, `uuid`, `jsonb`, `numeric`, arrays, and enums were
+> **never** silently nulled — sqlx rejects them while building the row, so the
+> query already failed loudly. That behaviour is unchanged.
 
 ### `BAD_REQUEST` is now `VALIDATION_ERROR`, and an oversized result is a 500
 
@@ -1518,154 +1899,50 @@ for genuinely invalid input.
 **What to do.** Branch on 404 for the no-draft case. If you branched on the
 message text, it is unchanged.
 
-### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
+### Duplicate creates now return 409
 
-**What changed.** The live engine was held behind a read-write lock, so every
-request acquired a read guard and a reload waited for a write guard. It is
-published with an atomic store now, so readers never block and a reload never
-waits.
+`POST /api/v1/admin/workflows` and `POST /api/v1/admin/channels` with an id
+that already exists now return `409 Conflict` with
+`{"error": {"code": "CONFLICT", "message": "…"}}`. Through 0.3.x these returned
+`500 INTERNAL_ERROR`. Clients or retry logic that treated the 500 as transient
+should treat the 409 as a permanent client error — pick a different id, or use
+the import endpoints, which report conflicts per item without failing the
+batch.
 
-Two things existed only to describe that wait and have been removed:
+### A closed trace queue answers 503, not 500
 
-- **`engine.reload_timeout_secs`** (`ORION_ENGINE__RELOAD_TIMEOUT_SECS`) — how
-  long a reload would wait for the write lock. There is no wait to bound.
-- **`orion_engine_lock_wait_seconds`** — the histogram of that wait. It could
-  now only ever report zero.
+**What changed.** `TraceQueue::submit` had two adjacent failure arms for one
+condition — the queue cannot take this message. Queue *full* answered `503
+SERVICE_UNAVAILABLE`; queue *closed* answered `500 QUEUE_ERROR`, which
+`is_retryable()` simultaneously reported as retryable. A retryable 500 is a
+contradiction, and the OpenAPI document had never described it: it lists
+queue-full and queue-closed together under `503`.
 
-The `_orion.profile` debug output loses its `engine_lock_wait` phase and
-`engine_lock_wait_ms` field for the same reason. `engine.health_check_timeout_secs`
-stays — it still bounds the `/readyz` cluster-Redis ping.
+Both now answer `503` with code `SERVICE_UNAVAILABLE`. The `QUEUE_ERROR` code is
+gone.
 
-**How you'll notice.** Setting `ORION_ENGINE__RELOAD_TIMEOUT_SECS` now **stops
-the boot** with a message naming it as removed, rather than being silently
-ignored. A `reload_timeout_secs` line in a config file is rejected by
-`deny_unknown_fields` the same way.
+**How you'll notice.** Only during shutdown, which is the one time the queue is
+closed while requests still arrive. A client retrying on 503 now retries this
+too, which is the correct behaviour and was already what the documentation
+promised.
 
-**What to do.** Delete the setting from any config file, Helm values or
-environment. Drop `orion_engine_lock_wait_seconds` from dashboards and alerts —
-a panel on it will read empty rather than break.
+**What to do.** Nothing, unless you match on the literal string `QUEUE_ERROR`.
 
-### `trace_storage.batch_size` now defaults to `1000`
+### Queue-full now returns 503 instead of hanging
 
-**What changed.** Only the default; `trace_storage.mode` still defaults to
-`sync`, and a deployment that has not opted into `batch` or `async` is not
-affected by any of this.
+**What changed.** When the async trace queue was full, submission blocked
+waiting for capacity — an unbounded hang under load. It now sheds immediately.
 
-For deployments that *have*, a flush costs a fixed per-transaction price plus a
-per-row one, so the old default of `100` rows per flush spent most of each
-transaction on overhead. Measured on SQLite with 4 workers, the same load
-drained at 26k rows/s at `100` and 45k rows/s at `1000` — a tenth as many
-transactions for the same rows.
+**How you'll notice.** `POST /api/v1/data/{channel}/async` (and the REST-routed
+`…/async` equivalents) returns **`503`** with code **`SERVICE_UNAVAILABLE`** —
+*not* `QUEUE_FULL`. Disambiguate from other 503s by the message
+(`Trace queue is full (N messages pending)` or
+`Trace queue memory limit exceeded …`) or, better, by
+`orion_trace_queue_rejected_total{reason="full"|"memory"}`.
 
-**How you'll notice.** `batch` and `async` modes keep up with a higher request
-rate before `max_pending` overruns, and `orion_trace_persistence_batch_size`
-reports larger flushes. Trace visibility is unchanged — a partial batch still
-flushes on `batch_flush_interval_ms`.
-
-**What to do.** Nothing. Set `batch_size` explicitly to pin the old value:
-
-```toml
-[trace_storage]
-batch_size = 100
-```
-
-### Trace loss under `batch` / `async` now warns in the log
-
-**What changed.** When the persistence queue overruns `max_pending`, the dropped
-traces were reported only to `orion_trace_dropped_total{reason="overflow"}` —
-and `metrics.enabled` defaults to `false`, so the out-of-the-box signal for
-"your traces are being discarded" was a counter nobody was collecting. The drop
-now also logs a `WARN`: immediately when the loss starts, then at most once
-every 5 seconds, each line carrying how many traces were dropped since the
-previous one.
-
-**How you'll notice.** A log line naming the overrun, if you run `batch` or
-`async` at a request rate the DB cannot absorb. `sync` cannot produce it.
-
-**What to do.** Treat the line as real data loss, not noise. Raise
-`trace_storage.max_pending` / `batch_size`, set `async_on_overflow = "block"` to
-slow producers instead of shedding, sample deliberately with `sample_rate` /
-`errors_only`, or move to `mode = "sync"` and let the request path be throttled
-by the trace table rather than outrun it.
-
-### Response cache keys changed format
-
-**What changed.** Three things, all of which change the hash:
-
-1. The key hashed only the request body. It now also folds in the HTTP method,
-   route parameters, and query string (both sorted, so ordering does not affect
-   the key). The old key could serve one caller's cached response to a different
-   request that happened to share a body.
-2. The digest is **SHA-256 truncated to 128 bits**, not FNV-1a. FNV-1a is a
-   multiply-xor over 64 bits with no collision resistance — a colliding payload
-   is constructed rather than searched for, and the data plane is unauthenticated
-   by design, so on most deployments the body is attacker-shaped input. Two
-   requests that hash alike are served each other's response bodies.
-3. `cache_key_fields` entries now resolve as **paths**, not just literal
-   top-level keys. `user.id` walks into a nested object, and `data.user_id` —
-   the spelling this guide and the feature docs have always shown — resolves to
-   the payload's `user_id`. It previously matched nothing.
-
-**How you'll notice.** A one-time cache miss spike after the upgrade.
-
-If (3) applies to you, you will also see a **warning naming the channel and its
-fields**, and that channel will stop caching until the names are corrected. That
-is deliberate. A channel whose fields all missed was hashing only method, params
-and query, so every request on it collapsed onto one entry and the first
-caller's body was served to everyone for the TTL — it was not caching correctly
-before, it was mis-serving. Check the field names against your payload shape;
-all three spellings above resolve, so in most cases the existing config is
-already correct and simply starts working.
-
-**What to do.** Nothing is required. The key prefix (`cache:{channel}:{hash}`)
-is unchanged and carries no version segment, so old entries are **orphaned, not
-mis-served** — a new request cannot reproduce an old hash. They expire on their
-own via `cache.ttl_secs` (default `300` seconds when unset). There is no
-cache-flush endpoint; for a guaranteed-clean cutover on Redis:
-
-```bash
-redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli DEL
-```
-
-With the in-memory backend, entries are process-local and a restart clears
-them.
-
-### Data-plane error bodies are sanitised
-
-**What changed.** Workflow task errors returned on the data plane used to carry
-full internal detail — the raw error message, workflow ID, task path, and retry
-state. Each entry in `errors[]` is now reduced to a code, a fixed generic
-message, and (when present) the task ID:
-
-```json
-{
-  "id": "...",
-  "status": "ok",
-  "data": { },
-  "errors": [
-    {
-      "code": "TASK_ERROR",
-      "message": "Task processing failed; full detail is available in the trace",
-      "task_id": "enrich"
-    }
-  ],
-  "request_id": "0f8c…"
-}
-```
-
-**How you'll notice.** Any client parsing `errors[*].message` for detail gets
-the same constant string every time.
-
-**What to do.** Correlate on `request_id` — note it is a **top-level sibling of
-`errors[]`**, not a field inside each entry — and fetch the full detail from
-the persisted trace at `GET /api/v1/admin/traces/{id}`. It is also returned as
-the `x-request-id` response header. Cached responses store the sanitised body,
-so a cache hit is consistent with a miss.
-
-> **This is data-plane only, and it has a gap by default.**
-> `GET /api/v1/admin/traces/{id}` returns the **unsanitised** result. That
-> endpoint is guarded only when `admin_auth.enabled = true`, and the default is
-> `false`. Enable admin auth for the sanitisation to hold end to end.
+**What to do.** Make async clients retry on `503`. Size the queue with
+`trace_queue.buffer_size` (default `1000`) and `trace_queue.max_queue_memory_bytes`
+(default `104857600`, 100 MB). Sync requests never touch this queue.
 
 ### Open circuit breakers return 503 `CIRCUIT_OPEN`
 
@@ -1694,262 +1971,6 @@ retryable.
 > is visible only in the persisted trace and in
 > `orion_circuit_breaker_rejections_total{connector, channel}`. Alert on the metric,
 > not on the status code, if your workflows use `continue_on_error: true`.
-
-### Queue-full now returns 503 instead of hanging
-
-**What changed.** When the async trace queue was full, submission blocked
-waiting for capacity — an unbounded hang under load. It now sheds immediately.
-
-**How you'll notice.** `POST /api/v1/data/{channel}/async` (and the REST-routed
-`…/async` equivalents) returns **`503`** with code **`SERVICE_UNAVAILABLE`** —
-*not* `QUEUE_FULL`. Disambiguate from other 503s by the message
-(`Trace queue is full (N messages pending)` or
-`Trace queue memory limit exceeded …`) or, better, by
-`orion_trace_queue_rejected_total{reason="full"|"memory"}`.
-
-**What to do.** Make async clients retry on `503`. Size the queue with
-`trace_queue.buffer_size` (default `1000`) and `trace_queue.max_queue_memory_bytes`
-(default `104857600`, 100 MB). Sync requests never touch this queue.
-
-### Trace read endpoints require admin auth
-
-**What changed.** `GET /api/v1/admin/traces` and `GET /api/v1/admin/traces/{id}`
-return full input and result payloads but were reachable without a key even
-with `admin_auth.enabled = true`. They are now guarded alongside
-`/api/v1/admin/*` and `/metrics`.
-
-**How you'll notice.** Previously-open callers polling for async results get
-`401`. URLs are unchanged.
-
-**What to do.** Send the admin key on those requests. **No effect if
-`admin_auth.enabled = false`** (still the default) — which is also why enabling
-admin auth is recommended, see the sanitisation gap above.
-
-### Sticky canary rollouts are now caller-stable
-
-**What changed.** The rollout bucket was `rand::random` per request, so a
-caller in a 10% canary flip-flopped between versions call to call and replica
-to replica. The bucket is now a stable hash of a caller identity:
-`engine.rollout_sticky_header` when configured (e.g. `x-user-id`), otherwise
-the forwarded client IP (`X-Forwarded-For` first element, else `X-Real-IP`).
-Requests with no identity keep the random fallback, so percentages still hold
-in aggregate.
-
-**How you'll notice.** A given caller now consistently gets the same version.
-The *population* split still matches the configured percentage, but it is no
-longer re-drawn per request — a 10% canary that previously exposed nearly every
-caller occasionally now exposes a stable 10% of callers.
-
-**What to do.** Set the identity header explicitly if IP is a poor proxy for
-your callers (NAT, mobile, shared egress):
-
-```toml
-[engine]
-rollout_sticky_header = "x-user-id"
-```
-
-```bash
-ORION_ENGINE__ROLLOUT_STICKY_HEADER=x-user-id
-```
-
-> Unlike rate limiting, this path reads forwarded headers **without**
-> consulting `rate_limit.trusted_proxies`, so the identity is caller-influenced.
-> That is acceptable for canary assignment and is not a security control — do
-> not use rollout percentages to gate access.
-
-### Unimplemented secret schemes are rejected
-
-**What changed.** `vault://`, `aws-sm://`, `gcp-sm://`, and `azure-kv://` in
-connector configs were never resolved — the reference string was passed through
-and **used as the literal password**. Those four schemes are now rejected at
-connector load. `env://` still works, and ordinary URLs (`postgres://`,
-`redis://`, `https://`) are untouched.
-
-**How you'll notice.** The connector is **skipped at load** with an `ERROR` log
-— the server still boots, and `POST`/`PUT` of such a connector through the
-admin API still returns `201`/`200`. The connector is simply absent, and
-workflows referencing it fail at request time. Grep for:
-
-```
-Failed to resolve secret reference in connector config, skipping
-```
-
-whose `error=` field reads
-`connector '<name>' config_json: secret scheme 'vault://' is reserved but not supported in this build; supply the value via env:// or a literal instead`.
-
-**What to do.** Find them before upgrading — matching is case-sensitive and
-lowercase-only, as in the code:
-
-```sql
-SELECT id, name, connector_type, enabled
-FROM connectors
-WHERE config_json LIKE '%vault://%'
-   OR config_json LIKE '%aws-sm://%'
-   OR config_json LIKE '%gcp-sm://%'
-   OR config_json LIKE '%azure-kv://%';
-```
-
-Replace each with `env://VAR_NAME` and inject the secret through your
-orchestrator. If such a connector appeared to work before, it was authenticating
-with the literal string `vault://...` as its password — rotate that credential.
-
-### Masking is an allowlist now, and channel auth material is masked too
-
-**What changed.** Connector configs used to be masked by a *denylist* of
-secret-looking key names, so a credential under a name the list never
-anticipated (`signing_cert_pem`, a custom header value) was served in clear by
-`GET /api/v1/admin/connectors`. Masking is inverted: only the structural
-vocabulary the connector types define (endpoints, timeouts, operation gates,
-identity fields) is readable, and every other value answers `"******"`. All
-`headers` *values* are masked — header names stay visible.
-
-Channel configs, which were never masked at all, now mask `auth.keys` and
-`auth.secret`. The update path gained the same round-trip handling connectors
-have: a masked value sent back on `PUT` is restored from the stored config,
-and a sentinel with no stored counterpart is refused with a `400` naming the
-field.
-
-**How you'll notice.** Tooling that read non-secret custom keys out of
-connector configs via the admin API sees `"******"` where it saw values.
-Exports of configs holding *literal* secrets are lossy (they always were for
-denylisted names); `env://` references pass through unmasked and remain the
-portable way to author credentials.
-
-**What to do.** Nothing for configs authored with `env://` references. If a
-custom field must stay readable through the API, it needs to be a real config
-field — or fetch it from your own source of truth rather than the masked
-admin read.
-
-### Connector reads redact credentials inside URLs
-
-**What changed.** `GET /api/v1/admin/connectors` already masked
-secret-named keys (`password`, `token`, `api_key`, …) with `******`. It now
-also strips **userinfo from URL-shaped values at any depth**, so
-`https://elastic:hunter2@es:9200` comes back as `https://elastic:******@es:9200`.
-This is what finally covers `url` and `brokers[]`. A credential-free URL is
-still shown in full — masking it wholesale would hide connector endpoints from
-the admin UI for no security gain.
-
-**Query parameters with secret-looking names are masked too.** `?api_key=…`,
-`?sig=…` and `?X-Amz-Signature=…` used to round-trip in the clear inside a URL
-value. The parameter name is now judged by the same predicate as an object key,
-and that predicate gained `bearer`, `dsn` and `webhook` (substring matches)
-plus `pat` and `sig` (exact matches).
-
-**What to do — nothing, but know the round-trip rules.** `update` replaces
-`config_json` wholesale rather than merging, so a `GET` → edit → `PUT` sends
-masked values back. Each masked position — a masked field, the userinfo
-password, each secret-named query value — is restored from the stored row
-*independently*, so rotating one in-URL secret while returning the other still
-masked does the right thing. A mask with no stored counterpart is refused with
-`400` naming the field rather than silently overwriting a credential, and so is
-a literal `******` sent under a non-secret query parameter name (masking can
-never produce one there). Omit the `config` field from the `PUT` body entirely
-if you do not intend to change it.
-
-**One credential shape is still shown in the clear:** a token embedded in a URL
-*path* — a Slack-style webhook — under a generic key such as `url`, because a
-path segment carries no name to judge. Store it under a secret-looking key
-(`webhook_url`) and the key-name rule masks the whole value.
-
-### Audit-log queries reject unknown parameters
-
-**What changed.** `GET /api/v1/admin/audit-logs` used to ignore unrecognised
-query parameters, so a typo silently returned **unfiltered** results that
-looked like a successful narrow query. Unknown parameters now return `400`.
-
-**How you'll notice.**
-
-```json
-{"error": {"code": "VALIDATION_ERROR",
-           "message": "Invalid query string: Failed to deserialize query string: unknown field `resource_types`, expected one of `offset`, `limit`, `action`, `resource_type`, `resource_id`, `principal`, `start_time`, `end_time`"}}
-```
-
-**What to do.** The accepted parameters are exactly those eight. `limit`
-defaults to 50 and is clamped to `[1, 1000]`; `offset` defaults to 0;
-`start_time` is inclusive and `end_time` exclusive, both accepting RFC 3339,
-`%Y-%m-%dT%H:%M:%S`, or `%Y-%m-%d %H:%M:%S`. This strictness applies to this
-endpoint only — no other route changed.
-
-### `db_read` returns values for float and blob columns
-
-**What changed.** `float4` / `REAL` / `FLOAT` columns and blob columns silently
-returned `null`. They now return values, and a column that genuinely cannot be
-decoded raises an error instead of nulling. A `null` in the result now means
-only "SQL NULL".
-
-- `Real` → JSON number.
-- `Blob` (`bytea`, SQLite `BLOB`, MySQL `TEXT`/`JSON`) → JSON **string**: the
-  UTF-8 text when the bytes are valid UTF-8, otherwise **lowercase hex** with
-  no `0x` prefix (not base64).
-
-New errors, all prefixed `db_read:`:
-
-```
-db_read: column 'x' is unreadable: <sqlx error>
-db_read: column 'x' (Real) failed to decode: <sqlx error>
-db_read: column 'x' holds NaN, which JSON cannot represent
-```
-
-**How you'll notice.** Workflows that used a `null` check to skip a float or
-blob column now see real data; a query touching an undecodable column now fails
-where it previously returned a row of nulls.
-
-**What to do.** Review JSONLogic that treats these columns as always-null.
-**Scope note:** this affects `db_read`, `data_query` (including nested
-`include` queries), and `data_write`'s `RETURNING` path. It does **not** affect
-`db_write`, which returns `{"rows_affected", "last_insert_id"}`.
-
-> Postgres `timestamptz`, `uuid`, `jsonb`, `numeric`, arrays, and enums were
-> **never** silently nulled — sqlx rejects them while building the row, so the
-> query already failed loudly. That behaviour is unchanged.
-
-### `backpressure.queue_depth` was removed
-
-**What changed.** The field was parsed but never read. Backpressure rejects
-immediately at `max_concurrent` via `try_acquire`; there is no wait queue, so
-the field promised behaviour that never existed.
-
-**What to do — delete it.** `ChannelConfig` is `deny_unknown_fields` as of 1.0
-(see [Unknown keys in a channel config are now
-refused](#unknown-keys-in-a-channel-config-are-now-refused)), so a stored
-`config_json` still carrying `queue_depth` **no longer parses**, and the channel
-is quarantined at load. This is the same failure as any other unrecognised key.
-
-`orion-server preflight` lists every affected channel. The direct query, if you
-would rather look yourself:
-
-```sql
-SELECT channel_id, version, name FROM channels
-WHERE config_json LIKE '%queue_depth%';
-```
-
-While you are in there: the field next to it is named
-[`max_concurrent_per_node`](#backpressuremax_concurrent-is-now-max_concurrent_per_node)
-as of this release, and the pre-1.0 `max_concurrent` spelling is not accepted
-either. A `backpressure` block written for 0.3.0 therefore needs both edits.
-
-### Storage pool defaults: a docs correction, not a behaviour change
-
-**No runtime default changed between 0.3.0 and 1.0.0.** The 0.3.0 *documentation*
-disagreed with the code — the config reference said `max_connections = 25` and
-`config.toml.example` said `10`, while the code has always defaulted to `50`.
-The docs are now generated from the code.
-
-**What to do.** If you sized your database against the documented number, check
-it against the real one. The actual defaults are:
-
-| Key | Default |
-|-----|---------|
-| `storage.max_connections` | `50` |
-| `storage.min_connections` | `5` |
-| `storage.acquire_timeout_secs` | `3` |
-| `storage.idle_timeout_secs` | `300` |
-| `storage.busy_timeout_ms` | `5000` (SQLite only) |
-
-In cluster mode this multiplies: *replicas × `max_connections`* must fit inside
-your PostgreSQL `max_connections`, minus headroom for the migration job and
-your own tooling.
 
 ### The data dialect rejects what it used to ignore
 
@@ -2144,58 +2165,78 @@ returning wrong or incomplete data. The first fires unconditionally.
   to name exactly which indices to retry or roll back. A bulk where *nothing*
   landed is still a hard error, and SQL connectors are unaffected.
 
-### `/docs` and the OpenAPI spec are off in production
+### Unknown keys in a channel config are now refused
 
-**What changed.** Swagger UI (`/docs`) and `/api/v1/openapi.json` used to be
-registered unconditionally and unauthenticated, so every deployment published
-the complete admin API surface to anonymous callers. They are now gated by
-`server.docs.enabled`: unset (the default) serves them only when `environment`
-does not start with `prod`; an explicit `true`/`false` always wins.
+**What changed.** `ChannelConfig` rejects keys it does not recognise. Before
+1.0 they were silently ignored. The refusal applies at every nesting level:
+a typo *inside* a guard's body — `rate_limit`, `cache`, `deduplication`,
+`tracing`, `backpressure`, `auth`, `response` — fails the same way, where it
+previously fell back to that field's default (a misspelled
+`rate_limit.key_logic` silently meant per-client-IP keying; a misspelled
+`deduplication.window_secs` silently took the default window).
 
-**How you'll notice.** With `environment = "production"`, `GET /docs` and
-`GET /api/v1/openapi.json` return **404** — not 401. The routes are not
-registered at all, so their existence is not advertised either.
+**Why.** Every key in a channel config is a *guard*. A key Orion does not
+recognise is a guard that never runs — and because nothing re-serialises
+`config_json` (the stored document is the one you wrote), the mistake survives
+every reload. A stored `"deduplicaton"` meant no idempotency, no error, forever.
+The config file, the connector configs and both dialect envelopes already
+rejected unknown keys; channel config was the last surface that did not.
 
-**What to do.** Usually nothing; this is the intended hardening. If production
-tooling reads the served spec, either set `server.docs.enabled = true` (or
-`ORION_SERVER__DOCS__ENABLED=true`) to opt back in, or switch to
-`orion-server dump-openapi > spec.json`, which works offline regardless of this
-setting.
+**How you'll notice.** A channel whose stored config carries a stray key is
+quarantined at load — refused at every ingress, listed on `/health` and the
+admin surface with the reason. On create and update it is a `400` naming the
+key. This is also the mechanism behind the `cors`, `max_concurrent` and
+`queue_depth` entries elsewhere on this page: all four are the same failure.
 
-### Workflow caches, dedup stores and response caches no longer share one keyspace
+**What to do.** Run `orion-server preflight` — it names every stored channel
+with an unparseable config and, for the two renames, the key to use instead.
 
-**What changed.** Every `backend: "memory"` cache connector, plus the built-in
-dedup store and response cache, shared a single in-process instance and one LRU
-budget. In-memory backends are now separate instances per purpose (workflow
-cache / dedup / response cache) and per connector name, each with its own
-`engine.max_memory_cache_entries` budget.
+### Channel names must be unique
 
-**How you'll notice.** Only if something depended on the aliasing: a workflow
-`cache_read` can no longer observe dedup or response-cache entries (or another
-memory connector's keys), and a workflow `cache_write` can no longer influence
-dedup or response-cache decisions. Memory contents never survived a restart, so
-there is no data migration.
+**What changed.** A channel name may belong to only one `channel_id` (K7).
+Creating, updating, or importing a channel whose name another channel's
+current version already holds answers **409**, and activation refuses a name
+another *active* channel holds. Before 1.0 the collision stored cleanly and
+was resolved silently at runtime: the data plane and `channel_call` address
+channels by **name**, so one of the two won the registry slot and the other's
+requests ran the winner's workflow.
 
-**What to do.** Re-check your sizing if the host is memory-constrained:
-`engine.max_memory_cache_entries` is now a **per-namespace** bound, so the
-worst case is that value × (2 built-in stores + up to 3 namespaces per memory
-connector). Divide the setting by your namespace count to keep the old ceiling.
+**What to do.** Run `orion-server preflight` before upgrading — it reports
+every name held by more than one `channel_id` (`channel-names` check). Rename
+all but one (new version with a distinct name, activate it) or delete the
+redundant channels. An estate without duplicates — any estate that worked
+predictably — is unaffected.
 
-Redis cache connectors are deliberately *not* partitioned: pointing a workflow
-connector and a channel's dedup store at the same Redis database still shares a
-keyspace — use separate databases (`redis://host/0`, `/1`, …) where you need
-isolation.
+### Channel activation now requires an active workflow
 
-### Non-http schemes are refused by SSRF validation
+**What changed.** `PATCH /admin/channels/{id}/status` with `{"status":
+"active"}` answers **400** when the channel's `workflow_id` is unset, names a
+workflow that does not exist, or names one with no active version (K8). It
+used to succeed and quarantine the channel at the next engine load — the same
+outcome, discovered later, with no error to the caller. The docs and the
+`/validate` warning always claimed this gate existed; now it does.
 
-**What changed.** The SSRF validator accepted any URL scheme and only checked
-the resolved addresses; it now rejects anything outside `http`/`https` before
-any DNS work.
+**What to do.** Activate in dependency order — connectors → workflows →
+channels — which is what any working deployment script already did, since an
+out-of-order channel never served. A script that relied on activate-then-fix
+ordering must activate the workflow first. `?dry_run=true` on the same
+endpoint pre-flights the gate without writing.
 
-**How you'll notice.** An `http_call` or Elasticsearch egress whose URL uses
-another scheme (`gopher://`, `ftp://`, `file://`, …) fails with *"only http and
-https are allowed"*. No supported configuration produced such URLs, so this
-should be invisible.
+### `route_pattern`, `topic` and `consumer_group` are capped at 255 characters
+
+**What changed.** Create, update and import reject values longer than 255
+characters in these three fields (field error code `TOO_LONG`). Before 1.0
+there was no length check at all.
+
+**Why.** MySQL stores all three columns as `varchar(255)`; SQLite and
+Postgres use unbounded `text`. A longer value stored fine on two backends
+and failed on the third — a silent divergence the portable schema exists to
+prevent. The narrowest backend sets the limit (characters, not bytes).
+
+**How you'll notice.** Only if you write a value that long: a `400` naming
+the field. Stored rows are not re-checked at load — a pre-1.0 row over the
+limit (only possible on SQLite/Postgres) keeps serving, but its next edit
+must shorten the value.
 
 ### REST routes match byte-exactly and decode parameters once
 
@@ -2224,160 +2265,187 @@ reachable through a double-encoded request — write the literal character
 instead. Already-active channels keep their existing behaviour until you next
 edit them.
 
-### Unknown keys in a channel config are now refused
+## 11. Runtime behaviour
 
-**What changed.** `ChannelConfig` rejects keys it does not recognise. Before
-1.0 they were silently ignored. The refusal applies at every nesting level:
-a typo *inside* a guard's body — `rate_limit`, `cache`, `deduplication`,
-`tracing`, `backpressure`, `auth`, `response` — fails the same way, where it
-previously fell back to that field's default (a misspelled
-`rate_limit.key_logic` silently meant per-client-IP keying; a misspelled
-`deduplication.window_secs` silently took the default window).
+Same contract, different behaviour underneath. Nothing in this group changes a
+request or response shape.
 
-**Why.** Every key in a channel config is a *guard*. A key Orion does not
-recognise is a guard that never runs — and because nothing re-serialises
-`config_json` (the stored document is the one you wrote), the mistake survives
-every reload. A stored `"deduplicaton"` meant no idempotency, no error, forever.
-The config file, the connector configs and both dialect envelopes already
-rejected unknown keys; channel config was the last surface that did not.
+### Sticky canary rollouts are now caller-stable
 
-**How you'll notice.** A channel whose stored config carries a stray key is
-quarantined at load — refused at every ingress, listed on `/health` and the
-admin surface with the reason. On create and update it is a `400` naming the
-key. This is also the mechanism behind the `cors`, `max_concurrent` and
-`queue_depth` entries elsewhere on this page: all four are the same failure.
+**What changed.** The rollout bucket was `rand::random` per request, so a
+caller in a 10% canary flip-flopped between versions call to call and replica
+to replica. The bucket is now a stable hash of a caller identity:
+`engine.rollout_sticky_header` when configured (e.g. `x-user-id`), otherwise
+the forwarded client IP (`X-Forwarded-For` first element, else `X-Real-IP`).
+Requests with no identity keep the random fallback, so percentages still hold
+in aggregate.
 
-**What to do.** Run `orion-server preflight` — it names every stored channel
-with an unparseable config and, for the two renames, the key to use instead.
+**How you'll notice.** A given caller now consistently gets the same version.
+The *population* split still matches the configured percentage, but it is no
+longer re-drawn per request — a 10% canary that previously exposed nearly every
+caller occasionally now exposes a stable 10% of callers.
 
-### `route_pattern`, `topic` and `consumer_group` are capped at 255 characters
+**What to do.** Set the identity header explicitly if IP is a poor proxy for
+your callers (NAT, mobile, shared egress):
 
-**What changed.** Create, update and import reject values longer than 255
-characters in these three fields (field error code `TOO_LONG`). Before 1.0
-there was no length check at all.
-
-**Why.** MySQL stores all three columns as `varchar(255)`; SQLite and
-Postgres use unbounded `text`. A longer value stored fine on two backends
-and failed on the third — a silent divergence the portable schema exists to
-prevent. The narrowest backend sets the limit (characters, not bytes).
-
-**How you'll notice.** Only if you write a value that long: a `400` naming
-the field. Stored rows are not re-checked at load — a pre-1.0 row over the
-limit (only possible on SQLite/Postgres) keeps serving, but its next edit
-must shorten the value.
-
-### `backpressure.max_concurrent` is now `max_concurrent_per_node`
-
-**What changed.** The limit was always per node (N replicas admit up to N× the
-value); the name now says so, which matters because dedup and rate limiting sit
-in the same config block and *are* cluster-shared.
-
-**What to do.** Rename the key on every stored channel that sets it, **and
-check the value**. The old spelling is refused — a stored config using it fails
-to parse and the channel is quarantined at load.
-
-There is no alias, deliberately. Honouring `max_concurrent` under a field that
-means something else would admit N× the intended concurrency on an N-replica
-deployment, silently, which is a worse outcome than a channel that refuses to
-start. If your 0.3.0 value was sized as a cluster-wide cap, divide it by your
-replica count rather than copying it across.
-
-`orion-server preflight` lists every affected channel.
-
-### A channel's `cors` is now `origin_allow_list`
-
-**What changed.** The per-channel key is renamed and flattened:
-
-```json
-{ "cors": { "allowed_origins": ["https://app.example.com"] } }
+```toml
+[engine]
+rollout_sticky_header = "x-user-id"
 ```
-
-becomes
-
-```json
-{ "origin_allow_list": ["https://app.example.com"] }
-```
-
-**The old spelling is refused.** A stored channel still carrying it fails to
-parse and is quarantined at load — refused at every ingress rather than served.
-This is deliberate and it is the security-relevant choice: had the old key been
-parsed and dropped, the channel would have served with **no origin allow-list at
-all**, which is indistinguishable from a channel that deliberately checks
-nothing. Every unlisted origin would have been admitted, silently and
-permanently. A quarantined channel is the loud version of the same event.
-
-Find them before you upgrade:
 
 ```bash
-orion-server preflight
+ORION_ENGINE__ROLLOUT_STICKY_HEADER=x-user-id
 ```
 
-or directly:
+> Unlike rate limiting, this path reads forwarded headers **without**
+> consulting `rate_limit.trusted_proxies`, so the identity is caller-influenced.
+> That is acceptable for canary assignment and is not a security control — do
+> not use rollout percentages to gate access.
 
-```sql
-SELECT name FROM current_channels WHERE config_json LIKE '%"cors"%';
+### Response cache keys changed format
+
+**What changed.** Three things, all of which change the hash:
+
+1. The key hashed only the request body. It now also folds in the HTTP method,
+   route parameters, and query string (both sorted, so ordering does not affect
+   the key). The old key could serve one caller's cached response to a different
+   request that happened to share a body.
+2. The digest is **SHA-256 truncated to 128 bits**, not FNV-1a. FNV-1a is a
+   multiply-xor over 64 bits with no collision resistance — a colliding payload
+   is constructed rather than searched for, and the data plane is unauthenticated
+   by design, so on most deployments the body is attacker-shaped input. Two
+   requests that hash alike are served each other's response bodies.
+3. `cache_key_fields` entries now resolve as **paths**, not just literal
+   top-level keys. `user.id` walks into a nested object, and `data.user_id` —
+   the spelling this guide and the feature docs have always shown — resolves to
+   the payload's `user_id`. It previously matched nothing.
+
+**How you'll notice.** A one-time cache miss spike after the upgrade.
+
+If (3) applies to you, you will also see a **warning naming the channel and its
+fields**, and that channel will stop caching until the names are corrected. That
+is deliberate. A channel whose fields all missed was hashing only method, params
+and query, so every request on it collapsed onto one entry and the first
+caller's body was served to everyone for the TTL — it was not caching correctly
+before, it was mis-serving. Check the field names against your payload shape;
+all three spellings above resolve, so in most cases the existing config is
+already correct and simply starts working.
+
+**What to do.** Nothing is required. The key prefix (`cache:{channel}:{hash}`)
+is unchanged and carries no version segment, so old entries are **orphaned, not
+mis-served** — a new request cannot reproduce an old hash. They expire on their
+own via `cache.ttl_secs` (default `300` seconds when unset). There is no
+cache-flush endpoint; for a guaranteed-clean cutover on Redis:
+
+```bash
+redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli DEL
 ```
 
-**Why it is not cosmetic.** This is a **server-side allow-list**, not CORS: it
-sets no `Access-Control-*` header and takes no part in the preflight handshake,
-which the platform `[cors]` layer performs for every route *before* a channel
-is resolved. The consequence is that a channel's list can only narrow the
-platform policy, never widen it — an origin `[cors] allowed_origins` rejects
-fails the preflight and never reaches the channel, so listing it on the channel
-does nothing. If per-channel origins are not taking effect in a browser, set
-`[cors] allowed_origins` to the union of what your channels accept and narrow
-from there.
+With the in-memory backend, entries are process-local and a restart clears
+them.
 
-### Audit log: new actor format, new fields, two new settings
+### Workflow caches, dedup stores and response caches no longer share one keyspace
 
-**The `principal` column changes format for authenticated callers.** It was the
-first eight characters of the presented API key (or of its `sha256:` digest);
-it is now a derived `key-<16 hex>` — `SHA-256("orion:audit:key-id:v1" ‖
-SHA-256(key))` truncated to 8 bytes. Three things that buys you:
+**What changed.** Every `backend: "memory"` cache connector, plus the built-in
+dedup store and response cache, shared a single in-process instance and one LRU
+budget. In-memory backends are now separate instances per purpose (workflow
+cache / dedup / response cache) and per connector name, each with its own
+`engine.max_memory_cache_entries` budget.
 
-- Two keys sharing a prefix are now two actors. Any generator with a fixed
-  leader (`orion_sk_…`) previously collapsed every key into one.
-- The audit log no longer contains eight literal characters of a live
-  credential.
-- The id is the same whether a key is configured in plaintext or `sha256:`
-  form, so rotating an operator between the two does not rename them in the
-  trail.
+**How you'll notice.** Only if something depended on the aliasing: a workflow
+`cache_read` can no longer observe dedup or response-cache entries (or another
+memory connector's keys), and a workflow `cache_write` can no longer influence
+dedup or response-cache decisions. Memory contents never survived a restart, so
+there is no data migration.
 
-Hold the config and you can recompute the id for each key you issued and map a
-row back to it; nobody else can go in either direction. **Rows written before
-the upgrade keep their old values,** so a saved `?principal=` filter matches
-those rows and matches nothing new.
+**What to do.** Re-check your sizing if the host is memory-constrained:
+`engine.max_memory_cache_entries` is now a **per-namespace** bound, so the
+worst case is that value × (2 built-in stores + up to 3 namespaces per memory
+connector). Divide the setting by your namespace count to keep the old ceiling.
 
-**`details` now carries request context** as a JSON object: `request_id` (the
-same value as the `x-request-id` header and the `error.request_id` the client
-was handed), `client_ip` (resolved with the `rate_limit.trusted_proxies`
-policy, so a forged `X-Forwarded-For` cannot dictate it — and note that policy
-now applies even with `rate_limit.enabled = false`, so a proxied deployment
-records the caller rather than the load balancer) and `user_agent` (truncated
-to 256 bytes). Unavailable fields are omitted rather than recorded empty. It
-previously held `{"request_id": …}` at most.
+Redis cache connectors are deliberately *not* partitioned: pointing a workflow
+connector and a channel's dedup store at the same Redis database still shares a
+keyspace — use separate databases (`redis://host/0`, `/1`, …) where you need
+isolation.
 
-**Mutations immediately before a restart are now recorded.** The write was a
-detached task nothing awaited, so a mutation accepted moments before `SIGTERM`
-was answered `200` and then lost — the row an investigation of a bad deploy
-most wants. It now goes onto a bounded queue drained at shutdown. Two new
-settings, both with working defaults:
+### `trace_storage.batch_size` now defaults to `1000`
 
-| Setting | Default | Raise it when |
-|---|---|---|
-| `audit.max_pending` | `1000` | A bursty admin plane (large `/import` batches) overruns the writer |
-| `audit.drain_timeout_secs` | `5` | Shutdown reports abandoned rows on a slow database |
+**What changed.** Only the default; `trace_storage.mode` still defaults to
+`sync`, and a deployment that has not opted into `batch` or `async` is not
+affected by any of this.
 
-Both are refused at `0`. Anything that still does not make it is counted in
-`orion_audit_events_dropped_total{reason}` (`queue_full`, `write_failed`,
-`drain_timeout`, `writer_stopped`) and logged at `error`. **Alert on that
-counter existing at all, not on a threshold** — any non-zero value is a hole in
-the audit trail.
+For deployments that *have*, a flush costs a fixed per-transaction price plus a
+per-row one, so the old default of `100` rows per flush spent most of each
+transaction on overhead. Measured on SQLite with 4 workers, the same load
+drained at 26k rows/s at `100` and 45k rows/s at `1000` — a tenth as many
+transactions for the same rows.
 
-**`POST /admin/workflows/{id}/test` now writes an `action: "test"` row.** It
-reads as a dry run and is not one: it executes the workflow's tasks against
-live connectors. If you have an audit-volume alert, expect it to see traffic
-from this endpoint for the first time.
+**How you'll notice.** `batch` and `async` modes keep up with a higher request
+rate before `max_pending` overruns, and `orion_trace_persistence_batch_size`
+reports larger flushes. Trace visibility is unchanged — a partial batch still
+flushes on `batch_flush_interval_ms`.
+
+**What to do.** Nothing. Set `batch_size` explicitly to pin the old value:
+
+```toml
+[trace_storage]
+batch_size = 100
+```
+
+### Trace loss under `batch` / `async` now warns in the log
+
+**What changed.** When the persistence queue overruns `max_pending`, the dropped
+traces were reported only to `orion_trace_dropped_total{reason="overflow"}` —
+and `metrics.enabled` defaults to `false`, so the out-of-the-box signal for
+"your traces are being discarded" was a counter nobody was collecting. The drop
+now also logs a `WARN`: immediately when the loss starts, then at most once
+every 5 seconds, each line carrying how many traces were dropped since the
+previous one.
+
+**How you'll notice.** A log line naming the overrun, if you run `batch` or
+`async` at a request rate the DB cannot absorb. `sync` cannot produce it.
+
+**What to do.** Treat the line as real data loss, not noise. Raise
+`trace_storage.max_pending` / `batch_size`, set `async_on_overflow = "block"` to
+slow producers instead of shedding, sample deliberately with `sample_rate` /
+`errors_only`, or move to `mode = "sync"` and let the request path be throttled
+by the trace table rather than outrun it.
+
+### Async submissions are exempt from trace sampling
+
+**What changed.** Channels with `trace_storage.sample_rate < 1.0` serving
+`/async` traffic used to write the trace's status rows but drop its *result* —
+a `completed` trace with nothing in it, and the storage was spent anyway. The
+result is now always persisted for an async submission: the 202's `trace_id` is
+a receipt for a fetchable result, exactly as `mode = "off"` is already upgraded
+to `sync` on that path.
+
+**What to do.** If you used `sample_rate` to bound async trace storage, switch
+to `errors_only = true` or tighten `trace_queue.retention_hours`. The sync path
+samples exactly as configured, and a sampled-out sync trace now leaves no row
+at all.
+
+### Storage pool defaults: a docs correction, not a behaviour change
+
+**No runtime default changed between 0.3.0 and 1.0.0.** The 0.3.0 *documentation*
+disagreed with the code — the config reference said `max_connections = 25` and
+`config.toml.example` said `10`, while the code has always defaulted to `50`.
+The docs are now generated from the code.
+
+**What to do.** If you sized your database against the documented number, check
+it against the real one. The actual defaults are:
+
+| Key | Default |
+|-----|---------|
+| `storage.max_connections` | `50` |
+| `storage.min_connections` | `5` |
+| `storage.acquire_timeout_secs` | `3` |
+| `storage.idle_timeout_secs` | `300` |
+| `storage.busy_timeout_ms` | `5000` (SQLite only) |
+
+In cluster mode this multiplies: *replicas × `max_connections`* must fit inside
+your PostgreSQL `max_connections`, minus headroom for the migration job and
+your own tooling.
 
 ### Startup retries an unreachable database instead of exiting
 
@@ -2421,101 +2489,6 @@ and both remain visible in the state they describe (`/health` for quarantined
 channels, the admin API's validation for route conflicts). If you alert on the
 *recurrence* of either line rather than on its first appearance, switch to a
 first-occurrence or state-based alert.
-
-### Connector operation gates now cover every connector type
-
-Additive and fully backward compatible — existing connectors behave exactly as
-before, since every gate defaults to allowed. If you want the new locks:
-
-```json
-{ "type": "cache", "backend": "redis", "url": "redis://…", "operations": { "write": false } }
-{ "type": "kafka", "brokers": ["…"], "topic": "t", "operations": { "publish": false } }
-{ "type": "http",  "url": "https://partner.example.com/v1", "operations": { "methods": ["GET"] } }
-```
-
-The HTTP allow-list is exhaustive once non-empty and matches
-case-insensitively; a method outside `GET`, `POST`, `PUT`, `PATCH`, `DELETE` is
-rejected with a `400` when the connector is created or updated, as is a gate
-key the type does not have. A gated call fails with the same validation error
-the `db`/`es` gates produce.
-
-One interaction worth knowing: a `cache` connector's `write` gate covers every
-write through it, **including a channel dedup store or response cache backed by
-it** — so gating a shared Redis read-only makes any channel pointing its dedup
-store at that connector fail to load, rather than silently downgrading. There
-is no `delete` gate on `cache`: the backend trait has no delete.
-
-### OpenAPI schema components renamed
-
-Five response schemas in `docs/openapi.json` changed name. For the first four
-**no response body changed** — the JSON field sets are identical — so only
-clients generated from the spec, which take their type names from component
-names, are affected:
-
-| Before | After |
-| --- | --- |
-| `Connector` | `ConnectorResponse` |
-| `AuditLogEntry` | `AuditLogEntryResponse` |
-| `TraceDlqEntry` | `TraceDlqEntryResponse` |
-| `PaginatedEnvelope_TraceDlqEntry` | `PaginatedEnvelope_TraceDlqSummaryResponse` |
-| `PaginatedEnvelope_TraceListItem` | `TracePageEnvelope` |
-
-The fifth is different: the trace-list envelope was renamed because its
-*shape* changed, not its row type. `total` is now conditional and
-`next_cursor` is new — see
-[the trace-list section](#the-trace-list-no-longer-returns-total-by-default).
-
-The generic envelope names follow (`DataEnvelope_Connector` →
-`DataEnvelope_ConnectorResponse`, and so on). Regenerate your client and rename
-the referenced types; no field access changes.
-
-The last row is a correction rather than a rename. `GET /api/v1/admin/trace-dlq`
-has never returned `payload_json` or `metadata_json` — it selects a
-payload-free projection so one request cannot dump every failed request's body
-— but the published schema claimed both fields, because the row struct that
-*did* have them was also the wire type. If you generated a client that modelled
-DLQ list rows as carrying payloads, those fields were always absent at runtime.
-Fetch a single entry with `GET /api/v1/admin/trace-dlq/{id}` for the payload.
-
-**One error code changed with it:** a database failure while listing audit logs
-now returns `{"error": {"code": "STORAGE_ERROR"}}` instead of
-`INTERNAL_ERROR`. The status is still 500. That is what every other list
-endpoint already returned — and what the *count* half of this same query
-already returned.
-
-### Async submissions are exempt from trace sampling
-
-**What changed.** Channels with `trace_storage.sample_rate < 1.0` serving
-`/async` traffic used to write the trace's status rows but drop its *result* —
-a `completed` trace with nothing in it, and the storage was spent anyway. The
-result is now always persisted for an async submission: the 202's `trace_id` is
-a receipt for a fetchable result, exactly as `mode = "off"` is already upgraded
-to `sync` on that path.
-
-**What to do.** If you used `sample_rate` to bound async trace storage, switch
-to `errors_only = true` or tighten `trace_queue.retention_hours`. The sync path
-samples exactly as configured, and a sampled-out sync trace now leaves no row
-at all.
-
-### Optional: fail closed when a guard's backend is down
-
-`rate_limit.on_backend_error` and `deduplication.on_backend_error` are new
-per-channel settings accepting `"allow"` (the default, today's fail-open
-behaviour) or `"deny"`, which refuses requests with `503` while the guard's
-backend cannot answer — never a `409` or `429`, because the key or limit is
-unverifiable rather than violated. Nothing changes unless you set it. Consider
-`"deny"` on payment or idempotency-critical channels, where a Redis blip
-silently removing all idempotency is worse than refusing the request.
-
-### Duplicate creates now return 409
-
-`POST /api/v1/admin/workflows` and `POST /api/v1/admin/channels` with an id
-that already exists now return `409 Conflict` with
-`{"error": {"code": "CONFLICT", "message": "…"}}`. Through 0.3.x these returned
-`500 INTERNAL_ERROR`. Clients or retry logic that treated the 500 as transient
-should treat the 409 as a permanent client error — pick a different id, or use
-the import endpoints, which report conflicts per item without failing the
-batch.
 
 ### Workflow export reads in bounded pages
 
@@ -2568,6 +2541,16 @@ startup could unready a node, account for the new component; a degraded node
 now leaves the load-balancer rotation. The `orion_kafka_ingest_degraded` gauge
 (0/1) carries the same signal for Prometheus. Deployments with Kafka disabled
 see byte-identical probe bodies.
+
+### Optional: fail closed when a guard's backend is down
+
+`rate_limit.on_backend_error` and `deduplication.on_backend_error` are new
+per-channel settings accepting `"allow"` (the default, today's fail-open
+behaviour) or `"deny"`, which refuses requests with `503` while the guard's
+backend cannot answer — never a `409` or `429`, because the key or limit is
+unverifiable rather than violated. Nothing changes unless you set it. Consider
+`"deny"` on payment or idempotency-critical channels, where a Redis blip
+silently removing all idempotency is worse than refusing the request.
 
 ### New operational settings, no action required
 

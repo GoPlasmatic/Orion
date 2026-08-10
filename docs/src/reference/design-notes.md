@@ -119,11 +119,11 @@ An admitted request leaves the pipeline carrying what the rest of processing nee
 
 One nuance surprises often enough to state here: applying the rate limit on every transport means the same limiter is *consulted* everywhere, not that the four ingresses share one bucket. The default bucket key is whatever caller identity the transport has — client IP over HTTP, topic on Kafka, the calling channel for `channel_call` — so `requests_per_second` is a per-identity rate on each ingress. Only a `rate_limit.key_logic` that returns a transport-independent value turns it into one shared throughput cap.
 
-Stated normatively in: [Architecture Overview](../architecture/overview.md#request-processing-flow) and [Channel Configuration](./channel-config.md).
+Stated normatively in: [How Orion Works](../concepts/how-orion-works.md#one-requests-journey) and [Channel Configuration](./channel-config.md).
 
 ## Related
 
-- [Architecture Overview](../architecture/overview.md) — the request flow these internals sit behind.
+- [How Orion Works](../concepts/how-orion-works.md) — the request flow these internals sit behind.
 - [Channel Configuration](./channel-config.md) — every channel key named above: `deduplication`, `cache`, `timeout_ms`, `rate_limit`, `validation_logic`.
 - [Configuration](./configuration.md) — the server-level ceilings and `trusted_proxies`.
 - [Data API](./data-api.md) — the trace endpoints the cursor pages.

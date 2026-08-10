@@ -278,7 +278,7 @@ See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cas
 
 **After:** one Orion instance replaces all of them. It consolidates the API gateway and the logic engine — routing traffic, running workflows, and handling governance automatically — while each channel and workflow stays independently versioned, testable, and deployable. The modularity of microservices with the operational simplicity of a monolith: change one workflow without touching the others, roll back a single channel without redeploying anything.
 
-The [architecture overview](https://goplasmatic.github.io/Orion/architecture/overview.html#deployment-topology) draws both topologies side by side.
+The [architecture overview](https://goplasmatic.github.io/Orion/concepts/how-orion-works.html#deployment-topology) draws both topologies side by side.
 
 ---
 
@@ -512,7 +512,7 @@ orion-cli channels create -f orders-channel.json
 orion-cli --yes channels activate orders
 ```
 
-See the [CLI guide](https://goplasmatic.github.io/Orion/getting-started/install.html) for the full command list — the CLI is developed in this repo at [crates/orion-cli](crates/orion-cli).
+See the [CLI reference](https://goplasmatic.github.io/Orion/reference/cli.html) for the full command list — the CLI is developed in this repo at [crates/orion-cli](crates/orion-cli).
 
 ## Documentation
 

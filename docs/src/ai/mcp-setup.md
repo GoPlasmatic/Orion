@@ -1,40 +1,27 @@
 # MCP Server Setup
 
-Orion includes an MCP (Model Context Protocol) server that lets AI assistants like Claude manage workflows, channels, and connectors through natural language. The MCP server wraps the Orion admin API, giving AI agents full control over your Orion instance.
+`orion-cli` carries an MCP (Model Context Protocol) server that exposes Orion's
+admin API as tools. An MCP-capable assistant can then create workflows, dry-run
+them, activate channels, and read traces by being asked to — no prompt
+engineering, no hand-written HTTP.
 
 <div class="asciinema-player" data-cast="casts/mcp.cast"></div>
 <span class="asciinema-caption">▶ Click to play. A real stdio JSON-RPC session: handshake, tool discovery, then a live tool call.</span>
 
-## Prerequisites
+## Before you start
 
-- A running Orion instance (see [Install & First Service](../getting-started/install.md))
-- An MCP-compatible client (Claude Code, Claude Desktop, or other MCP clients)
+- A running Orion instance — see [Install & Run](../getting-started/install.md).
+- `orion-cli` on your `PATH`, from the same page.
+- An MCP-capable client: Claude Code, Claude Desktop, Cursor, or any other.
 
-> No MCP client? Use the [Prompt Pack](../ai/prompt-pack.md) — a
-> self-contained context block that lets any LLM drive Orion through the plain
-> REST API.
+> [!TIP]
+> No MCP client? The [Prompt Pack](./prompt-pack.md) is a self-contained context
+> block that lets any LLM drive Orion through the plain REST API.
 
-## Configuration
+## Configure your client
 
-Add the Orion MCP server to your MCP client configuration.
-
-**Claude Code:** add to your `.claude/settings.json` or project-level `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "orion": {
-      "command": "orion-cli",
-      "args": ["mcp", "serve"],
-      "env": {
-        "ORION_SERVER_URL": "http://localhost:8080"
-      }
-    }
-  }
-}
-```
-
-**Claude Desktop:** add to your Claude Desktop configuration file:
+The server runs over stdio. Every stdio client takes the same three facts —
+the command, its arguments, and the environment that points it at your instance:
 
 ```json
 {
@@ -50,58 +37,97 @@ Add the Orion MCP server to your MCP client configuration.
 }
 ```
 
-If admin authentication is enabled on your Orion instance, include the API key:
+- **Claude Code:** `.claude/settings.json`, or a project-level `.mcp.json` you
+  can commit for your team. `claude mcp add` writes it for you — see
+  [Build a Service with Claude Code](./claude-code.md).
+- **Claude Desktop:** the same block, in
+  `~/Library/Application Support/Claude/claude_desktop_config.json`.
+- **Cursor:** Settings → MCP Servers takes the inner object only:
+
+  ```json
+  {
+    "orion": {
+      "command": "orion-cli",
+      "args": ["mcp", "serve"],
+      "env": { "ORION_SERVER_URL": "http://localhost:8080" }
+    }
+  }
+  ```
+
+If admin authentication is enabled on the instance, add the key to the same
+`env` block:
 
 ```json
-{
-  "env": {
-    "ORION_SERVER_URL": "http://localhost:8080",
-    "ORION_API_KEY": "your-secret-key"
-  }
-}
+{ "env": { "ORION_SERVER_URL": "http://localhost:8080", "ORION_API_KEY": "your-secret-key" } }
 ```
 
-## Available Tools
+`ORION_API_KEY_HEADER` overrides the header the key is sent in. Without an `env`
+block, `orion-cli` falls back to whatever `~/.orion/config.toml` holds.
 
-The MCP server exposes tools covering **the full Orion API**. Tool names follow a
-`<resource>_<action>` convention:
+## Remote clients: HTTP transport
 
-| Category | Tools |
-|----------|-------|
-| **Health** | `health_check` |
-| **Engine** | `engine_status`, `engine_reload` |
-| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import` |
-| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import` |
-| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import` |
-| **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
-| **Data** | `data_send_sync`, `data_send_async` |
-| **Traces** | `traces_list`, `traces_get` |
-| **Functions** | `functions_list` |
-| **Audit Logs** | `audit_logs_list` |
-| **Backups** | `backups_create`, `backups_list` |
-| **Metrics** | `get_metrics` |
+For a client that cannot spawn a local process, run the MCP server as a network
+service instead:
 
-## Usage Example
+```bash
+orion-cli mcp serve --http                    # binds 0.0.0.0:8081
+orion-cli mcp serve --http --bind 127.0.0.1:9000
+```
 
-Once configured, you can use natural language to manage Orion:
+The endpoint is `/mcp` on that address — `http://localhost:8081/mcp` by default.
+Point your client's HTTP/streamable transport at that URL; the exact
+configuration key is client-specific, so use your client's documentation for the
+JSON shape.
 
-> "Create a workflow that parses incoming orders, flags any over $10,000, and adds a risk level field. Then create a channel called 'orders' that uses it."
+> [!WARNING]
+> The HTTP transport has no authentication of its own. Anything that can reach
+> the port gets your instance's admin surface. Bind it to loopback, or put it
+> behind a proxy that authenticates.
 
-The AI assistant will use the MCP tools to:
+## What the assistant can do
 
-1. Create the workflow via `workflows_create`
-2. Test it with sample data via `workflows_test`
-3. Activate it via `workflows_activate`
-4. Create the channel via `channels_create`
-5. Activate the channel via `channels_activate`, then apply with `engine_reload`
+The tools cover the full admin API, named `<resource>_<action>`:
+
+| Category | What it covers |
+|----------|----------------|
+| **Workflows** | create, update, version, test, validate, activate, archive, roll out, import/export |
+| **Channels** | create, update, version, activate, archive, delete, import |
+| **Connectors** | create, update, enable/disable, delete, import |
+| **Data** | send a request to a channel, sync or async |
+| **Traces** | list and read execution traces |
+| **Engine** | status and reload |
+| **Operations** | health, metrics, audit logs, circuit breakers, backups |
+| **Discovery** | list the built-in functions with their input schemas |
+
+The authoritative list is the one your client shows after connecting — it is
+generated from the running CLI, so it never drifts from what is installed.
+
+## Verify it
+
+Ask the assistant for something read-only first:
+
+> Is my Orion instance healthy? How many workflows and channels are active?
+
+A correct answer means the handshake, the tool listing, and a live call all
+worked. From there, [Build a Service with Claude Code](./claude-code.md) walks a
+full session.
 
 ## Troubleshooting
 
-**MCP server not connecting:**
-- Verify Orion is running: `curl http://localhost:8080/health`
-- Check the `ORION_SERVER_URL` environment variable is set correctly
-- Ensure `orion-cli` is in your PATH
+**The server does not connect.** Check that Orion answers
+`curl http://localhost:8080/health`, that `orion-cli` is on the `PATH` the
+client uses (GUI apps often have a different one), and that `ORION_SERVER_URL`
+has no trailing slash.
 
-**Authentication errors:**
-- Verify `ORION_API_KEY` matches one of your Orion instance's `admin_auth.api_keys`
-- Check that admin auth is enabled on the Orion instance if you're passing a key
+**Every call returns an authentication error.** `ORION_API_KEY` must match one of
+the instance's `admin_auth.api_keys`. If admin auth is off, remove the key
+rather than sending an unused one.
+
+## Related
+
+- [Build a Service with Claude Code](./claude-code.md) — a full guided session
+  using these tools.
+- [Prompt Pack (any LLM)](./prompt-pack.md) — the same job without an MCP
+  client.
+- [CLI Reference](../reference/cli.md) — every `orion-cli` command, including
+  `mcp serve`.

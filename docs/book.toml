@@ -34,9 +34,19 @@ level = 0
 "/configuration/reference.html" = "../reference/configuration.html"
 "/reference/workflows.html#available-operators" = "expressions.html#available-operators"
 
-# Phase 2 — spine, Build with AI, upgrades home
+# Phase 2a — spine, Build with AI, upgrades home
 "/tutorials/cli-setup.html" = "../getting-started/install.html"
 "/tutorials/mcp-setup.html" = "../ai/mcp-setup.html"
 "/tutorials/claude-code.html" = "../ai/claude-code.html"
 "/getting-started/prompt-pack.html" = "../ai/prompt-pack.html"
 "/getting-started/upgrading.html" = "../operate/upgrading-to-1.0.html"
+
+# Phase 2b — the install split, and the Architecture part dissolving into
+# Concepts (characteristics.md is deleted outright; nothing in it survived).
+"/tutorials/cli-setup.html#create-your-first-service" = "../getting-started/first-service.html"
+"/getting-started/install.html#create-your-first-service" = "first-service.html"
+"/architecture/overview.html" = "../concepts/how-orion-works.html"
+"/architecture/overview.html#three-primitives" = "../concepts/how-orion-works.html#three-primitives"
+"/architecture/overview.html#deployment-topology" = "../concepts/how-orion-works.html#deployment-topology"
+"/architecture/overview.html#request-processing-flow" = "../concepts/how-orion-works.html#one-requests-journey"
+"/architecture/characteristics.html" = "../concepts/how-orion-works.html"
