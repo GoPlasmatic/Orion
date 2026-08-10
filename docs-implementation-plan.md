@@ -21,7 +21,7 @@ are pruned; git history of this file carries the full record.
 >   Architecture dissolved early. Book builds on mdBook 0.5.2; docs-lint and a
 >   Python twin of `docs_link_test` green.
 >
-> - Phase 3 `PENDING` — the twelve-page Operate estate; `features/` and
+> - Phase 3 `55490521` — the twelve-page Operate estate; `features/` and
 >   `topology/` dissolved; the promotion essay left admin-api.md and the
 >   Production Checklist left configuration.md; `DOCS2_PHASE=3`.
 >
