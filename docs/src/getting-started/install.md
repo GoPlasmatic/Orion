@@ -88,18 +88,24 @@ curl -s http://localhost:8080/health
   "status": "ok",
   "version": "1.0.0",
   "uptime_seconds": 5,
-  "workflows_loaded": 0,
   "components": {
     "database": "ok",
     "engine": "ok",
     "connectors": "ok",
     "channels": "ok"
-  }
+  },
+  "git_hash": "1a2b3c4d",
+  "build_timestamp": "1786365371",
+  "workflows_loaded": 0,
+  "connectors": { "circuit_breaker_scope": "node", "circuit_breakers": {}, "failed_to_load": [] },
+  "channels": { "quarantined": [] }
 }
 ```
 
 `"status": "ok"` with zero workflows loaded is the expected state of a fresh
-install — you have not created anything yet.
+install — you have not created anything yet. `git_hash` and `build_timestamp`
+identify the binary; `failed_to_load` and `quarantined` stay empty until a
+stored connector or channel cannot be built.
 
 Two more surfaces are live already:
 

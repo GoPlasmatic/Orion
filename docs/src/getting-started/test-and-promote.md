@@ -41,6 +41,10 @@ orion-server lint examples/packages/high-value-order/workflow.json
 It needs no server, no database, and no network, so it is the cheapest gate you
 can put in front of a pull request. It exits non-zero on any finding.
 
+Every `orion-server` subcommand run without `-c` also prints
+`Note: no config file specified…` on **stderr**. It is not a warning about your
+workflow, and `2>/dev/null` or a `-c config.toml` silences it.
+
 ## 2. Dry-run it offline
 
 `dry-run` executes the workflow in an in-process engine and prints the per-task
@@ -167,10 +171,18 @@ orion-server package export -s http://localhost:8080 \
 Export selects **channels**; each selected channel pulls in its workflow, and
 each workflow pulls in its connectors. That set is the package's **closure**.
 
+```
+wrote high-value-order@1.0.0 (0 connectors, 1 workflows, 1 channels) to high-value-order-1.0.0.json
+```
+
 Validate the artifact offline before it travels:
 
 ```bash
 orion-server package lint -f high-value-order-1.0.0.json
+```
+
+```
+'high-value-order-1.0.0.json' is a valid package: high-value-order@1.0.0 — 0 connectors, 1 workflows, 1 channels
 ```
 
 ## 7. Apply it to a second instance
@@ -188,12 +200,31 @@ Ask what would happen before anything is written:
 orion-server package plan -s http://localhost:9090 -f high-value-order-1.0.0.json
 ```
 
+```
+  workflows  high-value-order             created
+  channels   high-value-orders            created
+  workflows  high-value-order             gate pending apply order: Workflow 'high-value-order' not found
+  channels   high-value-orders            gate pending apply order: Channel 'high-value-orders' not found
+plan: high-value-order@1.0.0 applies cleanly to http://localhost:9090
+```
+
 `plan` writes nothing. It reports the per-entity action `apply` would take,
 verifies every declared requirement exists on the target, and checks the
-activation gates. Then apply:
+activation gates. The `gate pending apply order` lines are not errors: a
+channel's activation gate wants an active workflow that this same apply is
+about to create, so the gate can only be satisfied in order. The last line is
+the verdict.
 
 ```bash
 orion-server package apply -s http://localhost:9090 -f high-value-order-1.0.0.json
+```
+
+```
+staged workflows: 1 written, 0 unchanged, 0 failed
+staged channels: 1 written, 0 unchanged, 0 failed
+activated workflows 'high-value-order'
+activated channels 'high-value-orders'
+applied high-value-order@1.0.0 to http://localhost:9090
 ```
 
 `apply` stages every entity, activates them in dependency order — connectors,
@@ -220,12 +251,19 @@ Then confirm the two instances agree:
 orion-server package diff -s http://localhost:9090 -f high-value-order-1.0.0.json
 ```
 
+```
+  unchanged  workflow 'high-value-order'
+  unchanged  channel 'high-value-orders'
+no drift: high-value-order@1.0.0 matches http://localhost:9090
+```
+
 `diff` compares content hashes and exits non-zero on drift, so it works as a CI
 check that production still runs what you shipped.
 
-Re-running the same `apply` is a no-op — every entity reports `unchanged`. A
-*changed* artifact reusing an applied version is refused with a `409`: content
-changes ride a version bump.
+Re-running the same `apply` is a no-op: the target recognises the receipt and
+answers `high-value-order@1.0.0 is already applied with identical content —
+nothing to do`. A *changed* artifact reusing an applied version is refused with
+a `409` instead: content changes ride a version bump.
 
 ## Next steps
 

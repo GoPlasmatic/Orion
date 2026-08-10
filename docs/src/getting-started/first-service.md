@@ -94,6 +94,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/hello \
 
 ```json
 {
+  "id": "019febae-d01f-7c31-b6f3-671a42a4a74e",
   "status": "ok",
   "data": { "req": { "name": "World", "greeting": "Hello, World!" } },
   "errors": []
@@ -102,19 +103,25 @@ curl -s -X POST http://localhost:8080/api/v1/data/hello \
 
 That is the whole service. Requests arrive under `{"data": …}`, `parse_json`
 lifts the payload into the data context at `data.req`, `map` writes
-`data.req.greeting`, and the finished context is returned.
+`data.req.greeting`, and the finished context is returned. `id` is the trace
+id for this execution — the handle you would poll on an async channel, and the
+key you look a request up by later.
 
 ## Verify it
 
 Two checks confirm the service is really live, not just accepted:
 
 ```bash
-curl -s http://localhost:8080/health | jq '.workflows_loaded'   # 1
-orion-cli channels list                                          # hello · active
+curl -s http://localhost:8080/health | jq '.workflows_loaded'
+orion-cli channels list
 ```
 
-`workflows_loaded` counts what the *running engine* holds, so it moves only when
-an activation has actually reloaded the engine.
+The first answers `1`. `workflows_loaded` counts what the *running engine*
+holds, so it moves only when an activation has actually reloaded the engine —
+a workflow that was created but never activated leaves it at `0`.
+
+The second prints a table with one row for `hello`, its workflow, and status
+`active`.
 
 ## The same flow with the CLI
 
