@@ -39,9 +39,12 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ## Project Structure
 
-The repo is a cargo workspace: `crates/orion-server` (the runtime) and
-`crates/orion-cli` (the CLI + MCP server — see its own `CLAUDE.md` and
-`tests/e2e/`). Bare cargo commands target the server via `default-members`.
+The repo is a cargo workspace of four crates: `crates/orion-server` (the
+runtime), `crates/orion-cli` (the CLI + MCP server — see its own
+`CLAUDE.md`), and two shared library crates — `crates/orion-api` (the wire
+contract) and `crates/orion-client` (the HTTP transport). The end-to-end
+suite that drives the server with the CLI lives at the repo root
+(`tests/e2e/`). Bare cargo commands target the server via `default-members`.
 
 ```
 crates/orion-server/
@@ -78,7 +81,10 @@ crates/orion-server/
 crates/orion-cli/
  src/commands/         # clap subcommands (one file per command group)
  src/mcp/              # Built-in MCP server + tools
- tests/e2e/            # Shell-based end-to-end suites (`just e2e`)
+crates/orion-api/      # Shared wire contract (DTOs, enums, error envelope)
+crates/orion-client/   # Shared HTTP transport (OrionClient, endpoint paths)
+tests/e2e/             # Shell end-to-end suites: orion-cli against orion-server (`just e2e`)
+examples/              # Deployable packages, offline workflow tests, e2e use cases
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
 docs/                  # mdBook documentation (published to GitHub Pages)
 ```
@@ -144,6 +150,10 @@ migration.
 
 ## Testing
 
+The full map of the test estate — every suite, what it covers, what it
+needs, and which CI job runs it — is [`TESTING.md`](TESTING.md). The layers
+you will touch most often:
+
 ### Integration tests
 
 Integration tests use an in-memory SQLite database and the full Axum router — no running server needed. New test files go in `tests/integration/` and are declared as modules in `tests/integration/main.rs`. The test helpers in `tests/integration/common/mod.rs` provide:
@@ -197,6 +207,20 @@ cargo test --test integration -- --ignored <filter> # container-gated integratio
 The `#[ignore]` → CI-filter mapping is self-enforcing
 (`tests/integration/ci_filter_drift_test.rs`): a container-gated module missing
 from CI's name filters fails the build, in both directions.
+
+### End-to-end suite
+
+`tests/e2e/` at the repo root drives a real `orion-server` binary over HTTP
+with the `orion-cli` binary — both built from your tree — through 12 shell
+suites. The last suite is data-driven: scenario cases in
+`examples/use-cases/` deploy the shipped example packages, and
+runtime-behavior cases live in `tests/e2e/cases/`. It needs `jq` and
+`curl`; CI runs it on every PR (the `cli-e2e` job):
+
+```bash
+just e2e                    # or: ./tests/e2e/run.sh
+./tests/e2e/run.sh 07 08    # a subset, by suite-number prefix
+```
 
 ### Doc tests
 

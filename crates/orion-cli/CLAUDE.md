@@ -18,17 +18,21 @@ cargo deny check               # Dependency/licence policy (whole workspace)
 
 ### E2E Tests
 
+The end-to-end suite lives at the **repo root** (`tests/e2e/`), not in this
+crate — it exercises the server and the CLI together.
+
 ```bash
 # From the workspace root — builds both binaries from this tree (needs jq, curl):
 just e2e
 
-# Or directly, against any server binary:
+# Or directly; ORION_BIN/ORION_CLI override the in-tree default binaries:
+./tests/e2e/run.sh
 ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 
 # Useful env vars:
 # E2E_PORT=9090        Custom port
 # E2E_DEBUG=1          Debug logging
-# E2E_SKIP_BUILD=1     Skip cargo build, use existing binary
+# E2E_SKIP_BUILD=1     Skip cargo build, use existing binaries
 # E2E_KEEP_SERVER=1    Don't stop server after tests
 ```
 
@@ -40,7 +44,7 @@ orion-cli mcp serve --http                    # HTTP transport (remote clients),
 orion-cli mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
 ```
 
-E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/`, fixtures in `tests/e2e/fixtures/`, test case definitions in `tests/e2e/cases/`. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
+E2E tests are shell-based (not `cargo test`). 12 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); the last suite is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behavior cases in `tests/e2e/cases/`. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
 
 ## Architecture
 

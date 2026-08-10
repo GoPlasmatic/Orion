@@ -12,11 +12,10 @@ check:
     cargo test --doc
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
 
-# CLI end-to-end suite: builds both binaries from this tree, then drives a
+# End-to-end suite: builds both binaries from this tree, then drives a
 # real orion-server over HTTP with the orion-cli binary.
 e2e:
-    cargo build -p orion-server -p orion-cli
-    E2E_SKIP_BUILD=1 ORION_BIN=target/debug/orion-server ./crates/orion-cli/tests/e2e/run.sh
+    ./tests/e2e/run.sh
 
 # Regenerate the committed OpenAPI spec after changing routes or
 # request/response schemas (a test fails while it is stale).

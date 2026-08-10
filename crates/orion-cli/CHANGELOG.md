@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Orion server v1.0 compatibility release, developed in the Orion monorepo
 (the CLI moved from GoPlasmatic/Orion-cli to GoPlasmatic/Orion as
-`crates/orion-cli`; its e2e suite now runs against the in-tree server on
-every PR).
+`crates/orion-cli`; the end-to-end suite that drives both binaries now
+lives at the repo root — `tests/e2e/`, with its data-driven use cases in
+`examples/use-cases/` — and runs against the in-tree server on every PR).
 
 ### Added
 

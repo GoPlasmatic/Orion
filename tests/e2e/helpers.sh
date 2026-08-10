@@ -31,15 +31,16 @@ FAILED_NAMES=()
 SUITE_START_TIME=0
 
 # ── Paths ───────────────────────────────────────────────────────
-E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"          # crates/orion-cli
-WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"   # repo root (cargo target dir lives here)
+E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"       # <repo>/tests/e2e
+REPO_ROOT="$(cd "$E2E_DIR/../.." && pwd)"                     # workspace root (cargo target dir lives here)
 FIXTURES_DIR="$E2E_DIR/fixtures"
+# Data-driven use cases live with the other runnable examples.
+CASES_DIR="$REPO_ROOT/examples/use-cases"
 
-# Orion server binary (cargo build -p orion-server puts it in the workspace target/)
-ORION_BIN="${ORION_BIN:-}"
-# Orion CLI binary (built from this workspace)
-ORION_CLI="${ORION_CLI:-$WORKSPACE_ROOT/target/debug/orion-cli}"
+# Both binaries default to the in-tree debug build; override to test
+# against a foreign binary (e.g. a released orion-server).
+ORION_BIN="${ORION_BIN:-$REPO_ROOT/target/debug/orion-server}"
+ORION_CLI="${ORION_CLI:-$REPO_ROOT/target/debug/orion-cli}"
 
 # ── Test Port & Server URL ──────────────────────────────────────
 E2E_PORT="${E2E_PORT:-0}"
@@ -669,11 +670,22 @@ run_case_file() {
 
     # Create workflows, activate them, store IDs
     _CASE_RULE_IDS=()
+    local case_dir
+    case_dir="$(cd "$(dirname "$case_file")" && pwd)"
     local rule_count
     rule_count=$(jq '.workflows // [] | length' "$case_file")
     for ((i=0; i<rule_count; i++)); do
-        local rule_data
-        rule_data=$(jq -c ".workflows[$i]" "$case_file")
+        # A workflow entry is either inline JSON or {"file": "<path>"} with
+        # the path relative to the case file. File references single-source
+        # the workflow from the example package it exercises, so the e2e
+        # suite tests the shipped JSON instead of a copy that can drift.
+        local rule_data wf_file
+        wf_file=$(jq -r ".workflows[$i].file // empty" "$case_file")
+        if [[ -n "$wf_file" ]]; then
+            rule_data=$(jq -c . "$case_dir/$wf_file")
+        else
+            rule_data=$(jq -c ".workflows[$i]" "$case_file")
+        fi
         cli_quiet workflows create -d "$rule_data"
         local _rule_id="$CLI_OUTPUT"
         _CASE_RULE_IDS+=("$_rule_id")

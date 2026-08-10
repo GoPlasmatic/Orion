@@ -1,4 +1,9 @@
-# Orion Test Suite
+# Orion Server Test Suite
+
+This README covers the server crate's cargo test binaries. The map of the
+whole repo's test estate — including the shell e2e suite at `tests/e2e/`,
+the examples gates, and the CLI's tests — is [`TESTING.md`](../../../TESTING.md)
+at the repo root.
 
 ## Test Binaries
 

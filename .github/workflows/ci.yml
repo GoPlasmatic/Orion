@@ -210,10 +210,11 @@ jobs:
       - name: Run doctests
         run: cargo test --doc
 
-  # The CLI's shell e2e suite drives a real orion-server over HTTP with the
-  # orion-cli binary — the one place the two crates' API contract is
-  # exercised end to end at the same commit. Before the monorepo merge this
-  # needed an out-of-band server binary and could not run per PR at all.
+  # The workspace shell e2e suite (tests/e2e/) drives a real orion-server
+  # over HTTP with the orion-cli binary — the one place the two crates' API
+  # contract is exercised end to end at the same commit. Before the monorepo
+  # merge this needed an out-of-band server binary and could not run per PR
+  # at all.
   cli-e2e:
     name: CLI E2E (orion-cli against orion-server)
     runs-on: ubuntu-22.04
@@ -238,9 +239,7 @@ jobs:
 
       # jq and curl are preinstalled on the GitHub ubuntu images.
       - name: Run the e2e suite
-        run: |
-          E2E_SKIP_BUILD=1 ORION_BIN="$PWD/target/debug/orion-server" \
-            ./crates/orion-cli/tests/e2e/run.sh
+        run: E2E_SKIP_BUILD=1 ./tests/e2e/run.sh
 
   # Advisories AND license compatibility / bans / source policy over the
   # whole tree (proposal T12) — deny.toml is the policy, including the one

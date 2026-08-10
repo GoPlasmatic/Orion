@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# tests/e2e/run.sh — Main E2E test runner for Orion CLI
+# tests/e2e/run.sh — the workspace end-to-end suite: drives a real
+# orion-server over HTTP with the orion-cli binary, both built from this
+# tree. The one place the two crates' API contract is exercised end to end.
 #
-# Usage:
+# Usage (from the repo root; `just e2e` is the same thing):
 #   ./tests/e2e/run.sh                    # Run all suites
 #   ./tests/e2e/run.sh 01_health          # Run a specific suite
 #   ./tests/e2e/run.sh 01 07 08           # Run multiple suites (prefix match)
 #
 # Environment:
-#   ORION_BIN=<path>     Path to orion-server binary (required)
+#   ORION_BIN=<path>     orion-server binary (default: target/debug build)
+#   ORION_CLI=<path>     orion-cli binary (default: target/debug build)
 #   E2E_PORT=9999        Use specific port (default: auto)
 #   E2E_DEBUG=1          Enable debug logging
 #   E2E_KEEP_SERVER=1    Don't stop server after tests
@@ -34,12 +37,12 @@ check_prerequisites() {
 }
 
 # ── Build ───────────────────────────────────────────────────────
-build_cli() {
+build_binaries() {
     if [[ -n "${E2E_SKIP_BUILD:-}" ]]; then
         log_info "Skipping build (E2E_SKIP_BUILD=1)"
     else
-        echo -e "${BOLD}Building orion-cli...${RESET}"
-        if ! cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1; then
+        echo -e "${BOLD}Building orion-server and orion-cli...${RESET}"
+        if ! cargo build --manifest-path "$REPO_ROOT/Cargo.toml" -p orion-server -p orion-cli 2>&1; then
             echo -e "${RED}Build failed${RESET}" >&2
             exit 1
         fi
@@ -47,17 +50,13 @@ build_cli() {
 
     if [[ ! -x "$ORION_CLI" ]]; then
         echo -e "${RED}orion-cli binary not found at $ORION_CLI${RESET}" >&2
-        exit 1
-    fi
-
-    if [[ -z "$ORION_BIN" ]]; then
-        echo -e "${RED}ORION_BIN not set. Set it to the path of the orion-server binary.${RESET}" >&2
-        echo "  Example: ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh" >&2
+        echo "  Build it with: cargo build -p orion-cli (or set ORION_CLI)" >&2
         exit 1
     fi
 
     if [[ ! -x "$ORION_BIN" ]]; then
         echo -e "${RED}orion-server binary not found at $ORION_BIN${RESET}" >&2
+        echo "  Build it with: cargo build -p orion-server (or set ORION_BIN)" >&2
         exit 1
     fi
 
@@ -115,7 +114,7 @@ main() {
     echo -e "${RESET}"
 
     check_prerequisites
-    build_cli
+    build_binaries
 
     trap 'stop_server' EXIT INT TERM
 

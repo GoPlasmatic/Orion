@@ -27,7 +27,8 @@ activated, first request sent) against a running instance in one command.
 examples/
 ├── packages/           # each directory = one deployable package
 │   └── <name>/
-├── workflow-tests/     # offline *.case.json regression suite
+├── workflow-tests/     # offline *.case.json regression suite (references packages/)
+├── use-cases/          # live e2e scenarios for the packages (run by tests/e2e)
 ├── deploy.sh           # deploy one package end-to-end
 └── quickstart.sh       # your first service in one command
 ```
@@ -144,6 +145,17 @@ orion-server test examples/workflow-tests
 The runner exits non-zero on any failure, so it gates CI alongside
 `orion-server lint`. See [its README](workflow-tests/README.md) for the case
 format (including connector stubs).
+
+## Server-backed use cases
+
+[`use-cases/`](use-cases/) holds end-to-end scenario definitions for the
+packages above: each references a package's `workflow.json` (never a copy)
+and pairs it with the requests to send and the responses to expect. Unlike
+`workflow-tests/`, these run against a **real server**: the repo's e2e suite
+(`just e2e`, from `tests/e2e/`) deploys each case through the `orion-cli`
+binary and asserts the live responses — so CI proves the shipped examples
+against real traffic, not just offline. See
+[its README](use-cases/README.md) for the case format and how to add one.
 
 ## Beyond these examples
 
