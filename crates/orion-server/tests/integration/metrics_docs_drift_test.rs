@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const METRICS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs");
 const OBSERVABILITY_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/docs/src/features/observability.md"
+    "/../../docs/src/features/observability.md"
 );
 
 /// `name -> label keys`, parsed from the `counter!` / `gauge!` / `histogram!`

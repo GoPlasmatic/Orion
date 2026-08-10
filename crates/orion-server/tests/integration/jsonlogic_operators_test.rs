@@ -43,7 +43,7 @@ use crate::common::{body_json, json_request};
 
 const WORKFLOWS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/docs/src/reference/workflows.md"
+    "/../../docs/src/reference/workflows.md"
 );
 
 /// Every operator Orion supports, with an expression that exercises it and the

@@ -649,7 +649,8 @@ mod tests {
     fn documented_schema_example() -> serde_json::Value {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/docs/src/reference/data-dialect.md"
+            // The docs book lives at the repo root, two levels above this crate.
+            "/../../docs/src/reference/data-dialect.md"
         );
         let source = std::fs::read_to_string(path)
             .expect("docs/src/reference/data-dialect.md must be readable");

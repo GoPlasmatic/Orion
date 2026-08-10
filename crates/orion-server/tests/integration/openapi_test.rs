@@ -236,10 +236,11 @@ async fn openapi_references_the_shared_error_envelope() {
 /// `cargo run -- dump-openapi > docs/openapi.json`.
 #[test]
 fn committed_openapi_json_is_up_to_date() {
-    let committed =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/openapi.json")).expect(
-            "docs/openapi.json should exist — run `cargo run -- dump-openapi > docs/openapi.json`",
-        );
+    let committed = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/openapi.json"
+    ))
+    .expect("docs/openapi.json should exist — run `cargo run -- dump-openapi > docs/openapi.json`");
 
     let generated = orion::server::routes::openapi::pretty_json();
 

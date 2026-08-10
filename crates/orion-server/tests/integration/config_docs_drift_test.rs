@@ -38,9 +38,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use orion::config::AppConfig;
 
+// The docs tree lives at the repo root, two levels above this crate.
 const REFERENCE_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/docs/src/configuration/reference.md"
+    "/../../docs/src/configuration/reference.md"
 );
 const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
 const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/env_overrides.rs");
@@ -266,7 +267,7 @@ const PROSE_FILES: &[&str] = &[
     "README.md",
     "CONTRIBUTING.md",
     "CLAUDE.md",
-    "config.toml.example",
+    "crates/orion-server/config.toml.example",
     "docker-compose.yml",
     "docker-compose.ha.yml",
     "docker-compose.ha.build.yml",
@@ -410,7 +411,8 @@ fn prose_files() -> Vec<std::path::PathBuf> {
         }
     }
 
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Prose scanning starts at the repo root, two levels above this crate.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut out = Vec::new();
     for dir in PROSE_DIRS {
         walk(&root.join(dir), &mut out);
@@ -470,7 +472,8 @@ fn orion_tokens(text: &str) -> Vec<(String, usize)> {
 fn every_documented_env_name_is_real() {
     let known = orion::config::known_env_override_keys();
     let retired = orion::config::retired_env_names();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Prose scanning starts at the repo root, two levels above this crate.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
 
     let mut files = 0usize;
     let mut problems = Vec::new();
@@ -480,7 +483,7 @@ fn every_documented_env_name_is_real() {
         };
         files += 1;
         let relative = path
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
@@ -515,14 +518,15 @@ fn every_documented_env_name_is_real() {
 #[test]
 fn every_excused_env_name_is_still_needed() {
     let known = orion::config::known_env_override_keys();
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // Prose scanning starts at the repo root, two levels above this crate.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let mut mentioned: BTreeSet<(String, String)> = BTreeSet::new();
     for path in prose_files() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
         let relative = path
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");

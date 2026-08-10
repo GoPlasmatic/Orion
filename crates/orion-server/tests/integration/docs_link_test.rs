@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-const DOCS_SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/src");
+const DOCS_SRC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src");
 
 fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read docs dir") {
