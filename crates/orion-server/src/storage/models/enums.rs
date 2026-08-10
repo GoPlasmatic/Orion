@@ -3,7 +3,7 @@
 //!
 //! The definitions moved to the shared `orion-api` crate so the CLI reads the
 //! same vocabulary the server writes; they are re-exported here under their
-//! pre-1.0 paths. What stays behind is [`parse_json_field`] — the row → DTO
+//! pre-1.0 paths. What stays behind is `parse_json_field` — the row → DTO
 //! bridge — because it speaks [`OrionError`], which is server-internal.
 
 use crate::errors::OrionError;
