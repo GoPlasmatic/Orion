@@ -6,11 +6,13 @@ pub mod completions;
 pub mod config;
 pub mod connectors;
 pub mod data;
+pub mod dlq;
 pub mod engine;
 pub mod functions;
 pub mod health;
 pub mod mcp;
 pub mod metrics;
+pub mod packages;
 pub mod traces;
 pub mod workflows;
 
@@ -67,6 +69,13 @@ pub enum Commands {
 
     /// Manage database backups (SQLite snapshots)
     Backups(backups::BackupsCmd),
+
+    /// Inspect package promotion receipts (staged/applied versions)
+    #[command(alias = "pkg")]
+    Packages(packages::PackagesCmd),
+
+    /// Inspect and drain the trace dead-letter queue
+    Dlq(dlq::DlqCmd),
 
     /// Start the MCP server for AI assistants (Claude Desktop, Cursor)
     Mcp(mcp::McpCmd),

@@ -21,10 +21,9 @@ pub async fn remove_resources(
             if let Err(e) = client
                 .delete_request(&format!("/api/v1/admin/workflows/{id}"))
                 .await
+                && !quiet
             {
-                if !quiet {
-                    eprintln!("\n  Warning: failed to delete workflow {id}: {e}");
-                }
+                eprintln!("\n  Warning: failed to delete workflow {id}: {e}");
             }
         }
     }
@@ -63,20 +62,18 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
         let name = wf["name"].as_str().unwrap_or("");
         let is_bench = name.starts_with("Bench ") || name.starts_with("Multi Rule ");
 
-        if is_bench {
-            if let Some(id) = wf["workflow_id"].as_str() {
-                if let Err(e) = client
-                    .delete_request(&format!("/api/v1/admin/workflows/{id}"))
-                    .await
-                {
-                    if !quiet {
-                        eprintln!("  Warning: failed to delete {name} ({id}): {e}");
-                    }
-                } else {
-                    deleted += 1;
-                    if !quiet {
-                        eprintln!("  Deleted: {name} ({id})");
-                    }
+        if is_bench && let Some(id) = wf["workflow_id"].as_str() {
+            if let Err(e) = client
+                .delete_request(&format!("/api/v1/admin/workflows/{id}"))
+                .await
+            {
+                if !quiet {
+                    eprintln!("  Warning: failed to delete {name} ({id}): {e}");
+                }
+            } else {
+                deleted += 1;
+                if !quiet {
+                    eprintln!("  Deleted: {name} ({id})");
                 }
             }
         }

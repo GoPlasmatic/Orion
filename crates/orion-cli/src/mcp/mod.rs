@@ -78,6 +78,16 @@ impl OrionService {
         tools::workflows::get(&self.client, params).await
     }
 
+    #[tool(
+        description = "Show what a workflow depends on: connector names its tasks reference (with the referencing function), channel names targeted by channel_call tasks, and whether any channel_call resolves its target dynamically at runtime (making the static list incomplete)."
+    )]
+    async fn workflows_dependencies(
+        &self,
+        Parameters(params): Parameters<tools::workflows::WorkflowsGetParams>,
+    ) -> Result<String, String> {
+        tools::workflows::dependencies(&self.client, params).await
+    }
+
     #[doc = include_str!("tools/descriptions/workflows_create.md")]
     #[tool]
     async fn workflows_create(
@@ -278,7 +288,7 @@ impl OrionService {
     }
 
     #[tool(
-        description = "Bulk import channels from a JSON array. Use dry_run=true to validate on the server without writing (returns would_create/would_fail counts and per-item errors)."
+        description = "Bulk import channels from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors)."
     )]
     async fn channels_import(
         &self,
@@ -307,6 +317,16 @@ impl OrionService {
         Parameters(params): Parameters<tools::connectors::ConnectorsGetParams>,
     ) -> Result<String, String> {
         tools::connectors::get(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Probe a connector's target with its stored configuration: reports reachable/unreachable with the probe performed, or supported=false for connector types without a probe."
+    )]
+    async fn connectors_test(
+        &self,
+        Parameters(params): Parameters<tools::connectors::ConnectorsGetParams>,
+    ) -> Result<String, String> {
+        tools::connectors::test(&self.client, params).await
     }
 
     #[doc = include_str!("tools/descriptions/connectors_create.md")]
@@ -354,7 +374,7 @@ impl OrionService {
     }
 
     #[tool(
-        description = "Bulk import connectors from a JSON array. Use dry_run=true to validate on the server without writing (returns would_create/would_fail counts and per-item errors)."
+        description = "Bulk import connectors from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors)."
     )]
     async fn connectors_import(
         &self,
@@ -428,6 +448,58 @@ impl OrionService {
     #[tool]
     async fn backups_list(&self) -> Result<String, String> {
         tools::backups::list(&self.client).await
+    }
+
+    // ── Packages (v1.0 promotion receipts) ─────────────────────────────
+
+    #[tool(
+        description = "List package promotion receipts: which package versions were staged or applied on this instance by 'orion-server package plan/apply'. Supports limit/offset pagination."
+    )]
+    async fn packages_list(
+        &self,
+        Parameters(params): Parameters<tools::packages::PackagesListParams>,
+    ) -> Result<String, String> {
+        tools::packages::list(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Get one package's promotion receipt: the current staged/applied version with its content hash and principal, plus the recorded version history."
+    )]
+    async fn packages_get(
+        &self,
+        Parameters(params): Parameters<tools::packages::PackagesGetParams>,
+    ) -> Result<String, String> {
+        tools::packages::get(&self.client, params).await
+    }
+
+    // ── Trace DLQ (v1.0) ────────────────────────────────────────────────
+
+    #[tool(
+        description = "List trace dead-letter queue entries: traces whose async persistence failed. Filter by channel or exhausted=true (retries used up). Each row shows retry_count/max_retries, next_retry_at and the error."
+    )]
+    async fn trace_dlq_list(
+        &self,
+        Parameters(params): Parameters<tools::trace_dlq::DlqListParams>,
+    ) -> Result<String, String> {
+        tools::trace_dlq::list(&self.client, params).await
+    }
+
+    #[tool(description = "Get one trace DLQ entry including its payload and metadata JSON.")]
+    async fn trace_dlq_get(
+        &self,
+        Parameters(params): Parameters<tools::trace_dlq::DlqEntryParams>,
+    ) -> Result<String, String> {
+        tools::trace_dlq::get(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Requeue a trace DLQ entry: resets its retry counter so the next retry pass picks it up immediately."
+    )]
+    async fn trace_dlq_requeue(
+        &self,
+        Parameters(params): Parameters<tools::trace_dlq::DlqEntryParams>,
+    ) -> Result<String, String> {
+        tools::trace_dlq::requeue(&self.client, params).await
     }
 
     // ── Functions ──────────────────────────────────────────────────────

@@ -78,9 +78,27 @@ enum WorkflowsSubcommand {
     Activate {
         /// Workflow ID
         id: String,
+        /// Pre-flight only: report whether activation would succeed, change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Defer the engine reload (batch several changes, then 'engine reload' once)
+        #[arg(long)]
+        defer_reload: bool,
     },
     /// Archive an active workflow (run 'engine reload' after to apply)
     Archive {
+        /// Workflow ID
+        id: String,
+        /// Pre-flight only: report whether archiving would succeed, change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Defer the engine reload (batch several changes, then 'engine reload' once)
+        #[arg(long)]
+        defer_reload: bool,
+    },
+    /// Show what a workflow depends on: connectors and channel_call targets
+    #[command(alias = "deps")]
+    Dependencies {
         /// Workflow ID
         id: String,
     },
@@ -163,6 +181,9 @@ enum WorkflowsSubcommand {
         /// Preview what would be imported without making changes
         #[arg(long)]
         dry_run: bool,
+        /// On ID conflict: fail (default), skip the item, or write a new version
+        #[arg(long, value_parser = ["fail", "skip", "new_version"])]
+        on_conflict: Option<String>,
     },
     /// Compare local file against server state
     #[command(after_help = "Examples:\n  orion-cli workflows diff -f workflows.json")]
@@ -239,11 +260,18 @@ impl WorkflowsCmd {
                 update(client, format, quiet, id, &body).await
             }
             WorkflowsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
-            WorkflowsSubcommand::Activate { id } => {
-                change_status(client, quiet, id, "active").await
-            }
-            WorkflowsSubcommand::Archive { id } => {
-                change_status(client, quiet, id, "archived").await
+            WorkflowsSubcommand::Activate {
+                id,
+                dry_run,
+                defer_reload,
+            } => change_status(client, quiet, id, "active", *dry_run, *defer_reload).await,
+            WorkflowsSubcommand::Archive {
+                id,
+                dry_run,
+                defer_reload,
+            } => change_status(client, quiet, id, "archived", *dry_run, *defer_reload).await,
+            WorkflowsSubcommand::Dependencies { id } => {
+                dependencies(client, format, quiet, id).await
             }
             WorkflowsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
@@ -267,7 +295,11 @@ impl WorkflowsCmd {
                 test_workflow(client, format, quiet, id, &payload, meta.as_ref(), *trace).await
             }
             WorkflowsSubcommand::Export { status, tag } => export(client, status, tag).await,
-            WorkflowsSubcommand::Import { file, dry_run } => {
+            WorkflowsSubcommand::Import {
+                file,
+                dry_run,
+                on_conflict,
+            } => {
                 utils::run_import(
                     client,
                     format,
@@ -276,6 +308,7 @@ impl WorkflowsCmd {
                     "workflow",
                     file,
                     *dry_run,
+                    on_conflict.as_deref(),
                 )
                 .await
             }
@@ -481,20 +514,43 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
     Ok(0)
 }
 
-async fn change_status(client: &OrionClient, quiet: bool, id: &str, status: &str) -> Result<i32> {
+async fn change_status(
+    client: &OrionClient,
+    quiet: bool,
+    id: &str,
+    status: &str,
+    dry_run: bool,
+    defer_reload: bool,
+) -> Result<i32> {
+    let qs = utils::build_query_string(&[
+        ("dry_run", dry_run.then(|| "true".to_string())),
+        ("reload", defer_reload.then(|| "defer".to_string())),
+    ]);
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/workflows/{id}/status"), &body)
+        .patch(&format!("/api/v1/admin/workflows/{id}/status{qs}"), &body)
         .await?;
 
     if !quiet {
         let wf = &resp["data"];
+        if dry_run {
+            println!(
+                "{} Workflow {} can change to {} (nothing written)",
+                "DRY RUN".yellow().bold(),
+                wf["name"].as_str().unwrap_or(id),
+                colorize_status(status)
+            );
+            return Ok(0);
+        }
         println!(
             "{} Workflow {} status changed to {}",
             "OK".green().bold(),
             wf["name"].as_str().unwrap_or(id),
             colorize_status(status)
         );
+        if defer_reload {
+            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
+        }
     }
     Ok(0)
 }
@@ -516,6 +572,8 @@ async fn test_workflow(
     let resp: Value = client
         .post(&format!("/api/v1/admin/workflows/{id}/test"), &body)
         .await?;
+    // v1.0 wraps the WorkflowTestResult in the {"data": …} admin envelope.
+    let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
         output::print_value(format, &resp)?;
@@ -539,27 +597,23 @@ async fn test_workflow(
     println!("  Workflow: {id}");
     println!("  Result:   {match_display}");
 
-    if matched {
-        if let Some(output) = resp.get("output") {
-            println!("\n{}", "Output:".bold());
-            println!("{}", serde_json::to_string_pretty(output)?);
+    if matched && let Some(output) = resp.get("output") {
+        println!("\n{}", "Output:".bold());
+        println!("{}", serde_json::to_string_pretty(output)?);
+    }
+
+    if let Some(errors) = resp.get("errors").and_then(|e| e.as_array())
+        && !errors.is_empty()
+    {
+        println!("\n{}", "Errors:".yellow().bold());
+        for err in errors {
+            println!("  - {err}");
         }
     }
 
-    if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-        if !errors.is_empty() {
-            println!("\n{}", "Errors:".yellow().bold());
-            for err in errors {
-                println!("  - {err}");
-            }
-        }
-    }
-
-    if trace {
-        if let Some(trace_data) = resp.get("trace") {
-            println!("\n{}", "Execution Trace:".bold());
-            print_trace(trace_data, 1);
-        }
+    if trace && let Some(trace_data) = resp.get("trace") {
+        println!("\n{}", "Execution Trace:".bold());
+        print_trace(trace_data, 1);
     }
 
     Ok(if matched { 0 } else { 1 })
@@ -574,6 +628,7 @@ async fn validate(
     let resp: Value = client
         .post("/api/v1/admin/workflows/validate", body)
         .await?;
+    let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
         output::print_value(format, &resp)?;
@@ -594,25 +649,25 @@ async fn validate(
         println!("{} Workflow definition has issues", "INVALID".red().bold());
     }
 
-    if let Some(errors) = resp["errors"].as_array() {
-        if !errors.is_empty() {
-            println!("\n{}", "Errors:".red().bold());
-            for err in errors {
-                let field = err["field"].as_str().unwrap_or("");
-                let msg = err["message"].as_str().unwrap_or("");
-                println!("  - {field}: {msg}");
-            }
+    if let Some(errors) = resp["errors"].as_array()
+        && !errors.is_empty()
+    {
+        println!("\n{}", "Errors:".red().bold());
+        for err in errors {
+            let field = err["field"].as_str().unwrap_or("");
+            let msg = err["message"].as_str().unwrap_or("");
+            println!("  - {field}: {msg}");
         }
     }
 
-    if let Some(warnings) = resp["warnings"].as_array() {
-        if !warnings.is_empty() {
-            println!("\n{}", "Warnings:".yellow().bold());
-            for warn in warnings {
-                let field = warn["field"].as_str().unwrap_or("");
-                let msg = warn["message"].as_str().unwrap_or("");
-                println!("  - {field}: {msg}");
-            }
+    if let Some(warnings) = resp["warnings"].as_array()
+        && !warnings.is_empty()
+    {
+        println!("\n{}", "Warnings:".yellow().bold());
+        for warn in warnings {
+            let field = warn["field"].as_str().unwrap_or("");
+            let msg = warn["message"].as_str().unwrap_or("");
+            println!("  - {field}: {msg}");
         }
     }
 
@@ -824,6 +879,73 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
         deleted_count.to_string().red(),
         unchanged_count
     );
+
+    Ok(0)
+}
+
+async fn dependencies(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
+    let resp: Value = client
+        .get(&format!("/api/v1/admin/workflows/{id}/dependencies"))
+        .await?;
+    let deps = &resp["data"];
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+
+    let connectors = deps["connectors"].as_array().cloned().unwrap_or_default();
+    let channels = deps["channels"].as_array().cloned().unwrap_or_default();
+
+    if quiet {
+        for c in &connectors {
+            if let Some(name) = c["connector"].as_str() {
+                println!("{name}");
+            }
+        }
+        return Ok(0);
+    }
+
+    println!("{}", "Workflow Dependencies".bold());
+    println!(
+        "  Workflow: {} (v{})",
+        deps["workflow_id"].as_str().unwrap_or(id),
+        deps["version"].as_i64().unwrap_or(0)
+    );
+
+    if connectors.is_empty() {
+        println!("  Connectors: {}", "(none)".dimmed());
+    } else {
+        println!("  Connectors:");
+        for c in &connectors {
+            println!(
+                "    - {} (via {})",
+                c["connector"].as_str().unwrap_or(""),
+                c["function"].as_str().unwrap_or("")
+            );
+        }
+    }
+
+    if channels.is_empty() {
+        println!("  Channel calls: {}", "(none)".dimmed());
+    } else {
+        println!("  Channel calls:");
+        for ch in &channels {
+            println!("    - {}", ch.as_str().unwrap_or(""));
+        }
+    }
+
+    if deps["has_dynamic_channel_calls"].as_bool().unwrap_or(false) {
+        println!(
+            "  {} channel_call targets are resolved at runtime -- the list above is incomplete by construction",
+            "NOTE".yellow()
+        );
+    }
 
     Ok(0)
 }

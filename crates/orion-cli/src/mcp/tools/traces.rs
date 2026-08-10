@@ -40,7 +40,7 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
         ("sort_order", params.sort_order),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/data/traces{qs}"))
+        .get(&format!("/api/v1/admin/traces{qs}"))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -48,7 +48,7 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
 
 pub async fn get(client: &OrionClient, params: TracesGetParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/data/traces/{}", params.id))
+        .get(&format!("/api/v1/admin/traces/{}", params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

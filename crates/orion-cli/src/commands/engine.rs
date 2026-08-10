@@ -43,6 +43,8 @@ impl EngineCmd {
 
 async fn status(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
     let resp: Value = client.get("/api/v1/admin/engine/status").await?;
+    // v1.0 wraps admin responses in {"data": …}; tolerate the bare pre-1.0 shape.
+    let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if quiet {
         let workflows = resp["workflows_count"].as_u64().unwrap_or(0);
@@ -88,6 +90,7 @@ async fn reload(client: &OrionClient, quiet: bool, yes: bool) -> Result<i32> {
     }
 
     let resp: Value = client.post_empty("/api/v1/admin/engine/reload").await?;
+    let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if !quiet {
         let workflows = resp["workflows_count"].as_u64().unwrap_or(0);

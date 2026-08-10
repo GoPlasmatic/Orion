@@ -64,7 +64,7 @@ pub struct ChannelsImportParams {
     )]
     pub channels_json: String,
     #[schemars(
-        description = "If true, validate on the server without writing any changes (returns would_create/would_fail counts)"
+        description = "If true, validate on the server without writing any changes (returns imported/unchanged/skipped/failed counts)"
     )]
     pub dry_run: Option<bool>,
 }

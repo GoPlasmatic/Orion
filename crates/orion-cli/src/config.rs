@@ -39,10 +39,10 @@ impl OrionConfig {
 
     /// Resolve server URL: env var > config file
     pub fn resolve_server_url() -> Result<String> {
-        if let Ok(url) = std::env::var("ORION_SERVER_URL") {
-            if !url.is_empty() {
-                return Ok(url);
-            }
+        if let Ok(url) = std::env::var("ORION_SERVER_URL")
+            && !url.is_empty()
+        {
+            return Ok(url);
         }
         let config = Self::load()?;
         config.server_url.ok_or_else(|| {
@@ -54,11 +54,11 @@ impl OrionConfig {
 
     /// Resolve API key: env var > config file. Returns (key, optional header).
     pub fn resolve_api_key() -> Option<(String, Option<String>)> {
-        if let Ok(key) = std::env::var("ORION_API_KEY") {
-            if !key.is_empty() {
-                let header = std::env::var("ORION_API_KEY_HEADER").ok();
-                return Some((key, header));
-            }
+        if let Ok(key) = std::env::var("ORION_API_KEY")
+            && !key.is_empty()
+        {
+            let header = std::env::var("ORION_API_KEY_HEADER").ok();
+            return Some((key, header));
         }
         let config = Self::load().ok()?;
         config.api_key.map(|k| (k, config.api_key_header))

@@ -37,6 +37,9 @@ enum ChannelsSubcommand {
         /// Filter by protocol (http, rest, kafka)
         #[arg(long)]
         protocol: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
         /// Page size
         #[arg(long)]
         limit: Option<i64>,
@@ -85,11 +88,23 @@ enum ChannelsSubcommand {
     Activate {
         /// Channel ID
         id: String,
+        /// Pre-flight only: report whether activation would succeed, change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Defer the engine reload (batch several changes, then 'engine reload' once)
+        #[arg(long)]
+        defer_reload: bool,
     },
     /// Archive an active channel (run 'engine reload' after to apply)
     Archive {
         /// Channel ID
         id: String,
+        /// Pre-flight only: report whether archiving would succeed, change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Defer the engine reload (batch several changes, then 'engine reload' once)
+        #[arg(long)]
+        defer_reload: bool,
     },
     /// List version history for a channel
     Versions {
@@ -100,6 +115,27 @@ enum ChannelsSubcommand {
     NewVersion {
         /// Channel ID
         id: String,
+    },
+    /// Validate a channel definition without creating it
+    Validate {
+        /// Path to JSON file with the channel definition
+        #[arg(short, long)]
+        file: Option<String>,
+        /// Inline JSON string with the channel definition
+        #[arg(short, long)]
+        data: Option<String>,
+        /// Read channel definition from stdin
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Export channels as JSON (pipe to file for backup)
+    Export {
+        /// Filter by status (draft, active, archived)
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Bulk import channels from a JSON array file
     #[command(
@@ -112,6 +148,9 @@ enum ChannelsSubcommand {
         /// Validate on the server without writing any changes
         #[arg(long)]
         dry_run: bool,
+        /// On ID conflict: fail (default), skip the item, or write a new version
+        #[arg(long, value_parser = ["fail", "skip", "new_version"])]
+        on_conflict: Option<String>,
     },
 }
 
@@ -156,6 +195,7 @@ impl ChannelsCmd {
                 status,
                 channel_type,
                 protocol,
+                tag,
                 limit,
                 offset,
             } => {
@@ -166,6 +206,7 @@ impl ChannelsCmd {
                     status,
                     channel_type,
                     protocol,
+                    tag,
                     limit,
                     offset,
                 )
@@ -186,13 +227,28 @@ impl ChannelsCmd {
                 update(client, format, quiet, id, &body).await
             }
             ChannelsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
-            ChannelsSubcommand::Activate { id } => change_status(client, quiet, id, "active").await,
-            ChannelsSubcommand::Archive { id } => {
-                change_status(client, quiet, id, "archived").await
+            ChannelsSubcommand::Activate {
+                id,
+                dry_run,
+                defer_reload,
+            } => change_status(client, quiet, id, "active", *dry_run, *defer_reload).await,
+            ChannelsSubcommand::Archive {
+                id,
+                dry_run,
+                defer_reload,
+            } => change_status(client, quiet, id, "archived", *dry_run, *defer_reload).await,
+            ChannelsSubcommand::Validate { file, data, stdin } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
+                validate(client, format, quiet, &body).await
             }
+            ChannelsSubcommand::Export { status, tag } => export(client, status, tag).await,
             ChannelsSubcommand::Versions { id } => versions(client, format, quiet, id).await,
             ChannelsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
-            ChannelsSubcommand::Import { file, dry_run } => {
+            ChannelsSubcommand::Import {
+                file,
+                dry_run,
+                on_conflict,
+            } => {
                 utils::run_import(
                     client,
                     format,
@@ -201,6 +257,7 @@ impl ChannelsCmd {
                     "channel",
                     file,
                     *dry_run,
+                    on_conflict.as_deref(),
                 )
                 .await
             }
@@ -216,6 +273,7 @@ async fn list(
     status: &Option<String>,
     channel_type: &Option<String>,
     protocol: &Option<String>,
+    tag: &Option<String>,
     limit: &Option<i64>,
     offset: &Option<i64>,
 ) -> Result<i32> {
@@ -223,6 +281,7 @@ async fn list(
         ("status", status.clone()),
         ("channel_type", channel_type.clone()),
         ("protocol", protocol.clone()),
+        ("tag", tag.clone()),
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
     ]);
@@ -320,25 +379,25 @@ async fn get_channel(
             println!("  Methods:      {}", methods_str.join(", "));
         }
     }
-    if let Some(route) = ch["route_pattern"].as_str() {
-        if !route.is_empty() {
-            println!("  Route:        {route}");
-        }
+    if let Some(route) = ch["route_pattern"].as_str()
+        && !route.is_empty()
+    {
+        println!("  Route:        {route}");
     }
-    if let Some(topic) = ch["topic"].as_str() {
-        if !topic.is_empty() {
-            println!("  Topic:        {topic}");
-        }
+    if let Some(topic) = ch["topic"].as_str()
+        && !topic.is_empty()
+    {
+        println!("  Topic:        {topic}");
     }
 
     println!("  Created:      {}", ch["created_at"]);
     println!("  Updated:      {}", ch["updated_at"]);
 
-    if let Some(config) = ch.get("config") {
-        if !config.is_null() {
-            println!("\n{}", "Config:".bold());
-            println!("{}", serde_json::to_string_pretty(config)?);
-        }
+    if let Some(config) = ch.get("config")
+        && !config.is_null()
+    {
+        println!("\n{}", "Config:".bold());
+        println!("{}", serde_json::to_string_pretty(config)?);
     }
 
     Ok(0)
@@ -419,20 +478,43 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
     Ok(0)
 }
 
-async fn change_status(client: &OrionClient, quiet: bool, id: &str, status: &str) -> Result<i32> {
+async fn change_status(
+    client: &OrionClient,
+    quiet: bool,
+    id: &str,
+    status: &str,
+    dry_run: bool,
+    defer_reload: bool,
+) -> Result<i32> {
+    let qs = utils::build_query_string(&[
+        ("dry_run", dry_run.then(|| "true".to_string())),
+        ("reload", defer_reload.then(|| "defer".to_string())),
+    ]);
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/channels/{id}/status"), &body)
+        .patch(&format!("/api/v1/admin/channels/{id}/status{qs}"), &body)
         .await?;
 
     if !quiet {
         let ch = &resp["data"];
-        println!(
-            "{} Channel {} status changed to {}",
-            "OK".green().bold(),
-            ch["name"].as_str().unwrap_or(id),
-            colorize_status(status)
-        );
+        if dry_run {
+            println!(
+                "{} Channel {} can change to {} (nothing written)",
+                "DRY RUN".yellow().bold(),
+                ch["name"].as_str().unwrap_or(id),
+                colorize_status(status)
+            );
+        } else {
+            println!(
+                "{} Channel {} status changed to {}",
+                "OK".green().bold(),
+                ch["name"].as_str().unwrap_or(id),
+                colorize_status(status)
+            );
+            if defer_reload {
+                println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
+            }
+        }
     }
     Ok(0)
 }
@@ -507,5 +589,53 @@ async fn new_version(
         ch["version"].as_i64().unwrap_or(0),
         ch["name"].as_str().unwrap_or(id)
     );
+    Ok(0)
+}
+
+async fn validate(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client.post("/api/v1/admin/channels/validate", body).await?;
+    let resp = resp.get("data").cloned().unwrap_or(resp);
+
+    let valid = resp["valid"].as_bool().unwrap_or(false);
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    if quiet {
+        println!("{}", if valid { "valid" } else { "invalid" });
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    if valid {
+        println!("{} Channel definition is valid", "OK".green().bold());
+    } else {
+        println!("{} Channel definition has issues", "INVALID".red().bold());
+    }
+    if let Some(errors) = resp["errors"].as_array() {
+        for err in errors {
+            println!("  - {err}");
+        }
+    }
+    Ok(if valid { 0 } else { 1 })
+}
+
+async fn export(
+    client: &OrionClient,
+    status: &Option<String>,
+    tag: &Option<String>,
+) -> Result<i32> {
+    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
+    let resp: Value = client
+        .get(&format!("/api/v1/admin/channels/export{qs}"))
+        .await?;
+    let channels = resp.get("data").unwrap_or(&resp);
+    println!("{}", serde_json::to_string_pretty(channels)?);
     Ok(0)
 }

@@ -8,6 +8,8 @@ pub mod engine;
 pub mod functions;
 pub mod health;
 pub mod metrics;
+pub mod packages;
+pub mod trace_dlq;
 pub mod traces;
 pub mod workflows;
 

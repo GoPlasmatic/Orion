@@ -24,6 +24,9 @@ pub struct ConnectorsCmd {
 enum ConnectorsSubcommand {
     /// List all connectors
     List {
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
         /// Page size
         #[arg(long)]
         limit: Option<i64>,
@@ -78,6 +81,29 @@ enum ConnectorsSubcommand {
         /// Connector ID
         id: String,
     },
+    /// Probe a connector's target: is it reachable with the stored config?
+    Test {
+        /// Connector ID
+        id: String,
+    },
+    /// Validate a connector definition without creating it
+    Validate {
+        /// Path to JSON file with the connector definition
+        #[arg(short, long)]
+        file: Option<String>,
+        /// Inline JSON string with the connector definition
+        #[arg(short, long)]
+        data: Option<String>,
+        /// Read connector definition from stdin
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Export connectors as JSON (pipe to file for backup; secrets stay masked)
+    Export {
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+    },
     /// List circuit breaker states for all connectors
     #[command(
         after_help = "Shows the state (closed, open, half_open) of each circuit breaker.\nClosed = healthy, Open = failing (requests blocked), Half-open = testing recovery."
@@ -100,6 +126,9 @@ enum ConnectorsSubcommand {
         /// Validate on the server without writing any changes
         #[arg(long)]
         dry_run: bool,
+        /// On ID conflict: fail (default), skip the item, or write a new version
+        #[arg(long, value_parser = ["fail", "skip", "new_version"])]
+        on_conflict: Option<String>,
     },
 }
 
@@ -124,8 +153,8 @@ impl ConnectorsCmd {
         yes: bool,
     ) -> Result<i32> {
         match &self.command {
-            ConnectorsSubcommand::List { limit, offset } => {
-                list(client, format, quiet, limit, offset).await
+            ConnectorsSubcommand::List { tag, limit, offset } => {
+                list(client, format, quiet, tag, limit, offset).await
             }
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
             ConnectorsSubcommand::Create { file, data, stdin } => {
@@ -142,11 +171,21 @@ impl ConnectorsCmd {
                 update(client, format, quiet, id, &body).await
             }
             ConnectorsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
+            ConnectorsSubcommand::Test { id } => test(client, format, quiet, id).await,
+            ConnectorsSubcommand::Validate { file, data, stdin } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
+                validate(client, format, quiet, &body).await
+            }
+            ConnectorsSubcommand::Export { tag } => export(client, tag).await,
             ConnectorsSubcommand::Enable { id } => toggle(client, quiet, id, true).await,
             ConnectorsSubcommand::Disable { id } => toggle(client, quiet, id, false).await,
             ConnectorsSubcommand::CircuitBreakers => circuit_breakers(client, format, quiet).await,
             ConnectorsSubcommand::ResetBreaker { key } => reset_breaker(client, quiet, key).await,
-            ConnectorsSubcommand::Import { file, dry_run } => {
+            ConnectorsSubcommand::Import {
+                file,
+                dry_run,
+                on_conflict,
+            } => {
                 utils::run_import(
                     client,
                     format,
@@ -155,6 +194,7 @@ impl ConnectorsCmd {
                     "connector",
                     file,
                     *dry_run,
+                    on_conflict.as_deref(),
                 )
                 .await
             }
@@ -166,10 +206,12 @@ async fn list(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
+    tag: &Option<String>,
     limit: &Option<i64>,
     offset: &Option<i64>,
 ) -> Result<i32> {
     let qs = utils::build_query_string(&[
+        ("tag", tag.clone()),
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
     ]);
@@ -250,11 +292,11 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
     println!("  Created: {}", conn["created_at"]);
     println!("  Updated: {}", conn["updated_at"]);
 
-    if let Some(config_str) = conn["config_json"].as_str() {
-        if let Ok(config) = serde_json::from_str::<Value>(config_str) {
-            println!("\n{}", "Config:".bold());
-            println!("{}", serde_json::to_string_pretty(&config)?);
-        }
+    if let Some(config_str) = conn["config_json"].as_str()
+        && let Ok(config) = serde_json::from_str::<Value>(config_str)
+    {
+        println!("\n{}", "Config:".bold());
+        println!("{}", serde_json::to_string_pretty(&config)?);
     }
 
     Ok(0)
@@ -412,5 +454,100 @@ async fn reset_breaker(client: &OrionClient, quiet: bool, key: &str) -> Result<i
     if !quiet {
         println!("{} Circuit breaker '{key}' reset", "OK".green().bold());
     }
+    Ok(0)
+}
+
+async fn test(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
+    let resp: Value = client
+        .post_empty(&format!("/api/v1/admin/connectors/{id}/test"))
+        .await?;
+    let probe = &resp["data"];
+    let reachable = probe["reachable"].as_bool().unwrap_or(false);
+    let supported = probe["supported"].as_bool().unwrap_or(false);
+    let exit = if reachable || !supported { 0 } else { 1 };
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(exit);
+    }
+
+    if quiet {
+        println!(
+            "{}",
+            if !supported {
+                "unsupported"
+            } else if reachable {
+                "reachable"
+            } else {
+                "unreachable"
+            }
+        );
+        return Ok(exit);
+    }
+
+    let kind = probe["connector_type"].as_str().unwrap_or("unknown");
+    if !supported {
+        println!(
+            "{} Probing is not supported for '{kind}' connectors",
+            "SKIP".yellow().bold()
+        );
+    } else if reachable {
+        println!(
+            "{} Connector {id} ({kind}) is reachable [{}]",
+            "OK".green().bold(),
+            probe["probe"].as_str().unwrap_or("")
+        );
+    } else {
+        println!(
+            "{} Connector {id} ({kind}) is unreachable: {}",
+            "FAIL".red().bold(),
+            probe["error"].as_str().unwrap_or("unknown error")
+        );
+    }
+    Ok(exit)
+}
+
+async fn validate(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client
+        .post("/api/v1/admin/connectors/validate", body)
+        .await?;
+    let resp = resp.get("data").cloned().unwrap_or(resp);
+    let valid = resp["valid"].as_bool().unwrap_or(false);
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    if quiet {
+        println!("{}", if valid { "valid" } else { "invalid" });
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    if valid {
+        println!("{} Connector definition is valid", "OK".green().bold());
+    } else {
+        println!("{} Connector definition has issues", "INVALID".red().bold());
+    }
+    if let Some(errors) = resp["errors"].as_array() {
+        for err in errors {
+            println!("  - {err}");
+        }
+    }
+    Ok(if valid { 0 } else { 1 })
+}
+
+async fn export(client: &OrionClient, tag: &Option<String>) -> Result<i32> {
+    let qs = utils::build_query_string(&[("tag", tag.clone())]);
+    let resp: Value = client
+        .get(&format!("/api/v1/admin/connectors/export{qs}"))
+        .await?;
+    let connectors = resp.get("data").unwrap_or(&resp);
+    println!("{}", serde_json::to_string_pretty(connectors)?);
     Ok(0)
 }

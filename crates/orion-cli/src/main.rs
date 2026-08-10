@@ -197,6 +197,20 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
+        Commands::Packages(cmd) => {
+            let client = build_client(&cli)?;
+            if cli.verbose {
+                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
+            }
+            cmd.run(&client, &cli.output, cli.quiet).await
+        }
+        Commands::Dlq(cmd) => {
+            let client = build_client(&cli)?;
+            if cli.verbose {
+                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
+            }
+            cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
+        }
         Commands::Completions(cmd) => {
             cmd.run();
             Ok(0)

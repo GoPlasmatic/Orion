@@ -274,3 +274,17 @@ pub async fn create_version(
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
 }
+
+pub async fn dependencies(
+    client: &OrionClient,
+    params: WorkflowsGetParams,
+) -> Result<String, String> {
+    let resp: Value = client
+        .get(&format!(
+            "/api/v1/admin/workflows/{}/dependencies",
+            params.id
+        ))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}

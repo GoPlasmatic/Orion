@@ -52,7 +52,7 @@ pub struct ConnectorsImportParams {
     )]
     pub connectors_json: String,
     #[schemars(
-        description = "If true, validate on the server without writing any changes (returns would_create/would_fail counts)"
+        description = "If true, validate on the server without writing any changes (returns imported/unchanged/skipped/failed counts)"
     )]
     pub dry_run: Option<bool>,
 }
@@ -150,4 +150,12 @@ pub async fn import(
         params.dry_run.unwrap_or(false),
     )
     .await
+}
+
+pub async fn test(client: &OrionClient, params: ConnectorsGetParams) -> Result<String, String> {
+    let resp: Value = client
+        .post_empty(&format!("/api/v1/admin/connectors/{}/test", params.id))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
 }

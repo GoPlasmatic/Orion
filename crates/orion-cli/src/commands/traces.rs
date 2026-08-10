@@ -48,6 +48,12 @@ enum TracesSubcommand {
         /// Page offset
         #[arg(long)]
         offset: Option<i64>,
+        /// Keyset cursor from a previous page's next_cursor (v1.0)
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Ask the server for the total matching count (scans the filtered set)
+        #[arg(long)]
+        include_total: bool,
     },
     /// Get trace details including result or error
     Get {
@@ -102,10 +108,22 @@ impl TracesCmd {
                 sort_order,
                 limit,
                 offset,
+                cursor,
+                include_total,
             } => {
                 list(
-                    client, format, quiet, status, channel, mode, sort_by, sort_order, limit,
+                    client,
+                    format,
+                    quiet,
+                    status,
+                    channel,
+                    mode,
+                    sort_by,
+                    sort_order,
+                    limit,
                     offset,
+                    cursor,
+                    *include_total,
                 )
                 .await
             }
@@ -131,8 +149,12 @@ async fn list(
     sort_order: &Option<String>,
     limit: &Option<i64>,
     offset: &Option<i64>,
+    cursor: &Option<String>,
+    include_total: bool,
 ) -> Result<i32> {
     let qs = utils::build_query_string(&[
+        ("cursor", cursor.clone()),
+        ("include_total", include_total.then(|| "true".to_string())),
         ("status", status.clone()),
         ("channel", channel.clone()),
         ("mode", mode.clone()),
@@ -142,7 +164,7 @@ async fn list(
         ("offset", offset.map(|o| o.to_string())),
     ]);
 
-    let resp: Value = client.get(&format!("/api/v1/data/traces{qs}")).await?;
+    let resp: Value = client.get(&format!("/api/v1/admin/traces{qs}")).await?;
     let traces = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -185,11 +207,16 @@ async fn list(
     output::print_table(rows);
     let total = resp["total"].as_i64().unwrap_or(traces.len() as i64);
     println!("{}", format!("{} trace(s)", total).dimmed());
+    if let Some(next) = resp["next_cursor"].as_str() {
+        println!("{}", format!("next page: --cursor {next}").dimmed());
+    }
     Ok(0)
 }
 
 async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/data/traces/{id}")).await?;
+    let resp: Value = client.get(&format!("/api/v1/admin/traces/{id}")).await?;
+    // v1.0 wraps the TraceDetail in the {"data": …} admin envelope.
+    let resp = resp.get("data").cloned().unwrap_or(resp);
 
     let status = resp["status"].as_str().unwrap_or("unknown");
 
@@ -226,11 +253,11 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         if let Some(msg) = resp.get("message") {
             println!("\n{}", "Result:".bold());
             println!("{}", serde_json::to_string_pretty(msg)?);
-        } else if let Some(result) = resp.get("result_json").and_then(|r| r.as_str()) {
-            if let Ok(parsed) = serde_json::from_str::<Value>(result) {
-                println!("\n{}", "Result:".bold());
-                println!("{}", serde_json::to_string_pretty(&parsed)?);
-            }
+        } else if let Some(result) = resp.get("result_json").and_then(|r| r.as_str())
+            && let Ok(parsed) = serde_json::from_str::<Value>(result)
+        {
+            println!("\n{}", "Result:".bold());
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
         }
     }
 
@@ -276,7 +303,8 @@ async fn wait(
     }
 
     loop {
-        let resp: Value = client.get(&format!("/api/v1/data/traces/{id}")).await?;
+        let resp: Value = client.get(&format!("/api/v1/admin/traces/{id}")).await?;
+        let resp = resp.get("data").cloned().unwrap_or(resp);
 
         let status = resp["status"].as_str().unwrap_or("unknown");
 
@@ -295,10 +323,9 @@ async fn wait(
                             println!("{}", serde_json::to_string_pretty(msg)?);
                         } else if let Some(result) =
                             resp.get("result_json").and_then(|r| r.as_str())
+                            && let Ok(parsed) = serde_json::from_str::<Value>(result)
                         {
-                            if let Ok(parsed) = serde_json::from_str::<Value>(result) {
-                                println!("{}", serde_json::to_string_pretty(&parsed)?);
-                            }
+                            println!("{}", serde_json::to_string_pretty(&parsed)?);
                         }
                     }
                     "failed" => {

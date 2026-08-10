@@ -77,9 +77,12 @@ pub fn read_json_input(file: Option<&str>, data: Option<&str>, stdin: bool) -> R
 ///
 /// `base_path` is the import endpoint (e.g. `/api/v1/admin/channels/import`),
 /// `label` the singular resource noun (e.g. `channel`). With `dry_run`, appends
-/// `?dry_run=true` so the server validates without writing and returns
-/// `would_create`/`would_fail`; otherwise it reports `imported`/`failed`.
+/// `?dry_run=true` so the server validates without writing. `on_conflict`
+/// (`fail`/`skip`/`new_version`) rides along as `?on_conflict=`. The v1.0
+/// server wraps the result in the `{"data": …}` admin envelope and reports
+/// `imported`/`unchanged`/`skipped`/`failed` in both real and dry-run modes.
 /// Returns exit code 1 when any item failed (or would fail).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_import(
     client: &OrionClient,
     format: &OutputFormat,
@@ -88,6 +91,7 @@ pub async fn run_import(
     label: &str,
     file: &str,
     dry_run: bool,
+    on_conflict: Option<&str>,
 ) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
     let items: Value = serde_json::from_str(&content)?;
@@ -95,25 +99,20 @@ pub async fn run_import(
         bail!("Import file must contain a JSON array of {label}s");
     }
 
-    let path = if dry_run {
-        format!("{base_path}?dry_run=true")
-    } else {
-        base_path.to_string()
-    };
-    let resp: Value = client.post(&path, &items).await?;
+    let qs = build_query_string(&[
+        ("dry_run", dry_run.then(|| "true".to_string())),
+        ("on_conflict", on_conflict.map(str::to_string)),
+    ]);
+    let resp: Value = client.post(&format!("{base_path}{qs}"), &items).await?;
+    // v1.0 wraps admin responses in {"data": …}; tolerate the bare pre-1.0
+    // shape so the CLI still reads older servers.
+    let result = resp.get("data").cloned().unwrap_or(resp);
 
-    let is_dry = resp["dry_run"].as_bool().unwrap_or(dry_run);
-    let (success, fail) = if is_dry {
-        (
-            resp["would_create"].as_u64().unwrap_or(0),
-            resp["would_fail"].as_u64().unwrap_or(0),
-        )
-    } else {
-        (
-            resp["imported"].as_u64().unwrap_or(0),
-            resp["failed"].as_u64().unwrap_or(0),
-        )
-    };
+    let is_dry = result["dry_run"].as_bool().unwrap_or(dry_run);
+    let success = result["imported"].as_u64().unwrap_or(0);
+    let fail = result["failed"].as_u64().unwrap_or(0);
+    let unchanged = result["unchanged"].as_u64().unwrap_or(0);
+    let skipped = result["skipped"].as_u64().unwrap_or(0);
     let exit = if fail > 0 { 1 } else { 0 };
 
     if quiet {
@@ -122,7 +121,7 @@ pub async fn run_import(
     }
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
+        output::print_value(format, &result)?;
         return Ok(exit);
     }
 
@@ -134,8 +133,20 @@ pub async fn run_import(
         "PARTIAL".yellow().bold()
     };
     let verb = if is_dry { "Would import" } else { "Imported" };
+    let mut extras = Vec::new();
+    if unchanged > 0 {
+        extras.push(format!("{unchanged} unchanged"));
+    }
+    if skipped > 0 {
+        extras.push(format!("{skipped} skipped"));
+    }
+    let extras = if extras.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", extras.join(", "))
+    };
     println!(
-        "{tag} {verb}: {}, Failed: {}",
+        "{tag} {verb}: {}{extras}, Failed: {}",
         success.to_string().green(),
         if fail > 0 {
             fail.to_string().red().to_string()
@@ -144,7 +155,7 @@ pub async fn run_import(
         }
     );
 
-    if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
+    if let Some(errors) = result.get("errors").and_then(|e| e.as_array()) {
         for err in errors {
             let idx = err["index"].as_u64().unwrap_or(0);
             let msg = err["error"].as_str().unwrap_or("unknown");

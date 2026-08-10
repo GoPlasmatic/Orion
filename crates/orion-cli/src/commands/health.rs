@@ -66,18 +66,17 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
         .get("connectors")
         .and_then(|c| c.get("circuit_breakers"))
         .and_then(|c| c.as_object())
+        && !cbs.is_empty()
     {
-        if !cbs.is_empty() {
-            println!("  {}", "Circuit Breakers:".bold());
-            for (key, val) in cbs {
-                let state = val["state"].as_str().unwrap_or("unknown");
-                let indicator = if state == "closed" {
-                    "CLOSED".green()
-                } else {
-                    state.to_uppercase().red()
-                };
-                println!("    {key:<20} {indicator}");
-            }
+        println!("  {}", "Circuit Breakers:".bold());
+        for (key, val) in cbs {
+            let state = val["state"].as_str().unwrap_or("unknown");
+            let indicator = if state == "closed" {
+                "CLOSED".green()
+            } else {
+                state.to_uppercase().red()
+            };
+            println!("    {key:<20} {indicator}");
         }
     }
 

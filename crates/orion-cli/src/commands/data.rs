@@ -123,18 +123,16 @@ impl SendCmd {
             resp["id"].as_str().unwrap_or("")
         );
 
-        if verbose {
-            if let Some(data) = resp.get("data") {
-                println!("\n{}", "Output:".bold());
-                println!("{}", serde_json::to_string_pretty(data)?);
-            }
+        if verbose && let Some(data) = resp.get("data") {
+            println!("\n{}", "Output:".bold());
+            println!("{}", serde_json::to_string_pretty(data)?);
         }
 
-        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-            if !errors.is_empty() {
-                for err in errors {
-                    println!("  {} {err}", "WARN".yellow());
-                }
+        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array())
+            && !errors.is_empty()
+        {
+            for err in errors {
+                println!("  {} {err}", "WARN".yellow());
             }
         }
 
@@ -169,6 +167,9 @@ impl SendCmd {
             .await?;
 
         let trace_id = resp["trace_id"].as_str().unwrap_or("");
+        // v1.0 always returns a trace_token alongside the id; polling with
+        // ?token= works even when the admin API requires an API key.
+        let trace_token = resp["trace_token"].as_str().unwrap_or("");
 
         // When the channel's trace storage mode is "off", the server accepts the
         // request but returns a null trace_id (with a 299 warning header). There
@@ -199,7 +200,7 @@ impl SendCmd {
             if !quiet {
                 eprint!("Waiting for trace {trace_id}...");
             }
-            let result = poll_trace(client, trace_id, self.timeout).await?;
+            let result = poll_trace(client, trace_id, trace_token, self.timeout).await?;
 
             if !quiet {
                 eprintln!();
@@ -220,10 +221,9 @@ impl SendCmd {
                             println!("{}", serde_json::to_string_pretty(msg)?);
                         } else if let Some(result_json) =
                             result.get("result_json").and_then(|r| r.as_str())
+                            && let Ok(parsed) = serde_json::from_str::<Value>(result_json)
                         {
-                            if let Ok(parsed) = serde_json::from_str::<Value>(result_json) {
-                                println!("{}", serde_json::to_string_pretty(&parsed)?);
-                            }
+                            println!("{}", serde_json::to_string_pretty(&parsed)?);
                         }
                     }
                     Ok(0)
@@ -273,32 +273,42 @@ fn render_profile(profile: &Value) {
         }
     }
 
-    if let Some(handlers) = profile.get("handlers").and_then(|h| h.as_array()) {
-        if !handlers.is_empty() {
-            println!("  {}", "Handlers:".bold());
-            for h in handlers {
-                let function = h["function"].as_str().unwrap_or("");
-                let connector = h["connector"].as_str().unwrap_or("");
-                let ms = h["duration_ms"].as_f64().unwrap_or(0.0);
-                let target = if connector.is_empty() {
-                    function.to_string()
-                } else {
-                    format!("{function} -> {connector}")
-                };
-                println!("    {target:<32} {ms:>8.3} ms");
-            }
+    if let Some(handlers) = profile.get("handlers").and_then(|h| h.as_array())
+        && !handlers.is_empty()
+    {
+        println!("  {}", "Handlers:".bold());
+        for h in handlers {
+            let function = h["function"].as_str().unwrap_or("");
+            let connector = h["connector"].as_str().unwrap_or("");
+            let ms = h["duration_ms"].as_f64().unwrap_or(0.0);
+            let target = if connector.is_empty() {
+                function.to_string()
+            } else {
+                format!("{function} -> {connector}")
+            };
+            println!("    {target:<32} {ms:>8.3} ms");
         }
     }
 }
 
-async fn poll_trace(client: &OrionClient, trace_id: &str, timeout_secs: u64) -> Result<Value> {
+async fn poll_trace(
+    client: &OrionClient,
+    trace_id: &str,
+    trace_token: &str,
+    timeout_secs: u64,
+) -> Result<Value> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
+    let path = if trace_token.is_empty() {
+        format!("/api/v1/admin/traces/{trace_id}")
+    } else {
+        format!("/api/v1/admin/traces/{trace_id}?token={trace_token}")
+    };
 
     loop {
-        let resp: Value = client
-            .get(&format!("/api/v1/data/traces/{trace_id}"))
-            .await?;
+        let resp: Value = client.get(&path).await?;
+        // v1.0 wraps the TraceDetail in the {"data": …} admin envelope.
+        let resp = resp.get("data").cloned().unwrap_or(resp);
 
         let status = resp["status"].as_str().unwrap_or("");
         if status == "completed" || status == "failed" {
