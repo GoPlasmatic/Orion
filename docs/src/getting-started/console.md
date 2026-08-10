@@ -87,3 +87,11 @@ search and drill-down, and a command palette (<kbd>⌘K</kbd>) for jumping anywh
 > All visuals on this page are generated from a live instance by the
 > [recording pipeline](https://github.com/GoPlasmatic/Orion/tree/main/docs/recordings)
 > — re-run `record-ui.sh` and they regenerate.
+
+## Related
+
+- [Your First Service](./first-service.md) — the same flow as four API calls,
+  if you would rather see the wire format.
+- [Run the Examples](./examples.md) — services to import and click through.
+- [Monitoring & Alerts](../operate/monitoring.md) — the metrics behind the
+  dashboard, and what to alert on.

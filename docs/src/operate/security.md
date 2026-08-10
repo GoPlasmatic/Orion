@@ -198,6 +198,8 @@ are specified in
 
 - [Production Checklist](./production-checklist.md) — every pre-go-live item,
   including the ones on this page, as one list.
+- [Cluster Mode & High Availability](./cluster.md) — what changes about all of
+  this once there is more than one replica.
 - [Channel Configuration](../reference/channel-config.md) — the per-channel
   `auth`, `origin_allow_list`, and validation contracts.
 - [Connector Types](../reference/connectors.md) — secret references, masking,

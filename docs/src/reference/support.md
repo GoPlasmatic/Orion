@@ -112,3 +112,12 @@ Orion is open source under the Apache-2.0 license. "Supported" here describes
 where fixes ship, not a service-level commitment: issues and vulnerability
 reports are triaged on a best-effort basis by the maintainers, with security
 reports prioritized. There is no commercial support offering at this time.
+
+## Related
+
+- [Upgrades](../operate/upgrades.md) — the standing procedure, and how a
+  renamed key fails on each surface.
+- [Upgrading to 1.0.0](../operate/upgrading-to-1.0.md) — the per-version guide
+  for the current release.
+- [Configuration Reference](./configuration.md) — the settings this policy
+  freezes.

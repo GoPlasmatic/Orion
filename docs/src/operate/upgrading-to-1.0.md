@@ -769,7 +769,7 @@ dominate the whole 1.0 migration. Run it in a maintenance window if your
 > the re-run. **SQLite** has no online build and needs none: it is single-node
 > and the migration runs before the listener binds.
 
-#### Two JSON columns were renamed
+### Two JSON columns were renamed
 
 `workflows.tags` is now `workflows.tags_json`, and `channels.methods` is now
 `channels.methods_json`. On MySQL, `traces.access_token_hash` narrows from
@@ -825,7 +825,7 @@ ALTER TABLE `channels`  RENAME COLUMN `methods_json` TO `methods`;
 a matching `DROP`, so once the columns are back the migration is re-runnable.
 `012` is a no-op on re-run. On SQLite, restore the file from your backup.
 
-#### A production cluster may not migrate at boot
+### A production cluster may not migrate at boot
 
 This is now enforced, not advised. With `environment` starting `prod`,
 `cluster.enabled = true` together with `storage.auto_migrate = true` is a

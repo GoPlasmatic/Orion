@@ -118,3 +118,12 @@ rules above are explained for humans in
 > (a machine-readable index) and [`llms-full.txt`](https://goplasmatic.github.io/Orion/llms-full.txt)
 > (the entire documentation as one file). Point your tools at those for full
 > documentation context.
+
+## Related
+
+- [MCP Server Setup](./mcp-setup.md) — the richer alternative, when your client
+  supports it.
+- [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active rules in
+  the block above, explained for humans.
+- [Task Functions](../reference/functions.md) — the authority the block tells
+  the model to consult.

@@ -105,7 +105,7 @@ change.
 | **Coordination** | None — one process | Cluster mode: a config epoch in the database plus shared Redis |
 | **Migrations** | At boot | A deploy step; replicas never migrate at boot |
 | **Scaling** | One local instance | N identical replicas, one logical system |
-| **Engine reload** | Constant — every activation | Controlled, audit-logged, zero-downtime, cluster-wide |
+| **Engine reload** | Constant — every activation | Controlled and audit-logged; reaches every replica without downtime |
 
 Nothing about the artifacts changes between the two. A workflow authored against
 SQLite on a laptop is the same JSON that runs on a Postgres-backed fleet, which
@@ -133,7 +133,8 @@ service you write, or a feature request.
   [Connectors](./connectors.md) — one page per primitive.
 - [The Entity Lifecycle](./lifecycle.md) — draft, active, archived, and what
   each transition does to the running engine.
-- [Your First Service](../getting-started/first-service.md) — the four calls
+- [Install & Run](../getting-started/install.md) then
+  [Your First Service](../getting-started/first-service.md) — the four calls
   that turn the diagram above into a live endpoint.
 - [Design Notes](../reference/design-notes.md) — the internals behind the
   guarantees, for when you want them.

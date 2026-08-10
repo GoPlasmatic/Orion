@@ -162,5 +162,7 @@ each pool is still a cluster if it has more than one node.
   case.
 - [Timeouts, Retries & Circuit Breakers](./failure-handling.md) — the drain
   sequence a rolling deploy depends on.
+- [Monitoring & Alerts](./monitoring.md) — scraping a fleet, and the per-node
+  metrics that need aggregating.
 - [Configuration Reference](../reference/configuration.md#cluster-ha) — every
   `[cluster]` key with its default.

@@ -360,11 +360,12 @@ clear out entries that will never succeed.
 A **package** is the channels, workflows, and connectors of one service,
 promoted between instances as a versioned unit
 ([Promote Between Environments](../operate/promotion.md)). This is the single
-package-aware surface of the admin API. Packaging itself —
-computing an artifact's dependency closure, planning, staging, activating —
-lives in client tooling built on the per-kind endpoints above; what the server
-keeps is one **receipt** per package version, because the promotion rule
-cannot be enforced without the target remembering what was applied:
+package-aware surface of the admin API.
+
+Packaging itself lives in client tooling built on the per-kind endpoints above:
+computing an artifact's dependency closure, planning, staging, activating. What
+the server keeps is one **receipt** per package version. It has to, because the
+promotion rule cannot be enforced unless the target remembers what was applied:
 
 > **An applied package version is immutable.** The same version arriving with
 > a different content hash is refused with a `409`; only a `staged` receipt
@@ -395,3 +396,14 @@ the server and compared only for equality.
 Every error code, the shared error envelope, field-pathed validation
 `details`, and the two validation warnings are specified in
 [Errors & Response Envelopes](./errors.md).
+
+## Related
+
+- [Errors & Response Envelopes](./errors.md) — every code these endpoints
+  return, and the envelope they return it in.
+- [Promote Between Environments](../operate/promotion.md) — the operator's
+  guide to the export and import endpoints above.
+- [OpenAPI Specification](./openapi.md) — the generated contract, and where to
+  fetch it.
+- [The Entity Lifecycle](../concepts/lifecycle.md) — the rules the status
+  endpoints enforce.

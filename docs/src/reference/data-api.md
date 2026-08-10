@@ -237,3 +237,13 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
 | GET | `/api/v1/openapi.json` | OpenAPI 3.1 specification |
+
+## Related
+
+- [Channel Configuration](./channel-config.md) — the guards a request passes
+  through before a workflow runs.
+- [Errors & Response Envelopes](./errors.md) — the sync envelope, and how a
+  failed task appears in it.
+- [Traces & Async Processing](../operate/traces.md) — the async submission's
+  other half.
+- [Channels](../concepts/channels.md) — what a route resolves to.

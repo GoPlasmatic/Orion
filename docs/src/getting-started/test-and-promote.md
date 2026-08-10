@@ -20,10 +20,6 @@ git clone https://github.com/GoPlasmatic/Orion.git
 cd Orion
 ```
 
-<!-- TODO(docs2): build/testing.md (Phase 4) becomes the owner of the stub-file
-     format, the all-or-nothing stubbing rule, and the *.case.json field
-     reference. This page then keeps only the tutorial steps and links there. -->
-
 ## 1. Lint the workflow
 
 `lint` reads a workflow JSON file and applies the same validators the admin API
@@ -68,7 +64,7 @@ orion-server dry-run -w examples/packages/high-value-order/workflow.json \
 ```
 
 Run it again with `"total": 50` and the `flag` task is skipped by its condition
-instead. That is the fastest loop Orion offers for logic changes: no server, no
+instead. That is the fastest way to change logic and see the result: no server, no
 restart, no request.
 
 ## 3. Stub the calls that leave the process
@@ -90,17 +86,13 @@ orion-server dry-run -w examples/packages/postgres-orders/workflow.json \
   -i /tmp/order-with-customer.json --stubs /tmp/stubs.json
 ```
 
-Use `"*"` as the inner key to match any connector. Two rules are worth knowing
-before you rely on this:
+One rule matters more than the format: **a task with no matching stub fails**,
+and the error names the stub that would satisfy it. A half-stubbed run reporting
+success would be worse than no stubs at all, because it looks like a pass.
 
-- **A task with no matching stub fails**, and the error names the stub that
-  would satisfy it. A half-stubbed run that reported success would be worse than
-  no stubs at all, because it looks like a pass.
-- **Nothing reaches a real backend.** The offline counterpart is
-  `POST /workflows/{id}/test`, which runs the same workflow against **live**
-  connectors — real webhooks, real databases, real topics. Reach for the
-  endpoint when you mean to touch the real systems, and for `dry-run` when you
-  do not.
+The full stub-file reference — wildcards, inline stubs, and the two mistakes the
+parser catches for you — is
+[Test Workflows Offline](../build/testing.md#stub-the-calls-that-leave-the-process).
 
 ## 4. Freeze the run as a regression case
 
@@ -136,11 +128,10 @@ orion-server test examples/workflow-tests
 1 passed, 1 failed (2 case(s))
 ```
 
-`workflow` and `stubs_file` resolve relative to the case file, and `stubs` can
-be written inline instead. `expect` maps dotted output paths to expected values
-(a leading `data.` is optional). `expect_errors` lists expected task-error codes
-and defaults to empty — so a workflow that starts failing its tasks cannot pass
-silently.
+`workflow` and `stubs_file` resolve relative to the case file. `expect` maps
+dotted output paths to expected values, and `expect_errors` defaults to empty —
+so a workflow that starts failing its tasks cannot pass silently. Every field is
+in [Test Workflows Offline](../build/testing.md#build-a-regression-suite).
 
 Together, `lint` and `test` gate CI without a server, a database, or a secret.
 
@@ -271,5 +262,7 @@ a `409` instead: content changes ride a version bump.
   boundary sits there.
 - [Promote Between Environments](../operate/promotion.md) — receipts, rollback, secrets
   that survive the trip, and the `requires` boundary.
+- [Author Workflows](../build/workflows.md) — the how-to layer, now that you
+  can test what you write.
 - [CLI Reference](../reference/cli.md) — every flag of `lint`, `dry-run`,
   `test`, and `package`.

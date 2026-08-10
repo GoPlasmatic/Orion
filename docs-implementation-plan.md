@@ -29,7 +29,11 @@ are pruned; git history of this file carries the full record.
 >   tutorials/use-cases.md retired; SUMMARY at proposal §3's final shape;
 >   `DOCS2_PHASE=4`, so llms.txt now covers every chapter.
 >
-> **Next: Phase 5** — the style sweep.
+> - Phase 5 `PENDING` — style sweep: `TODO(docs2)` markers to zero, Related
+>   blocks on every chapter, H3 depth restored, the worst sentences split, and
+>   the three persona journeys verified to link end to end with no dead ends.
+>
+> **The restructure is complete.** What follows is the residue.
 
 Standing constraints (from the settled-facts pass; full text in git history):
 
@@ -86,16 +90,6 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 
 ---
 
-## Phase 5 — Style sweep (PR 6)
-
-- [ ] **T5.1** Page-by-page pass enforcing proposal §6: sentence surgery,
-  admonition conversion, "Use for:" selector lines, Next-Steps blocks,
-  one-altitude checks, duplicate-block removal.
-- [ ] **T5.2** All guard greps green; grep for leftover `TODO(docs2)` markers
-  → 0.
-- [ ] **T5.3** Full-book read-through in SUMMARY order (llms-full.txt) for the
-  three persona journeys: evaluator, new builder, operator-going-to-prod.
-
 ## Code-hygiene follow-ups (small, non-blocking, any phase)
 
 - [ ] orion-cli clap help says "run 'engine reload' after to apply" on
@@ -106,16 +100,28 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 - [ ] `engine/functions/schema.rs:77` comment reads as contradicting the
   serde surface (`channel_call` also accepts the `response_path` alias).
 
+## Follow-ups worth funding later
+
+- **A runnable Kafka example package** under `examples/packages/`, so
+  guides/kafka-channels.md can drop its documented-from-configuration scoping
+  note and `{{#include}}` real files (D2's deferred half).
+- **A runnable `channel_call` composition example**, same argument, for
+  guides/workflow-patterns.md (D3's deferred half). Both would also gain e2e
+  coverage automatically, since `examples/use-cases/` drives the shipped
+  packages through a real server.
+- **Sentence surgery in the deepest reference pages.** data-dialect.md,
+  admin-api.md and upgrading-to-1.0.md still carry sentences past the 25-word
+  budget where the content is genuinely dense. The structural rules (Related
+  blocks, H3 depth, no grab-bag headings, one owner per fact) hold everywhere.
+
 ## Risks that remain live
 
 - **Interim duplication windows: closed.** features/* and topology/* are
   gone; every operator narrative now links its reference owner instead of
   restating it. The rule still stands for Phase 4: never edit a fact in two
   places, the reference page is the owner.
-- **Forward links:** two `TODO(docs2)` markers remain, both for Phase 4 —
-  concepts/lifecycle.md → build/versioning.md, and
-  getting-started/test-and-promote.md's stub/case-format ownership note →
-  build/testing.md. Grep `TODO(docs2)` before closing the phase.
+- **Forward links: none.** `TODO(docs2)` is at zero. Any future parked
+  reference should reuse the marker so the same grep keeps working.
 - **Tests that pin doc paths:** before each rename phase run
   `git grep -ln "docs/src" crates | grep -v '\.md'` — jsonlogic, config-drift
   and metrics-drift are already repointed; new pins may appear.
@@ -129,10 +135,17 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 
 ## Definition of done (unchanged)
 
-1. SUMMARY.md matches proposal §3 (± the D2-gated Kafka guide).
-2. All 31 original pages accounted for per the migration map; old URLs
-   redirect; every hard inbound link resolves.
-3. docs-lint green in CI at `DOCS2_PHASE=4` strictness.
-4. Each fact has one owner; the guard greps hold.
-5. A cold read of Get Started succeeds end-to-end against a locally built
-   server.
+1. **Done.** SUMMARY.md matches proposal §3 — 58 pages, every part in the
+   specified order.
+2. **Done.** All 31 original pages accounted for; every retired URL redirects
+   (including the fragment redirects the sweeps turned up); every hard inbound
+   link in README.md, examples/README.md and llms.txt resolves.
+3. **Done.** docs-lint green at `DOCS2_PHASE=4`, which is full strictness:
+   include targets, relative links, hard site links, magic numbers, the single
+   function-count owner, review IDs, the Rust-internals guard, and
+   SUMMARY↔llms.txt parity.
+4. **Done.** Each fact has one owner; all guard greps hold; `TODO(docs2)` is
+   zero.
+5. **Done.** The Get Started arc was executed against a locally built 1.0
+   server in Phase 2b, and four sample outputs were corrected to match what the
+   binary actually prints (`cc9bd1f9`).

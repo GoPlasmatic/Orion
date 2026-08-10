@@ -107,3 +107,12 @@ Convinced, or at least curious?
 [Install & Run](./getting-started/install.md) takes about a minute, and
 [Your First Service](./getting-started/first-service.md) is four calls after
 that.
+
+## Related
+
+- [Install & Run](./getting-started/install.md) — decide by trying it; it takes
+  about a minute.
+- [How Orion Works](./concepts/how-orion-works.md) — the mental model, if you
+  want it before the install.
+- [Secure an Instance](./operate/security.md) — the authentication planning the
+  gateway section above calls for.

@@ -87,8 +87,8 @@ clears only when a later reload builds the channel successfully. Run
 
 ## Next steps
 
-- [Version & Roll Out Changes](../reference/workflows.md#lifecycle-and-versioning)
-  — the endpoints behind each transition. <!-- TODO(docs2): repoint to build/versioning.md in Phase 4. -->
+- [Version & Roll Out Changes](../build/versioning.md) — the endpoints behind
+  each transition, and how to roll one out gradually.
 - [Admin API](../reference/admin-api.md) — status changes, versions, and their
   query parameters.
 - [Packages](./packages.md) — how a promotion drives these transitions in

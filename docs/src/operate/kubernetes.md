@@ -10,8 +10,8 @@ Orion ships an official Helm chart that deploys the
   `/readyz`.
 - **An optional CPU-based HPA** and a PodDisruptionBudget.
 
-The chart is linted and rendered in CI, and every release publishes it to
-GHCR as an OCI artifact — no chart repository to add:
+Every release publishes the chart to GHCR as an OCI artifact, so there is no
+chart repository to add. CI lints and renders it on every change.
 
 ```bash
 helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0
