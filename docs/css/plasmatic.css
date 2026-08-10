@@ -677,3 +677,68 @@ pre > .buttons {
 .light .hero-logo p {
   color: #3D6B7D;
 }
+
+/* ============================================================
+   Landing-page card grids (.doc-cards)
+   A markdown list wrapped in <div class="doc-cards">…</div>, not
+   raw HTML cards: the links stay real markdown links, so mdBook
+   still rewrites .md → .html and docs/lint.sh check 2 keeps
+   covering them.
+   ============================================================ */
+.doc-cards > ul {
+  display: grid;
+  /* 320px min yields two columns at the 920px content width, so both the
+     four-card and six-card groups fill their last row. */
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin: 1.25em 0 1.75em;
+  padding: 0;
+  list-style: none;
+}
+
+.doc-cards > ul > li {
+  margin: 0;
+  padding: 15px 17px;
+  border: 1px solid var(--table-border-color);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 0.94em;
+  line-height: 1.5;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.doc-cards > ul > li:hover {
+  transform: translateY(-1px);
+}
+
+.navy .doc-cards > ul > li:hover {
+  border-color: #119FCD;
+}
+
+.light .doc-cards > ul > li:hover {
+  border-color: #0D7FA3;
+}
+
+/* The card title is its own paragraph and the description follows, so tight and
+   loose lists both need covering: mdBook only wraps items in <p> when the list
+   has blank lines between them. */
+.doc-cards > ul > li > a:first-child,
+.doc-cards > ul > li > p:first-child > a:first-child {
+  display: block;
+  font-family: "DM Sans", sans-serif;
+  font-size: 1.03em;
+}
+
+.doc-cards > ul > li p {
+  margin: 0;
+}
+
+.doc-cards > ul > li > p:first-child {
+  margin-bottom: 5px;
+}
+
+@media (max-width: 620px) {
+  .doc-cards > ul {
+    grid-template-columns: 1fr;
+  }
+}

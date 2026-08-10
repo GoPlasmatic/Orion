@@ -21,9 +21,10 @@ Reach for cluster mode when you need one of these, in roughly this order:
 
 Throughput is usually the *weakest* reason. A single instance sustains
 **5.1K–5.7K workflow requests/sec** with single-digit-millisecond average
-latency in the repository's benchmark (v1.0.0, Apple M2 Pro Mac Mini, release
-build, 50 concurrent connections). Most estates hit an availability requirement
-long before they hit that ceiling.
+latency in the
+[v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
+(Apple M2 Pro Mac Mini, release build, 50 concurrent connections). Most estates
+hit an availability requirement long before they hit that ceiling.
 
 > [!NOTE]
 > The published record measures a **single instance**. The repository ships a
