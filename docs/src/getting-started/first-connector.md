@@ -1,6 +1,6 @@
 # Your First Connector
 
-The [first service](../tutorials/cli-setup.md#create-your-first-service) you
+The [first service](../getting-started/install.md#create-your-first-service) you
 built transformed data in-process. Real services talk to databases. This
 tutorial connects Orion to PostgreSQL and builds a service that **writes an
 order and reads back the customer's history** — using the portable data

@@ -217,7 +217,7 @@ The full lifecycle — create, activate, dry-run, then send live data — in one
 <div class="asciinema-player" data-cast="casts/cli-lifecycle.cast"></div>
 <span class="asciinema-caption">▶ Click to play. Dry-run testing and live traffic flow through the same workflow.</span>
 
-See the [CLI crate](https://github.com/GoPlasmatic/Orion/tree/main/crates/orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
+See the [CLI crate](https://github.com/GoPlasmatic/Orion/tree/main/crates/orion-cli) for the full command list, or set up the [MCP Server](../ai/mcp-setup.md) for AI assistant integration.
 
 ## Testing Workflows Offline
 

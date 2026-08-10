@@ -1,6 +1,6 @@
 # Prompt Pack (any LLM)
 
-The [MCP server](../tutorials/mcp-setup.md) is the richest way to give an AI
+The [MCP server](../ai/mcp-setup.md) is the richest way to give an AI
 assistant control of Orion: tools covering the full admin API, live schema
 discovery, no prompt engineering. But it needs an MCP-capable client.
 
@@ -100,7 +100,7 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
 ````
 
 A worked end-to-end session using exactly these calls is in
-[Install & First Service](../tutorials/cli-setup.md#create-your-first-service);
+[Install & First Service](../getting-started/install.md#create-your-first-service);
 the deeper references the LLM (or you) may need are the
 [Workflow Reference](../reference/workflows.md),
 [Function Reference](../reference/functions.md), and

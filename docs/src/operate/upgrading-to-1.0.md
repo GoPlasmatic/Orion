@@ -921,7 +921,7 @@ increase throughput, run more Orion instances in the same consumer group
   ```
   Error: Configuration error: these environment variables were renamed or
   removed in 1.0 and are no longer read (see
-  docs/src/getting-started/upgrading.md):
+  docs/src/operate/upgrading-to-1.0.md):
     ORION_ENV -> ORION_ENVIRONMENT
     ORION_QUEUE__WORKERS -> ORION_TRACE_QUEUE__WORKERS
   ```

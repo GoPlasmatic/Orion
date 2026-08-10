@@ -47,7 +47,7 @@ List endpoints add the three pagination counters alongside it, and nothing else:
 { "data": [ ... ], "total": 137, "limit": 50, "offset": 0 }
 ```
 
-Pre-1.0 responses differed for ten handlers — the [upgrade guide](../getting-started/upgrading.md) has the full list.
+Pre-1.0 responses differed for ten handlers — the [upgrade guide](../operate/upgrading-to-1.0.md) has the full list.
 
 Errors follow one structure across both planes — see
 [Errors & Response Envelopes](./errors.md#the-error-envelope).

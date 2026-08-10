@@ -51,7 +51,7 @@ working, and removed no earlier than the next major.
 How a refused name fails on each surface — a startup error for the config file
 and environment, refusal at create/update and quarantine at load for stored
 channels and workflows — is covered in
-[Upgrading to 1.0.0](../getting-started/upgrading.md), along with
+[Upgrading to 1.0.0](../operate/upgrading-to-1.0.md), along with
 `orion-server preflight`, which names every affected entity before a rollout.
 
 ### Accepted alternate spellings
@@ -64,7 +64,7 @@ removal date; supplying both spellings in one input is a duplicate-field error.
 ## Upgrade guarantees
 
 - Each release documents its upgrade path from the previous release (for
-  1.0.0: [Upgrading to 1.0.0](../getting-started/upgrading.md)). Upgrades are
+  1.0.0: [Upgrading to 1.0.0](../operate/upgrading-to-1.0.md)). Upgrades are
   supported **release to release**; when skipping releases, read each
   intermediate upgrade page.
 - Database migrations are embedded in the binary for all three backends and
@@ -92,7 +92,7 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
 |------------|-------|
 | SQLite     | Default; embedded, zero-configuration. The reference backend. Not usable in [cluster mode](../features/scalability.md). |
 | PostgreSQL | Supports cluster mode. Project deployment artifacts and examples use PostgreSQL 16. |
-| MySQL      | MySQL 8+; supports cluster mode. New in 1.0.0 — no 0.x MySQL deployment can exist to upgrade ([why](../getting-started/upgrading.md#which-backend-were-you-actually-on)). |
+| MySQL      | MySQL 8+; supports cluster mode. New in 1.0.0 — no 0.x MySQL deployment can exist to upgrade ([why](../operate/upgrading-to-1.0.md#which-backend-were-you-actually-on)). |
 
 ## Platforms
 

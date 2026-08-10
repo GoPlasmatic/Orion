@@ -44,4 +44,4 @@ failure, so it gates CI alongside `orion-server lint`.
 New to Orion? [`examples/quickstart.sh`](https://github.com/GoPlasmatic/Orion/blob/main/examples/quickstart.sh)
 deploys your first service (workflow + channel, activated, first request sent)
 against a running instance in one command — the same flow the
-[Install & First Service](../tutorials/cli-setup.md) tutorial walks through.
+[Install & First Service](../getting-started/install.md) tutorial walks through.

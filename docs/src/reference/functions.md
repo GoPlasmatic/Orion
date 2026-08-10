@@ -557,7 +557,7 @@ and at most one of `data`/`data_logic`.
 
 `GET /api/v1/admin/functions` returns the live input schema for the connector and
 composition functions (the data functions are provided by dataflow-rs and are not
-cataloged there). The [Orion CLI MCP server](../tutorials/mcp-setup.md) surfaces
+cataloged there). The [Orion CLI MCP server](../ai/mcp-setup.md) surfaces
 the same schemas to AI assistants so generated workflows use correct field names.
 
 ## Related

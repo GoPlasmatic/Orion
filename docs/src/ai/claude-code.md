@@ -12,7 +12,7 @@ Orion instance.
 
 ## Setup
 
-1. **Run Orion** (see [Install & First Service](./cli-setup.md)):
+1. **Run Orion** (see [Install & First Service](../getting-started/install.md)):
 
    ```bash
    brew install GoPlasmatic/tap/orion-server && orion-server
@@ -102,7 +102,7 @@ canary. If anything looks wrong:
 
 - The full tool catalog and client configs (Claude Desktop, Cursor, HTTP
   transport): [MCP Server Setup](./mcp-setup.md)
-- No MCP client available? The [Prompt Pack](../getting-started/prompt-pack.md)
+- No MCP client available? The [Prompt Pack](../ai/prompt-pack.md)
   gives any LLM the same powers over the plain REST API.
 - Ready-made prompts for common services (webhook transforms, enrichment,
-  routing): [Use Cases & Patterns](./use-cases.md)
+  routing): [Use Cases & Patterns](../tutorials/use-cases.md)

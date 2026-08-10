@@ -5,16 +5,22 @@
 
 ---
 
-# Getting Started
+# Get Started
 
-- [Install & First Service](./tutorials/cli-setup.md)
-- [Examples](./getting-started/examples.md)
-- [The Console (Orion UI)](./getting-started/console.md)
+- [Install & First Service](./getting-started/install.md)
 - [Your First Connector](./getting-started/first-connector.md)
-- [MCP Server Setup](./tutorials/mcp-setup.md)
-- [Orion + Claude Code](./tutorials/claude-code.md)
-- [Prompt Pack (any LLM)](./getting-started/prompt-pack.md)
-- [Upgrading to 1.0.0](./getting-started/upgrading.md)
+- [Run the Examples](./getting-started/examples.md)
+- [The Console (Orion UI)](./getting-started/console.md)
+
+# Build with AI
+
+- [Build a Service with Claude Code](./ai/claude-code.md)
+- [MCP Server Setup](./ai/mcp-setup.md)
+- [Prompt Pack (any LLM)](./ai/prompt-pack.md)
+
+# Operate
+
+- [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
 
 # Architecture
 

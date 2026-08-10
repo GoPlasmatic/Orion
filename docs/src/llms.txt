@@ -17,13 +17,13 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 ## Getting started
 
 - [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
-- [Install & First Service](https://goplasmatic.github.io/Orion/tutorials/cli-setup.html): install matrix, first workflow + channel end-to-end
+- [Install & First Service](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix, first workflow + channel end-to-end
 - [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
-- [Prompt Pack](https://goplasmatic.github.io/Orion/getting-started/prompt-pack.html): self-contained context block for driving Orion from any LLM
-- [MCP Server Setup](https://goplasmatic.github.io/Orion/tutorials/mcp-setup.html): MCP tools covering the full admin API, via orion-cli
-- [Orion + Claude Code](https://goplasmatic.github.io/Orion/tutorials/claude-code.html): driving Orion from Claude Code with the MCP server
-- [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/getting-started/upgrading.html): every 0.3.0 → 1.0.0 break, with the preflight scanner that finds them
+- [Prompt Pack](https://goplasmatic.github.io/Orion/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
+- [MCP Server Setup](https://goplasmatic.github.io/Orion/ai/mcp-setup.html): MCP tools covering the full admin API, via orion-cli
+- [Orion + Claude Code](https://goplasmatic.github.io/Orion/ai/claude-code.html): driving Orion from Claude Code with the MCP server
+- [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, with the preflight scanner that finds them
 
 ## Reference
 

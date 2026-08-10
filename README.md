@@ -235,7 +235,7 @@ When AI generates a microservice, you still need to add health checks, metrics, 
 }
 ```
 
-No MCP client? Paste the [**prompt pack**](https://goplasmatic.github.io/Orion/getting-started/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It's a self-contained context block with Orion's schemas, conventions, and API calls.
+No MCP client? Paste the [**prompt pack**](https://goplasmatic.github.io/Orion/ai/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It's a self-contained context block with Orion's schemas, conventions, and API calls.
 
 ```
 You: "Classify orders into VIP (>=500, 15% discount), Premium (100-500, 5%), and Standard tiers"
@@ -512,7 +512,7 @@ orion-cli channels create -f orders-channel.json
 orion-cli --yes channels activate orders
 ```
 
-See the [CLI guide](https://goplasmatic.github.io/Orion/tutorials/cli-setup.html) for the full command list — the CLI is developed in this repo at [crates/orion-cli](crates/orion-cli).
+See the [CLI guide](https://goplasmatic.github.io/Orion/getting-started/install.html) for the full command list — the CLI is developed in this repo at [crates/orion-cli](crates/orion-cli).
 
 ## Documentation
 

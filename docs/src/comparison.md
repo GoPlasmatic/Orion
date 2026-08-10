@@ -103,5 +103,5 @@ versioning, governance, and an admin API as a standing service.
 
 ---
 
-Convinced, or at least curious? [Install & ship your first service](./tutorials/cli-setup.md)
+Convinced, or at least curious? [Install & ship your first service](./getting-started/install.md)
 in a couple of minutes.

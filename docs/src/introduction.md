@@ -23,7 +23,7 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 * **🦀 Rust speed:** Built on Tokio and Axum. **5,100–5,700 requests/sec** per instance (measured, v1.0.0), single-digit millisecond latency, small memory footprint.
 * **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
 
-This site is the deep reference and how-to guide. New here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
+This site is the deep reference and how-to guide. New here? [**Install Orion and ship your first service**](./getting-started/install.md) in a couple of minutes.
 
 <div class="themed-media">
   <video class="media-dark" controls muted playsinline preload="metadata" src="videos/ui-quickstart-dark.webm"></video>
@@ -65,8 +65,8 @@ The channels, workflows, and connectors that make up one service form a **packag
 
 ## Start here
 
-- [**CLI Setup**](./tutorials/cli-setup.md): install Orion and ship your first service in a couple of minutes.
-- [**MCP Server Setup**](./tutorials/mcp-setup.md): give an AI assistant full Orion context so it generates valid workflows.
+- [**CLI Setup**](./getting-started/install.md): install Orion and ship your first service in a couple of minutes.
+- [**MCP Server Setup**](./ai/mcp-setup.md): give an AI assistant full Orion context so it generates valid workflows.
 - [**Use Cases & Patterns**](./tutorials/use-cases.md): complete, tested examples for classification, transformation, routing, and CI/CD.
 
 ## Build workflows
