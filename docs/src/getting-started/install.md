@@ -1,7 +1,6 @@
 # Install & Run
 
-Orion is a single binary with an embedded database. Installing it and getting a
-running server takes about a minute.
+Orion is a single binary with an embedded database. Installing it and getting a running server takes about a minute.
 
 In this guide, you will:
 
@@ -13,13 +12,13 @@ In this guide, you will:
 
 Pick one method. All of them produce the same binary.
 
-**Homebrew** (macOS Apple silicon and Linux — Intel Macs build from source):
+**Homebrew** (macOS Apple Silicon and Linux — Intel Macs build from source):
 
 ```bash
 brew install GoPlasmatic/tap/orion-server
 ```
 
-**Shell installer** (Linux, macOS Apple silicon):
+**Shell installer** (Linux, macOS Apple Silicon):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
@@ -45,9 +44,7 @@ cargo install --git https://github.com/GoPlasmatic/Orion
 
 ## Install the CLI
 
-`orion-cli` drives the same admin API from the terminal, and carries the MCP
-server that AI assistants connect to. It is optional — every step in these
-tutorials also has a `curl` form — but it is shorter to type.
+`orion-cli` drives the same admin API from the terminal, and carries the MCP server that AI assistants connect to. It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
 
 **Homebrew** (macOS and Linux):
 
@@ -55,10 +52,7 @@ tutorials also has a `curl` form — but it is shorter to type.
 brew install GoPlasmatic/tap/orion-cli
 ```
 
-**Shell / PowerShell installers:** attached to each `orion-cli-v*` release on the
-[releases page](https://github.com/GoPlasmatic/Orion/releases) — copy the
-`orion-cli-installer.sh` (Linux/macOS) or `orion-cli-installer.ps1` (Windows)
-one-liner from the release notes.
+**Shell / PowerShell installers:** copy the `orion-cli-installer.sh` (Linux/macOS) or `orion-cli-installer.ps1` (Windows) one-liner from the notes on any `orion-cli-v*` release on the [releases page](https://github.com/GoPlasmatic/Orion/releases).
 
 **From source** (requires Rust 1.88+):
 
@@ -74,16 +68,17 @@ Start Orion with its defaults — SQLite in `./orion.db`, HTTP on port 8080:
 orion-server
 ```
 
-Nothing to provision: the database file is created on first boot and the
-migrations are embedded in the binary. SQLite is the right backend for one
-instance; see [which backend to
-use](../reference/configuration.md#storage) before you deploy more than one.
+Nothing to provision: the database file is created on first boot and the migrations are embedded in the binary. SQLite is the right backend for one instance; see [which backend to use](../reference/configuration.md#storage) before you deploy more than one.
 
 ## Verify it
+
+Ask the server how it is doing:
 
 ```bash
 curl -s http://localhost:8080/health
 ```
+
+Expected JSON response:
 
 ```json
 {
@@ -104,16 +99,14 @@ curl -s http://localhost:8080/health
 }
 ```
 
-`"status": "ok"` with zero workflows loaded is the expected state of a fresh
-install — you have not created anything yet. `git_hash` and `build_timestamp`
-identify the binary; `failed_to_load` and `quarantined` stay empty until a
-stored connector or channel cannot be built.
+A status of `"status": "ok"` with `"workflows_loaded": 0` confirms the server is
+ready to accept service definitions — you have not created anything yet.
+`git_hash` and `build_timestamp` identify the binary; `failed_to_load` and
+`quarantined` stay empty until a stored connector or channel cannot be built.
 
 Two more surfaces are live already:
 
-- **Swagger UI** at [http://localhost:8080/docs](http://localhost:8080/docs) —
-  the whole admin API, explorable. It is served outside production
-  environments; see [OpenAPI Specification](../reference/openapi.md).
+- **Swagger UI** at [http://localhost:8080/docs](http://localhost:8080/docs) — the whole admin API, explorable. It is served outside production environments; see [OpenAPI Specification](../reference/openapi.md).
 - **The CLI**, once you point it at the server:
 
   ```bash
@@ -123,24 +116,17 @@ Two more surfaces are live already:
 
 ## Change the defaults
 
-Orion reads a TOML config file, and every key in it can be overridden by an
-`ORION_SECTION__KEY` environment variable:
+Orion reads a TOML config file, and every key in it can be overridden by an `ORION_SECTION__KEY` environment variable:
 
 ```bash
 orion-server -c config.toml
 ORION_SERVER__PORT=9090 orion-server
 ```
 
-Check a file before you deploy it — `orion-server validate-config -c config.toml`
-reports unknown keys and invalid values without starting the server. Every
-setting, its default, and its environment variable are in the
-[Configuration Reference](../reference/configuration.md).
+Check a file before you deploy it — `orion-server validate-config -c config.toml` reports unknown keys and invalid values without starting the server. Every setting, its default, and its environment variable are in the [Configuration Reference](../reference/configuration.md).
 
 ## Next steps
 
-- [Your First Service](./first-service.md) — turn a JSON document into a live
-  REST endpoint, in four calls.
-- [The Console (Orion UI)](./console.md) — the same flow point-and-click, if you
-  would rather not use a terminal.
-- [Run the Examples](./examples.md) — deploy a ready-made service from the
-  repository instead of writing one.
+- [Your First Service](./first-service.md) — turn a JSON document into a live REST endpoint, in four calls.
+- [The Console (Orion UI)](./console.md) — the same flow point-and-click, if you would rather not use a terminal.
+- [Run the Examples](./examples.md) — deploy a ready-made service from the repository instead of writing one.

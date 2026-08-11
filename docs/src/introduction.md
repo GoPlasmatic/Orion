@@ -1,77 +1,54 @@
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>
-  <p>Turn business logic into APIs your AI can write and your ops team can trust.</p>
-  <p class="hero-sub">No new service to build. No deploy to wait for.</p>
+  <p>The declarative runtime for AI agents, workflows, microservices, and event processing.</p>
+  <p class="hero-sub">Production infrastructure out of the box. You write only the business logic.</p>
 </div>
 
-Orion is a declarative services runtime. You describe a service as JSON — the
-logic and the endpoint it answers on — and send it to a running Orion server
-over its API. A second later it is live. Change the JSON and the endpoint
-changes with it: no rebuild, no restart, no downtime.
+Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it is live a second later. No rebuild, no restart, no downtime.
 
-Open a small internal microservice and count the lines. HTTP server setup,
-connection pools, a Prometheus exporter, OpenTelemetry wiring, retry loops, a
-circuit breaker, health checks, a Dockerfile, a deploy manifest. Somewhere in
-the middle sits the logic you actually cared about, and it is maybe fifty lines
-long. **Orion runs that middle part and provides everything around it, the same
-way, for every service.**
+Everything around that logic is the runtime's job, and it works the same way for every service you put on it: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. That is the glue you would otherwise write again for every microservice, agent backend, stream processor, and data pipeline.
 
 > **First time here?** [**Install & Run**](./getting-started/install.md) puts a
 > server on your machine in about a minute. The next page turns it into a
 > service.
 
-## What you get
+## What you can build
 
-**No service to build:** idea to live REST or Kafka endpoint in seconds. No
-Dockerfile, no CI pipeline, no server code.
-
-**Production features included:** rate limiting, circuit breakers, timeouts,
-caching, and payload validation on every endpoint. You configure them instead of
-writing them.
-
-**Safe for AI-written logic:** models generate JSON reliably. Validation,
-draft-before-activate, dry-run, percentage rollout, and one-call rollback mean
-AI output cannot quietly break production.
-
-**Measured, not claimed:** **5.1K–5.7K workflow requests/sec** per instance with
-single-digit millisecond latency, on the published
-[v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
-— run conditions and all. Built on Tokio and Axum.
-
-**Services that call services:** `channel_call` runs another workflow
-in-process, so composition costs no network hop and no serialization.
-
-**One binary, one file:** a single Rust binary with an embedded database.
-Nothing to containerize and nothing to provision — with PostgreSQL or MySQL
-waiting for when you outgrow that.
-
-## What people build with Orion
+Orion carries the same infrastructure across five kinds of service:
 
 <div class="doc-cards">
 
-- [**Replace single-purpose microservices**](./guides/worked-examples.md)
+- [**AI Agents & MCP Tool Execution**](./ai/claude-code.md)
 
-  The pricing rule, the fraud check, the routing table: each becomes a
-  workflow and a channel on one instance, still versioned and rolled back
-  independently.
+  An agent calls your channels as tools over HTTP. Through the MCP server in `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
 
-- [**Normalize webhooks**](./guides/worked-examples.md#normalizing-webhook-payloads)
+- [**Workflows & Business Logic**](./build/workflows.md)
 
-  Turn Stripe, GitHub and Shopify payloads into one internal schema without
-  a service per provider.
+  Express decision rules, payload transformations, conditional branching, and error handling as clear task pipelines using JSONLogic expressions.
 
-- [**Process Kafka events**](./guides/kafka-channels.md)
+- [**Microservice Orchestration**](./guides/worked-examples.md)
 
-  Consume a topic, transform and enrich each record, route the result, and
-  give poison messages somewhere safe to land.
+  Combine pricing rules, fraud checks, and routing logic on a shared runtime. Invoke internal workflows in-process using `channel_call` without network latency.
 
-- [**Let an AI own the logic**](./ai/claude-code.md)
+- [**Kafka Event Processing**](./guides/kafka-channels.md)
 
-  Describe the service in a sentence; Claude drafts it, dry-runs it, and
-  activates it through the MCP server, inside Orion's lifecycle rules.
+  Consume Kafka topics, transform and enrich records on the fly, route event results, and isolate poison messages with dead-letter queues.
+
+- [**Analytics & Data Pipelines**](./build/connectors.md)
+
+  Normalize webhook payloads (e.g. Stripe, GitHub, Shopify) and query or write across PostgreSQL, MySQL, MongoDB, Elasticsearch, and Redis using a unified data dialect.
 
 </div>
+
+## What you get
+
+- **No service to build.** Post a JSON document and you have a live REST or Kafka endpoint. No Dockerfile, no CI pipeline, no server code.
+- **Production features included.** Rate limiting, circuit breakers, timeouts, caching, and payload validation are things you configure on a channel instead of writing.
+- **Safe for AI-written logic.** Draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output cannot quietly break production.
+- **Services that call services.** `channel_call` runs another workflow in-process, so composition costs no network hop and no serialization.
+- **One binary, one file.** A single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
+- **Measured, not claimed.** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
 
 ## Start here
 
@@ -93,11 +70,11 @@ waiting for when you outgrow that.
 
   The neighbouring tools mapped honestly, including where they win.
 
-- [**Build a Service with Claude Code**](./ai/claude-code.md)
+- [**Build with Claude Code**](./ai/claude-code.md)
 
   The fastest route from a sentence to a live endpoint.
 
-- [**Run the Examples**](./getting-started/examples.md)
+- [**Example Packages**](./getting-started/examples.md)
 
   Deployable packages, from a threshold check to Kafka ingress.
 
@@ -107,22 +84,19 @@ waiting for when you outgrow that.
 
 <div class="doc-cards">
 
-- [**Author Workflows**](./build/workflows.md)
+- [**Authoring Workflows**](./build/workflows.md)
 
-  The build estate: workflows, channels, connectors, offline testing, and
-  versioned rollout.
+  Workflows, channels, connectors, offline testing, and versioned rollout.
 
-- [**Production Checklist**](./operate/production-checklist.md)
+- [**Production Operations**](./operate/production-checklist.md)
 
-  The operate estate: Docker and Kubernetes, cluster mode, monitoring,
-  promotion between environments.
+  Docker and Kubernetes, cluster mode, monitoring, promotion between environments.
 
-- [**Admin API**](./reference/admin-api.md)
+- [**Admin API Reference**](./reference/admin-api.md)
 
-  The reference estate: every endpoint, the workflow schema, every task
-  function, the full config surface.
+  Every endpoint, the workflow schema, every task function, the full config surface.
 
-- [**The Console (Orion UI)**](./getting-started/console.md)
+- [**Orion Console**](./getting-started/console.md)
 
   The same operations, point-and-click, in the browser.
 
@@ -130,11 +104,4 @@ waiting for when you outgrow that.
 
 ## The project
 
-Orion is open source under Apache-2.0 and developed in the open at
-[GoPlasmatic/Orion](https://github.com/GoPlasmatic/Orion). Questions go to
-[Discussions](https://github.com/GoPlasmatic/Orion/discussions) and bugs to
-[Issues](https://github.com/GoPlasmatic/Orion/issues);
-[Support & Compatibility](./reference/support.md) states what a release
-guarantees. Using Orion for something? Add yourself to
-[ADOPTERS.md](https://github.com/GoPlasmatic/Orion/blob/main/ADOPTERS.md) — the
-usage reports shape the roadmap.
+Orion is open source under Apache-2.0 and developed in the open at [GoPlasmatic/Orion](https://github.com/GoPlasmatic/Orion). Questions go to [Discussions](https://github.com/GoPlasmatic/Orion/discussions) and bugs to [Issues](https://github.com/GoPlasmatic/Orion/issues); [Support & Compatibility](./reference/support.md) states what a release guarantees. Using Orion for something? Add yourself to [ADOPTERS.md](https://github.com/GoPlasmatic/Orion/blob/main/ADOPTERS.md) — the usage reports shape the roadmap.

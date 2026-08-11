@@ -1,23 +1,14 @@
 # Orion
 
-> Orion turns business logic into live APIs without building a microservice for
-> each one. Logic is declared as JSON workflows and exposed through channels
-> (REST/Kafka service endpoints) via a REST admin API, with rate limiting,
-> circuit breakers, caching, validation, versioning, and observability built
-> into the runtime. Written in Rust; single binary, embedded SQLite by default
-> (PostgreSQL/MySQL optional).
+> Orion is a high-performance declarative runtime for AI agents, workflows, microservice orchestration, event processing, and analytics data pipelines. Logic is declared as JSON specifications and exposed through channels (REST endpoints or Kafka topics) via an administrative REST API, which orion-cli also serves as MCP tools. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
 
-Key facts: workflows are pipelines of tasks using JSONLogic; everything is
-created as a draft, tested via dry-run, then activated (the engine
-hot-reloads); active versions are immutable; connectors are named connections
-to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka)
-referenced from tasks by name. The full documentation concatenated into one
-file is at https://goplasmatic.github.io/Orion/llms-full.txt
+Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested via dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka) referenced from tasks by name. The full documentation concatenated into one file is at https://goplasmatic.github.io/Orion/llms-full.txt
+
 
 ## Getting started
 
 - [Introduction](https://goplasmatic.github.io/Orion/introduction.html): what Orion is, why it exists, and where to start
-- [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
+- [Architectural Comparison & Use Cases](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
 - [Install & Run](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix for server and CLI, first run, health check
 - [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect

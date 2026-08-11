@@ -1,7 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
-[Is Orion Right for You?](./comparison.md)
+[Architectural Comparison & Use Cases](./comparison.md)
 
 ---
 
