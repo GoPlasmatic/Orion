@@ -37,6 +37,7 @@ fn workflow_request(id: &str) -> CreateWorkflowRequest {
         condition: serde_json::Value::Bool(true),
         tasks: serde_json::json!([]),
         tags: vec![],
+        loop_config: None,
         continue_on_error: false,
     }
 }

@@ -66,7 +66,7 @@ pub(crate) async fn create_workflow(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    crate::validation::validate_create_workflow(&req)?;
+    crate::validation::validate_create_workflow(&req, state.config.engine.max_loop_iterations)?;
     let workflow = state.repos.workflows.create(&req).await?;
     audit_log_draft_only(
         &state.audit_queue,
@@ -116,7 +116,7 @@ pub(crate) async fn update_workflow(
     Path(id): Path<String>,
     OrionJson(req): OrionJson<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    crate::validation::validate_update_workflow(&req)?;
+    crate::validation::validate_update_workflow(&req, state.config.engine.max_loop_iterations)?;
     let workflow = state.repos.workflows.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_queue, &principal, "update", "workflow", &id);
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
@@ -728,12 +728,15 @@ pub(crate) async fn import_workflows(
     let repo = state.repos.workflows.clone();
     let probe = state.repos.workflows.clone();
     let upsert_repo = state.repos.workflows.clone();
+    let loop_cap = state.config.engine.max_loop_iterations;
     let outcome = super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _, _, _>(
         items,
         query.dry_run,
         query.on_conflict,
         super::ImportOps {
-            validate: crate::validation::validate_create_workflow,
+            validate: |w: &CreateWorkflowRequest| {
+                crate::validation::validate_create_workflow(w, loop_cap)
+            },
             conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
             exists: |id: String| {
                 let repo = probe.clone();
@@ -895,7 +898,9 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    if let Err(e) = crate::validation::validate_create_workflow(req) {
+    if let Err(e) =
+        crate::validation::validate_create_workflow(req, state.config.engine.max_loop_iterations)
+    {
         errors.extend(issues_from_error(e));
     }
 

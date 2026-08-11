@@ -14,6 +14,17 @@ pub struct EngineConfig {
     pub max_channel_call_depth: u32,
     /// Default timeout in milliseconds for channel_call invocations.
     pub default_channel_call_timeout_ms: u64,
+    /// Ceiling on a workflow `loop`'s `max`, refused at write time.
+    ///
+    /// dataflow-rs makes termination structural by requiring an author-supplied
+    /// `max`, but does not bound what that number may be. A sweep can call a
+    /// connector, so `max: 10_000_000` is a workflow that holds a request open
+    /// until the channel timeout kills it, having spent the interim consuming
+    /// pool connections — the same class of foot-gun `max_channel_call_depth`
+    /// exists to prevent, which is why the bound is spelled the same way.
+    /// Raise it when a workload genuinely needs more; `0` removes the ceiling
+    /// and leaves only the author's `max`.
+    pub max_loop_iterations: i64,
     /// Global default timeout in seconds for all outbound HTTP requests (safety net).
     /// Individual connector/task timeouts override this when shorter.
     pub global_http_timeout_secs: u64,
@@ -54,6 +65,7 @@ impl Default for EngineConfig {
             health_check_timeout_secs: 2,
             max_channel_call_depth: 10,
             default_channel_call_timeout_ms: 30_000,
+            max_loop_iterations: 10_000,
             global_http_timeout_secs: 30,
             max_pool_cache_entries: 100,
             cache_cleanup_interval_secs: 60,

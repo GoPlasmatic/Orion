@@ -40,6 +40,13 @@ pub struct Workflow {
     /// `tags` field the admin API publishes — that lives on
     /// [`super::dto::WorkflowResponse`] and is a `Value`, already decoded.
     pub tags_json: String,
+    /// The engine-managed loop over this workflow's task list, stored as the
+    /// `LoopConfig` object verbatim — `{counter, init, increment, max}` — or
+    /// `None` for a workflow that runs its tasks exactly once. Nullable
+    /// because absent and empty are different statements, and because a
+    /// stored `NULL` keeps the [`content_hash`](crate::storage::content)
+    /// projection identical to what it was before the column existed.
+    pub loop_json: Option<String>,
     pub continue_on_error: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,

@@ -3,7 +3,10 @@ use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkf
 
 use super::common::{validate_description, validate_id, validate_name};
 
-pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), OrionError> {
+pub fn validate_create_workflow(
+    req: &CreateWorkflowRequest,
+    max_loop_iterations: i64,
+) -> Result<(), OrionError> {
     if let Some(ref id) = req.workflow_id {
         validate_id(id, "workflow.workflow_id")?;
     }
@@ -18,10 +21,22 @@ pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), Orion
             task_errors,
         ));
     }
+    if let Some(loop_config) = &req.loop_config {
+        let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
+        if !loop_errors.is_empty() {
+            return Err(validation_with_details(
+                "Workflow loop is invalid",
+                loop_errors,
+            ));
+        }
+    }
     Ok(())
 }
 
-pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), OrionError> {
+pub fn validate_update_workflow(
+    req: &UpdateWorkflowRequest,
+    max_loop_iterations: i64,
+) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
         validate_name(name, "workflow.name")?;
     }
@@ -37,7 +52,155 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
             ));
         }
     }
+    // `null` clears the loop and needs no checking; anything else is a config
+    // that has to hold up.
+    if let Some(loop_config) = &req.loop_config
+        && !loop_config.is_null()
+    {
+        let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
+        if !loop_errors.is_empty() {
+            return Err(validation_with_details(
+                "Workflow loop is invalid",
+                loop_errors,
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Validate a workflow's `loop` object.
+///
+/// Every structural rule here mirrors `LoopConfig::validate` in dataflow-rs,
+/// which runs at `Engine::build()` time. That timing is the whole reason this
+/// exists: a loop the engine refuses does not fail the request that wrote it,
+/// it fails the *reload*, and a reload that cannot build takes every channel
+/// on every node with it. Catching the same conditions here turns a
+/// cluster-wide outage into a `400` on one API call — the same bargain
+/// [`validate_workflow_tasks_schema`] strikes for duplicate task ids.
+///
+/// The ceiling is Orion's own, not the engine's. dataflow-rs requires `max`
+/// but does not bound it; a sweep can call a connector, so an unbounded `max`
+/// is a request that holds pool connections until the channel timeout fires.
+/// `0` disables the check.
+pub fn validate_workflow_loop_schema(
+    loop_config: &serde_json::Value,
+    max_loop_iterations: i64,
+) -> Vec<FieldError> {
+    let Some(obj) = loop_config.as_object() else {
+        return vec![FieldError::new(
+            "loop",
+            "INVALID",
+            "Workflow 'loop' must be an object with at least a 'max' — or absent, \
+             which runs the task list exactly once",
+        )];
+    };
+
+    let mut errors = Vec::new();
+
+    // Read the three numbers up front: `max`'s rules are stated against
+    // `init`, so a bad `init` has to be known before `max` is judged.
+    let init = match obj.get("init") {
+        None => Some(0),
+        Some(v) => match v.as_i64() {
+            Some(n) => Some(n),
+            None => {
+                errors.push(FieldError::new(
+                    "loop.init",
+                    "INVALID",
+                    "Loop 'init' must be an integer — it is the counter's first value \
+                     (default 0)",
+                ));
+                None
+            }
+        },
+    };
+
+    match obj.get("increment") {
+        None => {}
+        Some(v) => match v.as_i64() {
+            Some(n) if n < 1 => errors.push(FieldError::new(
+                "loop.increment",
+                "INVALID",
+                format!(
+                    "Loop 'increment' must be at least 1, got {n} — a counter that does \
+                     not advance would never reach 'max'"
+                ),
+            )),
+            Some(_) => {}
+            None => errors.push(FieldError::new(
+                "loop.increment",
+                "INVALID",
+                "Loop 'increment' must be an integer of at least 1 (default 1)",
+            )),
+        },
+    }
+
+    match obj.get("max") {
+        None => errors.push(FieldError::new(
+            "loop.max",
+            "REQUIRED",
+            "Loop 'max' is required — it is the upper bound that makes termination \
+             structural rather than a property of the condition being written correctly",
+        )),
+        Some(v) => match v.as_i64() {
+            Some(max) => {
+                if let Some(init) = init
+                    && max <= init
+                {
+                    errors.push(FieldError::new(
+                        "loop.max",
+                        "INVALID",
+                        format!(
+                            "Loop 'max' ({max}) must be greater than 'init' ({init}) — the \
+                             bound is half-open, so this could never run a sweep"
+                        ),
+                    ));
+                }
+                if max_loop_iterations > 0 && max > max_loop_iterations {
+                    errors.push(FieldError::new(
+                        "loop.max",
+                        "INVALID",
+                        format!(
+                            "Loop 'max' ({max}) exceeds the configured ceiling of \
+                             {max_loop_iterations} — raise engine.max_loop_iterations if this \
+                             workload genuinely needs more sweeps"
+                        ),
+                    ));
+                }
+            }
+            None => errors.push(FieldError::new(
+                "loop.max",
+                "INVALID",
+                "Loop 'max' must be an integer",
+            )),
+        },
+    }
+
+    if let Some(counter) = obj.get("counter")
+        && !counter.is_null()
+    {
+        match counter.as_str() {
+            Some(path) if path.is_empty() || path.split('.').any(str::is_empty) => {
+                errors.push(FieldError::new(
+                    "loop.counter",
+                    "INVALID",
+                    format!(
+                        "Loop 'counter' must be a non-empty temp_data field path, got \
+                         {path:?} — \"i\" writes temp_data.i, and dots nest"
+                    ),
+                ));
+            }
+            Some(_) => {}
+            None => errors.push(FieldError::new(
+                "loop.counter",
+                "INVALID",
+                "Loop 'counter' must be a string naming a temp_data field, or absent to \
+                 bound the loop without exposing the count",
+            )),
+        }
+    }
+
+    errors
 }
 
 /// Walk the `tasks` array and collect validation errors: each task's identity,
@@ -213,9 +376,10 @@ mod tests {
             condition: json!(true),
             tasks: json!([]),
             tags: vec!["tag1".to_string()],
+            loop_config: None,
             continue_on_error: false,
         };
-        assert!(validate_create_workflow(&req).is_ok());
+        assert!(validate_create_workflow(&req, 10_000).is_ok());
     }
 
     #[test]
@@ -228,9 +392,10 @@ mod tests {
             condition: json!(true),
             tasks: json!([]),
             tags: vec![],
+            loop_config: None,
             continue_on_error: false,
         };
-        assert!(validate_create_workflow(&req).is_err());
+        assert!(validate_create_workflow(&req, 10_000).is_err());
     }
 
     #[test]
@@ -243,9 +408,10 @@ mod tests {
             condition: json!(true),
             tasks: json!([]),
             tags: vec![],
+            loop_config: None,
             continue_on_error: false,
         };
-        assert!(validate_create_workflow(&req).is_err());
+        assert!(validate_create_workflow(&req, 10_000).is_err());
     }
 
     #[test]
@@ -257,9 +423,10 @@ mod tests {
             condition: None,
             tasks: None,
             tags: None,
+            loop_config: None,
             continue_on_error: None,
         };
-        assert!(validate_update_workflow(&req).is_ok());
+        assert!(validate_update_workflow(&req, 10_000).is_ok());
     }
 
     #[test]
@@ -271,9 +438,10 @@ mod tests {
             condition: None,
             tasks: None,
             tags: None,
+            loop_config: None,
             continue_on_error: None,
         };
-        assert!(validate_update_workflow(&req).is_err());
+        assert!(validate_update_workflow(&req, 10_000).is_err());
     }
 
     #[test]
@@ -285,9 +453,10 @@ mod tests {
             condition: None,
             tasks: None,
             tags: None,
+            loop_config: None,
             continue_on_error: None,
         };
-        assert!(validate_update_workflow(&req).is_err());
+        assert!(validate_update_workflow(&req, 10_000).is_err());
     }
 
     #[test]

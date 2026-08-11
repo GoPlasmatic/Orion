@@ -37,8 +37,13 @@ use crate::storage::repositories::workflows::CreateWorkflowRequest;
 
 /// A workflow row's importable content, mirroring
 /// [`workflow_request_content`].
+/// `loop` is projected **only when present**, on both sides. Adding a key
+/// unconditionally would have changed the hash of every workflow that predates
+/// the column, which is not a cosmetic problem: applied package versions are
+/// content-immutable, so a re-`apply` of an unmodified artifact would stop
+/// being a no-op and start returning `409`. Absent in, absent out.
 pub fn workflow_content(w: &Workflow) -> Result<Value, OrionError> {
-    Ok(serde_json::json!({
+    let mut content = serde_json::json!({
         "name": w.name,
         "description": w.description,
         "priority": w.priority,
@@ -46,11 +51,15 @@ pub fn workflow_content(w: &Workflow) -> Result<Value, OrionError> {
         "tasks": serde_json::from_str::<Value>(&w.tasks_json)?,
         "tags": serde_json::from_str::<Value>(&w.tags_json)?,
         "continue_on_error": w.continue_on_error,
-    }))
+    });
+    if let Some(loop_json) = w.loop_json.as_deref() {
+        content["loop"] = serde_json::from_str::<Value>(loop_json)?;
+    }
+    Ok(content)
 }
 
 pub fn workflow_request_content(r: &CreateWorkflowRequest) -> Value {
-    serde_json::json!({
+    let mut content = serde_json::json!({
         "name": r.name,
         "description": r.description,
         "priority": r.priority,
@@ -58,7 +67,11 @@ pub fn workflow_request_content(r: &CreateWorkflowRequest) -> Value {
         "tasks": r.tasks,
         "tags": r.tags,
         "continue_on_error": r.continue_on_error,
-    })
+    });
+    if let Some(loop_config) = &r.loop_config {
+        content["loop"] = loop_config.clone();
+    }
+    content
 }
 
 /// A channel row's importable content, mirroring
@@ -296,6 +309,7 @@ mod tests {
             condition_json: "true".to_string(),
             tasks_json: serde_json::to_string(&req.tasks).expect("test"),
             tags_json: r#"["a"]"#.to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: now,
             updated_at: now,

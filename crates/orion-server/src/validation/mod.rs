@@ -16,5 +16,5 @@ pub use endpoints::{
 pub use ssrf::{PinnedDnsResolver, validate_url_not_private};
 pub use workflows::{
     validate_create_workflow, validate_update_workflow, validate_workflow_id,
-    validate_workflow_tasks_schema,
+    validate_workflow_loop_schema, validate_workflow_tasks_schema,
 };

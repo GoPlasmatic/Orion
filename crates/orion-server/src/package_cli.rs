@@ -371,7 +371,10 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
     for (i, entry) in artifact.workflows.iter().enumerate() {
         match serde_json::from_value::<CreateWorkflowRequest>(entry.clone()) {
             Ok(req) => {
-                if let Err(e) = orion::validation::validate_create_workflow(&req) {
+                if let Err(e) = orion::validation::validate_create_workflow(
+                    &req,
+                    orion::config::EngineConfig::default().max_loop_iterations,
+                ) {
                     errors.push(format!("workflows[{i}] '{}': {e}", req.name));
                 }
                 if let Some(id) = &req.workflow_id {

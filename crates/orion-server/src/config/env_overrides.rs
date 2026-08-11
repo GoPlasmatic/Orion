@@ -298,6 +298,7 @@ where
     ov!(engine.health_check_timeout_secs: u64);
     ov!(engine.max_channel_call_depth: u32);
     ov!(engine.default_channel_call_timeout_ms: u64);
+    ov!(engine.max_loop_iterations: i64);
     ov!(engine.global_http_timeout_secs: u64);
     ov!(engine.max_pool_cache_entries: usize);
     ov!(engine.max_memory_cache_entries: usize);

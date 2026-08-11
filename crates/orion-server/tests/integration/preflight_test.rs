@@ -85,6 +85,7 @@ async fn create_workflow(repo: &SqlWorkflowRepository, name: &str) -> String {
         // shared validator's engine-parse catch-all refuses it absent.
         tasks: json!([{ "id": "t", "name": "T", "function": { "name": "log", "input": { "message": "t" } } }]),
         tags: vec![],
+        loop_config: None,
         continue_on_error: false,
     })
     .await

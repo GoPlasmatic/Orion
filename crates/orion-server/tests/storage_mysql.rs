@@ -68,6 +68,7 @@ async fn mysql_migrations_apply_and_repo_roundtrip() {
         condition: serde_json::Value::Bool(true),
         tasks: serde_json::json!([]),
         tags: vec![],
+        loop_config: None,
         continue_on_error: false,
     };
     let wf = repo.create(&req).await.expect("create draft");

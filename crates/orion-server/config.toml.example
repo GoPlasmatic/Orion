@@ -132,6 +132,9 @@
 # health_check_timeout_secs = 2            # Timeout for the /readyz cluster-Redis ping
 # max_channel_call_depth = 10              # Recursion limit for channel_call
 # default_channel_call_timeout_ms = 30000  # Default channel_call timeout
+# max_loop_iterations = 10000              # Ceiling on a workflow loop's `max`, refused at
+                                           # write time. 0 removes the ceiling and leaves only
+                                           # the author's own bound
 # global_http_timeout_secs = 30            # Safety net for every outbound HTTP request;
                                            # shorter connector/task timeouts still win
 # max_pool_cache_entries = 100             # Cached connection pools per external backend (LRU)

@@ -31,6 +31,12 @@ pub struct WorkflowResponse {
     pub condition: Value,
     pub tasks: Value,
     pub tags: Value,
+    /// The engine-managed loop over `tasks`, or absent for a workflow that
+    /// runs its task list exactly once. Skipped on serialize rather than sent
+    /// as `null`, so a response from a server that has the feature and one
+    /// from a server that does not are byte-identical for the common case.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_config: Option<Value>,
     pub continue_on_error: bool,
     /// `sha256:…` over the canonical importable content (K10) — the same
     /// projection the upsert import compares and the package CLI hashes, so

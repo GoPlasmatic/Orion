@@ -45,6 +45,13 @@ impl TryFrom<&Workflow> for WorkflowResponse {
             // the column, because that is what an operator staring at a
             // corrupt row has to go and look at.
             tags: parse_json_field(&workflow.tags_json, "workflow", id, "tags_json")?,
+            // Wire name `loop`, column name `loop_json` — same D26 split as
+            // `tags`. Absent stays absent rather than becoming `null`.
+            loop_config: workflow
+                .loop_json
+                .as_deref()
+                .map(|json| parse_json_field(json, "workflow", id, "loop_json"))
+                .transpose()?,
             continue_on_error: workflow.continue_on_error,
             content_hash: crate::storage::content::content_hash(
                 &crate::storage::content::workflow_content(workflow)?,
@@ -329,6 +336,7 @@ mod tests {
             condition_json: r#"{"==": [1, 1]}"#.to_string(),
             tasks_json: r#"[{"id": "t1", "function": "http_call"}]"#.to_string(),
             tags_json: r#"["test"]"#.to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: sample_datetime(),
             updated_at: sample_datetime(),

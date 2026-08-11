@@ -54,6 +54,11 @@ pub struct CreateWorkflowRequest {
     pub tasks: serde_json::Value,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Engine-managed loop over `tasks`, spelled `loop` on the wire to match
+    /// dataflow-rs. Absent — the overwhelmingly common case — runs the task
+    /// list exactly once.
+    #[serde(default, rename = "loop")]
+    pub loop_config: Option<serde_json::Value>,
     #[serde(default)]
     pub continue_on_error: bool,
 }
@@ -70,6 +75,11 @@ pub struct UpdateWorkflowRequest {
     pub condition: Option<serde_json::Value>,
     pub tasks: Option<serde_json::Value>,
     pub tags: Option<Vec<String>>,
+    /// `Some(Value::Null)` clears the loop; `None` leaves it as stored. The
+    /// distinction is why this is not `Option<Value>` collapsed to one level:
+    /// "remove the loop" and "do not touch the loop" are different edits.
+    #[serde(default, rename = "loop", skip_serializing_if = "Option::is_none")]
+    pub loop_config: Option<serde_json::Value>,
     pub continue_on_error: Option<bool>,
 }
 
@@ -182,7 +192,23 @@ struct WorkflowInsertRow<'a> {
     condition_json: &'a str,
     tasks_json: &'a str,
     tags_json: &'a str,
+    loop_json: Option<&'a str>,
     continue_on_error: bool,
+}
+
+/// Serialize a wire `loop` value for storage.
+///
+/// `None` (the key was absent) and `Some(Value::Null)` (the key was sent as
+/// `null`) both store `NULL`. On a full-replace path they mean the same thing;
+/// on the partial-update path the caller distinguishes them *before* calling
+/// this, because there "absent" means leave the stored value alone.
+fn loop_json_for_storage(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<String>, serde_json::Error> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => serde_json::to_string(v).map(Some),
+    }
 }
 
 /// Build the INSERT statement for a workflow row.
@@ -200,6 +226,7 @@ fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> sea_query::InsertStateme
             Workflows::ConditionJson,
             Workflows::TasksJson,
             Workflows::TagsJson,
+            Workflows::LoopJson,
             Workflows::ContinueOnError,
         ])
         .values_panic([
@@ -213,6 +240,7 @@ fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> sea_query::InsertStateme
             Expr::val(row.condition_json).into(),
             Expr::val(row.tasks_json).into(),
             Expr::val(row.tags_json).into(),
+            Expr::val(row.loop_json).into(),
             Expr::val(row.continue_on_error).into(),
         ]);
     q
@@ -336,6 +364,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let condition_json = serde_json::to_string(&req.condition)?;
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
+            let loop_json = loop_json_for_storage(req.loop_config.as_ref())?;
 
             let description_val = optional_string_value(req.description.as_deref());
 
@@ -350,6 +379,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 condition_json: condition_json.as_str(),
                 tasks_json: tasks_json.as_str(),
                 tags_json: tags_json.as_str(),
+                loop_json: loop_json.as_deref(),
                 continue_on_error: req.continue_on_error,
             });
 
@@ -491,6 +521,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 Some(t) => serde_json::to_string(t)?,
                 None => existing.tags_json.clone(),
             };
+            // Three-way, unlike the fields above: absent leaves the stored
+            // loop alone, explicit `null` removes it, an object replaces it.
+            let loop_json = match &req.loop_config {
+                None => existing.loop_json.clone(),
+                Some(v) => loop_json_for_storage(Some(v))?,
+            };
 
             let description_val = optional_string_value(description);
 
@@ -502,6 +538,10 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .value(Workflows::ConditionJson, condition_json.as_str())
                 .value(Workflows::TasksJson, tasks_json.as_str())
                 .value(Workflows::TagsJson, tags_json.as_str())
+                .value(
+                    Workflows::LoopJson,
+                    optional_string_value(loop_json.as_deref()),
+                )
                 .value(Workflows::ContinueOnError, continue_on_error)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                 .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
@@ -533,6 +573,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let condition_json = serde_json::to_string(&req.condition)?;
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
+            let loop_json = loop_json_for_storage(req.loop_config.as_ref())?;
             let description_val = optional_string_value(req.description.as_deref());
 
             let mut update = Query::update()
@@ -543,6 +584,10 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .value(Workflows::ConditionJson, condition_json.as_str())
                 .value(Workflows::TasksJson, tasks_json.as_str())
                 .value(Workflows::TagsJson, tags_json.as_str())
+                .value(
+                    Workflows::LoopJson,
+                    optional_string_value(loop_json.as_deref()),
+                )
                 .value(Workflows::ContinueOnError, req.continue_on_error)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                 .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
@@ -728,6 +773,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 condition_json: latest.condition_json.as_str(),
                 tasks_json: latest.tasks_json.as_str(),
                 tags_json: latest.tags_json.as_str(),
+                loop_json: latest.loop_json.as_deref(),
                 continue_on_error: latest.continue_on_error,
             });
 
@@ -778,6 +824,7 @@ pub fn synthetic_workflow(
         condition_json: serde_json::to_string(&req.condition)?,
         tasks_json: serde_json::to_string(&req.tasks)?,
         tags_json: serde_json::to_string(&req.tags)?,
+        loop_json: loop_json_for_storage(req.loop_config.as_ref())?,
         continue_on_error: req.continue_on_error,
         created_at: now,
         updated_at: now,
@@ -806,6 +853,13 @@ fn workflow_to_dataflow_inner(
     let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
     let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
+    // `null` rather than an omitted key: dataflow-rs defaults the field to
+    // `None` either way, and being explicit keeps the built JSON's shape the
+    // same for every workflow.
+    let loop_config: serde_json::Value = match workflow.loop_json.as_deref() {
+        Some(json) => serde_json::from_str(json)?,
+        None => serde_json::Value::Null,
+    };
 
     let workflow_json = serde_json::json!({
         "id": id,
@@ -818,6 +872,7 @@ fn workflow_to_dataflow_inner(
         "condition": condition,
         "tasks": tasks,
         "tags": tags,
+        "loop": loop_config,
         "continue_on_error": workflow.continue_on_error,
         "rollout": rollout.map(|(bucket_start, bucket_end)| serde_json::json!({
             "bucket_start": bucket_start,
@@ -906,6 +961,7 @@ mod tests {
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"log_task","name":"Log","function":{"name":"log","input":{"message":"hello"}}}]"#.to_string(),
             tags_json: "[]".to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
@@ -932,6 +988,7 @@ mod tests {
             tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
             tags_json: r#"["orders"]"#.to_string(),
+            loop_json: None,
             continue_on_error: true,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
@@ -956,6 +1013,7 @@ mod tests {
             tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
             tags_json: "[]".to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
@@ -993,6 +1051,7 @@ mod tests {
             condition_json: "true".to_string(),
             tasks_json: "[]".to_string(),
             tags_json: "[]".to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),

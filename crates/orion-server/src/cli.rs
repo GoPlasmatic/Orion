@@ -216,7 +216,12 @@ pub(crate) fn run_lint(workflow_path: &str) -> Result<(), Box<dyn std::error::Er
     let req: CreateWorkflowRequest = serde_json::from_str(&raw)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
 
-    if let Err(err) = orion::validation::validate_create_workflow(&req) {
+    // No config here: `lint` reads a file, not a server. The default ceiling
+    // is used, which can only make lint *stricter* than an instance that has
+    // raised `engine.max_loop_iterations` — the safe direction for a
+    // pre-flight tool (R20).
+    let loop_cap = orion::config::EngineConfig::default().max_loop_iterations;
+    if let Err(err) = orion::validation::validate_create_workflow(&req, loop_cap) {
         return Err(format_lint_error(workflow_path, err).into());
     }
 
@@ -284,8 +289,11 @@ pub(crate) fn build_dry_run_engine_with_stubs(
         .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
     let req: CreateWorkflowRequest = serde_json::from_str(&raw)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
-    orion::validation::validate_create_workflow(&req)
-        .map_err(|e| format_lint_error(workflow_path, e))?;
+    orion::validation::validate_create_workflow(
+        &req,
+        orion::config::EngineConfig::default().max_loop_iterations,
+    )
+    .map_err(|e| format_lint_error(workflow_path, e))?;
 
     // Build a synthetic Workflow row from the request to reuse the
     // existing dataflow conversion. Version + timestamps are placeholders.

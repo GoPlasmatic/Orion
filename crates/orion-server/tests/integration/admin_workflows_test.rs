@@ -1683,3 +1683,231 @@ async fn a_workflow_with_proper_task_identity_is_accepted() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body = {body}");
 }
+
+// ============================================================
+// Workflow loop (dataflow-rs 3.3)
+// ============================================================
+
+fn looping_workflow(name: &str, loop_config: serde_json::Value) -> serde_json::Value {
+    json!({
+        "name": name,
+        "condition": { "<": [{ "var": "temp_data.i" }, { "var": "data.count" }] },
+        "loop": loop_config,
+        "tasks": [{
+            "id": "note",
+            "name": "Note the sweep",
+            "function": { "name": "log", "input": { "message": "sweep" } }
+        }]
+    })
+}
+
+/// A `loop` survives create → read → new version → activate. The version copy
+/// matters most: `create_new_version` builds its row field by field, so a
+/// column it forgets is silently dropped rather than failing anything.
+#[tokio::test]
+async fn workflow_loop_round_trips_and_survives_a_new_version() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(looping_workflow(
+                "Looping",
+                json!({ "counter": "i", "max": 500 }),
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+    assert_eq!(body["data"]["loop"]["counter"], "i");
+    assert_eq!(body["data"]["loop"]["max"], 500);
+    let hash_with_loop = body["data"]["content_hash"].as_str().unwrap().to_string();
+
+    // Activate, then branch a new draft version off it.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{id}/status"),
+            Some(json!({ "status": "active" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/workflows/{id}/versions"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["version"], 2);
+    assert_eq!(
+        body["data"]["loop"]["max"], 500,
+        "the new version must carry the loop the old one had"
+    );
+    assert_eq!(
+        body["data"]["content_hash"].as_str().unwrap(),
+        hash_with_loop,
+        "copying a version must not change its content"
+    );
+}
+
+/// A workflow with no `loop` must not grow a `loop` key, and its hash must be
+/// what it was before the column existed — package receipts are content-
+/// immutable, so a shifted hash turns a re-apply into a 409.
+#[tokio::test]
+async fn a_workflow_without_a_loop_is_unchanged_by_the_feature() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::workflow_with_priority("No Loop", 0)),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert!(
+        body["data"].get("loop").is_none(),
+        "absent must stay absent, not become null: {}",
+        body["data"]
+    );
+}
+
+/// Each rule mirrors `LoopConfig::validate` in dataflow-rs, which otherwise
+/// only fires at `Engine::build()` — where the failure is a refused reload
+/// across every channel rather than a 400 on one call.
+#[tokio::test]
+async fn an_invalid_loop_is_refused_at_write_time() {
+    let app = common::test_app().await;
+
+    let cases = [
+        (json!({ "counter": "i" }), "max"),
+        (json!({ "max": 10, "increment": 0 }), "increment"),
+        (json!({ "max": 5, "init": 5 }), "max"),
+        (json!({ "max": 10, "counter": "" }), "counter"),
+        (json!({ "max": 10, "counter": "a..b" }), "counter"),
+        // Above engine.max_loop_iterations, which defaults to 10_000.
+        (json!({ "max": 10_000_001 }), "max"),
+    ];
+
+    for (loop_config, expected_field) in cases {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(looping_workflow("Bad Loop", loop_config.clone())),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for loop {loop_config}"
+        );
+        let body = body_json(resp).await;
+        let details = body["error"]["details"].to_string();
+        assert!(
+            details.contains(expected_field),
+            "loop {loop_config} should have reported on `{expected_field}`, got {details}"
+        );
+    }
+}
+
+/// The one that proves the feature rather than the plumbing: a looping
+/// workflow, executed, must run its task list once per sweep and stop where
+/// the break says. Storage round-trips and 400s would all still pass if
+/// `workflow_to_dataflow` dropped the `loop` key on the floor.
+///
+/// The break is a `filter` with `on_reject: "halt"` rather than a workflow
+/// condition, and that is not a stylistic choice: `data` starts empty, so a
+/// workflow-level condition indexing `data.*` is false on sweep 0 and the loop
+/// never starts. Inside the body, `parse_json` has already run.
+#[tokio::test]
+async fn a_loop_executes_one_sweep_per_iteration() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "loop-exec",
+                "name": "Loop Exec",
+                "condition": true,
+                "loop": { "counter": "i", "max": 50 },
+                "tasks": [
+                    {
+                        "id": "parse",
+                        "name": "Parse the payload",
+                        "function": {
+                            "name": "parse_json",
+                            "input": { "source": "payload", "target": "req" }
+                        }
+                    },
+                    {
+                        "id": "more",
+                        "name": "Stop once every item is done",
+                        "function": {
+                            "name": "filter",
+                            "input": {
+                                "condition": {
+                                    "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }]
+                                },
+                                "on_reject": "halt"
+                            }
+                        }
+                    },
+                    {
+                        "id": "sweep",
+                        "name": "One sweep",
+                        "function": { "name": "log", "input": { "message": "sweep" } }
+                    }
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/loop-exec/test",
+            // `max` is 50, so the filter is what stops this at 3.
+            Some(json!({ "data": { "count": 3 } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    let steps = body["data"]["trace"]["steps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("trace.steps should be an array: {}", body["data"]));
+    let sweeps = steps
+        .iter()
+        .filter(|s| s["task_id"] == "sweep" && s["result"] != "skipped")
+        .count();
+    assert_eq!(
+        sweeps, 3,
+        "expected one executed step per sweep, stopped by the filter, got {sweeps} in {:#}",
+        body["data"]["trace"]
+    );
+}

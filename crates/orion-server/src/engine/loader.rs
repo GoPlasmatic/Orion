@@ -397,6 +397,7 @@ mod tests {
                 r#"[{"id":"t1","name":"log","function":{"name":"log","input":{"message":"x"}}}]"#
                     .to_string(),
             tags_json: "[]".to_string(),
+            loop_json: None,
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
