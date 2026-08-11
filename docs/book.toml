@@ -50,14 +50,16 @@ level = 0
 "/getting-started/upgrading.html" = "../operate/upgrading-to-1.0.html"
 
 # Phase 2b — the install split, and the Architecture part dissolving into
-# Concepts (characteristics.md is deleted outright; nothing in it survived).
+# Concepts. characteristics.html is the one page of that part that came back:
+# it now sits at the site root as a front-matter chapter, so its old URL points
+# there rather than at how-orion-works.
 "/tutorials/cli-setup.html#create-your-first-service" = "../getting-started/first-service.html"
 "/getting-started/install.html#create-your-first-service" = "first-service.html"
 "/architecture/overview.html" = "../concepts/how-orion-works.html"
 "/architecture/overview.html#three-primitives" = "../concepts/how-orion-works.html#three-primitives"
 "/architecture/overview.html#deployment-topology" = "../concepts/how-orion-works.html#deployment-topology"
 "/architecture/overview.html#request-processing-flow" = "../concepts/how-orion-works.html#one-requests-journey"
-"/architecture/characteristics.html" = "../concepts/how-orion-works.html"
+"/architecture/characteristics.html" = "../characteristics.html"
 
 # Phase 3 — the Operate estate; features/ and topology/ dissolve.
 "/features/observability.html" = "../operate/monitoring.html"

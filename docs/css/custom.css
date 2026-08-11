@@ -1,5 +1,5 @@
-/* ── D3 diagrams + ReactFlow diagrams (shared container) ── */
-.d3-diagram,
+/* ── Mindmap + ReactFlow diagrams (shared container) ── */
+.orion-mindmap,
 .orion-diagram {
   position: relative;
   width: 100%;
@@ -10,10 +10,78 @@
   background: var(--bg);
 }
 
-.d3-diagram svg {
+.orion-mindmap svg {
   display: block;
   width: 100%;
   height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.orion-mindmap svg.is-dragging { cursor: grabbing; }
+
+/* Only the fit/reset transition animates the whole canvas; node moves animate
+   per node so an expand slides its siblings apart instead of jumping. */
+.orion-mindmap svg.is-animating > g,
+.orion-mindmap .mm-node {
+  transition: transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orion-mindmap svg.is-animating > g,
+  .orion-mindmap .mm-node { transition: none; }
+}
+
+.orion-mindmap .mm-link {
+  fill: none;
+  stroke: var(--p-border-strong);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+/* Node faces reuse the --node-* custom properties the rf-<type> classes below
+   already define per theme, so the mindmap and the flow diagrams stay one palette.
+   Those are defined for .navy and .light only; the fallbacks keep the map legible
+   (monochrome) on any other mdBook theme rather than painting it invisible. */
+.orion-mindmap .mm-box {
+  fill: var(--node-fill, var(--p-accent-tint));
+  stroke: var(--node-stroke, var(--p-border-strong));
+  stroke-width: 1.4;
+}
+
+.orion-mindmap .mm-label {
+  fill: var(--node-text, var(--p-fg));
+  font-family: var(--p-font-text);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.orion-mindmap .mm-chevron {
+  fill: var(--node-stroke, var(--p-border-strong));
+  font-family: var(--p-font-text);
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.orion-mindmap .mm-l0 .mm-label,
+.orion-mindmap .mm-l1 .mm-label { font-weight: 700; }
+.orion-mindmap .mm-l0 .mm-box { stroke-width: 2.2; }
+.orion-mindmap .mm-l1 .mm-box { stroke-width: 1.8; }
+
+/* Depth reads as recession: the face fades toward the page, the outline stays. */
+.orion-mindmap .mm-l2 .mm-box { fill-opacity: 0.55; }
+.orion-mindmap .mm-l3 .mm-box { fill-opacity: 0.28; stroke-dasharray: 4 3; stroke-opacity: 0.75; }
+.orion-mindmap .mm-l3 .mm-label { font-weight: 500; }
+
+.orion-mindmap .is-interactive { cursor: pointer; }
+.orion-mindmap .is-interactive:hover .mm-box { stroke-width: 2.4; }
+.orion-mindmap .is-interactive:focus-visible { outline: none; }
+.orion-mindmap .is-interactive:focus-visible .mm-box {
+  stroke: var(--p-accent);
+  stroke-width: 2.6;
 }
 
 .diagram-hint {
@@ -32,8 +100,8 @@
   white-space: nowrap;
 }
 
-/* ── Diagram fullscreen overlay (D3 + ReactFlow) ── */
-.d3-diagram.is-fullscreen,
+/* ── Diagram fullscreen overlay (mindmap + ReactFlow) ── */
+.orion-mindmap.is-fullscreen,
 .orion-diagram.is-fullscreen {
   position: fixed;
   inset: 0;

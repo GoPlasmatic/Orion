@@ -8,6 +8,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 ## Getting started
 
 - [Introduction](https://goplasmatic.github.io/Orion/introduction.html): what Orion is, why it exists, and where to start
+- [Architectural Characteristics](https://goplasmatic.github.io/Orion/characteristics.html): the capability map — eight characteristics, what the runtime provides under each, and the deliberate gaps
 - [Architectural Comparison & Use Cases](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
 - [Install & Run](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix for server and CLI, first run, health check
 - [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls

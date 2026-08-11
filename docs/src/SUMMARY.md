@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[Architectural Characteristics](./characteristics.md)
 [Architectural Comparison & Use Cases](./comparison.md)
 
 ---

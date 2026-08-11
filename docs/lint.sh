@@ -137,6 +137,24 @@ if [ "$DOCS2_PHASE" -ge 4 ]; then
   done < <(grep -oE '^- \[[^]]+\]\(https://goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+\)' docs/src/llms.txt)
 fi
 
+## 11. Mindmap node links resolve to a real page. An ```orion-mindmap block is
+##     JSON inside a fenced code block carrying runtime .html hrefs, so checks 1
+##     and 2 never see it — they look for markdown links. Without this, retiring a
+##     page would leave the capability map pointing at a 404 that nothing notices.
+##     Only the page is checked, matching check 2's depth; fragments are not.
+##     Plain grep, not git grep: a page added but not yet committed must be
+##     checked too, which is exactly when a bad link is cheapest to fix.
+for f in $(grep -rl 'orion-mindmap' docs/src --include='*.md' 2>/dev/null); do
+  while IFS= read -r hit; do
+    line=${hit%%:*}
+    body=${hit#*:}
+    for l in $(printf '%s' "$body" | grep -oE '"link" *: *"[^"]+"' | sed -E 's/.*"link" *: *"([^"#]+).*/\1/'); do
+      case "$l" in http://*|https://*) continue ;; esac
+      [ -f "docs/src/${l%.html}.md" ] || err "$f:$line: mindmap link has no page: $l"
+    done
+  done < <(grep -n '"link" *: *"' "$f" 2>/dev/null)
+done
+
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
 else
