@@ -2,7 +2,7 @@
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>
   <p>The declarative runtime for AI agents, workflows, microservices, and event processing.</p>
-  <p class="hero-sub">Production infrastructure out of the box. You write only the business logic.</p>
+  <p class="hero-sub">Safe enough to let an AI write your services. Fast enough to run them in production.</p>
 </div>
 
 Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it is live a second later. No rebuild, no restart, no downtime.
@@ -19,25 +19,25 @@ Orion carries the same infrastructure across five kinds of service:
 
 <div class="doc-cards">
 
-- [**AI Agents & MCP Tool Execution**](./ai/claude-code.md)
+- [**Microservices**](./guides/worked-examples.md)
+
+  One channel and one workflow make a service, and Orion answers the request in-process — nothing you built sits in the path. Four complete examples here, from an order classifier to a notification router, each deployed with a single command.
+
+- [**AI Agent Tools**](./ai/claude-code.md)
 
   An agent calls your channels as tools over HTTP. Through the MCP server in `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
 
-- [**Workflows & Business Logic**](./build/workflows.md)
+- [**Business Rules & Decision APIs**](./build/workflows.md)
 
-  Express decision rules, payload transformations, conditional branching, and error handling as clear task pipelines using JSONLogic expressions.
+  Pricing tiers, eligibility checks, routing decisions. Write the rules as JSONLogic conditions over the request, branch between them, and return the result as the response body.
 
-- [**Microservice Orchestration**](./guides/worked-examples.md)
+- [**Kafka Event Consumers**](./guides/kafka-channels.md)
 
-  Combine pricing rules, fraud checks, and routing logic on a shared runtime. Invoke internal workflows in-process using `channel_call` without network latency.
+  A topic is the ingress: consume records, transform and enrich them as they arrive, publish results onward, and send poison messages to a dead-letter topic instead of letting one stall the partition.
 
-- [**Kafka Event Processing**](./guides/kafka-channels.md)
+- [**Webhook & Data Ingestion**](./build/connectors.md)
 
-  Consume Kafka topics, transform and enrich records on the fly, route event results, and isolate poison messages with dead-letter queues.
-
-- [**Analytics & Data Pipelines**](./build/connectors.md)
-
-  Normalize webhook payloads (e.g. Stripe, GitHub, Shopify) and query or write across PostgreSQL, MySQL, MongoDB, Elasticsearch, and Redis using a unified data dialect.
+  Normalize payloads from Stripe, GitHub or Shopify, then read and write across PostgreSQL, MySQL, SQLite, MongoDB and Elasticsearch through one portable dialect. Credentials stay on the connector, so the workflow JSON is safe to commit.
 
 </div>
 

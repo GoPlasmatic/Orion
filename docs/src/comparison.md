@@ -1,6 +1,6 @@
 # Architectural Comparison & Use Cases
 
-Orion is a declarative runtime designed for AI agents, workflows, microservice orchestration, event processing, and analytics data pipelines. Operating between edge API gateways and heavy workflow orchestrators, Orion executes request-response pipelines, continuous event streams, and agentic tool invocations without requiring process restarts or binary rebuilds.
+Orion is a declarative runtime designed for microservices, AI agent tools, business rules, event processing, and webhook data ingestion. Operating between edge API gateways and heavy workflow orchestrators, Orion executes request-response pipelines, continuous event streams, and agentic tool invocations without requiring process restarts or binary rebuilds.
 
 This guide outlines where Orion fits within modern system architecture, compares it against alternative tools, and describes key deployment patterns across its five core workload pillars.
 
@@ -8,11 +8,11 @@ This guide outlines where Orion fits within modern system architecture, compares
 
 | Workload / Requirement | Recommended Tool | Architectural Fit |
 |---|:-:|-|
-| **AI Agents & MCP Tool Execution** | **Orion** | Safe agent execution engine with staged drafts, MCP tools, and instant rollbacks |
-| **Workflow Automation & Logic** | **Orion** | Declarative JSON task pipelines with JSONLogic rules and validation |
-| **Microservice Orchestration** | **Orion** | In-process zero-overhead composition via `channel_call`, consolidating microservices |
-| **Event & Stream Processing** | **Orion** | High-throughput Kafka consumer groups, event routing, and poison-message isolation |
-| **Analytics & Data Pipelines** | **Orion** | Webhook payload normalization and multi-backend data envelope across SQL, Mongo, and ES |
+| **Microservices** | **Orion** | The service itself, not a coordinator over others; `channel_call` composes in-process |
+| **AI Agent Tools** | **Orion** | Safe agent execution engine with staged drafts, MCP tools, and instant rollbacks |
+| **Business Rules & Decision APIs** | **Orion** | Declarative JSON task pipelines with JSONLogic rules and validation |
+| **Kafka Event Consumers** | **Orion** | High-throughput Kafka consumer groups, event routing, and poison-message isolation |
+| **Webhook & Data Ingestion** | **Orion** | Payload normalization and one portable data envelope across SQL, Mongo, and ES |
 | Browser-based management dashboard | [Orion UI](https://github.com/GoPlasmatic/Orion-ui) | Web management console for Orion Admin API |
 | Multi-day stateful sagas, human approvals | Temporal, Airflow | Stateful durable execution engines for long-running processes |
 | Full API Gateway with plugin ecosystem | Kong, Envoy | Ingress traffic management (can front Orion instances) |
@@ -21,11 +21,11 @@ This guide outlines where Orion fits within modern system architecture, compares
 | General-purpose compute (ML training, video rendering) | Dedicated Services / Serverless | Custom microservice / serverless environments |
 
 **Optimal Use Cases for Orion:**
-- **AI Agent Execution:** Serving as the tool backend an LLM agent calls over HTTP, and — through the MCP server in `orion-cli` — the runtime an assistant authors and operates those tools in.
-- **Microservice Orchestration:** Composing internal endpoints in-process without network hops or serialization costs.
-- **Workflow & Business Automation:** Expressing complex conditional routing, data transformation, and validation rules as declarative JSON.
-- **Stream Processing:** Ingesting and processing continuous event streams from Kafka topics and asynchronous webhooks.
-- **Data & Analytics Ingestion:** Normalizing heterogeneous incoming payloads into standardized database models across SQL, MongoDB, Elasticsearch, and Redis.
+- **Microservices:** The endpoint and its logic in one runtime, composed in-process without network hops or serialization costs.
+- **AI Agent Tools:** Serving as the tool backend an LLM agent calls over HTTP, and — through the MCP server in `orion-cli` — the runtime an assistant authors and operates those tools in.
+- **Business Rules & Decision APIs:** Expressing complex conditional routing, data transformation, and validation rules as declarative JSON.
+- **Kafka Event Consumers:** Ingesting and processing continuous event streams from Kafka topics and asynchronous webhooks.
+- **Webhook & Data Ingestion:** Normalizing heterogeneous incoming payloads into standardized database models across SQL, MongoDB, and Elasticsearch.
 
 **Out of Scope for Orion:** Long-running multi-step processes spanning days or requiring human-in-the-loop approvals.
 
