@@ -1,6 +1,6 @@
 [book]
 title = "Orion Documentation"
-description = "Orion is a declarative services runtime: describe a service as JSON, send it to a running server, and it's live in seconds. Business logic as APIs your AI can write and your ops team can trust."
+description = "Orion is a declarative services runtime: describe a service as JSON, send it to a running server, and it's live in seconds. Safe enough to let an AI write your services. Fast enough to run them in production."
 authors = ["Plasmatic"]
 language = "en"
 src = "src"

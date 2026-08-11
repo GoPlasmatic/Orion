@@ -3,9 +3,9 @@
 
   # Orion
 
-  **Turn business logic into APIs your AI can write and your ops team can trust.**
+  **The declarative runtime for AI agents, workflows, microservices, and event processing.**
 
-  *No new service to build. No deploy to wait for.*
+  *Safe enough to let an AI write your services. Fast enough to run them in production.*
 
   [![CI](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml/badge.svg)](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml)
   [![Crates.io](https://img.shields.io/crates/v/orion-server.svg)](https://crates.io/crates/orion-server)
@@ -17,15 +17,13 @@
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
 </div>
 
-Every piece of business logic tends to turn into its own microservice. You set up a repo, an HTTP server, a Dockerfile, a CI pipeline, metrics, retries, and a deployment, all before you get to the logic itself.
+Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it's live a second later. No rebuild, no restart, no downtime.
 
-Orion works the other way around. You write the logic as JSON, either by hand or by asking an AI, and send it to a running Orion server. A second later it's a live API.
+Everything around that logic is the runtime's job, and it works the same way for every service you put on it: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. That's the glue you'd otherwise write again for every microservice, agent backend, stream processor, and data pipeline.
 
-Everything you'd normally build around it is already running: rate limits, retries, caching, metrics, tracing, input validation, versioning, and rollback. Change the logic and the endpoint changes with it. No rebuild, no restart, no downtime.
+It ships as a single Rust binary on Tokio and Axum, storing your service definitions in an embedded database. There's nothing to containerize and nothing to provision.
 
-Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 5,000+ measured requests per second. There's nothing to containerize and nothing to provision.
-
-**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
+**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [What you can build](#what-you-can-build) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
 
 ---
 
@@ -36,8 +34,9 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 * **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
 * **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
 * **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output can't quietly break production.
-* **🦀 Rust speed:** Built on Tokio and Axum. **5,100–5,700 requests/sec** per instance (measured, v1.0.0), single-digit millisecond latency, small memory footprint.
 * **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
+* **📦 One binary, one file:** a single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
+* **🦀 Measured, not claimed:** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
 
 ---
 
@@ -151,6 +150,20 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 That's it. The business logic is a JSON document, deploying it was an API call, and rate limiting, metrics, health checks, and request tracing were already active when it went live. Change the threshold? One API call. No rebuild, no redeploy, no restart.
 
 > **Prefer to describe the service instead of writing it?** Workflow JSON is easy for LLMs to generate. Tell your AI assistant *"flag orders over $10,000 for manual review with an alert message"* and deploy what it returns. [AI Writes Services, Not Code](#ai-writes-services-not-code) shows the safe path from prompt to production.
+
+---
+
+## What You Can Build
+
+Orion carries the same infrastructure across five kinds of service:
+
+- **[Microservices](https://goplasmatic.github.io/Orion/guides/worked-examples.html):** one channel and one workflow make a service, and Orion answers the request in-process — nothing you built sits in the path.
+- **[AI agent tools](https://goplasmatic.github.io/Orion/ai/claude-code.html):** an agent calls your channels as tools over HTTP, and through the MCP server in `orion-cli` an assistant drafts, dry-runs, activates, and rolls back those workflows itself.
+- **[Business rules & decision APIs](https://goplasmatic.github.io/Orion/build/workflows.html):** pricing tiers, eligibility checks, routing decisions — written as JSONLogic conditions over the request and returned as the response body.
+- **[Kafka event consumers](https://goplasmatic.github.io/Orion/guides/kafka-channels.html):** a topic is the ingress — consume records, transform and enrich them as they arrive, publish results onward, and send poison messages to a dead-letter topic instead of letting one stall the partition.
+- **[Webhook & data ingestion](https://goplasmatic.github.io/Orion/build/connectors.html):** normalize payloads from Stripe, GitHub or Shopify, then read and write across PostgreSQL, MySQL, SQLite, MongoDB and Elasticsearch through one portable dialect.
+
+See [Worked Examples](https://goplasmatic.github.io/Orion/guides/worked-examples.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
 
 ---
 
@@ -276,7 +289,7 @@ See [CI/CD with Packages](https://goplasmatic.github.io/Orion/guides/ci-cd.html)
 
 **Before:** every piece of business logic is its own service to build, deploy, and operate — a pricing service, a fraud service, a routing service, a notification service, each with its own repo, pipeline, and pager entry.
 
-**After:** one Orion instance replaces all of them. It consolidates the API gateway and the logic engine — routing traffic, running workflows, and handling governance automatically — while each channel and workflow stays independently versioned, testable, and deployable. The modularity of microservices with the operational simplicity of a monolith: change one workflow without touching the others, roll back a single channel without redeploying anything.
+**After:** one Orion instance replaces all of them. It routes traffic, runs the workflows, and polices its own ingress — rate limits, validation, deduplication — while each channel and workflow stays independently versioned, testable, and deployable. The modularity of microservices with the operational simplicity of a monolith: change one workflow without touching the others, roll back a single channel without redeploying anything.
 
 The [architecture overview](https://goplasmatic.github.io/Orion/concepts/how-orion-works.html#deployment-topology) draws both topologies side by side.
 
@@ -424,7 +437,7 @@ docker compose -f docker-compose.ha.yml up
 
 ## Performance
 
-**5K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)):
+**5.1K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/media/benchmark-dark.svg">
@@ -442,17 +455,6 @@ Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
 ---
-
-## Use Cases
-
-- **Replace microservices:** define REST endpoints as channels, logic as workflows, external calls as connectors
-- **Webhook gateway:** normalize Stripe, GitHub, Shopify payloads into a consistent internal schema
-- **Event processing:** Kafka-to-workflow pipelines with transforms, enrichment, and routing
-- **API composition:** use `channel_call` to compose services from other services
-- **AI-managed business logic:** LLMs create and update workflows via the REST API
-- **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
-
-See [Worked Examples](https://goplasmatic.github.io/Orion/guides/worked-examples.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
 
 ## Install
 
