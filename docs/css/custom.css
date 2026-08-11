@@ -3,7 +3,7 @@
 .orion-diagram {
   position: relative;
   width: 100%;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
   overflow: hidden;
   margin: 1em 0;
@@ -55,11 +55,11 @@
   gap: 6px;
   padding: 6px 10px;
   font-size: 12px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--p-font-text);
   line-height: 1;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 6px;
   cursor: pointer;
   opacity: 0.7;
@@ -73,7 +73,7 @@
 /* ── asciinema player embeds ── */
 .asciinema-player {
   margin: 1.25em 0;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -83,11 +83,6 @@
   margin: -0.75em 0 1.5em;
   font-size: 0.85em;
   opacity: 0.6;
-}
-
-/* ── General tweaks ── */
-:root {
-  --content-max-width: 920px;
 }
 
 /* ============================================================
@@ -128,7 +123,7 @@ pre:has(> code.language-orion-diagram) {
   justify-content: flex-start;
   padding: 8px 13px;
   color: var(--node-text);
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   transition: box-shadow 0.15s ease;
 }
 
@@ -256,7 +251,7 @@ pre:has(> code.language-orion-diagram) {
 .light .rf-group { border-color: #B0CDD8; background: rgba(13, 127, 163, 0.05); }
 
 .rf-group-label {
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -274,7 +269,7 @@ pre:has(> code.language-orion-diagram) {
 }
 
 .orion-diagram .react-flow__edge-text {
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   font-size: 10px;
   fill: var(--fg);
 }
@@ -335,6 +330,6 @@ html.rust .themed-media .media-light { display: block; }
 .themed-media video {
   width: 100%;
   margin: 1.25em 0;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
 }

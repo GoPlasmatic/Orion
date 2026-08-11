@@ -12,15 +12,20 @@ build-dir = "book"
 create-missing = false
 
 [output.html]
-additional-css = ["css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
+additional-css = ["css/fonts.css", "css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
 additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader.js"]
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
 edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 
+# No expand/collapse in the sidebar: the one nested chapter this book has
+# (Upgrades → Upgrading to 1.0.0) simply shows. Note this key governs *chapter*
+# nesting only — the per-page heading tree mdBook's toc.js injects is separate
+# and is hidden in plasmatic.css §13, since the on-page ToC rail on the right
+# already carries it.
 [output.html.fold]
-enable = true
+enable = false
 level = 0
 
 # Redirects for every URL the docs 2.0 restructure retired. Keys are absolute

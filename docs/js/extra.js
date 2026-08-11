@@ -32,6 +32,93 @@
   }
 })();
 
+// ── On-page table of contents ──
+// Built from the page's own h2/h3 headings, with a scroll-spy on the
+// content scroller. Only rendered when there are at least two h2s —
+// a short page does not need a second navigation. CSS hides the rail
+// below 1400px, so this is progressive: no layout depends on it.
+(function () {
+  function buildToc() {
+    // print.html concatenates every chapter — 400+ h2s there would build a
+    // rail longer than most pages. The sidebar is the right index for it.
+    if (/\/print\.html$/.test(location.pathname)) return;
+
+    var content = document.querySelector(".content");
+    var main = content && content.querySelector("main");
+    if (!main || content.querySelector(".page-toc")) return;
+
+    var headings = main.querySelectorAll("h2[id], h3[id]");
+    var h2count = main.querySelectorAll("h2[id]").length;
+    if (h2count < 2) return;
+
+    var nav = document.createElement("nav");
+    nav.className = "page-toc";
+    nav.setAttribute("aria-label", "On this page");
+
+    var title = document.createElement("span");
+    title.className = "page-toc-title";
+    title.textContent = "On this page";
+    nav.appendChild(title);
+
+    var links = [];
+    for (var i = 0; i < headings.length; i++) {
+      var h = headings[i];
+      var a = document.createElement("a");
+      a.href = "#" + h.id;
+      a.className = h.tagName === "H3" ? "lvl-3" : "lvl-2";
+      // The heading text includes mdBook's anchor link; textContent is enough.
+      a.textContent = h.textContent.replace(/^»\s*/, "").trim();
+      nav.appendChild(a);
+      links.push({ el: a, heading: h });
+    }
+
+    // Sits after <main> so the grid in plasmatic.css §14 can place it.
+    main.parentNode.insertBefore(nav, main.nextSibling);
+
+    var current = null;
+    function spy() {
+      // Viewport-relative: the document is what scrolls, and the sticky rail
+      // sits just under the menu bar.
+      var top = 120;
+      var active = links[0];
+      for (var i = 0; i < links.length; i++) {
+        if (links[i].heading.getBoundingClientRect().top <= top) {
+          active = links[i];
+        }
+      }
+      if (active === current) return;
+      if (current) current.el.classList.remove("active");
+      active.el.classList.add("active");
+      current = active;
+    }
+
+    var ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () {
+        spy();
+        ticking = false;
+      });
+    }
+
+    // Capture phase on `document` catches the scroll wherever it originates —
+    // the document itself today, or `.content` if mdBook ever caps its height.
+    // Scroll events do not bubble, so a plain listener would miss one of them.
+    document.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
+    spy();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", buildToc);
+  } else {
+    buildToc();
+  }
+})();
+
 // ── Dark / Light theme toggle ──
 (function () {
   var SUN_SVG =
