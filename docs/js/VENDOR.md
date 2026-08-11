@@ -6,12 +6,23 @@ so this file is the license/provenance record for these assets.
 
 | File | Package | Version | License | Upstream |
 |------|---------|---------|---------|----------|
-| `docs/js/asciinema-player.min.js` | asciinema-player | not embedded in the minified build — record the exact version on the next update | Apache-2.0 | <https://github.com/asciinema/asciinema-player> |
-| `docs/css/asciinema-player.css` | asciinema-player (same release as the JS) | ditto | Apache-2.0 | <https://github.com/asciinema/asciinema-player> |
+| `docs/js/asciinema-player.min.js` | asciinema-player | 3.17.0 | Apache-2.0 | <https://github.com/asciinema/asciinema-player> |
+| `docs/css/asciinema-player.css` | asciinema-player (same release as the JS) | 3.17.0 | Apache-2.0 | <https://github.com/asciinema/asciinema-player> |
 
-When updating: download the versioned release bundle from the upstream GitHub
-releases page, replace both files together (they ship as a pair), and write the
-version number into this table.
+Take both files from `dist/bundle/` in the npm tarball — that build is
+self-contained. The same directory also ships `asciinema-player-ui.js` and
+`asciinema-player-worker.js`; those are for module consumers and are **not**
+needed here, which is what keeps this a two-file drop-in.
+
+The version is not embedded in the minified build, so it cannot be read back
+out of the file. It was recovered for 3.8.0 (the previous vendored release) by
+byte-comparing against the published tarballs; keep this table current instead
+of relying on that.
+
+When updating: replace both files together (they ship as a pair), write the
+version into this table, and re-check that the three cast embeds still mount —
+`docs/src/getting-started/first-service.md` has two,
+`docs/src/ai/mcp-setup.md` has one.
 
 ## Webfonts
 
