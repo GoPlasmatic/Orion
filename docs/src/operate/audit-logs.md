@@ -38,7 +38,7 @@ the vocabulary behind it. This is all of it:
 | `update` | `workflow`, `channel`, `connector` | `PUT /{kind}/{id}` |
 | `delete` | `workflow`, `channel`, `connector` | `DELETE /{kind}/{id}` |
 | `import` | `workflow`, `channel`, `connector` | `POST /{kind}/import` — one row per entity written, plus a batch summary row |
-| `status_draft`, `status_active`, `status_archived` | `workflow`, `channel` | `PATCH /{kind}/{id}/status`, named for the status requested |
+| `status_active`, `status_archived` | `workflow`, `channel` | `PATCH /{kind}/{id}/status`, named for the status requested. There is no `status_draft`: a transition *to* draft is refused before anything is written |
 | `update_rollout` | `workflow` | `PATCH /workflows/{id}/rollout` |
 | `test` | `workflow`, `connector` | `POST /workflows/{id}/test`, `POST /connectors/{id}/test` — both reach live backends, so both are recorded |
 | `reset` | `circuit_breaker` | `POST /connectors/circuit-breakers/{key}` |
