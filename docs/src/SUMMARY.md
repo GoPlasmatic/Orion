@@ -1,8 +1,8 @@
 # Summary
 
 [Introduction](./introduction.md)
-[Architectural Characteristics](./characteristics.md)
 [Is Orion Right for You?](./comparison.md)
+[Architectural Characteristics](./characteristics.md)
 
 ---
 
