@@ -147,6 +147,46 @@ guards, minus the ones a `channel_call` cannot have (no `auth`, no origin check,
 no dedup), and its `timeout_ms` applies inside your request's budget. Size the
 caller's timeout above the callee's.
 
+## One call per element of an array
+
+**Problem.** The payload carries a list, and each element needs a connector
+call. `map` reshapes an array inside one expression, but it cannot make an
+`http_call` per element.
+
+**Pattern.** A workflow [`loop`](../reference/workflows.md#loop) repeats the
+whole task list once per element, with the counter in `temp_data` as the index.
+The break is a `filter`, not the workflow condition:
+
+```json
+{
+  "workflow_id": "notify-each",
+  "condition": true,
+  "loop": { "counter": "i", "max": 500 },
+  "tasks": [
+    { "id": "parse", "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } } },
+    { "id": "more", "name": "Stop when done",
+      "function": { "name": "filter", "input": {
+        "condition": { "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }] },
+        "on_reject": "halt" } } },
+    { "id": "send", "name": "Send one",
+      "function": { "name": "http_call", "input": {
+        "connector": "notifier", "method": "POST", "path": "/send",
+        "body": { "var": ["data.req.recipients", { "var": "temp_data.i" }] } } } }
+  ]
+}
+```
+
+**Why it bites.** Putting the break in the workflow `condition` is the obvious
+move and it silently does nothing: `data` starts empty, so the condition is
+false on sweep 0 and the loop never runs once. Put it in a `filter`, after the
+parse.
+
+The sweeps are **sequential and inside one request**. Twenty calls at 50 ms is
+a second of wall clock against your channel timeout; a thousand is a job for an
+async channel or a service built for it. `max` is capped by
+[`engine.max_loop_iterations`](../reference/configuration.md).
+
 ## Collect errors instead of halting
 
 **Problem.** One optional enrichment fails and the whole request fails with it.

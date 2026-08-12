@@ -5004,6 +5004,9 @@
               "null"
             ]
           },
+          "loop": {
+            "description": "Engine-managed loop over `tasks`, spelled `loop` on the wire to match\ndataflow-rs. Absent — the overwhelmingly common case — runs the task\nlist exactly once."
+          },
           "name": {
             "type": "string"
           },
@@ -5980,6 +5983,9 @@
                     "null"
                   ]
                 },
+                "loop": {
+                  "description": "The engine-managed loop over `tasks`, or absent for a workflow that\nruns its task list exactly once. Skipped on serialize rather than sent\nas `null`, so a response from a server that has the feature and one\nfrom a server that does not are byte-identical for the common case."
+                },
                 "name": {
                   "type": "string"
                 },
@@ -6103,6 +6109,9 @@
                   "string",
                   "null"
                 ]
+              },
+              "loop": {
+                "description": "The engine-managed loop over `tasks`, or absent for a workflow that\nruns its task list exactly once. Skipped on serialize rather than sent\nas `null`, so a response from a server that has the feature and one\nfrom a server that does not are byte-identical for the common case."
               },
               "name": {
                 "type": "string"
@@ -7049,6 +7058,9 @@
                     "null"
                   ]
                 },
+                "loop": {
+                  "description": "The engine-managed loop over `tasks`, or absent for a workflow that\nruns its task list exactly once. Skipped on serialize rather than sent\nas `null`, so a response from a server that has the feature and one\nfrom a server that does not are byte-identical for the common case."
+                },
                 "name": {
                   "type": "string"
                 },
@@ -7696,6 +7708,9 @@
               "null"
             ]
           },
+          "loop": {
+            "description": "`Some(Value::Null)` clears the loop; `None` leaves it as stored. The\ndistinction is why this is not `Option<Value>` collapsed to one level:\n\"remove the loop\" and \"do not touch the loop\" are different edits."
+          },
           "name": {
             "type": [
               "string",
@@ -7847,6 +7862,9 @@
               "string",
               "null"
             ]
+          },
+          "loop": {
+            "description": "The engine-managed loop over `tasks`, or absent for a workflow that\nruns its task list exactly once. Skipped on serialize rather than sent\nas `null`, so a response from a server that has the feature and one\nfrom a server that does not are byte-identical for the common case."
           },
           "name": {
             "type": "string"

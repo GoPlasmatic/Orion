@@ -24,6 +24,7 @@ responses — you do not send them on create.
 | `condition` | JSONLogic | no | `true` | Whether the workflow matches a request (see [Conditions](#conditions)) |
 | `tasks` | array | **yes** | — | Ordered, non-empty list of [task objects](#tasks) |
 | `tags` | string[] | no | `[]` | Free-form labels for filtering |
+| `loop` | object | no | — | Run the task list once per sweep instead of once in total (see [Loop](#loop)) |
 | `continue_on_error` | bool | no | `false` | If `true`, a failing task does not halt the pipeline (see [Error handling](#error-handling)) |
 | `version` | integer | server-managed | `1` | Increments per saved version of a `workflow_id` |
 | `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
@@ -175,6 +176,94 @@ The complete operator set — core JSONLogic plus the date, string, array, math,
 and control extensions — is cataloged in the
 [Expression Reference](./expressions.md). That page also documents the
 silent-failure edges, including misspelled operators inside `map` mappings.
+
+## Loop
+
+A workflow with a `loop` runs its **whole task list once per sweep** instead of
+once in total. It is how one workflow processes each element of an array —
+calling a connector per element, which a JSONLogic `map` cannot do.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `max` | integer | **yes** | — | Upper bound on sweeps. Half-open: `init: 0, max: 10` yields counter values `0`–`9` |
+| `counter` | string | no | — | `temp_data` field holding the count — `"i"` is `temp_data.i`, and dots nest (`"cursor.index"`). Omit to bound the loop without exposing the count |
+| `init` | integer | no | `0` | First counter value |
+| `increment` | integer | no | `1` | Added after each sweep. Must be at least `1`, so the counter always advances |
+
+Per sweep, in order: the engine writes the counter, checks `counter < max`,
+re-evaluates the **workflow** `condition`, and runs the task list. The sweep
+happens only if both the bound and the condition hold.
+
+Stopping early is a [`filter`](./functions.md#filter) task with `on_reject:
+"halt"`, which ends the whole loop rather than the current sweep:
+
+```json
+{
+  "id": "notify-each-recipient",
+  "name": "Notify each recipient",
+  "condition": true,
+  "loop": { "counter": "i", "max": 500 },
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "more",
+      "name": "Stop once every recipient is done",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "send",
+      "name": "Send one notification",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "notifier",
+          "method": "POST",
+          "path": "/send",
+          "body": { "var": ["data.req.recipients", { "var": "temp_data.i" }] }
+        }
+      }
+    }
+  ]
+}
+```
+
+> [!WARNING]
+> **Do not put the break in the workflow `condition`.** It looks like the
+> natural home for it and it does not work: `data` [starts empty](#the-data-context),
+> so `{"<": [{"var": "temp_data.i"}, {"var": "data.req.count"}]}` as a workflow
+> condition is false on sweep 0 — before any `parse_json` has run — and the
+> loop never starts at all. Inside the body the parse has already happened,
+> which is why the break belongs there.
+>
+> A workflow condition can still end a loop, but only over what is readable
+> *before* the sweep's own tasks run: `metadata`, or `data` a previous workflow
+> populated.
+
+So the two bounds do different jobs. `max` is structural — the loop cannot
+outrun it, whatever the body does. The `filter` is what ends it early, once the
+real work is done. Reaching `max` is normal completion, not an error: `max` is
+always something you wrote, so hitting it is the bound you asked for.
+
+> [!NOTE]
+> `max` is capped by [`engine.max_loop_iterations`](./configuration.md)
+> (default `10000`), and a workflow exceeding it is refused with `400` at write
+> time rather than at activation. A sweep can call a connector, so an
+> unbounded loop is a request that holds pool connections until the channel
+> timeout fires.
+
+Each sweep's steps appear in the [execution trace](../operate/traces.md)
+tagged with the iteration they belong to, so a trace of ten sweeps reads as ten
+groups rather than one flat list.
 
 ## Error handling
 
