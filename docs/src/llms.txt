@@ -14,7 +14,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
 - [Test & Promote a Service](https://goplasmatic.github.io/Orion/getting-started/test-and-promote.html): lint, dry-run with stubs, regression cases, then export/plan/apply to a second instance
-- [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html): six deployable example packages, with the step-by-step walkthrough
+- [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html): the deployable example packages, with the step-by-step walkthrough
 - [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
 
 ## Compare

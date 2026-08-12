@@ -47,6 +47,12 @@ or compose channels.
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 
 > [!NOTE]
+> The **Category** column above groups the table for reading. It is not the wire
+> value: `GET /api/v1/admin/functions` serves a `category` of either `connector`
+> or `control` for every function, so tooling should branch on those two rather
+> than on the labels here.
+
+> [!NOTE]
 > Wherever an input field is described as **JSONLogic**, you pass a JSONLogic
 > expression that is evaluated against the data context. A plain JSON literal
 > (string, number, object) is also valid JSONLogic and evaluates to itself.

@@ -27,6 +27,14 @@ docker run -p 8081:8080 \
   ghcr.io/goplasmatic/orion-ui:latest
 ```
 
+> [!IMPORTANT]
+> **Keep the console and the server in step.** The console talks to the admin
+> API, and 1.0 moved ten of its endpoints under a `{"data": …}` envelope
+> ([details](../operate/upgrading-to-1.0.md#every-admin-response-is-now-wrapped-in-data)). A
+> console image built before 1.0 will render empty values against a 1.0 server
+> rather than erroring. `:latest` is fine for a first look; for anything you
+> depend on, pin the tag and move both together.
+
 Open `http://localhost:8081` — `ORION_URL` points at your Orion server and the bundled
 nginx reverse-proxies all `/api/` requests to it. Developing against a local checkout?
 `npm install && npm run dev` in the [Orion-ui repo](https://github.com/GoPlasmatic/Orion-ui)

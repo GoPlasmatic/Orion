@@ -1,6 +1,6 @@
 Create a new channel in the Orion engine. Channels are service endpoints that receive data and route it to a workflow for processing.
 
-Channels are created in draft status. Activate them with `channels_activate`, then call `engine_reload` to load changes.
+Channels are created in draft status. Activate them with `channels_activate` — activation hot-reloads the engine automatically; `engine_reload` is only needed after a change committed with `?reload=defer`, or to force a rebuild.
 
 ## Channel JSON Structure
 

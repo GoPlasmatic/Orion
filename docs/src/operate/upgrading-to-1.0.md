@@ -3,7 +3,7 @@
 This page is for operators upgrading an existing Orion deployment from
 **0.3.0** (the previous release) to **1.0.0**. It covers only what *breaks* or
 *changes behaviour*. New capabilities are in the
-[CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md); new
+[CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md); new
 configuration keys are in the [Config Reference](../reference/configuration.md).
 
 Every item below is written as **what changed → how you'll notice → what to
@@ -18,9 +18,10 @@ renamed key fails.
 
 ## Before you start
 
-**Run this first.** It answers the database-backed rows below — 3, 7, 14, and
-the two channel-config renames — against your actual estate rather than in the
-abstract, and exits non-zero if it finds anything:
+**Run this first.** It answers the database-backed rows below — 3 and 14, the
+two channel-config renames, and duplicate channel names — against your actual
+estate rather than in the abstract, and exits non-zero if it finds anything.
+The other rows are config- or client-side and it cannot see them:
 
 ```bash
 orion-server preflight
@@ -37,7 +38,7 @@ Then work through this list. Each row links to the section with the detail.
 |---|-------|-------------------|
 | 1 | [Set `rate_limit.trusted_proxies`](#1-rate-limiting-behind-a-proxy-or-load-balancer) | You run behind a proxy, LB, or ingress — **whether or not** `rate_limit.enabled` is set, if any channel declares a `rate_limit` block |
 | 2 | [Update dashboards and alerts](#2-metrics-dashboards-and-alerts-will-break) | You scrape `/metrics` — three families changed name or labels, and `/metrics` now 404s when metrics are off |
-| 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load), and [remove unknown keys](#unknown-keys-in-a-channel-config-are-now-refused) from them | Always — this one can stop the server from booting. Unknown keys include the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
+| 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load), and [remove unknown keys](#unknown-keys-in-a-channel-config-are-now-refused) from them | Always — this one silently stops individual channels serving, without failing a boot or an admin call. Unknown keys include the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
 | 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic**. Also: the platform `[rate_limit]` budget now [stacks on the channel's own limit](#the-platform-limiter-and-the-channels-now-stack) instead of being bypassed by it |
 | 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
@@ -310,34 +311,39 @@ backpressure guards silently disabled**. A channel whose `validation_logic` was
 broken was, in effect, an unvalidated channel. That is now a refusal, in both
 single-node and cluster mode.
 
-**How you'll notice.** Loudly, and in three separate places:
+**How you'll notice.** Quietly, and only on the channel that is broken. The
+refusal is scoped to the offending row — the server boots, binds, and serves
+everything else:
 
-- **At startup, the process exits with status 1 and never binds a port.** One
-  broken active channel takes down the whole server.
-- **At reload, the operation fails wholesale.** The registry rebuild is
-  all-or-nothing, so the previous engine and registry stay in place and healthy
-  channels keep serving — but `POST /api/v1/admin/engine/reload` returns `500`
-  with code `CONFIG_ERROR`. So does **every admin mutation that triggers a
-  reload**: activate, archive, delete, and rollout updates. The admin plane is
-  effectively wedged for status changes until the row is fixed. (Draft creates
-  and updates do not reload, so you can still edit your way out.)
-- **In cluster mode**, the epoch watcher logs
-  `Epoch watcher: resync failed; will retry`, increments
-  `orion_errors_total{reason="epoch_watcher"}`, and stops advancing — nodes quietly
-  stop picking up *any* config change.
+- **At startup, the process boots normally.** Each broken channel is
+  *quarantined*: absent from the serving map and from the route table, while
+  every healthy channel loads. One bad row no longer takes the server down.
+- **The quarantined channel answers `503` at every ingress**, with
+  `Channel '<name>' failed to load and is not being served: <reason>`. Because
+  it is also absent from the route table, a REST channel's path stops matching
+  and falls through to the usual not-found handling.
+- **Reload and admin mutations still succeed.** `POST /api/v1/admin/engine/reload`
+  and the mutations that trigger a reload — activate, archive, delete, rollout —
+  complete normally; the rest of the rebuild is unaffected. In cluster mode the
+  epoch watcher keeps advancing, so nodes continue to pick up config changes.
+- **`GET /health` reports it.** The endpoint returns HTTP `200` with
+  `"status": "degraded"` and `"components": {"channels": "degraded"}`. The
+  offending names are listed under `channels.quarantined` — detail that is only
+  rendered for a development instance or an authenticated admin caller, so an
+  unauthenticated prober learns *that* something is degraded, not *what*.
 
-Log lines to grep for:
+This is the change worth internalising: the failure is no longer loud. Nothing
+crashes, no admin call errors, and a channel simply stops answering. Watch
+`/health`'s `components.channels`, and alert on it.
+
+Log lines to grep for — one per channel, with the reason:
 
 ```
+Channel quarantined: it will be refused at every ingress until fixed
 Refusing to load channel: config_json does not parse
 Refusing to load channel: validation_logic does not compile
-```
-
-The aggregate error printed to stderr at boot, and returned in the admin
-response body, reads:
-
-```
-refused to load N channel(s): <channel>: config_json does not parse: <serde error>; ...
+Refusing to load channel: rate_limit.key_logic does not compile
+Refusing to load channel: auth config cannot be compiled
 ```
 
 **What to do — before you upgrade.** Only rows with `status = 'active'` are
@@ -1713,6 +1719,21 @@ Error bodies are unaffected — they stay `{"error": {code, message}}`, so
 is unaffected too: `POST /api/v1/data/…` still answers
 `{"status": "ok", "data": …}` as before.
 
+**Upgrade your clients in the same window.** This break is on the admin plane,
+which is what the CLI and the console talk to — a client that predates 1.0
+reads the old shape and will show empty or missing values against a 1.0 server
+rather than failing loudly.
+
+| Client | What speaks 1.0 |
+|---|---|
+| `orion-cli` | **1.0.0 or newer.** It is versioned in lockstep with the server and ships in the same release, so matching the server's version is always right. A `0.2.x` CLI predates this envelope. |
+| Orion console (`orion-ui`) | The image built for this release. Pin a tag rather than running `:latest` across an upgrade, so the console and the server move together deliberately. |
+| Your own tooling | Anything reading the ten endpoints above. If it is Rust, the [`orion-api`](https://crates.io/crates/orion-api) crate carries the exact response types and tolerates skew in both directions. |
+
+Upgrade the server first, then the clients: a 1.0 CLI reads a pre-1.0 server's
+bare responses too (it accepts both shapes), so that order has no window where
+nothing works.
+
 The `orion-server dry-run` CLI subcommand prints the **unwrapped** shape
 (`{matched, trace, output, errors}`) — it writes JSON to stdout for `jq`, not
 an HTTP response, so it gains nothing from an envelope.
@@ -2651,5 +2672,5 @@ key_path  = "/etc/orion/tls/server.key"
 - [Config Reference](../reference/configuration.md) — every key, with defaults
 - [Metrics Reference](../reference/metrics.md) — the full metrics list
 - [Back Up & Restore](./backup-restore.md) and [Audit Logs](./audit-logs.md)
-- [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md)
+- [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md)
 - [Open an issue](https://github.com/GoPlasmatic/Orion/issues)

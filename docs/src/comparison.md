@@ -48,7 +48,7 @@ Four words carry the last column:
 - You would otherwise write the same rate limiting, retries, metrics and
   versioning for the fifth time.
 - An LLM is writing or changing the logic, and you need drafts, dry-runs and
-  one-call rollback around it.
+  one-command rollback around it.
 - Traffic is request/response or per-record events, answered in milliseconds.
 - The logic changes more often than the infrastructure around it does.
 
@@ -59,8 +59,8 @@ Four words carry the last column:
   [durable execution engines](./compare/durable-execution.md).
 - **Something has to *start* on a schedule.** Orion runs when it is called, over
   REST, plain HTTP, or a Kafka topic. There is no timer and no cron.
-- **You need gRPC, WebSockets, or a streaming response.** Those three protocols
-  are the whole ingress surface.
+- **You need gRPC, WebSockets, or a streaming response.** REST, plain HTTP and
+  Kafka are the whole ingress surface.
 - **The logic needs a real programming language.** There is no plugin mechanism,
   no scripting runtime and no WASM sandbox.
   [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)

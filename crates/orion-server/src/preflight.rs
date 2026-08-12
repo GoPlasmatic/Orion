@@ -219,7 +219,7 @@ fn pick_config_remedy(config_json: &str) -> String {
 pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
     let Ok(tasks) = serde_json::from_str::<Value>(tasks_json) else {
         return vec![Finding {
-            check: "3",
+            check: "14",
             entity: format!("workflow '{name}'"),
             problem: "its stored tasks are not valid JSON".to_string(),
             remedy: "repair the tasks_json column, or re-create the workflow".to_string(),
@@ -234,7 +234,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
     let mut findings: Vec<Finding> = crate::validation::validate_workflow_tasks_schema(&tasks)
         .into_iter()
         .map(|e| Finding {
-            check: "3",
+            check: "14",
             entity: format!("workflow '{name}' {}", e.path),
             problem: e.message,
             remedy: "fix the task and PUT the workflow; it is refused at create \

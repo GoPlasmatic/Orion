@@ -49,7 +49,7 @@ backup_retention_count = 7    # keep the newest 7; older ones are pruned and the
 Unset, every backup is kept.
 
 > [!WARNING]
-> **`POST /backups` returns `400` in cluster mode.** The file would land on one
+> **`POST /backups` and `GET /backups` both return `400` in cluster mode.** The file would land on one
 > arbitrary replica, and cluster storage is PostgreSQL or MySQL, which
 > `VACUUM INTO` cannot copy. Use the database's own tooling.
 

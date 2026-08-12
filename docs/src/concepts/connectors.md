@@ -84,13 +84,17 @@ every workflow change.
 
 ## Breakers: what a connector does when the far side fails
 
-Each connector has its own **circuit breaker**. Repeated failures open it, calls
-through it then fail fast with `503` instead of piling up against a dead
+Connectors can be guarded by a **circuit breaker**. Repeated failures open it,
+calls through it then fail fast with `503` instead of piling up against a dead
 backend, and it closes again on its own once calls succeed. HTTP connectors also
 retry with exponential backoff.
 
-A breaker is per connector, so one failing vendor API cannot exhaust the request
-capacity a healthy one needs.
+Breakers are off by default — turn them on with
+`engine.circuit_breaker.enabled = true`
+([configuration](../reference/configuration.md#circuit-breaker)). A breaker is
+per `channel:connector` pair and per node, so one failing vendor API cannot
+exhaust the request capacity a healthy one needs, and one noisy channel cannot
+trip a shared connector for every other channel using it.
 
 ## Next steps
 

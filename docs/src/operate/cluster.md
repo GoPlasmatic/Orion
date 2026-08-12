@@ -89,9 +89,13 @@ These are per-node **by design**, and each has ×N semantics you should size for
 
 > [!WARNING]
 > **A channel whose dedup or cache connector is missing, broken, or explicitly
-> in-memory refuses to load in cluster mode.** The activating admin call errors
-> and boot fails. Silently degrading to per-node state would leave a channel
-> advertising a guarantee it no longer keeps.
+> in-memory refuses to load in cluster mode.** The activating admin call
+> succeeds; the channel is then quarantined at load — refused at every ingress
+> with a `503`, absent from the route table, logged as `Channel quarantined`,
+> and listed under `/health`'s `channels.quarantined` with
+> `components.channels: "degraded"` — while the node boots and every other
+> channel keeps serving. Silently degrading to per-node state would leave a
+> channel advertising a guarantee it no longer keeps.
 
 ## Migrate as a deploy step, not at boot
 

@@ -559,6 +559,11 @@ pub fn mask_connector_secrets(config_json: &str) -> String {
 pub fn mask_connector(connector: &crate::storage::models::Connector) -> ConnectorResponse {
     let mut masked = ConnectorResponse::from(connector);
     masked.config_json = mask_connector_secrets(&masked.config_json);
+    // Parsed from the *masked* string, never from the row: `config` cannot
+    // carry a secret the string form has already replaced, whatever masking
+    // rules are added later. A document that does not parse yields `null`,
+    // matching the empty `content_hash` the same condition produces.
+    masked.config = serde_json::from_str(&masked.config_json).unwrap_or(Value::Null);
     masked
 }
 
@@ -660,6 +665,60 @@ pub fn find_masked_value(value: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ConnectorResponse::config` is parsed from the *masked* string, so it
+    /// cannot carry a secret that `config_json` has already replaced.
+    ///
+    /// The field exists so a read response can be edited and written straight
+    /// back (`POST`/`PUT` both take the config as an object). That convenience
+    /// would be a credential leak if it were parsed from the row instead, so
+    /// this asserts the two views agree *and* that both are masked.
+    #[test]
+    fn mask_connector_populates_the_parsed_config_from_the_masked_string() {
+        let row = crate::storage::models::Connector {
+            id: "c-1".to_string(),
+            name: "api".to_string(),
+            connector_type: "http".to_string(),
+            config_json:
+                r#"{"type":"http","url":"https://api.example.com","auth":{"type":"bearer","token":"secret123"}}"#
+                    .to_string(),
+            enabled: true,
+            tags_json: "[]".to_string(),
+            created_at: Default::default(),
+            updated_at: Default::default(),
+        };
+
+        let masked = mask_connector(&row);
+
+        assert_eq!(masked.config["auth"]["token"], "******");
+        assert!(
+            !masked.config.to_string().contains("secret123"),
+            "the parsed config leaked a secret the string form masked: {}",
+            masked.config
+        );
+        // The two views are the same document.
+        let from_string: Value = serde_json::from_str(&masked.config_json).expect("test");
+        assert_eq!(masked.config, from_string);
+    }
+
+    /// A stored document that does not parse yields `null`, not a panic and
+    /// not a half-populated object — the same condition that empties
+    /// `content_hash`.
+    #[test]
+    fn an_unparseable_config_yields_a_null_parsed_config() {
+        let row = crate::storage::models::Connector {
+            id: "c-2".to_string(),
+            name: "broken".to_string(),
+            connector_type: "http".to_string(),
+            config_json: "{not json".to_string(),
+            enabled: true,
+            tags_json: "[]".to_string(),
+            created_at: Default::default(),
+            updated_at: Default::default(),
+        };
+
+        assert_eq!(mask_connector(&row).config, Value::Null);
+    }
 
     #[test]
     fn test_mask_connector_secrets_bearer_token() {

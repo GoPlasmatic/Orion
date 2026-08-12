@@ -17,13 +17,13 @@ Orion MCP server — manage workflows, channels, connectors, data processing, ex
 3. `workflows_create` — define processing workflows with task pipelines
 4. `channels_create` — create channels (service endpoints) that link to workflows
 5. `workflows_activate` / `channels_activate` — activate the draft entities
-6. `engine_reload` — **required** after creating/updating workflows and channels to activate changes
+6. `engine_reload` — only needed after a change committed with `?reload=defer`, or to force a rebuild; activation reloads on its own
 7. `workflows_test` — dry-run a workflow with sample data to verify behaviour
 8. `data_send_sync` / `data_send_async` — send real data for processing
 
 ## Important Notes
 
-- Always call `engine_reload` after creating, updating, or deleting workflows/channels — changes are not active until reload
+- Activation hot-reloads the engine by itself. Call `engine_reload` only when several changes were committed with `?reload=defer` and must go live together
 - Workflows and channels are created in "draft" status — activate them before they can process data
 - Channels define how data enters the system (REST routes, HTTP endpoints, Kafka topics)
 - Workflows define what happens to the data (the processing pipeline)

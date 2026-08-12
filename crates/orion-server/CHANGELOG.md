@@ -7,22 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **Shared wire-contract and transport crates.** The response DTOs, domain
-  enums, error envelope (with a stable `error.code` registry) and the
-  bulk-import report moved to the workspace's `orion-api` crate, and the
-  admin-API HTTP client behind `orion-server package` moved to
-  `orion-client` — the same crates orion-cli builds on, so a client can no
-  longer drift from the server's wire shapes. Server code paths re-export
-  everything under their old names and the wire is byte-compatible; the one
-  spec-visible improvement is that the OpenAPI document now describes
-  `ImportResult.errors[]`/`results[]` with typed
-  `ImportItemError`/`ImportItemResult` components instead of untyped arrays.
-  Neither library crate is released on its own: crates-publish ships them as
-  skip-if-published riders right before a binary crate.
-
-## [1.0.0] - 2026-08-09
+## [1.0.0] - 2026-08-12
 
 **Highlights.** The promotion story: an `orion-server package` CLI
 (export / lint / plan / apply / diff) over a new receipts API, upsert
@@ -459,8 +444,12 @@ follows.
   corresponds to nothing in the author's document turns a loud parse error into a
   quiet misattribution in traces and metrics.
 
-- **dataflow-rs 3.0 → 3.1, and the workarounds it exists to remove are gone.**
-  Six behaviour changes come with it; the rest of the upgrade is internal.
+- **dataflow-rs 3.0 → 3.3, and the workarounds it exists to remove are gone.**
+  Six behaviour changes come with the 3.1 step, described below; the rest of
+  the upgrade is internal. 3.2 added the `all-operators` feature — enabled
+  here, which is what makes the `datetime`, `ext-string`, `ext-array`,
+  `ext-math`, `ext-control` and `error-handling` operator families available
+  to expressions — and 3.3 added the workflow `loop` recorded under Added.
 
   - **The versioned rollout traffic split now actually splits traffic.** This
     is a live defect being fixed, not a new feature. Each version's condition
@@ -1299,6 +1288,18 @@ follows.
 
 ### Added
 
+- **Workflows can loop over a task list.** A workflow may carry a `loop`
+  object — `{counter, init, increment, max}` — that repeats its tasks with a
+  counter in scope, unlocking per-element fan-out (one HTTP call per item of
+  an array) without a task per element. Stored in a new nullable `loop_json`
+  column (sqlite/012, postgres/016, mysql/015) and projected into the content
+  hash only when present, so existing workflows keep their hashes. Iterations
+  are bounded by `engine.max_loop_iterations` (default 10000). The loop body's
+  break condition must be a filter task inside the loop, not the workflow
+  condition — `data` is empty when the workflow condition is evaluated — and
+  a workflow that gets this wrong is refused at write time by
+  `validate_workflow_loop_schema` rather than at reload. Requires the
+  dataflow-rs 3.3 engine.
 - **`orion-server package` promotes a bundle of connectors, workflows and
   channels between environments.** Five verbs compose the promotion story:
   `export` computes a package's closure from a running instance — selected
@@ -2267,6 +2268,23 @@ follows.
 
 ### Changed
 
+- **Shared wire-contract and transport crates.** The response DTOs, domain
+  enums, error envelope (with a stable `error.code` registry) and the
+  bulk-import report moved to the workspace's `orion-api` crate, and the
+  admin-API HTTP client behind `orion-server package` moved to
+  `orion-client` — the same crates orion-cli builds on, so a client can no
+  longer drift from the server's wire shapes. Server code paths re-export
+  everything under their old names and the wire is byte-compatible; the one
+  spec-visible improvement is that the OpenAPI document now describes
+  `ImportResult.errors[]`/`results[]` with typed
+  `ImportItemError`/`ImportItemResult` components instead of untyped arrays.
+  Neither library crate is released on its own: crates-publish ships them as
+  skip-if-published riders right before a binary crate.
+- **orion-cli is versioned in lockstep with the server and released with it.**
+  A bare `vX.Y.Z` tag now announces both packages, so the CLI's installers,
+  Homebrew formula and crates.io release ship from the same tag as the
+  server's rather than from a separate `orion-cli-v*` cycle. The prefixed
+  tags remain available for shipping one package alone.
 - **Handler classification moved off the error message and onto the error.**
   A handler must return a `DataflowError`, and before 3.1 that enum was closed
   with no extension point — so three classifications lived as *prefixes on the

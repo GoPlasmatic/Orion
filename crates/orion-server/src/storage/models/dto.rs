@@ -125,6 +125,12 @@ impl From<&Connector> for ConnectorResponse {
             name: connector.name.clone(),
             connector_type: connector.connector_type.clone(),
             config_json: connector.config_json.clone(),
+            // Deliberately null here, not the parsed row config: this `From`
+            // sees the *unmasked* document, and `mask_connector` — the only
+            // supported constructor (D27) — fills this in by parsing the
+            // masked string. A path that skips masking therefore publishes no
+            // config at all rather than a secret-bearing one.
+            config: Value::Null,
             enabled: connector.enabled,
             // Tolerant, unlike the channel/workflow decode: this `From` is
             // infallible because `mask_connector` (the sole constructor of
@@ -490,6 +496,7 @@ mod tests {
                 "name",
                 "connector_type",
                 "config_json",
+                "config",
                 "enabled",
                 "tags",
                 "content_hash",
@@ -498,6 +505,10 @@ mod tests {
             ]
         );
         assert_eq!(value["config_json"], r#"{"password":"******"}"#);
+        // `From` deliberately leaves `config` null — only `mask_connector`
+        // fills it, from the masked string, so an unmasked path cannot publish
+        // a parsed secret. See `mask_connector_populates_the_parsed_config`.
+        assert_eq!(value["config"], serde_json::Value::Null);
         assert_eq!(value["tags"], serde_json::json!([]));
         assert!(
             value["content_hash"]

@@ -39,6 +39,7 @@ this table against the engine, so it cannot drift from what actually runs.
 | Operator | Example | Meaning |
 |----------|---------|---------|
 | `var` / `val` | `{ "var": "data.order.total" }` | Read a value from the context (dotted path) |
+| `val` (path chain) | `{ "val": ["data", "items", { "val": ["temp_data", "i"] }] }` | Read with **computed** segments — the only way to index an array by a value |
 | `==` / `!=` | `{ "==": [{ "var": "data.type" }, "order"] }` | Loose equality |
 | `===` / `!==` | `{ "===": [{ "var": "data.qty" }, 1] }` | Strict equality (no type coercion) |
 | `>` `>=` `<` `<=` | `{ ">": [{ "var": "data.order.total" }, 10000] }` | Comparison |

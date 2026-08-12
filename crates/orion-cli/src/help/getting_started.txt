@@ -3,7 +3,6 @@ Getting Started:
   orion-cli health
   orion-cli workflows create -f workflow.json
   orion-cli workflows activate <id>
-  orion-cli engine reload
   orion-cli send my-channel -d '{"key": "value"}'
 
 Typical Workflow:
@@ -12,9 +11,11 @@ Typical Workflow:
   3. workflows       -- define processing pipelines
   4. channels        -- create endpoints that route data to workflows
   5. activate        -- activate draft workflows and channels
-  6. engine reload   -- required to load changes into the engine
-  7. workflows test  -- dry-run with sample data
-  8. send            -- send real data for processing
+  6. workflows test  -- dry-run with sample data
+  7. send            -- send real data for processing
+
+  Activation hot-reloads the engine on its own; `engine reload` is only
+  needed for changes committed with --defer-reload, or to force a rebuild.
 
 Environment Variables:
   ORION_SERVER_URL      Server URL (overrides config file)

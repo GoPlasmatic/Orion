@@ -18,8 +18,9 @@ Nothing here is compiled or deployed. Every step is one API call, and the endpoi
 > flow entirely in the browser.
 >
 > In a hurry? `curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/examples/quickstart.sh | bash`
-> runs all four steps against your instance and sends the test request. The steps
-> below build the same service by hand, so you can see each moving part.
+> deploys a ready-made service — `high-value-order`, answering `POST /api/v1/data/orders` —
+> and sends it a test request. The steps below build a simpler one (`hello-world`)
+> by hand instead, so you can see each moving part.
 
 ## 1. Create the workflow
 
@@ -115,14 +116,19 @@ orion-cli channels list
 
 ## The same flow with the CLI
 
-Every call above has a CLI equivalent, and `orion-cli send` replaces the data-plane curl:
+Every call above has a CLI equivalent, and `orion-cli send` replaces the data-plane curl.
+
+One difference to keep in mind: `send` (and `workflows test`) takes the **bare
+business payload** and wraps it in the `{"data": …}` envelope for you, while the
+HTTP data API expects that envelope in the request body. Passing the envelope to
+`send` nests it twice, and the workflow then reads `data.data.*`.
 
 ```bash
 orion-cli workflows create -f workflow.json
 orion-cli workflows activate hello-world
 orion-cli channels create -f channel.json
 orion-cli channels activate hello
-orion-cli send hello -d '{ "data": { "name": "World" } }'
+orion-cli send hello -d '{ "name": "World" }'
 ```
 
 <div class="asciinema-player" data-cast="casts/cli-lifecycle.cast"></div>

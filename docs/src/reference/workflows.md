@@ -229,7 +229,7 @@ Stopping early is a [`filter`](./functions.md#filter) task with `on_reject:
           "connector": "notifier",
           "method": "POST",
           "path": "/send",
-          "body": { "var": ["data.req.recipients", { "var": "temp_data.i" }] }
+          "body_logic": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] }
         }
       }
     }

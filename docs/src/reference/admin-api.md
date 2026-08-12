@@ -41,13 +41,29 @@ Every admin 2xx body puts its payload under a top-level `data` key — one shape
 { "data": { "workflow_id": "wf_...", "name": "Order Processing", "...": "..." } }
 ```
 
-List endpoints add the three pagination counters alongside it, and nothing else:
+List endpoints add pagination counters alongside it — `limit` and `offset` always, `total` where the endpoint computes it (the trace list makes it opt-in via `?include_total=true` and adds `next_cursor`):
 
 ```json
 { "data": [ ... ], "total": 137, "limit": 50, "offset": 0 }
 ```
 
 Pre-1.0 responses differed for ten handlers — the [upgrade guide](../operate/upgrading-to-1.0.md) has the full list.
+
+### Paging and sorting by endpoint
+
+Not every list takes the same query parameters. The asymmetry is contract, not
+accident — the trace list pages by keyset because its table is the one that
+grows without bound, and the narrower lists are the ones whose result sets are
+small enough that sorting client-side is cheaper than supporting it server-side.
+
+| Endpoints | `limit` / `offset` | `sort_by` / `sort_order` | Other |
+|---|:---:|:---:|---|
+| `/workflows`, `/channels`, `/connectors` and their `/export` | ✅ | ✅ | `?tag=`, `?status=` filters |
+| `/traces` | ✅ | ✅ | `?cursor=` (keyset), `?include_total=true`; the response adds `next_cursor` and omits `total` unless asked |
+| `/audit-logs` | ✅ | ❌ | `?start_time=` / `?end_time=` (RFC 3339 or naive), `limit` clamped to 1–1000 |
+| `/trace-dlq`, `/packages`, `/{id}/versions` | ✅ | ❌ | — |
+
+`limit` and `offset` are therefore the only two you can rely on everywhere.
 
 Errors follow one structure across both planes — see
 [Errors & Response Envelopes](./errors.md#the-error-envelope).
@@ -213,6 +229,11 @@ All three primitives export and import, so an estate can live in git rather than
 only in the database. Each `/export` emits the shape its `/import` accepts, so
 the round trip needs no reshaping in between.
 
+Every `/import` endpoint accepts at most **1000 items per request** and answers
+`400 VALIDATION_ERROR` above that — split a larger estate into batches. The
+request is also bounded by `server.max_admin_body_size`, which a batch of large
+workflows can reach well before the item cap does.
+
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/admin/{workflows,channels,connectors}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set |
@@ -354,8 +375,8 @@ clear out entries that will never succeed.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) |
-| GET | `/api/v1/admin/backups` | List backup files currently in `storage.backup_dir` |
+| POST | `/api/v1/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) — `400` in cluster mode |
+| GET | `/api/v1/admin/backups` | List backup files currently in `storage.backup_dir` — `400` in cluster mode |
 
 ## Packages
 

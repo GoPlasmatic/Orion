@@ -1,6 +1,6 @@
 # Common Workflow Patterns
 
-Six shapes that cover most workflows. Each states the problem, the pattern, and
+Seven shapes that cover most workflows. Each states the problem, the pattern, and
 the mistake it prevents.
 
 ## Parse, then process
@@ -172,15 +172,24 @@ The break is a `filter`, not the workflow condition:
     { "id": "send", "name": "Send one",
       "function": { "name": "http_call", "input": {
         "connector": "notifier", "method": "POST", "path": "/send",
-        "body": { "var": ["data.req.recipients", { "var": "temp_data.i" }] } } } }
+        "body_logic": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] } } } }
   ]
 }
 ```
 
-**Why it bites.** Putting the break in the workflow `condition` is the obvious
-move and it silently does nothing: `data` starts empty, so the condition is
-false on sweep 0 and the loop never runs once. Put it in a `filter`, after the
-parse.
+**Why it bites.** Three traps, all silent:
+
+- Putting the break in the workflow `condition` is the obvious move and it does
+  nothing: `data` starts empty, so the condition is false on sweep 0 and the
+  loop never runs once. Put it in a `filter`, after the parse.
+- `body` is a **static** field — an expression written there is sent verbatim,
+  not evaluated. The evaluated field is `body_logic`. The same split exists on
+  the other connector functions.
+- **`var` cannot index by a computed value.** `var`'s second argument is a
+  *default*, not an index, so
+  `{"var": ["data.req.recipients", {"var": "temp_data.i"}]}` quietly returns the
+  whole array on every sweep. Dynamic indexing needs `val` with path-chain
+  segments, as above.
 
 The sweeps are **sequential and inside one request**. Twenty calls at 50 ms is
 a second of wall clock against your channel timeout; a thousand is a job for an

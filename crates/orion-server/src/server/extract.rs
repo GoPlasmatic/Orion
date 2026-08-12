@@ -56,6 +56,32 @@ where
     }
 }
 
+/// The data plane's raw body, with an envelope-carrying rejection.
+///
+/// The dynamic handler takes the body as bytes because a channel's payload is
+/// not necessarily JSON. Taking it as a bare `Bytes` meant axum's own
+/// rejection answered an oversize request — a `413` with the plain-text body
+/// `Failed to buffer the request body: length limit exceeded`, the one
+/// non-2xx in the whole surface that carried no `{"error": …}` envelope, and
+/// so the one a client's error path could not parse.
+pub struct OrionBody(pub axum::body::Bytes);
+
+impl<S> FromRequest<S> for OrionBody
+where
+    S: Send + Sync,
+{
+    type Rejection = OrionError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::body::Bytes::from_request(req, state).await {
+            Ok(bytes) => Ok(OrionBody(bytes)),
+            Err(_) => Err(OrionError::PayloadTooLarge(
+                "Request body exceeded `ingest.max_payload_size`".to_string(),
+            )),
+        }
+    }
+}
+
 fn map_rejection(rej: JsonRejection) -> OrionError {
     match rej {
         // Type/shape mismatch (default axum: 422). v0.1 returned 400 for
@@ -73,6 +99,15 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
         }
         JsonRejection::MissingJsonContentType(_) => OrionError::UnsupportedMediaType(
             "Expected `content-type: application/json`".to_string(),
+        ),
+        // The body exceeded the plane's limit. Matched explicitly because the
+        // catch-all below turns it into a 400 `VALIDATION_ERROR`, which tells
+        // the caller to fix their JSON when the JSON was never read.
+        JsonRejection::BytesRejection(_) => OrionError::PayloadTooLarge(
+            "Request body exceeded the configured limit — see \
+             `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` \
+             (admin plane)"
+                .to_string(),
         ),
         // Catch-all: surface body_text but use the rejection's status as a hint.
         other => OrionError::validation(other.body_text()),

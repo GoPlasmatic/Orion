@@ -8,7 +8,7 @@
   Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Use as a CLI or as an MCP server for Claude Desktop, Cursor, and other AI tools.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-  [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
+  [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion?filter=orion-cli-v*)](https://github.com/GoPlasmatic/Orion/releases)
 </div>
 
@@ -17,7 +17,7 @@
 ## Quick Start
 
 <div align="center">
-  <img src="../../docs/media/cli-lifecycle.gif" alt="orion-cli creating and activating a workflow, dry-running it, then sending live data" width="100%">
+  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/cli-lifecycle.gif" alt="orion-cli creating and activating a workflow, dry-running it, then sending live data" width="100%">
   <br>
   <em>Create, activate, dry-run and send — the full lifecycle from one terminal.</em>
 </div>
@@ -41,7 +41,7 @@ orion-cli health
 ```
 
 ```
-Orion Server v0.2.0
+Orion Server v1.0.0
   Status:       OK
   Uptime:       2h 30m
   Components:
@@ -59,14 +59,13 @@ orion-cli workflows create -f high-value-order.json
 orion-cli workflows activate <WORKFLOW_ID>
 
 # Create a channel that links to the workflow
-orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"http","workflow_id":"<WORKFLOW_ID>"}'
+orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"http","route_pattern":"/orders","methods":["POST"],"workflow_id":"<WORKFLOW_ID>"}'
 orion-cli channels activate <CHANNEL_ID>
 
-# Reload the engine to pick up changes
-orion-cli engine reload
+# Activation hot-reloads the engine on its own — no reload step needed
 
 # Dry-run test with sample data
-orion-cli workflows test <WORKFLOW_ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+orion-cli workflows test <WORKFLOW_ID> -d '{"order_id":"ORD-9182","total":25000}' --trace
 
 # Send real data through the channel
 orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
@@ -79,6 +78,7 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | Command | Description |
 |---------|-------------|
 | `health` | Check server health and component status |
+| `benchmark` | Load-test a channel and report latency statistics |
 | `workflows` | Manage workflows — create, update, delete, test, import/export, diff |
 | `channels` | Manage channels — create, update, delete, activate/archive, versioning, bulk import |
 | `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
@@ -89,6 +89,8 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `metrics` | Retrieve Prometheus metrics |
 | `audit-logs` | View audit logs of admin actions |
 | `backups` | Create and list database backups (SQLite) |
+| `packages` | List and inspect package promotion receipts |
+| `dlq` | Inspect and requeue the trace dead-letter queue |
 | `config` | Configure server URL and defaults |
 | `completions` | Generate shell completions (bash, zsh, fish, powershell) |
 | `mcp` | Start MCP server for AI tool integration |
@@ -108,7 +110,7 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 
 ## Workflow Management
 
-Full lifecycle management for [Orion workflows](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#admin-api):
+Full lifecycle management for [Orion workflows](https://goplasmatic.github.io/Orion/reference/admin-api.html):
 
 ```bash
 # List workflows with filters
@@ -143,7 +145,7 @@ orion-cli workflows delete <ID>
 Test any workflow against sample data before activating — with a full execution trace:
 
 ```bash
-orion-cli workflows test <ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+orion-cli workflows test <ID> -d '{"order_id":"ORD-9182","total":25000}' --trace
 ```
 
 ```
@@ -197,7 +199,7 @@ Channels are service endpoints that receive data and route it to workflows:
 orion-cli channels list --status active --protocol rest
 
 # Create a channel
-orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"rest","route_pattern":"/orders/{id}","workflow_id":"process-orders"}'
+orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"rest","route_pattern":"/orders/{id}","methods":["GET"],"workflow_id":"process-orders"}'
 
 # Activate / Archive
 orion-cli channels activate <ID>
@@ -216,7 +218,7 @@ orion-cli channels import -f channels.json
 
 ## Connectors
 
-Manage [named external service configurations](https://github.com/GoPlasmatic/Orion/blob/main/docs/connectors.md) with auth and retry policies:
+Manage [named external service configurations](https://goplasmatic.github.io/Orion/reference/connectors.html) with auth and retry policies:
 
 ```bash
 orion-cli connectors list
@@ -240,7 +242,7 @@ orion-cli connectors import -f connectors.json
 
 ## Sending Data
 
-[Processing modes](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#data-api) for any workload:
+[Processing modes](https://goplasmatic.github.io/Orion/reference/data-api.html) for any workload:
 
 ### Synchronous (default)
 
@@ -287,7 +289,6 @@ Exit codes: `0` completed, `1` failed, `2` timeout.
 orion-cli engine status
 
 # Hot-reload workflows and channels (zero downtime)
-orion-cli engine reload
 ```
 
 ---
@@ -311,7 +312,7 @@ orion-cli --output json functions list
 Orion includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, enabling AI assistants like Claude Desktop and Cursor to manage your Orion instance directly.
 
 <div align="center">
-  <img src="../../docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 46 tools, then a live tool call" width="100%">
+  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 53 tools, then a live tool call" width="100%">
   <br>
   <em>A real stdio JSON-RPC session — the same transport Claude Desktop and Cursor use.</em>
 </div>
@@ -369,21 +370,23 @@ Or add manually to Cursor MCP settings (Settings > MCP Servers):
 
 ### Available MCP Tools
 
-The MCP server exposes 46 tools covering the full Orion API:
+The MCP server exposes 53 tools covering the full Orion API:
 
 | Category | Tools |
 |----------|-------|
 | **Health** | `health_check` |
 | **Engine** | `engine_status`, `engine_reload` |
-| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import` |
+| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import`, `workflows_dependencies` |
 | **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import` |
-| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import` |
+| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import`, `connectors_test` |
 | **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
 | **Data** | `data_send_sync`, `data_send_async` |
 | **Traces** | `traces_list`, `traces_get` |
 | **Functions** | `functions_list` |
 | **Audit Logs** | `audit_logs_list` |
 | **Backups** | `backups_create`, `backups_list` |
+| **Packages** | `packages_list`, `packages_get` |
+| **Trace DLQ** | `trace_dlq_list`, `trace_dlq_get`, `trace_dlq_requeue` |
 | **Metrics** | `get_metrics` |
 
 ---
@@ -402,7 +405,7 @@ Use `--quiet` for minimal output (just IDs) — ideal for shell scripts:
 
 ```bash
 WF_ID=$(orion-cli --quiet workflows create -f workflow.json)
-orion-cli workflows test "$WF_ID" -d '{"data":{"amount":100}}'
+orion-cli workflows test "$WF_ID" -d '{"amount":100}'
 ```
 
 ---
@@ -468,11 +471,11 @@ Verify with `orion-cli --version`. Requires Rust 1.88+ for source builds.
 ## Related
 
 - **[Orion Server](https://github.com/GoPlasmatic/Orion)** — The services runtime platform
-- **[API Reference](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md)** — Full REST API documentation
-- **[Connectors Guide](https://github.com/GoPlasmatic/Orion/blob/main/docs/connectors.md)** — Auth schemes, retry policies, and secrets
-- **[Production Features](https://github.com/GoPlasmatic/Orion/blob/main/docs/production-features.md)** — Custom IDs, versioning, fault tolerance
-- **[Use Cases & Patterns](https://github.com/GoPlasmatic/Orion/blob/main/docs/use-cases.md)** — Real-world examples and AI prompt templates
-- **[Observability](https://github.com/GoPlasmatic/Orion/blob/main/docs/observability.md)** — Prometheus metrics, health checks, logging
+- **[API Reference](https://goplasmatic.github.io/Orion/reference/admin-api.html)** — Full REST API documentation
+- **[Connectors Guide](https://goplasmatic.github.io/Orion/reference/connectors.html)** — Auth schemes, retry policies, and secrets
+- **[Production Features](https://goplasmatic.github.io/Orion/reference/cli.html)** — Custom IDs, versioning, fault tolerance
+- **[Use Cases & Patterns](https://goplasmatic.github.io/Orion/guides/worked-examples.html)** — Real-world examples and AI prompt templates
+- **[Observability](https://goplasmatic.github.io/Orion/operate/monitoring.html)** — Prometheus metrics, health checks, logging
 
 ## Contributing
 

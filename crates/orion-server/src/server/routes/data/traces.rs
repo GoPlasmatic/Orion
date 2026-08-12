@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::errors::OrionError;
-use crate::server::extract::OrionQuery;
+use crate::server::extract::{OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
 use crate::server::routes::openapi::{DataEnvelope, TraceDetail, TracePageEnvelope};
@@ -92,8 +92,34 @@ pub(crate) async fn get_trace(
     State(state): State<AppState>,
     Path(id): Path<String>,
     OrionQuery(query): OrionQuery<TraceAccessQuery>,
+    PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, OrionError> {
+    // This route carries its own auth (the admin middleware does not guard it),
+    // so it has to carry the middleware's *brute-force* protection too. Without
+    // this, the trace token was the one credential on the whole surface that
+    // could be guessed at full speed: unlimited attempts, none counted, no
+    // lockout. Identify the caller exactly as the middleware and the rate
+    // limiter do, so a spoofed `X-Forwarded-For` cannot mint a fresh budget.
+    let client = crate::server::rate_limit::client_ip_from_parts(
+        peer.as_ref(),
+        &headers,
+        state.trusted_proxies(),
+    );
+    if state.config.admin_auth.enabled
+        && let Some(remaining) = state.admin_auth_failures.locked_for(&client)
+    {
+        crate::metrics::record_admin_auth_failure("locked_out");
+        tracing::warn!(
+            client = %client,
+            remaining_ms = remaining.as_millis() as u64,
+            "Trace read refused: client is in failed-auth backoff"
+        );
+        return Err(OrionError::Unauthorized(
+            "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+        ));
+    }
+
     let trace = state.repos.traces.get_by_id(&id).await?;
 
     // R12 access rule. Lane 1: a valid admin credential (only meaningful when
@@ -123,10 +149,27 @@ pub(crate) async fn get_trace(
             None => !auth_cfg.enabled,
         };
         if !allowed {
+            if auth_cfg.enabled {
+                let lockout = state.admin_auth_failures.record_failure(&client);
+                crate::metrics::record_admin_auth_failure("invalid_key");
+                tracing::warn!(
+                    client = %client,
+                    lockout_ms = lockout.map(|d| d.as_millis() as u64),
+                    "Trace read refused: neither a valid trace token nor an admin credential"
+                );
+            }
             return Err(OrionError::Unauthorized(
                 "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
             ));
         }
+        // A correct token clears the budget, the way a valid admin key does —
+        // otherwise a legitimate poller inherits a lockout from whoever else
+        // shares its address.
+        if auth_cfg.enabled {
+            state.admin_auth_failures.record_success(&client);
+        }
+    } else {
+        state.admin_auth_failures.record_success(&client);
     }
 
     let mut response = json!({

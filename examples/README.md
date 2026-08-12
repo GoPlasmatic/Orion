@@ -42,7 +42,7 @@ Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
 | [`notification-routing`](packages/notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](packages/postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 | [`channel-composition`](packages/channel-composition/) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
-| [`kafka-order-events`](packages/kafka-order-events/) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates |
+| [`kafka-order-events`](packages/kafka-order-events/) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates — **needs `kafka.enabled = true` and a broker** |
 
 Every entity carries a `tags: ["pkg:<name>"]` label — that is what marks it as
 belonging to the package, and what `orion-server package export` selects on.

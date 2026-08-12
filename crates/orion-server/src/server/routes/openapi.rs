@@ -1,4 +1,3 @@
-use serde::Serialize;
 use serde_json::Value;
 use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
@@ -22,42 +21,16 @@ const METRICS_ON_DOCUMENTED_LISTENER: bool = true;
 ///
 /// Every 4xx/5xx from `OrionError` — and the 500 emitted by the panic-recovery
 /// layer — uses this envelope.
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ErrorResponse {
-    error: ErrorDetail,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ErrorDetail {
-    /// Stable machine-readable code, e.g. `NOT_FOUND`, `VALIDATION_ERROR`,
-    /// `RATE_LIMITED`, `CIRCUIT_OPEN`, `TIMEOUT`, `INTERNAL_ERROR`.
-    #[schema(example = "VALIDATION_ERROR")]
-    code: String,
-    /// Human-readable message. Internal 5xx messages are replaced with a
-    /// generic string; the detail is logged and kept in the trace.
-    message: String,
-    /// Per-field breakdown, present only on `VALIDATION_ERROR`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<Vec<ErrorFieldDetail>>,
-    /// Echo of the request's `x-request-id`. Omitted when the request carried
-    /// no id and none was generated.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    request_id: Option<String>,
-}
-
-/// One entry of `error.details` on a validation failure.
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ErrorFieldDetail {
-    /// JSON pointer-ish path to the offending field.
-    #[schema(example = "data.amount")]
-    path: String,
-    code: String,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expected: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    got: Option<Value>,
-}
+///
+/// These are the shared contract types, not mirrors of them. Three hand-written
+/// structs used to stand in here and had already drifted: they published
+/// `details` as a nullable array, while `ErrorBody` omits the key when empty and
+/// never sends null. `schema(as = …)` on the orion-api types keeps the component
+/// names the document has always used, since renaming one breaks clients
+/// generated against it.
+pub(crate) use orion_api::{
+    ErrorBody as ErrorDetail, ErrorEnvelope as ErrorResponse, FieldError as ErrorFieldDetail,
+};
 
 /// Component name of the default `Authorization: Bearer <token>` scheme.
 const SCHEME_BEARER: &str = "admin_bearer";
@@ -186,17 +159,23 @@ impl Modify for SecurityAddon {
             // `/metrics` on this listener at all, and the operation's own
             // description says so.
             let guarded = is_guarded_path(path, METRICS_ON_DOCUMENTED_LISTENER);
+            // Paired with the method name because the read-only-key refusal
+            // below is method-dependent — `admin_auth` allows GET/HEAD on a
+            // read-only key and refuses everything else.
             let operations = [
-                item.get.as_mut(),
-                item.put.as_mut(),
-                item.post.as_mut(),
-                item.delete.as_mut(),
-                item.options.as_mut(),
-                item.head.as_mut(),
-                item.patch.as_mut(),
-                item.trace.as_mut(),
+                ("GET", item.get.as_mut()),
+                ("PUT", item.put.as_mut()),
+                ("POST", item.post.as_mut()),
+                ("DELETE", item.delete.as_mut()),
+                ("OPTIONS", item.options.as_mut()),
+                ("HEAD", item.head.as_mut()),
+                ("PATCH", item.patch.as_mut()),
+                ("TRACE", item.trace.as_mut()),
             ];
-            for operation in operations.into_iter().flatten() {
+            for (method, operation) in operations
+                .into_iter()
+                .filter_map(|(m, op)| op.map(|op| (m, op)))
+            {
                 if guarded {
                     operation.security = Some(admin_security());
                     ensure_response(
@@ -207,6 +186,21 @@ impl Modify for SecurityAddon {
                              `admin_auth.enabled` is true.",
                         ),
                     );
+                    // S13: a read-only key authenticates but does not authorize
+                    // a mutation. Injected rather than annotated for the same
+                    // reason the 401 is — the rule lives in the middleware and
+                    // is method-based, so a per-handler annotation would be a
+                    // second copy of it that a new route could forget.
+                    if !matches!(method, "GET" | "HEAD") {
+                        ensure_response(
+                            operation,
+                            "403",
+                            error_response(
+                                "The presented admin key is read-only, and this method \
+                                 mutates. Only returned when `admin_auth.enabled` is true.",
+                            ),
+                        );
+                    }
                 }
                 ensure_response(
                     operation,
@@ -672,8 +666,10 @@ pub(crate) struct ConnectorListItem {
     id: String,
     name: String,
     connector_type: String,
-    /// Connector config with every secret replaced by `******`.
+    /// Connector config with every secret replaced by `******`, verbatim.
     config_json: String,
+    /// The same masked config, parsed — the shape `POST`/`PUT` accept.
+    config: serde_json::Value,
     enabled: bool,
     /// Selection labels (K6); filter the list with `?tag=`.
     tags: Vec<String>,
@@ -691,6 +687,31 @@ pub(crate) struct ConnectorListItem {
     /// Which load stage failed. Present only when `load_status = "failed"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     load_error_stage: Option<String>,
+}
+
+/// One item of `GET /api/v1/admin/connectors/export`.
+///
+/// Declared separately from [`crate::storage::models::ConnectorResponse`]
+/// because an export has to emit the shape `/import` *accepts*, not the shape
+/// the read endpoints return: `config` is the parsed object here, where the
+/// read shape carries `config_json` as a string. Publishing the read type for
+/// this route promised three fields the body does not carry (`config_json`,
+/// `created_at`, `updated_at`) and hid the one it does.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ConnectorExportItem {
+    id: String,
+    name: String,
+    connector_type: String,
+    /// The parsed connector config, with every secret replaced by `******`.
+    /// `env://`-style references survive the masking as references.
+    config: serde_json::Value,
+    enabled: bool,
+    /// Selection labels (K6); filter the export with `?tag=`.
+    tags: serde_json::Value,
+    /// `sha256:…` over the canonical importable content (K10), computed on the
+    /// stored (unmasked) config. Ignored by `/import`, like the other extras.
+    content_hash: String,
 }
 
 // Result of a bulk import (R18, K2). This used to be a schema-only mirror of

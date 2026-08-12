@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-12
+
 Orion server v1.0 compatibility release, developed in the Orion monorepo
 (the CLI moved from GoPlasmatic/Orion-cli to GoPlasmatic/Orion as
 `crates/orion-cli`; the end-to-end suite that drives both binaries now

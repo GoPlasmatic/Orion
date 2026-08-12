@@ -42,12 +42,14 @@ estate). With that said:
 | E: c=1 | 4,646.6 | 4,318.4 | −7.1% | 3.2 ms | 3.6 ms |
 | E: c=10 | 5,296.4 | 5,026.8 | −5.1% | 21.6 ms | 36.0 ms |
 | E: c=50 | 6,428.5 | 5,034.2 | −21.7% | 17.0 ms | **15.4 ms** |
-| E: c=100 | 6,403.9 | 4,932.7 | −23.0% | 23.6 ms | **30.4 ms** |
+| E: c=100 | 6,403.9 | 4,932.7 | −23.0% | 23.6 ms | 30.4 ms |
 | F: Reload under load | 6,464.7 | 5,019.1 | −22.4% | 16.9 ms | **15.8 ms** |
 
 Reading it honestly: the health path got dramatically faster, and P99 improved
-on most c=50 workflow scenarios, while straight-line workflow throughput sits
-15–24% below the v0.2.0 record. Known differences on the workflow hot path
+on the c=50 workflow scenarios and under reload, while straight-line workflow
+throughput sits 15–24% below the v0.2.0 record. P99 did **not** improve
+everywhere — at c=100 it regressed 29% (23.6 ms → 30.4 ms), the one tail number
+in this table that moved the wrong way. Known differences on the workflow hot path
 since v0.2.0 include the always-on per-task timing
 (`orion_task_duration_seconds` via dataflow-rs's `ExecutionObserver`) and the
 channel guard work added through the 1.0 audits; the run-condition caveats
@@ -57,11 +59,11 @@ sustained load.
 ## Reproducing
 
 ```bash
-BENCH_RELEASE=1 BENCH_DURATION=30s ./tests/benchmark/bench.sh
+BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
 ```
 
-Pass `BENCH_OUTPUT_DIR=tests/benchmark/results/<your-tag>` to redirect output.
+Pass `BENCH_OUTPUT_DIR=crates/orion-server/tests/benchmark/results/<your-tag>` to redirect output.
 Per-scenario raw `hey` reports are in the sibling `.txt` files in this
 directory. The cluster scenario needs the HA compose stack:
 `docker compose -f docker-compose.ha.yml up -d`, then
-`BENCH_RELEASE=1 ./tests/benchmark/bench.sh cluster`.
+`BENCH_RELEASE=1 ./crates/orion-server/tests/benchmark/bench.sh cluster`.

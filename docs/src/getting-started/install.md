@@ -39,25 +39,52 @@ docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 **From source** (requires Rust 1.88+):
 
 ```bash
-cargo install --git https://github.com/GoPlasmatic/Orion
+cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server
+```
+
+Both arguments matter. The repository is a cargo workspace with two binary
+crates and `cargo install --git` searches the whole repo, so the package has to
+be named — without it the install fails rather than picking a default. `--locked`
+builds the dependency set the committed `Cargo.lock` pins, which is the one CI
+tested; without it cargo re-resolves every dependency to the newest version its
+requirements allow.
+
+To install the server and the CLI together, name both packages:
+
+```bash
+cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server orion-cli
 ```
 
 ## Install the CLI
 
 `orion-cli` drives the same admin API from the terminal, and carries the MCP server that AI assistants connect to. It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
 
-**Homebrew** (macOS and Linux):
+The CLI is versioned in lockstep with the server and ships in the same release, so
+the two always agree on the wire format. Every method below is the server's, with
+`orion-server` swapped for `orion-cli`.
+
+**Homebrew** (macOS Apple Silicon and Linux):
 
 ```bash
 brew install GoPlasmatic/tap/orion-cli
 ```
 
-**Shell / PowerShell installers:** copy the `orion-cli-installer.sh` (Linux/macOS) or `orion-cli-installer.ps1` (Windows) one-liner from the notes on any `orion-cli-v*` release on the [releases page](https://github.com/GoPlasmatic/Orion/releases).
+**Shell installer** (Linux, macOS Apple Silicon):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.sh | sh
+```
+
+**PowerShell** (Windows):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.ps1 | iex"
+```
 
 **From source** (requires Rust 1.88+):
 
 ```bash
-cargo install --git https://github.com/GoPlasmatic/Orion orion-cli
+cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-cli
 ```
 
 ## Run the server

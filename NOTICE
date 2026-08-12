@@ -1,0 +1,55 @@
+Orion
+Copyright 2024-2026 Plasmatic
+
+This product includes software developed at Plasmatic
+(https://goplasmatic.io).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+===============================================================================
+THIRD-PARTY ASSETS
+===============================================================================
+
+Orion's Rust dependency tree is governed by deny.toml and its licences are
+resolved by cargo. The assets below are different: they are *vendored* — the
+binary files are committed to this repository and redistributed with the
+documentation site, so their licence texts and copyright notices must travel
+with them. That is what this file and the two licence files it points at are
+for.
+
+-------------------------------------------------------------------------------
+Documentation site — JavaScript and CSS (MIT)
+-------------------------------------------------------------------------------
+Location:      docs/src/diagram-assets/
+Licence text:  docs/src/diagram-assets/LICENSE-third-party.txt
+Provenance:    docs/src/diagram-assets/VENDOR.md
+
+  react, react-dom  18.3.1     MIT   Copyright (c) Facebook, Inc. and its affiliates.
+                                     https://github.com/facebook/react
+  reactflow         11.11.4    MIT   Copyright (c) 2019-2025 webkid GmbH
+                                     https://github.com/xyflow/xyflow
+  dagre             0.8.5      MIT   Copyright (c) 2012-2014 Chris Pettitt
+                                     https://github.com/dagrejs/dagre
+
+-------------------------------------------------------------------------------
+Documentation site — web fonts (SIL Open Font License 1.1)
+-------------------------------------------------------------------------------
+Location:      docs/src/webfonts/
+Licence text:  docs/src/webfonts/OFL.txt
+Provenance:    docs/js/VENDOR.md
+
+  Inter                        OFL-1.1  Copyright (c) 2016 The Inter Project Authors
+                                        https://github.com/rsms/inter
+  Montserrat                   OFL-1.1  Copyright 2024 The Montserrat.Git Project Authors
+                                        https://github.com/JulietaUla/Montserrat
+  JetBrains Mono               OFL-1.1  Copyright 2020 The JetBrains Mono Project Authors
+                                        https://github.com/JetBrains/JetBrainsMono
+
+-------------------------------------------------------------------------------
+Not third-party
+-------------------------------------------------------------------------------
+docs/src/diagram-assets/diagram-widget.js and mindmap-widget.js are Orion's own
+work and are covered by this repository's Apache-2.0 licence.
+
+When vendoring a new asset, add it to the relevant VENDOR.md, add its copyright
+line to the licence file in its directory, and list it here.

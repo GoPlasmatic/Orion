@@ -32,7 +32,7 @@ cd ../.. && ./deploy.sh postgres-orders
 ```
 
 > Requires Orion ≥ 1.0.0 — the dialect envelope changed shape for 1.0 (see
-> the [upgrade guide](../../../docs/src/getting-started/upgrading.md)), and this
+> the [upgrade guide](../../../docs/src/operate/upgrading-to-1.0.md)), and this
 > example is written against the 1.0 form.
 
 Expected response (ids vary):

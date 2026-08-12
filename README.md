@@ -33,7 +33,7 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 
 * **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
 * **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
-* **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output can't quietly break production.
+* **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-command rollback mean AI output can't quietly break production.
 * **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
 * **📦 One binary, one file:** a single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
 * **🦀 Measured, not claimed:** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
@@ -85,7 +85,7 @@ Create the workflow, with the business logic as JSON (a parse task, then a condi
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   -H "Content-Type: application/json" \
   -d '{
-    "workflow_id": "high-value-order",
+    "workflow_id": "quickstart-orders",
     "name": "High-Value Order",
     "condition": true,
     "tasks": [
@@ -106,7 +106,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   }'
 
 # Activate it (draft → active; the engine hot-reloads)
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
+curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/quickstart-orders/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
@@ -117,7 +117,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/channels \
   -H "Content-Type: application/json" \
   -d '{ "channel_id": "orders", "name": "orders", "channel_type": "sync",
         "protocol": "rest", "route_pattern": "/orders",
-        "methods": ["POST"], "workflow_id": "high-value-order" }'
+        "methods": ["POST"], "workflow_id": "quickstart-orders" }'
 
 curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
@@ -313,8 +313,8 @@ Every channel gets production-grade features without writing a line of code. Con
 | **Request IDs** | UUID propagated through the entire pipeline | `x-request-id` header, automatic |
 | **Deduplication** | Prevent duplicate processing via idempotency keys | `Idempotency-Key` header, configurable retention window |
 | **Response caching** | Cache responses for identical requests | TTL-based, configurable cache key fields |
-| **Per-request profiling** | Break a single request down by phase (engine lock, workflow run, tasks) | Opt in with `X-Orion-Profile: 1` or `?profile=1`; surfaces under `_orion.profile` |
-| **Per-task tracing** | Capture each task's input/output for replay and debugging | Channel-level `config.tracing.per_task = true`; stored on the trace row |
+| **Per-request profiling** | Break a single request down by phase (engine lock, workflow run, tasks) | Set `tracing.debug_profile_enabled = true`, then opt in per request with `X-Orion-Profile: 1` or `?profile=1`; surfaces under `_orion.profile` |
+| **Per-task tracing** | Capture each task's input/output for replay and debugging | Channel-level `config.tracing.task_details = true`; persisted to the trace's `task_trace_json` |
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
@@ -477,8 +477,11 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 # From crates.io
 cargo install orion-server
 
-# From source
-cargo install --git https://github.com/GoPlasmatic/Orion.git
+# From source — this repo is a two-binary workspace, so the package must be named
+cargo install --git https://github.com/GoPlasmatic/Orion.git --locked orion-server
+
+# ...or install the server and the CLI in one go
+cargo install --git https://github.com/GoPlasmatic/Orion.git --locked orion-server orion-cli
 ```
 
 Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](https://goplasmatic.github.io/Orion/reference/configuration.html) for deployment options.
@@ -501,11 +504,10 @@ The full list — `migrate`, `test-connectivity`, `dump-openapi`, every flag —
 Manage workflows, channels, and connectors without writing curl commands:
 
 ```bash
-# Install
+# Install — versioned in lockstep with the server and shipped in the same release
 brew install GoPlasmatic/tap/orion-cli                # Homebrew
-cargo install --git https://github.com/GoPlasmatic/Orion orion-cli  # From source
-# Shell/PowerShell installers are attached to each orion-cli-v* release:
-# https://github.com/GoPlasmatic/Orion/releases
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.sh | sh
+cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-cli  # From source
 
 # Deploy a workflow from a JSON file
 orion-cli workflows create -f order-processing.json
@@ -547,7 +549,7 @@ Using Orion in a project, a company, or a side quest? Add yourself to [ADOPTERS.
 
 ## Contributing
 
-Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request, we'd love to hear from you. **[CONTRIBUTING.md](CONTRIBUTING.md)** has everything: dev setup, how to run the container-gated tests, the PR checklist, and commit conventions. The project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); notable changes are tracked in the [CHANGELOG](CHANGELOG.md).
+Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request, we'd love to hear from you. **[CONTRIBUTING.md](CONTRIBUTING.md)** has everything: dev setup, how to run the container-gated tests, the PR checklist, and commit conventions. The project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); notable changes are tracked per package in the [server CHANGELOG](crates/orion-server/CHANGELOG.md) and the [CLI CHANGELOG](crates/orion-cli/CHANGELOG.md).
 
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Ask questions:** [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions)

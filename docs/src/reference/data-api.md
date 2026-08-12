@@ -231,9 +231,9 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Aggregated health. `200` while serving — including `degraded` components such as quarantined channels, reported per component; `503` when a core check (DB, engine) fails. With admin auth enabled, per-channel quarantine reasons require an admin credential |
+| GET | `/health` | Aggregated health. `200` while serving — including `degraded` components such as quarantined channels, reported per component; `503` when the database check fails (`components.engine` is a constant `"ok"` kept for response-shape stability, so it never trips either probe). With admin auth enabled, per-channel quarantine reasons require an admin credential |
 | GET | `/healthz` | Kubernetes liveness probe. Always returns 200 |
-| GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
+| GET | `/readyz` | Kubernetes readiness probe. 503 if DB, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
 | GET | `/api/v1/openapi.json` | OpenAPI 3.1 specification |

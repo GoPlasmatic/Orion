@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::channel::guards;
 use crate::errors::OrionError;
-use crate::server::extract::{OrionQuery, PeerAddr};
+use crate::server::extract::{OrionBody, OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
 use crate::server::state::AppState;
@@ -101,6 +101,7 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
         (status = 500, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`), or an internal failure (`INTERNAL_ERROR`)", body = ErrorResponse),
@@ -119,7 +120,7 @@ pub(crate) async fn dynamic_handler(
     headers: axum::http::HeaderMap,
     PeerAddr(peer): PeerAddr,
     OrionQuery(query_params): OrionQuery<std::collections::HashMap<String, String>>,
-    body: axum::body::Bytes,
+    OrionBody(body): OrionBody,
 ) -> Result<impl IntoResponse, OrionError> {
     // N10: the raw, still-encoded path (the nested router has stripped the
     // `/api/v1/data` prefix). `Path<String>` would hand us the wildcard
@@ -521,6 +522,7 @@ synchronous endpoint, where the caller already has the answer.",
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 413, description = "Request body exceeded `ingest.max_payload_size` (`PAYLOAD_TOO_LARGE`)", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
         (status = 503, description = "Channel backpressure limit reached, the trace queue is full/closed, or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),

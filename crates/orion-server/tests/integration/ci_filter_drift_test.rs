@@ -26,6 +26,7 @@ const WORKFLOW: &str = concat!(
     "/../../.github/workflows/ci.yml"
 );
 const INTEGRATION_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/integration");
+const JUSTFILE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../justfile");
 
 /// Module names (file stems) under `tests/integration/` that declare at least
 /// one `#[ignore]` test, and so depend on a CI filter to ever run.
@@ -188,5 +189,36 @@ fn every_test_binary_with_ignored_tests_has_a_ci_step() {
         unnamed.is_empty(),
         "these test binaries declare #[ignore] tests but no `cargo test --test <name>` \
          line in ci.yml runs them — their ignored half executes nowhere: {unnamed:?}"
+    );
+}
+
+/// `just test-containers` must be CI's container invocation, verbatim.
+///
+/// TESTING.md's second principle is "local commands mirror CI", and the
+/// container suites are where that mattered most and held least: the recipe
+/// and the workflow drifted by one filter (`vault_test` ran in CI and never
+/// locally), so a maintainer could run `just test-containers` green and still
+/// have a red PR from a suite they had no way to reach.
+#[test]
+fn just_test_containers_matches_the_ci_invocation() {
+    fn container_line(source: &str, what: &str) -> String {
+        source
+            .lines()
+            .map(str::trim)
+            .find(|l| l.contains("--test integration") && l.contains("--ignored"))
+            .unwrap_or_else(|| panic!("no container invocation found in {what}"))
+            .trim_start_matches("run:")
+            .trim()
+            .to_string()
+    }
+
+    let ci = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
+    let just = std::fs::read_to_string(Path::new(JUSTFILE)).expect("read justfile");
+
+    assert_eq!(
+        container_line(&just, "the justfile"),
+        container_line(&ci, "ci.yml"),
+        "`just test-containers` and ci.yml's container step have drifted — a filter \
+         that runs in one and not the other is a suite someone cannot reproduce locally"
     );
 }

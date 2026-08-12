@@ -13,6 +13,10 @@ record for these assets.
 | `reactflow.css` | reactflow (same release as the JS) | 11.11.4 | MIT | <https://github.com/xyflow/xyflow> |
 | `dagre.min.js` | dagre | 0.8.5 | MIT | <https://github.com/dagrejs/dagre> |
 
+The MIT permission notice and each package's copyright line — required of any
+redistribution — are in [`LICENSE-third-party.txt`](./LICENSE-third-party.txt)
+beside these files, and summarised in the repository's root `NOTICE`.
+
 The reactflow and dagre versions are not embedded in the minified builds; they
 were recovered by byte-comparing against the published npm tarballs. Keep this
 table current instead of relying on that.

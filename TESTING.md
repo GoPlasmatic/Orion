@@ -36,9 +36,9 @@ Three principles shape the setup:
 
 Inline `#[cfg(test)]` modules across all four crates: `orion-server`
 (config parsing, error mapping, validation/SSRF, query lowering, …),
-`orion-cli` (rendering, hints, argument plumbing), `orion-api` (wire-contract
-serde: envelope shapes, skew-tolerant defaults, enum round-trips), and
-`orion-client` (path builders, error classification).
+`orion-cli` (string helpers and benchmark statistics only — see Known gaps),
+`orion-api` (wire-contract serde: envelope shapes, skew-tolerant defaults,
+enum round-trips), and `orion-client` (path builders, error classification).
 
 ```bash
 cargo test --workspace          # what CI runs (server + CLI + both lib crates)
@@ -102,11 +102,11 @@ body from its own process, where the recorder race can't occur.
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
 
-The workspace-level suite at the repo root: 12 shell suites drive a real
+The workspace-level suite at the repo root: 13 shell suites drive a real
 `orion-server` binary over HTTP with the `orion-cli` binary, both built from
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.
-The last suite is data-driven, from two case directories with distinct
+Suite 13 is data-driven, from two case directories with distinct
 roles: [`examples/use-cases/`](examples/use-cases/) deploys the shipped
 example packages (workflows referenced by file, never copied) and asserts
 their live responses, and `tests/e2e/cases/` holds runtime-behaviour cases
@@ -136,8 +136,10 @@ The examples are executable and CI treats them as a gate (`examples` job):
 ## Layer 6 — meta-suites (quality of the tests themselves)
 
 - **Coverage ratchet** — `coverage` job, `cargo llvm-cov` with
-  `--fail-under-lines 88` (measured ~89.5% on the 1.0 tree). Raise the floor
-  when the real number moves up; never lower it to make a red build green.
+  `--fail-under-lines 88` (measured ~89.5%). **Scoped to `orion-server`**: the
+  job runs the default members, so `orion-cli` is neither compiled nor
+  instrumented and the percentage says nothing about it. Raise the floor when
+  the real number moves up; never lower it to make a red build green.
 - **Mutation testing** — `mutants` job (PRs only): `cargo mutants --in-diff`
   over the security/correctness-critical globs in `.cargo/mutants.toml`
   (SSRF, admin auth, masking, circuit breaker, query dialect, error
@@ -163,7 +165,7 @@ The examples are executable and CI treats them as a gate (`examples` job):
 `crates/orion-server/tests/benchmark/bench.sh` (six `hey` scenarios, plus a
 `cluster` mode against the HA compose stack). Not in CI — numbers from
 shared runners are noise. Run on dedicated hardware at release checkpoints;
-each release's record is committed under `tests/benchmark/results/vX.Y.Z/`
+each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).
 
 ## CI at a glance
@@ -176,9 +178,23 @@ commit (`ci-gate.yml`) before any artifact pipeline starts.
 
 ## Known gaps (accepted, with reasons)
 
-- **The MCP server loop** (`orion-cli mcp serve`) is not driven end to end;
-  its tools share the command implementations the e2e suite covers, but the
-  rmcp transport/handshake itself only has unit-level coverage.
+- **The MCP server is untested at every layer.** `crates/orion-cli/src/mcp/`
+  (~1,600 LOC across `mod.rs` and 15 `tools/*.rs`) is a *second*,
+  independently written client over `orion-client` — it shares no code with
+  `commands::`, so the e2e suite's CLI coverage says nothing about it. Neither
+  the 53 tool implementations nor the rmcp transport/handshake has a test.
+- **`orion-cli`'s rendering, help/hint and argument-plumbing code has no unit
+  tests.** The crate's inline tests cover two helpers (`utils.rs` and
+  `commands/benchmark/stats.rs`); output formatting and error hints are
+  exercised only indirectly, through the e2e suite's assertions on command
+  output.
+- **The e2e suite invokes 15 of the CLI's 17 command groups.** The seven the
+  lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
+  `send`, `traces`, `engine`, `health`) plus eight covered at smoke depth by
+  `suites/14_read_only_commands.sh` (`functions`, `metrics`, `audit-logs`,
+  `backups`, `packages`, `dlq`, `completions`, `config`) — enough to catch a
+  broken output shape or envelope, not enough to call them tested. `mcp` and
+  `benchmark` are never invoked.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was
   judged not worth the CI cost.

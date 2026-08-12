@@ -237,12 +237,12 @@ Sheds load to a failing dependency: after `failure_threshold` consecutive failur
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `engine.circuit_breaker.enabled` | `false` | `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED` | Enable in production whenever workflows call external HTTP services. |
+| `engine.circuit_breaker.enabled` | `false` | `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED` | Enable in production whenever workflows reach anything over the network. |
 | `engine.circuit_breaker.failure_threshold` | `5` | `ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD` | Lower to trip sooner on a flaky dependency; raise to tolerate isolated errors. |
 | `engine.circuit_breaker.recovery_timeout_secs` | `30` | `ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS` | How long the breaker stays open before probing. |
 | `engine.circuit_breaker.max_breakers` | `10000` | `ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS` | Rarely — bounds the tracked `channel:connector` pairs before LRU eviction. |
 
-Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else, and the state is per node. Currently applied to `http_call`.
+Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else, and the state is per node. Every connector-backed task function passes through its breaker — `http_call`, `db_read`/`db_write`, `cache_read`/`cache_write`, `mongo_read`, `publish_kafka` and the portable `data_query`/`data_write` dialect — not just HTTP.
 
 ## Trace Queue
 

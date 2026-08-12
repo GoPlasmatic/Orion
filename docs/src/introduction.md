@@ -45,7 +45,7 @@ Orion carries the same infrastructure across five kinds of service:
 
 - **No service to build.** Post a JSON document and you have a live REST or Kafka endpoint. No Dockerfile, no CI pipeline, no server code.
 - **Production features included.** Rate limiting, circuit breakers, timeouts, caching, and payload validation are things you configure on a channel instead of writing.
-- **Safe for AI-written logic.** Draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output cannot quietly break production.
+- **Safe for AI-written logic.** Draft-before-activate, dry-run, percentage rollout, and one-command rollback mean AI output cannot quietly break production.
 - **Services that call services.** `channel_call` runs another workflow in-process, so composition costs no network hop and no serialization.
 - **One binary, one file.** A single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
 - **Measured, not claimed.** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.

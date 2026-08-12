@@ -610,3 +610,140 @@ async fn test_trace_read_does_not_expose_request_context() {
         );
     }
 }
+
+// ============================================================
+// Brute-force protection on the trace token (FEAT-01)
+// ============================================================
+
+/// Guessing a `trace_token` is rate-limited by the same lockout the admin
+/// middleware applies.
+///
+/// `GET /admin/traces/{id}` carries its own auth — the admin middleware does
+/// not guard it, because the per-submission token is a second, non-admin way
+/// in. That also meant it inherited none of the middleware's brute-force
+/// protection: wrong tokens were not counted, no backoff ever engaged, and the
+/// token was the one credential on the surface that could be guessed at full
+/// speed. After `FAILURES_BEFORE_LOCKOUT` misses the route refuses even a
+/// *correct* token until the backoff expires, which is what makes the
+/// difference observable.
+#[tokio::test]
+async fn guessing_a_trace_token_trips_the_admin_lockout() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["a-sufficiently-long-test-secret-key-000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    // Admin auth is on, so the shared helper (which sends no key) cannot do
+    // the setup — build the workflow and channel with the key attached.
+    const KEY: &str = "a-sufficiently-long-test-secret-key-000";
+    let authed = |method: &str, uri: String, body: Option<serde_json::Value>| {
+        let mut req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {KEY}"));
+        let body = match body {
+            Some(v) => axum::body::Body::from(v.to_string()),
+            None => axum::body::Body::empty(),
+        };
+        req = req.header("accept", "application/json");
+        req.body(body).unwrap()
+    };
+
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/api/v1/admin/workflows".to_string(),
+            Some(json!({
+                "workflow_id": "t-wf", "name": "T", "condition": true,
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+            })),
+        ),
+        (
+            "PATCH",
+            "/api/v1/admin/workflows/t-wf/status".to_string(),
+            Some(json!({"status": "active"})),
+        ),
+        (
+            "POST",
+            "/api/v1/admin/channels".to_string(),
+            Some(json!({
+                "channel_id": "test-ch", "name": "test-ch", "channel_type": "async",
+                "protocol": "rest", "route_pattern": "/test-ch",
+                "methods": ["POST"], "workflow_id": "t-wf"
+            })),
+        ),
+        (
+            "PATCH",
+            "/api/v1/admin/channels/test-ch/status".to_string(),
+            Some(json!({"status": "active"})),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(authed(method, uri.clone(), body))
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "setup call {method} {uri} failed: {}",
+            resp.status()
+        );
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-ch/async",
+            Some(json!({"data": {"input": "world"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    // Five wrong guesses: each is a 401, and each one counts.
+    for attempt in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                    .header("x-trace-token", format!("wrong-guess-{attempt}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a wrong token must be refused (attempt {attempt})"
+        );
+    }
+
+    // The sixth request presents the *right* token and is still refused: the
+    // client is in backoff. Before FEAT-01 this returned 200, because nothing
+    // had been counted.
+    let resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                .header("x-trace-token", &token)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "after repeated wrong tokens the client must be in failed-auth backoff"
+    );
+}

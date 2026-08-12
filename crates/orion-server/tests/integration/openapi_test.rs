@@ -359,3 +359,56 @@ async fn disabling_docs_leaves_the_rest_of_the_api_served() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+/// Every guarded *mutating* operation declares the read-only-key `403`.
+///
+/// `admin_auth` refuses a read-only key on anything but GET/HEAD (S13), so a
+/// 403 is reachable on roughly thirty operations — and the document declared it
+/// on none of them. A generated client had no branch for the one refusal an
+/// operator hits by handing out the wrong key. The rule is method-based and
+/// lives in the middleware, so `SecurityAddon` injects the response rather than
+/// each handler annotating it; this asserts the injection stays exhaustive.
+#[tokio::test]
+async fn openapi_declares_403_on_guarded_mutating_operations() {
+    let app = common::test_app().await;
+    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let response = app.oneshot(req).await.unwrap();
+    let body = common::body_json(response).await;
+
+    let mut checked = 0;
+    let mut missing = Vec::new();
+    let mut spurious = Vec::new();
+
+    for (path, item) in body["paths"].as_object().expect("paths") {
+        for (method, op) in item.as_object().expect("path item") {
+            // Only guarded operations carry `security`; the data plane does not.
+            if !op.get("security").is_some_and(|s| s.is_array()) {
+                continue;
+            }
+            let declares_403 = op["responses"].get("403").is_some();
+            if matches!(method.as_str(), "get" | "head") {
+                if declares_403 {
+                    spurious.push(format!("{} {path}", method.to_uppercase()));
+                }
+            } else {
+                checked += 1;
+                if !declares_403 {
+                    missing.push(format!("{} {path}", method.to_uppercase()));
+                }
+            }
+        }
+    }
+
+    assert!(
+        checked > 20,
+        "expected the admin plane to have many guarded mutating operations, found {checked}"
+    );
+    assert!(
+        missing.is_empty(),
+        "guarded mutating operations without a 403 (a read-only key refusal): {missing:?}"
+    );
+    assert!(
+        spurious.is_empty(),
+        "guarded read operations declaring a 403 they cannot return: {spurious:?}"
+    );
+}

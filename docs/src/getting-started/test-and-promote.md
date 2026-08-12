@@ -74,12 +74,22 @@ API cannot run offline unless something answers those calls — which is what a
 **stub file** is: canned responses, keyed by function and by the connector the
 task names.
 
-```json
+Write one out, along with a payload for the workflow to run against:
+
+```bash
+cat > /tmp/stubs.json <<'JSON'
 {
   "data_write": { "orders-db": { "status": "ok", "rows_affected": 1, "returning": [{ "id": 4 }] } },
   "data_query": { "orders-db": [ { "id": 1, "name": "Ada Lovelace", "orders": [] } ] }
 }
+JSON
+
+# `-i` takes the bare business payload, like step 2 — `request.json` is the
+# HTTP body, so unwrap its `data` key.
+jq '.data' examples/packages/postgres-orders/request.json > /tmp/order-with-customer.json
 ```
+
+Then run the workflow against both:
 
 ```bash
 orion-server dry-run -w examples/packages/postgres-orders/workflow.json \

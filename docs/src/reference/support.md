@@ -40,6 +40,32 @@ The versioned API prefix (`/api/v1/`) is independent of the crate version:
 `v1` endpoints keep their request/response contracts for the life of the 1.x
 line. Endpoint additions and new optional fields are not considered breaking.
 
+### What the 1.0 promise covers
+
+| Surface | Covered? |
+|---|---|
+| HTTP Admin and Data APIs under `/api/v1/` | **Yes** — the contract above |
+| Configuration keys and their semantics | **Yes** — a minor may add keys with behaviour-preserving defaults, never repurpose one |
+| Workflow, channel and connector JSON | **Yes** — a document that validates on 1.0 validates for the 1.x line |
+| Prometheus metric names and labels | **Yes** — renames wait for a major |
+| The `orion-api` / `orion-client` **Rust** APIs | **No** — see below |
+| The **database schema** | **No** — internal |
+
+**The client crates carry their own versions.** `orion-api` and `orion-client`
+are published so `orion-cli` and third-party tools can share the server's exact
+wire types, but their version numbers move independently of the server's and
+are not tied to a server release. Treat their *Rust* surface as semver'd on its
+own crate version, not on the server's — a server minor may ship alongside a
+crate major. The **wire format** those crates describe is covered by the HTTP
+contract above, whichever crate version you read it with.
+
+**The database schema is internal.** Tables, views, triggers and column
+spellings may change in any minor via a migration. Read Orion's data through
+the HTTP API. If you query the tables directly — for dashboards, ETL, or
+reporting — pin what you read to a specific server version and re-check it on
+every upgrade; 1.0 already renamed two JSON columns, and a 1.x minor may rename
+more.
+
 ## Deprecations
 
 **1.0.0 accepts no pre-1.0 spellings.** Where 1.0 renamed a key, the old name

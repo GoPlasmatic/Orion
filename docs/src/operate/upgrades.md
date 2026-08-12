@@ -82,5 +82,5 @@ supported-version window, the MSRV, and the platform matrix.
   `migrate`, and `test-connectivity` in full.
 - [Configuration Reference](../reference/configuration.md) — every key and its
   environment variable, the authority when a config error names one.
-- [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md) —
+- [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md) —
   what was added, as opposed to what broke.

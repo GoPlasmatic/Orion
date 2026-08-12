@@ -105,14 +105,24 @@ code.
 1. **Fork** the repository and create a branch from `main`
 2. **Make your changes** — keep commits focused and atomic
 3. **Write tests** for new functionality
-4. **Run the checks:**
+4. **Run the checks.** With [`just`](https://github.com/casey/just) installed,
+   one command runs the full CI-equivalent gate — fmt, clippy with
+   `-D warnings`, tests, doc-tests and rustdoc:
    ```bash
-   cargo fmt && cargo clippy && cargo test
+   just check
    ```
-   With [`just`](https://github.com/casey/just) installed, `just check` runs
-   the full CI-equivalent gate (fmt, clippy with `-D warnings`, tests,
-   doc-tests, rustdoc) in one command — the `justfile` at the repo root also
-   carries `just test-containers`, `just openapi` and `just docs`.
+   Without `just`, the equivalent is the four commands it wraps. Note the
+   `--workspace` flags: bare `cargo clippy` / `cargo test` only cover the
+   server, because `default-members` points at it, so they silently skip
+   `orion-cli` — which CI does not.
+   ```bash
+   cargo fmt --all --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
+   cargo test --doc
+   ```
+   The `justfile` at the repo root also carries `just test-containers`,
+   `just openapi`, `just docs` and `just e2e`.
    If you changed the HTTP API (routes or request/response schemas), regenerate
    the checked-in OpenAPI spec — a test fails if it's stale:
    ```bash
@@ -285,8 +295,14 @@ gate on a successful CI run for the tagged commit (`ci-gate`), so a tag can
 never outrun a red build. The secrets they need and the full procedure are
 in `RELEASING.md`.
 
-1. **Version alignment.** `Cargo.toml`'s `version` is the release version;
-   tags are `v`-prefixed (`v1.0.0`). The Helm chart needs **no** manual bump —
+1. **Version alignment.** The root `Cargo.toml` is a virtual manifest with no
+   version of its own. `orion-server` and `orion-cli` are versioned in
+   lockstep, so set the same `version` in both `crates/orion-server/Cargo.toml`
+   and `crates/orion-cli/Cargo.toml`; a bare `v`-prefixed tag (`v1.0.0`)
+   releases every package at that version. Any change to the rider crates
+   (`orion-api`, `orion-client`) must bump their versions too, or the rider
+   publish skips them and the released binaries resolve older crates.io
+   content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from
    the tag at publish time; the in-tree `Chart.yaml` value is a development
    placeholder.
@@ -294,9 +310,11 @@ in `RELEASING.md`.
    `## [X.Y.Z] - YYYY-MM-DD` heading (merge per category), leave an empty
    `[Unreleased]` on top, and check the compare links at the foot of the file
    name the new tag.
-3. **Tag and push.**
+3. **Tag and push.** Push the tag by its full `refs/tags/` name — release
+   branches are named after their version, so a bare `git push origin vX.Y.Z`
+   can match both a branch and a tag and fails as an ambiguous refspec.
    ```bash
-   git tag vX.Y.Z && git push origin vX.Y.Z
+   git tag vX.Y.Z && git push origin refs/tags/vX.Y.Z
    ```
 4. **Watch the release land.** `release.yml` builds each dist target
    (macOS/Windows are pre-proven per PR by `cross-os-build.yml`, but the

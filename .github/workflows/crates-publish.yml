@@ -43,16 +43,23 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Two releasable packages share this repo. A package-prefixed tag
-      # (orion-cli-v0.3.0, orion-server-v1.1.0) publishes that package; a
-      # bare v* tag stays the server's, matching its pre-monorepo history.
-      - name: Determine package from tag
+      # Two releasable packages share this repo, versioned in lockstep. A
+      # package-prefixed tag (orion-cli-v1.0.1, orion-server-v1.1.0) publishes
+      # exactly that package — the out-of-band patch path. A bare v* tag is the
+      # joint release and publishes both, matching the set dist announces for
+      # the same tag (release.yml covers every dist-able package at the tagged
+      # version, so the crates.io side has to cover the same ground or the
+      # GitHub release ships a CLI that `cargo install` cannot reach).
+      - name: Determine packages from tag
         id: pkg
         run: |
           case "${GITHUB_REF_NAME}" in
-            orion-cli-*) echo "package=orion-cli" >> "$GITHUB_OUTPUT" ;;
-            *)           echo "package=orion-server" >> "$GITHUB_OUTPUT" ;;
+            orion-cli-*)    packages="orion-cli" ;;
+            orion-server-*) packages="orion-server" ;;
+            *)              packages="orion-server orion-cli" ;;
           esac
+          echo "packages=${packages}" >> "$GITHUB_OUTPUT"
+          echo "Publishing: ${packages}"
 
       # The shared library crates (orion-api, orion-client) have no release
       # cycle of their own — no tag ever names them. They ride along here:
@@ -82,7 +89,24 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
+      # Skip-if-present, for the same reason the rider step has it: on a bare
+      # tag this publishes two packages whose versions are equal today but need
+      # not stay that way. A server-only patch released as v1.0.1 would
+      # otherwise fail the whole job trying to re-publish an unchanged
+      # orion-cli 1.0.0 — after the server crate is already live and
+      # unyankable-in-place. Skipping keeps the joint tag safe when only one
+      # package moved, and an out-of-band orion-cli-v* tag remains available
+      # when the CLI needs to ship alone.
       - name: Publish
-        run: cargo publish --locked -p "${{ steps.pkg.outputs.package }}"
+        run: |
+          for crate in ${{ steps.pkg.outputs.packages }}; do
+            version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
+            if curl -fsS -A "orion-release (github.com/GoPlasmatic/Orion)" \
+                "https://crates.io/api/v1/crates/${crate}/${version}" > /dev/null; then
+              echo "${crate} ${version} already on crates.io — skipping"
+            else
+              cargo publish --locked -p "${crate}"
+            fi
+          done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

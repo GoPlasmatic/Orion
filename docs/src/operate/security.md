@@ -4,8 +4,12 @@ Orion's defaults serve a laptop: admin auth off, TLS off, CORS wide open, and a
 data plane anyone who can reach the port can call. This page is what you change
 before anything you do not control can reach it.
 
-Setting `environment = "production"` makes the first two items below fatal at
-startup rather than advisory. The rest are on you.
+Setting `environment = "production"` makes exactly five things fatal at startup
+rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
+`[cors] allowed_origins = ["*"]` wildcard, `server.verbose_errors = true`, and
+`cluster.enabled` together with `storage.auto_migrate`. Everything else on this
+page — **including TLS and per-channel data-plane `auth`** — is never gated by
+production mode and stays your responsibility.
 
 ## Authenticate the admin plane
 

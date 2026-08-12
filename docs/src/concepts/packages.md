@@ -92,7 +92,7 @@ procedural:
   package and apply it to a second instance, start to finish.
 - [Promote Between Environments](../operate/promotion.md) — the five verbs, the secrets
   rules, and the `requires` boundary in detail.
-- [Run the Examples](../getting-started/examples.md) — six packages in source
+- [Run the Examples](../getting-started/examples.md) — the deployable example packages in source
   form, ready to deploy.
 - [The Entity Lifecycle](./lifecycle.md) — the draft/active/archived rules that
   `apply` drives on your behalf.

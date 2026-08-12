@@ -563,6 +563,14 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         StatusCode::PAYLOAD_TOO_LARGE,
         "the data plane must still honour ingest.max_payload_size"
     );
+    // ...and say so in the envelope. This used to be the one non-2xx in the
+    // whole surface that answered with axum's plain-text rejection instead,
+    // so a client's error path could not parse the only field it branches on.
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["error"]["code"], "PAYLOAD_TOO_LARGE",
+        "an oversize body must carry the error envelope like every other refusal: {body}"
+    );
 
     // Admin: the same bytes, well under its own bound.
     let resp = app
@@ -584,4 +592,25 @@ async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
         StatusCode::CREATED,
         "an admin body over the data-plane limit must still be accepted"
     );
+
+    // Admin, over its *own* bound: the same condition as the data plane's, so
+    // the same status and code. It answered `400 VALIDATION_ERROR` before —
+    // axum's `BytesRejection` fell into the catch-all arm and told the caller
+    // to fix JSON that had never been read.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({ "name": "y".repeat(300 * 1024) })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "both planes must answer an oversize body the same way"
+    );
+    let body = common::body_json(resp).await;
+    assert_eq!(body["error"]["code"], "PAYLOAD_TOO_LARGE");
 }

@@ -31,7 +31,10 @@ channel (creating the connector first, if it has one), then POSTs
 and `python3`. Re-running is safe: objects that already exist are skipped.
 
 A package with no HTTP route — `kafka-order-events` — deploys the same way, and
-the script prints the topic it now consumes instead of sending a request.
+the script prints the topic it now consumes instead of sending a request. It is
+the one example that is **not** zero-dependency: it needs a broker and a server
+started with `[kafka] enabled = true`. Without those the channel still deploys,
+but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
 
 ## The packages
 
@@ -44,7 +47,7 @@ the script prints the topic it now consumes instead of sending a request.
 | [`notification-routing`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/notification-routing) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 | [`channel-composition`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/channel-composition) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
-| [`kafka-order-events`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/kafka-order-events) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates |
+| [`kafka-order-events`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/kafka-order-events) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates — **needs `kafka.enabled = true` and a broker** |
 
 ## What is in a package directory
 

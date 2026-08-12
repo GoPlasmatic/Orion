@@ -1,6 +1,6 @@
 Create a new workflow in the Orion engine. Workflows define processing pipelines (task sequences) that execute when data arrives on a linked channel.
 
-Workflows are created in draft status. Activate them with `workflows_activate`, then call `engine_reload` to load changes.
+Workflows are created in draft status. Activate them with `workflows_activate` — activation hot-reloads the engine automatically; `engine_reload` is only needed after a change committed with `?reload=defer`, or to force a rebuild.
 
 ## Workflow JSON Structure
 

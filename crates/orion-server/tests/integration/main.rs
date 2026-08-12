@@ -47,6 +47,7 @@ mod error_envelope_test;
 mod error_paths_test;
 mod es_test;
 mod export_roundtrip_test;
+mod field_codes_drift_test;
 mod function_schema_test;
 mod functions_docs_drift_test;
 mod http_retry_test;

@@ -398,6 +398,33 @@ fn exists_needs_segments_not_a_dotted_path() {
     assert_eq!(eval(&json!({"exists": ["s.x"]})), json!(false));
 }
 
+/// `var`'s second argument is a **default**, not an index — so the natural
+/// spelling for "the i-th element" silently returns the whole array.
+///
+/// Pinned because the per-element fan-out pattern in
+/// `docs/src/guides/workflow-patterns.md` shipped with exactly this bug: a
+/// `loop` whose body read `{"var": ["data.req.recipients", {"var":
+/// "temp_data.i"}]}` sent the entire recipient list on every sweep instead of
+/// one recipient, with no error anywhere. `val` with path-chain segments is the
+/// spelling that indexes, and the docs now say so.
+#[test]
+fn var_cannot_index_an_array_but_val_can() {
+    // `n` is 4 and `nums` is [3, 1, 2]; this is index 1, whose element is 1.
+    let index = json!({"-": [{"var": "n"}, 3]});
+
+    assert_eq!(
+        eval(&json!({"var": ["nums", index]})),
+        json!([3, 1, 2]),
+        "`var`'s second argument is a default — a present path returns whole"
+    );
+
+    assert_eq!(
+        eval(&json!({"val": ["nums", index]})),
+        json!(1),
+        "`val` with a computed segment is what actually indexes"
+    );
+}
+
 /// In a **condition**, an operator this build does not know is a hard error.
 ///
 /// `fractional` belongs to datalogic's `flagd` feature, which `all-operators`

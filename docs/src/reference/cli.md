@@ -47,7 +47,7 @@ Statically validates a workflow JSON file with the same checks the admin `POST /
 orion-server lint <workflow.json>
 ```
 
-Example: `orion-server lint examples/workflows/enrich-order.json`
+Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 
 ### `dry-run`
 

@@ -37,6 +37,10 @@ uses. Only `latin` loads on an English page; `latin-ext` is gated behind
 | Montserrat | `montserrat-{latin,latin-ext}.woff2` | wght 600–700 | OFL-1.1 | <https://github.com/JulietaUla/Montserrat> |
 | JetBrains Mono | `jetbrains-mono-{latin,latin-ext}.woff2` | wght 400–500 | OFL-1.1 | <https://github.com/JetBrains/JetBrainsMono> |
 
+The OFL-1.1 text and each family's copyright line — required of any
+redistribution — are in [`docs/src/webfonts/OFL.txt`](../src/webfonts/OFL.txt)
+beside the font files, and summarised in the repository's root `NOTICE`.
+
 These were fetched from the Google Fonts CSS2 API, which serves the woff2
 subsets above. They replaced a runtime `@import url(fonts.googleapis.com/…)`
 that had sat at the top of `plasmatic.css` — a third-party dependency on every

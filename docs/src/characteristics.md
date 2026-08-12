@@ -51,7 +51,7 @@ Click a node to expand it; click a capability to open its page.
         { "name": "Data-plane authentication", "link": "operate/security.html#decide-how-the-data-plane-authenticates",
           "children": ["api_key per channel", "hmac over the raw body", "Uniform 401", "No JWT/OIDC or mTLS"] },
         { "name": "Secrets by reference", "link": "reference/connectors.html#secrets-by-reference",
-          "children": ["env:// and vault://", "Masked in API reads", "Encrypted at rest"] },
+          "children": ["env:// and vault://", "Masked in API reads", "Optional AES-256-GCM at rest"] },
         { "name": "Payload validation", "link": "reference/channel-config.html#validation",
           "children": ["JSONLogic rules per channel", "Body size limit", "Runs before any logic"] },
         { "name": "Egress control", "link": "operate/security.html#bound-what-connectors-can-reach",
@@ -176,7 +176,7 @@ Click a node to expand it; click a capability to open its page.
 |---|---|
 | [Admin authentication](./operate/security.md#authenticate-the-admin-plane) | Keys compared in constant time, storable as `sha256:` digests, several at once so rotation needs no downtime. Missing admin auth is a startup error in production, not a warning. |
 | [Data-plane authentication](./operate/security.md#decide-how-the-data-plane-authenticates) | Per channel: `api_key`, or `hmac` verified over the raw body before parsing. There is no built-in JWT/OIDC and no mTLS termination — put a gateway in front if you need either. |
-| [Secrets by reference](./reference/connectors.md#secrets-by-reference) | `env://` and `vault://` references resolved at load, never stored inline. Secret fields are masked in API reads, and the stored config is encrypted at rest. |
+| [Secrets by reference](./reference/connectors.md#secrets-by-reference) | `env://` and `vault://` references resolved at load, never stored inline. Secret fields are masked in API reads, and the stored config is AES-256-GCM encrypted at rest when `storage.connector_encryption_key` is set (plaintext by default). |
 | [Payload validation](./reference/channel-config.md#validation) | JSONLogic rules per channel, plus a body-size limit, enforced before any workflow logic runs. |
 | [Egress control](./operate/security.md#bound-what-connectors-can-reach) | SSRF protection blocks private and internal addresses unless a connector opts in. [Operation gates](./reference/connectors.md#operation-gates) make a connector read-only, delete-proof, or anything between. |
 | [Query safety](./reference/connectors.md#dialect-guards) | Parameterized queries throughout, with dialect guards on `db` connectors that refuse statements the connector was not opened for. |

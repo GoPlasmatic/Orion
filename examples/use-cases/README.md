@@ -89,3 +89,4 @@ Instead of the default sync send, a test can set one of:
 | `iot-sensor-alerts.json` | [`iot-sensor-alert`](../packages/iot-sensor-alert/) | Severity ranges with validation and filtering |
 | `webhook-transformation.json` | [`webhook-transform`](../packages/webhook-transform/) | Payload normalization via null-safe `var` mapping |
 | `notification-routing.json` | [`notification-routing`](../packages/notification-routing/) | Progressive routing (log / email / SMS) by severity |
+| `channel-composition.json` | [`channel-composition`](../packages/channel-composition/) | One service calling another in-process via `channel_call` |

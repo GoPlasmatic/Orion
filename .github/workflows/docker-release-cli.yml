@@ -9,11 +9,19 @@ permissions:
   packages: write
 
 on:
-  # CLI release tags only — bare v* and orion-server-v* belong to
-  # docker-release.yml.
+  # The CLI ships in two shapes. A bare v* tag is the joint release the server
+  # and the CLI share while their versions are in lockstep — it builds both
+  # images, this workflow's and docker-release.yml's. An orion-cli-v* tag is
+  # the out-of-band CLI patch. orion-server-v* is docker-release.yml's alone.
+  #
+  # On a bare tag the CLI may legitimately not be part of the release (a
+  # server-only patch leaves orion-cli's version behind); `prepare` detects
+  # that and skips rather than failing, so a server patch never turns the
+  # release red on the CLI image's account.
   push:
     tags:
       - "orion-cli-v[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
   # Allow manual trigger with options
   workflow_dispatch:
     inputs:
@@ -47,6 +55,7 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -69,26 +78,53 @@ jobs:
               exit 1
             fi
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#orion-cli-v}"
+            # Strips either shape: orion-cli-v1.0.0 (the CLI's own tag) and
+            # v1.0.0 (the joint release tag) both reduce to 1.0.0.
+            VERSION="${GITHUB_REF_NAME#orion-cli-}"
+            VERSION="${VERSION#v}"
           else
             VERSION="0.0.0-dev.${GITHUB_SHA::8}"
             RELEASE=0
           fi
+          SHOULD_RELEASE=1
           # P19: refuse a version the binary does not report.
           if [ "${RELEASE}" = "1" ]; then
             CARGO_VERSION=$(grep -m1 '^version = ' crates/orion-cli/Cargo.toml | cut -d'"' -f2)
             if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
-              echo "::error::Release version says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
-              exit 1
+              # Only ONE case is a benign mismatch: a bare tag pushed for a
+              # server-only release, which the CLI is simply not part of. An
+              # explicit override, or a tag that names the CLI, is a mistake
+              # and must stay a hard error — a dispatch's GITHUB_REF_NAME is a
+              # branch, so the override has to be tested before the tag shape.
+              if [ -n "${TAG_OVERRIDE}" ]; then
+                echo "::error::tag_override says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Re-publish from a ref whose Cargo.toml agrees."
+                exit 1
+              fi
+              case "${GITHUB_REF_NAME}" in
+                orion-cli-*)
+                  echo "::error::Release version says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
+                  exit 1
+                  ;;
+                *)
+                  # Skip, do not fail — and above all do not re-push an
+                  # existing immutable tag with freshly built content.
+                  echo "::notice::${GITHUB_REF_NAME} is a server-only release (orion-cli is at ${CARGO_VERSION}) — skipping the CLI image."
+                  SHOULD_RELEASE=0
+                  ;;
+              esac
             fi
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Version: ${VERSION}"
+          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION} (release: ${SHOULD_RELEASE})"
 
   # Build per-platform images natively in parallel
   build:
     name: Build (${{ matrix.platform }})
     needs: [prepare, ci-gate]
+    # Skips the whole downstream chain (merge, publish-mcp) when a bare tag
+    # turns out to be a server-only release: both need this job.
+    if: ${{ needs.prepare.outputs.should_release == '1' }}
     strategy:
       fail-fast: false
       matrix:

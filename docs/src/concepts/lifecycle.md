@@ -33,8 +33,8 @@ AI-generated logic and 3am changes equally safe to accept.
 
 Because active versions cannot change, every fact about a running service is
 fixed once it is serving. A trace names the version that produced it. Rollback
-is re-activating a version whose content is guaranteed to be what it was. A
-reviewer approving a diff is approving the exact bytes that will run.
+is re-promoting content that is guaranteed to be what it was. A reviewer
+approving a diff is approving the exact bytes that will run.
 
 The cost is one extra step: you cannot patch production in place. The benefit is
 that no change can arrive without a new version to point at — which is what lets

@@ -78,7 +78,7 @@ if [[ -f "$CONN_FILE" ]]; then
     echo "==> Connector '$CONN_ID' already exists"
   else
     echo "==> Create connector '$CONN_ID'"
-    curl -fsS -X POST "$ADMIN/connectors" \
+    curl --fail-with-body -sS -X POST "$ADMIN/connectors" \
       -H 'Content-Type: application/json' --data @"$CONN_FILE" > /dev/null
   fi
 fi
@@ -90,14 +90,14 @@ while IFS= read -r wf; do
     echo "==> Workflow '$WF_ID' already exists"
   else
     echo "==> Create workflow '$WF_ID'"
-    curl -fsS -X POST "$ADMIN/workflows" \
+    curl --fail-with-body -sS -X POST "$ADMIN/workflows" \
       -H 'Content-Type: application/json' --data @"$wf" > /dev/null
   fi
   if active "$ADMIN/workflows/$WF_ID"; then
     echo "==> Workflow '$WF_ID' already active"
   else
     echo "==> Activate workflow '$WF_ID'"
-    curl -fsS -X PATCH "$ADMIN/workflows/$WF_ID/status" \
+    curl --fail-with-body -sS -X PATCH "$ADMIN/workflows/$WF_ID/status" \
       -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
   fi
 done < <(workflow_files)
@@ -109,14 +109,14 @@ while IFS= read -r ch; do
     echo "==> Channel '$CH_ID' already exists"
   else
     echo "==> Create channel '$CH_ID'"
-    curl -fsS -X POST "$ADMIN/channels" \
+    curl --fail-with-body -sS -X POST "$ADMIN/channels" \
       -H 'Content-Type: application/json' --data @"$ch" > /dev/null
   fi
   if active "$ADMIN/channels/$CH_ID"; then
     echo "==> Channel '$CH_ID' already active"
   else
     echo "==> Activate channel '$CH_ID'"
-    curl -fsS -X PATCH "$ADMIN/channels/$CH_ID/status" \
+    curl --fail-with-body -sS -X PATCH "$ADMIN/channels/$CH_ID/status" \
       -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
   fi
 done < <(channel_files)
@@ -137,6 +137,6 @@ if [[ ! -f "$REQ_FILE" ]]; then
 fi
 
 echo "==> POST /api/v1/data$ROUTE"
-curl -fsS -X POST "$BASE/api/v1/data$ROUTE" \
+curl --fail-with-body -sS -X POST "$BASE/api/v1/data$ROUTE" \
   -H 'Content-Type: application/json' --data @"$REQ_FILE"
 echo

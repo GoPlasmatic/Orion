@@ -80,6 +80,12 @@ pub enum OrionError {
     #[error("Rate limit key unavailable: {0}")]
     RateLimitKeyUnavailable(String),
 
+    /// The client sent more than the plane's body limit allows. A 413, and —
+    /// unlike the bare `Bytes` extractor's own rejection — one that carries
+    /// the error envelope like every other refusal.
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Response too large: {0}")]
     ResponseTooLarge(String),
 
@@ -225,6 +231,13 @@ impl OrionError {
             // refusing to send what it built: a 500, under a code distinct
             // enough to diagnose. The message stays verbatim; it names two
             // byte counts and nothing sensitive.
+            // The caller's own doing and fixable by them: a 4xx, with the
+            // message naming the limit rather than the raw buffering error.
+            OrionError::PayloadTooLarge(msg) => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                codes::PAYLOAD_TOO_LARGE,
+                msg.clone(),
+            ),
             OrionError::ResponseTooLarge(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 codes::RESPONSE_TOO_LARGE,
@@ -763,6 +776,7 @@ mod tests {
             OrionError::Config { .. } => "Config",
             OrionError::RateLimited(_) => "RateLimited",
             OrionError::RateLimitKeyUnavailable(_) => "RateLimitKeyUnavailable",
+            OrionError::PayloadTooLarge(_) => "PayloadTooLarge",
             OrionError::ResponseTooLarge(_) => "ResponseTooLarge",
             OrionError::ServiceUnavailable(_) => "ServiceUnavailable",
             OrionError::Timeout { .. } => "Timeout",
@@ -777,7 +791,7 @@ mod tests {
     /// The number of variants [`variant_name`] enumerates. Bumping this is the
     /// second half of the prompt: the compile error says "name the variant",
     /// this assertion says "and state its wire contract below".
-    const VARIANT_COUNT: usize = 17;
+    const VARIANT_COUNT: usize = 18;
 
     /// One sample per variant with the `(status, code)` it must answer with.
     ///
@@ -837,6 +851,11 @@ mod tests {
                 OrionError::RateLimitKeyUnavailable("key logic failed".into()),
                 StatusCode::TOO_MANY_REQUESTS,
                 "RATE_LIMITED",
+            ),
+            (
+                OrionError::PayloadTooLarge("body too big".into()),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "PAYLOAD_TOO_LARGE",
             ),
             (
                 OrionError::ResponseTooLarge("big".into()),

@@ -4,7 +4,7 @@ Every Orion response is one of three JSON shapes: the admin success envelope, th
 
 ## The admin envelope
 
-Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add three pagination counters — `total`, `limit`, `offset` — and nothing else. The [Admin API](./admin-api.md) documents each endpoint's payload.
+Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add pagination counters alongside it: `limit` and `offset` always, and `total` where the endpoint computes it — the trace list makes `total` opt-in via `?include_total=true` and adds `next_cursor` (see [Data API](./data-api.md)). The [Admin API](./admin-api.md) documents each endpoint's payload.
 
 ### The error envelope
 
@@ -94,10 +94,11 @@ Every `error.code` the server emits, on both the admin and data planes:
 |------|-------------|-------------|
 | `VALIDATION_ERROR` | 400 | Invalid input — malformed body, failed strict validation, bad query parameter |
 | `UNAUTHORIZED` | 401 | Missing or invalid credentials |
-| `FORBIDDEN` | 403 | Access denied — e.g. a read-only admin key on a mutating method, or a channel auth failure |
+| `FORBIDDEN` | 403 | Access denied — a read-only admin key on a mutating method, an `Origin` outside a channel's `origin_allow_list`, or a `channel_call` relaying a target channel's 403. A channel **auth** failure is `UNAUTHORIZED` above |
 | `NOT_FOUND` | 404 | Resource not found |
 | `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
 | `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, an import collision, or an idempotency-key replay |
+| `PAYLOAD_TOO_LARGE` | 413 | The request body exceeded `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` (admin plane) — the caller's to fix, unlike `RESPONSE_TOO_LARGE` |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
 | `RATE_LIMITED` | 429 | Too many requests. The response carries a `Retry-After` header |
 | `INTERNAL_ERROR` | 500 | Internal server error |
@@ -123,8 +124,8 @@ When a workflow, channel, or connector fails strict validation on create or upda
     "message": "Workflow validation failed",
     "details": [
       { "path": "tasks[0].function.input.connector", "code": "REQUIRED", "message": "is required" },
-      { "path": "channel.protocol", "code": "ENUM_MISMATCH", "message": "unknown protocol",
-        "expected": ["rest", "http", "kafka"], "got": "REST" }
+      { "path": "channel.protocol", "code": "INVALID", "message": "unknown protocol",
+        "expected": ["rest", "http", "kafka"], "got": "grpc" }
     ]
   }
 }
@@ -132,11 +133,45 @@ When a workflow, channel, or connector fails strict validation on create or upda
 
 | Field | Type | Present | Description |
 |---|---|---|---|
-| `path` | string | always | Dotted, indexed pointer into the JSON the API received, so editors can jump straight to the failing key. |
-| `code` | string | always | Stable machine-readable identifier from a closed vocabulary — e.g. `REQUIRED`, `ENUM_MISMATCH`, `TYPE_MISMATCH`. |
+| `path` | string | always | Pointer to the failing key. Rooted two ways — see below. |
+| `code` | string | always | Stable machine-readable identifier from the closed vocabulary below. |
 | `message` | string | always | What is wrong with the field. |
 | `expected` | any | when known | The accepted value, list, or type. |
 | `got` | any | when known | The value that was rejected. |
+
+### Field error codes
+
+The complete vocabulary. It is closed: a code outside this table is a bug, and
+a drift test fails the build if `src/` emits one or if this table and the
+`orion-api` registry disagree.
+
+| Code | Meaning |
+|---|---|
+| `REQUIRED` | The field was absent and is always required. |
+| `REQUIRED_FOR_PROTOCOL` | Required for this `protocol` or `channel_type`, though optional in general — a REST channel without `methods`, say. |
+| `INVALID` | Present and well-typed, but not an acceptable value. |
+| `TYPE_MISMATCH` | Present but the wrong JSON type. |
+| `TOO_LONG` | Longer than the column or protocol allows. |
+| `UNKNOWN_FIELD` | A key the strict parser does not accept — a typo, or a pre-1.0 spelling 1.0 refuses. |
+| `DUPLICATE_FIELD` | The same key appeared twice in one object. |
+| `DUPLICATE_TASK_ID` | Two tasks in one workflow declare the same `id`. |
+| `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. |
+
+### How `path` is rooted
+
+`path` points at the offending field, rooted according to how far the request
+got before it was rejected:
+
+- **Validation ran** — the path is resource-rooted and may be indexed:
+  `channel.protocol`, `tasks[2].function.input.connector`.
+- **The body did not deserialize** — validation never ran, and the layer that
+  reports the failure knows the field name but not which resource was being
+  parsed. The path is `body.<field>`, or bare `body` when the field cannot be
+  recovered from the parser's message at all.
+
+So the same mistake can surface as `body.protocol` or `channel.protocol`
+depending on whether it was a parse failure or a validation failure. Match on
+the last segment if you want to treat both alike.
 
 The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
 

@@ -6,10 +6,15 @@
 #   # or, from a clone:
 #   ./examples/quickstart.sh [base-url]
 #
-# Deploys the "high-value-order" service against a running Orion instance
+# Deploys the "quickstart-orders" service against a running Orion instance
 # (default http://localhost:8080): a workflow that flags orders over $10,000,
 # and a POST /orders channel that exposes it. Safe to re-run — existing
 # objects are left in place. Requires only curl.
+#
+# The workflow id is quickstart-orders, not high-value-order, deliberately:
+# examples/packages/high-value-order ships the same logic as a *tagged* package,
+# and sharing one id meant whichever ran first won — leaving the package's
+# `pkg:high-value-order` tag off the workflow that ended up deployed.
 set -euo pipefail
 
 BASE="${1:-${ORION_URL:-http://localhost:8080}}"
@@ -31,12 +36,12 @@ have "$BASE/healthz" || {
 }
 
 # --- Workflow: flag orders over $10,000 ------------------------------------
-if have "$ADMIN/workflows/high-value-order"; then
-  say "Workflow 'high-value-order' already exists"
+if have "$ADMIN/workflows/quickstart-orders"; then
+  say "Workflow 'quickstart-orders' already exists"
 else
-  say "Create workflow 'high-value-order'"
+  say "Create workflow 'quickstart-orders'"
   curl -fsS -X POST "$ADMIN/workflows" -H 'Content-Type: application/json' -d '{
-    "workflow_id": "high-value-order",
+    "workflow_id": "quickstart-orders",
     "name": "High-Value Order",
     "condition": true,
     "tasks": [
@@ -57,11 +62,11 @@ else
   }' > /dev/null
 fi
 
-if active "$ADMIN/workflows/high-value-order"; then
+if active "$ADMIN/workflows/quickstart-orders"; then
   say "Workflow already active"
 else
   say "Activate workflow"
-  curl -fsS -X PATCH "$ADMIN/workflows/high-value-order/status" \
+  curl -fsS -X PATCH "$ADMIN/workflows/quickstart-orders/status" \
     -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
 fi
 
@@ -73,7 +78,7 @@ else
   curl -fsS -X POST "$ADMIN/channels" -H 'Content-Type: application/json' -d '{
     "channel_id": "orders", "name": "orders", "channel_type": "sync",
     "protocol": "rest", "route_pattern": "/orders",
-    "methods": ["POST"], "workflow_id": "high-value-order"
+    "methods": ["POST"], "workflow_id": "quickstart-orders"
   }' > /dev/null
 fi
 

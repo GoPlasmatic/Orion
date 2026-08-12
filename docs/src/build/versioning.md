@@ -96,18 +96,46 @@ caller.
 
 ## Roll back
 
+Rolling back is rolling *forward* to the old content. There is no command that
+reactivates an archived version in place — `PATCH /{id}/status` addresses a
+workflow id, not a version, and activating always promotes the current draft.
+What you do instead is put the known-good content into a new draft and activate
+that. Because active versions are immutable, the content you are copying is
+guaranteed to be exactly what it was when it last served — which is the whole
+reason rollback is trustworthy rather than hopeful.
+
+If you promote with packages, re-apply the previous artifact and stop reading —
+that is the whole procedure, and [Promote Between
+Environments](../operate/promotion.md#roll-back) covers it:
+
 ```bash
-curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/status \
-  -H 'Content-Type: application/json' -d '{"status": "active"}'   # on the previous version's id
+orion-server package apply -s https://prod.orion.internal -f payments-1.3.0.json
 ```
 
-Re-activating a previous version makes it current again. Because active versions
-are immutable, that version's content is guaranteed to be exactly what it was
-when it last served — which is the whole reason rollback is trustworthy rather
-than hopeful.
+Over the admin API directly, it is four calls:
 
-Setting a rollout to `0`, or archiving the new version, has the same effect
-faster if the new version is already the problem.
+```bash
+# 1. Find the version you want back
+curl -s http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+
+# 2. Cut a fresh draft from the current version
+curl -s -X POST http://localhost:8080/api/v1/admin/workflows/order-processing/versions
+
+# 3. Put the known-good content into that draft
+curl -s -X PUT http://localhost:8080/api/v1/admin/workflows/order-processing \
+  -H 'Content-Type: application/json' -d @order-processing-v3.json
+
+# 4. Activate it — the bad version is archived as this one goes live
+curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/order-processing/status \
+  -H 'Content-Type: application/json' -d '{"status": "active"}'
+```
+
+Two things that look like shortcuts are not. Setting a rollout to `0` is
+refused — `PATCH /{id}/rollout` accepts `1`–`100`, because a version serving no
+traffic is an archived version, not an active one. And archiving the bad version
+does not fall back to its predecessor: archiving takes *every* active version of
+that workflow out of service, so any channel bound to it is quarantined and
+starts answering `503`. Roll forward instead.
 
 ## Move an estate between instances
 
@@ -131,9 +159,17 @@ narrow the set.
 
 By default an import is create-only and a collision is an error.
 `?on_conflict=skip` leaves existing entities alone; `?on_conflict=new_version`
-cuts a new draft version carrying the imported content. Re-importing an
-unmodified export reports `unchanged` for everything, which is what makes the
-import safe to retry from CI. The full matrix is in
+cuts a new draft version carrying the imported content. Under either of those
+two modes — not the create-only default — re-importing an unmodified export
+reports `unchanged` for everything, which is what makes the import safe to retry
+from CI:
+
+```bash
+curl -s -X POST "http://localhost:8080/api/v1/admin/workflows/import?on_conflict=new_version" \
+  -H 'Content-Type: application/json' --data @workflows.json
+```
+
+The full matrix is in
 [Admin API](../reference/admin-api.md#promoting-over-an-existing-estate-on_conflict).
 
 > [!TIP]

@@ -135,7 +135,9 @@ jobs:
 
       - name: Lint example workflows
         run: |
-          for f in examples/packages/*/workflow.json; do
+          # workflow*.json, not workflow.json: channel-composition ships a
+          # second workflow (workflow-lookup.json) the narrower glob skipped.
+          for f in examples/packages/*/workflow*.json; do
             ./target/debug/orion-server lint "$f"
           done
 
@@ -284,6 +286,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          # Full history so the rider check below can diff against the base.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
         with:
@@ -293,6 +297,31 @@ jobs:
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
+
+      # The rider rule, enforced. orion-api and orion-client are never tagged:
+      # crates-publish ships them as skip-if-published riders, so a change that
+      # does *not* bump the version is skipped at publish time and the released
+      # binary links the older crates.io content while the repo builds the
+      # newer local one — a divergence nothing else in CI can see, because the
+      # workspace always resolves the path dependency.
+      - name: Rider crates changed must have their version bumped
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          status=0
+          for crate in orion-api orion-client; do
+            changed=$(git diff --name-only "$BASE_SHA"...HEAD -- "crates/$crate/" | grep -v '/CHANGELOG.md$' || true)
+            [ -n "$changed" ] || continue
+            if git diff -U0 "$BASE_SHA"...HEAD -- "crates/$crate/Cargo.toml" \
+                 | grep -qE '^\+version = '; then
+              echo "::notice::$crate changed and its version was bumped"
+            else
+              echo "::error file=crates/$crate/Cargo.toml::$crate changed without a version bump. crates-publish skips a rider whose version is already on crates.io, so the released binary would resolve the older published content. Bump [package] version in crates/$crate/Cargo.toml (and the requirement in every dependent manifest)."
+              status=1
+            fi
+          done
+          exit $status
 
       - name: Assemble and verify-build the publish tarballs
         run: cargo package --locked --workspace
@@ -459,6 +488,9 @@ jobs:
       # Raise the floor when the real number moves up; never lower it to make
       # a red build green. Blocking since T42 (the job earned it — see the
       # note on `coverage:` above).
+      # Scoped to the default members (orion-server): orion-cli is neither
+      # compiled nor instrumented here, so this percentage describes the
+      # server only. TESTING.md's layer-6 note says the same.
       - name: Generate coverage report
         run: cargo llvm-cov --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 

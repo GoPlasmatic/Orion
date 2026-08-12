@@ -47,7 +47,7 @@
 - Keeps the definition as JSON in your repository, promoted between
   environments as a [package](../concepts/packages.md).
 - Versions every change, with
-  [percentage rollout and one-call rollback](../build/versioning.md).
+  [percentage rollout and one-command rollback](../build/versioning.md).
 - Brings the production furniture: [circuit breakers](../operate/failure-handling.md),
   [Prometheus metrics](../operate/monitoring.md), rate limits, and per-request
   [traces](../operate/traces.md).

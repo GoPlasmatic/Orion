@@ -55,6 +55,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
     assert_eq!(
         keys(&body["data"], "connector"),
         [
+            "config",
             "config_json",
             "connector_type",
             "content_hash",
@@ -66,6 +67,13 @@ async fn connector_response_keeps_every_field_the_row_published() {
             "updated_at"
         ]
     );
+    // `config` is the parsed twin of `config_json` — the shape POST/PUT take,
+    // so a read can be written straight back. Both are masked; the parsed one
+    // is derived *from* the masked string, never from the row.
+    let parsed: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().expect("config_json"))
+            .expect("config_json parses");
+    assert_eq!(body["data"]["config"], parsed);
     assert_eq!(body["data"]["id"], id);
     // Timestamps stay naive-UTC strings, not RFC 3339 with an offset.
     let created = body["data"]["created_at"].as_str().expect("created_at");
@@ -80,6 +88,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
     assert_eq!(
         keys(row, "connector list row"),
         [
+            "config",
             "config_json",
             "connector_type",
             "content_hash",

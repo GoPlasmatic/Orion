@@ -311,7 +311,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
         if !crate::engine::is_known_function(fn_name) {
             errors.push(FieldError::new(
                 format!("tasks[{i}].function.name"),
-                "unknown_function",
+                "UNKNOWN_FUNCTION",
                 format!(
                     "Unknown function '{fn_name}' — this workflow would be accepted \
                      and then fail at its first request"

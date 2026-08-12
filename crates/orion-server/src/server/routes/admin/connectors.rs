@@ -8,8 +8,8 @@ use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::openapi::{
-    CircuitBreakerReset, CircuitBreakerStates, ConnectorListItem, DataEnvelope, ImportResult,
-    PaginatedEnvelope,
+    CircuitBreakerReset, CircuitBreakerStates, ConnectorExportItem, ConnectorListItem,
+    DataEnvelope, ImportResult, PaginatedEnvelope,
 };
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
@@ -516,7 +516,7 @@ pub(crate) async fn reset_circuit_breaker(
     tag = "Connectors",
     params(ConnectorFilter),
     responses(
-        (status = 200, description = "Exported connectors, secrets masked", body = DataEnvelope<Vec<ConnectorResponse>>),
+        (status = 200, description = "Exported connectors in the shape `/import` accepts, secrets masked", body = DataEnvelope<Vec<ConnectorExportItem>>),
     )
 )]
 #[tracing::instrument(skip(state))]

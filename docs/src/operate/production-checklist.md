@@ -4,8 +4,11 @@ Everything below is off or permissive by default, because the defaults serve a
 laptop. Work through this before an instance takes traffic you did not send it
 yourself.
 
-Setting `environment = "production"` makes the first two rows fatal at startup
-rather than advisory. The rest are on you.
+Setting `environment = "production"` makes exactly five things fatal at startup
+rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
+`[cors] allowed_origins = ["*"]` wildcard, `server.verbose_errors = true`, and
+`cluster.enabled` together with `storage.auto_migrate`. Every other row below —
+**TLS and per-channel data-plane `auth` included** — is never checked for you.
 
 ## Before it takes traffic
 

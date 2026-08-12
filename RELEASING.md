@@ -8,11 +8,29 @@ green and the container-gated suites verified.
 
 ## What a release-shaped tag triggers
 
-The workspace has two releasable packages. A bare `v*` tag (e.g. `v1.0.0`,
-`v1.0.0-rc.1`) or an `orion-server-v*` tag releases the server; an
-`orion-cli-vX.Y.Z` tag releases the CLI (release.yml's dist plan,
-docker-release-cli.yml with its MCP-registry publish, and crates-publish all
-route on the prefix). The two shared library crates (`orion-api`,
+The workspace has two releasable packages, `orion-server` and `orion-cli`,
+**versioned in lockstep**. A bare `v*` tag (e.g. `v1.0.0`, `v1.0.0-rc.1`) is
+the joint release: dist announces every dist-able package sitting at the
+tagged version, so one tag yields one GitHub release carrying both sets of
+archives, both installers and both tap formulae, while crates-publish
+publishes both crates and both docker-release workflows build their image.
+Keeping the two `version` fields equal is the whole mechanism — let them
+drift and the bare tag silently releases only the package that matches.
+
+The package-prefixed tags are the out-of-band path for shipping one package
+alone: `orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` each release exactly
+their own package (release.yml's dist plan, docker-release-cli.yml with its
+MCP-registry publish, and crates-publish all route on the prefix).
+
+Because lockstep means a bare tag names a version one package may not have
+reached, both CLI pipelines degrade rather than fail on a mismatch:
+crates-publish skips a crate whose version is already on crates.io, and
+docker-release-cli's `prepare` job skips the CLI image when a bare tag's
+version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
+`orion-cli-v*` tag that disagrees is still a hard error — that one is a
+mistake, not a server-only release.
+
+The two shared library crates (`orion-api`,
 `orion-client`) are never tagged: crates-publish publishes them automatically
 as riders — in dependency order, skipping versions already on crates.io —
 right before the binary crate, since crates.io refuses a crate whose
@@ -55,16 +73,23 @@ The signing/attestation pipeline shipped without ever executing. The rc run
 is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 
 1. **Version bump (required):** dist refuses a tag whose version is not the
-   workspace version. On the release branch set `version = "1.0.0-rc.1"` in
-   `crates/orion-server/Cargo.toml` (one commit; `Cargo.lock` updates with
-   it), push, and wait
+   package version. On the release branch set `version = "1.0.0-rc.1"` in
+   **both** `crates/orion-server/Cargo.toml` and `crates/orion-cli/Cargo.toml`
+   — they release in lockstep, and a bare tag only announces the packages that
+   match it (one commit; `Cargo.lock` updates with it), push, and wait
    for CI to go green on that commit — the release pipelines gate on it.
 2. **Tag and push:**
 
    ```bash
    git tag v1.0.0-rc.1
-   git push origin v1.0.0-rc.1
+   git push origin refs/tags/v1.0.0-rc.1
    ```
+
+   Push the tag by its full `refs/tags/` name. The release branch is itself
+   called `v1.0.0`, so once the final tag exists the two share a name and a
+   bare `git push origin v1.0.0` fails with
+   `src refspec v1.0.0 matches more than one`. The fully-qualified form is
+   unambiguous whatever the branch is called.
 
 3. **Watch the pipelines** (`crates-publish` skips its publish job on an
    rc tag, so the live ones are `release.yml` and `docker-release.yml`).
@@ -94,18 +119,28 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    top, and check the compare links at the foot of the file name the new
    tag. Do this after the last feature commit lands — an entry dated before
    its content silently drops whatever shipped in between.
-8. **For the real release:** set `version = "1.0.0"` back, land, wait for
-   CI, tag `v1.0.0`.
+8. **For the real release:** set `version = "1.0.0"` back in both crate
+   manifests, land, wait for CI, then
+   `git tag v1.0.0 && git push origin refs/tags/v1.0.0`.
 9. **Publish the docs:** merge the release branch into `main`. The docs
    site deploys only from `main` (`docs.yml` triggers on `push` to `main`
    for `docs/**`), so until the merge lands the live site still serves the
    pre-1.0 book — no upgrade guide, old version strings. Do this
    immediately after tagging, not as cleanup.
 
-## The 1.0.0 benchmark session (C13)
+## The benchmark session (C13 — closed for 1.0.0)
 
-The README's performance numbers are still the v0.2.0 record. The 1.0
-numbers must come from **dedicated hardware** — a laptop running other work
+**C13 is done for 1.0.0.** The record is committed at
+[`crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
+and the README's Performance section cites it. Nothing below is outstanding
+work for this release; it is the procedure to repeat at the next one.
+
+One deliberate gap to carry forward rather than re-open: **the cluster
+scenario (step 4) was not run for 1.0.0**, so there are no published scaling
+numbers at N=2/N=3. That was accepted for this release, not overlooked — treat
+it as the first thing to add next time, not as a blocker now.
+
+Numbers must come from **dedicated hardware** — a laptop running other work
 produces numbers worse than none.
 
 1. **Hardware:** a machine doing nothing else, on AC power, thermals
@@ -117,7 +152,7 @@ produces numbers worse than none.
    BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
    ```
 
-4. **Cluster scenario:** bring up the HA compose stack
+4. **Cluster scenario** *(skipped for 1.0.0 — see above)*: bring up the HA compose stack
    (`docker compose -f docker-compose.ha.yml up -d`, N=2), then:
 
    ```bash
@@ -138,8 +173,8 @@ produces numbers worse than none.
    schemes), and replace the README's Performance section numbers — table,
    alt text, and the "measured on v0.2.0" framing — with the 1.0.0 numbers
    including cluster scaling efficiency.
-7. **Close C13**: the commit that lands the numbers names C13 in its
-   message (`git log --grep=C13` is the index).
+7. **Close the checkpoint**: the commit that lands the numbers names C13 in
+   its message (`git log --grep=C13` is the index).
 
 ## Musl promotion checkpoint (P13)
 

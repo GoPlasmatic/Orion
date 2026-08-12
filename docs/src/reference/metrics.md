@@ -11,7 +11,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_message_duration_seconds` | Histogram | `channel` | Message processing latency. |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |
 | `orion_errors_total` | Counter | `reason` | Errors by cause: `engine`, `timeout`, `panic`, `kafka_retry`, and other reason codes. |
-| `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin credentials: `missing_or_malformed`, `invalid_key`, or `locked_out`. |
+| `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin requests: `missing_or_malformed`, `invalid_key`, `locked_out`, or `read_only_write` (a read-only key attempting a mutation — a 403, not a bad credential). |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served. |
 | `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency. |
 | `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency. |

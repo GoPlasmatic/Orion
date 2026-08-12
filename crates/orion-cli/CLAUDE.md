@@ -44,7 +44,7 @@ orion-cli mcp serve --http                    # HTTP transport (remote clients),
 orion-cli mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
 ```
 
-E2E tests are shell-based (not `cargo test`). 12 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); the last suite is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behaviour cases in `tests/e2e/cases/`. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
+E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); suite 13 is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behaviour cases in `tests/e2e/cases/` — and suite 14 smoke-covers the read-only command groups the lifecycle suites never reach. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
 
 ## Architecture
 

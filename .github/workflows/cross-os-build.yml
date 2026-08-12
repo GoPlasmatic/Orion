@@ -30,6 +30,12 @@ on:
       - "crates/orion-server/migrations/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
+      # dist ships macOS and Windows binaries for orion-cli too, so the
+      # cross-OS proof has to cover it and the crates it links.
+      - "crates/orion-cli/src/**"
+      - "crates/orion-cli/Cargo.toml"
+      - "crates/orion-api/**"
+      - "crates/orion-client/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/cross-os-build.yml"
@@ -39,6 +45,12 @@ on:
       - "crates/orion-server/migrations/**"
       - "crates/orion-server/build.rs"
       - "crates/orion-server/Cargo.toml"
+      # dist ships macOS and Windows binaries for orion-cli too, so the
+      # cross-OS proof has to cover it and the crates it links.
+      - "crates/orion-cli/src/**"
+      - "crates/orion-cli/Cargo.toml"
+      - "crates/orion-api/**"
+      - "crates/orion-client/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/cross-os-build.yml"
@@ -79,7 +91,7 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build
-        run: cargo build --locked
+        run: cargo build --locked --workspace
 
   # The static-Linux proof (P13). Musl is the audience of the "single binary,
   # no runtime dependencies" pitch (Alpine/distroless/scratch), and rdkafka's
@@ -139,4 +151,4 @@ jobs:
           CXX_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-g++
           AR_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-ar
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-buildroot-linux-musl-gcc
-        run: cargo build --locked --target x86_64-unknown-linux-musl
+        run: cargo build --locked --workspace --target x86_64-unknown-linux-musl
