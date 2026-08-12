@@ -39,6 +39,18 @@ You create a connector through the [Admin API](./admin-api.md#connectors):
 - **`enabled`**: defaults to `true`. A disabled connector is never loaded; export → import preserves the flag ([endpoints](./admin-api.md#connectors)).
 - **`tags`**: selection labels for `?tag=` filtering and [package export](../operate/promotion.md).
 
+A read gives the config back **twice**, both copies masked:
+
+| Field | Type | Use |
+|---|---|---|
+| `config` | object | The shape `POST` and `PUT` accept, so a read response can be edited and written straight back. Read this one. |
+| `config_json` | string | The stored document verbatim, as a string. Kept for the life of the 1.x line; a client reading it has to parse the string before it can write it back. |
+
+They are the same document — `config` is parsed *from* the masked string, so it
+cannot carry a secret the string form has already replaced. `config` is `null`
+only when the stored document no longer parses, the same condition that empties
+`content_hash`.
+
 > [!NOTE]
 > Connector configs ignore unknown top-level fields, so rows written by older versions keep loading. The `operations`, `retry`, and `dialect` blocks are the exception: each refuses unknown keys, as its section states. A misspelled control would otherwise read as protection while providing none.
 

@@ -735,7 +735,7 @@ The migration is **not idempotent**: the `DROP VIEW` statements have no
 two views, and sqlx will not re-run version 004 because it is already recorded.
 **Take a backup first.** To recover manually, recreate the two views using the
 `CREATE VIEW` statements at the bottom of
-`migrations/postgres/004_bigint_columns.sql`.
+`crates/orion-server/migrations/postgres/004_bigint_columns.sql`.
 
 **All backends: the trace pagination indexes are the slow part.** They add
 `idx_traces_updated_at` and `idx_traces_created_at_id`, then drop

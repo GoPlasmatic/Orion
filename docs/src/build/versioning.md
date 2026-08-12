@@ -1,8 +1,9 @@
 # Version & Roll Out Changes
 
 Active workflows and channels are immutable. Changing one means creating a new
-version and activating it — which is also what makes rollback a single call.
-This page is the mechanics.
+version and activating it — which is also what makes rollback trustworthy: the
+old content is guaranteed to be exactly what it was when it last served. This
+page is the mechanics, [rolling back](#roll-back) included.
 
 ## Create a new version
 

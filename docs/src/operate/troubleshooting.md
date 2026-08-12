@@ -71,7 +71,8 @@ channel exists and failed to load.
 
 ```bash
 orion-cli channels list                       # is it there, and is it active?
-curl -s http://localhost:8080/health | jq '.workflows_loaded'
+curl -s -H "Authorization: Bearer $ORION_ADMIN_TOKEN" \
+  http://localhost:8080/health | jq '.workflows_loaded'
 ```
 
 If the channel is `active` but the request still `404`s, the route pattern is
@@ -154,8 +155,9 @@ curl -s "http://localhost:8080/api/v1/admin/trace-dlq?limit=20" | jq '.data[].er
 Read the errors first; the DLQ is a symptom, not a cause. Then:
 
 - **Drain faster** by raising `trace_queue.dlq_batch_size`.
-- **Purge what is beyond use:**
-  `POST /api/v1/admin/trace-dlq/purge?older_than_hours=168`.
+- **Purge what is beyond use:** `POST /api/v1/admin/trace-dlq/purge` with
+  `{"older_than_hours": 168}` as the body — the age is required, and only
+  exhausted entries are deleted.
 - **Check whether retry is even on.** With
   `trace_queue.dlq_retry_enabled = false`, the `orion_trace_dlq_depth` gauge
   stops updating, so a flat line means "nobody is looking", not "empty".

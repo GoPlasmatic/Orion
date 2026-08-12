@@ -235,7 +235,8 @@ can; raise a precise, located capability error where it cannot; never
 approximate silently.**
 
 Everything not listed below returns the **same row set on all five backends**,
-and that claim is executable: `tests/integration/data_parity_test.rs` runs one
+and that claim is executable:
+`crates/orion-server/tests/integration/data_parity_test.rs` runs one
 fixture dataset through a table of envelopes and asserts an identical result —
 or an identical capability error — on SQLite, PostgreSQL, MySQL, MongoDB and
 Elasticsearch. The table below is the complete list of divergences.

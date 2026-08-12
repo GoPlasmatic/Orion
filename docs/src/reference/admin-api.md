@@ -33,6 +33,38 @@ Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true`
 environment variable. Keys listed under `admin_auth.read_only_api_keys`
 authorise `GET`/`HEAD` only; every mutating method answers `403`.
 
+### Failed-auth backoff
+
+Wrong credentials are rate-limited, so the admin plane cannot be guessed at
+line speed. The policy is fixed — there is no setting for it:
+
+| Rule | Value |
+|---|---|
+| Tolerated before backoff starts | 5 consecutive failures from one client |
+| First lockout | 500 ms, doubling on each further failure |
+| Ceiling | 30 s, so a shared NAT egress address cannot be locked out indefinitely |
+| Forgotten after | 300 s with no failure from that client |
+
+A locked-out request answers the same `401 Invalid API key` a wrong key gets:
+the response never reveals that the caller is in backoff. One successful
+authentication clears the budget.
+
+Two details are easy to get wrong:
+
+- **The client is identified by the `rate_limit.trusted_proxies` policy**, not
+  by a raw `X-Forwarded-For`, so a forged header cannot mint a fresh budget per
+  request. Behind an unlisted proxy every caller shares one budget — see the
+  `client_ip` note under [Audit Logs](#audit-logs).
+- **`GET /traces/{id}` shares the same budget.** It authenticates itself with a
+  per-submission trace token rather than through the middleware, so a wrong
+  token counts as a failure and a correct one clears the budget, exactly as an
+  admin key does.
+
+A read-only key refused on a mutation is a `403` and does **not** count: the
+credential is valid, only its authority is not. Each outcome increments
+`orion_admin_auth_failures_total` under its own `reason` — see the
+[Metrics Reference](./metrics.md).
+
 ## Response envelopes
 
 Every admin 2xx body puts its payload under a top-level `data` key — one shape, so one unwrapping function works everywhere:
@@ -173,7 +205,7 @@ simply omit the parameter.
 |--------|------|-------------|
 | POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment. Optional `tags: ["..."]` (selection labels for `?tag=` and package export) and `enabled` (default `true`; a disabled connector is never loaded into the registry, and export → import preserves the flag) |
 | GET | `/api/v1/admin/connectors` | List connectors (secrets masked). Filter with `?tag=` |
-| GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked) |
+| GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked). The config comes back both parsed (`config`) and as the stored string (`config_json`) — [which to read](./connectors.md#definition-and-identity) |
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
 | DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
 | POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing name means (connectors are unversioned, so `new_version` updates in place) |
@@ -358,11 +390,26 @@ still recorded. Anything that does not make it is counted in
 
 ## Trace DLQ
 
-An async trace whose persistence keeps failing lands in the dead-letter
-queue and is retried automatically with backoff (see
-[Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md)). These endpoints are the operator
-view of that queue — inspect what is stuck, put an entry back in line, or
-clear out entries that will never succeed.
+An async submission that fails lands in the dead-letter queue and is retried
+automatically with backoff (see
+[Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md)). Two
+different failures put it there, and the queue does not distinguish them:
+
+- **The run failed** — a task errored, or the workflow exceeded the channel's
+  timeout. The trace is settled `failed` and the whole submission is queued for
+  re-execution, so a downstream outage that has since recovered drains by
+  itself.
+- **The run never started** — the trace's pre-run status write failed, so the
+  message is queued rather than dropped and re-runs once the database recovers.
+
+A *result* write that fails after a successful run is the one failure that does
+**not** queue: the work is already done, so the trace is settled `failed` with
+`Result persistence failed after retries` and re-running it would repeat every
+side effect. Only `/async` traffic reaches this queue at all — a sync request
+carries its own failure back to the caller, with nothing left to retry.
+
+These endpoints are the operator view of that queue — inspect what is stuck,
+put an entry back in line, or clear out entries that will never succeed.
 
 | Method | Path | Description |
 |--------|------|-------------|

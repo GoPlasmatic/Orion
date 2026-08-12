@@ -34,6 +34,13 @@ read_only_api_keys = []
   authorises `GET`/`HEAD` and answers `403` to anything mutating — enough for a
   dashboard, an auditor, or a CI check, and not enough to rewrite a workflow.
 
+Guessing is already rate-limited: after five consecutive failures a client is
+put in a doubling backoff up to 30 s, and reading a trace by its token shares
+that budget. The policy is fixed and needs no configuration —
+[Admin API › Failed-auth backoff](../reference/admin-api.md#failed-auth-backoff)
+is the contract. Watch `orion_admin_auth_failures_total`; a sustained
+`invalid_key` or `locked_out` rate is someone trying.
+
 With `header = "Authorization"` the key travels as `Bearer <key>`; any other
 header name takes the raw value.
 

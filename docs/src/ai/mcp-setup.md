@@ -90,11 +90,13 @@ The tools cover the full admin API, named `<resource>_<action>`:
 
 | Category | What it covers |
 |----------|----------------|
-| **Workflows** | create, update, version, test, validate, activate, archive, roll out, import/export |
+| **Workflows** | create, update, version, test, validate, activate, archive, roll out, dependencies, delete, import/export |
 | **Channels** | create, update, version, activate, archive, delete, import |
-| **Connectors** | create, update, enable/disable, delete, import |
+| **Connectors** | create, update, enable/disable, test, delete, import |
 | **Data** | send a request to a channel, sync or async |
 | **Traces** | list and read execution traces |
+| **Trace DLQ** | list and read dead-lettered submissions, and requeue one |
+| **Packages** | list and read promotion receipts |
 | **Engine** | status and reload |
 | **Operations** | health, metrics, audit logs, circuit breakers, backups |
 | **Discovery** | list the built-in functions with their input schemas |

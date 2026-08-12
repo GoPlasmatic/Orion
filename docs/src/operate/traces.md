@@ -94,8 +94,13 @@ stays in the table for you to inspect. Inspect and purge over the admin API:
 
 ```bash
 curl -s "http://localhost:8080/api/v1/admin/trace-dlq"
-curl -s -X POST "http://localhost:8080/api/v1/admin/trace-dlq/purge?older_than_hours=168"
+curl -s -X POST "http://localhost:8080/api/v1/admin/trace-dlq/purge" \
+  -H 'Content-Type: application/json' -d '{"older_than_hours": 168}'
 ```
+
+`older_than_hours` travels in the body and is required — an omitted age must
+not silently mean "everything". Only *exhausted* entries are purged; a row
+still being retried is never deleted.
 
 In cluster mode each row is claimed with a lease, so exactly one node retries
 it, and the retry job itself is lease-gated so only one node polls per tick.
@@ -128,9 +133,13 @@ without bound.
 ## Read a trace
 
 ```bash
-curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=error&limit=20"
+curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=failed&limit=20"
 curl -s "http://localhost:8080/api/v1/admin/traces/<trace-id>"
 ```
+
+`status` takes one of `pending`, `running`, `completed`, `failed`. It is
+matched literally rather than validated, so a value outside that set — `error`,
+say — comes back as an empty page rather than a `400`.
 
 The list endpoint pages by cursor: pass `cursor` from `next_cursor` rather than
 walking `offset`, and ask for `include_total=true` only when you genuinely need

@@ -93,8 +93,10 @@ node:
 ## Versioned, not edited
 
 An active workflow is **immutable**. Changing one means creating a new version,
-testing it, and activating that — which is also why rollback is a single call
-rather than a redeploy. [The Entity Lifecycle](./lifecycle.md) covers the rules;
+testing it, and activating that — which is also why rolling back is putting
+known-good content into a new version rather than a redeploy, and why that
+content is guaranteed to be what it was when it last served.
+[The Entity Lifecycle](./lifecycle.md) covers the rules;
 what matters here is that "edit the running logic" is not an operation Orion
 offers, on purpose.
 

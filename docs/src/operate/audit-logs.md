@@ -27,8 +27,27 @@ Filters are applied in the database and combine with AND: `action`,
 > are scripting against this endpoint, that refusal is the feature — it means a
 > compliance query cannot silently widen.
 
-Recorded actions: `create`, `update`, `delete`, `import`, `update_rollout`,
-`status_active`, `status_archived`, `status_draft`, `reload`, and `backup`.
+Because `action` and `resource_type` match exactly, a filter is only as good as
+the vocabulary behind it. This is all of it:
+
+| `action` | `resource_type` | Written by |
+|---|---|---|
+| `create` | `workflow`, `channel`, `connector` | `POST /{kind}` |
+| `create` | `backup` | `POST /backups` |
+| `create_version` | `workflow`, `channel` | `POST /{kind}/{id}/versions` |
+| `update` | `workflow`, `channel`, `connector` | `PUT /{kind}/{id}` |
+| `delete` | `workflow`, `channel`, `connector` | `DELETE /{kind}/{id}` |
+| `import` | `workflow`, `channel`, `connector` | `POST /{kind}/import` — one row per entity written, plus a batch summary row |
+| `status_draft`, `status_active`, `status_archived` | `workflow`, `channel` | `PATCH /{kind}/{id}/status`, named for the status requested |
+| `update_rollout` | `workflow` | `PATCH /workflows/{id}/rollout` |
+| `test` | `workflow`, `connector` | `POST /workflows/{id}/test`, `POST /connectors/{id}/test` — both reach live backends, so both are recorded |
+| `reset` | `circuit_breaker` | `POST /connectors/circuit-breakers/{key}` |
+| `purge`, `requeue` | `trace_dlq` | The [trace DLQ](../reference/admin-api.md#trace-dlq) endpoints |
+| `package_staged`, `package_applied` | `package` | `PUT /packages/{name}`, named for the receipt state |
+| `reload` | `engine` | `POST /engine/reload` |
+
+Reads are not recorded — only mutations, and the two `test` calls that behave
+like one.
 
 ## Group a multi-step operation
 

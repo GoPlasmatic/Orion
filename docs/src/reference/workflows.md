@@ -301,7 +301,10 @@ key `(workflow_id, version)`. Status moves in one direction:
   exist at a time. Creating a workflow starts it as a draft.
 - **active** — served; **immutable**. To change an active workflow, create a
   new draft version, edit it, and activate it.
-- **archived** — retired; kept for history and instant rollback.
+- **archived** — retired, and kept. An archived version is a rollback *source*:
+  its content is what you copy into a new draft and activate. Nothing
+  reactivates an archived version in place — see
+  [Version & Roll Out Changes › Roll back](../build/versioning.md#roll-back).
 
 | Action | Endpoint |
 |--------|----------|
