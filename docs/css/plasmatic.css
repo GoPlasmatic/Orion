@@ -1153,7 +1153,44 @@ pre > .buttons {
 
 
 /* ============================================================
-   18. Scrollbar & selection
+   18. Comparison page metadata (.compare-meta)
+   ============================================================
+   Every page under compare/ opens with three labelled facts: how the
+   category relates to Orion, where the two overlap, and when a human
+   last checked the other tools' docs. Written as three consecutive
+   markdown lines they rendered as one run-on paragraph, because a soft
+   line break is a space in HTML. The wrapper (with blank lines inside
+   it, so CommonMark still processes the markdown) gives each fact its
+   own <p>; this rule sets them as a block to scan rather than prose to
+   read. */
+.compare-meta {
+  margin: 0 0 28px;
+  padding: 14px 18px;
+  border-inline-start: 3px solid var(--p-accent);
+  border-radius: var(--p-radius-sm);
+  background: var(--p-surface);
+  font-size: 0.94em;
+}
+
+.compare-meta p {
+  margin: 0;
+  color: var(--p-fg-muted);
+}
+
+.compare-meta p + p {
+  margin-top: 5px;
+}
+
+/* The labels carry the scan; the value is what you read once one of
+   them has caught. */
+.compare-meta strong {
+  font-weight: 600;
+  color: var(--p-fg);
+}
+
+
+/* ============================================================
+   19. Scrollbar & selection
    ============================================================ */
 ::-webkit-scrollbar {
   width: 8px;
@@ -1180,7 +1217,7 @@ pre > .buttons {
 
 
 /* ============================================================
-   19. Print
+   20. Print
    ============================================================
    The two-track grid and the ToC rail are screen affordances; on paper
    the content should just be one column at full page width. */
@@ -1198,7 +1235,7 @@ pre > .buttons {
 
 
 /* ============================================================
-   20. Narrow screens
+   21. Narrow screens
    ============================================================ */
 @media (max-width: 900px) {
   body {

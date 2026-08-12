@@ -1,53 +1,56 @@
-# Architectural Comparison & Use Cases
+# Is Orion Right for You?
 
-Orion is a declarative runtime designed for microservices, AI agent tools, business rules, event processing, and webhook data ingestion. Operating between edge API gateways and heavy workflow orchestrators, Orion executes request-response pipelines, continuous event streams, and agentic tool invocations without requiring process restarts or binary rebuilds.
+Orion **is** the service. A gateway sits in front of it, a durable execution
+engine sits above it, and
+[dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) runs inside it. You
+post JSON to a running server and get a live endpoint, and the runtime brings
+the rate limiting, retries, versioning and metrics you would otherwise write
+again for every service you own.
 
-This guide outlines where Orion fits within modern system architecture, compares it against alternative tools, and describes key deployment patterns across its five core workload pillars.
+This page maps the neighbours. Each row of the chart says what that kind of
+tool is for and how it relates to Orion. The linked page makes the case in
+full — including where Orion loses.
 
-## The short answer
+## Where Orion sits
 
-| Workload / Requirement | Recommended Tool | Architectural Fit |
-|---|:-:|-|
-| **Microservices** | **Orion** | The service itself, not a coordinator over others; `channel_call` composes in-process |
-| **AI Agent Tools** | **Orion** | Safe agent execution engine with staged drafts, MCP tools, and instant rollbacks |
-| **Business Rules & Decision APIs** | **Orion** | Declarative JSON task pipelines with JSONLogic rules and validation |
-| **Kafka Event Consumers** | **Orion** | High-throughput Kafka consumer groups, event routing, and poison-message isolation |
-| **Webhook & Data Ingestion** | **Orion** | Payload normalization and one portable data envelope across SQL, Mongo, and ES |
-| Browser-based management dashboard | [Orion UI](https://github.com/GoPlasmatic/Orion-ui) | Web management console for Orion Admin API |
-| Multi-day stateful sagas, human approvals | Temporal, Airflow | Stateful durable execution engines for long-running processes |
-| Full API Gateway with plugin ecosystem | Kong, Envoy | Ingress traffic management (can front Orion instances) |
-| Complex RETE rule engine over large fact bases | Drools | Stateful rule evaluation engines |
-| In-process workflow library embedded in Rust | [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) | Underlying execution library for custom Rust applications |
-| General-purpose compute (ML training, video rendering) | Dedicated Services / Serverless | Custom microservice / serverless environments |
+```orion-diagram
+{
+  "direction": "LR",
+  "nodes": [
+    { "id": "gw",    "label": "API gateway",       "sublabel": "in front of Orion",      "type": "gateway" },
+    { "id": "orch",  "label": "Durable execution", "sublabel": "above Orion",            "type": "infra" },
+    { "id": "orion", "label": "Orion",             "sublabel": "the service itself",     "type": "service" },
+    { "id": "df",    "label": "dataflow-rs",       "sublabel": "inside Orion",           "type": "workflow" },
+    { "id": "sys",   "label": "Your systems",      "sublabel": "SQL · Mongo · ES · APIs", "type": "datastore" }
+  ],
+  "edges": [
+    { "from": "gw",    "to": "orion" },
+    { "from": "orch",  "to": "orion" },
+    { "from": "orion", "to": "df" },
+    { "from": "orion", "to": "sys" }
+  ]
+}
+```
 
-**Optimal Use Cases for Orion:**
-- **Microservices:** The endpoint and its logic in one runtime, composed in-process without network hops or serialization costs.
-- **AI Agent Tools:** Serving as the tool backend an LLM agent calls over HTTP, and — through the MCP server in `orion-cli` — the runtime an assistant authors and operates those tools in.
-- **Business Rules & Decision APIs:** Expressing complex conditional routing, data transformation, and validation rules as declarative JSON.
-- **Kafka Event Consumers:** Ingesting and processing continuous event streams from Kafka topics and asynchronous webhooks.
-- **Webhook & Data Ingestion:** Normalizing heterogeneous incoming payloads into standardized database models across SQL, MongoDB, and Elasticsearch.
+## The chart
 
-**Out of Scope for Orion:** Long-running multi-step processes spanning days or requiring human-in-the-loop approvals.
+| What you are weighing | Examples | What it is for | How it relates to Orion |
+|---|---|---|---|
+| Building it yourself | Spring Boot, FastAPI, Express, Go | A service you compile, deploy and own end to end | **Replaces** — for services that fit a pipeline |
+| [Durable execution engines](./compare/durable-execution.md) | Temporal, Restate, Step Functions, Airflow | Work that must survive a restart, or wait hours for a human | **Pairs with** — they call Orion, Orion calls them |
+| [API gateways](./compare/api-gateways.md) | Kong, Envoy, APISIX, KrakenD | Policing and routing traffic to the services behind them | **Pairs with** — Orion is one of the services behind it |
+| MCP tool servers | Hand-written MCP servers, FastMCP, LangChain tools | Exposing your systems to an LLM as callable tools | **Replaces** — and adds drafts, rollout and rollback |
+| [Automation platforms](./compare/automation-platforms.md) | n8n, Zapier, Make, Node-RED | Wiring SaaS apps together quickly, at low volume | **Different job** — Orion carries production request traffic |
+| Stream & integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps** — Orion does per-record work, not windowed joins |
+| [Rule engines](./compare/rule-engines.md) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps** — at small rule counts |
+| [Embedding dataflow-rs](./compare/dataflow-rs.md) | dataflow-rs | Running workflow tasks inside your own Rust program | **Sits under** — it is the engine Orion wraps |
 
-The trade is worth stating plainly: your logic must be expressible as a pipeline
-of Orion's task functions and JSONLogic. When it is not, `http_call` to a real
-service you wrote is the intended escape hatch.
+Four words carry the last column:
 
-## vs. Temporal / Airflow / BPMN engines
-
-Orchestrators specialize in **durable, stateful execution**, managing workflows that sleep for extended periods, survive process restarts mid-execution, and await manual intervention.
-
-Orion workflows are **stateless execution pipelines**. They run within milliseconds inside a request loop or event stream, persisting operational state to target datastores or message brokers rather than maintaining complex saga states inside the runtime.
-
-- **Use an Orchestrator** for multi-day saga transactions, manual approval workflows, and scheduled DAG tasks.
-- **Use Orion** for AI agent tool execution, synchronous REST endpoints, microservice composition, and high-throughput stream processing.
-- **Integration Pattern:** A Temporal activity can invoke an Orion channel endpoint, or an Orion task can trigger a Temporal workflow via an HTTP call.
-
-## vs. Kong / Envoy / API gateways
-
-API gateways focus on **proxying and policing** traffic destined for downstream application services. Orion **implements the execution logic itself**, terminating requests directly within a workflow pipeline.
-
-The overlap — rate limiting, payload validation, deduplication, origin allow-lists — exists because Orion channels police their own ingress. For a fleet, a gateway still earns its place, with Orion as an upstream that needs fewer of the gateway's compensating features.
+- **Replaces** — Orion does this job instead.
+- **Pairs with** — both live in the same estate, each doing its own job.
+- **Sits under** — it is a component of Orion, not an alternative to it.
+- **Different job** — the overlap is superficial.
 
 > [!WARNING]
 > **Plan for authentication before you expose a channel.** The admin plane
@@ -58,34 +61,58 @@ The overlap — rate limiting, payload validation, deduplication, origin allow-l
 > reverse proxy — see [Secure an Instance](./operate/security.md) for what to
 > configure.
 
-## vs. Drools and RETE rule engines
+## Orion is a good fit when
 
-Orion evaluates [JSONLogic](https://jsonlogic.com) conditions. They are compiled at engine build time: fast, deterministic, and easy for an LLM to write. What they are not is a RETE engine doing incremental matching over a working memory of thousands of interdependent facts.
+- The logic fits an ordered pipeline: parse, validate, look something up,
+  transform, respond.
+- You want the endpoint live without a build, a deploy, or a restart.
+- You would otherwise write the same rate limiting, retries, metrics and
+  versioning for the fifth time.
+- An LLM is writing or changing the logic, and you need drafts, dry-runs and
+  one-call rollback around it.
+- Traffic is request/response or per-record events — thousands a second,
+  answered in milliseconds.
+- The payload carries a list, and each element needs a connector call — a few
+  dozen of them, not a few thousand.
+- The logic changes more often than the infrastructure around it does.
 
-**Use Drools for:** "which of 10,000 rules fire as facts accumulate".
-**Use Orion for:** "does this request satisfy these conditions — then transform and route it". The second model is simpler to write, review, version, and roll back.
+## Orion is the wrong tool when
 
-## vs. n8n / Zapier / Make
+- **The work spans hours or days, or waits for a human.** Orion runs inside a
+  request and forgets. See
+  [durable execution engines](./compare/durable-execution.md).
+- **Something has to *start* on a schedule.** Orion runs when it is called —
+  over REST, plain HTTP, or a Kafka topic. There is no timer and no cron.
+- **You need gRPC, WebSockets, or a streaming response.** Those three
+  protocols are the whole ingress surface.
+- **The logic needs a real programming language.** There is no plugin
+  mechanism, no scripting runtime and no WASM sandbox —
+  [what you can extend](./concepts/how-orion-works.md#what-you-can-extend)
+  states the boundary exactly.
+- **You need JWT/OIDC or mTLS at the data plane** with nothing in front. See
+  the warning above.
+- **You need every last microsecond.** The published record is
+  [5.1K–5.7K workflow requests/sec per instance](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md);
+  a hand-written Go service doing the same work will beat it.
 
-Visual automation tools optimise for building an integration quickly: large app catalogues, drag-and-drop, hosted convenience. Orion optimises for production service traffic: thousands of requests per second, single-digit millisecond latency, versioned rollouts, circuit breakers, Prometheus metrics, and JSON definitions that live in your repository. [Orion UI](https://github.com/GoPlasmatic/Orion-ui) adds a dashboard for managing and visualising them, but the API stays the source of truth.
+## The trade you are making
 
-**Use an automation tool for:** a workflow that runs a few times an hour and touches 40 SaaS apps. **Use Orion for:** a workflow that *is* one of your services.
+Your logic must be expressible as a pipeline of Orion's
+[task functions](./reference/functions.md) and
+[JSONLogic](./reference/expressions.md). The pipeline does not have to run once:
+a workflow [`loop`](./reference/workflows.md#loop) repeats the whole task list
+once per sweep, so a call per element of a list is a supported thing to write —
+sequentially, inside the one request, bounded by a `max` you declare.
 
-## vs. embedding dataflow-rs
-
-Orion is the **runtime** built on the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) engine. If you want workflow execution *inside* your own Rust application — no server, no admin API, no lifecycle management — embed dataflow-rs directly.
-
-Orion is what you deploy when you want that engine plus channels, connectors, versioning, governance, and an admin API as a standing service.
-
----
-
-Convinced, or at least curious? [Install & Run](./getting-started/install.md)
-takes about a minute, and [Your First Service](./getting-started/first-service.md)
-is four calls after that.
+When the logic is not expressible that way, `http_call` to a real service you
+wrote is the intended escape hatch — and that is a normal outcome, not a
+failure of the design. A workflow that reaches outside for one hard step still
+gets the versioning, the guards and the traces for everything around it.
 
 ## Related
 
 - [Install & Run](./getting-started/install.md) — decide by trying it; it takes about a minute.
 - [How Orion Works](./concepts/how-orion-works.md) — the mental model, if you want it before the install.
+- [Architectural Characteristics](./characteristics.md) — everything the runtime carries, mapped.
 - [Build with Claude Code](./ai/claude-code.md) — hand the authoring to an assistant.
-- [Secure an Instance](./operate/security.md) — the authentication planning the gateway section above calls for.
+- [Secure an Instance](./operate/security.md) — the authentication planning the warning above calls for.

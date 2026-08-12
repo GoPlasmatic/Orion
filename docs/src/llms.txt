@@ -9,13 +9,21 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 - [Introduction](https://goplasmatic.github.io/Orion/introduction.html): what Orion is, why it exists, and where to start
 - [Architectural Characteristics](https://goplasmatic.github.io/Orion/characteristics.html): the capability map — eight characteristics, what the runtime provides under each, and the deliberate gaps
-- [Architectural Comparison & Use Cases](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
+- [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html): the one chart of neighbouring tools, where Orion fits, and where it is the wrong tool
 - [Install & Run](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix for server and CLI, first run, health check
 - [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
 - [Test & Promote a Service](https://goplasmatic.github.io/Orion/getting-started/test-and-promote.html): lint, dry-run with stubs, regression cases, then export/plan/apply to a second instance
 - [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html): six deployable example packages, with the step-by-step walkthrough
 - [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
+
+## Compare
+
+- [Orion vs Durable Execution Engines](https://goplasmatic.github.io/Orion/compare/durable-execution.html): Temporal, Restate, Step Functions, Airflow — resume vs answer-and-forget, and why weight is not the distinction
+- [Orion vs API Gateways](https://goplasmatic.github.io/Orion/compare/api-gateways.html): Kong, Envoy, APISIX, KrakenD — the gateway polices, Orion terminates; what to keep on each side
+- [Orion vs Automation Platforms](https://goplasmatic.github.io/Orion/compare/automation-platforms.html): n8n, Zapier, Make, Node-RED — app catalogue and speed vs production request traffic
+- [Orion vs Rule Engines](https://goplasmatic.github.io/Orion/compare/rule-engines.html): Drools, OPA, GoRules — inference over accumulating facts vs conditions over one payload
+- [Orion vs Embedding dataflow-rs](https://goplasmatic.github.io/Orion/compare/dataflow-rs.html): library or runtime — custom Rust handlers vs everything Orion adds around the engine
 
 ## Concepts
 

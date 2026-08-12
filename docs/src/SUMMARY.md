@@ -2,9 +2,17 @@
 
 [Introduction](./introduction.md)
 [Architectural Characteristics](./characteristics.md)
-[Architectural Comparison & Use Cases](./comparison.md)
+[Is Orion Right for You?](./comparison.md)
 
 ---
+
+# Compare
+
+- [Orion vs Durable Execution Engines](./compare/durable-execution.md)
+- [Orion vs API Gateways](./compare/api-gateways.md)
+- [Orion vs Automation Platforms](./compare/automation-platforms.md)
+- [Orion vs Rule Engines](./compare/rule-engines.md)
+- [Orion vs Embedding dataflow-rs](./compare/dataflow-rs.md)
 
 # Get Started
 

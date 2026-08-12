@@ -155,6 +155,40 @@ for f in $(grep -rl 'orion-mindmap' docs/src --include='*.md' 2>/dev/null); do
   done < <(grep -n '"link" *: *"' "$f" 2>/dev/null)
 done
 
+## 12. Every comparison page carries the template's load-bearing parts. The
+##     section's whole value is that its pages read side by side and that the
+##     honest half is never quietly dropped, so both are checked rather than
+##     trusted: a page that cannot fill "What Orion cannot do here" is a page
+##     that is not honest yet, and an undated comparison is a stale one. The
+##     review date is a claim about when a human last checked the other tools'
+##     docs — nothing can verify that for us, but a missing line is catchable.
+##
+##     "What Orion does instead" is deliberately NOT required. dataflow-rs.md
+##     says "What Orion adds on top" because it is a build decision, not a
+##     competitive comparison, and the page opens by saying so. Forcing the
+##     heading there would make it lie to satisfy a grep.
+if [ -d docs/src/compare ]; then
+  for f in docs/src/compare/*.md; do
+    [ -e "$f" ] || continue
+    for h in 'Side by side' 'Where they overlap' 'Running both' \
+             'What Orion cannot do here' 'Related'; do
+      grep -q "^## $h\$" "$f" || err "$f: missing required heading '## $h'"
+    done
+    grep -q '^\*\*How it relates:\*\* ' "$f" \
+      || err "$f: missing a '**How it relates:**' line"
+    ## The date alone was the weaker half of the contract: it says a human
+    ## looked, not what they looked at. A version is what makes the claim
+    ## falsifiable later, so the line has to name one.
+    grep -q '^\*\*Last reviewed:\*\* .*, against ' "$f" \
+      || err "$f: '**Last reviewed:**' needs a ', against <Tool> <version>' clause"
+    ## An orphan page would otherwise sit outside checks 8 and 10, which only
+    ## ever walk SUMMARY.md.
+    rel=${f#docs/src/}
+    grep -qF "](./$rel)" docs/src/SUMMARY.md \
+      || err "$f: no SUMMARY.md chapter, so llms.txt is never checked for it"
+  done
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
 else
