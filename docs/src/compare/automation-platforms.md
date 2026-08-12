@@ -22,7 +22,7 @@
 | What it is | A builder and host for cross-app automations | A runtime that serves service definitions you send it |
 | Unit of work | A scenario or flow, usually triggered on a schedule or webhook | A [channel](../concepts/channels.md) answering a request or a Kafka record |
 | How you write the logic | Drag and drop in a browser | JSON, posted to a running server |
-| Where state lives | In the platform, with per-run history | Nowhere in Orion; in your datastores if you put it there |
+| Where state lives | In the platform, with per-run history | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
 | How a change ships | Save in the editor | One API call, versioned, hot-reloaded |
 | Typical latency / cadence | Seconds; a few runs an hour to a few thousand a day | Milliseconds; thousands of requests a second |
 | What it needs to run | A hosted account, or a container plus its database | [One binary](../getting-started/install.md) |

@@ -21,7 +21,7 @@ Orion loses.
 | MCP tool servers | Hand-written MCP servers, FastMCP, LangChain tools | Exposing your systems to an LLM as callable tools | **Replaces**, and adds drafts, rollout and rollback |
 | [Automation platforms](./compare/automation-platforms.md) | n8n, Zapier, Make, Node-RED | Wiring SaaS apps together quickly, at low volume | **Different job**. Orion carries production request traffic |
 | Stream & integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps**. Orion handles each record on its own; windowing and engine-managed state are theirs |
-| [Rule engines](./compare/rule-engines.md) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps**, at small rule counts |
+| [Rule engines](./compare/rule-engines.md) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps**. In Orion each step feeds the next, in the order you wrote; re-firing rules until they settle is theirs |
 | [Embedding dataflow-rs](./compare/dataflow-rs.md) | dataflow-rs | Running workflow tasks inside your own Rust program | **Sits under**. It is the engine Orion wraps |
 
 Four words carry the last column:

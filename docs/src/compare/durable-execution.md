@@ -28,7 +28,7 @@ distinction that matters. This is.
 | What it is | A runtime that journals every step so a run can resume | A runtime that serves service definitions you send it |
 | Unit of work | A run, with an id, resumable | One request, or one Kafka record |
 | How you write the logic | Handlers or DAGs in TypeScript, Java, Python or Go | JSON, posted to a running server |
-| Where state lives | In the engine's journal — that *is* the product | Nowhere in Orion; in your datastores if you put it there |
+| Where state lives | In the engine's journal — that *is* the product | In the run's data context while it lasts; nothing after it unless you wrote it to a datastore |
 | How a change ships | Deploy the code, register the new version | One API call, hot-reloaded, no restart |
 | Typical latency / cadence | Milliseconds to days, by design | Milliseconds, bounded by the channel timeout |
 | What it needs to run | The engine plus your deployed workers | [One binary](../getting-started/install.md) |

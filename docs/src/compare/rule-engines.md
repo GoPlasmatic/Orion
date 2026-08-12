@@ -1,14 +1,14 @@
 # Orion vs Rule Engines
 
-> **In one line.** A rule engine answers "which of my rules fire as facts
-> accumulate". Orion answers "does this request satisfy these conditions —
-> then transform it and route it". If you have thousands of interdependent
-> rules, you want the engine. If you have a decision to make about one payload,
-> Orion is simpler to write, review, version and roll back.
+> **In one line.** A rule engine works out the firing order itself and re-fires
+> rules as new facts appear. Orion runs the steps in the order you wrote, each
+> one seeing what the last produced, once. If deciding that order is the hard
+> part of your problem, you want the engine. If the decision is about one
+> payload, Orion is simpler to write, review, version and roll back.
 
 <div class="compare-meta">
 
-**How it relates:** Overlaps — at small rule counts
+**How it relates:** Overlaps, on conditions over one payload
 
 **Where they overlap:** both evaluate declarative conditions over structured data
 
@@ -23,7 +23,7 @@
 | What it is | An evaluator over a body of rules and facts | A runtime that serves service definitions you send it |
 | Unit of work | A rule set evaluated against working memory | A [workflow](../concepts/workflows.md) run against one payload |
 | How you write the logic | DRL, Rego, or a decision table | [JSONLogic](../reference/expressions.md), inside a task or a condition |
-| Where state lives | Facts in working memory, accumulating | Nothing accumulates; each request starts clean |
+| Where state lives | Facts in working memory, accumulating | The run's [data context](../reference/workflows.md#the-data-context), which each task adds to and the response ends |
 | How a change ships | Rebuild or redistribute the rule set | One API call, hot-reloaded |
 | Typical latency / cadence | Sub-millisecond decisions, after the engine is loaded | The whole request, in milliseconds |
 | What it needs to run | The engine, embedded or as a sidecar | [One binary](../getting-started/install.md) |
@@ -57,18 +57,24 @@
 ## Where they overlap
 
 Both evaluate declarative conditions over structured data, and for a decision
-API with a few dozen rules over one payload the overlap is nearly total. At
-that size, Orion is the smaller thing to run: the rules and the endpoint that
-serves them are the same artifact.
+API answering about one payload the overlap is nearly total. Orion is the
+smaller thing to run there, because the rules and the endpoint that serves them
+are the same artifact.
 
-The overlap ends at inference. Orion evaluates conditions against the request
-in front of it. It never accumulates facts and never re-evaluates a rule
-because another rule changed something.
+Nor is the number of rules what separates them. Conditions compile when the
+engine builds, and a request reaches one channel and the workflow behind it, so
+hundreds of conditions still answer in milliseconds.
+
+The overlap ends at inference, and not where you might expect. State does build
+up as a run proceeds: tasks share one data context, and a task's condition can
+match on what an earlier task wrote there. What never happens is a rule firing
+*again*.
 
 ## Choose a rule engine when
 
 - You have hundreds or thousands of rules, and business users maintain them.
-- Rules derive facts that other rules then match on.
+- Asserting a fact has to re-trigger rules that already ran, until the set
+  settles.
 - The same policy must be enforced identically by many services.
 - Rule ordering, priority and conflict resolution are part of the specification.
 - Authorization policy is the problem, and Rego is built for it.
@@ -79,7 +85,8 @@ because another rule changed something.
 - The rules and the endpoint change together and should ship together.
 - You want the lookup, the decision and the transformation in one pipeline
   rather than a call out to a decision service and back.
-- The rule count is tens, not thousands.
+- You can write the order the rules run in, and one forward pass through it
+  settles the answer.
 
 ## Running both
 
@@ -91,9 +98,13 @@ one question it is better at.
 
 ## What Orion cannot do here
 
-- **No working memory and no inference.** Conditions read the request. Facts do
-  not accumulate, and one rule cannot cause another to re-fire.
-- **No RETE or incremental matching.** Every condition is evaluated as reached.
+- **No inference.** A task reads what earlier tasks wrote, but nothing re-fires:
+  a condition already passed is never reconsidered, so a fact derived late
+  cannot change a decision made early. Ordering that correctly is your job.
+- **No RETE or incremental matching.** Every condition is evaluated as reached,
+  and nothing is shared between two conditions that test the same thing. The
+  cost of a request grows with the number of conditions on its path, where a
+  RETE engine's does not.
 - **No salience, agenda or conflict resolution.** Tasks run in the order you
   wrote them; a condition either passes or it does not.
 - **No decision tables** as a first-class artifact, and no rule-authoring UI
