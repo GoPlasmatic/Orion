@@ -786,6 +786,45 @@ pre > .buttons {
   margin-top: 22px;
 }
 
+/* Nav icons on the front-matter chapters and the part titles, injected by
+   extra.js. Flex rather than an inline span so a title that wraps keeps its
+   second line clear of the glyph, and the glyph stays put beside the first.
+   `currentColor` in the SVGs means the muted, hover and active colours below
+   already apply — there is no separate icon palette to keep in step. */
+.chapter li a.with-nav-icon,
+.chapter li.part-title.with-nav-icon {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.nav-icon {
+  flex: 0 0 auto;
+  display: flex;
+  width: 16px;
+  height: 16px;
+  /* The label is what you read; the glyph is what you aim at. Sitting it a
+     shade back keeps it from competing with the text at this size. */
+  opacity: 0.72;
+  transition: opacity 0.15s ease;
+}
+
+.nav-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* One size for every nav icon, chapter and part title alike, even though a
+   part title sets 11px text against a chapter's 14.5px. Scaling the glyph to
+   its label shrank the section markers — the very things the eye jumps
+   between — below the chapter icons under them. The glyph is the landmark
+   here, not a bullet on the label. */
+
+.chapter li a:hover .nav-icon,
+.chapter li.chapter-item a.active .nav-icon {
+  opacity: 1;
+}
+
 .chapter li a {
   color: var(--p-fg-muted);
   padding: 5px 12px;
@@ -987,6 +1026,12 @@ pre > .buttons {
   height: 20px;
   fill: currentColor;
 }
+
+/* The home button → goplasmatic.io that extra.js injects as the first of the
+   menu bar's right buttons needs no rules of its own: it carries mdBook's own
+   `.icon-button` / `.fa-svg` markup, so colour, size, padding and hover all
+   come from `.menu-bar .icon-button`, and `.right-buttons a` already drops
+   the underline. */
 
 
 /* ============================================================

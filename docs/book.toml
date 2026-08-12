@@ -17,7 +17,14 @@ additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
-edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
+# No "1., 2., 3." prefixes in the sidebar. The parts already group the book,
+# and the numbers implied a reading order this estate does not have — nobody
+# reads the reference section in order. Titles alone are what you scan for.
+no-section-label = true
+
+# No `edit-url-template`: the per-page "Suggest an edit" pencil in the menu bar
+# only renders when that key is set. The git-repository-url icon above still
+# points anyone who wants to file a change at the repo.
 
 # No expand/collapse in the sidebar: the one nested chapter this book has
 # (Upgrades → Upgrading to 1.0.0) simply shows. Note this key governs *chapter*
@@ -27,6 +34,13 @@ edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 [output.html.fold]
 enable = false
 level = 0
+
+# No printer icon, and no print.html. That page concatenated all ~90 chapters
+# into one document nobody asked for, and browser print still works per page
+# (plasmatic.css §20 is what styles it). The right buttons are Home and the
+# repo, nothing else.
+[output.html.print]
+enable = false
 
 # Redirects for every URL the docs 2.0 restructure retired. Keys are absolute
 # paths from the site root; values are relative to the redirecting page (the
