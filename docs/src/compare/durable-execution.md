@@ -1,9 +1,9 @@
 # Orion vs Durable Execution Engines
 
 > **In one line.** A durable execution engine remembers where a run got to, so
-> it can survive a crash or wait a week for a human. Orion answers one request
-> and forgets. If the work has to outlive the process running it, that is not
-> Orion's job.
+> it can survive a crash or wait a week for a human. Orion remembers nothing: a
+> run that fails starts again at the first task, if it runs again at all. If the
+> work has to outlive the process running it, that is not Orion's job.
 
 <div class="compare-meta">
 
@@ -65,10 +65,14 @@ Both run ordered steps against external systems, with retries and timeouts
 around each one. For work that finishes inside a single request, that overlap
 is real, and Orion is the smaller thing to operate.
 
-The overlap ends the moment a step must survive the process. Orion does retry
-failed async work from the [dead-letter queue](../operate/traces.md#drain-the-dead-letter-queue) —
-but it retries the run *from the start*, because there is no journal to resume
-from.
+Orion is not defenceless about failure either. A [Kafka
+channel](../guides/kafka-channels.md) carries an at-least-once guarantee: the
+offset is committed only once the record has been processed, so a node that dies
+mid-record redelivers it and runs it again.
+
+The overlap ends at *where* it runs again. Orion starts the workflow over from
+the first task, because there is no journal to resume from. A sync HTTP request
+gets no guarantee at all: it is answered, or it is lost.
 
 ## Choose a durable execution engine when
 
@@ -104,16 +108,19 @@ shape:
 
 ## What Orion cannot do here
 
-- **No resume.** A crash loses in-flight work. Async work is retried from the
-  start, never resumed mid-pipeline.
+- **No resume.** A redelivered Kafka record runs again from the first task, so
+  the steps that already succeeded run twice. Nothing picks up mid-pipeline, and
+  a crash loses an in-flight `/async` submission outright.
 - **No timers and no schedules.** Orion runs when something calls it — REST,
   plain HTTP, or Kafka. There is no `sleep`, no cron, and no delayed
   invocation.
 - **No human-in-the-loop primitive.** There is no awakeable, no task token, and
   no way for an external system to complete a paused run.
-- **No per-key state or single-writer guarantees.** Orion is stateless between
-  requests; [deduplication](../reference/channel-config.md#deduplication) bounds
-  replays within a window but is not keyed state.
+- **No per-key state or single-writer guarantees.** A workflow can keep state in
+  a datastore, but the runtime holds none between requests and nothing
+  serializes two of them touching the same key.
+  [Deduplication](../reference/channel-config.md#deduplication) bounds replays
+  within a window; it is not keyed state.
 - **Fan-out is bounded and in-process.** A workflow
   [`loop`](../reference/workflows.md#loop) repeats the task list once per sweep,
   with a counter you index the array with, so one call per item is a supported
