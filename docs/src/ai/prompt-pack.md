@@ -114,8 +114,8 @@ rules above are explained for humans in
 [Function Reference](../reference/functions.md), and
 [Portable Data Dialect](../reference/data-dialect.md).
 
-> **Tip:** the docs site also serves [`llms.txt`](https://goplasmatic.github.io/Orion/llms.txt)
-> (a machine-readable index) and [`llms-full.txt`](https://goplasmatic.github.io/Orion/llms-full.txt)
+> **Tip:** the docs site also serves [`llms.txt`](https://docs.goplasmatic.io/llms.txt)
+> (a machine-readable index) and [`llms-full.txt`](https://docs.goplasmatic.io/llms-full.txt)
 > (the entire documentation as one file). Point your tools at those for full
 > documentation context.
 

@@ -11,7 +11,7 @@ rust-version.workspace = true
 description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
 license.workspace = true
 repository.workspace = true
-homepage = "https://goplasmatic.github.io/Orion/"
+homepage = "https://docs.goplasmatic.io/"
 keywords = ["mcp", "cli", "workflow", "microservices", "devops"]
 categories = ["command-line-utilities", "development-tools"]
 

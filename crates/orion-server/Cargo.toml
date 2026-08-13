@@ -7,7 +7,7 @@ description = "Turn business logic into live REST/Kafka services. Declare workfl
 license.workspace = true
 repository.workspace = true
 homepage = "https://goplasmatic.io/orion"
-documentation = "https://goplasmatic.github.io/Orion/"
+documentation = "https://docs.goplasmatic.io/"
 # The repo landing README doubles as the crate README; cargo copies a readme
 # from outside the package dir into the tarball root at package time.
 readme = "../../README.md"

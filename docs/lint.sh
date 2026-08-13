@@ -77,7 +77,7 @@ for f in README.md examples/README.md docs/src/llms.txt; do
     if [ ! -f "docs/src/${p%.html}.md" ] && ! grep -qF "\"/${p}\"" docs/book.toml; then
       err "$f: site link has no page and no redirect: $url"
     fi
-  done < <(grep -oE 'goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+' "$f" | sort -u)
+  done < <(grep -oE 'docs\.goplasmatic\.io/[A-Za-z0-9_./#-]+' "$f" | sort -u)
 done
 
 ## 4. No hand-maintained magic numbers (casts are recorded sessions — exempt).
@@ -154,7 +154,7 @@ if [ "$DOCS2_PHASE" -ge 4 ]; then
     chapter_title=${chapter%%](*}; chapter_title=${chapter_title#*[}
     [ "$title" = "$chapter_title" ] \
       || err "llms.txt: entry titled '$title' but SUMMARY calls $p '$chapter_title'"
-  done < <(grep -oE '^- \[[^]]+\]\(https://goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+\)' docs/src/llms.txt)
+  done < <(grep -oE '^- \[[^]]+\]\(https://docs\.goplasmatic\.io/[A-Za-z0-9_./#-]+\)' docs/src/llms.txt)
 fi
 
 ## 11. Mindmap node links resolve to a real page. An ```orion-mindmap block is

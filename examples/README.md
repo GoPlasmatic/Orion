@@ -6,7 +6,7 @@ workflow, and connector that belong to one service, grouped so they deploy — a
 later export, promote, and version — together.
 
 **The walkthrough lives in the documentation:**
-[Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html)
+[Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html)
 — what each package shows, the step-by-step deploy, and how to dry-run a draft
 before activating it.
 
@@ -60,9 +60,9 @@ documents the server-backed scenario format.
 
 ## Documentation
 
-- [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html) — the full walkthrough
-- [Test & Promote a Service](https://goplasmatic.github.io/Orion/getting-started/test-and-promote.html) — from a local run to a second instance
-- [Packages](https://goplasmatic.github.io/Orion/concepts/packages.html) — what a package is and why the boundary sits there
-- [Task Functions](https://goplasmatic.github.io/Orion/reference/functions.html) — every function's input schema
-- [Workflow Schema](https://goplasmatic.github.io/Orion/reference/workflows.html) — workflow shape, conditions, and lifecycle
+- [Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html) — the full walkthrough
+- [Test & Promote a Service](https://docs.goplasmatic.io/getting-started/test-and-promote.html) — from a local run to a second instance
+- [Packages](https://docs.goplasmatic.io/concepts/packages.html) — what a package is and why the boundary sits there
+- [Task Functions](https://docs.goplasmatic.io/reference/functions.html) — every function's input schema
+- [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and lifecycle
 - [Orion CLI](../crates/orion-cli/) — deploy with `orion-cli workflows create -f workflow.json`

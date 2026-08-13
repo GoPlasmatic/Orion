@@ -56,7 +56,7 @@ FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7
 LABEL org.opencontainers.image.title="Orion" \
       org.opencontainers.image.description="Declarative services runtime: channels + workflows over REST/Kafka, single binary" \
       org.opencontainers.image.source="https://github.com/GoPlasmatic/Orion" \
-      org.opencontainers.image.documentation="https://goplasmatic.github.io/Orion/" \
+      org.opencontainers.image.documentation="https://docs.goplasmatic.io/" \
       org.opencontainers.image.vendor="Plasmatic" \
       org.opencontainers.image.licenses="Apache-2.0"
 

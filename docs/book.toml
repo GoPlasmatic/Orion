@@ -58,8 +58,11 @@ limit-results = 30
 teaser-word-count = 30
 
 # Redirects for every URL the docs 2.0 restructure retired. Keys are absolute
-# paths from the site root; values are relative to the redirecting page (the
-# site serves under the /Orion/ subpath, so absolute values would escape it).
+# paths from the site root; values stay relative to the redirecting page. They
+# had to be relative on GitHub Pages, which served the book under a /Orion/
+# subpath that an absolute value would have escaped; docs.goplasmatic.io serves
+# at the root, so that constraint is gone — but relative values are correct
+# under either, and rewriting ~50 of them would buy nothing.
 # Nothing here may be removed: these are the only thing keeping old inbound
 # links alive, and docs/lint.sh checks that hard site links resolve to a live
 # page or an entry below.

@@ -392,7 +392,7 @@ pub(crate) async fn run_preflight(
 
     println!(
         "\n{} item(s) need attention before upgrading. Numbers in brackets are \
-         checklist rows at https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html.\n",
+         checklist rows at https://docs.goplasmatic.io/operate/upgrading-to-1.0.html.\n",
         findings.len()
     );
     for finding in &findings {

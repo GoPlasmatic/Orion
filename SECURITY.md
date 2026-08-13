@@ -32,7 +32,7 @@ in the binary and the upgrade path between releases is documented, so the
 supported response to a vulnerability is always to upgrade to the newest
 release. The full statement of what "supported" covers — versioning, upgrade
 guarantees, MSRV, database and platform compatibility — is the
-[Support & Compatibility policy](https://goplasmatic.github.io/Orion/reference/support.html).
+[Support & Compatibility policy](https://docs.goplasmatic.io/reference/support.html).
 
 ## Scope
 

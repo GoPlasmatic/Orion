@@ -560,9 +560,9 @@ hr {
    whole URL including the query string, and the footer's "Report an issue"
    link carries the current page URL inside its `body=` parameter — so a
    `*=` exclusion silently unmarked every report link on the deployed site,
-   where that parameter contains goplasmatic.github.io. Match the origin or
+   where that parameter contains docs.goplasmatic.io. Match the origin or
    do not match at all. */
-.content main a[href^="http"]:not([href^="https://goplasmatic.github.io"]):not([href^="http://goplasmatic.github.io"]):not([href^="http://localhost"]):not([href^="https://localhost"])::after {
+.content main a[href^="http"]:not([href^="https://docs.goplasmatic.io"]):not([href^="http://docs.goplasmatic.io"]):not([href^="http://localhost"]):not([href^="https://localhost"])::after {
   content: "";
   display: inline-block;
   width: 0.82em;

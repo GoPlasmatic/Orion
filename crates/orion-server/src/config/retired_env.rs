@@ -159,7 +159,7 @@ where
     Err(OrionError::Config {
         message: format!(
             "these environment variables were renamed or removed in 1.0 and are no \
-             longer read (see https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html):\n{}",
+             longer read (see https://docs.goplasmatic.io/operate/upgrading-to-1.0.html):\n{}",
             found.join("\n")
         ),
     })

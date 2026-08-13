@@ -110,7 +110,7 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 
 ## Workflow Management
 
-Full lifecycle management for [Orion workflows](https://goplasmatic.github.io/Orion/reference/admin-api.html):
+Full lifecycle management for [Orion workflows](https://docs.goplasmatic.io/reference/admin-api.html):
 
 ```bash
 # List workflows with filters
@@ -218,7 +218,7 @@ orion-cli channels import -f channels.json
 
 ## Connectors
 
-Manage [named external service configurations](https://goplasmatic.github.io/Orion/reference/connectors.html) with auth and retry policies:
+Manage [named external service configurations](https://docs.goplasmatic.io/reference/connectors.html) with auth and retry policies:
 
 ```bash
 orion-cli connectors list
@@ -242,7 +242,7 @@ orion-cli connectors import -f connectors.json
 
 ## Sending Data
 
-[Processing modes](https://goplasmatic.github.io/Orion/reference/data-api.html) for any workload:
+[Processing modes](https://docs.goplasmatic.io/reference/data-api.html) for any workload:
 
 ### Synchronous (default)
 
@@ -471,11 +471,11 @@ Verify with `orion-cli --version`. Requires Rust 1.88+ for source builds.
 ## Related
 
 - **[Orion Server](https://github.com/GoPlasmatic/Orion)** — The services runtime platform
-- **[API Reference](https://goplasmatic.github.io/Orion/reference/admin-api.html)** — Full REST API documentation
-- **[Connectors Guide](https://goplasmatic.github.io/Orion/reference/connectors.html)** — Auth schemes, retry policies, and secrets
-- **[Production Features](https://goplasmatic.github.io/Orion/reference/cli.html)** — Custom IDs, versioning, fault tolerance
-- **[Use Cases & Patterns](https://goplasmatic.github.io/Orion/guides/worked-examples.html)** — Real-world examples and AI prompt templates
-- **[Observability](https://goplasmatic.github.io/Orion/operate/monitoring.html)** — Prometheus metrics, health checks, logging
+- **[API Reference](https://docs.goplasmatic.io/reference/admin-api.html)** — Full REST API documentation
+- **[Connectors Guide](https://docs.goplasmatic.io/reference/connectors.html)** — Auth schemes, retry policies, and secrets
+- **[Production Features](https://docs.goplasmatic.io/reference/cli.html)** — Custom IDs, versioning, fault tolerance
+- **[Use Cases & Patterns](https://docs.goplasmatic.io/guides/worked-examples.html)** — Real-world examples and AI prompt templates
+- **[Observability](https://docs.goplasmatic.io/operate/monitoring.html)** — Prometheus metrics, health checks, logging
 
 ## Contributing
 

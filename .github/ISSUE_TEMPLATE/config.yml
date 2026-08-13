@@ -4,7 +4,7 @@ contact_links:
     url: https://github.com/GoPlasmatic/Orion/discussions
     about: Ask questions and share what you're building in GitHub Discussions.
   - name: Documentation
-    url: https://goplasmatic.github.io/Orion/
+    url: https://docs.goplasmatic.io/
     about: Guides, API reference, and the portable data dialect docs.
   - name: Security vulnerability
     url: https://github.com/GoPlasmatic/Orion/security/advisories/new

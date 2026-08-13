@@ -23,6 +23,6 @@ annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/links: |
     - name: Documentation
-      url: https://goplasmatic.github.io/Orion/
+      url: https://docs.goplasmatic.io/
     - name: Chart source
       url: https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion

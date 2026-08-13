@@ -930,9 +930,10 @@
     if (!href || /^[a-z]+:/i.test(href) || href.charAt(0) === "#") return null;
 
     // Resolved against the current page, not parsed as written. A sibling
-    // link inside one part is `./errors.md` with no directory to read, and
-    // the site is served under a /Orion/ prefix on Pages — letting the URL
-    // parser do it handles `./`, `../` and the prefix in one step.
+    // link inside one part is `./errors.md` with no directory to read —
+    // letting the URL parser do it handles `./` and `../` in one step, and
+    // keeps this working under any path prefix the site is served from
+    // (it was `/Orion/` on GitHub Pages; docs.goplasmatic.io serves at root).
     var path;
     try {
       path = new URL(href, location.href).pathname;

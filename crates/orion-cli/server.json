@@ -7,7 +7,7 @@
     "source": "github"
   },
   "version": "1.0.0",
-  "websiteUrl": "https://goplasmatic.github.io/Orion/ai/mcp-setup.html",
+  "websiteUrl": "https://docs.goplasmatic.io/ai/mcp-setup.html",
   "packages": [
     {
       "registryType": "oci",

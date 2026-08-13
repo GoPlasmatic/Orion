@@ -390,9 +390,18 @@ fn prose_files() -> Vec<std::path::PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
+                // `book` is docs/book — mdBook's build output, and since the
+                // move to Cloudflare it also holds the generated llms-full.txt
+                // (docs/build.sh concatenates the whole book into it). Scanning
+                // it re-reads every page through a second path and re-reports
+                // the deliberate typos the troubleshooting chapter documents,
+                // at line numbers in a gitignored artifact nobody can edit.
+                // docs/src is the source and is scanned; this is its shadow.
                 if !matches!(
                     path.file_name().and_then(|n| n.to_str()),
-                    Some("node_modules" | "out" | "target" | "casts" | "videos" | "images")
+                    Some(
+                        "node_modules" | "out" | "target" | "casts" | "videos" | "images" | "book"
+                    )
                 ) {
                     walk(&path, out);
                 }

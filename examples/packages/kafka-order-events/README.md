@@ -42,7 +42,7 @@ async channel:
 orion-cli traces list --channel order-events
 ```
 
-See [Consume from Kafka](https://goplasmatic.github.io/Orion/guides/kafka-channels.html)
+See [Consume from Kafka](https://docs.goplasmatic.io/guides/kafka-channels.html)
 for delivery semantics, the DLQ, and how the channel's guards apply to records;
 [`examples/README.md`](../../README.md) for the file layout and the full example
 list.

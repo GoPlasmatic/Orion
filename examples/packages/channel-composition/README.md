@@ -38,6 +38,6 @@ is assembled in `temp_data` with `map` first, because `channel_call`'s
 `output` receives the callee's whole **data context**, not its HTTP envelope —
 so the caller reads `data.customer.lookup.tier`, not `data.customer.data.…`.
 
-See [Compose channels in-process](https://goplasmatic.github.io/Orion/guides/workflow-patterns.html)
+See [Compose channels in-process](https://docs.goplasmatic.io/guides/workflow-patterns.html)
 for the pattern in full, and [`examples/README.md`](../../README.md) for the file
 layout and the full example list.
