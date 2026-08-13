@@ -2,9 +2,15 @@
 
 The release process for maintainers: what a version tag triggers, how the
 first signed release is proven (P12), and the benchmark session the 1.0
-README numbers come from (C13). Everything here assumes a clean tree on the
-release branch with `cargo fmt` / `clippy --all-targets` / `cargo test`
-green and the container-gated suites verified.
+README numbers come from (C13). Everything here assumes a clean tree on
+`main` with `cargo fmt` / `clippy --all-targets` / `cargo test` green and
+the container-gated suites verified.
+
+Releases are cut from `main` directly. There was a long-lived `v1.0.0`
+branch while the monorepo restructure was in flight; it was merged and
+deleted once `main` became the workspace, and nothing here needs a release
+branch. If one is ever reintroduced, the tag steps below still work — they
+name refs explicitly rather than relying on the current branch.
 
 ## What a release-shaped tag triggers
 
@@ -73,7 +79,7 @@ The signing/attestation pipeline shipped without ever executing. The rc run
 is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 
 1. **Version bump (required):** dist refuses a tag whose version is not the
-   package version. On the release branch set `version = "1.0.0-rc.1"` in
+   package version. On `main` set `version = "1.0.0-rc.1"` in
    **both** `crates/orion-server/Cargo.toml` and `crates/orion-cli/Cargo.toml`
    — they release in lockstep, and a bare tag only announces the packages that
    match it (one commit; `Cargo.lock` updates with it), push, and wait
@@ -85,11 +91,13 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    git push origin refs/tags/v1.0.0-rc.1
    ```
 
-   Push the tag by its full `refs/tags/` name. The release branch is itself
-   called `v1.0.0`, so once the final tag exists the two share a name and a
-   bare `git push origin v1.0.0` fails with
-   `src refspec v1.0.0 matches more than one`. The fully-qualified form is
-   unambiguous whatever the branch is called.
+   Push the tag by its full `refs/tags/` name. This used to be mandatory:
+   the release branch was itself called `v1.0.0`, so once the final tag
+   existed the two shared a name and a bare `git push origin v1.0.0` failed
+   with `src refspec v1.0.0 matches more than one`. That branch is gone, so
+   the ambiguity is too — but keep the fully-qualified form. It is
+   unambiguous whatever a branch is called, and the next release branch to
+   be named after its version would reintroduce exactly this.
 
 3. **Watch the pipelines** (`crates-publish` skips its publish job on an
    rc tag, so the live ones are `release.yml` and `docker-release.yml`).
@@ -122,13 +130,14 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 8. **For the real release:** set `version = "1.0.0"` back in both crate
    manifests, land, wait for CI, then
    `git tag v1.0.0 && git push origin refs/tags/v1.0.0`.
-9. **Publish the docs:** merge the release branch into `main`.
-   `docs.goplasmatic.io` deploys only from `main` — Cloudflare Workers Builds
-   watches this repo and rebuilds on a push to `main` touching `docs/` — so
-   until the merge lands the live site still serves the pre-1.0 book: no
-   upgrade guide, old version strings. Do this immediately after tagging, not
-   as cleanup. The deploy runs outside GitHub, so watch it in the Cloudflare
-   dashboard (Workers → orion-docs → Deployments), not the Actions tab.
+9. **Publish the docs:** nothing to merge — releases are cut from `main`, so
+   the tagged commit is already the one `docs.goplasmatic.io` builds from.
+   Cloudflare Workers Builds watches this repo and rebuilds on a push to
+   `main` touching `docs/`, which means the docs went live with the commit
+   you tagged rather than after it. Confirm rather than assume: the deploy
+   runs outside GitHub, so check the Cloudflare dashboard (Workers →
+   orion-docs → Deployments), not the Actions tab, and confirm the upgrade
+   guide and the new version strings are actually being served.
 
 ## The benchmark session (C13 — closed for 1.0.0)
 
