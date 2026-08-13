@@ -190,13 +190,43 @@ pub fn canonical_json(value: &Value) -> String {
 pub fn content_hash(value: &Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(canonical_json(value).as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    // `hex::encode`, not `{:x}`: sha2 0.11 returns crypto-common's `Array`,
+    // which — unlike the `GenericArray` it replaced — implements no LowerHex.
+    // Same lowercase hex output, and this hash is the package-receipt
+    // identity (K14) that the CLI recomputes, so the spelling cannot drift.
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The exact `sha256:<hex>` spelling, pinned against an outside authority.
+    ///
+    /// Every other test here is self-consistent — they compare two hashes this
+    /// function produced, so a change in the *encoding* moves both and passes.
+    /// That matters because a package receipt is content-immutable: the same
+    /// version arriving with a different content_hash is a 409 (K14), so a
+    /// re-spelled hash would reject every receipt already stored in an estate
+    /// rather than fail anything here.
+    ///
+    /// The literal is not copied from this implementation's output. It is
+    /// `shasum -a 256` over the canonical form asserted below, so this test
+    /// answers to plain SHA-256 and lowercase hex rather than to whatever the
+    /// digest crate currently returns:
+    ///
+    ///     printf '%s' '{"a":null,"b":[1,{"x":3,"y":2}]}' | shasum -a 256
+    #[test]
+    fn content_hash_spelling_is_pinned_to_plain_sha256_lowercase_hex() {
+        let v: Value =
+            serde_json::from_str(r#"{"b": [1, {"y": 2, "x": 3}], "a": null}"#).expect("test");
+        assert_eq!(canonical_json(&v), r#"{"a":null,"b":[1,{"x":3,"y":2}]}"#);
+        assert_eq!(
+            content_hash(&v),
+            "sha256:fd5905a59ba4aec9fd37e5214d395b1f9ac0db9d3a7addf85ee5c31e89e8a5bc"
+        );
+    }
 
     /// Key order must not change the hash; value changes must.
     #[test]

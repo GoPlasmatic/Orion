@@ -10,7 +10,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tower::ServiceExt;
