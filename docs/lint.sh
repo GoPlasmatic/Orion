@@ -15,6 +15,26 @@
 # listed, every listed page resolves, nothing lists a page that no longer has a
 # chapter, and no entry describes a page by a title it has lost. Descriptions
 # stay uncompared on purpose; that is the part a human is better at.
+#
+# TWO RULES FOR EVERY `git grep` BELOW, both learned from a CI failure this
+# script could not reproduce on any developer's machine (run 31587839330).
+#
+# CI runs with no LANG set, so git's regexes execute in the C locale, where
+# every byte is a valid single-byte character. A developer's shell is almost
+# always UTF-8, where the same bytes are invalid sequences the engine skips.
+# The two therefore disagree about the ~20 binaries under docs/src (fonts,
+# screenshots, videos), and only the CI half of the disagreement is ever seen:
+#
+#   1. Pass -I to any `git grep` scanning a tree, so binaries are never
+#      searched. Every check here is about prose; a woff2 cannot hold a review
+#      ID, but its compressed bytes can spell one. That is precisely what broke
+#      — check 6 matched inter-italic-latin-ext.woff2 in CI and nowhere else.
+#   2. Start any -P pattern using \x{...} above FF with (*UTF), which puts
+#      PCRE in UTF mode from inside the pattern rather than relying on the
+#      locale. Without it, check 14's pattern does not merely mismatch in the C
+#      locale: it fails to compile, and git exits 128. Since these checks read
+#      "did grep find anything", a 128 is indistinguishable from a clean pass —
+#      the guard reports success having tested nothing.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -51,7 +71,7 @@ done < <(grep -rnE '\]\([^)]*\.md[#)]' docs/src --include='*.md' 2>/dev/null)
 for f in README.md examples/README.md docs/src/llms.txt; do
   [ -f "$f" ] || continue
   while IFS= read -r url; do
-    p=${url#goplasmatic.github.io/Orion/}
+    p=${url#docs.goplasmatic.io/}
     p=${p%%#*}
     case "$p" in *.html) ;; *) continue ;; esac
     if [ ! -f "docs/src/${p%.html}.md" ] && ! grep -qF "\"/${p}\"" docs/book.toml; then
@@ -61,8 +81,8 @@ for f in README.md examples/README.md docs/src/llms.txt; do
 done
 
 ## 4. No hand-maintained magic numbers (casts are recorded sessions — exempt).
-if git grep -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >/dev/null 2>&1; then
-  git grep -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >&2
+if git grep -I -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >/dev/null 2>&1; then
+  git grep -I -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >&2
   err 'hand-maintained magic number (46 tools / 6,000+)'
 fi
 
@@ -70,7 +90,7 @@ fi
 ##    *correct* is asserted by functions_docs_drift_test against the schema
 ##    registry and the page's own summary table — this check only stops the
 ##    number being restated somewhere it would later drift.
-stray=$(git grep -lE '18 functions|18 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
+stray=$(git grep -I -lE '18 functions|18 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
 [ -z "$stray" ] || err "function count '18' stated outside reference/functions.md: $stray"
 
 ## 6. No internal review IDs in user docs. The audit IDs (K…, R…, F…, N…, S…)
@@ -84,7 +104,7 @@ stray=$(git grep -lE '18 functions|18 built-in' -- docs/src 2>/dev/null | grep -
 ##    change the binary; do not paraphrase it into a doc that then disagrees
 ##    with what the terminal says. Drop this filter if that string ever loses
 ##    its ID.
-hits=$(git grep -nE '\((K|R|F|N|S)[0-9]+(, ?(K|R|F|N|S)[0-9]+)*\)' -- docs/src \
+hits=$(git grep -I -nE '\((K|R|F|N|S)[0-9]+(, ?(K|R|F|N|S)[0-9]+)*\)' -- docs/src \
        | grep -v 'removed in 1.0 (K4)' || true)
 if [ -n "$hits" ]; then
   printf '%s\n' "$hits" >&2
@@ -94,8 +114,8 @@ fi
 ## 7. (Phase ≥3, after the features/* pages dissolve) no Rust internals
 ##    outside reference/design-notes.md.
 if [ "$DOCS2_PHASE" -ge 3 ]; then
-  if git grep -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >/dev/null 2>&1; then
-    git grep -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >&2
+  if git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >/dev/null 2>&1; then
+    git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >&2
     err 'Rust internals outside reference/design-notes.md'
   fi
 fi
@@ -105,7 +125,7 @@ fi
 if [ "$DOCS2_PHASE" -ge 4 ]; then
   while IFS= read -r p; do
     html="${p%.md}.html"
-    grep -qF "goplasmatic.github.io/Orion/${html}" docs/src/llms.txt \
+    grep -qF "docs.goplasmatic.io/${html}" docs/src/llms.txt \
       || err "llms.txt: no entry for SUMMARY chapter $p"
   done < <(grep -oE '\(\./[A-Za-z0-9_./-]+\.md\)' docs/src/SUMMARY.md | sed 's/^(\.\///; s/)$//')
 fi
@@ -123,7 +143,7 @@ if [ "$DOCS2_PHASE" -ge 4 ]; then
   while IFS= read -r entry; do
     title=${entry%%](*}; title=${title#*[}
     url=${entry#*](}; url=${url%)}
-    p=${url#https://goplasmatic.github.io/Orion/}
+    p=${url#https://docs.goplasmatic.io/}
     p=${p%%#*}
     case "$p" in *.html) ;; *) continue ;; esac
     chapter=$(grep -F "](./${p%.html}.md)" docs/src/SUMMARY.md || true)
@@ -245,13 +265,27 @@ fi
 ##     prompt is what the shell actually printed — the same reason check 4
 ##     exempts them — and the images, videos and webfonts are binaries that a
 ##     byte-range match hits by accident.
-emoji_glob='docs/src/**/*.md'
-if git grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' \
-     -- "$emoji_glob" 'docs/src/*.md' >/dev/null 2>&1; then
-  git grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' \
-     -- "$emoji_glob" 'docs/src/*.md' >&2
+##     `(*UTF)` is load-bearing — see rule 2 in the header. Without it this
+##     pattern does not compile in CI's C locale, and the failure is invisible:
+##     git exits 128, which an `if git grep …; then` reads as "found nothing".
+##
+##     Run once, not twice, and separate the three outcomes git actually
+##     returns (0 found / 1 clean / >1 error) instead of collapsing them into
+##     a boolean. A guard that cannot tell "clean" from "broken" is how this
+##     one shipped dead in the first place.
+emoji_re='(*UTF)[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]'
+emoji_hits=$(git grep -I -nP "$emoji_re" -- 'docs/src/**/*.md' 'docs/src/*.md' 2>&1)
+case $? in
+0)
+  printf '%s\n' "$emoji_hits" >&2
   err 'emoji or dingbat in docs/src — use an SVG mark (js/extra.js sprite, or --p-icon-* in plasmatic.css §1)'
-fi
+  ;;
+1) ;; # clean
+*)
+  printf '%s\n' "$emoji_hits" >&2
+  err 'the emoji check could not run (git grep failed) — it is not passing, it is broken'
+  ;;
+esac
 
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
