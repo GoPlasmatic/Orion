@@ -81,7 +81,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 tracing = "0.1"
@@ -116,7 +116,7 @@ hmac = "0.12"
 hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
 # encodings are accepted, so both decoders are needed.
-base64 = "0.22"
+base64 = "0.23"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
