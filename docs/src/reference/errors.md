@@ -90,6 +90,8 @@ A submission shed at the queue answers `503 SERVICE_UNAVAILABLE` with the error 
 
 Every `error.code` the server emits, on both the admin and data planes:
 
+<div class="table-filter" data-label="Filter error codes"></div>
+
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
 | `VALIDATION_ERROR` | 400 | Invalid input — malformed body, failed strict validation, bad query parameter |

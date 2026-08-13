@@ -65,6 +65,47 @@
   --p-radius-sm: 4px;
   --p-radius: 8px;
   --p-radius-lg: 10px;
+
+  /* ── Icon geometry for pseudo-elements ──
+     A `::before` or `::after` cannot hold an <svg><use>, so the marks drawn
+     by CSS carry their geometry here as data URIs and are painted with
+     `mask-image` + `background-color: currentColor`. That keeps them real
+     SVG — sized in `em`, tinted by the surrounding colour, identical in both
+     themes — rather than a character borrowed from the text face, which is
+     what `content: "→"` and `content: "✓"` amount to.
+
+     The stroke colour inside each URI is irrelevant: a mask reads alpha, not
+     colour. Marks the SCRIPT inserts live in the <symbol> sprite in
+     js/extra.js instead; same geometry, different delivery. */
+  --p-icon-chevron-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9.5 5.5 6.5 6.5-6.5 6.5'/%3E%3C/svg%3E");
+  --p-icon-chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5.5 9.5 6.5 6.5 6.5-6.5'/%3E%3C/svg%3E");
+  --p-icon-external: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.5 15.5 15.5 8.5'/%3E%3Cpath d='M9.8 8.5h5.7v5.7'/%3E%3C/svg%3E");
+  --p-icon-filter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='6.2'/%3E%3Cpath d='m15.6 15.6 4 4'/%3E%3C/svg%3E");
+}
+
+/* The <symbol> sprite js/extra.js injects as the first child of <body>.
+   Out of flow and zero-sized: it renders nothing itself, it only holds the
+   geometry that <use> instances point at. */
+#orion-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Default box for a sprite instance. Sized in `em` so a glyph tracks the
+   type it sits beside rather than a fixed pixel size.
+
+   `stroke-width` lives here rather than on the <symbol> on purpose: it is an
+   inherited property, and an attribute on the symbol would be a specified
+   value that no rule on the instance could override. This is the house
+   weight; a mark that needs a different one overrides it. */
+.orion-ico {
+  width: 1.05em;
+  height: 1.05em;
+  flex: 0 0 auto;
+  vertical-align: -0.15em;
+  stroke-width: 1.7;
 }
 
 
@@ -506,6 +547,31 @@ hr {
 .page-toc a,
 .sidebar a {
   border-bottom: 0;
+}
+
+/* A link that leaves the site says so. Real SVG geometry through a mask
+   rather than `content: "↗"` — see the note on --p-icon-* in section 1.
+   Two exclusions: this book's own published URL, which the compare pages
+   and llms.txt reference absolutely, and `localhost`, which is the reader's
+   own machine and the least external address there is. Scoped to `main`, so
+   the sidebar, the ToC rail and the menu bar are untouched. */
+.content main a[href^="http"]:not([href*="goplasmatic.github.io"]):not([href*="localhost"])::after {
+  content: "";
+  display: inline-block;
+  width: 0.82em;
+  height: 0.82em;
+  margin-inline-start: 0.18em;
+  vertical-align: -0.06em;
+  background-color: currentColor;
+  opacity: 0.75;
+  -webkit-mask: var(--p-icon-external) center / contain no-repeat;
+  mask: var(--p-icon-external) center / contain no-repeat;
+}
+
+/* Inside a card grid the whole tile is already the affordance and the
+   chevron is the mark; a second glyph mid-title would be noise. */
+.content main .doc-cards a::after {
+  content: none;
 }
 
 
@@ -996,6 +1062,33 @@ pre > .buttons {
   color: var(--p-fg-faint);
 }
 
+/* mdBook binds `/` and `s` to the search box and mentions it only in the
+   toggle's title attribute. The chip is where the shortcut gets learned for
+   next time; extra.js hides it once the field has content. */
+#mdbook-searchbar-outer {
+  position: relative;
+}
+
+#search-key-hint {
+  position: absolute;
+  inset-inline-end: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-family: var(--mono-font);
+  font-size: 1.2rem;
+  line-height: 1;
+  color: var(--p-fg-faint);
+  background: var(--p-bg);
+  border: 1px solid var(--p-border-strong);
+  border-radius: var(--p-radius-sm);
+  padding: 3px 7px;
+}
+
+#search-key-hint[hidden] {
+  display: none;
+}
+
 /* Replace mdBook's multi-theme picker with the dark/light toggle
    injected by extra.js. */
 #mdbook-theme-toggle {
@@ -1117,22 +1210,40 @@ pre > .buttons {
 
 /* Chevron, so the affordance survives for anyone who cannot rely on the
    accent colour alone. Generated on the <li>, so it paints above the
-   title link's stretched ::after rather than under it. */
+   title link's stretched ::after rather than under it.
+
+   Real SVG geometry through `mask-image`, not `content: "→"`. The arrow
+   character was borrowed from Inter: it carried the text face's own weight
+   and baseline, so it neither matched the 1.7 stroke of the nav glyphs nor
+   sat on the optical centre of the card's first line. A mask is tinted by
+   `background-color`, so both theme colours below still apply. */
 .doc-cards > ul > li::after {
-  content: "→";
+  content: "";
   position: absolute;
-  top: 15px;
+  top: 19px;
   inset-inline-end: 16px;
-  color: var(--p-fg-faint);
-  font-size: 1.5rem;
-  line-height: 1;
-  transition: color 0.15s ease, transform 0.15s ease;
+  width: 15px;
+  height: 15px;
+  background-color: var(--p-fg-faint);
+  -webkit-mask: var(--p-icon-chevron-right) center / contain no-repeat;
+  mask: var(--p-icon-chevron-right) center / contain no-repeat;
+  transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
 .doc-cards > ul > li:hover::after,
 .doc-cards > ul > li:focus-within::after {
-  color: var(--p-accent);
+  background-color: var(--p-accent);
   transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-cards > ul > li::after {
+    transition: background-color 0.15s ease;
+  }
+  .doc-cards > ul > li:hover::after,
+  .doc-cards > ul > li:focus-within::after {
+    transform: none;
+  }
 }
 
 .doc-cards > ul > li:focus-within {
@@ -1294,5 +1405,346 @@ pre > .buttons {
   .content main table th,
   .content main table td {
     padding-inline-end: 14px;
+  }
+}
+
+
+/* ============================================================
+   22. Disclosures (<details>)
+   ============================================================
+   Five of these were already in the markdown — the "why" asides in
+   upgrades, connectors, data-dialect and channel-config — with no
+   rules anywhere in this stylesheet, so they rendered as the bare
+   UA triangle in a page set in Montserrat and Inter.
+
+   A run of them should read as one list, not as five boxes: hairline
+   rules top and bottom, no fill, no radius. Same logic as section 10
+   deciding tables are rules rather than boxes. */
+.content main details {
+  border-block-start: 1px solid var(--p-border);
+  margin: 1.6em 0;
+}
+
+/* A consecutive run shares one hairline between neighbours. */
+.content main details + details {
+  margin-block-start: -1.6em;
+}
+
+.content main details:last-of-type,
+.content main details.is-last {
+  border-block-end: 1px solid var(--p-border);
+}
+
+.content main details > summary {
+  /* Both are needed: `list-style` covers Firefox, the pseudo-element
+     covers WebKit. */
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 2px;
+  font-weight: 600;
+  color: var(--p-fg);
+  transition: color 0.15s ease;
+}
+
+.content main details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.content main details > summary:hover {
+  color: var(--p-accent);
+}
+
+.content main details > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.75em;
+  height: 0.75em;
+  /* Baseline-aligned flex items and a mask box do not agree on where the
+     optical centre is; this nudge sits the chevron on the summary's
+     x-height rather than its baseline. */
+  transform: translateY(0.06em);
+  background-color: var(--p-accent);
+  -webkit-mask: var(--p-icon-chevron-down) center / contain no-repeat;
+  mask: var(--p-icon-chevron-down) center / contain no-repeat;
+  transition: transform 0.15s ease;
+}
+
+.content main details[open] > summary::before {
+  transform: translateY(0.06em) rotate(-180deg);
+}
+
+/* The body is indented to the summary's text, not the chevron, so the
+   disclosed content lines up with the label that revealed it. */
+.content main details > *:not(summary) {
+  margin-inline-start: calc(0.75em + 10px);
+}
+
+.content main details > *:last-child {
+  margin-block-end: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content main details > summary,
+  .content main details > summary::before {
+    transition: none;
+  }
+}
+
+/* On paper a closed disclosure is just missing content. extra.js opens
+   every one before the print dialog and restores the state after; this
+   covers a print that bypasses the event (a PDF from the command line,
+   Reader mode) by making the marker meaningless rather than misleading. */
+@media print {
+  .content main details {
+    border-color: var(--p-border-strong);
+  }
+
+  .content main details > summary::before {
+    display: none;
+  }
+
+  .content main details > summary {
+    padding-inline-start: 0;
+  }
+}
+
+
+/* ============================================================
+   23. Table marks — HTTP methods and status codes
+   ============================================================
+   Both are inserted by js/extra.js over the rendered DOM, because CSS
+   cannot select on the text inside a cell. The markdown is untouched:
+   an endpoint table stays a markdown table, and `` `503` `` stays
+   inline code.
+
+   No new hues. A method takes the syntax colour its shape already
+   suggests — read as accent, create as string-green, modify as
+   number-amber, destroy as the delete red — so the whole vocabulary is
+   one a reader has already learned from the code blocks. */
+.content main td.http-method {
+  white-space: nowrap;
+}
+
+.content main .m-badge {
+  display: inline-block;
+  min-width: 6.2em;
+  text-align: center;
+  font-family: var(--mono-font);
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  padding: 1px 8px;
+  border-radius: var(--p-radius-sm);
+  border: 1px solid;
+}
+
+.content main .m-badge.m-get {
+  color: var(--p-accent);
+  border-color: color-mix(in srgb, var(--p-accent) 40%, transparent);
+  background: var(--p-accent-tint);
+}
+
+.content main .m-badge.m-post {
+  color: var(--p-syn-str);
+  border-color: color-mix(in srgb, var(--p-syn-str) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-str) 12%, transparent);
+}
+
+.content main .m-badge.m-put,
+.content main .m-badge.m-patch {
+  color: var(--p-syn-num);
+  border-color: color-mix(in srgb, var(--p-syn-num) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-num) 12%, transparent);
+}
+
+.content main .m-badge.m-delete {
+  color: var(--p-syn-del);
+  border-color: color-mix(in srgb, var(--p-syn-del) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-del) 12%, transparent);
+}
+
+/* Status codes keep the inline-code colour they had; the tint and rule
+   are what make them catchable at scroll speed on the troubleshooting
+   and upgrade pages, where the code IS the index entry. */
+.content main code.status-code {
+  padding: 0 5px;
+  border-radius: var(--p-radius-sm);
+  border: 1px solid;
+}
+
+.content main code.status-code.sc-2 {
+  color: var(--p-syn-str);
+  border-color: color-mix(in srgb, var(--p-syn-str) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-str) 11%, transparent);
+}
+
+.content main code.status-code.sc-4 {
+  color: var(--p-syn-num);
+  border-color: color-mix(in srgb, var(--p-syn-num) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-num) 11%, transparent);
+}
+
+.content main code.status-code.sc-5 {
+  color: var(--p-syn-del);
+  border-color: color-mix(in srgb, var(--p-syn-del) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-del) 11%, transparent);
+}
+
+/* Section 10 strips the background from code in a table cell so the
+   first column reads as a list; a status chip in a cell is the one
+   place that should keep its own box. */
+.content main table td code.status-code {
+  padding: 0 5px;
+}
+
+
+/* ============================================================
+   24. Table filter
+   ============================================================
+   Opt in from the markdown with an empty marker div immediately before
+   the table — same convention as .doc-cards and .themed-media:
+
+     <div class="table-filter" data-label="Filter metrics"></div>
+
+   js/extra.js turns it into an input that hides non-matching rows. It
+   is progressive: with JS off the marker renders nothing and the table
+   is exactly as it was. */
+.content main .table-filter {
+  margin: 1.4em 0 0.7em;
+}
+
+.content main .table-filter-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+}
+
+.content main .table-filter-box::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 11px;
+  width: 15px;
+  height: 15px;
+  background-color: var(--p-fg-faint);
+  -webkit-mask: var(--p-icon-filter) center / contain no-repeat;
+  mask: var(--p-icon-filter) center / contain no-repeat;
+  pointer-events: none;
+}
+
+.content main .table-filter input {
+  width: 100%;
+  font-family: var(--p-font-text);
+  font-size: 1.45rem;
+  color: var(--p-fg);
+  background: var(--p-surface);
+  border: 1px solid var(--p-border-strong);
+  border-radius: var(--p-radius);
+  padding: 7px 12px 7px 34px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.content main .table-filter input::placeholder {
+  color: var(--p-fg-faint);
+}
+
+.content main .table-filter input:focus {
+  outline: none;
+  border-color: var(--p-accent);
+  box-shadow: 0 0 0 3px var(--p-accent-tint);
+}
+
+.content main .table-filter-count {
+  margin-inline-start: 12px;
+  font-size: 1.3rem;
+  color: var(--p-fg-faint);
+  white-space: nowrap;
+}
+
+/* A filter is a screen affordance; paper gets the whole table. */
+@media print {
+  .content main .table-filter {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   25. Inline "On this page" (below the rail's breakpoint)
+   ============================================================
+   Section 14's rail appears at 1400px and up. Below that — every
+   1280 and 1366 laptop — a 529-line reference page had no in-page
+   navigation at all. Same link list, folded into a disclosure at the
+   top of the content, closed by default so it costs one line until
+   it is wanted. */
+.content main .page-toc-inline {
+  display: none;
+}
+
+@media (max-width: 1399px) {
+  .content main .page-toc-inline {
+    display: block;
+    border: 1px solid var(--p-border);
+    border-radius: var(--p-radius);
+    margin: 0 0 2em;
+    background: var(--p-surface);
+  }
+
+  /* Section 22's rules are for asides inside the prose; this one is a
+     navigation control and wants its own box. */
+  .content main .page-toc-inline,
+  .content main .page-toc-inline + * {
+    border-block-start: 0;
+  }
+
+  .content main .page-toc-inline > summary {
+    padding: 10px 14px;
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--p-fg-muted);
+  }
+
+  .content main .page-toc-inline[open] > summary {
+    border-block-end: 1px solid var(--p-border);
+  }
+
+  .content main .page-toc-inline .page-toc-inline-count {
+    color: var(--p-fg-faint);
+    font-weight: 400;
+  }
+
+  .content main .page-toc-inline nav {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 8px 14px 12px;
+  }
+
+  .content main .page-toc-inline a {
+    color: var(--p-fg-muted);
+    border-bottom: 0;
+    padding: 4px 0;
+    font-size: 1.4rem;
+    line-height: 1.45;
+  }
+
+  .content main .page-toc-inline a:hover {
+    color: var(--p-accent);
+  }
+
+  .content main .page-toc-inline a.lvl-3 {
+    padding-inline-start: 16px;
+    font-size: 1.35rem;
+  }
+}
+
+@media print {
+  .content main .page-toc-inline {
+    display: none;
   }
 }

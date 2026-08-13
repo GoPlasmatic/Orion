@@ -13,7 +13,7 @@ is the boundary along which a service ships from one Orion instance to another.
   ],
   "nodes": [
     { "id": "TAGGED", "label": "Tagged entities", "sublabel": "channels · workflows · connectors\ntags: [\"pkg:payments\"]", "type": "accent", "group": "dev" },
-    { "id": "ARTIFACT", "label": "📦 payments-1.4.0.json", "sublabel": "one versioned artifact", "type": "infra" },
+    { "id": "ARTIFACT", "label": "payments-1.4.0.json", "sublabel": "one versioned artifact", "type": "infra" },
     { "id": "APPLIED", "label": "Applied package", "sublabel": "staged → activated → receipt", "type": "accent", "group": "prod" }
   ],
   "edges": [

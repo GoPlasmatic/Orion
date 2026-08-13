@@ -90,10 +90,10 @@ small enough that sorting client-side is cheaper than supporting it server-side.
 
 | Endpoints | `limit` / `offset` | `sort_by` / `sort_order` | Other |
 |---|:---:|:---:|---|
-| `/workflows`, `/channels`, `/connectors` and their `/export` | ✅ | ✅ | `?tag=`, `?status=` filters |
-| `/traces` | ✅ | ✅ | `?cursor=` (keyset), `?include_total=true`; the response adds `next_cursor` and omits `total` unless asked |
-| `/audit-logs` | ✅ | ❌ | `?start_time=` / `?end_time=` (RFC 3339 or naive), `limit` clamped to 1–1000 |
-| `/trace-dlq`, `/packages`, `/{id}/versions` | ✅ | ❌ | — |
+| `/workflows`, `/channels`, `/connectors` and their `/export` | Yes | Yes | `?tag=`, `?status=` filters |
+| `/traces` | Yes | Yes | `?cursor=` (keyset), `?include_total=true`; the response adds `next_cursor` and omits `total` unless asked |
+| `/audit-logs` | Yes | No | `?start_time=` / `?end_time=` (RFC 3339 or naive), `limit` clamped to 1–1000 |
+| `/trace-dlq`, `/packages`, `/{id}/versions` | Yes | No | — |
 
 `limit` and `offset` are therefore the only two you can rely on everywhere.
 

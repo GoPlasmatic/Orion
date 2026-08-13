@@ -25,6 +25,8 @@ are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
 engine; ten are Orion handlers that talk to [connectors](./connectors.md)
 or compose channels.
 
+<div class="table-filter" data-label="Filter functions"></div>
+
 | Function | Category | Connector | Purpose |
 |----------|----------|:---------:|---------|
 | [`parse_json`](#parse_json) | Data | — | Parse the raw payload into the data context |

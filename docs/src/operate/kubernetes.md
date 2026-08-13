@@ -122,6 +122,8 @@ The important subset — see the chart's
 [`values.yaml`](https://github.com/GoPlasmatic/Orion/blob/main/deploy/helm/orion/values.yaml)
 for the full annotated list:
 
+<div class="table-filter" data-label="Filter values"></div>
+
 | Value | Default | Meaning |
 |---|---|---|
 | `replicaCount` | `2` | Replicas (ignored when `autoscaling.enabled`) |

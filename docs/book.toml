@@ -42,6 +42,21 @@ level = 0
 [output.html.print]
 enable = false
 
+# Search, tuned for a 56-chapter reference estate. On the defaults a query for
+# a term that IS a chapter title ranked page bodies mentioning it level with
+# the page about it, which on a book this size buries the obvious answer.
+#
+# The two boosts are the whole point: a hit in the page title outranks the same
+# hit in a paragraph, and a hit in the heading whose section contains it
+# outranks one in unrelated prose. The remaining two only widen the default
+# result set — 30 hits and a longer teaser, because reference lookups
+# legitimately match many pages and the teaser is how you pick between them.
+[output.html.search]
+boost-title = 3
+boost-hierarchy = 2
+limit-results = 30
+teaser-word-count = 30
+
 # Redirects for every URL the docs 2.0 restructure retired. Keys are absolute
 # paths from the site root; values are relative to the redirecting page (the
 # site serves under the /Orion/ subpath, so absolute values would escape it).

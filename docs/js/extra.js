@@ -32,105 +32,167 @@
   }
 })();
 
+// ── Icon sprite ──
+// One hidden <svg> of <symbol>s, injected once, referenced everywhere as
+// <svg class="orion-ico"><use href="#i-name"></use></svg> via window.orionIcon.
+// The glyphs used to be built as SVG strings and assigned with innerHTML at
+// each site, which is fine at one use per glyph and wasteful at the hundreds
+// per page the table marks will reach.
+//
+// They are drawn here rather than pulled from an icon font: a viewBox and two
+// strokes each, no third-party asset to vendor, license or keep in sync
+// (js/VENDOR.md tracks the ones that are). Every symbol carries the same
+// presentation attributes — no fill, `currentColor` stroke at 1.7, round caps —
+// so an instance inherits its colour from whatever it sits in.
+//
+// This sprite is for marks the SCRIPT inserts. A mark drawn by a CSS
+// pseudo-element cannot hold a <use>, so those live in plasmatic.css §1 as
+// `--p-icon-*` data URIs applied through `mask-image`. Same geometry, two
+// delivery mechanisms; reach for whichever the insertion point allows.
+(function () {
+  var GLYPHS = {
+    // Open book — the introduction.
+    book:
+      '<path d="M12 6.5c-1.6-1.4-3.6-2-6-2-.9 0-1.7.1-2.4.2a.7.7 0 0 0-.6.7v11.9c0 .4.4.8.9.7.6-.1 1.3-.1 2.1-.1 2.4 0 4.4.6 6 2 1.6-1.4 3.6-2 6-2 .8 0 1.5 0 2.1.1.5.1.9-.3.9-.7V5.4a.7.7 0 0 0-.6-.7c-.7-.1-1.5-.2-2.4-.2-2.4 0-4.4.6-6 2Z"/>' +
+      '<path d="M12 6.5V19"/>',
+    // Question mark in a circle — "Is Orion Right for You?".
+    help:
+      '<circle cx="12" cy="12" r="9"/>' +
+      '<path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.5c-.7.3-1 .9-1 1.6v.4"/>' +
+      '<path d="M12 17h.01"/>',
+    // Stacked layers — the characteristics.
+    layers:
+      '<path d="m12 3 9 5-9 5-9-5 9-5Z"/>' +
+      '<path d="m3.5 12.5 8.5 4.7 8.5-4.7"/>' +
+      '<path d="m3.5 16.5 8.5 4.7 8.5-4.7"/>',
+    // Arrows pointing opposite ways — Compare.
+    compare:
+      '<path d="M4 9h13"/><path d="m14 6 3 3-3 3"/>' +
+      '<path d="M20 15H7"/><path d="m10 12-3 3 3 3"/>',
+    // Play button — Get Started.
+    start: '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5z"/>',
+    // Cube — Concepts.
+    concepts:
+      '<path d="m12 2.8 8 4.6v9.2l-8 4.6-8-4.6V7.4z"/>' +
+      '<path d="m4.3 7.6 7.7 4.4 7.7-4.4"/><path d="M12 21v-9"/>',
+    // Sparkles — Build with AI.
+    ai:
+      '<path d="m12 3.5 1.9 5.3 5.3 1.9-5.3 1.9-1.9 5.3-1.9-5.3-5.3-1.9 5.3-1.9z"/>' +
+      '<path d="m18.5 16.5.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
+    // Angle brackets — Build.
+    build:
+      '<path d="m8.5 8.5-4 3.5 4 3.5"/><path d="m15.5 8.5 4 3.5-4 3.5"/>' +
+      '<path d="m13.5 5-3 14"/>',
+    // Folded map — Guides.
+    guides:
+      '<path d="m9 4.5-5.5 2.6v12.4L9 16.9l6 2.6 5.5-2.6V4.5L15 7.1z"/>' +
+      '<path d="M9 4.5v12.4"/><path d="M15 7.1v12.4"/>',
+    // Two server bays — Operate.
+    operate:
+      '<rect x="3.2" y="4.2" width="17.6" height="6" rx="1.6"/>' +
+      '<rect x="3.2" y="13.8" width="17.6" height="6" rx="1.6"/>' +
+      '<path d="M7 7.2h.01"/><path d="M7 16.8h.01"/>',
+    // Document — Reference.
+    reference:
+      '<path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/>' +
+      '<path d="M13.5 3.5v5h5"/><path d="M9 13h6"/><path d="M9 16.5h4"/>',
+
+  };
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function build() {
+    if (!document.body || document.getElementById("orion-sprite")) return;
+    var symbols = [];
+    for (var name in GLYPHS) {
+      if (!Object.prototype.hasOwnProperty.call(GLYPHS, name)) continue;
+      // No stroke-width here, deliberately. A presentation attribute on the
+      // <symbol> is a specified value, and a specified value beats an
+      // inherited one — so a CSS rule on the instance could never override
+      // it. `stroke-width` is an inherited property, so leaving it off lets
+      // plasmatic.css set 1.7 as the house default on .orion-ico and a
+      // heavier weight on the small marks. `stroke="currentColor"` can stay:
+      // it resolves against the instance's own inherited `color`.
+      symbols.push(
+        '<symbol id="i-' +
+          name +
+          '" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+          'stroke-linecap="round" stroke-linejoin="round">' +
+          GLYPHS[name] +
+          "</symbol>",
+      );
+    }
+    var host = document.createElement("div");
+    host.id = "orion-sprite";
+    host.setAttribute("aria-hidden", "true");
+    host.innerHTML =
+      '<svg xmlns="' + SVG_NS + '" width="0" height="0">' +
+      symbols.join("") +
+      "</svg>";
+    document.body.insertBefore(host, document.body.firstChild);
+  }
+
+  // Returns a detached <svg> instancing one symbol, or null for an unknown
+  // name — a caller naming a glyph that does not exist gets nothing rather
+  // than an empty box.
+  window.orionIcon = function (name, className) {
+    if (!Object.prototype.hasOwnProperty.call(GLYPHS, name)) return null;
+    build();
+    var svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "orion-ico" + (className ? " " + className : ""));
+    svg.setAttribute("aria-hidden", "true");
+    var use = document.createElementNS(SVG_NS, "use");
+    use.setAttribute("href", "#i-" + name);
+    svg.appendChild(use);
+    return svg;
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", build);
+  } else {
+    build();
+  }
+})();
+
 // ── Sidebar navigation icons ──
 // One glyph for each of the three front-matter chapters and one for each part
 // title, so the sidebar's eight sections are findable by shape as well as by
 // reading the labels. Chapters inside a part stay text-only: an icon per page
 // would be 60 of them, which is decoration, not navigation.
 //
-// The glyphs are drawn here rather than pulled from an icon font: two strokes
-// and a viewBox each, no third-party asset to vendor, license or keep in sync
-// (js/VENDOR.md tracks the ones that are). They inherit `currentColor`, so the
-// muted / hover / active colours in plasmatic.css §13 carry to them for free.
+// They inherit `currentColor`, so the muted / hover / active colours in
+// plasmatic.css §13 carry to them for free.
 (function () {
-  var ATTRS =
-    'fill="none" stroke="currentColor" stroke-width="1.7" ' +
-    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"';
-
-  function svg(body) {
-    return (
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ' +
-      ATTRS +
-      ">" +
-      body +
-      "</svg>"
-    );
-  }
-
   // Keyed by the page the sidebar link points at — the hrefs mdBook generates
   // carry a `path_to_root` prefix ("../introduction.html" on a nested page),
-  // so matching is on the file name.
+  // so matching is on the file name. Values are sprite symbol names.
   var CHAPTER_ICONS = {
-    // Open book.
-    "introduction.html": svg(
-      '<path d="M12 6.5c-1.6-1.4-3.6-2-6-2-.9 0-1.7.1-2.4.2a.7.7 0 0 0-.6.7v11.9c0 .4.4.8.9.7.6-.1 1.3-.1 2.1-.1 2.4 0 4.4.6 6 2 1.6-1.4 3.6-2 6-2 .8 0 1.5 0 2.1.1.5.1.9-.3.9-.7V5.4a.7.7 0 0 0-.6-.7c-.7-.1-1.5-.2-2.4-.2-2.4 0-4.4.6-6 2Z"/>' +
-        '<path d="M12 6.5V19"/>',
-    ),
-    // Question mark in a circle.
-    "comparison.html": svg(
-      '<circle cx="12" cy="12" r="9"/>' +
-        '<path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.5c-.7.3-1 .9-1 1.6v.4"/>' +
-        '<path d="M12 17h.01"/>',
-    ),
-    // Stacked layers.
-    "characteristics.html": svg(
-      '<path d="m12 3 9 5-9 5-9-5 9-5Z"/>' +
-        '<path d="m3.5 12.5 8.5 4.7 8.5-4.7"/>' +
-        '<path d="m3.5 16.5 8.5 4.7 8.5-4.7"/>',
-    ),
+    "introduction.html": "book",
+    "comparison.html": "help",
+    "characteristics.html": "layers",
   };
 
   // Keyed by part title, lower-cased. These are the `# Heading` lines in
   // SUMMARY.md; a part renamed there needs its key renamed here, and an
   // unmatched part simply keeps its plain text label.
   var PART_ICONS = {
-    // Arrows pointing opposite ways.
-    compare: svg(
-      '<path d="M4 9h13"/><path d="m14 6 3 3-3 3"/>' +
-        '<path d="M20 15H7"/><path d="m10 12-3 3 3 3"/>',
-    ),
-    // Play button.
-    "get started": svg(
-      '<circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5z"/>',
-    ),
-    // Cube.
-    concepts: svg(
-      '<path d="m12 2.8 8 4.6v9.2l-8 4.6-8-4.6V7.4z"/>' +
-        '<path d="m4.3 7.6 7.7 4.4 7.7-4.4"/><path d="M12 21v-9"/>',
-    ),
-    // Sparkles.
-    "build with ai": svg(
-      '<path d="m12 3.5 1.9 5.3 5.3 1.9-5.3 1.9-1.9 5.3-1.9-5.3-5.3-1.9 5.3-1.9z"/>' +
-        '<path d="m18.5 16.5.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>',
-    ),
-    // Angle brackets.
-    build: svg(
-      '<path d="m8.5 8.5-4 3.5 4 3.5"/><path d="m15.5 8.5 4 3.5-4 3.5"/>' +
-        '<path d="m13.5 5-3 14"/>',
-    ),
-    // Folded map.
-    guides: svg(
-      '<path d="m9 4.5-5.5 2.6v12.4L9 16.9l6 2.6 5.5-2.6V4.5L15 7.1z"/>' +
-        '<path d="M9 4.5v12.4"/><path d="M15 7.1v12.4"/>',
-    ),
-    // Two server bays.
-    operate: svg(
-      '<rect x="3.2" y="4.2" width="17.6" height="6" rx="1.6"/>' +
-        '<rect x="3.2" y="13.8" width="17.6" height="6" rx="1.6"/>' +
-        '<path d="M7 7.2h.01"/><path d="M7 16.8h.01"/>',
-    ),
-    // Document.
-    reference: svg(
-      '<path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/>' +
-        '<path d="M13.5 3.5v5h5"/><path d="M9 13h6"/><path d="M9 16.5h4"/>',
-    ),
+    compare: "compare",
+    "get started": "start",
+    concepts: "concepts",
+    "build with ai": "ai",
+    build: "build",
+    guides: "guides",
+    operate: "operate",
+    reference: "reference",
   };
 
-  function decorate(el, markup) {
-    if (!markup || el.querySelector(".nav-icon")) return;
+  function decorate(el, name) {
+    if (!name || el.querySelector(".nav-icon")) return;
+    var glyph = window.orionIcon(name);
+    if (!glyph) return;
     var icon = document.createElement("span");
     icon.className = "nav-icon";
-    icon.innerHTML = markup;
+    icon.appendChild(glyph);
     el.insertBefore(icon, el.firstChild);
     el.classList.add("with-nav-icon");
   }
@@ -177,6 +239,40 @@
 // a short page does not need a second navigation. CSS hides the rail
 // below 1400px, so this is progressive: no layout depends on it.
 (function () {
+  // The rail is hidden below 1400px (CSS §14), which is every 1280 and 1366
+  // laptop — and the pages that need in-page navigation most are the 500-line
+  // reference chapters. Same links, folded into a disclosure under the title
+  // and closed by default, so it costs one line until someone wants it.
+  function insertInlineToc(main, nav, count) {
+    var box = document.createElement("details");
+    box.className = "page-toc-inline";
+
+    var summary = document.createElement("summary");
+    summary.appendChild(document.createTextNode("On this page "));
+    var tally = document.createElement("span");
+    tally.className = "page-toc-inline-count";
+    tally.textContent = "· " + count + " section" + (count === 1 ? "" : "s");
+    summary.appendChild(tally);
+
+    box.appendChild(summary);
+    box.appendChild(nav);
+
+    // Under the title, not above it. The h1 may be wrapped — the hero on the
+    // introduction page puts it inside a div — so anchor on main's own child
+    // that contains the h1 rather than on the h1 itself.
+    var h1 = main.querySelector("h1");
+    var anchor = null;
+    if (h1) {
+      anchor = h1;
+      while (anchor && anchor.parentNode !== main) anchor = anchor.parentNode;
+    }
+    if (anchor) {
+      main.insertBefore(box, anchor.nextSibling);
+    } else {
+      main.insertBefore(box, main.firstChild);
+    }
+  }
+
   function buildToc() {
     // print.html concatenates every chapter — 400+ h2s there would build a
     // rail longer than most pages. The sidebar is the right index for it.
@@ -200,6 +296,12 @@
     nav.appendChild(title);
 
     var links = [];
+    // The inline copy for viewports below the rail's breakpoint. Built from
+    // the same walk rather than cloned, so the two can never disagree; CSS
+    // §14 and §25 decide which of them is visible at a given width.
+    var inlineNav = document.createElement("nav");
+    inlineNav.setAttribute("aria-label", "On this page");
+
     for (var i = 0; i < headings.length; i++) {
       var h = headings[i];
       var a = document.createElement("a");
@@ -208,11 +310,13 @@
       // The heading text includes mdBook's anchor link; textContent is enough.
       a.textContent = h.textContent.replace(/^»\s*/, "").trim();
       nav.appendChild(a);
+      inlineNav.appendChild(a.cloneNode(true));
       links.push({ el: a, heading: h });
     }
 
     // Sits after <main> so the grid in plasmatic.css §14 can place it.
     main.parentNode.insertBefore(nav, main.nextSibling);
+    insertInlineToc(main, inlineNav, h2count);
 
     var current = null;
     function spy() {
@@ -249,6 +353,7 @@
       passive: true,
     });
     spy();
+
   }
 
   if (document.readyState === "loading") {
@@ -343,6 +448,220 @@
 
     home.appendChild(icon);
     right.insertBefore(home, right.firstChild);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", inject);
+  } else {
+    inject();
+  }
+})();
+
+// ── Table marks: HTTP methods and status codes ──
+// Both run over the rendered DOM because CSS cannot select on the text in a
+// cell, and doing it here keeps the markdown as markdown: an endpoint table
+// stays a markdown table and `` `503` `` stays inline code, so llms-full.txt
+// (a raw concatenation of the sources) sees no markup it has to ignore.
+// plasmatic.css §23 carries the colours.
+(function () {
+  var METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+  // An allowlist, not /^[1-5]\d\d$/. The loose pattern also matches the
+  // rollout percentage `100`, `300` as a default in seconds, and the 255
+  // character cap — none of which are statuses. These are the codes the
+  // book actually documents as responses.
+  var STATUS = {
+    200: 1, 201: 1, 202: 1, 204: 1, 207: 1,
+    400: 1, 401: 1, 403: 1, 404: 1, 405: 1, 408: 1, 409: 1,
+    413: 1, 415: 1, 422: 1, 429: 1,
+    500: 1, 502: 1, 503: 1, 504: 1,
+  };
+
+  function markMethods(main) {
+    var tables = main.querySelectorAll("table");
+    for (var i = 0; i < tables.length; i++) {
+      var head = tables[i].querySelector("thead th");
+      if (!head || head.textContent.trim().toLowerCase() !== "method") continue;
+
+      var cells = tables[i].querySelectorAll("tbody tr > td:first-child");
+      for (var j = 0; j < cells.length; j++) {
+        var cell = cells[j];
+        var verb = cell.textContent.trim().toUpperCase();
+        if (METHODS.indexOf(verb) === -1) continue;
+
+        var badge = document.createElement("span");
+        badge.className = "m-badge m-" + verb.toLowerCase();
+        badge.textContent = verb;
+        cell.textContent = "";
+        cell.appendChild(badge);
+        cell.classList.add("http-method");
+      }
+    }
+  }
+
+  function markStatusCodes(main) {
+    var codes = main.querySelectorAll("code");
+    for (var i = 0; i < codes.length; i++) {
+      var el = codes[i];
+      // Only inline code. A block is highlighted markup with its own spans.
+      if (el.closest("pre")) continue;
+      var text = el.textContent.trim();
+      if (!Object.prototype.hasOwnProperty.call(STATUS, text)) continue;
+      el.classList.add("status-code", "sc-" + text.charAt(0));
+    }
+  }
+
+  function run() {
+    var main = document.querySelector(".content main");
+    if (!main) return;
+    markMethods(main);
+    markStatusCodes(main);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+
+// ── Table filter ──
+// Opt in from the markdown with an empty marker div immediately before the
+// table, matching the .doc-cards / .themed-media convention:
+//
+//   <div class="table-filter" data-label="Filter metrics"></div>
+//
+// Progressive: with JS off the marker renders nothing and the table is
+// untouched. plasmatic.css §24 carries the styling.
+(function () {
+  function attach(marker) {
+    // mdBook wraps every table in <div class="table-wrapper">, so the table
+    // is inside the marker's next element sibling.
+    var next = marker.nextElementSibling;
+    var table = next && next.querySelector ? next.querySelector("table") : null;
+    if (!table) return;
+
+    var rows = table.querySelectorAll("tbody tr");
+    if (!rows.length) return;
+
+    var box = document.createElement("div");
+    box.className = "table-filter-box";
+
+    var input = document.createElement("input");
+    input.type = "search";
+    input.setAttribute("autocomplete", "off");
+    input.placeholder = marker.dataset.label || "Filter…";
+    input.setAttribute("aria-label", input.placeholder);
+
+    var count = document.createElement("span");
+    count.className = "table-filter-count";
+    count.setAttribute("aria-live", "polite");
+
+    box.appendChild(input);
+    box.appendChild(count);
+    marker.appendChild(box);
+
+    // Lower-cased once per row rather than on every keystroke.
+    var haystack = [];
+    for (var i = 0; i < rows.length; i++) {
+      haystack.push(rows[i].textContent.toLowerCase());
+    }
+
+    function apply() {
+      var q = input.value.trim().toLowerCase();
+      var shown = 0;
+      for (var i = 0; i < rows.length; i++) {
+        var hit = !q || haystack[i].indexOf(q) !== -1;
+        rows[i].hidden = !hit;
+        if (hit) shown++;
+      }
+      count.textContent = q ? shown + " of " + rows.length : "";
+    }
+
+    input.addEventListener("input", apply);
+    // Escape clears rather than leaving a filtered table behind.
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && input.value) {
+        e.stopPropagation();
+        input.value = "";
+        apply();
+      }
+    });
+  }
+
+  function run() {
+    var markers = document.querySelectorAll(".content main .table-filter");
+    for (var i = 0; i < markers.length; i++) attach(markers[i]);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+
+// ── Disclosures: open everything for printing ──
+// A closed <details> prints as a title with no content, which on paper is
+// indistinguishable from a section that has nothing in it. Open them all for
+// the print, then restore exactly what was open before.
+(function () {
+  var reopened = [];
+
+  function expand() {
+    reopened = [];
+    var all = document.querySelectorAll(".content main details");
+    for (var i = 0; i < all.length; i++) {
+      if (!all[i].open) {
+        all[i].open = true;
+        reopened.push(all[i]);
+      }
+    }
+  }
+
+  function restore() {
+    for (var i = 0; i < reopened.length; i++) reopened[i].open = false;
+    reopened = [];
+  }
+
+  window.addEventListener("beforeprint", expand);
+  window.addEventListener("afterprint", restore);
+
+  // Safari fires neither event; it drives the same transition through the
+  // print media query instead.
+  if (window.matchMedia) {
+    var mq = window.matchMedia("print");
+    var onChange = function (e) {
+      if (e.matches) expand();
+      else restore();
+    };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+})();
+
+// ── Search: show the keyboard shortcut ──
+// mdBook binds `/` and `s` to the search box and says so only in the toggle
+// button's title attribute, which nobody reads. A chip in the field itself is
+// how the shortcut gets learned for next time.
+(function () {
+  function inject() {
+    var form = document.getElementById("mdbook-searchbar-outer");
+    var input = document.getElementById("mdbook-searchbar");
+    if (!form || !input || document.getElementById("search-key-hint")) return;
+
+    var hint = document.createElement("kbd");
+    hint.id = "search-key-hint";
+    hint.setAttribute("aria-hidden", "true");
+    hint.textContent = "/";
+    form.appendChild(hint);
+
+    // Nothing to hint at once the field has focus and content.
+    function sync() {
+      hint.hidden = input.value.length > 0;
+    }
+    input.addEventListener("input", sync);
+    sync();
   }
 
   if (document.readyState === "loading") {
