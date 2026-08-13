@@ -112,7 +112,7 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # Channel `auth.mode = "hmac"`: webhook signature verification over the raw
 # request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
 # and hmac 0.13 would pull a second digest major into the tree.
-hmac = "0.12"
+hmac = "0.13"
 hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
 # encodings are accepted, so both decoders are needed.
