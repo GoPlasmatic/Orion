@@ -1,0 +1,50 @@
+{
+  // Cloudflare Workers static-assets deployment for the Orion documentation.
+  // No Worker script (`main`) — this is an assets-only Worker that serves the
+  // mdBook output, so asset requests cost zero Worker invocations.
+  //
+  // Deployed by Cloudflare Workers Builds, the same mechanism as the
+  // GoPlasmatic/website repo: the cloudflare-workers-and-pages GitHub App
+  // watches this repo, and a push to `main` under docs/** makes Cloudflare
+  // clone it, run the build command, and `wrangler deploy` from here. No
+  // GitHub Actions workflow and no API-token secret are involved — the build
+  // runs on Cloudflare's side, so nothing in GitHub needs credentials.
+  //
+  // Three settings live in the Cloudflare dashboard rather than this file,
+  // because Workers Builds owns them (Workers → orion-docs → Settings →
+  // Build). Record of what they must be:
+  //   • Build command    : bash docs/build.sh
+  //   • Deploy command   : npx wrangler deploy
+  //   • Root directory   : docs
+  //   • Branch           : main
+  //   • Include paths    : docs/*   (openapi.json is regenerated on API
+  //                        changes and is not part of the published book, so
+  //                        an unfiltered docs/** would redeploy for nothing)
+  //
+  // Everything else — the mdBook version, llms-full.txt, the _redirects and
+  // _headers staging — is deliberately inside docs/build.sh so it stays in the
+  // repo and under review. `mdbook_pin_drift_test` holds the mdBook version
+  // there equal to the one ci.yml checks pull requests with.
+  "name": "orion-docs",
+  "compatibility_date": "2025-08-01",
+  // No public *.workers.dev mirror — the book is served on one hostname.
+  "workers_dev": false,
+  // custom_domain:true makes wrangler create the DNS record + edge cert on
+  // deploy. The goplasmatic.io zone is already on Cloudflare with its apex
+  // bound to the separate `website` Worker; Workers custom domains are
+  // per-hostname, so this binding does not collide with it.
+  "routes": [{ "pattern": "docs.goplasmatic.io", "custom_domain": true }],
+  "assets": {
+    "directory": "./book",
+    // mdBook emits flat .html files and every internal link, the search index,
+    // the book.toml redirect stubs and llms.txt all address them by name. The
+    // default ("auto-trailing-slash") would 307 /foo.html → /foo on every one
+    // of those, adding a redirect hop per click and desyncing the canonical
+    // URL from every link we publish. "none" serves exact matches only, which
+    // is byte-for-byte what GitHub Pages did before this.
+    "html_handling": "none",
+    // ...and because "none" means a bare "/" matches no file, the root is
+    // served by the `/ → /index.html 200` proxy rule in cloudflare/_redirects.
+    "not_found_handling": "404-page"
+  }
+}

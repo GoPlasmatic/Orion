@@ -122,11 +122,13 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 8. **For the real release:** set `version = "1.0.0"` back in both crate
    manifests, land, wait for CI, then
    `git tag v1.0.0 && git push origin refs/tags/v1.0.0`.
-9. **Publish the docs:** merge the release branch into `main`. The docs
-   site deploys only from `main` (`docs.yml` triggers on `push` to `main`
-   for `docs/**`), so until the merge lands the live site still serves the
-   pre-1.0 book — no upgrade guide, old version strings. Do this
-   immediately after tagging, not as cleanup.
+9. **Publish the docs:** merge the release branch into `main`.
+   `docs.goplasmatic.io` deploys only from `main` — Cloudflare Workers Builds
+   watches this repo and rebuilds on a push to `main` touching `docs/` — so
+   until the merge lands the live site still serves the pre-1.0 book: no
+   upgrade guide, old version strings. Do this immediately after tagging, not
+   as cleanup. The deploy runs outside GitHub, so watch it in the Cloudflare
+   dashboard (Workers → orion-docs → Deployments), not the Actions tab.
 
 ## The benchmark session (C13 — closed for 1.0.0)
 

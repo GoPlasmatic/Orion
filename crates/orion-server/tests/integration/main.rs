@@ -56,6 +56,7 @@ mod http_retry_test;
 mod ingress_guards_test;
 mod jsonlogic_operators_test;
 mod kafka_test;
+mod mdbook_pin_drift_test;
 mod metrics_docs_drift_test;
 mod metrics_endpoint_test;
 mod migration_guard_test;

@@ -326,7 +326,8 @@ jobs:
       - name: Assemble and verify-build the publish tarballs
         run: cargo package --locked --workspace
 
-  # docs.yml only fires on merges touching docs/**, so without this a PR
+  # The docs site is deployed by Cloudflare Workers Builds on merges touching
+  # docs/**, entirely outside GitHub, so without this a PR
   # can break the book (dangling SUMMARY entry, bad include) and nobody
   # notices until after merge. book.toml sets create-missing = false, so a
   # missing SUMMARY target fails the build here instead of fabricating an
@@ -346,8 +347,13 @@ jobs:
         with:
           tool: mdbook@0.5.4
 
+      # The same script Cloudflare Workers Builds runs to deploy, so a PR also
+      # exercises the llms-full.txt generation and the _redirects/_headers
+      # staging, not just `mdbook build`. mdbook is already on PATH from the
+      # step above, so the script's pinned-binary fetch is skipped here —
+      # mdbook_pin_drift_test is what keeps that pin and this one equal.
       - name: Build book
-        run: mdbook build docs
+        run: bash docs/build.sh
 
       # The docs estate's structural guard: include/link integrity, redirect
       # coverage for hard site links, and the one-owner-per-fact guard greps.

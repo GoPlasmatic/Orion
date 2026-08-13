@@ -42,6 +42,13 @@ debug/
 # mdBook rendered output
 /docs/book/
 
+# Wrangler local dev state (`just docs-preview`)
+/docs/.wrangler/
+
+# The pinned mdBook binary docs/build.sh fetches when one is not on PATH
+# (Cloudflare's build image); dev machines and CI never populate this.
+/docs/.bin/
+
 # Benchmark results: scratch runs stay local; each Orion release record
 # (RELEASING.md's C13 session) gets an explicit re-include line. Deliberately
 # not a blanket `v*` — dev machines hold comparison dirs named after

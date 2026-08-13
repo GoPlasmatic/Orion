@@ -86,7 +86,7 @@ crates/orion-client/   # Shared HTTP transport (OrionClient, endpoint paths)
 tests/e2e/             # Shell end-to-end suites: orion-cli against orion-server (`just e2e`)
 examples/              # Deployable packages, offline workflow tests, e2e use cases
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
-docs/                  # mdBook documentation (published to GitHub Pages)
+docs/                  # mdBook documentation (published to docs.goplasmatic.io)
 ```
 
 ## Your First Contribution

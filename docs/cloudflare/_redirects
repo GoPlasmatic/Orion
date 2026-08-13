@@ -1,0 +1,10 @@
+# Cloudflare Workers static-assets redirect rules. Copied into docs/book/ after
+# `mdbook build` (see the justfile `docs` recipe and .github/workflows/docs.yml)
+# — it lives outside docs/src/ so mdBook does not treat it as book content.
+#
+# wrangler.jsonc sets "html_handling": "none" to keep mdBook's .html URLs
+# canonical. The cost of that setting is that a bare "/" matches no file on
+# disk, so it needs this rule: a 200 proxy (not a redirect) serving the book's
+# root index.html at "/" — the docs home page, and the single most linked URL
+# on the site. Retiring this line without changing html_handling 404s the root.
+/    /index.html    200

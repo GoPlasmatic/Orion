@@ -31,9 +31,16 @@ test-containers:
     cargo test --test schema_parity -- --ignored
     cargo test --test cluster -- --ignored --test-threads=1
 
-# Build the documentation book (needs mdbook).
+# Build the deployable documentation site into docs/book/ (needs mdbook).
+# Same script the deploy runs, so what you get here is what Cloudflare serves.
 docs:
-    mdbook build docs
+    bash docs/build.sh
+
+# Serve the built book the way Cloudflare will, on http://localhost:8787 —
+# exact-match .html URLs, the "/" proxy rule and the _headers rules all apply,
+# which plain `mdbook serve` does not model. Run `just docs` first.
+docs-preview:
+    cd docs && npx wrangler dev
 
 # Format the tree in place.
 fmt:
