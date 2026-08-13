@@ -39,7 +39,7 @@ orion-client = { version = "1.0.0", path = "../orion-client" }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 anyhow = "1"
-rmcp = { version = "1.4", features = ["server", "transport-io", "transport-streamable-http-server"] }
+rmcp = { version = "3.1", features = ["server", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -577,8 +577,33 @@ pub async fn serve(
                 move || Ok(OrionService::new(client.clone())),
                 Default::default(),
                 {
-                    let mut config = StreamableHttpServerConfig::default();
-                    config.stateful_mode = true;
+                    // rmcp 3.x renamed `stateful_mode` to `legacy_session_mode`
+                    // and now defaults it to true, so the old assignment is
+                    // gone rather than changed. Per SEP-2567 it applies only to
+                    // protocol versions < 2026-07-28; anything negotiating the
+                    // newer version is served statelessly regardless.
+                    //
+                    // `disable_allowed_hosts()` is the load-bearing line. rmcp
+                    // 3.x added inbound `Host` validation defaulting to
+                    // ["localhost", "127.0.0.1", "::1"], which guards a
+                    // *locally* running server against DNS rebinding. This
+                    // server is not that: `--http` binds 0.0.0.0:8081, ships as
+                    // ghcr.io/goplasmatic/orion-cli and is listed in the MCP
+                    // registry for remote clients — so the default would reject
+                    // every request that reaches it by any name other than
+                    // loopback, i.e. all of them.
+                    //
+                    // Clearing the list restores exactly the reachability rmcp
+                    // 1.x had; it does not weaken anything that was previously
+                    // enforced. The protection is still worth having, but it
+                    // needs an operator-supplied hostname to be useful, which
+                    // means a CLI flag (`--allowed-host`, repeatable) and a
+                    // deliberate choice about breaking existing deployments.
+                    // That is a feature, not this dependency bump.
+                    // Built by mutation, not a struct expression: the type is
+                    // #[non_exhaustive], so even `..Default::default()` is
+                    // refused outside the defining crate.
+                    let mut config = StreamableHttpServerConfig::default().disable_allowed_hosts();
                     config.cancellation_token = ct.child_token();
                     config
                 },
