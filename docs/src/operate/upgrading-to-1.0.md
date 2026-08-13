@@ -14,6 +14,11 @@ The version-independent procedure — back up, preflight, validate config,
 migrate, roll — is on [Upgrades](./upgrades.md), along with the policy on how a
 renamed key fails.
 
+Each change below is collapsed to its heading, so the eleven sections read as a
+list of what breaks. Open the ones that touch you; **Expand all** opens the lot.
+
+<div class="fold-sections" data-level="3" data-default="closed"></div>
+
 ---
 
 ## Before you start

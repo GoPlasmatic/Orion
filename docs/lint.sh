@@ -189,6 +189,70 @@ if [ -d docs/src/compare ]; then
   done
 fi
 
+## 13. The Required column is lower case, everywhere.
+##
+##     Two field-table legends used to disagree — functions.md published
+##     `yes`/`no` and channel-config.md published `Yes`/`No` — for the same
+##     column, which meant no reader could tell whether the difference meant
+##     anything. It does not. The Required column carries a controlled value
+##     that sits beside `rest`, `hmac` and `one of …`, so it is lower case
+##     like those.
+##
+##     A boolean MATRIX cell is a different thing: it answers a question in
+##     prose ("does this guard apply on this ingress?"), so it stays `Yes` /
+##     `No`. That is why this walks the tables and only looks at the column
+##     whose header is Required, rather than grepping for the words.
+req_case=$(python3 - <<'PY'
+import pathlib
+bad = []
+for f in sorted(pathlib.Path('docs/src').rglob('*.md')):
+    hdr = idx = None
+    for n, l in enumerate(f.read_text().split('\n'), 1):
+        if not l.startswith('|'):
+            hdr = idx = None
+            continue
+        cells = [c.strip() for c in l.strip().strip('|').split('|')]
+        if hdr is None:
+            hdr = cells
+            low = [c.lower().strip('`* ') for c in cells]
+            idx = low.index('required') if 'required' in low else None
+            continue
+        if set(''.join(cells)) <= set('-: '):
+            continue
+        if idx is not None and idx < len(cells) and cells[idx] in ('Yes', 'No'):
+            bad.append(f"{f}:{n}: Required column says '{cells[idx]}', want lower case")
+print('\n'.join(bad))
+PY
+)
+if [ -n "$req_case" ]; then
+  printf '%s\n' "$req_case" >&2
+  err 'capitalised Yes/No in a Required column'
+fi
+
+## 14. No emoji, and no character standing in for an icon.
+##
+##     A character borrowed from the text face cannot be sized, aligned or
+##     stroked against the type around it, and an emoji renders differently
+##     on every platform. Every mark in this book is an SVG — a <symbol> in
+##     js/extra.js for the ones the script inserts, a `--p-icon-*` mask in
+##     plasmatic.css §1 for the ones CSS draws.
+##
+##     The arrow characters are NOT listed here: `→` is real punctuation in
+##     prose like "rate limit → auth", and this book uses it that way in nine
+##     files. Only the ones whose sole use is decorative are refused.
+##
+##     Prose only. The casts are recorded terminal sessions and their `❯`
+##     prompt is what the shell actually printed — the same reason check 4
+##     exempts them — and the images, videos and webfonts are binaries that a
+##     byte-range match hits by accident.
+emoji_glob='docs/src/**/*.md'
+if git grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' \
+     -- "$emoji_glob" 'docs/src/*.md' >/dev/null 2>&1; then
+  git grep -nP '[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]' \
+     -- "$emoji_glob" 'docs/src/*.md' >&2
+  err 'emoji or dingbat in docs/src — use an SVG mark (js/extra.js sprite, or --p-icon-* in plasmatic.css §1)'
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
 else

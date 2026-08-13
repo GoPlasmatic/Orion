@@ -1,7 +1,9 @@
 # Troubleshooting
 
 Indexed by what you see. Each entry is **what it looks like → why it happens →
-what to do**.
+what to do**, collapsed to the symptom so the whole index fits on one screen.
+
+<div class="fold-sections" data-level="2" data-default="closed" data-skip="related"></div>
 
 ## A channel answers `503` "failed to load and is not being served"
 

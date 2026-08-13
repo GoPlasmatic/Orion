@@ -164,10 +164,10 @@ curl -s -X POST http://localhost:8080/api/v1/data/notifications \
 
 | Severity | `logged` | `email_sent` | `sms_sent` |
 |----------|:-:|:-:|:-:|
-| low | yes | — | — |
-| medium | yes | yes | — |
-| high | yes | yes | yes |
-| critical | yes | yes | yes |
+| low | Yes | No | No |
+| medium | Yes | Yes | No |
+| high | Yes | Yes | Yes |
+| critical | Yes | Yes | Yes |
 
 **What this shows:** the `in` operator for set membership, and a progressive
 pipeline where each task adds to the same object rather than branching away from

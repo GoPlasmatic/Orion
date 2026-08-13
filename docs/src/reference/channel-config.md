@@ -22,7 +22,7 @@ All `config` keys are optional. An empty `{}` is valid: the channel then runs wi
 | [`origin_allow_list`](#cors--origins) | Server-side `Origin` header check. |
 | [`tracing`](#tracing-override) | Per-channel override of the global trace-storage policy. |
 
-**Field-table legend.** In the Required column, `Yes`/`No` are absolute; a protocol or mode name (`rest`, `hmac`, …) means the field is required exactly when that protocol or mode applies. `—` in Default means the field has no value until you set one.
+**Field-table legend.** In the Required column, `yes`/`no` are absolute; a protocol or mode name (`rest`, `hmac`, …) means the field is required exactly when that protocol or mode applies. `—` in Default means the field has no value until you set one. The Guards-by-ingress matrix above answers a different question and answers it in prose — `Yes`/`No`, not a field value.
 
 ## Guards by ingress
 
@@ -57,13 +57,13 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `channel_type` | string | Yes | — | `sync` (the caller waits for the result) or `async` (queued; answers `202` with a trace id). Case-insensitive. |
-| `protocol` | string | Yes | — | `rest`, `http`, or `kafka`. Case-insensitive. Immutable across versions. |
+| `channel_type` | string | yes | — | `sync` (the caller waits for the result) or `async` (queued; answers `202` with a trace id). Case-insensitive. |
+| `protocol` | string | yes | — | `rest`, `http`, or `kafka`. Case-insensitive. Immutable across versions. |
 | `methods` | array of strings | `rest`, `http` | — | HTTP methods the route answers. Valid values: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`. An unknown or duplicated method is refused. |
 | `route_pattern` | string | `rest`, `http` | — | Path pattern, for example `/orders/{id}`. Grammar below. At most 255 characters. |
 | `topic` | string | `kafka` | — | Kafka topic the channel consumes. At most 255 characters. |
-| `consumer_group` | string | No | — | Kafka consumer group name. At most 255 characters. |
-| `priority` | number | No | `0` | Route-match precedence. Routes match by priority descending, then segment count descending, then channel name — deterministic on every node. |
+| `consumer_group` | string | no | — | Kafka consumer group name. At most 255 characters. |
+| `priority` | number | no | `0` | Route-match precedence. Routes match by priority descending, then segment count descending, then channel name — deterministic on every node. |
 
 `rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v1/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload; config-file topic mappings take precedence over channel-declared ones (see [Kafka Consumer Configuration](./configuration.md#kafka)).
 
@@ -95,12 +95,12 @@ Guard keys go in a `config` object beside these fields:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `mode` | string | Yes | — | `api_key` or `hmac`. |
+| `mode` | string | yes | — | `api_key` or `hmac`. |
 | `keys` | array of strings | `api_key` | — | Accepted keys; any match authorizes. Each entry is a literal or an `env://VAR` reference. |
-| `header` | string | No | `Authorization` (`api_key`) / `X-Signature` (`hmac`) | Header carrying the credential. |
-| `scheme` | string | No | `Bearer ` when `header` is `Authorization`; none otherwise | `api_key` only: expected prefix on the header value. |
+| `header` | string | no | `Authorization` (`api_key`) / `X-Signature` (`hmac`) | Header carrying the credential. |
+| `scheme` | string | no | `Bearer ` when `header` is `Authorization`; none otherwise | `api_key` only: expected prefix on the header value. |
 | `secret` | string | `hmac` | — | Shared secret; literal or `env://VAR`. |
-| `signature_prefix` | string | No | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. |
+| `signature_prefix` | string | no | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. |
 
 **`api_key`** compares the presented key in constant time against the SHA-256 of each accepted key. Listing several keys enables rotation without a window of refusals:
 
@@ -141,10 +141,10 @@ Rules:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `requests_per_second` | integer | Yes | — | Steady admission rate per bucket. |
-| `burst` | integer | No | `requests_per_second / 2 + 1` | Allowance above the steady rate. |
-| `key_logic` | JSONLogic | No | caller identity | Expression computing the bucket key. See the context below. |
-| `on_backend_error` | string | No | `"allow"` | `allow` fails open, `deny` refuses with `503`, when the shared cluster Redis cannot answer. Irrelevant on a single node — the in-process limiter cannot fail. |
+| `requests_per_second` | integer | yes | — | Steady admission rate per bucket. |
+| `burst` | integer | no | `requests_per_second / 2 + 1` | Allowance above the steady rate. |
+| `key_logic` | JSONLogic | no | caller identity | Expression computing the bucket key. See the context below. |
+| `on_backend_error` | string | no | `"allow"` | `allow` fails open, `deny` refuses with `503`, when the shared cluster Redis cannot answer. Irrelevant on a single node — the in-process limiter cannot fail. |
 
 The limit applies on every ingress, whether or not the platform limiter ([`[rate_limit]`](./configuration.md#rate-limiting)) is enabled.
 
@@ -186,7 +186,7 @@ Limiter state survives engine reloads: a channel whose `requests_per_second`, `b
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `max_concurrent_per_node` | integer | Yes | — | Maximum concurrent requests for this channel on this node. |
+| `max_concurrent_per_node` | integer | yes | — | Maximum concurrent requests for this channel on this node. |
 
 ```json
 { "backpressure": { "max_concurrent_per_node": 200 } }
@@ -204,10 +204,10 @@ The semaphore is per process, as the name states: N replicas admit up to N × `m
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `header` | string | Yes | — | Header carrying the idempotency key. |
-| `window_secs` | integer | No | `300` | Seconds a key is remembered. |
-| `connector` | string | No | in-memory store | Name of a [cache connector](./connectors.md) backing the dedup store. In cluster mode the default is the shared cluster Redis. |
-| `on_backend_error` | string | No | `"allow"` | `allow` proceeds without the check when the store cannot answer; `deny` refuses with `503` — never `409`, because the key is unverifiable, not a known duplicate. |
+| `header` | string | yes | — | Header carrying the idempotency key. |
+| `window_secs` | integer | no | `300` | Seconds a key is remembered. |
+| `connector` | string | no | in-memory store | Name of a [cache connector](./connectors.md) backing the dedup store. In cluster mode the default is the shared cluster Redis. |
+| `on_backend_error` | string | no | `"allow"` | `allow` proceeds without the check when the store cannot answer; `deny` refuses with `503` — never `409`, because the key is unverifiable, not a known duplicate. |
 
 ```json
 {
@@ -237,10 +237,10 @@ Rules:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `enabled` | boolean | Yes | — | `false` disables the cache without removing the block. |
-| `ttl_secs` | integer | No | `300` | Seconds an entry lives. |
-| `cache_key_fields` | array of strings | No | whole payload | Payload fields that form the cache key. |
-| `connector` | string | No | in-memory | Name of a [cache connector](./connectors.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
+| `enabled` | boolean | yes | — | `false` disables the cache without removing the block. |
+| `ttl_secs` | integer | no | `300` | Seconds an entry lives. |
+| `cache_key_fields` | array of strings | no | whole payload | Payload fields that form the cache key. |
+| `connector` | string | no | in-memory | Name of a [cache connector](./connectors.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
 
 ```json
 {
@@ -273,8 +273,8 @@ By default every sync channel answers `200` with the fixed envelope `{id, status
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `response.mode` | string | No | `"envelope"` | `envelope` or `shaped`. |
-| `response.allowed_headers` | array of strings | No | default allowlist | Headers the workflow may set. **Replaces** the default list, so a channel can narrow it as well as widen it. Case-insensitive. |
+| `response.mode` | string | no | `"envelope"` | `envelope` or `shaped`. |
+| `response.allowed_headers` | array of strings | no | default allowlist | Headers the workflow may set. **Replaces** the default list, so a channel can narrow it as well as widen it. Case-insensitive. |
 
 ```json
 { "response": { "mode": "shaped", "allowed_headers": ["location"] } }
@@ -298,10 +298,10 @@ The control block's fields:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `status` | number | No | `200` | HTTP status. Out-of-range values fall back to `200`. |
-| `headers` | object | No | `{}` | Response headers, subject to the allowlist below. |
-| `body_path` | string | No | whole document | Field to send instead of the entire data document. A leading `data.` is optional. |
-| `raw` | boolean | No | `false` | Send a string field verbatim rather than as a JSON string — how a channel returns CSV, XML, or plain text. |
+| `status` | number | no | `200` | HTTP status. Out-of-range values fall back to `200`. |
+| `headers` | object | no | `{}` | Response headers, subject to the allowlist below. |
+| `body_path` | string | no | whole document | Field to send instead of the entire data document. A leading `data.` is optional. |
+| `raw` | boolean | no | `false` | Send a string field verbatim rather than as a JSON string — how a channel returns CSV, XML, or plain text. |
 
 `Content-Type` is `application/json` unless the workflow sets it.
 
@@ -317,7 +317,7 @@ The control block's fields:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `validation_logic` | JSONLogic | No | none | Predicate over `{data, metadata}`. See the [Expression Language](./expressions.md). |
+| `validation_logic` | JSONLogic | no | none | Predicate over `{data, metadata}`. See the [Expression Language](./expressions.md). |
 
 ```json
 {
@@ -344,7 +344,7 @@ Rules:
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `timeout_ms` | integer | No | per ingress, below | Maximum workflow execution time in milliseconds. |
+| `timeout_ms` | integer | no | per ingress, below | Maximum workflow execution time in milliseconds. |
 
 ```json
 { "timeout_ms": 5000 }
@@ -373,7 +373,7 @@ A `channel_call` task may set its own `timeout_ms`, which outranks the target ch
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `origin_allow_list` | array of strings | No | no check | Accepted `Origin` values. `"*"` allows any origin. |
+| `origin_allow_list` | array of strings | no | no check | Accepted `Origin` values. `"*"` allows any origin. |
 
 ```json
 { "origin_allow_list": ["https://app.example.com", "https://admin.example.com"] }
@@ -399,10 +399,10 @@ Neither is authentication: `Origin` is client-supplied, and any non-browser call
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `mode` | string | No | global `trace_storage.mode` | `sync`, `async`, `batch`, or `off`. |
-| `sample_rate` | number | No | global `trace_storage.sample_rate` | Fraction of traces persisted, `0.0`–`1.0`. Applies to sync traces only; async traces always persist. |
-| `errors_only` | boolean | No | global `trace_storage.errors_only` | Persist only traces that ended with errors. |
-| `task_details` | boolean | No | `false` | Capture a per-task execution trace into `task_trace_json`. No global setting exists — this is per-channel only. |
+| `mode` | string | no | global `trace_storage.mode` | `sync`, `async`, `batch`, or `off`. |
+| `sample_rate` | number | no | global `trace_storage.sample_rate` | Fraction of traces persisted, `0.0`–`1.0`. Applies to sync traces only; async traces always persist. |
+| `errors_only` | boolean | no | global `trace_storage.errors_only` | Persist only traces that ended with errors. |
+| `task_details` | boolean | no | `false` | Capture a per-task execution trace into `task_trace_json`. No global setting exists — this is per-channel only. |
 
 ```json
 {

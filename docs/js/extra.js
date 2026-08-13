@@ -97,6 +97,47 @@
       '<path d="M13.5 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/>' +
       '<path d="M13.5 3.5v5h5"/><path d="M9 13h6"/><path d="M9 16.5h4"/>',
 
+    // ── Connector types ──
+    // The five values the `type` field takes. Used in the types table on
+    // concepts/connectors.md; `kafka` doubles as the stream ingress below.
+    "type-http":
+      '<circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/>' +
+      '<path d="M12 3.6c2.2 2.3 3.4 5.3 3.4 8.4s-1.2 6.1-3.4 8.4c-2.2-2.3-3.4-5.3-3.4-8.4S9.8 5.9 12 3.6Z"/>',
+    "type-db":
+      '<ellipse cx="12" cy="6.4" rx="7.4" ry="2.9"/>' +
+      '<path d="M4.6 6.4v11.2c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9V6.4"/>' +
+      '<path d="M4.6 12c0 1.6 3.3 2.9 7.4 2.9s7.4-1.3 7.4-2.9"/>',
+    "type-cache": '<path d="M13.2 3.2 5.6 13.6h5.9L10.8 20.8l7.6-10.4h-5.9z"/>',
+    "type-es":
+      '<path d="M13.4 3.4H7A1.5 1.5 0 0 0 5.5 4.9v14.2A1.5 1.5 0 0 0 7 20.6h5"/>' +
+      '<path d="M13.4 3.4v5h5"/><circle cx="16.6" cy="15.6" r="3.1"/>' +
+      '<path d="m18.9 17.9 2.1 2.1"/>',
+    "type-kafka":
+      '<path d="M3.6 8.6c3-2.6 6-2.6 9 0s6 2.6 9 0"/>' +
+      '<path d="M3.6 15.4c3-2.6 6-2.6 9 0s6 2.6 9 0"/>',
+
+    // ── Ingress kinds ──
+    // The four ways a request reaches a channel, for the guards matrix
+    // headers. `ingress-kafka` is type-kafka reused — one topic, one glyph.
+    "ingress-sync": '<circle cx="12" cy="12" r="8.4"/><path d="M8 12h7"/><path d="m12.4 9 3 3-3 3"/>',
+    "ingress-async": '<circle cx="12" cy="12" r="8.4"/><path d="M12 7.2V12l3.2 1.9"/>',
+    "ingress-call":
+      '<path d="M10.2 13.8a3.6 3.6 0 0 0 5.1 0l2.8-2.8a3.6 3.6 0 0 0-5.1-5.1l-1.3 1.3"/>' +
+      '<path d="M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-2.8 2.8a3.6 3.6 0 0 0 5.1 5.1l1.3-1.3"/>',
+
+    // Chain link — the per-row permalink on a reference table.
+    anchor:
+      '<path d="M10.2 13.8a3.6 3.6 0 0 0 5.1 0l2.8-2.8a3.6 3.6 0 0 0-5.1-5.1l-1.3 1.3"/>' +
+      '<path d="M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-2.8 2.8a3.6 3.6 0 0 0 5.1 5.1l1.3-1.3"/>',
+
+    // ── Table marks ──
+    // Yes in a matrix or a Required column.
+    check: '<path d="m4.5 12.5 5 5 10-11"/>',
+    // No. A dash, not a cross: channel-config states that every No in the
+    // guards matrix is deliberate — those guards are not offered on that
+    // ingress by design. A cross reads as a failure; a dash reads as
+    // not-applicable, which is what the sentence already says.
+    dash: '<path d="M6 12h12"/>',
   };
 
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -354,6 +395,9 @@
     });
     spy();
 
+    // Opening or closing a fold moves every heading below it, so the rail's
+    // highlight is stale until the spy runs again. The fold pass calls this.
+    window.orionRespyToc = spy;
   }
 
   if (document.readyState === "loading") {
@@ -457,6 +501,253 @@
   }
 })();
 
+// ── Section folding ──
+// Opt in from the markdown with an empty marker div at the top of the page,
+// matching the .doc-cards / .table-filter convention:
+//
+//   <div class="fold-sections" data-level="3" data-default="closed"
+//        data-skip="related"></div>
+//
+// Each heading at that level, plus everything under it up to the next heading
+// of the same level or higher, becomes one <details>. Doing it over the
+// rendered DOM rather than in the source is what keeps 58 sections from
+// becoming 58 hand-written HTML wrappers in a file that llms-full.txt
+// concatenates verbatim.
+//
+// The heading element itself is MOVED, not copied, so it keeps the id and the
+// <a class="header"> anchor mdBook generated for it. That is what lets the ToC
+// rail, the search index and every inbound deep link go on working: mdBook
+// emits a search entry per heading, including headings inside a closed fold,
+// so a hit has to be able to open its way out. See openTo() below.
+//
+// Find-in-page cannot see closed content. Chromium expands a closed <details>
+// on find; elsewhere "Expand all" is the answer, which is why that control is
+// not optional. plasmatic.css §26 carries the styling.
+(function () {
+  var STORE_PREFIX = "orion-folds:";
+
+  function storeKey() {
+    return STORE_PREFIX + location.pathname;
+  }
+
+  function readState() {
+    try {
+      var raw = localStorage.getItem(storeKey());
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeState(ids) {
+    try {
+      localStorage.setItem(storeKey(), JSON.stringify(ids));
+    } catch (e) {
+      /* private mode, quota — the folds still work, they just do not persist */
+    }
+  }
+
+  function headingLevel(el) {
+    return /^H[1-6]$/.test(el.tagName) ? parseInt(el.tagName.charAt(1), 10) : 0;
+  }
+
+  function build(marker, main) {
+    var level = parseInt(marker.dataset.level, 10);
+    if (!level || level < 2 || level > 4) return [];
+
+    var skip = (marker.dataset.skip || "")
+      .split(",")
+      .map(function (s) { return s.trim(); })
+      .filter(Boolean);
+
+    // Snapshot first: the walk reparents nodes, and a live child list would
+    // shift underneath it.
+    var children = Array.prototype.slice.call(main.children);
+    var folds = [];
+
+    for (var i = 0; i < children.length; i++) {
+      var node = children[i];
+      if (headingLevel(node) !== level) continue;
+      if (!node.id || skip.indexOf(node.id) !== -1) continue;
+
+      var body = [];
+      for (var j = i + 1; j < children.length; j++) {
+        var lvl = headingLevel(children[j]);
+        if (lvl && lvl <= level) break;
+        body.push(children[j]);
+      }
+      // A heading with nothing under it is a heading, not a disclosure.
+      if (!body.length) continue;
+
+      var details = document.createElement("details");
+      details.className = "fold";
+      var summary = document.createElement("summary");
+
+      main.insertBefore(details, node);
+      summary.appendChild(node);
+      details.appendChild(summary);
+      for (var k = 0; k < body.length; k++) details.appendChild(body[k]);
+
+      folds.push(details);
+    }
+
+    // §22 gives the last of a run its closing hairline. `:last-of-type` only
+    // ever matches one element per parent, so a run that ends before some
+    // other block needs saying explicitly.
+    for (var f = 0; f < folds.length; f++) {
+      var after = folds[f].nextElementSibling;
+      if (!after || after.tagName !== "DETAILS") folds[f].classList.add("is-last");
+    }
+
+    return folds;
+  }
+
+  function foldId(details) {
+    var h = details.querySelector("summary > :is(h2,h3,h4)");
+    return h ? h.id : null;
+  }
+
+  // Opens every fold on the path to `hash`, so a search result, a ToC click or
+  // an inbound link lands on open content instead of a closed box.
+  function openTo(hash) {
+    if (!hash || hash.length < 2) return null;
+    var target;
+    try {
+      target = document.getElementById(decodeURIComponent(hash.slice(1)));
+    } catch (e) {
+      return null;
+    }
+    if (!target) return null;
+    var node = target.closest ? target.closest("details") : null;
+    while (node) {
+      node.open = true;
+      node = node.parentNode && node.parentNode.closest
+        ? node.parentNode.closest("details")
+        : null;
+    }
+    return target;
+  }
+
+  function addControls(marker, folds, defaultOpen) {
+    var bar = document.createElement("div");
+    bar.className = "fold-controls";
+
+    var label = document.createElement("span");
+    label.className = "fold-controls-count";
+    label.textContent = folds.length + " sections";
+
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "fold-toggle";
+
+    function anyClosed() {
+      for (var i = 0; i < folds.length; i++) if (!folds[i].open) return true;
+      return false;
+    }
+
+    function sync() {
+      var expand = anyClosed();
+      toggle.textContent = expand ? "Expand all" : "Collapse all";
+      toggle.setAttribute("aria-expanded", expand ? "false" : "true");
+    }
+
+    toggle.addEventListener("click", function () {
+      var expand = anyClosed();
+      for (var i = 0; i < folds.length; i++) folds[i].open = expand;
+      persist();
+      sync();
+      if (window.orionRespyToc) window.orionRespyToc();
+    });
+
+    function persist() {
+      var open = [];
+      for (var i = 0; i < folds.length; i++) {
+        if (folds[i].open) {
+          var id = foldId(folds[i]);
+          if (id) open.push(id);
+        }
+      }
+      // Nothing to remember when the page is exactly as it ships.
+      var isDefault = defaultOpen ? open.length === folds.length : open.length === 0;
+      if (isDefault) {
+        try {
+          localStorage.removeItem(storeKey());
+        } catch (e) { /* see writeState */ }
+      } else {
+        writeState(open);
+      }
+    }
+
+    bar.appendChild(label);
+    bar.appendChild(toggle);
+    marker.appendChild(bar);
+    sync();
+
+    return { sync: sync, persist: persist };
+  }
+
+  function run() {
+    var main = document.querySelector(".content main");
+    var marker = main && main.querySelector(".fold-sections");
+    if (!marker) return;
+
+    var folds = build(marker, main);
+    if (!folds.length) return;
+
+    var defaultOpen = marker.dataset.default !== "closed";
+    var remembered = readState();
+
+    for (var i = 0; i < folds.length; i++) {
+      var id = foldId(folds[i]);
+      folds[i].open = remembered
+        ? remembered.indexOf(id) !== -1
+        : defaultOpen;
+    }
+
+    var controls = addControls(marker, folds, defaultOpen);
+
+    // A click on the heading's own anchor should copy/visit the link, not
+    // toggle the section it names — the summary's default action would close
+    // the very thing the link points at.
+    for (var f = 0; f < folds.length; f++) {
+      folds[f].addEventListener("click", function (e) {
+        var anchor = e.target.closest && e.target.closest("summary a.header");
+        if (!anchor) return;
+        e.preventDefault();
+        this.open = true;
+        var href = anchor.getAttribute("href");
+        if (history.replaceState) history.replaceState(null, "", href);
+        else location.hash = href;
+        controls.sync();
+        controls.persist();
+      });
+      folds[f].addEventListener("toggle", function () {
+        controls.sync();
+        controls.persist();
+        if (window.orionRespyToc) window.orionRespyToc();
+      });
+    }
+
+    // The page may already have been asked for a heading inside a fold —
+    // by a search result, a ToC link or an inbound URL. The browser resolved
+    // that hash before this script ran and found nothing scrollable.
+    var target = openTo(location.hash);
+    if (target) target.scrollIntoView();
+
+    window.addEventListener("hashchange", function () {
+      var el = openTo(location.hash);
+      if (el) el.scrollIntoView();
+      controls.sync();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+
 // ── Table marks: HTTP methods and status codes ──
 // Both run over the rendered DOM because CSS cannot select on the text in a
 // cell, and doing it here keeps the markdown as markdown: an endpoint table
@@ -511,11 +802,189 @@
     }
   }
 
+  // A cell whose ENTIRE text is yes or no is a boolean, wherever it sits —
+  // the guards-by-ingress matrix, a Required column, the paging table. The
+  // word stays in the DOM and the glyph carries aria-hidden, so a screen
+  // reader and llms-full.txt both still read "Yes"; nothing depends on the
+  // mark. That is also why this is not a CSS ::before with a character in it.
+  function markBooleans(main) {
+    var cells = main.querySelectorAll("table tbody td");
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var text = cell.textContent.trim();
+      var glyph;
+      if (text === "Yes" || text === "yes") glyph = "check";
+      else if (text === "No" || text === "no") glyph = "dash";
+      else continue;
+
+      var icon = window.orionIcon(glyph, "bool-mark bool-" + glyph);
+      if (!icon) continue;
+      var wrap = document.createElement("span");
+      wrap.className = "bool-cell";
+      wrap.appendChild(icon);
+      wrap.appendChild(document.createTextNode(text));
+      cell.textContent = "";
+      cell.appendChild(wrap);
+    }
+  }
+
+  // Two families of categorical value that repeat across the book: the five
+  // connector types, and the four ingresses a channel can be reached on.
+  // Both are matched narrowly — the type family only inside a table whose
+  // first header is "Type", the ingress family only in the header row of the
+  // guards matrix — so a stray cell that happens to read "cache" somewhere
+  // else is never decorated.
+  var CONNECTOR_TYPES = {
+    http: "type-http",
+    db: "type-db",
+    cache: "type-cache",
+    es: "type-es",
+    kafka: "type-kafka",
+  };
+
+  var INGRESSES = {
+    "http sync": "ingress-sync",
+    "http /async": "ingress-async",
+    kafka: "type-kafka",
+    channel_call: "ingress-call",
+  };
+
+  function prefixGlyph(cell, name, extraClass) {
+    var icon = window.orionIcon(name, extraClass);
+    if (!icon) return;
+    var wrap = document.createElement("span");
+    wrap.className = "cat-cell";
+    wrap.appendChild(icon);
+    while (cell.firstChild) wrap.appendChild(cell.firstChild);
+    cell.appendChild(wrap);
+  }
+
+  function markCategories(main) {
+    var tables = main.querySelectorAll("table");
+    for (var i = 0; i < tables.length; i++) {
+      var first = tables[i].querySelector("thead th");
+      if (!first) continue;
+      var head = first.textContent.trim().toLowerCase();
+
+      if (head === "type") {
+        var cells = tables[i].querySelectorAll("tbody tr > td:first-child");
+        for (var j = 0; j < cells.length; j++) {
+          var key = cells[j].textContent.trim().toLowerCase();
+          if (CONNECTOR_TYPES[key]) prefixGlyph(cells[j], CONNECTOR_TYPES[key], "cat-mark");
+        }
+      } else if (head === "guard") {
+        var heads = tables[i].querySelectorAll("thead th");
+        for (var k = 1; k < heads.length; k++) {
+          var label = heads[k].textContent.trim().toLowerCase();
+          if (INGRESSES[label]) prefixGlyph(heads[k], INGRESSES[label], "cat-mark");
+        }
+      }
+    }
+  }
+
   function run() {
     var main = document.querySelector(".content main");
     if (!main) return;
     markMethods(main);
     markStatusCodes(main);
+    markBooleans(main);
+    markCategories(main);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+
+// ── Destination glyphs on cross-links ──
+// Nearly every page ends in "## Related" or "## Next steps", and those lists
+// mix concepts, reference, guides and operate pages with nothing to tell them
+// apart. The same eight part glyphs the sidebar uses go in front of each link,
+// so the vocabulary a reader learns in the rail is readable again in the link
+// lists and the card grids: the mark says what KIND of page is on the other
+// end, which is the question a Related list raises and never answers.
+//
+// Keyed by directory because that is what a SUMMARY part is on disk. A part
+// renamed in SUMMARY.md needs no change here; a directory renamed does.
+(function () {
+  var BY_DIR = {
+    compare: "compare",
+    "getting-started": "start",
+    concepts: "concepts",
+    ai: "ai",
+    build: "build",
+    guides: "guides",
+    operate: "operate",
+    reference: "reference",
+  };
+
+  var BY_PAGE = {
+    "introduction.html": "book",
+    "comparison.html": "help",
+    "characteristics.html": "layers",
+  };
+
+  function glyphFor(href) {
+    if (!href || /^[a-z]+:/i.test(href) || href.charAt(0) === "#") return null;
+
+    // Resolved against the current page, not parsed as written. A sibling
+    // link inside one part is `./errors.md` with no directory to read, and
+    // the site is served under a /Orion/ prefix on Pages — letting the URL
+    // parser do it handles `./`, `../` and the prefix in one step.
+    var path;
+    try {
+      path = new URL(href, location.href).pathname;
+    } catch (e) {
+      return null;
+    }
+
+    var parts = path.split("/").filter(Boolean);
+    if (!parts.length) return null;
+    var file = parts[parts.length - 1];
+    if (BY_PAGE[file]) return BY_PAGE[file];
+    return parts.length > 1 ? BY_DIR[parts[parts.length - 2]] || null : null;
+  }
+
+  function decorate(list) {
+    var items = list.querySelectorAll(":scope > li");
+    for (var i = 0; i < items.length; i++) {
+      var link = items[i].querySelector("a[href]");
+      if (!link || items[i].querySelector(".dest-mark")) continue;
+      var glyph = window.orionIcon(glyphFor(link.getAttribute("href")), "dest-mark");
+      if (!glyph) continue;
+      items[i].insertBefore(glyph, items[i].firstChild);
+      items[i].classList.add("with-dest-mark");
+    }
+  }
+
+  function run() {
+    var main = document.querySelector(".content main");
+    if (!main) return;
+
+    // The closing link list on nearly every page. After folding, the heading
+    // can sit inside a <summary>, so the list is a sibling of the details
+    // rather than of the heading — look in both places.
+    var heads = main.querySelectorAll("h2#related, h2#next-steps");
+    for (var i = 0; i < heads.length; i++) {
+      var list = null;
+      var sib = heads[i].nextElementSibling;
+      while (sib && !list) {
+        if (sib.tagName === "UL") list = sib;
+        else if (/^H[1-3]$/.test(sib.tagName)) break;
+        sib = sib.nextElementSibling;
+      }
+      if (!list) {
+        var box = heads[i].closest("details");
+        if (box) list = box.querySelector("ul");
+      }
+      if (list) decorate(list);
+    }
+
+    // Card grids get the same vocabulary.
+    var cards = main.querySelectorAll(".doc-cards > ul");
+    for (var c = 0; c < cards.length; c++) decorate(cards[c]);
   }
 
   if (document.readyState === "loading") {
@@ -601,6 +1070,69 @@
   }
 })();
 
+// ── Per-row anchors on reference tables ──
+// A config key, an error code, a metric name and a CLI flag are all things
+// people link each other to, and until now the finest anchor in the book was
+// the section. Each first-column cell in a reference table gets an id derived
+// from its own text, plus a link that appears on hover — so a support answer
+// can point at one key instead of one page.
+//
+// Reference pages only: elsewhere a table is illustrating a point, not
+// serving as a lookup surface, and 700 more ids would just be weight.
+(function () {
+  function slug(text) {
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/[`'"]/g, "")
+      .replace(/[^a-z0-9._/-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function run() {
+    if (!/\/reference\//.test(location.pathname)) return;
+    var main = document.querySelector(".content main");
+    if (!main) return;
+
+    var seen = {};
+    // mdBook's heading ids are already in the document; a row id must not
+    // collide with one, or the two would fight over the same fragment.
+    var taken = main.querySelectorAll("[id]");
+    for (var t = 0; t < taken.length; t++) seen[taken[t].id] = 1;
+
+    var cells = main.querySelectorAll("table tbody tr > td:first-child");
+    for (var i = 0; i < cells.length; i++) {
+      var cell = cells[i];
+      var text = cell.textContent;
+      if (!text || text.length > 60) continue;
+      var base = slug(text);
+      if (!base || /^[0-9]+$/.test(base)) continue;
+
+      var id = "row-" + base;
+      var n = 2;
+      while (seen[id]) id = "row-" + base + "-" + n++;
+      seen[id] = 1;
+      cell.id = id;
+
+      var a = document.createElement("a");
+      a.className = "row-anchor";
+      a.href = "#" + id;
+      a.setAttribute("aria-label", "Link to " + text.trim());
+      var glyph = window.orionIcon("anchor");
+      if (!glyph) continue;
+      a.appendChild(glyph);
+      cell.appendChild(a);
+      cell.classList.add("has-row-anchor");
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
+  }
+})();
+
 // ── Disclosures: open everything for printing ──
 // A closed <details> prints as a title with no content, which on paper is
 // indistinguishable from a section that has nothing in it. Open them all for
@@ -668,6 +1200,138 @@
     document.addEventListener("DOMContentLoaded", inject);
   } else {
     inject();
+  }
+})();
+
+// ── Page footer: named prev/next, and a way to report a page ──
+// mdBook's own chapter navigation is two unlabelled chevrons pinned to the
+// window edges. They say a next chapter exists; they never say what it is —
+// and with `no-section-label` on, nothing else in the book carries the
+// reading order either. The names come from the sidebar, which already has
+// every chapter title on the page.
+//
+// The report links are deliberately NOT a "was this page helpful?" thumbs
+// pair. A vote widget with no backend records nothing; these two links go
+// somewhere a reply can come back from, prefilled with the page and its
+// source file so the reader does not have to describe where they were.
+(function () {
+  var REPO = "https://github.com/GoPlasmatic/Orion";
+
+  function resolve(href) {
+    try {
+      return new URL(href, location.href).pathname;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The sidebar is the only place the chapter titles exist on a rendered
+  // page, so it is where the names come from.
+  function titleFor(href) {
+    var want = resolve(href);
+    if (!want) return null;
+    var links = document.querySelectorAll(".sidebar .chapter a[href]");
+    for (var i = 0; i < links.length; i++) {
+      if (resolve(links[i].getAttribute("href")) === want) {
+        return links[i].textContent.trim();
+      }
+    }
+    return null;
+  }
+
+  function arrow(href, rel, label) {
+    var title = titleFor(href);
+    if (!title) return null;
+    var a = document.createElement("a");
+    a.className = "page-nav-link page-nav-" + rel;
+    a.href = href;
+    a.rel = rel;
+    var kicker = document.createElement("span");
+    kicker.className = "page-nav-kicker";
+    kicker.textContent = label;
+    var name = document.createElement("b");
+    name.textContent = title;
+    a.appendChild(kicker);
+    a.appendChild(name);
+    return a;
+  }
+
+  // docs/src/reference/errors.html -> docs/src/reference/errors.md, so a
+  // report names the file to edit rather than the page that rendered it.
+  function sourcePath() {
+    var parts = location.pathname.split("/").filter(Boolean);
+    var file = parts.pop() || "index.html";
+    var root = parts.indexOf("Orion");
+    var dirs = root === -1 ? parts : parts.slice(root + 1);
+    return "docs/src/" + dirs.concat(file.replace(/\.html$/, ".md")).join("/");
+  }
+
+  function reportLinks() {
+    var wrap = document.createElement("div");
+    wrap.className = "page-report";
+
+    var pageTitle = document.querySelector(".content main h1");
+    var name = pageTitle ? pageTitle.textContent.trim() : document.title;
+
+    var lead = document.createElement("span");
+    lead.textContent = "Something wrong on this page?";
+
+    var body =
+      "Page: " + location.href + "\nSource: " + sourcePath() + "\n\n";
+    var issue = document.createElement("a");
+    issue.href =
+      REPO +
+      "/issues/new?labels=documentation&title=" +
+      encodeURIComponent("Docs: " + name) +
+      "&body=" +
+      encodeURIComponent(body);
+    issue.textContent = "Report an issue";
+    issue.rel = "noopener";
+
+    var ask = document.createElement("a");
+    ask.href = REPO + "/discussions";
+    ask.textContent = "Ask in Discussions";
+    ask.rel = "noopener";
+
+    wrap.appendChild(lead);
+    wrap.appendChild(issue);
+    wrap.appendChild(ask);
+    return wrap;
+  }
+
+  function run() {
+    var main = document.querySelector(".content main");
+    if (!main || main.querySelector(".page-nav")) return;
+    if (/\/print\.html$/.test(location.pathname)) return;
+
+    var foot = document.createElement("footer");
+    foot.className = "page-foot";
+
+    var prevHref = document.querySelector(".nav-wrapper a[rel~='prev']");
+    var nextHref = document.querySelector(".nav-wrapper a[rel~='next']");
+
+    var prev = prevHref && arrow(prevHref.getAttribute("href"), "prev", "Previous");
+    var next = nextHref && arrow(nextHref.getAttribute("href"), "next", "Next");
+
+    if (prev || next) {
+      var nav = document.createElement("nav");
+      nav.className = "page-nav";
+      nav.setAttribute("aria-label", "Chapter navigation");
+      // An empty cell so a page with only a next link still puts it on the
+      // right, where the reading order says it belongs.
+      nav.appendChild(prev || document.createElement("span"));
+      nav.appendChild(next || document.createElement("span"));
+      foot.appendChild(nav);
+    }
+
+    foot.appendChild(reportLinks());
+    main.appendChild(foot);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run);
+  } else {
+    run();
   }
 })();
 

@@ -554,8 +554,15 @@ hr {
    Two exclusions: this book's own published URL, which the compare pages
    and llms.txt reference absolutely, and `localhost`, which is the reader's
    own machine and the least external address there is. Scoped to `main`, so
-   the sidebar, the ToC rail and the menu bar are untouched. */
-.content main a[href^="http"]:not([href*="goplasmatic.github.io"]):not([href*="localhost"])::after {
+   the sidebar, the ToC rail and the menu bar are untouched.
+
+   The exclusions anchor with `^=`, not `*=`. A substring match reads the
+   whole URL including the query string, and the footer's "Report an issue"
+   link carries the current page URL inside its `body=` parameter — so a
+   `*=` exclusion silently unmarked every report link on the deployed site,
+   where that parameter contains goplasmatic.github.io. Match the origin or
+   do not match at all. */
+.content main a[href^="http"]:not([href^="https://goplasmatic.github.io"]):not([href^="http://goplasmatic.github.io"]):not([href^="http://localhost"]):not([href^="https://localhost"])::after {
   content: "";
   display: inline-block;
   width: 0.82em;
@@ -1601,6 +1608,110 @@ pre > .buttons {
   padding: 0 5px;
 }
 
+/* Boolean cells. The word is still the content — the glyph is a second,
+   faster channel for the same fact, which is why it is aria-hidden and
+   why the cell still reads "Yes" to anything that is not looking at it. */
+.content main .bool-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.content main table th[align="center"] + th[align="center"],
+.content main .bool-cell {
+  line-height: 1.4;
+}
+
+.content main .bool-mark {
+  width: 1em;
+  height: 1em;
+}
+
+.content main .bool-check {
+  color: var(--p-syn-str);
+  /* The tick is a smaller shape than the rules around it; a hair more
+     weight keeps it from reading as lighter than the dash. */
+  stroke-width: 2.4;
+}
+
+.content main .bool-dash {
+  color: var(--p-fg-faint);
+  stroke-width: 2.4;
+}
+
+/* Section 10 mutes centred columns, which is where most matrices put
+   their booleans. The word can stay muted — the glyph is what carries
+   now — but a "yes" should not be quieter than the "no" beside it. */
+.content main table td[align="center"] .bool-cell {
+  justify-content: center;
+}
+
+/* Categorical marks: the five connector types, and the four ingresses in
+   the guards-matrix header. Muted rather than accented — these label a
+   row or a column, they are not the answer the reader came for. */
+.content main .cat-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.content main .cat-mark {
+  width: 1.05em;
+  height: 1.05em;
+  color: var(--p-fg-faint);
+}
+
+.content main thead th .cat-mark {
+  color: var(--p-fg-muted);
+}
+
+
+/* ============================================================
+   23a. Destination glyphs on cross-links
+   ============================================================
+   The eight part glyphs from the sidebar, in front of every link in a
+   "Related" / "Next steps" list and every card title, so a link says
+   what kind of page it goes to. Same vocabulary in both places — that
+   is the whole point of reusing them rather than drawing new ones. */
+.content main li.with-dest-mark {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  /* The glyph replaces the bullet rather than sitting beside it: two
+     markers on one line is one more than the line needs. */
+  list-style: none;
+  margin-inline-start: -1.1em;
+}
+
+.content main .dest-mark {
+  width: 1.02em;
+  height: 1.02em;
+  color: var(--p-fg-faint);
+  transform: translateY(0.12em);
+  transition: color 0.15s ease;
+}
+
+.content main li.with-dest-mark:hover .dest-mark {
+  color: var(--p-accent);
+}
+
+/* Inside a card the glyph belongs to the title, and the tile already
+   has its own padding and hover — no negative indent, no flex row. */
+.content main .doc-cards > ul > li.with-dest-mark {
+  display: block;
+  margin-inline-start: 0;
+}
+
+.content main .doc-cards > ul > li > .dest-mark {
+  float: inline-start;
+  margin-inline-end: 9px;
+  transform: translateY(0.28em);
+  color: var(--p-accent);
+  opacity: 0.75;
+}
+
 
 /* ============================================================
    24. Table filter
@@ -1746,5 +1857,251 @@ pre > .buttons {
 @media print {
   .content main .page-toc-inline {
     display: none;
+  }
+}
+
+
+/* ============================================================
+   25b. Per-row anchors on reference tables
+   ============================================================
+   The finest anchor in the book used to be the section. A config key
+   and an error code are things people link each other to, so the row
+   gets its own id and a link that surfaces on hover. */
+.content main td.has-row-anchor {
+  position: relative;
+}
+
+.content main .row-anchor {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 7px;
+  color: var(--p-fg-faint);
+  border-bottom: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.content main tr:hover .row-anchor,
+.content main .row-anchor:focus-visible {
+  opacity: 1;
+}
+
+.content main .row-anchor:hover {
+  color: var(--p-accent);
+}
+
+.content main .row-anchor .orion-ico {
+  width: 0.92em;
+  height: 0.92em;
+}
+
+/* The row someone was linked to should be findable once they arrive. */
+.content main td:target,
+.content main td:target ~ td {
+  background: var(--p-accent-tint);
+}
+
+@media print {
+  .content main .row-anchor {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   25c. Page footer — named prev/next, and the report links
+   ============================================================
+   mdBook's edge chevrons say a next chapter exists without saying what
+   it is. With `no-section-label` on, this strip is the only place the
+   reading order is written down. */
+.content main .page-foot {
+  margin-top: 4em;
+  padding-top: 1.6em;
+  border-top: 1px solid var(--p-border);
+}
+
+.content main .page-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.content main .page-nav-link {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 16px;
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-radius);
+  border-bottom: 1px solid var(--p-border);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.content main .page-nav-link:hover {
+  border-color: var(--p-border-strong);
+  background: var(--p-surface);
+}
+
+.content main .page-nav-next {
+  text-align: end;
+  align-items: flex-end;
+  grid-column: 2;
+}
+
+.content main .page-nav-kicker {
+  font-size: 1.2rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--p-fg-faint);
+}
+
+.content main .page-nav-link b {
+  font-weight: 600;
+  font-size: 1.5rem;
+  color: var(--p-accent);
+  line-height: 1.35;
+}
+
+.content main .page-report {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  margin-top: 1.8em;
+  font-size: 1.35rem;
+  color: var(--p-fg-faint);
+}
+
+.content main .page-report a {
+  color: var(--p-fg-muted);
+  border-bottom: 1px solid transparent;
+}
+
+.content main .page-report a:hover {
+  color: var(--p-accent);
+  border-bottom-color: color-mix(in srgb, var(--p-accent) 40%, transparent);
+}
+
+@media (max-width: 620px) {
+  .content main .page-nav {
+    grid-template-columns: 1fr;
+  }
+
+  .content main .page-nav-next {
+    grid-column: 1;
+  }
+}
+
+@media print {
+  .content main .page-foot {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   26. Folded sections (.fold-sections)
+   ============================================================
+   js/extra.js wraps each heading at the marker's level, plus the
+   content under it, in a <details class="fold">. Section 22 already
+   styles a disclosure; these rules are only the differences a folded
+   HEADING needs from a folded aside — it has to keep reading as the
+   heading it was, at the size the rest of the page sets, because the
+   list of them IS the page's index. */
+.content main .fold > summary > h2,
+.content main .fold > summary > h3,
+.content main .fold > summary > h4 {
+  margin: 0;
+  /* The heading owns the row; the summary is only the hit target. */
+  padding: 0;
+  border: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.content main .fold > summary {
+  /* Section 22 pads for a one-line label. A heading brings its own
+     vertical rhythm, so this only needs the gutter for the chevron. */
+  padding: 9px 2px;
+  font-weight: inherit;
+}
+
+.content main .fold > summary::before {
+  /* Nudged to the cap height of the heading rather than the x-height of
+     body text, which is where section 22 puts it. */
+  transform: translateY(0.28em);
+}
+
+.content main .fold[open] > summary::before {
+  transform: translateY(0.28em) rotate(-180deg);
+}
+
+/* An h2 fold is a bigger target than an h3 fold; keep the chevron
+   proportional to the label it opens rather than to the body text. */
+.content main .fold > summary > h2 ~ *,
+.content main .fold > summary > h2 {
+  line-height: 1.3;
+}
+
+.content main .fold > summary:hover > h2,
+.content main .fold > summary:hover > h3,
+.content main .fold > summary:hover > h4 {
+  color: var(--p-accent);
+}
+
+/* mdBook's own anchor stays clickable inside the summary — extra.js stops
+   it toggling — but it should not underline the whole heading on hover. */
+.content main .fold > summary a.header {
+  color: inherit;
+}
+
+/* The Expand all / Collapse all bar, generated into the marker div. */
+.content main .fold-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 1.2em;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--p-border);
+}
+
+.content main .fold-controls-count {
+  font-size: 1.3rem;
+  color: var(--p-fg-faint);
+}
+
+.content main .fold-toggle {
+  font-family: var(--p-font-text);
+  font-size: 1.3rem;
+  color: var(--p-accent);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--p-accent) 35%, transparent);
+  border-radius: var(--p-radius-sm);
+  padding: 3px 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.content main .fold-toggle:hover {
+  background: var(--p-accent-tint);
+  border-color: var(--p-accent);
+}
+
+.content main .fold-toggle:focus-visible {
+  outline: 2px solid var(--p-accent);
+  outline-offset: 2px;
+}
+
+/* On paper the controls are meaningless and every fold is opened by the
+   beforeprint handler, so the chevron gutter would only misalign the
+   headings against the unfolded ones above them. */
+@media print {
+  .content main .fold-controls {
+    display: none;
+  }
+
+  .content main .fold > summary {
+    padding-inline-start: 0;
   }
 }
