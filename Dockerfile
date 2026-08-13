@@ -3,7 +3,7 @@
 # doubling the cold-cache cost for the same binary (T23).
 # P18: digest-pinned (multi-arch manifest list) so a rebuild months from now
 # resolves the same base layers; dependabot bumps the tag+digest pair.
-FROM rust:1.93-slim@sha256:c0a38f5662afdb298898da1d70b909af4bda4e0acff2dc52aea6360a9b9c6956 AS chef
+FROM rust:1.97-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -46,7 +46,7 @@ RUN cargo build --profile dist --locked -p orion-server
 
 # Runtime stage. Named so `docker build --target` can address it, like the
 # stages above (T23).
-FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime
 
 # OCI identity on the image itself (T23): docker-release.yml injects the full
 # metadata-action label set at push time, but a local `docker build` — the

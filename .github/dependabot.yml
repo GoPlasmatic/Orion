@@ -26,8 +26,20 @@ updates:
         patterns:
           - "*"
 
+  # Two Dockerfiles, two entries. Docker updates are per-directory, so the
+  # root entry only ever sees the server image — the CLI's Dockerfile arrived
+  # with the monorepo restructure and was silently unwatched, which would have
+  # shown up the first time the root image took a base bump and this one did
+  # not follow. They currently share a base; nothing enforces that, so each
+  # gets its own watch rather than an assumption.
   - package-ecosystem: docker
     directory: /
+    schedule:
+      interval: weekly
+      day: monday
+
+  - package-ecosystem: docker
+    directory: /crates/orion-cli
     schedule:
       interval: weekly
       day: monday
