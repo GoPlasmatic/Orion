@@ -1,0 +1,25 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+# Writable data volume (SQLite database + backup_dir output), mounted at
+# {{ .Values.persistence.mountPath }}. resource-policy: keep means
+# `helm uninstall` leaves the claim (and the data) behind.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "orion.fullname" . }}-data
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/resource-policy": keep
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}

@@ -1,19 +1,87 @@
-/* ── D3 diagrams + ReactFlow diagrams (shared container) ── */
-.d3-diagram,
+/* ── Mindmap + ReactFlow diagrams (shared container) ── */
+.orion-mindmap,
 .orion-diagram {
   position: relative;
   width: 100%;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
   overflow: hidden;
   margin: 1em 0;
   background: var(--bg);
 }
 
-.d3-diagram svg {
+.orion-mindmap svg {
   display: block;
   width: 100%;
   height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.orion-mindmap svg.is-dragging { cursor: grabbing; }
+
+/* Only the fit/reset transition animates the whole canvas; node moves animate
+   per node so an expand slides its siblings apart instead of jumping. */
+.orion-mindmap svg.is-animating > g,
+.orion-mindmap .mm-node {
+  transition: transform 0.35s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orion-mindmap svg.is-animating > g,
+  .orion-mindmap .mm-node { transition: none; }
+}
+
+.orion-mindmap .mm-link {
+  fill: none;
+  stroke: var(--p-border-strong);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  opacity: 0.75;
+}
+
+/* Node faces reuse the --node-* custom properties the rf-<type> classes below
+   already define per theme, so the mindmap and the flow diagrams stay one palette.
+   Those are defined for .navy and .light only; the fallbacks keep the map legible
+   (monochrome) on any other mdBook theme rather than painting it invisible. */
+.orion-mindmap .mm-box {
+  fill: var(--node-fill, var(--p-accent-tint));
+  stroke: var(--node-stroke, var(--p-border-strong));
+  stroke-width: 1.4;
+}
+
+.orion-mindmap .mm-label {
+  fill: var(--node-text, var(--p-fg));
+  font-family: var(--p-font-text);
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.orion-mindmap .mm-chevron {
+  fill: var(--node-stroke, var(--p-border-strong));
+  font-family: var(--p-font-text);
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.orion-mindmap .mm-l0 .mm-label,
+.orion-mindmap .mm-l1 .mm-label { font-weight: 700; }
+.orion-mindmap .mm-l0 .mm-box { stroke-width: 2.2; }
+.orion-mindmap .mm-l1 .mm-box { stroke-width: 1.8; }
+
+/* Depth reads as recession: the face fades toward the page, the outline stays. */
+.orion-mindmap .mm-l2 .mm-box { fill-opacity: 0.55; }
+.orion-mindmap .mm-l3 .mm-box { fill-opacity: 0.28; stroke-dasharray: 4 3; stroke-opacity: 0.75; }
+.orion-mindmap .mm-l3 .mm-label { font-weight: 500; }
+
+.orion-mindmap .is-interactive { cursor: pointer; }
+.orion-mindmap .is-interactive:hover .mm-box { stroke-width: 2.4; }
+.orion-mindmap .is-interactive:focus-visible { outline: none; }
+.orion-mindmap .is-interactive:focus-visible .mm-box {
+  stroke: var(--p-accent);
+  stroke-width: 2.6;
 }
 
 .diagram-hint {
@@ -32,8 +100,8 @@
   white-space: nowrap;
 }
 
-/* ── Diagram fullscreen overlay (D3 + ReactFlow) ── */
-.d3-diagram.is-fullscreen,
+/* ── Diagram fullscreen overlay (mindmap + ReactFlow) ── */
+.orion-mindmap.is-fullscreen,
 .orion-diagram.is-fullscreen {
   position: fixed;
   inset: 0;
@@ -55,11 +123,11 @@
   gap: 6px;
   padding: 6px 10px;
   font-size: 12px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--p-font-text);
   line-height: 1;
   color: var(--fg);
   background: var(--bg);
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 6px;
   cursor: pointer;
   opacity: 0.7;
@@ -73,7 +141,7 @@
 /* ── asciinema player embeds ── */
 .asciinema-player {
   margin: 1.25em 0;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -83,11 +151,6 @@
   margin: -0.75em 0 1.5em;
   font-size: 0.85em;
   opacity: 0.6;
-}
-
-/* ── General tweaks ── */
-:root {
-  --content-max-width: 920px;
 }
 
 /* ============================================================
@@ -128,7 +191,7 @@ pre:has(> code.language-orion-diagram) {
   justify-content: flex-start;
   padding: 8px 13px;
   color: var(--node-text);
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   transition: box-shadow 0.15s ease;
 }
 
@@ -256,7 +319,7 @@ pre:has(> code.language-orion-diagram) {
 .light .rf-group { border-color: #B0CDD8; background: rgba(13, 127, 163, 0.05); }
 
 .rf-group-label {
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -274,7 +337,7 @@ pre:has(> code.language-orion-diagram) {
 }
 
 .orion-diagram .react-flow__edge-text {
-  font-family: "DM Sans", system-ui, sans-serif;
+  font-family: var(--p-font-text);
   font-size: 10px;
   fill: var(--fg);
 }
@@ -335,6 +398,6 @@ html.rust .themed-media .media-light { display: block; }
 .themed-media video {
   width: 100%;
   margin: 1.25em 0;
-  border: 1px solid var(--table-border-color);
+  border: 1px solid var(--p-border);
   border-radius: 8px;
 }

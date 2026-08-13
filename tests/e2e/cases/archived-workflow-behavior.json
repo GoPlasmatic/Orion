@@ -1,0 +1,76 @@
+{
+  "name": "Archived Workflow Behavior",
+  "description": "Verify that archived workflows skip processing",
+  "workflows": [
+    {
+      "name": "Content Moderator",
+      "priority": 10,
+      "condition": true,
+      "tasks": [
+        {
+          "id": "parse",
+          "name": "Parse Payload",
+          "function": {
+            "name": "parse_json",
+            "input": {
+              "source": "payload",
+              "target": "post"
+            }
+          }
+        },
+        {
+          "id": "moderate",
+          "name": "Add Moderation Flag",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "data.post.moderated",
+                  "logic": true
+                },
+                {
+                  "path": "data.post.status",
+                  "logic": "reviewed"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "name": "Active rule transforms data",
+      "channel": "content",
+      "input": {
+        "text": "Hello world",
+        "author": "user1"
+      },
+      "expect": {
+        ".status": "ok",
+        ".data.post.moderated": "true",
+        ".data.post.status": "reviewed",
+        ".data.post.text": "Hello world"
+      }
+    },
+    {
+      "name": "Archived workflow quarantines its channel",
+      "before": [
+        {
+          "action": "archive_rule",
+          "rule_index": 0
+        },
+        {
+          "action": "reload"
+        }
+      ],
+      "channel": "content",
+      "input": {
+        "text": "Should not be moderated"
+      },
+      "expect_error": true
+    }
+  ]
+}

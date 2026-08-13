@@ -1,0 +1,15 @@
+{
+  "name": "composition enriches a VIP order from the lookup channel",
+  "workflow": "../packages/channel-composition/workflow.json",
+  "input": { "order_id": "ORD-5511", "customer_id": 42, "total": 800 },
+  "stubs": {
+    "channel_call": {
+      "customer-lookup": { "lookup": { "customer_id": 42, "tier": "vip", "discount_pct": 15 } }
+    }
+  },
+  "expect": {
+    "data.order.tier": "vip",
+    "data.order.discount_pct": 15,
+    "data.customer.lookup.tier": "vip"
+  }
+}

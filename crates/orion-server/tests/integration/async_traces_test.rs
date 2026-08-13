@@ -1,0 +1,749 @@
+use crate::common;
+
+use crate::common::{body_json, json_request, poll_trace_until_done};
+use axum::http::StatusCode;
+use serde_json::json;
+use tower::ServiceExt;
+
+// ============================================================
+// Basic async submission
+// ============================================================
+
+#[tokio::test]
+async fn test_async_submit_returns_202_with_trace_id() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel for the async endpoint
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        common::simple_log_workflow("Events Workflow"),
+    )
+    .await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/events/async",
+            Some(json!({"data": {"event": "click", "user_id": "u1"}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    assert!(body["trace_id"].is_string());
+    assert!(!body["trace_id"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_async_trace_completes_successfully() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        common::simple_log_workflow("Orders Workflow"),
+    )
+    .await;
+
+    // Submit async trace
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders/async",
+            Some(json!({"data": {"order_id": 42, "amount": 99.99}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    // Poll until completion
+    let trace = poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
+    assert_eq!(trace["status"], "completed");
+    assert!(trace.get("message").is_some());
+}
+
+/// An async submission to a channel that does not exist is refused at
+/// ingress — it must not consume a queue slot or mint a trace. (It used to
+/// be accepted as a 202 no-op via the single-segment name fallback.)
+#[tokio::test]
+async fn test_async_trace_with_no_matching_channel() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/no-workflows-channel/async",
+            Some(json!({"data": {"key": "value"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "NOT_FOUND", "{body}");
+}
+
+#[tokio::test]
+async fn test_async_trace_empty_channel_rejected() {
+    let app = common::test_app().await;
+
+    // Use percent-encoded space as channel, which trims to empty
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/%20/async",
+            Some(json!({"data": {"key": "value"}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ============================================================
+// Multiple concurrent async traces
+// ============================================================
+
+#[tokio::test]
+async fn test_multiple_concurrent_async_traces() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        common::simple_log_workflow("Events Workflow"),
+    )
+    .await;
+
+    // Submit 10 traces concurrently
+    let mut trace_ids = Vec::new();
+    for i in 0..10 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/events/async",
+                Some(json!({"data": {"index": i}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let body = body_json(resp).await;
+        trace_ids.push((
+            body["trace_id"].as_str().unwrap().to_string(),
+            body["trace_token"].as_str().unwrap().to_string(),
+        ));
+    }
+
+    // Every submission must mint a distinct trace ID
+    let mut ids: Vec<&str> = trace_ids.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), trace_ids.len(), "trace IDs must be unique");
+
+    // Each trace completes independently
+    for (trace_id, token) in &trace_ids {
+        let trace = poll_trace_until_done(&app, trace_id, 40, Some(token)).await;
+        assert_eq!(
+            trace["status"], "completed",
+            "Trace {trace_id} should complete independently",
+        );
+    }
+}
+
+// ============================================================
+// Trace listing, pagination, and filtering
+// ============================================================
+
+#[tokio::test]
+async fn test_trace_list_pagination() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        common::simple_log_workflow("Orders Workflow"),
+    )
+    .await;
+
+    // Submit 5 async traces
+    for i in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/orders/async",
+                Some(json!({"data": {"item": i}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    // Wait until all five submissions are persisted, then page.
+    common::wait_for_body(
+        &app,
+        "/api/v1/admin/traces?limit=1&include_total=true",
+        |b| b["total"].as_i64().unwrap_or(0) >= 5,
+    )
+    .await;
+
+    // Page 1: limit=2, offset=0
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?limit=2&offset=0&include_total=true",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
+    assert!(body["total"].as_i64().unwrap() >= 5);
+    assert_eq!(body["limit"], 2);
+    assert_eq!(body["offset"], 0);
+
+    // Page 2: limit=2, offset=2
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?limit=2&offset=2",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
+    assert_eq!(body["offset"], 2);
+}
+
+/// D8: keyset paging over the same five traces. Following `next_cursor`
+/// visits every row exactly once and never sends an `offset` the database has
+/// to count past.
+#[tokio::test]
+async fn test_trace_list_keyset_pagination() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        common::simple_log_workflow("Orders Workflow"),
+    )
+    .await;
+
+    for i in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/orders/async",
+                Some(json!({"data": {"item": i}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+    common::wait_for_body(
+        &app,
+        "/api/v1/admin/traces?limit=1&include_total=true",
+        |b| b["total"].as_i64().unwrap_or(0) >= 5,
+    )
+    .await;
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut uri = "/api/v1/admin/traces?limit=2".to_string();
+    for _ in 0..10 {
+        let resp = app
+            .clone()
+            .oneshot(json_request("GET", &uri, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        let body = body_json(resp).await;
+        for row in body["data"].as_array().unwrap() {
+            seen.push(row["id"].as_str().unwrap().to_string());
+        }
+        match body["next_cursor"].as_str() {
+            Some(cursor) => uri = format!("/api/v1/admin/traces?limit=2&cursor={cursor}"),
+            None => break,
+        }
+    }
+
+    assert_eq!(
+        seen.len(),
+        5,
+        "keyset walk must visit every trace: {seen:?}"
+    );
+    let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 5, "and none of them twice: {seen:?}");
+
+    // A cursor is meaningless for an ordering it cannot resume — say so
+    // rather than silently returning the first page again.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?sort_by=updated_at&cursor=1.abc",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_trace_list_filter_by_status() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        common::simple_log_workflow("Events Workflow"),
+    )
+    .await;
+
+    // Submit a trace and wait for it to complete
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/events/async",
+            Some(json!({"data": {"event": "test"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    // Wait for completion
+    poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
+
+    // Filter by completed status
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?status=completed",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let traces = body["data"].as_array().unwrap();
+    assert!(!traces.is_empty());
+    for trace in traces {
+        assert_eq!(trace["status"], "completed");
+    }
+}
+
+#[tokio::test]
+async fn test_trace_list_filter_by_channel() {
+    let app = common::test_app().await;
+
+    // Create and activate two channels
+    common::create_and_activate_channel(
+        &app,
+        "channel-a",
+        common::simple_log_workflow("Channel A Workflow"),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "channel-b",
+        common::simple_log_workflow("Channel B Workflow"),
+    )
+    .await;
+
+    // Submit traces on two different channels
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/channel-a/async",
+            Some(json!({"data": {"src": "a"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/channel-b/async",
+            Some(json!({"data": {"src": "b"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+
+    // Filter by channel-a: exactly the one submission, once persisted.
+    let body = common::wait_for_body(&app, "/api/v1/admin/traces?channel=channel-a", |b| {
+        b["data"].as_array().is_some_and(|a| a.len() == 1)
+    })
+    .await;
+    let traces = body["data"].as_array().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["channel"], "channel-a");
+}
+
+// ============================================================
+// Get Trace - completed with result
+// ============================================================
+
+#[tokio::test]
+async fn test_get_completed_trace_with_result() {
+    let app = common::test_app().await;
+
+    // A map task writes into the message context, so the completed trace
+    // carries observable result data — not just a status flip.
+    common::create_and_activate_channel(
+        &app,
+        "test-ch",
+        json!({
+            "name": "Result Workflow",
+            "condition": true,
+            "tasks": [{
+                "id": "map1",
+                "name": "Set result",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [{
+                            "path": "data.computed",
+                            "logic": { "cat": ["hello-", { "var": "data.input" }] }
+                        }]
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-ch/async",
+            Some(json!({"data": {"input": "world"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    let body = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
+    assert_eq!(body["status"], "completed");
+    assert!(body.get("message").is_some());
+    assert!(body.get("started_at").is_some());
+    assert!(body.get("completed_at").is_some());
+
+    // The trace message context should contain the mapped data
+    let computed = &body["message"]["context"]["data"]["computed"];
+    assert!(
+        computed.is_string(),
+        "completed async trace should contain mapped result data"
+    );
+}
+
+// ============================================================
+// Credential redaction (S10/S14)
+// ============================================================
+
+/// S10: credential-bearing request headers must be masked before the header
+/// map enters workflow metadata, because the async path persists the whole
+/// engine message into `traces.result_json`. Asserts the at-rest state via
+/// the repository, independent of what the HTTP trace projection exposes.
+#[tokio::test]
+async fn test_credential_headers_masked_at_rest_in_async_trace() {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    // Sync traces: the assertion reads `traces.result_json` straight from the
+    // repository once processing completes, with no flush to wait on.
+    let mut cfg = orion::config::AppConfig::default();
+    cfg.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    let state = common::test_state_with_config(cfg).await;
+    let app = orion::server::build_router(state.clone());
+
+    common::create_and_activate_channel(
+        &app,
+        "secure-events",
+        common::simple_log_workflow("Secure Events"),
+    )
+    .await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/data/secure-events/async")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer SUPER-SECRET-TOKEN-A")
+        .header("cookie", "session=SECRET-COOKIE-A")
+        .header("proxy-authorization", "Basic PROXY-SECRET-B")
+        .header("x-api-key", "APIKEY-SECRET-C")
+        .header("x-tenant", "acme")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"data": {"event": "click"}})).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let submit = body_json(resp).await;
+    let trace_id = submit["trace_id"].as_str().unwrap().to_string();
+    let token = submit["trace_token"].as_str().unwrap().to_string();
+
+    let trace = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
+    assert_eq!(trace["status"], "completed");
+
+    let row = state.repos.traces.get_by_id(&trace_id).await.unwrap();
+    let result_json = row
+        .result_json
+        .expect("completed async trace stores result_json");
+    for secret in [
+        "SUPER-SECRET-TOKEN-A",
+        "SECRET-COOKIE-A",
+        "PROXY-SECRET-B",
+        "APIKEY-SECRET-C",
+    ] {
+        assert!(
+            !result_json.contains(secret),
+            "persisted trace leaks credential {secret}: {result_json}"
+        );
+    }
+
+    let msg: serde_json::Value = serde_json::from_str(&result_json).unwrap();
+    let headers = &msg["context"]["metadata"]["headers"];
+    assert_eq!(headers["authorization"], "******");
+    assert_eq!(headers["cookie"], "******");
+    assert_eq!(headers["proxy-authorization"], "******");
+    assert_eq!(headers["x-api-key"], "******");
+    // Non-credential headers stay readable for validation_logic and debugging.
+    assert_eq!(headers["x-tenant"], "acme");
+}
+
+/// S14: on a default config (admin auth off), an anonymous caller polling
+/// `GET /traces/{id}` must not be able to read another caller's request
+/// context. The persisted message's `context.metadata` (which carries the
+/// header map) is stripped from the read projection, and the list endpoint
+/// serves a payload-free projection.
+#[tokio::test]
+async fn test_trace_read_does_not_expose_request_context() {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "s14-channel",
+        common::simple_log_workflow("S14 Workflow"),
+    )
+    .await;
+
+    // Caller A submits with credentials attached.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/data/s14-channel/async")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer S14-SECRET-TOKEN")
+        .header("cookie", "session=S14-SECRET-COOKIE")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"data": {"event": "purchase"}})).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let submit = body_json(resp).await;
+    let trace_id = submit["trace_id"].as_str().unwrap().to_string();
+    let token = submit["trace_token"].as_str().unwrap().to_string();
+
+    // The submitter polls with its capability token (default config: no
+    // admin auth) — R12 requires the token even here.
+    let trace = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
+    assert_eq!(trace["status"], "completed");
+
+    // The message is served, but without the submitter's request context.
+    assert!(trace.get("message").is_some());
+    assert!(
+        trace["message"]["context"].get("metadata").is_none(),
+        "trace read must strip context.metadata (S14), got {trace}"
+    );
+    let serialized = trace.to_string();
+    assert!(!serialized.contains("S14-SECRET-TOKEN"));
+    assert!(!serialized.contains("S14-SECRET-COOKIE"));
+
+    // The list endpoint serves no payload fields at all.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/traces", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    let row = list["data"]
+        .as_array()
+        .and_then(|a| a.iter().find(|r| r["id"] == trace_id.as_str()))
+        .expect("submitted trace must appear in the list");
+    for forbidden in ["input_json", "result_json", "task_trace_json"] {
+        assert!(
+            row.get(forbidden).is_none() || row[forbidden].is_null(),
+            "list row must not carry {forbidden} (S14), row={row}"
+        );
+    }
+}
+
+// ============================================================
+// Brute-force protection on the trace token (FEAT-01)
+// ============================================================
+
+/// Guessing a `trace_token` is rate-limited by the same lockout the admin
+/// middleware applies.
+///
+/// `GET /admin/traces/{id}` carries its own auth — the admin middleware does
+/// not guard it, because the per-submission token is a second, non-admin way
+/// in. That also meant it inherited none of the middleware's brute-force
+/// protection: wrong tokens were not counted, no backoff ever engaged, and the
+/// token was the one credential on the surface that could be guessed at full
+/// speed. After `FAILURES_BEFORE_LOCKOUT` misses the route refuses even a
+/// *correct* token until the backoff expires, which is what makes the
+/// difference observable.
+#[tokio::test]
+async fn guessing_a_trace_token_trips_the_admin_lockout() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["a-sufficiently-long-test-secret-key-000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    // Admin auth is on, so the shared helper (which sends no key) cannot do
+    // the setup — build the workflow and channel with the key attached.
+    const KEY: &str = "a-sufficiently-long-test-secret-key-000";
+    let authed = |method: &str, uri: String, body: Option<serde_json::Value>| {
+        let mut req = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {KEY}"));
+        let body = match body {
+            Some(v) => axum::body::Body::from(v.to_string()),
+            None => axum::body::Body::empty(),
+        };
+        req = req.header("accept", "application/json");
+        req.body(body).unwrap()
+    };
+
+    for (method, uri, body) in [
+        (
+            "POST",
+            "/api/v1/admin/workflows".to_string(),
+            Some(json!({
+                "workflow_id": "t-wf", "name": "T", "condition": true,
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+            })),
+        ),
+        (
+            "PATCH",
+            "/api/v1/admin/workflows/t-wf/status".to_string(),
+            Some(json!({"status": "active"})),
+        ),
+        (
+            "POST",
+            "/api/v1/admin/channels".to_string(),
+            Some(json!({
+                "channel_id": "test-ch", "name": "test-ch", "channel_type": "async",
+                "protocol": "rest", "route_pattern": "/test-ch",
+                "methods": ["POST"], "workflow_id": "t-wf"
+            })),
+        ),
+        (
+            "PATCH",
+            "/api/v1/admin/channels/test-ch/status".to_string(),
+            Some(json!({"status": "active"})),
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(authed(method, uri.clone(), body))
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "setup call {method} {uri} failed: {}",
+            resp.status()
+        );
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-ch/async",
+            Some(json!({"data": {"input": "world"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    // Five wrong guesses: each is a 401, and each one counts.
+    for attempt in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                    .header("x-trace-token", format!("wrong-guess-{attempt}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a wrong token must be refused (attempt {attempt})"
+        );
+    }
+
+    // The sixth request presents the *right* token and is still refused: the
+    // client is in backoff. Before FEAT-01 this returned 200, because nothing
+    // had been counted.
+    let resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/admin/traces/{trace_id}"))
+                .header("x-trace-token", &token)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "after repeated wrong tokens the client must be in failed-auth backoff"
+    );
+}

@@ -1,0 +1,39 @@
+# Cloudflare Workers static-assets response headers. Copied into docs/book/
+# after `mdbook build` (see docs/build.sh) — it lives outside docs/src/ so
+# mdBook does not treat it as book content.
+#
+# No Content-Security-Policy here. mdBook emits inline <script> for its theme
+# detection and sidebar bootstrap, so any policy strict enough to be worth
+# setting would blank the page. The three headers below are the ones that cost
+# nothing and that GitHub Pages never set.
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: SAMEORIGIN
+
+# mdBook 0.5 content-hashes everything it emits into css/, js/ and fonts/ —
+# including the additional-css/additional-js this book adds, which ship as
+# `css/plasmatic-<hash>.css`, `js/extra-<hash>.js` and so on, with index.html
+# rewritten to match. A changed file is therefore a new URL, which is exactly
+# the condition `immutable` requires. **This rests on mdBook's hashing**: if a
+# future version emits stable filenames, these three rules must go, or readers
+# get pinned to a year-old design system.
+#
+# webfonts/ is ours, not mdBook's, and is copied verbatim from docs/src — but
+# a font file never changes under a name (a new face arrives as a new file),
+# so it earns the same treatment.
+#
+# Deliberately not listed: images/, videos/, casts/ and diagram-assets/ are
+# unhashed and *can* be replaced in place, so they keep the revalidating
+# default.
+/css/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/js/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/webfonts/*
+  Cache-Control: public, max-age=31536000, immutable

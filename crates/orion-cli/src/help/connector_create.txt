@@ -1,0 +1,33 @@
+Connectors configure external service connections used by workflow tasks (http_call, publish_kafka).
+
+HTTP Connector:
+  {
+    "name": "my_api",
+    "connector_type": "http",
+    "config": {
+      "type": "http",
+      "url": "https://api.example.com",
+      "headers": {"Content-Type": "application/json"},
+      "auth": {"type": "bearer", "token": "your-token"},
+      "retry": {"max_retries": 3, "retry_delay_ms": 1000}
+    }
+  }
+
+Kafka Connector:
+  {
+    "name": "kafka_prod",
+    "connector_type": "kafka",
+    "config": {
+      "type": "kafka",
+      "brokers": ["localhost:9092"],
+      "topic": "events",
+      "group_id": "orion-consumer"
+    }
+  }
+
+Auth types: bearer, basic, apikey (or omit for none)
+
+Examples:
+  orion-cli connectors create -f connector.json
+  orion-cli connectors create -d '{"name":"my-api","connector_type":"http","config":{...}}'
+  cat connector.json | orion-cli connectors create --stdin

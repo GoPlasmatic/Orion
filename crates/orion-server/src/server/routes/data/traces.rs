@@ -1,0 +1,259 @@
+//! Trace listing & polling: the payload-free list projection (S14) and the
+//! token- or admin-gated single-trace read (R12).
+
+use axum::Json;
+use axum::extract::{Path, State};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::errors::OrionError;
+use crate::server::extract::{OrionQuery, PeerAddr};
+// Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
+use crate::server::routes::openapi::ErrorResponse;
+use crate::server::routes::openapi::{DataEnvelope, TraceDetail, TracePageEnvelope};
+use crate::server::routes::response_helpers::data_response;
+use crate::server::state::AppState;
+use crate::storage::models::TraceListItemResponse;
+use crate::storage::repositories::traces::TraceFilter;
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/traces",
+    tag = "Traces",
+    params(TraceFilter),
+    responses(
+        (status = 200, description = "Page of traces", body = TracePageEnvelope),
+        (status = 400, description = "Malformed cursor, or cursor combined with offset or a non-default sort", body = ErrorResponse),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_traces(
+    State(state): State<AppState>,
+    OrionQuery(filter): OrionQuery<TraceFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let result = state.repos.traces.list_paginated(&filter).await?;
+    // Payload-free projection (S14): `input_json` holds the caller's request
+    // body and `result_json`/`task_trace_json` the full engine message, so a
+    // list row is every caller's traffic in one response — including rows
+    // persisted before S10 masked credential headers. Payloads are served
+    // one trace at a time by `GET /traces/{id}`, mirroring the DLQ list.
+    let rows: Vec<TraceListItemResponse> = result
+        .data
+        .iter()
+        .map(TraceListItemResponse::from)
+        .collect();
+    // `total` and `next_cursor` are both conditional (D8), so this page is
+    // assembled here rather than through `paginated_response`.
+    let mut body = json!({
+        "data": rows,
+        "limit": result.limit,
+        "offset": result.offset,
+    });
+    if let Some(total) = result.total {
+        body["total"] = json!(total);
+    }
+    if let Some(cursor) = result.next_cursor {
+        body["next_cursor"] = json!(cursor);
+    }
+    Ok(Json(body))
+}
+
+/// Query parameters for `GET /traces/{id}`.
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct TraceAccessQuery {
+    /// The capability token returned with the async 202. Alternative to the
+    /// `x-trace-token` header for clients that cannot set headers.
+    token: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/traces/{id}",
+    tag = "Traces",
+    description = "\
+Fetch one trace. Access follows a two-lane rule (R12): present either a \
+valid admin credential, or — for async submissions — the `trace_token` \
+returned with the 202, via the `x-trace-token` header or `?token=` query \
+parameter. Traces without a token (sync traces, DLQ retries, rows from \
+before 1.0.0) are admin-plane only when admin auth is enabled.",
+    params(
+        ("id" = String, Path, description = "Trace ID"),
+        TraceAccessQuery,
+    ),
+    responses(
+        (status = 200, description = "Trace status and result", body = DataEnvelope<TraceDetail>),
+        (status = 401, description = "Missing or wrong trace token / admin credential", body = ErrorResponse),
+        (status = 404, description = "Trace not found", body = ErrorResponse),
+    )
+)]
+#[tracing::instrument(skip(state, headers, query))]
+pub(crate) async fn get_trace(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    OrionQuery(query): OrionQuery<TraceAccessQuery>,
+    PeerAddr(peer): PeerAddr,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, OrionError> {
+    // This route carries its own auth (the admin middleware does not guard it),
+    // so it has to carry the middleware's *brute-force* protection too. Without
+    // this, the trace token was the one credential on the whole surface that
+    // could be guessed at full speed: unlimited attempts, none counted, no
+    // lockout. Identify the caller exactly as the middleware and the rate
+    // limiter do, so a spoofed `X-Forwarded-For` cannot mint a fresh budget.
+    let client = crate::server::rate_limit::client_ip_from_parts(
+        peer.as_ref(),
+        &headers,
+        state.trusted_proxies(),
+    );
+    if state.config.admin_auth.enabled
+        && let Some(remaining) = state.admin_auth_failures.locked_for(&client)
+    {
+        crate::metrics::record_admin_auth_failure("locked_out");
+        tracing::warn!(
+            client = %client,
+            remaining_ms = remaining.as_millis() as u64,
+            "Trace read refused: client is in failed-auth backoff"
+        );
+        return Err(OrionError::Unauthorized(
+            "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+        ));
+    }
+
+    let trace = state.repos.traces.get_by_id(&id).await?;
+
+    // R12 access rule. Lane 1: a valid admin credential (only meaningful when
+    // admin auth is enabled — the middleware no longer guards this route, so
+    // the check happens here). Lane 2: the per-submission capability token.
+    // Tokenless traces stay on the admin trust model: open when auth is
+    // disabled (the whole admin plane is), admin-only when enabled.
+    //
+    // A missing trace 404s before this check, so an unauthorized caller can
+    // distinguish "exists" from "does not exist". Deliberate: trace ids are
+    // v4 UUIDs, so there is nothing to enumerate (the id-listing endpoint is
+    // admin-guarded, and its rows carry no payloads since S14), and the
+    // distinction is what makes a wrong-id-vs-wrong-token mistake debuggable.
+    let auth_cfg = &state.config.admin_auth;
+    let is_admin = auth_cfg.enabled
+        && crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+    if !is_admin {
+        let presented = headers
+            .get("x-trace-token")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| query.token.clone());
+        let allowed = match trace.access_token_hash.as_deref() {
+            Some(stored) => presented
+                .as_deref()
+                .is_some_and(|t| crate::server::admin_auth::trace_token_matches(t, stored)),
+            None => !auth_cfg.enabled,
+        };
+        if !allowed {
+            if auth_cfg.enabled {
+                let lockout = state.admin_auth_failures.record_failure(&client);
+                crate::metrics::record_admin_auth_failure("invalid_key");
+                tracing::warn!(
+                    client = %client,
+                    lockout_ms = lockout.map(|d| d.as_millis() as u64),
+                    "Trace read refused: neither a valid trace token nor an admin credential"
+                );
+            }
+            return Err(OrionError::Unauthorized(
+                "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+            ));
+        }
+        // A correct token clears the budget, the way a valid admin key does —
+        // otherwise a legitimate poller inherits a lockout from whoever else
+        // shares its address.
+        if auth_cfg.enabled {
+            state.admin_auth_failures.record_success(&client);
+        }
+    } else {
+        state.admin_auth_failures.record_success(&client);
+    }
+
+    let mut response = json!({
+        "id": trace.id,
+        "status": trace.status,
+        "mode": trace.mode,
+        "channel": trace.channel,
+        "channel_id": trace.channel_id,
+        "created_at": trace.created_at,
+    });
+
+    use crate::storage::models;
+    if trace.status == models::TRACE_STATUS_COMPLETED {
+        if let Some(ref result_str) = trace.result_json
+            && let Ok(mut result_val) = serde_json::from_str::<Value>(result_str)
+        {
+            // S14: the stored message's `context.metadata` carries the
+            // request headers (masked since S10 — but rows persisted before
+            // that upgrade hold them in plaintext). Strip it from the read
+            // projection; pollers need `data`/`payload`, not the submitter's
+            // request context.
+            if let Some(ctx) = result_val.get_mut("context").and_then(Value::as_object_mut) {
+                ctx.remove("metadata");
+            }
+            response["message"] = result_val;
+        }
+    } else if trace.status == models::TRACE_STATUS_FAILED
+        && let Some(ref err) = trace.error_message
+    {
+        response["error"] = json!(err);
+    }
+
+    if let Some(ref started) = trace.started_at {
+        response["started_at"] = json!(started);
+    }
+    if let Some(ref completed) = trace.completed_at {
+        response["completed_at"] = json!(completed);
+    }
+    if let Some(duration) = trace.duration_ms {
+        response["duration_ms"] = json!(duration);
+    }
+    if let Some(ref tt) = trace.task_trace_json
+        && let Ok(mut v) = serde_json::from_str::<Value>(tt)
+    {
+        strip_step_metadata(&mut v);
+        response["task_trace_json"] = v;
+    }
+
+    Ok(data_response(response))
+}
+
+/// Apply the S14 strip to every step snapshot inside a stored task trace.
+///
+/// The strip above covers `result_json`, but each `ExecutionStep` holds its own
+/// full `Message` clone carrying the same `context.metadata` — so the identical
+/// request headers were returned verbatim one field further down. Only four
+/// header names are masked at ingress, which left everything else readable
+/// through this path.
+///
+/// New rows do not need this: `runner::trace_options` sets `redact_paths`, so
+/// the header map is never cloned into a step. It stays for rows already on
+/// disk, which is why it is a read-side walk rather than a migration.
+fn strip_step_metadata(trace: &mut Value) {
+    fn drop_metadata(context: Option<&mut Value>) {
+        if let Some(obj) = context.and_then(Value::as_object_mut) {
+            obj.remove("metadata");
+        }
+    }
+
+    let Some(steps) = trace.get_mut("steps").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for step in steps {
+        drop_metadata(step.get_mut("message").and_then(|m| m.get_mut("context")));
+        // A `map` task's per-mapping snapshots are whole-context clones of
+        // their own, so they carry the header map independently of the step's
+        // `message` — one more copy per mapping, not per task.
+        if let Some(contexts) = step
+            .get_mut("mapping_contexts")
+            .and_then(Value::as_array_mut)
+        {
+            for context in contexts {
+                drop_metadata(Some(context));
+            }
+        }
+    }
+}

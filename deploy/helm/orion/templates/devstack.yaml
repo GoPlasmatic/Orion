@@ -1,0 +1,137 @@
+{{- if .Values.devStack.enabled }}
+# ============================================================
+# DEV/DEMO ONLY: throwaway single-replica Postgres + Redis.
+# No persistence tuning, no HA, no backups. Never use in production —
+# point storage.url / cluster.redisUrl at managed services instead.
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orion.fullname" . }}-postgres
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dev-postgres
+  template:
+    metadata:
+      labels:
+        {{- include "orion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dev-postgres
+    spec:
+      # Neither dev pod reads service links, and leaving them on would put
+      # ORION_* names into an image that is not Orion's.
+      enableServiceLinks: false
+      # Restricted-profile contexts so a devStack install passes PodSecurity
+      # `restricted` namespaces. UID/GID 70 is the `postgres` user pinned in
+      # the postgres alpine images (the default devStack.postgres.image);
+      # started non-root, the image entrypoint skips its root step-down.
+      # Adjust when overriding the image (Debian postgres uses 999).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.devStack.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.devStack.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.devStack.postgres.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.devStack.postgres.database | quote }}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.devStack.postgres.user | quote }}]
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orion.fullname" . }}-postgres
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-postgres
+spec:
+  ports:
+    - port: 5432
+  selector:
+    {{- include "orion.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orion.fullname" . }}-redis
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dev-redis
+  template:
+    metadata:
+      labels:
+        {{- include "orion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dev-redis
+    spec:
+      enableServiceLinks: false
+      # UID 999 / GID 1000 is the `redis` user pinned in the redis alpine
+      # images (the default devStack.redis.image; alpine reserves GID 999,
+      # so upstream allocates the group at 1000). Started non-root, the
+      # image entrypoint skips its root step-down. Adjust when overriding
+      # the image (Debian redis uses 999:999).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: {{ .Values.devStack.redis.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "orion.fullname" . }}-redis
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-redis
+spec:
+  ports:
+    - port: 6379
+  selector:
+    {{- include "orion.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dev-redis
+{{- end }}

@@ -1,0 +1,10 @@
+{
+  "name": "low severity is logged and nothing else fires",
+  "workflow": "../packages/notification-routing/workflow.json",
+  "input": { "message": "Routine sync finished", "severity": "low" },
+  "expect": {
+    "data.notification.logged": true,
+    "data.notification.email_sent": null,
+    "data.notification.sms_sent": null
+  }
+}

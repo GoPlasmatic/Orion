@@ -14,16 +14,38 @@ installers = ["shell", "powershell", "homebrew"]
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
+# x86_64-apple-darwin (Intel Macs) was added by P13 and dropped again
+# 2026-08-01, before ever shipping in a release: dist's default runner for it
+# is macos-13, whose GitHub runners queue near-indefinitely, and the Intel
+# Mac audience is sunsetting (Apple ended Intel support with macOS 26).
+# Revisit only on demand, via dist's github-custom-runners cross-compiling
+# from macos-latest rather than the macos-13 pool. Musl (static Linux) is
+# deliberately NOT here yet: rdkafka's build is the risk, and
+# cross-os-build.yml compiles x86_64-unknown-linux-musl on every relevant
+# PR — promote it into this list once that job has a green history.
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Homebrew tap repository
 tap = "GoPlasmatic/homebrew-tap"
+# Attest dist artifacts with GitHub build provenance (proposal P12). The
+# committed release.yml carries the matching hand-edits (allow-dirty = ["ci"]
+# means dist does not regenerate it); keep this flag so a future regen
+# preserves them.
+github-attestations = true
 
-# System dependencies for rdkafka-sys (librdkafka built from source via cmake)
+# System dependencies for rdkafka-sys. P14: librdkafka builds via its native
+# configure on unix (cmake stays Windows-only, see Cargo.toml), and the
+# vendored OpenSSL build needs perl — GitHub's runner images preinstall all
+# of these, so this list matters exactly when a dist build runs in a
+# container, where nothing is preinstalled. Keep it in step with the
+# Dockerfile's builder-stage apt line and .github/actions/apt-build-deps.
 [dist.dependencies.apt]
 cmake = "*"
 "g++" = "*"
 pkg-config = "*"
 libcurl4-openssl-dev = "*"
+perl = "*"
 
+# macOS runners preinstall the whole toolchain; kept for a hypothetical
+# cmake-less runner image rather than because the configure path needs it.
 [dist.dependencies.homebrew]
 cmake = "*"

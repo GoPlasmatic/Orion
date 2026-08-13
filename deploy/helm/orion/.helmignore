@@ -1,0 +1,23 @@
+# Patterns to ignore when building Helm packages.
+.DS_Store
+.git/
+.gitignore
+.bzr/
+.hg/
+.hgignore
+.svn/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# IDE / editor
+.project
+.idea/
+*.tmproj
+.vscode/
+# CI values files and rendered output live next to the chart during
+# development; they are inputs to `helm template`, never chart contents.
+ci/
+*.tgz
+rendered/

@@ -8,9 +8,9 @@ artifacts from that single cast:
 
 | Flow | Script | GIF (READMEs) | Cast (mdBook player) |
 |------|--------|---------------|----------------------|
-| Quickstart (curl/HTTP) | `demo-quickstart.sh` | `../../media/quickstart.gif` | `../src/casts/quickstart.cast` |
-| CLI lifecycle | `demo-cli-lifecycle.sh` | `../../../Orion-cli/media/cli-lifecycle.gif` | `../src/casts/cli-lifecycle.cast` |
-| MCP session | `demo-mcp.sh` | `../../../Orion-cli/media/mcp.gif` | `../src/casts/mcp.cast` |
+| Quickstart (curl/HTTP) | `demo-quickstart.sh` | `../media/quickstart.gif` | `../src/casts/quickstart.cast` |
+| CLI lifecycle | `demo-cli-lifecycle.sh` | `../media/cli-lifecycle.gif` | `../src/casts/cli-lifecycle.cast` |
+| MCP session | `demo-mcp.sh` | `../media/mcp.gif` | `../src/casts/mcp.cast` |
 
 Recording the cast once and rendering the GIF from it (via `agg`) means the GIF and
 the interactive player can never drift apart.
@@ -29,8 +29,10 @@ DRY=1 ./record.sh                  # run the demo scripts live (no recording) to
 ORION_PORT=8090 ./record.sh        # use a different port (the quickstart GIF shows :8080)
 ```
 
-`record.sh` uses the debug binaries at `../../target/debug/orion-server` and
-`../../../Orion-cli/target/debug/orion-cli`, building them if they are missing.
+`record.sh` uses the workspace debug binaries at `../../target/debug/`
+(`orion-server` and `orion-cli`, both built from this tree), building them
+if they are missing. All three GIFs land in `docs/media/` — the single
+media folder every README references.
 
 ## UI recordings (console GIF + screenshots)
 
@@ -44,9 +46,9 @@ Console request → System Map — and captures, per theme (light + dark):
 
 | Artifact | Files |
 |----------|-------|
-| Hero GIF (creation loop, ~50 s) | `../../media/ui-quickstart-{light,dark}.gif` |
-| Demo video (same recording, webm, mdBook) | `../src/videos/ui-quickstart-{light,dark}.webm` |
-| Screenshots (README + mdBook) | `../../media/` and `../src/images/` — `ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
+| Hero GIF (creation loop, ~50 s) | `ui/out/ui-quickstart-{light,dark}.gif` — local only (gitignored); upload as a release asset when an animated embed is wanted |
+| Demo video (same recording, webm, mdBook + README demo link) | `../src/videos/ui-quickstart-{light,dark}.webm` |
+| Screenshots (README + mdBook) | `../src/images/ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
 
 The GIFs/screenshots in Orion-ui's README are copies of the same files — sync them
 when regenerating.

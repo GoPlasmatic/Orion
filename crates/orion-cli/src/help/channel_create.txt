@@ -1,0 +1,23 @@
+Channels are created in draft status. Activate with `orion-cli channels activate <id>`,
+then run `orion-cli engine reload` to make changes live.
+
+JSON Structure (required fields: name, channel_type, protocol, workflow_id):
+  {
+    "name": "orders-api",
+    "channel_type": "sync",
+    "protocol": "rest",
+    "methods": ["GET", "POST"],
+    "route_pattern": "/orders/{order_id}",
+    "workflow_id": "process-orders"
+  }
+
+Channel Types: sync (blocking response), async (returns trace ID)
+Protocols: http, rest, kafka
+
+Optional fields: description, methods, route_pattern, topic, consumer_group,
+  priority, config (rate_limit, timeout_ms, cors, backpressure, input_validation)
+
+Examples:
+  orion-cli channels create -f channel.json
+  orion-cli channels create -d '{"name":"my-ch","channel_type":"sync","protocol":"http","workflow_id":"wf-1"}'
+  cat channel.json | orion-cli channels create --stdin

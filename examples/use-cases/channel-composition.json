@@ -1,0 +1,45 @@
+{
+  "name": "In-Process Channel Composition",
+  "description": "One service calls another with channel_call — no network hop — and prices an order from the tier the called channel returns",
+  "workflows": [
+    { "file": "../packages/channel-composition/workflow-lookup.json" },
+    { "file": "../packages/channel-composition/workflow.json" }
+  ],
+  "channels": [
+    { "name": "customer-lookup", "workflow_id": "customer-lookup" },
+    { "name": "order-enrichment", "workflow_id": "order-enrichment" }
+  ],
+  "tests": [
+    {
+      "name": "the called channel answers on its own",
+      "channel": "customer-lookup",
+      "input": { "customer_id": 42 },
+      "expect": {
+        ".status": "ok",
+        ".data.lookup.tier": "vip",
+        ".data.lookup.discount_pct": "15"
+      }
+    },
+    {
+      "name": "the calling channel enriches a VIP order in-process",
+      "channel": "order-enrichment",
+      "input": { "order_id": "ORD-5511", "customer_id": 42, "total": 800 },
+      "expect": {
+        ".status": "ok",
+        ".data.order.tier": "vip",
+        ".data.order.discount_pct": "15",
+        ".data.customer.lookup.customer_id": "42"
+      }
+    },
+    {
+      "name": "an unknown customer falls through to the standard tier",
+      "channel": "order-enrichment",
+      "input": { "order_id": "ORD-5512", "customer_id": 999, "total": 40 },
+      "expect": {
+        ".status": "ok",
+        ".data.order.tier": "standard",
+        ".data.order.discount_pct": "0"
+      }
+    }
+  ]
+}

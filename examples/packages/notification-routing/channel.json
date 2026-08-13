@@ -1,0 +1,10 @@
+{
+  "channel_id": "notifications",
+  "tags": ["pkg:notification-routing"],
+  "name": "notifications",
+  "channel_type": "sync",
+  "protocol": "http",
+  "route_pattern": "/notifications",
+  "methods": ["POST"],
+  "workflow_id": "notification-routing"
+}

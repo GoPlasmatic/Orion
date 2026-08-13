@@ -1,0 +1,5 @@
+# CI render values (proposal T13): the self-contained dev/demo install.
+# Rendered and schema-checked by the `helm` job in ci.yml — not a deployment
+# example; see deploy/helm/orion/README.md for those.
+devStack:
+  enabled: true

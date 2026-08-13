@@ -41,6 +41,38 @@ at MongoDB and it renders a `find` filter document; at Elasticsearch and it
 renders a Query DSL search body. The results come back as the same JSON row
 array either way.
 
+A complete call does two more things. It binds request values through `params`,
+and it declares the entities it touches in `schema`. A call with no schema is
+refused — see [The schema registry](#the-schema-registry):
+
+```json
+{
+  "name": "data_query",
+  "input": {
+    "connector": "orders_db",
+    "query": {
+      "source": "users",
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+      "sort": [{ "age": "asc" }],
+      "limit": 50
+    },
+    "params": { "id": { "var": "data.req.id" } },
+    "schema": {
+      "entities": {
+        "users": {
+          "columns": {
+            "id":   { "type": "int" },
+            "name": { "type": "text" },
+            "age":  { "type": "int" }
+          }
+        }
+      }
+    },
+    "output": "data.users"
+  }
+}
+```
+
 ## The token model
 
 Three tokens appear inside envelopes, and they never collide:
@@ -72,9 +104,14 @@ injection-safe by construction.
 | `source` | string | Logical entity → table / collection / index (schema-resolved) |
 | `filter` | JSONLogic | Condition from the operator vocabulary below; omit for "match all" |
 | `fields` | array | Projection; omit for all columns/fields |
-| `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]` — deterministic null ordering across backends |
-| `limit` / `skip` | number | Pagination. Missing `limit` gets `query.default_limit`; above `query.max_limit` is **rejected, never clamped** |
-| `include` | object | Relation name → `{ "fields": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+| `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]`. A null (or missing) value sorts as the smallest value — first on `asc`, last on `desc` — on every backend |
+| `limit` / `skip` | number | Pagination. A missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
+| `include` | object | Relation name → `{ "fields": [..], "sort": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+
+Null-first ordering is the native order of SQLite, MySQL, and MongoDB;
+PostgreSQL and Elasticsearch receive an explicit `NULLS FIRST` / `missing`
+clause to match. No hidden sort key is added, so a page containing nulls comes
+back in the same order on every backend.
 
 ### Operator vocabulary
 
@@ -84,14 +121,50 @@ injection-safe by construction.
 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Comparisons (`===`/`!==` are aliases). `{"==": [x, null]}` is a null test |
 | `<`/`<=` (ternary) | Range: `{ "<=": [1, { "field": "x" }, 10] }` → BETWEEN |
 | `in` | Membership (list haystack) or substring containment (string haystack) |
-| `starts_with`, `ends_with` | Text anchors (rendered as `LIKE` / `$regex` / `prefix`+`wildcard`) |
+| `starts_with`, `ends_with` | Text anchors (rendered as `LIKE` / `$regex` / `prefix`+`wildcard`). Case sensitivity is **backend-defined** — see the parity table |
 | `missing` | Field(s) have no meaningful value |
 | `some`, `all`, `none` | Quantifiers over a declared relation |
 
-Anything outside this vocabulary is rejected with a **located error** naming
-the operator and position — never silently ignored.
+An operator outside this vocabulary is rejected with a **located error**
+naming the operator and its position — never silently ignored. An unknown key
+in a query or write envelope (a `"fileds"` typo, say) is rejected naming the
+key: a silently dropped key would be a filter or projection silently not
+applying.
+
+### Range, null and quantifier semantics
+
+These rules are **normative** — every renderer implements them, and the
+cross-backend parity suite pins them:
+
+- **Chained ranges keep each bound's strictness.** An inclusive chain
+  `{ "<=": [1, {"field": "x"}, 10] }` renders as an inclusive `BETWEEN` (or
+  its backend equivalent). A strict chain (`<`) renders as per-bound
+  comparisons — never widened into `BETWEEN` — and a mixed chain keeps the
+  strict side strict. The descending spellings
+  `{ ">": [10, {"field": "x"}, 1] }` / `">="` denote the same ranges with the
+  operands reversed.
+- **Empty combinators fold identically everywhere.** `{"and": []}` folds to
+  *true*, `{"or": []}` to *false*, and an empty `in` list to *false* — at
+  lowering time, before any backend sees the filter.
+- **`null` comparisons are existence tests.** `{"==": [{"field": "x"}, null]}`
+  means "x has no value" (SQL `IS NULL`, Mongo/ES missing-or-null), and `!=`
+  null is its negation — never a literal comparison that SQL three-valued
+  logic would swallow.
+- **`all` counts an unevaluable element as a violation.** `all` over a
+  relation means the relation is non-empty **and** no element violates the
+  predicate; an element whose predicate evaluates to SQL `NULL` counts as
+  violating. SQL renders
+  `EXISTS(rel) AND NOT EXISTS(rel WHERE NOT cond OR cond IS NULL)`; MongoDB
+  renders the equivalent; Elasticsearch rejects `all` outright (see the
+  parity table) rather than approximating it on nested documents.
 
 ## Write envelope (`data_write`)
+
+The envelope is nested under `write`, mirroring `data_query`'s `query`; the
+handler's own keys — `connector`, `schema`, `params`, `database`, `output` —
+stay at the top level. `write` is required: a task without it is refused at
+create, update, import, `POST /admin/workflows/validate`, and
+`orion-server lint`.
 
 | Field | Used by | Description |
 |-------|---------|-------------|
@@ -108,22 +181,26 @@ One task per operation:
 
 ```json
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "insert", "target": "users",
-    "values": [ { "name": "Ada", "status": "active" }, { "name": "Grace", "status": "active" } ],
-    "returning": ["id"], "output": "data.created" } }
+    "connector": "orders_db", "output": "data.created",
+    "write": {
+      "op": "insert", "target": "users",
+      "values": [ { "name": "Ada", "status": "active" }, { "name": "Grace", "status": "active" } ],
+      "returning": ["id"] } } }
 
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "update", "target": "users",
-    "set": { "status": "inactive" },
-    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+    "connector": "orders_db", "output": "data.updated",
     "params": { "id": { "var": "data.req.id" } },
-    "output": "data.updated" } }
+    "write": {
+      "op": "update", "target": "users",
+      "set": { "status": "inactive" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
 
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "upsert", "target": "users",
-    "values": { "email": "ada@x.io", "name": "Ada" },
-    "on_conflict": { "target": ["email"], "action": "update" },
-    "output": "data.upserted" } }
+    "connector": "orders_db", "output": "data.upserted",
+    "write": {
+      "op": "upsert", "target": "users",
+      "values": { "email": "ada@x.io", "name": "Ada" },
+      "on_conflict": { "target": ["email"], "action": "update" } } } }
 ```
 
 ### Safety guards
@@ -155,29 +232,46 @@ a query's `WHERE` — including relation predicates (`some` → SQL `EXISTS`).
 
 The dialect's governing rule: **match the reference semantics where a backend
 can; raise a precise, located capability error where it cannot; never
-approximate silently.** The notable divergences:
+approximate silently.**
 
-| Feature | Behavior |
+Everything not listed below returns the **same row set on all five backends**,
+and that claim is executable:
+`crates/orion-server/tests/integration/data_parity_test.rs` runs one
+fixture dataset through a table of envelopes and asserts an identical result —
+or an identical capability error — on SQLite, PostgreSQL, MySQL, MongoDB and
+Elasticsearch. The table below is the complete list of divergences.
+
+| Feature | Behaviour |
 |---------|----------|
 | `returning` | Native on PostgreSQL/SQLite. On MySQL it is rejected (`FeatureUnsupportedByTarget`); single-row inserts report `last_insert_id` instead. On MongoDB inserts report generated `ids`. On Elasticsearch it is rejected; inserts report `ids` |
+| `include` | SQL connectors only. Rejected on MongoDB and Elasticsearch (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some`. On SQL it requires a `sort` and is bounded per parent (see [Relations](#relations-and-includes)) |
+| `some`/`all`/`none` over a `many_to_many` relation | SQL only (junction join). Rejected on MongoDB and Elasticsearch, whose filter languages cannot express the junction |
 | `all` over an ES relation | Rejected (not set-equivalent on nested documents) |
 | Deep ES pagination | `skip + limit` beyond `max_result_window` (10k) is rejected, not truncated |
 | Bulk upsert on Mongo/ES | Rejected — single-row upserts only |
+| The document key (`_id`) | **Explicit everywhere.** Neither MongoDB nor Elasticsearch maps a logical `id` to `_id` implicitly — declare the rename (`{"columns": {"id": {"name": "_id"}}}`). Without it, `id` is an ordinary document field |
 | ES upsert conflict target | Must resolve to the document `_id` (declare a schema rename); anything else is rejected |
+| Text-match case sensitivity | **Backend-defined; the dialect does not normalize it.** PostgreSQL `LIKE` is case-sensitive; SQLite's `LIKE` folds ASCII only; MySQL follows the column's collation (case-insensitive under the default `_ci` collations); MongoDB `$regex` is case-sensitive; Elasticsearch follows the field mapping (`keyword` exact, `text` analyzer-folded). Use a `keyword` mapping or a binary collation when an exact match matters |
+
+<details><summary>Why case sensitivity is not normalized</summary>
+
+Case behaviour is a property of the stored data rather than of the query — no
+query-time flag can make an analyzed Elasticsearch field case-sensitive again.
+The dialect states the divergence instead of half-normalizing it.
+
+</details>
 
 ### Elasticsearch notes
 
-- **`_id` is explicit.** ES keys documents on the metadata `_id`, which lives
-  outside the document source. There is no implicit `id` → `_id` mapping —
-  declare it in the schema (`{"columns": {"id": {"name": "_id"}}}`). A physical
-  `_id` column is then lifted into the bulk action / URL path on insert and
-  upsert; mutating `_id` in `set` is rejected.
+- **`_id` lives outside `_source`.** With the rename declared, a physical `_id`
+  column is lifted into the bulk action / URL path on insert and upsert;
+  mutating `_id` in `set` is rejected.
 - **Read-your-writes.** Every ES write requests a refresh (`wait_for`, or
   `true` on the by-query endpoints), so a `data_query` later in the same
   pipeline sees the write — parity with SQL/Mongo visibility, at a throughput
   cost.
-- **`_bulk` is ordered but non-transactional.** Any item error fails the call,
-  though earlier items may already be applied. Version conflicts on
+- **`_bulk` is non-transactional.** Each action is applied independently, so
+  any subset can land — see [Bulk writes](#bulk-writes). Version conflicts on
   `_update_by_query`/`_delete_by_query` surface as errors (`conflicts=abort`).
 
 ## Result shapes
@@ -187,23 +281,90 @@ Written to the task's `output` path:
 | Backend | Shape |
 |---------|-------|
 | Query (all) | JSON array of rows/documents |
-| SQL write | `{ "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
-| MongoDB / ES write | Doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
+| SQL write | `{ "status": "ok", "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
+| MongoDB / ES write | `"status"` plus doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
+
+Every write result carries a **`status`** — `"ok"` or `"partial"` — so one
+check works across all backends.
+
+## Bulk writes
+
+A bulk `insert` — an array of `values` — reports through one shape on every
+backend. The underlying guarantee differs, and no envelope can make the three
+models the same:
+
+| Backend | Model | On failure |
+|---|---|---|
+| SQL | **Atomic** | One `INSERT … VALUES (…), (…)` inside an explicit transaction: every row or none. The call fails and nothing is written |
+| MongoDB | **Prefix-applied** | `insert_many` is ordered, so the server stops at the first rejected document. Everything before it is committed; everything after is never attempted |
+| Elasticsearch | **Arbitrary-applied** | `_bulk` attempts every action independently, so any subset can land |
+
+When a call applies **some but not all** of its items, the result is
+`"status": "partial"` and carries a per-item array, and the task reports audit
+status **`207`** rather than `200` — visible in the trace, not fatal, so the
+workflow can compensate:
+
+```json
+{
+  "status": "partial",
+  "inserted": 2,
+  "failed": 1,
+  "skipped": 2,
+  "ids": ["a", "c"],
+  "items": [
+    { "index": 0, "status": "ok", "id": "a" },
+    { "index": 1, "status": "ok", "id": "c" },
+    { "index": 2, "status": "error", "error": { "code": 11000, "message": "duplicate key" } },
+    { "index": 3, "status": "skipped" },
+    { "index": 4, "status": "skipped" }
+  ]
+}
+```
+
+`index` is the position in the `values` array you sent. `skipped` means the
+backend never attempted the item — only ordered MongoDB produces it. `items`
+and the `failed`/`skipped` counters appear only when there is something to
+report; a clean bulk is just `status`/`inserted`/`ids`.
+
+**A partial write does not fail the task.** Failing would abort the workflow
+without naming the applied prefix — the thing this result reports. A workflow
+that writes in bulk to MongoDB or Elasticsearch should check `status` and
+compensate. A bulk where *nothing* landed is still a hard error: there is no
+partial state to describe.
 
 ## The schema registry
 
-Both functions accept an optional inline `schema` — **privileged configuration
-authored alongside the workflow, never built from request input**. Without one,
-the dialect runs in *identity mode*: names pass through as-is.
+Both functions take an inline `schema` — **privileged configuration authored
+alongside the workflow, never built from request input**. It is what bounds the
+call: the dialect **rejects undeclared names by default**, so a task with no
+`schema` reaches nothing. Identity mode — every logical name passing through
+as the physical one — must be requested explicitly:
+`"schema": { "unmapped": "identity" }`.
+
+An undeclared name reports what to add, naming both routes:
+
+```
+entity 'orders' is not declared in the task's schema: add "schema":
+{"entities": {"orders": {"columns": {"<column>": {}}}}} naming the columns this
+task uses, or add "unmapped": "identity" to that schema to accept undeclared
+names as physical ones (pre-1.0 behaviour)
+```
+
+A relation's `to` target does not itself need declaring for the relation to
+resolve — like its join keys, it is structure the schema's author wrote, not a
+caller-supplied name. Naming one of its **columns** is caller input again:
+`include: { "orders": {} }` works against an undeclared `orders`, while
+`include: { "orders": { "fields": ["id"] } }` — or any `some`/`all`/`none`
+predicate over it — needs `orders` declared.
 
 ```json
 "schema": {
   "entities": {
     "users": {
-      "table": "app_users",
+      "physical": "app_users",
       "columns": {
         "id":     { "name": "user_id", "type": "int" },
-        "email":  { "type": "string" },
+        "email":  { "type": "text" },
         "secret": { "queryable": false, "writable": false }
       },
       "relations": {
@@ -216,11 +377,20 @@ the dialect runs in *identity mode*: names pass through as-is.
 ```
 
 - **Renames** — logical entity/column names map to physical tables/columns
-  (`id` → `user_id`, or `id` → `_id` for Elasticsearch).
-- **Types** — drive value coercion where a backend needs the hint.
-- **Allowlist** — with `"unmapped": "reject"`, only declared entities/columns
-  are usable; `queryable: false` hides a column from reads, `writable: false`
-  protects it from writes (generated/identity columns).
+  (`id` → `user_id`, or `id` → `_id` on both document stores — see the
+  parity table).
+- **Types** — declared hints (`int`, `text`, …), validated at parse time but
+  not consumed: values keep their natural JSON types end to end, and no
+  backend coerces on the hint. The key is reserved for value coercion in a
+  later version; an unknown type name is a hard error.
+- **Allowlist** — under `"unmapped": "reject"` (the default), only declared
+  entities and columns are usable. `queryable: false` hides a column from
+  reads; `writable: false` protects it from writes (generated/identity
+  columns). A read that names no `fields` returns exactly the entity's
+  queryable columns — a projection, not a wildcard. An entity that declares
+  *no* columns has no column allowlist and still reads every column; one whose
+  declared columns are all non-queryable is refused rather than widened back
+  to `SELECT *`.
 - **Relations** — declare `has_one` / `has_many` / `many_to_many` (the latter
   via `through`) so `some`/`all`/`none` predicates and `include` work.
 
@@ -237,8 +407,20 @@ renders as a correlated `EXISTS` (SQL), `$elemMatch` over embedded documents
 themselves, hydrated with one child query per relation:
 
 ```json
-"include": { "orders": { "fields": ["id", "total"], "limit": 10 } }
+"include": { "orders": { "fields": ["id", "total"], "sort": [{ "total": "desc" }], "limit": 10 } }
 ```
+
+**`sort` is required.** The per-parent page is cut inside the database
+(`ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`), so without an order
+key "the first 10 orders" has no defined answer. `limit` follows the envelope's
+own page policy: absent means `query.default_limit` **per parent**, and a value
+above `query.max_limit` is rejected rather than clamped. Hydration is therefore
+bounded by `parents × limit` rows, not by the whole child table.
+
+`sort` may name a column that `fields` does not: it is projected internally so
+the database can order by it, then removed again, so the nested objects carry
+exactly the `fields` that were asked for (and every column when `fields` is
+absent). The join key is handled the same way.
 
 ## Connector operation gates
 
@@ -276,17 +458,70 @@ raw SQL cannot be classified per-statement, `db_write` has its own `raw_write`
 gate — to make a connector fully delete-proof, disable both `delete` and
 `raw_write`.
 
-## Configuration
+The gates above are the `db` / `es` set — the set the portable dialect runs
+through. Other connector types carry gates for their own operations
+(`read`/`write` on `cache`, `publish` on `kafka`, a method allowlist on
+`http`), documented per type in [Connectors](./connectors.md).
 
-```toml
-[query]                    # Page-size bounds for data_query
-# default_limit = 100      # Page size when a query omits `limit`
-# max_limit = 1000         # Hard cap; a query asking for more is rejected
+### Schema guards
 
-[write]                    # Safety bounds for data_write
-# max_rows = 1000          # Cap on rows per bulk insert/upsert (over → rejected)
-# allow_unfiltered = false # Permit unfiltered update/delete (still needs per-call "all": true)
+`operations` answers *which verbs*; the `dialect` block answers *which tables
+the portable dialect may name*. A `read`-only connector is otherwise unbounded
+through `data_query` — nothing stops a workflow from selecting the whole
+database.
+
+**These guards bound `data_query`/`data_write`, not the connector.** The raw
+escape hatches — `db_read`, `db_write`, `mongo_read` — run on the same
+connector, carry no entity name a guard could match, and are bounded only by
+`operations`. So:
+
+- **Writes** are fully bounded by `allowed_entities` once `"raw_write": false`
+  leaves `data_write` as the only write path.
+- **Reads are not**, because `read` gates `data_query`, `db_read` and
+  `mongo_read` together: a connector that permits the dialect permits raw SQL
+  and raw `find` too. Bound those at the database credential — a role that can
+  only see the allowlisted tables — or keep raw reads on a separate connector.
+- On MongoDB the task's `database` field is not checked against the guard
+  either, so an allowlisted collection name can be read from any database the
+  credential can see. Scope the credential, not just the list.
+
+```json
+"config": {
+  "type": "db",
+  "connection_string": "postgres://…",
+  "dialect": {
+    "require_schema": true,
+    "allowed_entities": ["users", "orders", "order_items"]
+  }
+}
 ```
 
-Both sections are overridable via environment variables
-(`ORION_QUERY__MAX_LIMIT`, `ORION_WRITE__MAX_ROWS`, …).
+| Field | Default | Effect |
+|---|---|---|
+| `require_schema` | `false` | Refuse any dialect call that did not declare a real schema — no `entities`, or an explicit `"unmapped": "identity"`. Closes the per-task opt-out, so one forgotten `schema` key cannot reopen the connector |
+| `allowed_entities` | `[]` (unrestricted) | Physical table/collection/index names `data_query`/`data_write` may name through this connector |
+
+`allowed_entities` matches the name **after** schema renames apply, because the
+allowlist is the connector owner's and the schema is authored per task — a
+rename (`"orders"` → physical `secrets`) must not be able to step around it. It
+covers every table a call reaches: the envelope's `source`/`target`, relation
+targets, and many-to-many junction tables.
+
+Both default to off. They bound what the schema default cannot: a task can
+write `"schema": { "unmapped": "identity" }` itself, and only the connector's
+owner can refuse that through `require_schema`.
+
+## Configuration
+
+The `[query]` and `[write]` sections — `default_limit`, `max_limit`,
+`max_skip`, `max_rows`, `allow_unfiltered` — are documented in the
+[Configuration Reference](./configuration.md).
+
+## Related
+
+- [Function Reference](./functions.md#data_query) — the `data_query` and
+  `data_write` task fields that carry these envelopes.
+- [Connectors](./connectors.md) — `db`/`es` connector configuration, including
+  the operation gates each type carries.
+- [Configuration Reference](./configuration.md) — the `[query]`/`[write]`
+  server bounds and their environment overrides.

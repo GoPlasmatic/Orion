@@ -1,0 +1,44 @@
+[
+    {
+        "name": "Imported Workflow A",
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t1",
+                "name": "Log A",
+                "function": {
+                    "name": "log",
+                    "input": { "message": "rule A" }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Imported Workflow B",
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t1",
+                "name": "Log B",
+                "function": {
+                    "name": "log",
+                    "input": { "message": "rule B" }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Imported Workflow C",
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t1",
+                "name": "Log C",
+                "function": {
+                    "name": "log",
+                    "input": { "message": "rule C" }
+                }
+            }
+        ]
+    }
+]

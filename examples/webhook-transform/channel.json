@@ -1,9 +1,0 @@
-{
-  "channel_id": "webhooks",
-  "name": "webhooks",
-  "channel_type": "sync",
-  "protocol": "http",
-  "route_pattern": "/webhooks",
-  "methods": ["POST"],
-  "workflow_id": "webhook-transform"
-}

@@ -1,0 +1,289 @@
+# The orion-cli image + MCP registry publish, ported from the pre-monorepo
+# GoPlasmatic/Orion-cli repo. Mirrors docker-release.yml's shape (ci-gate,
+# digest-merge multi-arch build) for the CLI package; signing/SBOM stays a
+# server-image concern for now.
+name: Docker Release (CLI)
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  # The CLI ships in two shapes. A bare v* tag is the joint release the server
+  # and the CLI share while their versions are in lockstep — it builds both
+  # images, this workflow's and docker-release.yml's. An orion-cli-v* tag is
+  # the out-of-band CLI patch. orion-server-v* is docker-release.yml's alone.
+  #
+  # On a bare tag the CLI may legitimately not be part of the release (a
+  # server-only patch leaves orion-cli's version behind); `prepare` detects
+  # that and skips rather than failing, so a server patch never turns the
+  # release red on the CLI image's account.
+  push:
+    tags:
+      - "orion-cli-v[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+  # Allow manual trigger with options
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build but don't push)"
+        type: boolean
+        default: false
+      tag_override:
+        description: "Version tag override (e.g. 0.2.1) — also the MCP registry re-publish path"
+        type: string
+        required: false
+
+env:
+  GHCR_IMAGE: ghcr.io/goplasmatic/orion-cli
+
+jobs:
+  # Releases must not outrun CI (proposal T10): the tagged commit needs a
+  # successful CI run before anything is built or pushed.
+  ci-gate:
+    name: CI Gate
+    uses: ./.github/workflows/ci-gate.yml
+    with:
+      skip: ${{ inputs.dry_run || false }}
+    permissions:
+      actions: read
+      contents: read
+
+  # Determine version once, share across jobs
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_release: ${{ steps.version.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Determine version
+        id: version
+        env:
+          TAG_OVERRIDE: ${{ inputs.tag_override }}
+        run: |
+          RELEASE=1
+          if [ -n "${TAG_OVERRIDE}" ]; then
+            VERSION="${TAG_OVERRIDE}"
+            # P19: the override rides the same `type=semver` metadata path as
+            # a tag — an unparseable value is dropped by metadata-action,
+            # leaving the merge job's `imagetools create` with zero -t flags
+            # after the per-arch digests already pushed.
+            if ! printf '%s' "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
+              echo "::error::tag_override '${VERSION}' is not a semver version — metadata-action would drop it and the merge job would fail with untagged images already pushed."
+              exit 1
+            fi
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            # Strips either shape: orion-cli-v1.0.0 (the CLI's own tag) and
+            # v1.0.0 (the joint release tag) both reduce to 1.0.0.
+            VERSION="${GITHUB_REF_NAME#orion-cli-}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="0.0.0-dev.${GITHUB_SHA::8}"
+            RELEASE=0
+          fi
+          SHOULD_RELEASE=1
+          # P19: refuse a version the binary does not report.
+          if [ "${RELEASE}" = "1" ]; then
+            CARGO_VERSION=$(grep -m1 '^version = ' crates/orion-cli/Cargo.toml | cut -d'"' -f2)
+            if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
+              # Only ONE case is a benign mismatch: a bare tag pushed for a
+              # server-only release, which the CLI is simply not part of. An
+              # explicit override, or a tag that names the CLI, is a mistake
+              # and must stay a hard error — a dispatch's GITHUB_REF_NAME is a
+              # branch, so the override has to be tested before the tag shape.
+              if [ -n "${TAG_OVERRIDE}" ]; then
+                echo "::error::tag_override says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Re-publish from a ref whose Cargo.toml agrees."
+                exit 1
+              fi
+              case "${GITHUB_REF_NAME}" in
+                orion-cli-*)
+                  echo "::error::Release version says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
+                  exit 1
+                  ;;
+                *)
+                  # Skip, do not fail — and above all do not re-push an
+                  # existing immutable tag with freshly built content.
+                  echo "::notice::${GITHUB_REF_NAME} is a server-only release (orion-cli is at ${CARGO_VERSION}) — skipping the CLI image."
+                  SHOULD_RELEASE=0
+                  ;;
+              esac
+            fi
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "should_release=${SHOULD_RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION} (release: ${SHOULD_RELEASE})"
+
+  # Build per-platform images natively in parallel
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: [prepare, ci-gate]
+    # Skips the whole downstream chain (merge, publish-mcp) when a bare tag
+    # turns out to be a server-only release: both need this job.
+    if: ${{ needs.prepare.outputs.should_release == '1' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        if: ${{ !inputs.dry_run }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=sha,prefix=
+          flavor: |
+            latest=auto
+
+      # Build and push by digest (no tag yet — tags are applied in the merge step)
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: crates/orion-cli/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ !inputs.dry_run }}
+          # .dockerignore excludes .git/, so the SHA must ride in as a
+          # build-arg or the published image reports git_hash=unknown.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Distinct cache scope from the server image builds.
+          cache-from: type=gha,scope=cli-${{ matrix.platform }}
+          cache-to: type=gha,scope=cli-${{ matrix.platform }},mode=max
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ !inputs.dry_run }}
+
+      - name: Export digest
+        if: ${{ !inputs.dry_run }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Merge platform images into a multi-arch manifest
+  merge:
+    name: Merge & Push Manifest
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=sha,prefix=
+          flavor: |
+            latest=auto
+
+      - name: Create and push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.GHCR_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+  # Publish/update the server listing in the official MCP registry.
+  # OIDC from this repo grants the io.github.GoPlasmatic/* namespace
+  # (case-sensitive); the pushed image must carry the
+  # io.modelcontextprotocol.server.name label (see crates/orion-cli/Dockerfile).
+  # Docs: https://modelcontextprotocol.io/registry/github-actions
+  publish-mcp:
+    name: Publish to MCP Registry
+    needs: [prepare, merge]
+    # Runs on version tags, or on manual dispatch with tag_override (re-publish path)
+    if: ${{ !inputs.dry_run && (github.ref_type == 'tag' || inputs.tag_override != '') }}
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install mcp-publisher
+        run: |
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+          esac
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Sync server.json to release version
+        working-directory: crates/orion-cli
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          jq --arg v "$VERSION" \
+            '.version = $v | .packages[0].identifier = "ghcr.io/goplasmatic/orion-cli:" + $v' \
+            server.json > server.json.tmp && mv server.json.tmp server.json
+
+      - name: Publish
+        working-directory: crates/orion-cli
+        run: |
+          ../../mcp-publisher login github-oidc
+          ../../mcp-publisher publish

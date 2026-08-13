@@ -2,11 +2,33 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Release branches are included so the tag-time `ci-gate` job can find a
+    # successful run at the tag SHA. Without them, cutting a release from a
+    # `v*` branch either blocks the release workflows or ships unverified.
+    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
   pull_request:
+  # T34: without this, the only way to mint a fresh CI run for a SHA (to
+  # satisfy the release-time ci-gate after e.g. a transient failure) was to
+  # re-run an old run or push an empty commit — which changes the SHA.
+  # Note ci-gate filters on event=push, so a dispatch run satisfies a re-run
+  # need but not the gate itself; use "Re-run all jobs" on the push run for
+  # that.
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+# One group per PR: superseded pushes cancel the in-flight run — ten jobs
+# including two full test suites, a Docker build, and a container matrix.
+# Branch pushes (main, release/**, v*) group by COMMIT instead, so no two
+# pushes ever share a group and every pushed SHA runs to completion. This
+# cannot be done by queueing on a shared ref group: GitHub keeps at most
+# one running plus one pending run per group and CANCELS an older pending
+# run even with cancel-in-progress false — which would leave a SHA with no
+# completed run for the release-time ci-gate lookup to find.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,16 +40,17 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
         with:
+          toolchain: "stable"
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
   lint:
     name: Lint
@@ -35,21 +58,58 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
         with:
+          toolchain: "stable"
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # docs.rs renders this crate whether or not the library is a supported
+      # embedding API, and a broken intra-doc link ships as broken there. The
+      # lints are warn-by-default and nothing was reading them, so 18 had
+      # accumulated by 1.0.
+      - name: Rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --lib
+
+  # rust-version in Cargo.toml is a public stability promise; this job is
+  # the only thing that keeps it honest (proposal T9).
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "1.88"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      # Run the suite, not just `cargo check`: the promise is that a
+      # contributor on 1.88 can build AND test, which also keeps
+      # dev-dependencies honest about the MSRV.
+      - name: Test on MSRV
+        run: cargo test --workspace --no-fail-fast
 
   examples:
     name: Examples
@@ -57,28 +117,35 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Build
         run: cargo build
 
       - name: Lint example workflows
         run: |
-          for f in examples/*/workflow.json; do
+          # workflow*.json, not workflow.json: channel-composition ships a
+          # second workflow (workflow-lookup.json) the narrower glob skipped.
+          for f in examples/packages/*/workflow*.json; do
             ./target/debug/orion-server lint "$f"
           done
 
-      - name: Start Postgres (postgres-orders example)
-        run: docker compose -f examples/postgres-orders/docker-compose.yml up --wait postgres
+      - name: Run example workflow tests (offline, stubbed connectors)
+        run: ./target/debug/orion-server test examples/workflow-tests
+
+      - name: Start Postgres (postgres-orders package)
+        run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
 
       - name: Start Orion
         run: |
@@ -98,10 +165,10 @@ jobs:
           ./examples/quickstart.sh
           ./examples/quickstart.sh
 
-      - name: Deploy every example end-to-end (twice — idempotency)
+      - name: Deploy every example package end-to-end (twice — idempotency)
         run: |
           cd examples
-          for d in */; do
+          for d in packages/*/; do
             [ -f "$d/workflow.json" ] || continue
             ./deploy.sh "${d%/}"
             ./deploy.sh "${d%/}"
@@ -111,27 +178,278 @@ jobs:
         if: failure()
         run: cat /tmp/orion-examples.log || true
 
-  audit:
-    name: Security Audit
+  # The full default suite on its own job (proposal T8): unit and integration
+  # signal must not ride the coverage job, whose hand-rolled swapfile and
+  # OOM exposure can wipe all of it at once. Container-gated tests stay in
+  # integration-containers.
+  test:
+    name: Test
     runs-on: ubuntu-22.04
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
 
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Run audit
-        run: cargo audit
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      # --no-fail-fast: without it cargo stops after the first test binary that
+      # fails, so one broken unit test suppresses every integration result
+      # and a red CI is diagnosed one round-trip at a time.
+      - name: Run tests
+        run: cargo test --workspace --all-targets --no-fail-fast
+
+      # --all-targets silently skips doctests; the config structs carry
+      # heavily documented examples that would otherwise never compile.
+      - name: Run doctests
+        run: cargo test --doc
+
+  # The workspace shell e2e suite (tests/e2e/) drives a real orion-server
+  # over HTTP with the orion-cli binary — the one place the two crates' API
+  # contract is exercised end to end at the same commit. Before the monorepo
+  # merge this needed an out-of-band server binary and could not run per PR
+  # at all.
+  cli-e2e:
+    name: CLI E2E (orion-cli against orion-server)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      - name: Build both binaries
+        run: cargo build -p orion-server -p orion-cli
+
+      # jq and curl are preinstalled on the GitHub ubuntu images.
+      - name: Run the e2e suite
+        run: E2E_SKIP_BUILD=1 ./tests/e2e/run.sh
+
+  # Advisories AND license compatibility / bans / source policy over the
+  # whole tree (proposal T12) — deny.toml is the policy, including the one
+  # documented advisory ignore. Prebuilt binary + registry cache keep it
+  # fast; unlike the old `cargo audit` job, warnings-as-configured fail it.
+  deny:
+    name: Dependency Check (cargo-deny)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2 (tool from `with`)
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny check
+
+  # T29: crates-publish.yml runs `cargo publish --locked` on the release tag —
+  # the first time anything exercises the crates.io tarball. Cargo.toml uses
+  # an `include` allowlist, so a newly added required file silently drops out
+  # of the package and would only be discovered mid-release. `cargo package`
+  # assembles the tarball and verify-builds it from its own contents on every
+  # PR instead.
+  package:
+    name: Package (crates.io tarball)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          # Full history so the rider check below can diff against the base.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      # The rider rule, enforced. orion-api and orion-client are never tagged:
+      # crates-publish ships them as skip-if-published riders, so a change that
+      # does *not* bump the version is skipped at publish time and the released
+      # binary links the older crates.io content while the repo builds the
+      # newer local one — a divergence nothing else in CI can see, because the
+      # workspace always resolves the path dependency.
+      - name: Rider crates changed must have their version bumped
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          status=0
+          for crate in orion-api orion-client; do
+            changed=$(git diff --name-only "$BASE_SHA"...HEAD -- "crates/$crate/" | grep -v '/CHANGELOG.md$' || true)
+            [ -n "$changed" ] || continue
+            if git diff -U0 "$BASE_SHA"...HEAD -- "crates/$crate/Cargo.toml" \
+                 | grep -qE '^\+version = '; then
+              echo "::notice::$crate changed and its version was bumped"
+            else
+              echo "::error file=crates/$crate/Cargo.toml::$crate changed without a version bump. crates-publish skips a rider whose version is already on crates.io, so the released binary would resolve the older published content. Bump [package] version in crates/$crate/Cargo.toml (and the requirement in every dependent manifest)."
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Assemble and verify-build the publish tarballs
+        run: cargo package --locked --workspace
+
+  # The docs site is deployed by Cloudflare Workers Builds on merges touching
+  # docs/**, entirely outside GitHub, so without this a PR
+  # can break the book (dangling SUMMARY entry, bad include) and nobody
+  # notices until after merge. book.toml sets create-missing = false, so a
+  # missing SUMMARY target fails the build here instead of fabricating an
+  # empty page (proposal T25).
+  book:
+    name: Book (mdbook)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install mdbook
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2
+        with:
+          tool: mdbook@0.5.4
+
+      # The same script Cloudflare Workers Builds runs to deploy, so a PR also
+      # exercises the llms-full.txt generation and the _redirects/_headers
+      # staging, not just `mdbook build`. mdbook is already on PATH from the
+      # step above, so the script's pinned-binary fetch is skipped here —
+      # mdbook_pin_drift_test is what keeps that pin and this one equal.
+      - name: Build book
+        run: bash docs/build.sh
+
+      # The docs estate's structural guard: include/link integrity, redirect
+      # coverage for hard site links, and the one-owner-per-fact guard greps.
+      - name: Docs lint
+        run: bash docs/lint.sh
+
+  # The chart's guards — two `{{- fail }}`s, two `required`s and
+  # values.schema.json — only fire at render time, so before this job a typo
+  # shipped undetected until a user's `helm install` (proposal T13). Lint and
+  # template need a values file: the chart's defaults deliberately `required`-
+  # fail without storage.url/redisUrl, so each documented install shape is
+  # rendered explicitly — devStack, production, and production with the
+  # Prometheus Operator ServiceMonitor. `helm template` also renders
+  # `templates/tests/`, which nothing else in CI touches. kubeconform then
+  # type-checks the output against the Kubernetes schemas (CRDs-catalog
+  # supplies the ServiceMonitor type).
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: Lint and render each value set
+        run: |
+          set -euo pipefail
+          for values in deploy/helm/orion/ci/*-values.yaml; do
+            echo "=== ${values}"
+            helm lint deploy/helm/orion -f "${values}" --strict
+            helm template orion deploy/helm/orion -f "${values}" \
+              | kubeconform -strict -summary \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          done
+
+      # The schema must keep refusing what the templates do not read — that
+      # is the bug it exists to prevent (see values.schema.json in
+      # proposal.md's "already strong" list).
+      - name: A misspelled value must fail the render
+        run: |
+          if helm template orion deploy/helm/orion \
+               -f deploy/helm/orion/ci/production-values.yaml \
+               --set cluster.enabld=true > /dev/null 2>&1; then
+            echo "::error::values.schema.json accepted 'cluster.enabld' — the typo guard is gone"
+            exit 1
+          fi
+
+  # The image build breaks independently of cargo (system deps like the
+  # rdkafka toolchain, base-image drift). Building on every PR keeps that
+  # from being discovered mid-release (proposal T10). No push — the release
+  # workflow owns publishing; the shared gha cache scope keeps this cheap
+  # and warms the release build.
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          # Same build-arg the release build passes (.dockerignore excludes
+          # .git/), so this job exercises the exact release build shape.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
+          cache-from: type=gha,scope=linux/amd64
+          cache-to: type=gha,scope=linux/amd64,mode=max
 
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
+    # T42: this job carried `continue-on-error: true` while it proved it
+    # could survive the runner (T8's disk-freeing + swapfile era). Its last
+    # 15 completed runs are green (checked 2026-08-01), which is the
+    # promotion criterion the old comment set — the `--fail-under-lines`
+    # ratchet below is now a real floor, not a report.
     permissions:
       contents: read
     steps:
@@ -140,18 +458,19 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo docker image prune --all --force
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
         with:
+          toolchain: "stable"
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Add swap space
         run: |
@@ -163,16 +482,86 @@ jobs:
           sudo swapon /swapfile
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2 (tool from `with`)
+        with:
+          tool: cargo-llvm-cov
 
+      # --fail-under-lines turns the artifact into a ratchet: measured at
+      # 89.47% line / 89.97% function on the 1.0 tree, floored a little below
+      # that so an ordinary refactor has room to move but a module landing
+      # with no tests does not.
+      #
+      # Raise the floor when the real number moves up; never lower it to make
+      # a red build green. Blocking since T42 (the job earned it — see the
+      # note on `coverage:` above).
+      # Scoped to the default members (orion-server): orion-cli is neither
+      # compiled nor instrumented here, so this percentage describes the
+      # server only. TESTING.md's layer-6 note says the same.
       - name: Generate coverage report
-        run: cargo llvm-cov --lcov --output-path lcov.info -j 2
+        run: cargo llvm-cov --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: coverage-report
           path: lcov.info
+
+  # Coverage answers "did this line run", which is not the same question as
+  # "would anything have failed if it were wrong". Four of the error-code
+  # strings in errors.rs sat at full line coverage and could still be renamed
+  # with the whole suite green, because every assertion around them checked
+  # the HTTP status instead.
+  #
+  # --in-diff keeps this proportional: only code the PR actually touched is
+  # mutated, intersected with the security- and correctness-critical globs in
+  # .cargo/mutants.toml. A PR touching none of them generates no mutants and
+  # passes in seconds.
+  mutants:
+    name: Mutation Testing (changed code)
+    runs-on: ubuntu-22.04
+    # PR-only: --in-diff needs two commits to compare, and on a branch push
+    # there is no natural base to diff against.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          # Full history: the diff is taken against the merge base, which a
+          # shallow clone does not contain.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@6a1bd70eaac3c8bdf093356838d7ee09fda951cf # v2 (tool from `with`)
+        with:
+          tool: cargo-mutants
+
+      - name: Diff against the merge base
+        run: git diff "origin/${{ github.base_ref }}"... > /tmp/pr.diff
+
+      # Surviving mutants fail this step. To accept one as genuinely
+      # equivalent, annotate the function `#[mutants::skip]` with a comment
+      # saying why — that records the judgement in the code rather than
+      # widening a glob nobody revisits.
+      - name: Mutate the changed code
+        run: cargo mutants --in-diff /tmp/pr.diff --no-shuffle -j 2
+
+      - name: Upload mutants report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: mutants-report
+          path: mutants.out/
 
   integration-containers:
     name: Container Integration Tests
@@ -180,20 +569,67 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
-      # ephemeral Postgres / MySQL / MongoDB / Elasticsearch containers on
-      # demand. The name filters run only the container-backed round-trip +
-      # raw-SQL + ES tests and skip the still-localhost redis test.
+      # ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis / Kafka
+      # containers on demand. The name filters run only the container-backed
+      # round-trip + raw-SQL + ES + Redis tests. Filters are substring matches
+      # on the full module::test path — every module with #[ignore] tests must
+      # appear here by module name, or its tests never run anywhere.
       - name: Run container-backed integration tests
-        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test
+        run: cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test vault_test
+
+      # Kafka gets its own step: each test starts its own broker container, and
+      # sharing one invocation with the Postgres/MySQL/Mongo/ES containers
+      # starves them — producers fail with MessageTimedOut while brokers fight
+      # for CPU. Measured on the pre-existing suite (no changes): 4 Kafka
+      # failures in the combined run, 13/13 green when Kafka runs on its own.
+      # Scheduling pressure, not a defect. If this step is still flaky on a
+      # smaller runner, add `--test-threads=2`.
+      #
+      # Every container step from here on runs even if an earlier one failed
+      # (`!cancelled()`). They are independent backends, and this is the
+      # slowest feedback loop in the repo — without it a single flaky Kafka
+      # broker hides a real Postgres or schema-parity regression until the
+      # next push. The job still fails if any step does.
+      - name: Kafka container tests
+        if: ${{ !cancelled() }}
+        run: cargo test --test integration -- --ignored kafka_test
+
+      # Orion's own storage on Postgres / MySQL. Separate binaries (one
+      # process each) because the storage backend is pinned per process via
+      # the DB_BACKEND OnceLock.
+      - name: Postgres storage backend tests
+        if: ${{ !cancelled() }}
+        run: cargo test --test storage_postgres -- --ignored
+
+      - name: MySQL storage backend tests
+        if: ${{ !cancelled() }}
+        run: cargo test --test storage_mysql -- --ignored
+
+      # D10: migrate all three backends from scratch and assert the schemas
+      # agree — columns and their nullability, normalised types, and every
+      # idx_* index with its ordered column list. Only the SQLite half runs
+      # without Docker, so on a machine with no daemon this step is the only
+      # place the three are compared.
+      - name: Schema parity across backends
+        if: ${{ !cancelled() }}
+        run: cargo test --test schema_parity -- --ignored
+
+      # Multi-node cluster-mode tests: two AppStates over one Postgres + one
+      # Redis container per test. Serial — each test runs its own containers.
+      - name: Cluster mode multi-node tests
+        if: ${{ !cancelled() }}
+        run: cargo test --test cluster -- --ignored --test-threads=1

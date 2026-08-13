@@ -45,8 +45,28 @@ on:
       - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
+  # HAND-MAINTAINED (survives `dist init` regeneration only if re-added):
+  # publishing must not outrun CI (proposal T10). Same gate as
+  # crates-publish.yml and docker-release.yml — the `host` job below refuses
+  # to create the GitHub Release (and thus the Homebrew publish) unless CI
+  # passed for this commit. Skipped on pull_request runs, which only plan.
+  ci-gate:
+    name: CI Gate
+    if: ${{ !github.event.pull_request }}
+    uses: ./.github/workflows/ci-gate.yml
+    permissions:
+      actions: read
+      contents: read
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
+    # HAND-MAINTAINED (T33, survives `dist init` only if re-added): on a tag
+    # push this job runs `dist host --steps=create`, which creates the
+    # release object with `contents: write` — before this gate, a red-CI tag
+    # still got a release created with nothing to clean it up. ci-gate is
+    # skipped on pull_request runs (which only plan), so `skipped` must pass.
+    needs: ci-gate
+    if: ${{ !failure() && !cancelled() }}
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
@@ -56,7 +76,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -66,7 +86,7 @@ jobs:
         shell: bash
         run: "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh"
       - name: Cache dist
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/dist
@@ -82,7 +102,7 @@ jobs:
           cat plan-dist-manifest.json
           echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: artifacts-plan-dist-manifest
           path: plan-dist-manifest.json
@@ -93,6 +113,14 @@ jobs:
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
+    # id-token/attestations: sign what this job built (proposal P12). The
+    # provenance links each archive to this workflow run and commit;
+    # consumers verify with
+    #   gh attestation verify <file> -R GoPlasmatic/Orion
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
@@ -116,7 +144,7 @@ jobs:
       - name: enable windows longpaths
         run: |
           git config --global core.longpaths true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           submodules: recursive
@@ -131,7 +159,7 @@ jobs:
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -157,8 +185,12 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: "${{ steps.cargo-dist.outputs.paths }}"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: artifacts-build-local-${{ join(matrix.targets, '_') }}
           path: |
@@ -170,24 +202,29 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+    # See build-local-artifacts: the installers get provenance too (P12).
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           submodules: recursive
       - name: Install cached dist
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
       # Get all the local artifacts for the global tasks to use (for e.g. checksums)
       - name: Fetch local artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -204,8 +241,12 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: "${{ steps.cargo-dist.outputs.paths }}"
       - name: "Upload artifacts"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: artifacts-build-global
           path: |
@@ -217,27 +258,30 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - ci-gate
+    # Only run if we're "publishing", only if plan, local and global didn't fail
+    # (skipped is fine), and only if the CI gate confirmed a green CI run for
+    # this commit (hand-maintained condition — see the ci-gate job above)
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.ci-gate.result == 'success' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           submodules: recursive
       - name: Install cached dist
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: cargo-dist-cache
           path: ~/.cargo/bin/
       - run: chmod +x ~/.cargo/bin/dist
       # Fetch artifacts from scratch-storage
       - name: Fetch artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: target/distrib/
@@ -250,14 +294,14 @@ jobs:
           cat dist-manifest.json
           echo "manifest=$(jq -c "." dist-manifest.json)" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           # Overwrite the previous copy
           name: artifacts-dist-manifest
           path: dist-manifest.json
       # Create a GitHub Release while uploading all files to it
       - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: artifacts
@@ -290,14 +334,14 @@ jobs:
       GITHUB_EMAIL: "shankar@goplasmatic.io"
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: true
           repository: "GoPlasmatic/homebrew-tap"
           token: ${{ secrets.GH_PAT }}
       # So we have access to the formula
       - name: Fetch homebrew formulae
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: artifacts-*
           path: Formula/
@@ -337,7 +381,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           submodules: recursive

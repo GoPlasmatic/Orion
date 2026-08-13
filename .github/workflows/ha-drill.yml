@@ -1,0 +1,105 @@
+# Zero-downtime rolling drill (proposal T14).
+#
+# deploy/ha/rolling-drill.sh is the executable form of a headline 1.0 claim:
+# SIGTERM one of two replicas under steady load through the nginx LB and
+# observe ZERO non-2xx responses. Before this workflow it was self-asserting
+# but never asserted — no automation ran it, so the claim rested on a script
+# that could bit-rot silently.
+#
+# Path-filtered to the pieces the drill actually exercises, plus a weekly
+# tick: the graceful-shutdown behaviour lives in src/, but running a full
+# image build + stack + drill on every src change would double CI cost for a
+# property that changes rarely — the cron catches binary drift within a week,
+# and shutdown behaviour itself is pinned per-PR by the shutdown/drain
+# integration tests.
+name: HA Rolling Drill
+
+on:
+  push:
+    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    paths:
+      - "deploy/ha/**"
+      - "docker-compose.ha.yml"
+      - "docker-compose.ha.build.yml"
+      - "Dockerfile"
+      - ".github/workflows/ha-drill.yml"
+  pull_request:
+    paths:
+      - "deploy/ha/**"
+      - "docker-compose.ha.yml"
+      - "docker-compose.ha.build.yml"
+      - "Dockerfile"
+      - ".github/workflows/ha-drill.yml"
+  schedule:
+    # Weekly, Monday 04:17 UTC — off the busy hours, and odd-minuted so it
+    # does not pile onto GitHub's on-the-hour thundering herd.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-drill-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  drill:
+    name: Rolling deploy, zero non-2xx
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Reads ci.yml's docker-build cache scope; deliberately does NOT write it.
+      #
+      # Both workflows fire on the same push event, so they build concurrently
+      # rather than in sequence — the older "this usually costs a cache load"
+      # claim only held if ci.yml had already finished, which it never has.
+      # With both writing `mode=max` to one scope they were two cold builds
+      # racing for the same key: 11m here and 13m there on the run that
+      # prompted this change.
+      #
+      # ci.yml's docker-build runs on every push with no path filter, so it is
+      # the natural writer and this scope is never stale for long. Reading
+      # without writing costs this job nothing when the two race (it just
+      # misses, exactly as before) and wins outright whenever ci.yml's layers
+      # are already published — including the weekly cron, which no longer
+      # needs its own write to benefit.
+      - name: Build the Orion image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: orion:local
+          build-args: |
+            GIT_HASH=${{ github.sha }}
+          cache-from: type=gha,scope=linux/amd64
+
+      - name: Start the HA stack (local image)
+        env:
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+        run: |
+          docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml \
+            up -d --wait --no-build
+
+      - name: Run the drill
+        run: deploy/ha/rolling-drill.sh
+
+      - name: Stack logs on failure
+        if: failure()
+        env:
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+        run: docker compose -f docker-compose.ha.yml logs --tail 200
+
+      - name: Tear down
+        if: always()
+        env:
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
+        run: docker compose -f docker-compose.ha.yml down -v

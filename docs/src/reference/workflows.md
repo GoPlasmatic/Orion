@@ -1,29 +1,30 @@
-# Workflow Reference
+# Workflow Schema
 
 A **workflow** is a versioned, JSON-defined pipeline of tasks. A
-[channel](../architecture/overview.md) links to a workflow by `workflow_id`;
-when a request arrives, Orion matches an active workflow, runs its tasks in
+[channel](../concepts/channels.md) links to a workflow by `workflow_id`.
+When a request arrives, Orion matches an active workflow, runs its tasks in
 order, and returns the resulting data context.
 
-This page is the authoritative reference for the workflow JSON shape, the data
-context model, conditions, and the draft → active lifecycle. For the per-task
-`function.input` schemas, see the [Function Reference](./functions.md).
+Per-task `function.input` schemas live in the
+[Function Reference](./functions.md). The operator catalog for conditions and
+mappings lives in the [Expression Reference](./expressions.md).
 
 ## The workflow object
 
-Send this shape to `POST /api/v1/admin/workflows` (and `PUT .../{id}` to update
-the draft). Fields marked **server-managed** are set by Orion and returned in
-responses — you don't send them on create.
+Send this shape to `POST /api/v1/admin/workflows`; `PUT .../{id}` updates the
+draft. Fields marked *server-managed* are set by Orion and returned in
+responses — you do not send them on create.
 
-| Field | Type | Required | Default | Notes |
-|-------|------|:--------:|---------|-------|
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
 | `workflow_id` | string | no | auto (UUID v4) | Stable identifier. ≤128 chars, alphanumeric plus `.`, `-`, `_`, must start alphanumeric |
 | `name` | string | **yes** | — | Human-readable name. ≤255 chars, non-empty |
 | `description` | string | no | — | ≤2048 chars |
-| `priority` | integer | no | `0` | Match order — higher priority workflows are evaluated first (see [Matching](#matching)) |
+| `priority` | integer | no | `0` | Match order. Higher-priority workflows are evaluated first (see [Matching](#matching)) |
 | `condition` | JSONLogic | no | `true` | Whether the workflow matches a request (see [Conditions](#conditions)) |
 | `tasks` | array | **yes** | — | Ordered, non-empty list of [task objects](#tasks) |
 | `tags` | string[] | no | `[]` | Free-form labels for filtering |
+| `loop` | object | no | — | Run the task list once per sweep instead of once in total (see [Loop](#loop)) |
 | `continue_on_error` | bool | no | `false` | If `true`, a failing task does not halt the pipeline (see [Error handling](#error-handling)) |
 | `version` | integer | server-managed | `1` | Increments per saved version of a `workflow_id` |
 | `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
@@ -36,27 +37,27 @@ Responses wrap the resource in a `data` envelope:
 { "data": { "workflow_id": "high-value-order", "version": 1, "status": "draft", "...": "..." } }
 ```
 
-Validation failures return `400` with a structured error envelope — see the
-[Admin API](../api/admin.md#error-response-format) for the `FieldError` format.
+Validation failures return `400` with a field-level error envelope — see
+[Errors](./errors.md) for the format.
 
 ## Tasks
 
 Each entry in `tasks` is a single step in the pipeline:
 
-| Field | Type | Required | Notes |
-|-------|------|:--------:|-------|
-| `id` | string | **yes** | Unique within the workflow; used in tracing |
-| `name` | string | **yes** | Human-readable label |
-| `function` | object | **yes** | The function to run — see below |
-| `condition` | JSONLogic | no | If present and falsy, this task is skipped |
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `id` | string | **yes** | — | Unique within the workflow; used in tracing |
+| `name` | string | **yes** | — | Human-readable label |
+| `function` | object | **yes** | — | The function to run — see below |
+| `condition` | JSONLogic | no | — | If present and falsy, this task is skipped |
 
 The `function` object names a [built-in function](./functions.md) and supplies
 its `input`:
 
-| Field | Type | Required | Notes |
-|-------|------|:--------:|-------|
-| `name` | string | **yes** | One of the [16 built-in functions](./functions.md) |
-| `input` | object | depends | Function-specific parameters. Connector functions are schema-validated on create |
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `name` | string | **yes** | — | One of the [built-in functions](./functions.md) |
+| `input` | object | depends | — | Function-specific parameters. Connector functions are schema-validated on create |
 
 ```json
 {
@@ -72,20 +73,23 @@ its `input`:
 
 ## The data context
 
-Tasks share a single JSON document, the **data context**, with two top-level
-areas your JSONLogic can read:
+Tasks share a single JSON document, the **data context**. Its top level holds
+exactly three areas your JSONLogic can read:
 
-- `data` — the working document. The request body is parsed into it by
-  `parse_json` (or `parse_xml`), tasks read and write `data.*`, and for a sync
-  channel the final `data` object is what's returned to the caller.
-- `metadata` — request context such as headers, query params, and path params,
-  available to conditions and validation.
+| Area | Starts as | Purpose |
+|------|-----------|---------|
+| `data` | `{}` | The working document. Tasks read and write `data.*`. For a sync channel, the final `data` object is the response body |
+| `metadata` | ingress-stamped | Request context — channel name, method, headers, and params (see [Request metadata](#request-metadata)) |
+| `temp_data` | `{}` | Scratch space for intermediate values. Not part of the response |
 
-Most functions write their result to a **dotted output path** (e.g.
-`response_path`, `output`, or a `map` mapping `path`), which is created inside
-the context if it doesn't exist.
+> [!WARNING]
+> **`payload` is not in the context.** The raw ingress payload lives in a
+> sibling field outside the JSONLogic context, so `{"var": "payload.x"}`
+> resolves to nothing. The only way to reach it is `parse_json` or `parse_xml`
+> with `source: "payload"`, which parses it into `data`.
 
-> **The parse-then-process pattern.** A workflow that reads request data should
+> [!TIP]
+> **The parse-then-process pattern.** A workflow that reads request data must
 > start with `parse_json`; otherwise conditions referencing `data.*` see an
 > empty context.
 
@@ -98,48 +102,185 @@ the context if it doesn't exist.
 }
 ```
 
+### Output paths
+
+Every connector function writes its result to a dotted path named `output`; a
+`map` task uses its mapping `path` instead. Orion creates the path inside the
+context if it does not exist. `http_call` and `channel_call` also accept the
+pre-1.0 spelling `response_path`. Supplying **both** in one input is a
+duplicate-field error, not a precedence rule — see
+[Support & Compatibility](./support.md#accepted-alternate-spellings).
+
+### Request metadata
+
+The ingress that receives a request stamps `metadata`. Each ingress stamps a
+different set of keys.
+
+**HTTP.** Orion copies the caller's `metadata` object first, when the request
+supplies one, then stamps its own keys on top:
+
+| Key | Stamped | Value |
+|-----|---------|-------|
+| `channel` | always | The resolved channel name. Always overrides a caller-supplied value |
+| `http_method` | always | The request method (`POST`, `GET`, …) |
+| `params` | only when non-empty | Path parameters extracted by the REST route pattern |
+| `query` | only when non-empty | Query-string parameters |
+| `headers` | always | Every request header, names lowercased. Values of `authorization`, `cookie`, `proxy-authorization`, and `x-api-key` are masked |
+
+Orion stamps nothing else on the HTTP path: no client IP, no request path, no
+trace ID.
+
+**Kafka.** A consumed record stamps:
+
+| Key | Value |
+|-----|-------|
+| `channel` | The channel bound to the topic |
+| `kafka_topic` | Source topic |
+| `kafka_partition` | Partition number |
+| `kafka_offset` | Record offset |
+| `kafka_key` | The record key — stamped only when it is valid UTF-8 |
+
+Kafka record headers are not copied into `metadata`.
+
+**`channel_call`.** The called workflow inherits the parent's `metadata`.
+Orion overwrites `channel` with the target channel's name and adds two
+tracking keys: `_orion_call_depth` (nesting depth) and `_orion_call_chain`
+(the array of channel names traversed).
+
+### The `_orion` namespace
+
+Orion reserves these keys and no others:
+
+| Key | Where | Meaning |
+|-----|-------|---------|
+| `data._orion.response` | context | Shaped channels write the response `status`, `headers`, and `body` here; Orion drains it before replying. See [Channel Configuration](./channel-config.md) |
+| `_orion.profile` | response envelope | Per-task timings when profiling is requested. Never in the context. See the [Data API](./data-api.md) |
+| `metadata._orion_call_depth` | context | `channel_call` nesting depth |
+| `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
+
+No other key or prefix in the context is reserved.
+
 ## Conditions
 
-Conditions are [JSONLogic](https://jsonlogic.com) expressions, evaluated by
-[datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) and compiled once at
-engine build time. They appear at two levels:
+Conditions are [JSONLogic](https://jsonlogic.com) expressions, compiled once
+at engine build time. They appear at two levels:
 
-- **Workflow-level `condition`** — decides whether the whole workflow *matches* a
-  request. Defaults to `true` (always matches). If multiple active workflows are
-  bound to a channel, the first match wins (see [Matching](#matching)).
-- **Task-level `condition`** — decides whether *that task* runs within a matched
-  workflow. Use it for branching inside a pipeline.
+- **Workflow-level `condition`** — decides whether the whole workflow
+  *matches* a request. Defaults to `true` (always matches). If multiple active
+  workflows are bound to a channel, the first match wins (see
+  [Matching](#matching)).
+- **Task-level `condition`** — decides whether *that task* runs within a
+  matched workflow. Use it for branching inside a pipeline.
 
-Common operators (see the [JSONLogic spec](https://jsonlogic.com/operations.html)
-for the full set):
+The complete operator set — core JSONLogic plus the date, string, array, math,
+and control extensions — is cataloged in the
+[Expression Reference](./expressions.md). That page also documents the
+silent-failure edges, including misspelled operators inside `map` mappings.
 
-| Operator | Example | Meaning |
-|----------|---------|---------|
-| `var` | `{ "var": "data.order.total" }` | Read a value from the context |
-| `==` / `!=` | `{ "==": [{ "var": "data.type" }, "order"] }` | Loose equality |
-| `>` `>=` `<` `<=` | `{ ">": [{ "var": "data.order.total" }, 10000] }` | Comparison |
-| `and` / `or` / `!` | `{ "and": [a, b] }` | Boolean logic |
-| `!!` | `{ "!!": [{ "var": "data.order.id" }] }` | Truthiness (e.g. "is present") |
-| `if` | `{ "if": [cond, then, else] }` | Conditional value |
-| `in` | `{ "in": [{ "var": "data.tier" }, ["vip", "premium"]] }` | Membership |
-| `cat` | `{ "cat": ["Order #", { "var": "data.order.id" }] }` | String concatenation |
-| `+` `-` `*` `/` `%` | `{ "*": [{ "var": "data.qty" }, 1.1] }` | Arithmetic |
+## Loop
+
+A workflow with a `loop` runs its **whole task list once per sweep** instead of
+once in total. It is how one workflow processes each element of an array —
+calling a connector per element, which a JSONLogic `map` cannot do.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `max` | integer | **yes** | — | Upper bound on sweeps. Half-open: `init: 0, max: 10` yields counter values `0`–`9` |
+| `counter` | string | no | — | `temp_data` field holding the count — `"i"` is `temp_data.i`, and dots nest (`"cursor.index"`). Omit to bound the loop without exposing the count |
+| `init` | integer | no | `0` | First counter value |
+| `increment` | integer | no | `1` | Added after each sweep. Must be at least `1`, so the counter always advances |
+
+Per sweep, in order: the engine writes the counter, checks `counter < max`,
+re-evaluates the **workflow** `condition`, and runs the task list. The sweep
+happens only if both the bound and the condition hold.
+
+Stopping early is a [`filter`](./functions.md#filter) task with `on_reject:
+"halt"`, which ends the whole loop rather than the current sweep:
+
+```json
+{
+  "id": "notify-each-recipient",
+  "name": "Notify each recipient",
+  "condition": true,
+  "loop": { "counter": "i", "max": 500 },
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "more",
+      "name": "Stop once every recipient is done",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": { "<": [{ "var": "temp_data.i" }, { "var": "data.req.count" }] },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "send",
+      "name": "Send one notification",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "notifier",
+          "method": "POST",
+          "path": "/send",
+          "body_logic": { "val": ["data", "req", "recipients", { "val": ["temp_data", "i"] }] }
+        }
+      }
+    }
+  ]
+}
+```
+
+> [!WARNING]
+> **Do not put the break in the workflow `condition`.** It looks like the
+> natural home for it and it does not work: `data` [starts empty](#the-data-context),
+> so `{"<": [{"var": "temp_data.i"}, {"var": "data.req.count"}]}` as a workflow
+> condition is false on sweep 0 — before any `parse_json` has run — and the
+> loop never starts at all. Inside the body the parse has already happened,
+> which is why the break belongs there.
+>
+> A workflow condition can still end a loop, but only over what is readable
+> *before* the sweep's own tasks run: `metadata`, or `data` a previous workflow
+> populated.
+
+So the two bounds do different jobs. `max` is structural — the loop cannot
+outrun it, whatever the body does. The `filter` is what ends it early, once the
+real work is done. Reaching `max` is normal completion, not an error: `max` is
+always something you wrote, so hitting it is the bound you asked for.
+
+> [!NOTE]
+> `max` is capped by [`engine.max_loop_iterations`](./configuration.md)
+> (default `10000`), and a workflow exceeding it is refused with `400` at write
+> time rather than at activation. A sweep can call a connector, so an
+> unbounded loop is a request that holds pool connections until the channel
+> timeout fires.
+
+Each sweep's steps appear in the [execution trace](../operate/traces.md)
+tagged with the iteration they belong to, so a trace of ten sweeps reads as ten
+groups rather than one flat list.
 
 ## Error handling
 
-By default the pipeline **halts** on the first task that errors, and the error is
-returned to the caller. Set `continue_on_error: true` on the workflow to keep
-running subsequent tasks and collect errors instead. The
+By default the pipeline **halts** on the first task that errors, and the error
+is returned to the caller. Set `continue_on_error: true` on the workflow to
+keep running subsequent tasks and collect errors instead. The
 [`filter`](./functions.md#filter) function offers finer control: `on_reject:
-"halt"` stops the workflow, while `on_reject: "skip"` skips only the current task.
+"halt"` stops the workflow, while `on_reject: "skip"` skips only the current
+task.
 
-For async channels, a task failure routes the trace to the Dead Letter Queue for
-automatic retry — see [Resilience](../features/resilience.md).
+For async channels, a task failure routes the trace to the dead letter queue
+for automatic retry.
 
 ## Lifecycle and versioning
 
-Each `workflow_id` has one or more **versions**, identified by the composite key
-`(workflow_id, version)`. Status moves in one direction:
+Each `workflow_id` has one or more **versions**, identified by the composite
+key `(workflow_id, version)`. Status moves in one direction:
 
 ```orion-diagram
 {
@@ -156,13 +297,14 @@ Each `workflow_id` has one or more **versions**, identified by the composite key
 }
 ```
 
-- **draft** — editable; not served. Only **one draft per `workflow_id`** may exist
-  at a time. Creating a workflow starts it as a draft.
-- **active** — served; **immutable**. To change an active workflow, create a new
-  draft version, edit it, and activate it.
-- **archived** — retired; kept for history and instant rollback.
-
-Endpoints (see the [Admin API](../api/admin.md#workflows) for full details):
+- **draft** — editable; not served. Only **one draft per `workflow_id`** may
+  exist at a time. Creating a workflow starts it as a draft.
+- **active** — served; **immutable**. To change an active workflow, create a
+  new draft version, edit it, and activate it.
+- **archived** — retired, and kept. An archived version is a rollback *source*:
+  its content is what you copy into a new draft and activate. Nothing
+  reactivates an archived version in place — see
+  [Version & Roll Out Changes › Roll back](../build/versioning.md#roll-back).
 
 | Action | Endpoint |
 |--------|----------|
@@ -173,31 +315,27 @@ Endpoints (see the [Admin API](../api/admin.md#workflows) for full details):
 | Change status | `PATCH /api/v1/admin/workflows/{id}/status` |
 | Adjust rollout | `PATCH /api/v1/admin/workflows/{id}/rollout` |
 
+The Admin API owns endpoint semantics: see
+[Lifecycle](./admin-api.md#lifecycle) for the first four rows and
+[Status changes](./admin-api.md#status-changes) for status and rollout.
+
 ### Matching
 
-When a channel resolves to its workflows, Orion evaluates **active** workflows in
-descending `priority`, then runs the first whose `condition` is truthy. Give a
+When a channel resolves its workflows, Orion evaluates **active** workflows in
+descending `priority` and runs the first whose `condition` is truthy. Give a
 catch-all workflow a low priority and specific ones a higher priority to layer
-behavior.
+behaviour.
 
 ### Rollout
 
-`rollout_percentage` (1–100) enables canary releases across versions. Activating a
-new version at, say, `25` directs ~25% of traffic to it and the remainder to the
-previously active version; traffic is bucketed by a stable hash of the request so
-a given caller is routed consistently. Promote by raising the percentage to `100`
-(which archives the older active version), or roll back instantly by re-activating
-a previous version.
-
-```bash
-# Activate a new version to 10% of traffic
-curl -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
-  -H "Content-Type: application/json" -d '{ "status": "active", "rollout_percentage": 10 }'
-
-# Ramp up later
-curl -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/rollout \
-  -H "Content-Type: application/json" -d '{ "rollout_percentage": 50 }'
-```
+`rollout_percentage` (1–100) enables canary releases across versions.
+Activating a new version at `25` directs about 25% of traffic to it; the
+remainder goes to the previously active version. Traffic is bucketed by a
+stable hash of the request, so a given caller routes consistently. Promote by
+raising the percentage to `100`, which archives the older active version. Roll
+back instantly by re-activating a previous version. Both moves go through the
+status and rollout endpoints — see
+[Status changes](./admin-api.md#status-changes).
 
 ## Complete example
 
@@ -243,6 +381,13 @@ curl -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/roll
 }
 ```
 
-See [Use Cases & Patterns](../tutorials/use-cases.md) for complete, tested
-workflows, and the [Function Reference](./functions.md) for every function's
-input schema.
+## Related
+
+- [Function Reference](./functions.md) — the `input` schema for every built-in
+  function.
+- [Expression Reference](./expressions.md) — every operator conditions and
+  mappings can use, with the silent-failure edges.
+- [Channel Configuration](./channel-config.md) — how a channel binds to a
+  workflow and shapes its response.
+- [Admin API](./admin-api.md#lifecycle) — the endpoints that create, version,
+  and activate workflows.

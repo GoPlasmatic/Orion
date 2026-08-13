@@ -1,0 +1,37 @@
+# Postgres + Orion for the postgres-orders example.
+#
+#   docker compose up -d
+#   cd .. && ./deploy.sh postgres-orders
+#
+# The orion image is pinned below (override with ORION_VERSION=…); any
+# release from 1.0.0 up carries the portable data dialect (data_query /
+# data_write) this example uses. To run a locally installed orion-server
+# against just the database instead:
+#
+#   docker compose up -d postgres
+#   ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orion
+      POSTGRES_PASSWORD: orion
+      POSTGRES_DB: orion_orders
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion_orders"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  orion:
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy

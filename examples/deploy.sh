@@ -1,49 +1,76 @@
 #!/usr/bin/env bash
 #
-# Deploy and run one Orion example end-to-end.
+# Deploy and run one example package end-to-end.
 #
-#   ./deploy.sh <example-dir> [base-url]
+#   ./deploy.sh <package> [base-url]
 #
-# Creates + activates the workflow, creates + activates the channel (and
-# creates the connector first, if the example ships a connector.json), then
-# POSTs request.json and prints the response. Idempotent: re-running against
-# the same instance skips objects that already exist. Requires curl and
+# A package is the set of entities that ship together — its channels, their
+# workflows, and the connector when the package needs one. The script creates
+# and activates every workflow, then every channel (creating the connector
+# first, if the package ships a connector.json), then POSTs request.json to the
+# primary channel's route and prints the response. Idempotent: re-running
+# against the same instance skips objects that already exist. Requires curl and
 # python3.
+#
+# File conventions inside a package directory:
+#   workflow.json          the primary workflow          (required)
+#   workflow-<name>.json   additional workflows          (optional)
+#   channel.json           the primary channel           (required)
+#   channel-<name>.json    additional channels           (optional)
+#   connector.json         a connector the package needs (optional)
+#   request.json           a sample request              (optional)
+#
+# A package whose primary channel has no route_pattern — a Kafka channel — is
+# deployed the same way; the script prints the topic it now consumes instead of
+# sending a request.
 #
 # Example:
 #   ./deploy.sh high-value-order
-#   ./deploy.sh order-classification http://localhost:8080
+#   ./deploy.sh channel-composition http://localhost:8080
 set -euo pipefail
+
+cd "$(dirname "$0")"
 
 DIR="${1:-}"
 BASE="${2:-http://localhost:8080}"
 ADMIN="$BASE/api/v1/admin"
 
+DIR="${DIR%/}"
+# Accept a bare package name (`high-value-order`) or its path (`packages/high-value-order`).
+if [[ -n "$DIR" && ! -d "$DIR" && -d "packages/$DIR" ]]; then
+  DIR="packages/$DIR"
+fi
+
 if [[ -z "$DIR" || ! -d "$DIR" ]]; then
-  echo "usage: ./deploy.sh <example-dir> [base-url]" >&2
+  echo "usage: ./deploy.sh <package> [base-url]" >&2
   echo "example: ./deploy.sh high-value-order" >&2
   exit 1
 fi
-
-DIR="${DIR%/}"
 WF_FILE="$DIR/workflow.json"
 CH_FILE="$DIR/channel.json"
 REQ_FILE="$DIR/request.json"
 CONN_FILE="$DIR/connector.json"
 
-for f in "$WF_FILE" "$CH_FILE" "$REQ_FILE"; do
+for f in "$WF_FILE" "$CH_FILE"; do
   [[ -f "$f" ]] || { echo "missing $f" >&2; exit 1; }
 done
 
-# Read an id field out of a JSON file with the stdlib (no jq dependency).
-json_field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
+# Read a field out of a JSON file with the stdlib (no jq dependency). Prints
+# nothing when the field is absent, so a caller can test for it.
+json_field() {
+  python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+v = d.get(sys.argv[2])
+print("" if v is None else v)' "$1" "$2"
+}
 
 have()   { curl -fsS "$1" > /dev/null 2>&1; }
 active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
 
-WF_ID=$(json_field "$WF_FILE" workflow_id)
-CH_ID=$(json_field "$CH_FILE" channel_id)
-ROUTE=$(json_field "$CH_FILE" route_pattern)
+# The primary entity first, then any siblings, so a package that composes
+# channels deploys its callee alongside its caller in one run.
+workflow_files() { echo "$WF_FILE"; ls "$DIR"/workflow-*.json 2>/dev/null || true; }
+channel_files()  { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true; }
 
 if [[ -f "$CONN_FILE" ]]; then
   CONN_ID=$(json_field "$CONN_FILE" id)
@@ -51,44 +78,65 @@ if [[ -f "$CONN_FILE" ]]; then
     echo "==> Connector '$CONN_ID' already exists"
   else
     echo "==> Create connector '$CONN_ID'"
-    curl -fsS -X POST "$ADMIN/connectors" \
+    curl --fail-with-body -sS -X POST "$ADMIN/connectors" \
       -H 'Content-Type: application/json' --data @"$CONN_FILE" > /dev/null
   fi
 fi
 
-if have "$ADMIN/workflows/$WF_ID"; then
-  echo "==> Workflow '$WF_ID' already exists"
-else
-  echo "==> Create workflow '$WF_ID'"
-  curl -fsS -X POST "$ADMIN/workflows" \
-    -H 'Content-Type: application/json' --data @"$WF_FILE" > /dev/null
+while IFS= read -r wf; do
+  [[ -n "$wf" ]] || continue
+  WF_ID=$(json_field "$wf" workflow_id)
+  if have "$ADMIN/workflows/$WF_ID"; then
+    echo "==> Workflow '$WF_ID' already exists"
+  else
+    echo "==> Create workflow '$WF_ID'"
+    curl --fail-with-body -sS -X POST "$ADMIN/workflows" \
+      -H 'Content-Type: application/json' --data @"$wf" > /dev/null
+  fi
+  if active "$ADMIN/workflows/$WF_ID"; then
+    echo "==> Workflow '$WF_ID' already active"
+  else
+    echo "==> Activate workflow '$WF_ID'"
+    curl --fail-with-body -sS -X PATCH "$ADMIN/workflows/$WF_ID/status" \
+      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
+  fi
+done < <(workflow_files)
+
+while IFS= read -r ch; do
+  [[ -n "$ch" ]] || continue
+  CH_ID=$(json_field "$ch" channel_id)
+  if have "$ADMIN/channels/$CH_ID"; then
+    echo "==> Channel '$CH_ID' already exists"
+  else
+    echo "==> Create channel '$CH_ID'"
+    curl --fail-with-body -sS -X POST "$ADMIN/channels" \
+      -H 'Content-Type: application/json' --data @"$ch" > /dev/null
+  fi
+  if active "$ADMIN/channels/$CH_ID"; then
+    echo "==> Channel '$CH_ID' already active"
+  else
+    echo "==> Activate channel '$CH_ID'"
+    curl --fail-with-body -sS -X PATCH "$ADMIN/channels/$CH_ID/status" \
+      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
+  fi
+done < <(channel_files)
+
+ROUTE=$(json_field "$CH_FILE" route_pattern)
+TOPIC=$(json_field "$CH_FILE" topic)
+
+if [[ -z "$ROUTE" ]]; then
+  # A Kafka channel has no HTTP route; produce to its topic to exercise it.
+  echo "==> Deployed. '$(json_field "$CH_FILE" channel_id)' consumes topic '${TOPIC:-?}'"
+  echo "    Produce a record to that topic to run the workflow."
+  exit 0
 fi
 
-if active "$ADMIN/workflows/$WF_ID"; then
-  echo "==> Workflow '$WF_ID' already active"
-else
-  echo "==> Activate workflow '$WF_ID'"
-  curl -fsS -X PATCH "$ADMIN/workflows/$WF_ID/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
-fi
-
-if have "$ADMIN/channels/$CH_ID"; then
-  echo "==> Channel '$CH_ID' already exists"
-else
-  echo "==> Create channel '$CH_ID'"
-  curl -fsS -X POST "$ADMIN/channels" \
-    -H 'Content-Type: application/json' --data @"$CH_FILE" > /dev/null
-fi
-
-if active "$ADMIN/channels/$CH_ID"; then
-  echo "==> Channel '$CH_ID' already active"
-else
-  echo "==> Activate channel '$CH_ID'"
-  curl -fsS -X PATCH "$ADMIN/channels/$CH_ID/status" \
-    -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
+if [[ ! -f "$REQ_FILE" ]]; then
+  echo "==> Deployed. No request.json to send."
+  exit 0
 fi
 
 echo "==> POST /api/v1/data$ROUTE"
-curl -fsS -X POST "$BASE/api/v1/data$ROUTE" \
+curl --fail-with-body -sS -X POST "$BASE/api/v1/data$ROUTE" \
   -H 'Content-Type: application/json' --data @"$REQ_FILE"
 echo

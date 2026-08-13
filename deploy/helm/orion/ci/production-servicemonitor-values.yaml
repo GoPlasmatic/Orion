@@ -1,0 +1,13 @@
+# CI render values (proposal T13): production plus the Prometheus Operator
+# ServiceMonitor, the render path the servicemonitor.yaml `fail` guard and the
+# CRD-typed output make worth checking separately.
+storage:
+  url: postgres://orion:orion@postgres.example.internal:5432/orion
+cluster:
+  redisUrl: redis://redis.example.internal:6379
+adminAuth:
+  apiKeys:
+    - ci-render-only-not-a-real-key
+metrics:
+  serviceMonitor:
+    enabled: true

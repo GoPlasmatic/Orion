@@ -1,0 +1,292 @@
+# Default values for the Orion chart.
+#
+# The defaults deploy a 2-replica HA cluster and REQUIRE two inputs:
+#   storage.url   — a postgres:// (or mysql://) URL
+#   cluster.redisUrl — a redis:// URL
+# For a self-contained dev/demo install, set devStack.enabled=true instead:
+# it runs a throwaway single-replica Postgres + Redis in the same namespace
+# and wires Orion to them automatically.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/goplasmatic/orion
+  # Defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Runtime environment for Orion's config validation. The default
+# "production" forces admin auth on and refuses permissive CORS at boot.
+# devStack installs always run as "development" regardless of this value.
+env: production
+
+# Admin API authentication. With env=production (the default) Orion refuses
+# to boot without keys, so an install must provide either an existing Secret
+# holding a comma-separated `api-keys` entry, or inline apiKeys (rendered
+# into a chart-managed Secret). Generate one with: openssl rand -hex 32
+adminAuth:
+  enabled: true
+  existingSecret: ""
+  apiKeys: []
+
+# CORS origins for browser clients of the admin API (e.g. the Orion-ui
+# dashboard). Empty means no cross-origin access — the secure default.
+# Orion rejects a "*" wildcard in production at boot.
+cors:
+  allowedOrigins: []
+
+# Orion cluster-mode coordination (multi-instance HA).
+cluster:
+  enabled: true
+  # Shared Redis URL for dedup / response cache / rate limits.
+  # Required when cluster.enabled and devStack.enabled=false.
+  redisUrl: ""
+  epochPollIntervalMs: 2000
+
+storage:
+  # Database URL. Required unless devStack.enabled=true.
+  # Example: postgres://orion:orion@my-postgres:5432/orion
+  url: ""
+  # Name of an existing Secret with a `storage-url` key, if you prefer not
+  # to put the URL in values. Takes precedence over storage.url.
+  existingSecret: ""
+  # Replicas never migrate at boot; the pre-upgrade Job below does. Orion
+  # refuses to start if this is true on a production cluster install — every
+  # replica would race the others. (devStack installs run as `development`
+  # and migrate at boot, since they have no Job.)
+  autoMigrate: false
+
+# Pre-install/pre-upgrade `orion-server migrate` Job (expand/contract
+# convention: see CONTRIBUTING.md).
+migrateJob:
+  enabled: true
+  backoffLimit: 3
+
+server:
+  port: 8080
+  # Drain: readiness withdrawn immediately on SIGTERM, keep serving this long.
+  shutdownDrainSecs: 15
+  # Bound on the post-drain in-flight wait (0 = unbounded).
+  shutdownForceTimeoutSecs: 20
+
+logging:
+  format: json
+  level: info
+
+# Prometheus metrics. On by default: this chart deploys a production cluster,
+# and the operational alerts 1.0 documents (orion_trace_dlq_depth,
+# orion_trace_queue_rejected_total, orion_circuit_breaker_rejections_total)
+# all need a scrape target to exist.
+#
+# Metrics are served by a DEDICATED listener on metrics.port, not on the main
+# HTTP port. On the main listener /metrics sits behind admin auth, so a
+# scraper would have to hold an admin API key — a credential that can also
+# rewrite workflows and read trace payloads. The dedicated listener needs no
+# credential, and setting it makes the main listener stop serving /metrics
+# entirely. Because it is unauthenticated it is deliberately NOT reachable
+# through the Ingress, which targets the named `http` port only.
+metrics:
+  enabled: true
+  port: 9090
+  # Address the dedicated listener binds. Must be a literal IP:port —
+  # Orion rejects a hostname at boot. Empty means 0.0.0.0:<metrics.port>,
+  # which is what makes it reachable from a Prometheus pod.
+  bindAddr: ""
+  # Publish the metrics port on the Service. ServiceMonitor scrapes Service
+  # endpoints and needs this; PodMonitor scrapes pods directly and does not.
+  service:
+    enabled: true
+  # Emit prometheus.io/{scrape,port,path} pod annotations, for a Prometheus
+  # that discovers by annotation instead of by Operator CRD.
+  prometheusAnnotations: false
+  # Prometheus Operator ServiceMonitor. Off by default because the CRD is
+  # not present on every cluster and a missing CRD fails the install.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: ""
+    # Set to match your Prometheus `serviceMonitorSelector`.
+    labels: {}
+    annotations: {}
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+  # Prometheus Operator PodMonitor, for setups that scrape pods directly.
+  # Works with metrics.service.enabled=false.
+  podMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: ""
+    labels: {}
+    annotations: {}
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+
+# Extra environment variables for the Orion container (ORION_* overrides).
+# - name: ORION_ENGINE__ROLLOUT_STICKY_HEADER
+#   value: x-user-id
+extraEnv: []
+
+# Extra environment sourced from Secrets/ConfigMaps.
+extraEnvFrom: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: orion.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+# Rolling deploys never remove a replica before its replacement is Ready,
+# preserving the graceful-drain guarantee the probes and
+# terminationGracePeriodSeconds are built around. With type=Recreate the
+# rollingUpdate block is omitted from the rendered Deployment.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Pod-level security context. The image's `orion` user is pinned to
+# UID/GID 10001 in the Dockerfile; the numeric runAsUser/runAsGroup are
+# what let the kubelet's runAsNonRoot verification pass (it cannot verify
+# a named image USER), and fsGroup makes freshly provisioned PVCs
+# (persistence.enabled) writable by the orion user on mount.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. The root filesystem is read-only; the
+# chart mounts an emptyDir at /tmp and a data volume at
+# persistence.mountPath (see below) as the only writable paths.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Boot can be slow (pending-migration check, cluster Redis connect,
+# connector loading, engine build over a large channel set). The startup
+# probe holds liveness off for up to periodSeconds * failureThreshold
+# (default 5 minutes) so a slow boot does not CrashLoop.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+
+# Writable data volume mounted at mountPath — where a sqlite: storage.url
+# and the backup_dir output live. Postgres/MySQL installs do not need it
+# and get a plain emptyDir at the same path. For a single-node SQLite
+# install set persistence.enabled=true with cluster.enabled=false,
+# replicaCount=1 and strategy.type=Recreate (a ReadWriteOnce claim cannot
+# serve a surge replica), plus migrateJob.enabled=false with
+# storage.autoMigrate=true — a hook Job cannot share the replica's volume.
+persistence:
+  enabled: false
+  # Reuse a pre-existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+  mountPath: /app/data
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: true
+  # Keep at least one replica during voluntary disruptions.
+  maxUnavailable: 1
+
+# NetworkPolicy for the Orion pods (P8). Off by default: it requires a CNI
+# that enforces NetworkPolicy, and useful egress rules depend on where YOUR
+# databases, Redis, Kafka and upstream APIs live. When enabled with no egress
+# rules, the pod can resolve DNS and reach nothing else — fail-closed on
+# purpose, so an unconfigured policy is loud rather than silently open.
+# Orion makes outbound calls wherever its connectors point (it is
+# SSRF-relevant by design); this is the network-level pairing for the
+# application-level allow_private_urls guard.
+networkPolicy:
+  enabled: false
+  ingress:
+    # NetworkPolicyPeer list for the HTTP (and metrics) ports, verbatim.
+    # Empty = admit from anywhere the CNI routes.
+    from: []
+  egress:
+    # Always allow DNS (port 53), without which nothing else can be named.
+    allowDns: true
+    # NetworkPolicyEgressRule list, verbatim — point these at your database,
+    # Redis, Kafka and the upstreams your connectors call.
+    rules: []
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+# When empty, the chart defaults to a soft podAntiAffinity that spreads
+# server replicas across nodes (an HA install where both replicas share a
+# node does not survive that node). Set explicitly to override.
+affinity: {}
+# Rendered verbatim when set, e.g. to spread across zones:
+# - maxSkew: 1
+#   topologyKey: topology.kubernetes.io/zone
+#   whenUnsatisfiable: ScheduleAnyway
+#   labelSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: orion
+topologySpreadConstraints: []
+
+# `helm test` hooks: a DB/Kafka probe via the binary's own test-connectivity
+# subcommand, and a live check of /health, /readyz and (when enabled) the
+# unauthenticated metrics port. Inert until `helm test` is run.
+tests:
+  enabled: true
+
+# Throwaway in-namespace Postgres + Redis for dev/demo installs ONLY.
+# No persistence tuning, no HA, no backups — never use in production.
+devStack:
+  enabled: false
+  postgres:
+    image: postgres:16-alpine
+    user: orion
+    password: orion
+    database: orion
+  redis:
+    image: redis:7-alpine

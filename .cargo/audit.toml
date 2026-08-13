@@ -1,4 +1,19 @@
+# cargo-audit configuration. Keep in step with deny.toml's [advisories]
+# ignore list — CI enforces cargo-deny; this file exists so a developer's
+# `cargo audit` reaches the same verdict instead of re-flagging advisories
+# the project has already assessed.
+
 [advisories]
 ignore = [
-    "RUSTSEC-2023-0071",  # rsa via sqlx-mysql in Cargo.lock; we only use SQLite
+    # RUSTSEC-2023-0071 — Marvin timing sidechannel in the `rsa` crate (no
+    # fixed release exists). Assessed 2026-07-27 (proposal T11): `rsa`
+    # enters via sqlx-mysql's auth handshake, where the CLIENT encrypts the
+    # password with the SERVER's public key; Marvin leaks timing from
+    # PRIVATE-key operations, which never happen client-side. TLS removes
+    # the RSA path entirely. Full rationale in deny.toml. Revisit if `rsa`
+    # ships a fix or sqlx swaps it out.
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0173 — proc-macro-error2 unmaintained; compile-time-only
+    # dep of tabled_derive (orion-cli). Full rationale in deny.toml.
+    "RUSTSEC-2026-0173",
 ]

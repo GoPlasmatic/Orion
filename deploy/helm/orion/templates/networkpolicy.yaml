@@ -1,0 +1,51 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+P8: Orion is an SSRF-relevant workload by design — workflows make outbound
+HTTP calls wherever their connectors point — and it holds database and Redis
+credentials. Application-level private-IP blocking (allow_private_urls) is a
+guard, not a guarantee: the driver re-resolves hostnames when it dials. This
+policy is the network-level half of that pairing.
+
+Egress defaults to DNS-only when no rules are given, which is deliberately
+fail-closed: an install that enables the policy without writing egress rules
+gets a pod that can resolve names and reach nothing — loud and immediately
+visible — rather than one that silently allows everything.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "orion.fullname" . }}
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: {{ .Values.server.port }}
+          protocol: TCP
+        {{- if .Values.metrics.enabled }}
+        - port: {{ .Values.metrics.port }}
+          protocol: TCP
+        {{- end }}
+      {{- with .Values.networkPolicy.ingress.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.allowDns }}
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.rules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

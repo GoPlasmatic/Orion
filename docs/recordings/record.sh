@@ -5,7 +5,7 @@
 # Single source of truth per flow: asciinema records a real terminal session
 # driving a throwaway orion-server, then we emit BOTH artifacts from that cast:
 #   - <name>.cast  -> docs/src/casts/   (interactive asciinema player in mdBook)
-#   - <name>.gif   -> media/            (animated GIF embedded in the READMEs)
+#   - <name>.gif   -> docs/media/       (animated GIF embedded in the READMEs)
 # so the GIF and the cast can never drift apart.
 #
 # Prereqs: asciinema, agg, jq, curl, lsof   (brew install asciinema agg jq)
@@ -18,13 +18,11 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # docs/recordings
-ORION_DIR="$(cd "$HERE/../.." && pwd)"                 # .../Orion
-CLI_DIR="$(cd "$ORION_DIR/../Orion-cli" && pwd)"       # .../Orion-cli
+ORION_DIR="$(cd "$HERE/../.." && pwd)"                 # .../Orion (workspace root; the CLI is the in-tree crate)
 
-EXAMPLES="$ORION_DIR/examples/high-value-order"
+EXAMPLES="$ORION_DIR/examples/packages/high-value-order"
 CAST_DIR="$ORION_DIR/docs/src/casts"
-ORION_MEDIA="$ORION_DIR/media"
-CLI_MEDIA="$CLI_DIR/media"
+MEDIA_DIR="$ORION_DIR/docs/media"
 
 PORT="${ORION_PORT:-8080}"
 WINDOW="${WINDOW:-100x32}"
@@ -35,9 +33,9 @@ export EXAMPLES ORION_PORT="$PORT"
 export ORION_SERVER_URL="http://localhost:$PORT"
 
 SERVER_BIN="$ORION_DIR/target/debug/orion-server"
-CLI_BIN="$CLI_DIR/target/debug/orion-cli"
-[ -x "$SERVER_BIN" ] || ( echo "building orion-server…"; cd "$ORION_DIR" && cargo build --bin orion-server )
-[ -x "$CLI_BIN" ]    || ( echo "building orion-cli…";    cd "$CLI_DIR"   && cargo build --bin orion-cli )
+CLI_BIN="$ORION_DIR/target/debug/orion-cli"
+[ -x "$SERVER_BIN" ] || ( echo "building orion-server…"; cd "$ORION_DIR" && cargo build -p orion-server )
+[ -x "$CLI_BIN" ]    || ( echo "building orion-cli…";    cd "$ORION_DIR" && cargo build -p orion-cli )
 
 # Expose the binaries under clean names so the recorded prompt shows `orion-cli`.
 BINDIR="$(mktemp -d)"
@@ -107,10 +105,10 @@ record_one() {   # <name> <seed-fn|""> <gif-destination>
   stop_server
 }
 
-mkdir -p "$CAST_DIR" "$ORION_MEDIA" "$CLI_MEDIA"
+mkdir -p "$CAST_DIR" "$MEDIA_DIR"
 
-record_one quickstart    ""           "$ORION_MEDIA/quickstart.gif"
-record_one cli-lifecycle ""           "$CLI_MEDIA/cli-lifecycle.gif"
-record_one mcp           seed_orders  "$CLI_MEDIA/mcp.gif"
+record_one quickstart    ""           "$MEDIA_DIR/quickstart.gif"
+record_one cli-lifecycle ""           "$MEDIA_DIR/cli-lifecycle.gif"
+record_one mcp           seed_orders  "$MEDIA_DIR/mcp.gif"
 
 echo "All recordings regenerated."

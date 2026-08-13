@@ -1,0 +1,27 @@
+{
+  "workflow_id": "high-value-order",
+  "tags": ["pkg:high-value-order"],
+  "name": "High-Value Order",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } }
+    },
+    {
+      "id": "flag",
+      "name": "Flag order",
+      "condition": { ">": [{ "var": "data.order.total" }, 10000] },
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.order.flagged", "logic": true },
+            { "path": "data.order.alert", "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] } }
+          ]
+        }
+      }
+    }
+  ]
+}

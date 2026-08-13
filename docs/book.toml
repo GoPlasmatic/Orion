@@ -1,22 +1,119 @@
 [book]
 title = "Orion Documentation"
-description = "Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate."
+description = "Orion is a declarative services runtime: describe a service as JSON, send it to a running server, and it's live in seconds. Safe enough to let an AI write your services. Fast enough to run them in production."
 authors = ["Plasmatic"]
 language = "en"
 src = "src"
 
 [build]
 build-dir = "book"
-create-missing = true
+# Fail on SUMMARY.md entries with no file instead of fabricating empty
+# pages (proposal T25).
+create-missing = false
 
 [output.html]
-additional-css = ["css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
+additional-css = ["css/fonts.css", "css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
 additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader.js"]
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
-edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
+# No "1., 2., 3." prefixes in the sidebar. The parts already group the book,
+# and the numbers implied a reading order this estate does not have — nobody
+# reads the reference section in order. Titles alone are what you scan for.
+no-section-label = true
 
+# No `edit-url-template`: the per-page "Suggest an edit" pencil in the menu bar
+# only renders when that key is set. The git-repository-url icon above still
+# points anyone who wants to file a change at the repo.
+
+# No expand/collapse in the sidebar: the one nested chapter this book has
+# (Upgrades → Upgrading to 1.0.0) simply shows. Note this key governs *chapter*
+# nesting only — the per-page heading tree mdBook's toc.js injects is separate
+# and is hidden in plasmatic.css §13, since the on-page ToC rail on the right
+# already carries it.
 [output.html.fold]
-enable = true
+enable = false
 level = 0
+
+# No printer icon, and no print.html. That page concatenated all ~90 chapters
+# into one document nobody asked for, and browser print still works per page
+# (plasmatic.css §20 is what styles it). The right buttons are Home and the
+# repo, nothing else.
+[output.html.print]
+enable = false
+
+# Search, tuned for a 56-chapter reference estate. On the defaults a query for
+# a term that IS a chapter title ranked page bodies mentioning it level with
+# the page about it, which on a book this size buries the obvious answer.
+#
+# The two boosts are the whole point: a hit in the page title outranks the same
+# hit in a paragraph, and a hit in the heading whose section contains it
+# outranks one in unrelated prose. The remaining two only widen the default
+# result set — 30 hits and a longer teaser, because reference lookups
+# legitimately match many pages and the teaser is how you pick between them.
+[output.html.search]
+boost-title = 3
+boost-hierarchy = 2
+limit-results = 30
+teaser-word-count = 30
+
+# Redirects for every URL the docs 2.0 restructure retired. Keys are absolute
+# paths from the site root; values stay relative to the redirecting page. They
+# had to be relative on GitHub Pages, which served the book under a /Orion/
+# subpath that an absolute value would have escaped; docs.goplasmatic.io serves
+# at the root, so that constraint is gone — but relative values are correct
+# under either, and rewriting ~50 of them would buy nothing.
+# Nothing here may be removed: these are the only thing keeping old inbound
+# links alive, and docs/lint.sh checks that hard site links resolve to a live
+# page or an entry below.
+[output.html.redirect]
+# Phase 1 — reference estate
+"/api/admin.html" = "../reference/admin-api.html"
+"/api/data.html" = "../reference/data-api.html"
+"/api/data.html#route-resolution" = "../reference/data-api.html#route-resolution"
+"/configuration/reference.html" = "../reference/configuration.html"
+"/reference/workflows.html#available-operators" = "expressions.html#available-operators"
+
+# Phase 2a — spine, Build with AI, upgrades home
+"/tutorials/cli-setup.html" = "../getting-started/install.html"
+"/tutorials/mcp-setup.html" = "../ai/mcp-setup.html"
+"/tutorials/claude-code.html" = "../ai/claude-code.html"
+"/getting-started/prompt-pack.html" = "../ai/prompt-pack.html"
+"/getting-started/upgrading.html" = "../operate/upgrading-to-1.0.html"
+
+# Phase 2b — the install split, and the Architecture part dissolving into
+# Concepts. characteristics.html is the one page of that part that came back:
+# it now sits at the site root as a front-matter chapter, so its old URL points
+# there rather than at how-orion-works.
+"/tutorials/cli-setup.html#create-your-first-service" = "../getting-started/first-service.html"
+"/getting-started/install.html#create-your-first-service" = "first-service.html"
+"/architecture/overview.html" = "../concepts/how-orion-works.html"
+"/architecture/overview.html#three-primitives" = "../concepts/how-orion-works.html#three-primitives"
+"/architecture/overview.html#deployment-topology" = "../concepts/how-orion-works.html#deployment-topology"
+"/architecture/overview.html#request-processing-flow" = "../concepts/how-orion-works.html#one-requests-journey"
+"/architecture/characteristics.html" = "../characteristics.html"
+
+# Phase 3 — the Operate estate; features/ and topology/ dissolve.
+"/features/observability.html" = "../operate/monitoring.html"
+"/features/observability.html#health-monitoring" = "../operate/monitoring.html#health-endpoints"
+"/features/observability.html#what-to-alert-on" = "../operate/monitoring.html#what-to-alert-on"
+"/features/resilience.html" = "../operate/failure-handling.html"
+"/features/security.html" = "../operate/security.html"
+"/features/scalability.html" = "../operate/cluster.html"
+"/features/scalability.html#horizontal-scaling--cluster-mode" = "../operate/cluster.html#what-the-cluster-shares"
+"/features/deployability.html" = "../operate/docker.html"
+"/features/extensibility.html" = "../reference/connectors.html"
+"/features/extensibility.html#connectors" = "../reference/connectors.html"
+"/features/extensibility.html#kafka-consumer-configuration" = "../reference/configuration.html#kafka"
+"/features/availability.html" = "../concepts/lifecycle.html"
+"/features/maintainability.html" = "../operate/backup-restore.html"
+"/topology/environments.html" = "../operate/cluster.html"
+"/topology/packages.html" = "../concepts/packages.html"
+"/topology/kubernetes.html" = "../operate/kubernetes.html"
+"/reference/configuration.html#production-checklist" = "../operate/production-checklist.html"
+"/reference/admin-api.html#the-orion-server-package-cli" = "../operate/promotion.html"
+
+# Phase 4 — Build and Guides; the Tutorials part dissolves.
+"/tutorials/use-cases.html" = "../guides/worked-examples.html"
+"/tutorials/use-cases.html#common-workflow-patterns" = "../guides/workflow-patterns.html"
+"/tutorials/use-cases.html#ai-workflow--cicd" = "../guides/ci-cd.html"

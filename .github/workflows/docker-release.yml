@@ -5,10 +5,12 @@ permissions:
   packages: write
 
 on:
-  # Trigger on version tags (same pattern as release.yml)
+  # Server release tags only: bare v* (the pre-monorepo format) or the
+  # package-prefixed form. orion-cli-v* tags are docker-release-cli.yml's.
   push:
     tags:
-      - "**[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "orion-server-v[0-9]+.[0-9]+.[0-9]+*"
   # Allow manual trigger with options
   workflow_dispatch:
     inputs:
@@ -25,6 +27,17 @@ env:
   GHCR_IMAGE: ghcr.io/goplasmatic/orion
 
 jobs:
+  # Releases must not outrun CI (proposal T10): the tagged commit needs a
+  # successful CI run before anything is built or pushed.
+  ci-gate:
+    name: CI Gate
+    uses: ./.github/workflows/ci-gate.yml
+    with:
+      skip: ${{ inputs.dry_run || false }}
+    permissions:
+      actions: read
+      contents: read
+
   # Determine version once, share across jobs
   prepare:
     name: Prepare
@@ -32,15 +45,48 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
       - name: Determine version
         id: version
+        env:
+          TAG_OVERRIDE: ${{ inputs.tag_override }}
         run: |
-          if [ -n "${{ inputs.tag_override }}" ]; then
-            VERSION="${{ inputs.tag_override }}"
+          RELEASE=1
+          if [ -n "${TAG_OVERRIDE}" ]; then
+            VERSION="${TAG_OVERRIDE}"
+            # P19: the override rides the same `type=semver` metadata path as
+            # a tag — an unparseable value is dropped by metadata-action,
+            # leaving the merge job's `imagetools create` with zero -t flags
+            # after the per-arch digests already pushed. (A tag's shape is
+            # constrained by the `on: push: tags` pattern instead.)
+            if ! printf '%s' "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
+              echo "::error::tag_override '${VERSION}' is not a semver version — metadata-action would drop it and the merge job would fail with untagged images already pushed."
+              exit 1
+            fi
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
+            VERSION="${GITHUB_REF_NAME#orion-server-}"
+            VERSION="${VERSION#v}"
           else
-            VERSION="dev-${GITHUB_SHA::8}"
+            # P19: must parse as semver — `type=semver` in metadata-action
+            # drops an unparseable value, leaving `imagetools create` with
+            # zero -t flags. A prerelease version also keeps `latest=auto`
+            # from tagging `latest` on a rehearsal.
+            VERSION="0.0.0-dev.${GITHUB_SHA::8}"
+            RELEASE=0
+          fi
+          # P19: dist refuses a tag that disagrees with the workspace
+          # version; this workflow used to stamp whatever the tag (or the
+          # dispatch override) said onto image tags, OCI labels and the Helm
+          # chart. One refusal for both release paths, so they cannot drift.
+          if [ "${RELEASE}" = "1" ]; then
+            CARGO_VERSION=$(grep -m1 '^version = ' crates/orion-server/Cargo.toml | cut -d'"' -f2)
+            if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
+              echo "::error::Release version says ${VERSION} but Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
+              exit 1
+            fi
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION}"
@@ -48,7 +94,7 @@ jobs:
   # Build per-platform images natively in parallel
   build:
     name: Build (${{ matrix.platform }})
-    needs: prepare
+    needs: [prepare, ci-gate]
     strategy:
       fail-fast: false
       matrix:
@@ -59,16 +105,16 @@ jobs:
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GitHub Container Registry
         if: ${{ !inputs.dry_run }}
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -76,7 +122,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
@@ -89,11 +135,15 @@ jobs:
       # Build and push by digest (no tag yet — tags are applied in the merge step)
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: ${{ matrix.platform }}
           push: ${{ !inputs.dry_run }}
+          # .dockerignore excludes .git/, so the SHA must ride in as a
+          # build-arg or every published image reports git_hash=unknown.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max
@@ -108,32 +158,51 @@ jobs:
 
       - name: Upload digest
         if: ${{ !inputs.dry_run }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: digests-${{ matrix.runner }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
-  # Merge platform images into a multi-arch manifest
+  # Merge platform images into a multi-arch manifest, then sign and attest
+  # THAT manifest (proposal P12). The per-platform builds push by digest and
+  # are merged with `imagetools create`, and buildx-level provenance/sbom
+  # attestations do not reliably survive that merge — attaching them at
+  # build-push time can produce a release that looks signed with nothing
+  # verifiable on the published tag. So everything verifiable is attached to
+  # the final merged manifest digest, which is registry-level and
+  # merge-independent:
+  #
+  #   cosign verify ghcr.io/goplasmatic/orion:<tag> \
+  #     --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  #   gh attestation verify oci://ghcr.io/goplasmatic/orion:<tag> -R GoPlasmatic/Orion
   merge:
     name: Merge & Push Manifest
     needs: [prepare, build]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      # Keyless signing (cosign) and the provenance attestation both
+      # authenticate as the workflow via the OIDC token.
+      id-token: write
+      attestations: write
     steps:
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download digests
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: /tmp/digests
           pattern: digests-*
@@ -141,7 +210,7 @@ jobs:
 
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
@@ -161,3 +230,92 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+      # The digest of the multi-arch manifest list just pushed — the one
+      # thing every tag above points at, and therefore the subject every
+      # signature and attestation below is bound to.
+      - name: Resolve merged manifest digest
+        id: digest
+        run: |
+          DIGEST=$(docker buildx imagetools inspect \
+            "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            --format '{{ json .Manifest }}' | jq -r '.digest')
+          test -n "${DIGEST}" && [ "${DIGEST}" != "null" ]
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Merged manifest digest: ${DIGEST}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign the manifest (keyless)
+        run: cosign sign --yes "${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}
+          format: spdx-json
+          output-file: /tmp/orion-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach SBOM attestation
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate /tmp/orion-sbom.spdx.json \
+            "${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      # Trust, then verify — in the same run that published. This is the
+      # check P12 insists on: what is attached to the tag, not what the
+      # workflow diff claims. Fails the release if the signature or the
+      # provenance did not actually land on the manifest.
+      - name: Verify what is attached to the published tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cosign verify "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          gh attestation verify \
+            "oci://${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            -R "${GITHUB_REPOSITORY}"
+
+  # Publish the Helm chart to GHCR as an OCI artifact (proposal T13): before
+  # this job the chart existed only in-tree, so installing it meant cloning
+  # the repo. Runs after the manifest merge so a published chart can never
+  # point at an image tag that does not exist yet. The chart and app version
+  # are both stamped from the release version — the in-tree Chart.yaml value
+  # is a development placeholder.
+  helm-publish:
+    name: Publish Helm Chart
+    needs: [prepare, merge]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Package and push
+        run: |
+          helm package deploy/helm/orion \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --app-version "${{ needs.prepare.outputs.version }}" \
+            --destination /tmp/chart
+          helm push /tmp/chart/orion-${{ needs.prepare.outputs.version }}.tgz \
+            oci://ghcr.io/goplasmatic/charts

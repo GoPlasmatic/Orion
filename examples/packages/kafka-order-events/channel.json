@@ -1,0 +1,18 @@
+{
+  "channel_id": "order-events",
+  "tags": [
+    "pkg:kafka-order-events"
+  ],
+  "name": "order-events",
+  "channel_type": "async",
+  "protocol": "kafka",
+  "topic": "orders.events",
+  "consumer_group": "orion-examples",
+  "workflow_id": "order-events",
+  "config": {
+    "deduplication": {
+      "header": "order-event-id",
+      "window_secs": 300
+    }
+  }
+}

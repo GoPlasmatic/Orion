@@ -1,6 +1,7 @@
+# Pinned for reproducibility; override with e.g. ORION_VERSION=1.1.0.
 services:
   orion:
-    image: ghcr.io/goplasmatic/orion:latest
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
     ports:
       - "8080:8080"
     environment:

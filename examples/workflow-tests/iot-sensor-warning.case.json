@@ -1,0 +1,6 @@
+{
+  "name": "raises only a warning in the 70-90 band",
+  "workflow": "../packages/iot-sensor-alert/workflow.json",
+  "input": { "temperature": 80, "sensor_id": "SENSOR-42" },
+  "expect": { "data.reading.severity": "warning", "data.reading.alert": true }
+}

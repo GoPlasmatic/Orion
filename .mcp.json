@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "orion": {
+      "command": "orion-cli",
+      "args": ["mcp", "serve"],
+      "env": {
+        "ORION_SERVER_URL": "http://localhost:8080"
+      }
+    }
+  }
+}

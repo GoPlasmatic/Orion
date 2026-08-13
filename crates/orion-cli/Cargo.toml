@@ -1,0 +1,47 @@
+[package]
+name = "orion-cli"
+# Versioned in lockstep with orion-server: a bare `vX.Y.Z` tag announces every
+# dist-able package in the workspace at that version, so keeping these equal is
+# what puts the server and the CLI in one release, with one set of installers
+# and one tap push. The package-prefixed `orion-cli-vX.Y.Z` tag still works for
+# an out-of-band CLI patch between server releases.
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
+license.workspace = true
+repository.workspace = true
+homepage = "https://docs.goplasmatic.io/"
+keywords = ["mcp", "cli", "workflow", "microservices", "devops"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "orion-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+colored = "3"
+tabled = "0.20"
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+# The shared wire contract: the error envelope, status vocabulary and import
+# report this CLI reads are the same types the server serializes.
+orion-api = { version = "1.2.0", path = "../orion-api" }
+# The shared transport — the same client the server's `package` subcommand
+# drives. This crate owns reqwest; the CLI has no direct HTTP dependency.
+orion-client = { version = "1.2.0", path = "../orion-client" }
+# Same spec as orion-server so the shared lockfile carries one `toml` tree.
+# (reqwest reaches this binary only through orion-client now.)
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+anyhow = "1"
+rmcp = { version = "1.4", features = ["server", "transport-io", "transport-streamable-http-server"] }
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+axum = "0.8"
+tokio-util = "0.7"

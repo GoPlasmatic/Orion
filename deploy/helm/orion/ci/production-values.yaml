@@ -1,0 +1,23 @@
+# CI render values (proposal T13): the documented production install — external
+# database and Redis, inline admin keys. Rendered and schema-checked by the
+# `helm` job in ci.yml — not a deployment example, and the key below is not a
+# real credential.
+storage:
+  url: postgres://orion:orion@postgres.example.internal:5432/orion
+cluster:
+  redisUrl: redis://redis.example.internal:6379
+adminAuth:
+  apiKeys:
+    - ci-render-only-not-a-real-key
+networkPolicy:
+  enabled: true
+  egress:
+    rules:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.0/8
+        ports:
+          - port: 5432
+            protocol: TCP
+          - port: 6379
+            protocol: TCP

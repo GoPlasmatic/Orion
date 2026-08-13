@@ -31,12 +31,25 @@ body:
         curl -X POST http://localhost:8080/api/v1/data/... -d '{ "data": { ... } }'
     validations:
       required: false
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which part of Orion is this about?
+      options:
+        - orion-server (the runtime)
+        - orion-cli (the CLI)
+        - MCP server (orion-cli mcp serve)
+        - Helm chart / deployment
+        - Documentation
+    validations:
+      required: true
   - type: input
     id: version
     attributes:
       label: Orion version
-      description: Output of `orion-server --version`
-      placeholder: orion-server 0.3.0
+      description: Output of `orion-server --version`, and `orion-cli --version` if the CLI is involved
+      placeholder: orion-server 1.0.0 / orion-cli 1.0.0
     validations:
       required: true
   - type: dropdown

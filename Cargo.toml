@@ -1,83 +1,23 @@
-[package]
-name = "orion-server"
-version = "0.3.0"
+# Virtual workspace manifest — the packages live under crates/:
+# orion-server (the runtime) and orion-cli (the CLI + MCP server, merged from
+# the former GoPlasmatic/Orion-cli repo). `default-members` keeps bare cargo
+# commands (`cargo run`, `cargo test`, `cargo build`) pointed at the server,
+# matching the pre-workspace muscle memory; CI covers the CLI explicitly with
+# `--workspace` / `-p orion-cli`.
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/orion-server"]
+
+[workspace.package]
 edition = "2024"
 rust-version = "1.88"
-description = "Declarative services runtime — deploy governed REST/Kafka services as JSON workflows, with rate limiting, circuit breakers, versioning, and observability built in"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
-homepage = "https://goplasmatic.io/orion"
-documentation = "https://goplasmatic.github.io/Orion/"
-readme = "README.md"
-keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
-categories = ["web-programming", "web-programming::http-server"]
-exclude = ["tests/", "docs/", "examples/", ".github/", ".claude/", "docker-compose*", "Dockerfile"]
 
-[[bin]]
-name = "orion-server"
-path = "src/main.rs"
-
-[lib]
-name = "orion"
-path = "src/lib.rs"
-
-# All integration tests are consolidated into a single binary so the suite
-# links once instead of ~43 times. New test files go in tests/integration/ and
-# are declared as modules in tests/integration/main.rs.
-[[test]]
-name = "integration"
-path = "tests/integration/main.rs"
-harness = true
-
-[dependencies]
-dataflow-rs = "3.0.2"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
-sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "set-header"] }
-toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
-clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "test-util"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-thiserror = "2"
-async-trait = "0.1"
-datalogic-rs = { version = "5.1", features = ["serde_json"] }
-datavalue = { package = "datavalue-rs", version = "0.2.3", features = ["serde_json"] }
-metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.18", default-features = false }
-url = "2"
-rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
-governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
-dashmap = "6"
-tower = { version = "0.5", default-features = false, features = ["util"] }
-rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "tokio"] }
-utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"] }
-
-# External DB connectors
-mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
-redis = { version = "1.3", default-features = false, features = ["tokio-comp", "aio"] }
-futures = { version = "0.3", default-features = false, features = ["alloc"] }
-
-# TLS support
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-
-# OpenTelemetry
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
-tracing-opentelemetry = { version = "0.33", default-features = false }
-
-# TCP socket configuration
-socket2 = "0.6"
-
+# Profiles are only read from the workspace root — a [profile.*] section in a
+# member crate is silently ignored (cargo warns once and moves on), so every
+# profile the build relies on must live here.
 [profile.dev]
 split-debuginfo = "unpacked"
 codegen-units = 256
@@ -96,7 +36,3 @@ debug = "line-tables-only"
 [profile.dist]
 inherits = "release"
 lto = "thin"
-
-[dev-dependencies]
-testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search"] }

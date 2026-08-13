@@ -1,503 +1,1103 @@
 /* ============================================================
-   Plasmatic Design System — mdBook Theme Override
+   Plasmatic Design System — mdBook theme
+   ============================================================
+
+   Structure: semantic tokens first, then one rule per element that
+   consumes them. Colours are NOT repeated per theme at the element
+   level — `.navy` and `.light` redefine the token block and nothing
+   else, so changing a colour is a one-line edit in section 2 or 3.
+
+   Two unit conventions to know:
+     • mdBook sets `html { font-size: 62.5% }`, so **1rem = 10px**.
+     • `em` on a heading is relative to that heading's own size.
+
+   Fonts are declared in css/fonts.css and served from src/webfonts/.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;800&family=Inter:wght@400;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=DM+Mono:wght@400;500&display=swap');
-
-/* ── Global root overrides ── */
-:root {
-  --content-max-width: 920px;
-  --mono-font: "DM Mono", "Source Code Pro", Consolas, "Ubuntu Mono", Menlo, monospace;
-  --code-font-size: 0.8125em;
-}
 
 /* ============================================================
-   Navy Theme → Plasmatic Dark
+   1. Global tokens (theme-independent)
+   ============================================================ */
+:root {
+  /* ── Type families: three faces, one job each ──
+     Display = Montserrat, and only h1/h2 + the wordmark.
+     Text/UI = Inter, for everything readable.
+     Mono    = JetBrains Mono, for code. */
+  --p-font-display: "Montserrat", system-ui, -apple-system, sans-serif;
+  --p-font-text: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono-font: "JetBrains Mono", ui-monospace, "SF Mono", Consolas, Menlo, monospace;
+
+  /* Inter's alternates: single-storey `l` and a straight-tailed `y`,
+     both of which read better at 17px than the defaults. */
+  --p-font-features: "cv05" 1, "cv11" 1;
+
+  /* ── Measure ──
+     --content-max-width is the WIDE track (mdBook applies it to
+     `.content main`); prose is capped at --p-measure inside it by the
+     grid in section 6. Tables, code and diagrams get the full width.
+
+     --p-measure caps the width of running prose only (see section 6).
+     `none` lets text fill the column, matching tables and code.
+
+     If you do set a cap, do NOT reach for `ch`. The `ch` unit is the
+     advance of "0", and Inter's zero (10.67px at 17px) is 32% wider than
+     its average lowercase glyph (8.09px) — so a plausible-looking `68ch`
+     renders as ~90 characters, not 68. Use a length: 76rem = 760px ≈ 94
+     characters, 60rem = 600px ≈ 74. Measured on rendered prose; re-measure
+     if the text face ever changes. */
+  --content-max-width: 1080px;
+  --p-measure: none;
+
+  /* The on-page ToC rail and its gutter (section 14). Named here because the
+     centring calc in section 6a has to add them to the content width. */
+  --p-toc-width: 216px;
+  --p-toc-gap: 40px;
+
+  /* Width of mdBook's fixed prev/next chapter strips, and the clearance the
+     content keeps from them. See section 6a. */
+  --p-nav-arrow-width: 48px;
+  --p-nav-arrow-gutter: 52px;
+
+  /* 0.86em of 17px body text ≈ 14.6px, in prose and in code blocks alike. */
+  --code-font-size: 0.86em;
+
+  /* ── Radii ── */
+  --p-radius-sm: 4px;
+  --p-radius: 8px;
+  --p-radius-lg: 10px;
+
+  /* ── Icon geometry for pseudo-elements ──
+     A `::before` or `::after` cannot hold an <svg><use>, so the marks drawn
+     by CSS carry their geometry here as data URIs and are painted with
+     `mask-image` + `background-color: currentColor`. That keeps them real
+     SVG — sized in `em`, tinted by the surrounding colour, identical in both
+     themes — rather than a character borrowed from the text face, which is
+     what `content: "→"` and `content: "✓"` amount to.
+
+     The stroke colour inside each URI is irrelevant: a mask reads alpha, not
+     colour. Marks the SCRIPT inserts live in the <symbol> sprite in
+     js/extra.js instead; same geometry, different delivery. */
+  --p-icon-chevron-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9.5 5.5 6.5 6.5-6.5 6.5'/%3E%3C/svg%3E");
+  --p-icon-chevron-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5.5 9.5 6.5 6.5 6.5-6.5'/%3E%3C/svg%3E");
+  --p-icon-external: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.5 15.5 15.5 8.5'/%3E%3Cpath d='M9.8 8.5h5.7v5.7'/%3E%3C/svg%3E");
+  --p-icon-filter: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='6.2'/%3E%3Cpath d='m15.6 15.6 4 4'/%3E%3C/svg%3E");
+}
+
+/* The <symbol> sprite js/extra.js injects as the first child of <body>.
+   Out of flow and zero-sized: it renders nothing itself, it only holds the
+   geometry that <use> instances point at. */
+#orion-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+/* Default box for a sprite instance. Sized in `em` so a glyph tracks the
+   type it sits beside rather than a fixed pixel size.
+
+   `stroke-width` lives here rather than on the <symbol> on purpose: it is an
+   inherited property, and an attribute on the symbol would be a specified
+   value that no rule on the instance could override. This is the house
+   weight; a mark that needs a different one overrides it. */
+.orion-ico {
+  width: 1.05em;
+  height: 1.05em;
+  flex: 0 0 auto;
+  vertical-align: -0.15em;
+  stroke-width: 1.7;
+}
+
+
+/* ============================================================
+   2. Dark theme (navy) — the site default
    ============================================================ */
 .navy {
-  /* ── Backgrounds ── */
-  --bg: #07111A;
-  --sidebar-bg: #0B1925;
-  --theme-popup-bg: #0F2030;
+  /* ── Semantic tokens ── */
+  --p-bg: #0B141C;
+  --p-surface: #111E29;
+  --p-surface-2: #16242F;
+  --p-border: #1D3140;
+  --p-border-strong: #2C4A5C;
 
-  /* ── Foreground / Text ── */
-  --fg: #ECF4F8;
-  --sidebar-fg: #7FAFC0;
-  --sidebar-non-existant: #3D6B7D;
-  --sidebar-active: #119FCD;
-  --sidebar-spacer: #063B4C;
+  --p-fg: #D7E3EB;        /* 14.3:1 on --p-bg — AAA without the glare of 17:1 */
+  --p-fg-muted: #93ABB9;  /*  7.7:1 */
+  --p-fg-faint: #67838F;  /*  4.5:1 — the floor; labels and captions only */
 
-  --scrollbar: #3D6B7D;
+  --p-accent: #35B4DE;    /*  7.7:1 */
+  --p-accent-quiet: #7DD3FC;
+  --p-accent-tint: rgba(53, 180, 222, 0.12);
 
-  /* ── Icons ── */
-  --icons: #7FAFC0;
-  --icons-hover: #ECF4F8;
+  --p-sidebar-bg: #09121A;
 
-  /* ── Links ── */
-  --links: #119FCD;
+  /* ── Syntax: three hues, not six ── */
+  --p-syn-key: #35B4DE;
+  --p-syn-str: #4CBD97;
+  --p-syn-num: #E8B93F;
+  --p-syn-comment: #67838F;
+  --p-syn-del: #EF6B85;
 
-  /* ── Inline code ── */
-  --inline-code-color: #7DD3FC;
+  /* ── mdBook variable surface — aliases only, no new colours ── */
+  --bg: var(--p-bg);
+  --fg: var(--p-fg);
 
-  /* ── Theme popup ── */
-  --theme-popup-border: #3D6B7D;
-  --theme-hover: #152839;
+  --sidebar-bg: var(--p-sidebar-bg);
+  --sidebar-fg: var(--p-fg-muted);
+  --sidebar-non-existant: var(--p-fg-faint);
+  --sidebar-active: var(--p-accent);
+  --sidebar-spacer: var(--p-border);
+  --sidebar-header-border-color: var(--p-border);
 
-  /* ── Blockquotes ── */
-  --quote-bg: #0F2030;
-  --quote-border: #063B4C;
+  --scrollbar: var(--p-border-strong);
 
-  /* ── Warning ── */
-  --warning-border: #FFD167;
+  --icons: var(--p-fg-muted);
+  --icons-hover: var(--p-fg);
 
-  /* ── Tables ── */
-  --table-border-color: #063B4C;
-  --table-header-bg: #0B1925;
-  --table-alternate-bg: #0B1925;
+  --links: var(--p-accent);
+  --inline-code-color: var(--p-accent-quiet);
 
-  /* ── Search ── */
-  --searchbar-border-color: #3D6B7D;
-  --searchbar-bg: #0F2030;
-  --searchbar-fg: #ECF4F8;
-  --searchbar-shadow-color: rgba(17, 159, 205, 0.3);
-  --searchresults-header-fg: #7FAFC0;
-  --searchresults-border-color: #3D6B7D;
-  --searchresults-li-bg: #152839;
-  --search-mark-bg: rgba(17, 159, 205, 0.3);
+  --theme-popup-bg: var(--p-surface);
+  --theme-popup-border: var(--p-border-strong);
+  --theme-hover: var(--p-surface-2);
 
-  /* ── Color scheme ── */
+  --quote-bg: var(--p-surface);
+  --quote-border: var(--p-border);
+  --warning-border: #E8B93F;
+
+  --table-border-color: var(--p-border);
+  --table-header-bg: transparent;
+  --table-alternate-bg: transparent;
+
+  --searchbar-border-color: var(--p-border-strong);
+  --searchbar-bg: var(--p-surface);
+  --searchbar-fg: var(--p-fg);
+  --searchbar-shadow-color: var(--p-accent-tint);
+  --searchresults-header-fg: var(--p-fg-muted);
+  --searchresults-border-color: var(--p-border);
+  --searchresults-li-bg: var(--p-surface-2);
+  --search-mark-bg: rgba(53, 180, 222, 0.28);
+
   --color-scheme: dark;
 
-  /* ── Copy button ── */
   --copy-button-filter: invert(72%) sepia(14%) saturate(785%) hue-rotate(155deg) brightness(91%) contrast(88%);
   --copy-button-filter-hover: invert(52%) sepia(83%) saturate(524%) hue-rotate(155deg) brightness(96%) contrast(92%);
 
-  /* ── Misc ── */
-  --footnote-highlight: #119FCD;
-  --overlay-bg: rgba(7, 17, 26, 0.7);
+  --footnote-highlight: var(--p-accent);
+  --overlay-bg: rgba(11, 20, 28, 0.72);
 
-  /* ── Blockquote admonitions ── */
-  --blockquote-note-color: #119FCD;
+  /* Admonition hues — these now actually reach the page; see section 12. */
+  --blockquote-note-color: #35B4DE;
   --blockquote-tip-color: #4CBD97;
-  --blockquote-important-color: #7DD3FC;
-  --blockquote-warning-color: #FFD167;
-  --blockquote-caution-color: #EF476F;
-
-  /* ── Sidebar header ── */
-  --sidebar-header-border-color: #119FCD;
+  --blockquote-important-color: #A78BFA;
+  --blockquote-warning-color: #E8B93F;
+  --blockquote-caution-color: #EF6B85;
 }
 
+
 /* ============================================================
-   Light Theme → Plasmatic Light
+   3. Light theme
    ============================================================ */
 .light,
 html:not(.js) {
-  --bg: #F4F8FB;
-  --fg: #07111A;
+  --p-bg: #FCFDFE;
+  --p-surface: #F3F7FA;
+  --p-surface-2: #EAF1F5;
+  --p-border: #DCE6EC;
+  --p-border-strong: #BACCD6;
 
-  --sidebar-bg: #E8F0F5;
-  --sidebar-fg: #07111A;
-  --sidebar-non-existant: #7FAFC0;
-  --sidebar-active: #0D7FA3;
-  --sidebar-spacer: #D0DFE8;
+  --p-fg: #17242E;        /* 15.5:1 */
+  --p-fg-muted: #55707E;  /*  5.2:1 */
+  --p-fg-faint: #5F7887;  /*  4.6:1 */
 
-  --scrollbar: #7FAFC0;
+  --p-accent: #0A6E8E;    /*  5.8:1 — the old #0D7FA3 sat at ~4.6, borderline AA */
+  --p-accent-quiet: #0B5E7D;
+  --p-accent-tint: rgba(10, 110, 142, 0.10);
 
-  --icons: #3D6B7D;
-  --icons-hover: #07111A;
+  --p-sidebar-bg: #F7FAFC;
 
-  --links: #0D7FA3;
+  --p-syn-key: #0A6E8E;
+  --p-syn-str: #1F7F5E;
+  --p-syn-num: #8A6212;
+  --p-syn-comment: #7C949F;
+  --p-syn-del: #C32D4E;
 
-  --inline-code-color: #0B5E7D;
+  --bg: var(--p-bg);
+  --fg: var(--p-fg);
 
-  --theme-popup-bg: #F4F8FB;
-  --theme-popup-border: #B0CDD8;
-  --theme-hover: #E0EBF0;
+  --sidebar-bg: var(--p-sidebar-bg);
+  --sidebar-fg: var(--p-fg-muted);
+  --sidebar-non-existant: var(--p-fg-faint);
+  --sidebar-active: var(--p-accent);
+  --sidebar-spacer: var(--p-border);
+  --sidebar-header-border-color: var(--p-border);
 
-  --quote-bg: #E8F0F5;
-  --quote-border: #B0CDD8;
+  --scrollbar: var(--p-border-strong);
 
-  --warning-border: #D4A520;
+  --icons: var(--p-fg-muted);
+  --icons-hover: var(--p-fg);
 
-  --table-border-color: #D0DFE8;
-  --table-header-bg: #D0DFE8;
-  --table-alternate-bg: #EDF3F7;
+  --links: var(--p-accent);
+  --inline-code-color: var(--p-accent-quiet);
 
-  --searchbar-border-color: #B0CDD8;
+  --theme-popup-bg: var(--p-bg);
+  --theme-popup-border: var(--p-border-strong);
+  --theme-hover: var(--p-surface-2);
+
+  --quote-bg: var(--p-surface);
+  --quote-border: var(--p-border);
+  --warning-border: #9A6B06;
+
+  --table-border-color: var(--p-border);
+  --table-header-bg: transparent;
+  --table-alternate-bg: transparent;
+
+  --searchbar-border-color: var(--p-border-strong);
   --searchbar-bg: #FFFFFF;
-  --searchbar-fg: #07111A;
-  --searchbar-shadow-color: rgba(17, 159, 205, 0.25);
-  --searchresults-header-fg: #3D6B7D;
-  --searchresults-border-color: #B0CDD8;
-  --searchresults-li-bg: #E0EBF0;
-  --search-mark-bg: rgba(17, 159, 205, 0.2);
+  --searchbar-fg: var(--p-fg);
+  --searchbar-shadow-color: var(--p-accent-tint);
+  --searchresults-header-fg: var(--p-fg-muted);
+  --searchresults-border-color: var(--p-border);
+  --searchresults-li-bg: var(--p-surface-2);
+  --search-mark-bg: rgba(10, 110, 142, 0.18);
 
   --color-scheme: light;
 
   --copy-button-filter: invert(40%) sepia(15%) saturate(700%) hue-rotate(155deg) brightness(85%) contrast(90%);
   --copy-button-filter-hover: invert(35%) sepia(70%) saturate(600%) hue-rotate(160deg) brightness(90%) contrast(90%);
 
-  --footnote-highlight: #119FCD;
-  --overlay-bg: rgba(200, 215, 225, 0.5);
+  --footnote-highlight: var(--p-accent);
+  --overlay-bg: rgba(190, 208, 218, 0.55);
 
-  --blockquote-note-color: #0D7FA3;
-  --blockquote-tip-color: #2E9A74;
-  --blockquote-important-color: #0B5E7D;
-  --blockquote-warning-color: #D4A520;
-  --blockquote-caution-color: #D03555;
-
-  --sidebar-header-border-color: #0D7FA3;
+  --blockquote-note-color: #0A6E8E;
+  --blockquote-tip-color: #1F7F5E;
+  --blockquote-important-color: #6D4BC9;
+  --blockquote-warning-color: #9A6B06;
+  --blockquote-caution-color: #C32D4E;
 }
 
-/* no-JS dark fallback */
+/* no-JS dark fallback: re-point the same tokens, nothing else. */
 @media (prefers-color-scheme: dark) {
   html:not(.js) {
-    --bg: #07111A;
-    --fg: #ECF4F8;
-    --sidebar-bg: #0B1925;
-    --sidebar-fg: #7FAFC0;
-    --sidebar-non-existant: #3D6B7D;
-    --sidebar-active: #119FCD;
-    --sidebar-spacer: #063B4C;
-    --scrollbar: #3D6B7D;
-    --icons: #7FAFC0;
-    --icons-hover: #ECF4F8;
-    --links: #119FCD;
-    --inline-code-color: #7DD3FC;
-    --theme-popup-bg: #0F2030;
-    --theme-popup-border: #3D6B7D;
-    --theme-hover: #152839;
-    --quote-bg: #0F2030;
-    --quote-border: #063B4C;
-    --warning-border: #FFD167;
-    --table-border-color: #063B4C;
-    --table-header-bg: #0B1925;
-    --table-alternate-bg: #0B1925;
-    --searchbar-border-color: #3D6B7D;
-    --searchbar-bg: #0F2030;
-    --searchbar-fg: #ECF4F8;
-    --searchbar-shadow-color: rgba(17, 159, 205, 0.3);
-    --searchresults-header-fg: #7FAFC0;
-    --searchresults-border-color: #3D6B7D;
-    --searchresults-li-bg: #152839;
-    --search-mark-bg: rgba(17, 159, 205, 0.3);
+    --p-bg: #0B141C;
+    --p-surface: #111E29;
+    --p-surface-2: #16242F;
+    --p-border: #1D3140;
+    --p-border-strong: #2C4A5C;
+    --p-fg: #D7E3EB;
+    --p-fg-muted: #93ABB9;
+    --p-fg-faint: #67838F;
+    --p-accent: #35B4DE;
+    --p-accent-quiet: #7DD3FC;
+    --p-accent-tint: rgba(53, 180, 222, 0.12);
+    --p-sidebar-bg: #09121A;
+    --p-syn-key: #35B4DE;
+    --p-syn-str: #4CBD97;
+    --p-syn-num: #E8B93F;
+    --p-syn-comment: #67838F;
+    --p-syn-del: #EF6B85;
+    --searchbar-bg: var(--p-surface);
     --color-scheme: dark;
-    --footnote-highlight: #119FCD;
-    --overlay-bg: rgba(7, 17, 26, 0.7);
-    --blockquote-note-color: #119FCD;
+    --overlay-bg: rgba(11, 20, 28, 0.72);
+    --blockquote-note-color: #35B4DE;
     --blockquote-tip-color: #4CBD97;
-    --blockquote-important-color: #7DD3FC;
-    --blockquote-warning-color: #FFD167;
-    --blockquote-caution-color: #EF476F;
-    --sidebar-header-border-color: #119FCD;
+    --blockquote-important-color: #A78BFA;
+    --blockquote-warning-color: #E8B93F;
+    --blockquote-caution-color: #EF6B85;
   }
 }
 
+
 /* ============================================================
-   Typography
+   4. Base typography
    ============================================================ */
 html {
-  font-family: "DM Sans", "Open Sans", sans-serif;
+  font-family: var(--p-font-text);
 }
 
-/* Headings */
+body {
+  font-size: 1.7rem;         /* 17px */
+  line-height: 1.7;
+  font-feature-settings: var(--p-font-features);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* mdBook hard-codes 1.45 on these; 1.7 is the single biggest
+   readability change in this stylesheet. */
+.content p,
+.content ol,
+.content ul {
+  line-height: 1.7;
+}
+
+.content main p {
+  margin: 0 0 1.15em;
+}
+
+.content main ul,
+.content main ol {
+  margin: 0 0 1.15em;
+  padding-inline-start: 1.4em;
+}
+
+.content main li {
+  margin: 0.3em 0;
+}
+
+.content main li::marker {
+  color: var(--p-fg-faint);
+}
+
+.content main strong {
+  font-weight: 600;
+}
+
+
+/* ============================================================
+   5. Headings
+   ============================================================
+   Montserrat drops from 800 to 700, and from six levels to two.
+   h3–h6 use the text face — a heading level should be signalled by
+   size and weight, not by a second display face shouting at every
+   depth. Margins are asymmetric: a heading binds to the text under
+   it rather than floating between two blocks. */
+.content main h1,
+.content main h2 {
+  font-family: var(--p-font-display);
+  font-weight: 700;
+}
+
+.content main h3,
+.content main h4,
+.content main h5,
+.content main h6 {
+  font-family: var(--p-font-text);
+  font-weight: 600;
+}
+
 .content main h1 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 800;
-  font-size: 2.8em;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  font-size: 3.4rem;
+  line-height: 1.2;
+  letter-spacing: -0.022em;
+  margin: 0.6em 0 0.35em;
 }
 
 .content main h2 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 800;
-  font-size: 1.8em;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
+  font-size: 2.4rem;
+  line-height: 1.3;
+  letter-spacing: -0.014em;
+  margin: 2.2em 0 0.5em;
+  padding-top: 1.1em;
+  border-top: 1px solid var(--p-border);
 }
 
 .content main h3 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 800;
-  font-size: 1.4em;
-  line-height: 1.3;
+  font-size: 1.9rem;
+  line-height: 1.4;
+  letter-spacing: -0.008em;
+  margin: 2em 0 0.45em;
 }
 
 .content main h4 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 800;
-  font-size: 1.15em;
-  line-height: 1.4;
+  font-size: 1.6rem;
+  line-height: 1.45;
+  margin: 1.9em 0 0.4em;
 }
 
 .content main h5,
 .content main h6 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 700;
+  font-size: 1.5rem;
+  color: var(--p-fg-muted);
+  margin: 1.8em 0 0.4em;
 }
 
-/* Menu title */
-.menu-title {
-  font-family: "Inter", sans-serif;
-  font-weight: 700;
+/* An `h3` that is nothing but a function name reads better as code
+   coloured than as code boxed. */
+.content main h3 code,
+.content main h4 code {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--p-accent-quiet);
 }
 
-/* Sidebar */
-.sidebar,
-.sidebar-iframe-inner {
-  font-family: "DM Sans", sans-serif;
+.content main h1 + p,
+.content main h2 + p,
+.content main h3 + p {
+  margin-top: 0;
 }
 
-/* Code */
-code, pre code {
-  font-family: "DM Mono", var(--mono-font) !important;
-}
-
-/* ============================================================
-   Syntax Highlighting — Plasmatic Dark (navy)
-   ============================================================ */
-.navy .hljs {
-  background: #0F2030;
-  color: #ECF4F8;
-}
-
-/* Comments */
-.navy .hljs-comment,
-.navy .hljs-quote {
-  color: #3D6B7D;
-}
-
-/* Strings */
-.navy .hljs-string,
-.navy .hljs-symbol,
-.navy .hljs-bullet,
-.navy .hljs-value,
-.navy .hljs-inheritance,
-.navy .hljs-header,
-.navy .ruby .hljs-symbol,
-.navy .xml .hljs-cdata {
-  color: #FFD167;
-}
-
-/* Keywords */
-.navy .hljs-keyword,
-.navy .hljs-selector-tag,
-.navy .javascript .hljs-function {
-  color: #119FCD;
-}
-
-/* Variables, attributes, tags */
-.navy .hljs-variable,
-.navy .hljs-template-variable,
-.navy .hljs-attribute,
-.navy .hljs-attr,
-.navy .hljs-tag,
-.navy .hljs-regexp,
-.navy .hljs-link,
-.navy .hljs-name,
-.navy .hljs-selector-id,
-.navy .hljs-selector-class {
-  color: #7DD3FC;
-}
-
-/* Numbers, literals, built-ins */
-.navy .hljs-number,
-.navy .hljs-meta,
-.navy .hljs-built_in,
-.navy .hljs-builtin-name,
-.navy .hljs-literal,
-.navy .hljs-type,
-.navy .hljs-params,
-.navy .hljs-preprocessor,
-.navy .hljs-pragma,
-.navy .hljs-constant {
-  color: #4CBD97;
-}
-
-/* Function / section titles */
-.navy .hljs-title,
-.navy .hljs-section {
-  color: #7DD3FC;
-}
-
-/* Diff additions / deletions */
-.navy .hljs-addition {
-  color: #4CBD97;
-}
-
-.navy .hljs-deletion {
-  color: #EF476F;
-}
 
 /* ============================================================
-   Code Block Containers
-   ============================================================ */
-.navy pre {
-  background-color: #0F2030;
-  border: 1px solid rgba(17, 159, 205, 0.1);
-  border-radius: 8px;
-  overflow: hidden;
-  position: relative;
+   6. Content layout — one column, one width
+   ============================================================
+   Prose, tables, code and cards all fill --content-max-width. An
+   earlier revision put prose in a narrower track and let tables and
+   code break out wider; it read as ragged, because every paragraph
+   ended well short of the code block above it.
+
+   The trade-off this makes: at 980px, a line of Inter 17px runs to
+   roughly 115 characters, above the 60–75 that reads most easily.
+   The 1.7 line-height carries a lot of that — the leading is what
+   makes the return sweep findable — but if long lines start to feel
+   like work, --p-measure below is the one knob: set it to a length
+   (e.g. 76rem) to cap prose without touching anything else. */
+.content main {
+  max-width: var(--content-max-width);
 }
 
-/* Copy button — always visible (mdBook hides until hover by default) */
+/* Applied to the elements that hold running prose, so capping the
+   measure never squeezes a table or a code block. `none` = fill. */
+.content main > p,
+.content main > ul,
+.content main > ol,
+.content main > blockquote,
+.content main > h1,
+.content main > h2,
+.content main > h3,
+.content main > h4,
+.content main > h5,
+.content main > h6 {
+  max-width: var(--p-measure);
+}
+
+/* mdBook already wraps every table in `.table-wrapper` and gives it
+   `overflow-x: auto`, so a table wider than the column scrolls inside its
+   own box rather than stretching the page. All this needs is the rhythm. */
+.content main > .table-wrapper {
+  margin: 1.5em 0 1.9em;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--p-border);
+  margin: 2.5em 0;
+}
+
+
+/* ============================================================
+   6a. Clearance for the prev/next chapter arrows
+   ============================================================
+   mdBook's `<` and `>` are `position: fixed` strips pinned to the left and
+   right edges of the page area, `min-width: 90px` and the full height of the
+   viewport. Content starts at the same edge, so the left ~78px of every line
+   sat underneath the `<` — and because the strip is a real element on top,
+   it does not merely overlap visually, it swallows the clicks: links in that
+   band (table entries, heading anchors) went to the previous chapter instead.
+
+   Two changes, so clearing them costs as little width as possible: narrow the
+   strips to --p-nav-arrow-width, then inset the content past them.
+
+   The two media queries mirror mdBook's own (chrome.css): it hides the strips
+   below 1081px, and again below 1381px whenever the sidebar is open, falling
+   back to inline prev/next links under the content. Where there is no strip
+   there is nothing to clear, so the inset is given back rather than spent. */
+@media (min-width: 1081px) {
+  .nav-chapters {
+    min-width: var(--p-nav-arrow-width);
+    max-width: var(--p-nav-arrow-width);
+    font-size: 2em;
+  }
+
+  .content {
+    padding-inline: var(--p-nav-arrow-gutter);
+  }
+}
+
+@media (max-width: 1380px) {
+  #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper .content {
+    padding-inline: 5px;
+  }
+}
+
+/* Centre the reading area in whatever space is left beside the sidebar, so
+   surplus width is split evenly instead of collecting on one side. `.content`
+   is content-box (only .page-wrapper is border-box), so the max-width below
+   covers the columns and the arrow gutters sit outside it. */
+.content {
+  max-width: var(--content-max-width);
+  margin-inline: auto;
+}
+
+
+/* ============================================================
+   7. Links
+   ============================================================
+   A quiet underline, not none-until-hover: in a wall of reference
+   prose a link has to be findable without sweeping the mouse. */
+.content a:link,
+.content a:visited {
+  color: var(--links);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--links) 32%, transparent);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.content a:hover {
+  text-decoration: none;
+  border-bottom-color: var(--links);
+}
+
+/* Structural links carry their own affordance already. */
+.content a.header:link,
+.content a.header:visited,
+.content .doc-cards a,
+.content .hero-logo a,
+.nav-wrapper a,
+.page-toc a,
+.sidebar a {
+  border-bottom: 0;
+}
+
+/* A link that leaves the site says so. Real SVG geometry through a mask
+   rather than `content: "↗"` — see the note on --p-icon-* in section 1.
+   Two exclusions: this book's own published URL, which the compare pages
+   and llms.txt reference absolutely, and `localhost`, which is the reader's
+   own machine and the least external address there is. Scoped to `main`, so
+   the sidebar, the ToC rail and the menu bar are untouched.
+
+   The exclusions anchor with `^=`, not `*=`. A substring match reads the
+   whole URL including the query string, and the footer's "Report an issue"
+   link carries the current page URL inside its `body=` parameter — so a
+   `*=` exclusion silently unmarked every report link on the deployed site,
+   where that parameter contains docs.goplasmatic.io. Match the origin or
+   do not match at all. */
+.content main a[href^="http"]:not([href^="https://docs.goplasmatic.io"]):not([href^="http://docs.goplasmatic.io"]):not([href^="http://localhost"]):not([href^="https://localhost"])::after {
+  content: "";
+  display: inline-block;
+  width: 0.82em;
+  height: 0.82em;
+  margin-inline-start: 0.18em;
+  vertical-align: -0.06em;
+  background-color: currentColor;
+  opacity: 0.75;
+  -webkit-mask: var(--p-icon-external) center / contain no-repeat;
+  mask: var(--p-icon-external) center / contain no-repeat;
+}
+
+/* Inside a card grid the whole tile is already the affordance and the
+   chevron is the mark; a second glyph mid-title would be noise. */
+.content main .doc-cards a::after {
+  content: none;
+}
+
+
+/* ============================================================
+   8. Code
+   ============================================================ */
+pre {
+  background-color: var(--p-surface);
+  border: 0;
+  border-radius: var(--p-radius);
+  padding: 16px 18px;
+  margin: 1.4em 0;
+  overflow-x: auto;
+  line-height: 1.65;
+}
+
+/* In light mode the surface tint alone is too weak to read as a
+   surface, so it keeps a hairline; dark mode does not need one. */
+.light pre,
+html:not(.js) pre {
+  border: 1px solid var(--p-border);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not(.js) pre { border: 0; }
+}
+
+pre code,
+pre > code.hljs {
+  background: none;
+  padding: 0;
+  border: 0;
+}
+
+.hljs {
+  background: transparent;
+  color: var(--p-fg);
+}
+
+/* Copy button stays visible (mdBook hides it until hover). */
 pre > .buttons {
   visibility: visible;
   opacity: 1;
 }
 
-/* Light theme code blocks */
-.light pre {
-  background-color: #E8F0F5;
-  border: 1px solid #D0DFE8;
-  border-radius: 8px;
+/* Inline code: a tint, no border. The border is what speckles a
+   paragraph with little boxes. */
+:not(pre) > code {
+  background-color: var(--p-surface-2);
+  border: 0;
+  border-radius: var(--p-radius-sm);
+  padding: 0.1em 0.35em;
+  color: var(--inline-code-color);
 }
+
 
 /* ============================================================
-   Tables
+   9. Syntax highlighting
+   ============================================================
+   Three hues plus comments, driven by the theme tokens — the old
+   six-colour scheme made a JSON block harder to scan, not easier. */
+.hljs-comment,
+.hljs-quote { color: var(--p-syn-comment); font-style: italic; }
+
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition,
+.ruby .hljs-symbol,
+.xml .hljs-cdata { color: var(--p-syn-str); }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-attr,
+.hljs-attribute,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-title,
+.hljs-section,
+.javascript .hljs-function { color: var(--p-syn-key); }
+
+.hljs-number,
+.hljs-literal,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-type,
+.hljs-meta,
+.hljs-constant,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-regexp,
+.hljs-link { color: var(--p-syn-num); }
+
+.hljs-deletion { color: var(--p-syn-del); }
+
+
+/* ============================================================
+   10. Tables — rules, not boxes
+   ============================================================
+   No outer border, no radius, no zebra stripes, no uppercase
+   letterspaced header. Horizontal hairlines and a stronger rule
+   under the header carry the structure; everything else was noise
+   on top of pages that are mostly table. */
+.content main table {
+  width: 100%;
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 1.55rem;
+  line-height: 1.55;
+}
+
+.content main table thead {
+  background: none;
+}
+
+.content main table thead tr {
+  border: 0;
+}
+
+.content main table th {
+  text-align: start;
+  font-weight: 600;
+  font-size: 1.4rem;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--p-fg-muted);
+  padding: 0 18px 9px 0;
+  border: 0;
+  border-bottom: 1px solid var(--p-border-strong);
+  white-space: nowrap;
+}
+
+.content main table td {
+  padding: 10px 18px 10px 0;
+  border: 0;
+  border-bottom: 1px solid var(--p-border);
+  vertical-align: baseline;
+}
+
+.content main table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.content main table tbody tr:nth-child(2n) {
+  background: none;
+}
+
+/* First column is the key you scan for — keep it on one line, and
+   let its inline code sit unboxed so the column reads as a list. */
+.content main table td:first-child {
+  white-space: nowrap;
+}
+
+.content main table td code {
+  background: none;
+  padding: 0;
+}
+
+/* Centre-aligned columns (`:---:` in markdown) are usually short
+   yes/no flags; keep them quiet. */
+.content main table th[align="center"],
+.content main table td[align="center"] {
+  text-align: center;
+  color: var(--p-fg-muted);
+}
+
+
+/* ============================================================
+   11. Blockquotes (untagged)
    ============================================================ */
-.navy table {
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid #063B4C;
-  border-collapse: separate;
-  border-spacing: 0;
+.content main blockquote:not(.blockquote-tag) {
+  background: var(--p-surface);
+  border: 0;
+  border-inline-start: 3px solid var(--p-border-strong);
+  border-radius: 0;
+  padding: 14px 20px;
+  margin: 1.6em 0;
+  color: var(--p-fg-muted);
 }
 
-.navy table thead {
-  background: #0B1925;
+
+/* ============================================================
+   12. Admonitions (GFM alerts)
+   ============================================================
+   The previous stylesheet set `border-left: 4px solid #119FCD` on
+   `.navy blockquote` — specificity (0,1,1), loaded after mdBook's
+   `.blockquote-tag-warning` (0,1,0) — so every NOTE, TIP, IMPORTANT,
+   WARNING and CAUTION on the site rendered in the same blue, and the
+   fill mdBook deliberately disables for tagged quotes came back.
+
+   Nothing here touches border colour: the per-type
+   `--blockquote-*-color` variables from sections 2/3 now reach the
+   page. Keep it that way. */
+.content main .blockquote-tag {
+  background: none;
+  border-block: none;
+  border-inline-start-style: solid;
+  border-inline-start-width: 3px;
+  border-radius: 0;
+  padding: 2px 0 2px 18px;
+  margin: 1.6em 0;
 }
 
-.navy table thead th {
-  font-family: "DM Sans", sans-serif;
-  font-weight: 700;
-  font-size: 0.85em;
+.content main .blockquote-tag-title {
+  font-size: 1.3rem;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #7FAFC0;
-  padding: 12px 20px;
-  border-bottom: 1px solid #063B4C;
+  letter-spacing: 0.07em;
+  margin: 0 0 6px;
 }
 
-.navy table td {
-  padding: 10px 20px;
-  border-bottom: 1px solid rgba(6, 59, 76, 0.5);
+.content main .blockquote-tag-title svg {
+  width: 15px;
+  height: 15px;
+  margin-inline-end: 7px;
 }
 
-.navy table tbody tr:nth-child(2n) {
-  background: rgba(11, 25, 37, 0.5);
+.content main .blockquote-tag p:last-child {
+  margin-bottom: 0;
 }
+
 
 /* ============================================================
-   Blockquotes
+   13. Sidebar
    ============================================================ */
-.navy blockquote {
-  background-color: #0F2030;
-  border: 1px solid rgba(17, 159, 205, 0.1);
-  border-radius: 8px;
-  border-left: 4px solid #119FCD;
-  padding: 16px 20px;
+.sidebar,
+.sidebar-iframe-inner {
+  font-family: var(--p-font-text);
+  font-size: 1.45rem;
 }
 
-.light blockquote {
-  background-color: #E8F0F5;
-  border: 1px solid #D0DFE8;
-  border-radius: 8px;
-  border-left: 4px solid #0D7FA3;
-  padding: 16px 20px;
+.sidebar {
+  border-inline-end: 1px solid var(--p-border);
 }
 
-/* ============================================================
-   Sidebar
-   ============================================================ */
-
-/* Sidebar logo (injected via extra.js) */
+/* Logo + wordmark, injected by extra.js */
 .sidebar-logo {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
+  gap: 10px;
   text-decoration: none;
-  padding: 16px 0 16px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--sidebar-spacer);
+  padding: 18px 10px;
+  margin-bottom: 10px;
   transition: opacity 0.15s ease;
 }
 
 .sidebar-logo:hover {
-  opacity: 0.85;
+  opacity: 0.8;
   text-decoration: none;
 }
 
 .sidebar-logo img {
-  width: 48px;
-  height: 48px;
-  border-radius: 8px;
-  margin-bottom: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--p-radius);
 }
 
 .sidebar-logo span {
-  font-family: "Inter", sans-serif;
+  font-family: var(--p-font-display);
   font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.06em;
+  font-size: 1.5rem;
+  letter-spacing: -0.005em;
+  color: var(--p-fg);
 }
 
-.navy .sidebar-logo span {
-  color: #ECF4F8;
-}
-
-.light .sidebar-logo span {
-  color: #07111A;
-}
-
-.navy .sidebar {
-  border-right: 1px solid #063B4C;
-}
-
-.navy .chapter li.part-title {
-  color: #ECF4F8;
-  font-family: "Inter", sans-serif;
-  font-weight: 700;
-  font-size: 0.75em;
+.chapter li.part-title {
+  font-family: var(--p-font-text);
+  font-weight: 600;
+  font-size: 1.1rem;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 16px;
+  letter-spacing: 0.085em;
+  color: var(--p-fg-faint);
+  padding: 6px 12px;
+  margin-top: 22px;
 }
 
-.navy .chapter li a {
-  color: #7FAFC0;
-  transition: color 0.15s ease, background-color 0.15s ease;
-  border-radius: 4px;
+/* Nav icons on the front-matter chapters and the part titles, injected by
+   extra.js. Flex rather than an inline span so a title that wraps keeps its
+   second line clear of the glyph, and the glyph stays put beside the first.
+   `currentColor` in the SVGs means the muted, hover and active colours below
+   already apply — there is no separate icon palette to keep in step. */
+.chapter li a.with-nav-icon,
+.chapter li.part-title.with-nav-icon {
+  display: flex;
+  align-items: center;
+  gap: 9px;
 }
 
-.navy .chapter li a:hover {
-  color: #ECF4F8;
-  background-color: rgba(17, 159, 205, 0.08);
+.nav-icon {
+  flex: 0 0 auto;
+  display: flex;
+  width: 16px;
+  height: 16px;
+  /* The label is what you read; the glyph is what you aim at. Sitting it a
+     shade back keeps it from competing with the text at this size. */
+  opacity: 0.72;
+  transition: opacity 0.15s ease;
 }
 
-.navy .chapter li.chapter-item a.active {
-  color: #119FCD;
-  background-color: rgba(17, 159, 205, 0.12);
+.nav-icon svg {
+  width: 100%;
+  height: 100%;
 }
 
-/* Light sidebar */
-.light .sidebar {
-  border-right: 1px solid #D0DFE8;
+/* One size for every nav icon, chapter and part title alike, even though a
+   part title sets 11px text against a chapter's 14.5px. Scaling the glyph to
+   its label shrank the section markers — the very things the eye jumps
+   between — below the chapter icons under them. The glyph is the landmark
+   here, not a bullet on the label. */
+
+.chapter li a:hover .nav-icon,
+.chapter li.chapter-item a.active .nav-icon {
+  opacity: 1;
 }
 
-.light .chapter li.part-title {
-  color: #07111A;
-  font-family: "Inter", sans-serif;
-  font-weight: 700;
-  font-size: 0.75em;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.chapter li a {
+  color: var(--p-fg-muted);
+  padding: 5px 12px;
+  line-height: 1.45;
+  border-radius: 0;
+  border-inline-start: 2px solid transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
 }
+
+.chapter li a:hover {
+  color: var(--p-fg);
+  background: none;
+}
+
+.chapter li.chapter-item a.active {
+  color: var(--p-accent);
+  background: none;
+  border-inline-start-color: var(--p-accent);
+  font-weight: 500;
+}
+
+/* Drop the current page's own headings out of the sidebar.
+   mdBook's toc.js injects one `li.header-item` per heading (23 of them on
+   reference/functions.md) with `#anchor` links — the same list, in the same
+   order, that the on-page rail in section 14 already shows on the right. Two
+   copies of one navigation on one screen is noise, and it buried the chapter
+   list the sidebar is actually for.
+
+   This is not what `[output.html.fold]` in book.toml controls; that governs
+   *chapter* nesting, of which this book has exactly one instance. The heading
+   tree is built client-side and has no config switch, so CSS is the lever. */
+.chapter li.header-item {
+  display: none;
+}
+
 
 /* ============================================================
-   Theme Toggle — replace multi-theme picker with dark/light toggle
+   14. On-page table of contents
+   ============================================================
+   Built from the page's own h2/h3 by extra.js, with a scroll-spy.
+   Long reference and upgrade pages had no in-page navigation at all.
+   Hidden below 1400px so it never squeezes the content column. */
+.page-toc {
+  display: none;
+}
+
+@media (min-width: 1400px) {
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--p-toc-width);
+    /* Now that prose fills its column, without this the last word of a long
+       line sits flush against the rail. */
+    column-gap: var(--p-toc-gap);
+    /* The rail joins the centred block, so the cap has to grow by the rail
+       and its gutter — otherwise the text column would give up that width
+       and the whole group would sit left of centre. */
+    max-width: calc(
+      var(--content-max-width) + var(--p-toc-gap) + var(--p-toc-width)
+    );
+    align-items: start;
+    /* mdBook sets `overflow-y: auto` here, but `.content` has no height cap
+       so it grows and the document scrolls instead. That declaration still
+       makes `.content` the scrollport for its descendants, which leaves
+       `position: sticky` below with nothing to stick to. Wide content is
+       already contained by `.table-wrapper` and `pre`, both of which scroll
+       on their own, so releasing it costs nothing. */
+    overflow: visible;
+  }
+
+  .content > main {
+    grid-column: 1;
+    /* mdBook sets `margin-inline: auto` on `.content main`. Auto inline
+       margins suppress a grid item's stretch, so `main` sized itself from
+       its own content and spilled ~85px underneath the rail. Zero the
+       margins and size it from the track explicitly. */
+    margin-inline: 0;
+    justify-self: stretch;
+    min-width: 0;
+    width: 100%;
+    /* `.content` is already capped and centred, so the track is the bound —
+       a second cap here would only reintroduce dead space inside it. */
+    max-width: none;
+  }
+
+  .content > .nav-wrapper {
+    grid-column: 1 / -1;
+  }
+
+  .content > .page-toc {
+    display: block;
+    grid-column: 2;
+    position: sticky;
+    top: calc(var(--menu-bar-height) + 24px);
+    max-height: calc(100vh - var(--menu-bar-height) - 48px);
+    overflow-y: auto;
+    padding: 0 8px 24px 20px;
+    font-size: 1.3rem;
+    line-height: 1.5;
+  }
+
+  .page-toc-title {
+    display: block;
+    font-size: 1.05rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--p-fg-faint);
+    margin-bottom: 10px;
+  }
+
+  .page-toc a {
+    display: block;
+    color: var(--p-fg-muted);
+    text-decoration: none;
+    padding: 4px 0 4px 11px;
+    border-inline-start: 2px solid var(--p-border);
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .page-toc a:hover {
+    color: var(--p-fg);
+  }
+
+  .page-toc a.active {
+    color: var(--p-accent);
+    border-inline-start-color: var(--p-accent);
+  }
+
+  .page-toc a.lvl-3 {
+    padding-inline-start: 22px;
+    font-size: 1.25rem;
+  }
+}
+
+
+/* ============================================================
+   15. Menu bar, search, theme toggle
    ============================================================ */
+.menu-title {
+  font-family: var(--p-font-display);
+  font-weight: 700;
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+}
+
+#mdbook-menu-bar {
+  background-color: color-mix(in srgb, var(--p-bg) 92%, transparent);
+  border-bottom-color: var(--p-border);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+#mdbook-menu-bar.bordered {
+  border-bottom-color: var(--p-border);
+}
+
+#mdbook-searchbar {
+  border-radius: var(--p-radius);
+  font-family: var(--p-font-text);
+}
+
+#mdbook-searchbar:focus,
+#mdbook-searchbar.active {
+  border-color: var(--p-accent);
+  box-shadow: 0 0 0 3px var(--p-accent-tint);
+}
+
+#mdbook-searchbar::placeholder {
+  color: var(--p-fg-faint);
+}
+
+/* mdBook binds `/` and `s` to the search box and mentions it only in the
+   toggle's title attribute. The chip is where the shortcut gets learned for
+   next time; extra.js hides it once the field has content. */
+#mdbook-searchbar-outer {
+  position: relative;
+}
+
+#search-key-hint {
+  position: absolute;
+  inset-inline-end: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  font-family: var(--mono-font);
+  font-size: 1.2rem;
+  line-height: 1;
+  color: var(--p-fg-faint);
+  background: var(--p-bg);
+  border: 1px solid var(--p-border-strong);
+  border-radius: var(--p-radius-sm);
+  padding: 3px 7px;
+}
+
+#search-key-hint[hidden] {
+  display: none;
+}
+
+/* Replace mdBook's multi-theme picker with the dark/light toggle
+   injected by extra.js. */
 #mdbook-theme-toggle {
   display: none;
 }
@@ -527,147 +1127,981 @@ pre > .buttons {
   fill: currentColor;
 }
 
-/* ============================================================
-   Menu Bar
-   ============================================================ */
-.navy #mdbook-menu-bar {
-  background-color: rgba(7, 17, 26, 0.95);
-  border-bottom-color: rgba(6, 59, 76, 0.6);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
+/* The home button → goplasmatic.io that extra.js injects as the first of the
+   menu bar's right buttons needs no rules of its own: it carries mdBook's own
+   `.icon-button` / `.fa-svg` markup, so colour, size, padding and hover all
+   come from `.menu-bar .icon-button`, and `.right-buttons a` already drops
+   the underline. */
 
-.navy #mdbook-menu-bar.bordered {
-  border-bottom-color: #063B4C;
-}
-
-.light #mdbook-menu-bar {
-  background-color: rgba(244, 248, 251, 0.95);
-  border-bottom-color: #D0DFE8;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
 
 /* ============================================================
-   Search Bar
-   ============================================================ */
-.navy #mdbook-searchbar {
-  border-radius: 8px;
+   16. Landing-page card grids (.doc-cards)
+   ============================================================
+   A markdown list wrapped in <div class="doc-cards">…</div>, not raw
+   HTML cards: the links stay real markdown links, so mdBook still
+   rewrites .md → .html and docs/lint.sh check 2 keeps covering them.
+
+   One container with 1px gaps showing the border through, rather than
+   six separately bordered, rounded, lifting boxes. Reads as a table of
+   contents instead of six competing objects. */
+.doc-cards > ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 1px;
+  margin: 1.5em 0 2em;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-radius-lg);
+  overflow: hidden;
 }
 
-.navy #mdbook-searchbar:focus,
-.navy #mdbook-searchbar.active {
-  border-color: #119FCD;
-  box-shadow: 0 0 0 3px rgba(17, 159, 205, 0.2);
+.doc-cards > ul > li {
+  margin: 0;
+  padding: 16px 18px;
+  background: var(--p-bg);
+  /* Each card draws its own 1px ring, which exactly fills the 1px grid gap —
+     neighbours share one hairline, and a last row with fewer cards than
+     columns leaves page background instead of a block of border colour
+     (which is what a border-coloured container background would show). */
+  box-shadow: 0 0 0 1px var(--p-border);
+  font-size: 1.55rem;
+  line-height: 1.55;
+  transition: background 0.15s ease;
 }
 
-.navy #mdbook-searchbar::placeholder {
-  color: #3D6B7D;
+/* The whole card is the hit target, not just the title. The title stays a
+   real markdown link — docs/lint.sh check 2 resolves those, so replacing
+   them with an onclick or a wrapping raw <a> would put the card grids
+   outside the link checker. Instead the title link stretches an invisible
+   ::after over the whole card. */
+.doc-cards > ul > li {
+  position: relative;
 }
+
+.doc-cards > ul > li:hover,
+.doc-cards > ul > li:focus-within {
+  background: var(--p-surface);
+}
+
+.doc-cards > ul > li p {
+  margin: 0;
+}
+
+/* The card title is its own paragraph and the description follows, so
+   tight and loose lists both need covering: mdBook only wraps items in
+   <p> when the list has blank lines between them. */
+.doc-cards > ul > li > p:first-child {
+  margin-bottom: 4px;
+}
+
+.doc-cards > ul > li > a:first-child,
+.doc-cards > ul > li > p:first-child > a:first-child,
+.doc-cards > ul > li > p:first-child > strong > a:first-child {
+  display: block;
+  font-weight: 600;
+  font-size: 1.05em;
+  /* Accent, not --p-fg: the previous neutral title gave no signal that the
+     card was a link at all. */
+  color: var(--p-accent);
+  padding-inline-end: 20px;
+}
+
+.doc-cards > ul > li > a:first-child::after,
+.doc-cards > ul > li > p:first-child > a:first-child::after,
+.doc-cards > ul > li > p:first-child > strong > a:first-child::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+/* Chevron, so the affordance survives for anyone who cannot rely on the
+   accent colour alone. Generated on the <li>, so it paints above the
+   title link's stretched ::after rather than under it.
+
+   Real SVG geometry through `mask-image`, not `content: "→"`. The arrow
+   character was borrowed from Inter: it carried the text face's own weight
+   and baseline, so it neither matched the 1.7 stroke of the nav glyphs nor
+   sat on the optical centre of the card's first line. A mask is tinted by
+   `background-color`, so both theme colours below still apply. */
+.doc-cards > ul > li::after {
+  content: "";
+  position: absolute;
+  top: 19px;
+  inset-inline-end: 16px;
+  width: 15px;
+  height: 15px;
+  background-color: var(--p-fg-faint);
+  -webkit-mask: var(--p-icon-chevron-right) center / contain no-repeat;
+  mask: var(--p-icon-chevron-right) center / contain no-repeat;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.doc-cards > ul > li:hover::after,
+.doc-cards > ul > li:focus-within::after {
+  background-color: var(--p-accent);
+  transform: translateX(2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .doc-cards > ul > li::after {
+    transition: background-color 0.15s ease;
+  }
+  .doc-cards > ul > li:hover::after,
+  .doc-cards > ul > li:focus-within::after {
+    transform: none;
+  }
+}
+
+.doc-cards > ul > li:focus-within {
+  outline: 2px solid var(--p-accent);
+  outline-offset: -2px;
+}
+
+.doc-cards > ul > li > p:last-child {
+  color: var(--p-fg-muted);
+}
+
+@media (max-width: 620px) {
+  .doc-cards > ul {
+    grid-template-columns: 1fr;
+  }
+}
+
 
 /* ============================================================
-   Links
-   ============================================================ */
-.navy .content a:link,
-.navy .content a:visited {
-  color: #119FCD;
-  transition: color 0.15s ease;
-}
-
-.navy .content a:hover {
-  color: #4CBD97;
-}
-
-/* ============================================================
-   Inline Code
-   ============================================================ */
-.navy :not(pre) > code {
-  background-color: #152839;
-  border-radius: 6px;
-  padding: 0.15em 0.4em;
-  border: 1px solid rgba(6, 59, 76, 0.6);
-}
-
-.light :not(pre) > code {
-  background-color: #E0EBF0;
-  border-radius: 6px;
-  padding: 0.15em 0.4em;
-  border: 1px solid #D0DFE8;
-}
-
-/* ============================================================
-   Scrollbar
-   ============================================================ */
-.navy ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.navy ::-webkit-scrollbar-track {
-  background: #07111A;
-}
-
-.navy ::-webkit-scrollbar-thumb {
-  background: #3D6B7D;
-  border-radius: 4px;
-}
-
-.navy ::-webkit-scrollbar-thumb:hover {
-  background: #7FAFC0;
-}
-
-/* ============================================================
-   Selection
-   ============================================================ */
-.navy ::selection {
-  background-color: rgba(17, 159, 205, 0.3);
-  color: #ECF4F8;
-}
-
-.light ::selection {
-  background-color: rgba(13, 127, 163, 0.2);
-  color: #07111A;
-}
-
-/* ============================================================
-   Hero Logo (introduction page)
+   17. Hero (introduction page)
    ============================================================ */
 .hero-logo {
   text-align: center;
-  padding: 48px 0 32px;
+  padding: 40px 0 32px;
   margin-bottom: 24px;
-  border-bottom: 1px solid var(--sidebar-spacer, #063B4C);
+  border-bottom: 1px solid var(--p-border);
 }
 
 .hero-logo img {
-  width: 120px;
-  height: 120px;
+  width: 88px;
+  height: 88px;
   border-radius: 16px;
   margin-bottom: 16px;
 }
 
 .hero-logo h1 {
-  font-family: "Montserrat", sans-serif;
-  font-weight: 800;
-  font-size: 3em;
+  font-family: var(--p-font-display);
+  font-weight: 700;
+  font-size: 4.4rem;
+  line-height: 1.1;
   margin: 0;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, #119FCD, #4CBD97);
+  letter-spacing: -0.025em;
+  background: linear-gradient(135deg, var(--p-accent), #4CBD97);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .hero-logo p {
-  font-family: "DM Sans", sans-serif;
-  font-size: 1.15em;
-  margin: 8px 0 0;
+  font-family: var(--p-font-text);
+  font-size: 1.9rem;
+  line-height: 1.5;
+  color: var(--p-fg-muted);
+  margin: 12px auto 0;
+  max-width: none;
 }
 
-.navy .hero-logo p {
-  color: #7FAFC0;
+.hero-logo .hero-sub {
+  font-size: 1.6rem;
+  color: var(--p-fg-faint);
+  margin-top: 6px;
 }
 
-.light .hero-logo p {
-  color: #3D6B7D;
+
+/* ============================================================
+   18. Comparison page metadata (.compare-meta)
+   ============================================================
+   Every page under compare/ opens with three labelled facts: how the
+   category relates to Orion, where the two overlap, and when a human
+   last checked the other tools' docs. Written as three consecutive
+   markdown lines they rendered as one run-on paragraph, because a soft
+   line break is a space in HTML. The wrapper (with blank lines inside
+   it, so CommonMark still processes the markdown) gives each fact its
+   own <p>; this rule sets them as a block to scan rather than prose to
+   read. */
+.compare-meta {
+  margin: 0 0 28px;
+  padding: 14px 18px;
+  border-inline-start: 3px solid var(--p-accent);
+  border-radius: var(--p-radius-sm);
+  background: var(--p-surface);
+  font-size: 0.94em;
+}
+
+.compare-meta p {
+  margin: 0;
+  color: var(--p-fg-muted);
+}
+
+.compare-meta p + p {
+  margin-top: 5px;
+}
+
+/* The labels carry the scan; the value is what you read once one of
+   them has caught. */
+.compare-meta strong {
+  font-weight: 600;
+  color: var(--p-fg);
+}
+
+
+/* ============================================================
+   19. Scrollbar & selection
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--p-border-strong);
+  border-radius: var(--p-radius-sm);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--p-fg-faint);
+}
+
+::selection {
+  background-color: var(--p-accent-tint);
+  color: var(--p-fg);
+}
+
+
+/* ============================================================
+   20. Print
+   ============================================================
+   The two-track grid and the ToC rail are screen affordances; on paper
+   the content should just be one column at full page width. */
+@media print {
+  .page-toc {
+    display: none !important;
+  }
+
+  .content,
+  .content main {
+    display: block;
+    max-width: none;
+  }
+}
+
+
+/* ============================================================
+   21. Narrow screens
+   ============================================================ */
+@media (max-width: 900px) {
+  body {
+    font-size: 1.6rem;
+  }
+
+  .content main h1 { font-size: 2.9rem; }
+  .content main h2 { font-size: 2.1rem; }
+  .content main h3 { font-size: 1.8rem; }
+
+  .content main table th,
+  .content main table td {
+    padding-inline-end: 14px;
+  }
+}
+
+
+/* ============================================================
+   22. Disclosures (<details>)
+   ============================================================
+   Five of these were already in the markdown — the "why" asides in
+   upgrades, connectors, data-dialect and channel-config — with no
+   rules anywhere in this stylesheet, so they rendered as the bare
+   UA triangle in a page set in Montserrat and Inter.
+
+   A run of them should read as one list, not as five boxes: hairline
+   rules top and bottom, no fill, no radius. Same logic as section 10
+   deciding tables are rules rather than boxes. */
+.content main details {
+  border-block-start: 1px solid var(--p-border);
+  margin: 1.6em 0;
+}
+
+/* A consecutive run shares one hairline between neighbours. */
+.content main details + details {
+  margin-block-start: -1.6em;
+}
+
+.content main details:last-of-type,
+.content main details.is-last {
+  border-block-end: 1px solid var(--p-border);
+}
+
+.content main details > summary {
+  /* Both are needed: `list-style` covers Firefox, the pseudo-element
+     covers WebKit. */
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 2px;
+  font-weight: 600;
+  color: var(--p-fg);
+  transition: color 0.15s ease;
+}
+
+.content main details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.content main details > summary:hover {
+  color: var(--p-accent);
+}
+
+.content main details > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.75em;
+  height: 0.75em;
+  /* Baseline-aligned flex items and a mask box do not agree on where the
+     optical centre is; this nudge sits the chevron on the summary's
+     x-height rather than its baseline. */
+  transform: translateY(0.06em);
+  background-color: var(--p-accent);
+  -webkit-mask: var(--p-icon-chevron-down) center / contain no-repeat;
+  mask: var(--p-icon-chevron-down) center / contain no-repeat;
+  transition: transform 0.15s ease;
+}
+
+.content main details[open] > summary::before {
+  transform: translateY(0.06em) rotate(-180deg);
+}
+
+/* The body is indented to the summary's text, not the chevron, so the
+   disclosed content lines up with the label that revealed it. */
+.content main details > *:not(summary) {
+  margin-inline-start: calc(0.75em + 10px);
+}
+
+.content main details > *:last-child {
+  margin-block-end: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .content main details > summary,
+  .content main details > summary::before {
+    transition: none;
+  }
+}
+
+/* On paper a closed disclosure is just missing content. extra.js opens
+   every one before the print dialog and restores the state after; this
+   covers a print that bypasses the event (a PDF from the command line,
+   Reader mode) by making the marker meaningless rather than misleading. */
+@media print {
+  .content main details {
+    border-color: var(--p-border-strong);
+  }
+
+  .content main details > summary::before {
+    display: none;
+  }
+
+  .content main details > summary {
+    padding-inline-start: 0;
+  }
+}
+
+
+/* ============================================================
+   23. Table marks — HTTP methods and status codes
+   ============================================================
+   Both are inserted by js/extra.js over the rendered DOM, because CSS
+   cannot select on the text inside a cell. The markdown is untouched:
+   an endpoint table stays a markdown table, and `` `503` `` stays
+   inline code.
+
+   No new hues. A method takes the syntax colour its shape already
+   suggests — read as accent, create as string-green, modify as
+   number-amber, destroy as the delete red — so the whole vocabulary is
+   one a reader has already learned from the code blocks. */
+.content main td.http-method {
+  white-space: nowrap;
+}
+
+.content main .m-badge {
+  display: inline-block;
+  min-width: 6.2em;
+  text-align: center;
+  font-family: var(--mono-font);
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  padding: 1px 8px;
+  border-radius: var(--p-radius-sm);
+  border: 1px solid;
+}
+
+.content main .m-badge.m-get {
+  color: var(--p-accent);
+  border-color: color-mix(in srgb, var(--p-accent) 40%, transparent);
+  background: var(--p-accent-tint);
+}
+
+.content main .m-badge.m-post {
+  color: var(--p-syn-str);
+  border-color: color-mix(in srgb, var(--p-syn-str) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-str) 12%, transparent);
+}
+
+.content main .m-badge.m-put,
+.content main .m-badge.m-patch {
+  color: var(--p-syn-num);
+  border-color: color-mix(in srgb, var(--p-syn-num) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-num) 12%, transparent);
+}
+
+.content main .m-badge.m-delete {
+  color: var(--p-syn-del);
+  border-color: color-mix(in srgb, var(--p-syn-del) 40%, transparent);
+  background: color-mix(in srgb, var(--p-syn-del) 12%, transparent);
+}
+
+/* Status codes keep the inline-code colour they had; the tint and rule
+   are what make them catchable at scroll speed on the troubleshooting
+   and upgrade pages, where the code IS the index entry. */
+.content main code.status-code {
+  padding: 0 5px;
+  border-radius: var(--p-radius-sm);
+  border: 1px solid;
+}
+
+.content main code.status-code.sc-2 {
+  color: var(--p-syn-str);
+  border-color: color-mix(in srgb, var(--p-syn-str) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-str) 11%, transparent);
+}
+
+.content main code.status-code.sc-4 {
+  color: var(--p-syn-num);
+  border-color: color-mix(in srgb, var(--p-syn-num) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-num) 11%, transparent);
+}
+
+.content main code.status-code.sc-5 {
+  color: var(--p-syn-del);
+  border-color: color-mix(in srgb, var(--p-syn-del) 38%, transparent);
+  background: color-mix(in srgb, var(--p-syn-del) 11%, transparent);
+}
+
+/* Section 10 strips the background from code in a table cell so the
+   first column reads as a list; a status chip in a cell is the one
+   place that should keep its own box. */
+.content main table td code.status-code {
+  padding: 0 5px;
+}
+
+/* Boolean cells. The word is still the content — the glyph is a second,
+   faster channel for the same fact, which is why it is aria-hidden and
+   why the cell still reads "Yes" to anything that is not looking at it. */
+.content main .bool-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.content main table th[align="center"] + th[align="center"],
+.content main .bool-cell {
+  line-height: 1.4;
+}
+
+.content main .bool-mark {
+  width: 1em;
+  height: 1em;
+}
+
+.content main .bool-check {
+  color: var(--p-syn-str);
+  /* The tick is a smaller shape than the rules around it; a hair more
+     weight keeps it from reading as lighter than the dash. */
+  stroke-width: 2.4;
+}
+
+.content main .bool-dash {
+  color: var(--p-fg-faint);
+  stroke-width: 2.4;
+}
+
+/* Section 10 mutes centred columns, which is where most matrices put
+   their booleans. The word can stay muted — the glyph is what carries
+   now — but a "yes" should not be quieter than the "no" beside it. */
+.content main table td[align="center"] .bool-cell {
+  justify-content: center;
+}
+
+/* Categorical marks: the five connector types, and the four ingresses in
+   the guards-matrix header. Muted rather than accented — these label a
+   row or a column, they are not the answer the reader came for. */
+.content main .cat-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.content main .cat-mark {
+  width: 1.05em;
+  height: 1.05em;
+  color: var(--p-fg-faint);
+}
+
+.content main thead th .cat-mark {
+  color: var(--p-fg-muted);
+}
+
+
+/* ============================================================
+   23a. Destination glyphs on cross-links
+   ============================================================
+   The eight part glyphs from the sidebar, in front of every link in a
+   "Related" / "Next steps" list and every card title, so a link says
+   what kind of page it goes to. Same vocabulary in both places — that
+   is the whole point of reusing them rather than drawing new ones. */
+.content main li.with-dest-mark {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  /* The glyph replaces the bullet rather than sitting beside it: two
+     markers on one line is one more than the line needs. */
+  list-style: none;
+  margin-inline-start: -1.1em;
+}
+
+.content main .dest-mark {
+  width: 1.02em;
+  height: 1.02em;
+  color: var(--p-fg-faint);
+  transform: translateY(0.12em);
+  transition: color 0.15s ease;
+}
+
+.content main li.with-dest-mark:hover .dest-mark {
+  color: var(--p-accent);
+}
+
+/* Inside a card the glyph belongs to the title, and the tile already
+   has its own padding and hover — no negative indent, no flex row. */
+.content main .doc-cards > ul > li.with-dest-mark {
+  display: block;
+  margin-inline-start: 0;
+}
+
+.content main .doc-cards > ul > li > .dest-mark {
+  float: inline-start;
+  margin-inline-end: 9px;
+  transform: translateY(0.28em);
+  color: var(--p-accent);
+  opacity: 0.75;
+}
+
+
+/* ============================================================
+   24. Table filter
+   ============================================================
+   Opt in from the markdown with an empty marker div immediately before
+   the table — same convention as .doc-cards and .themed-media:
+
+     <div class="table-filter" data-label="Filter metrics"></div>
+
+   js/extra.js turns it into an input that hides non-matching rows. It
+   is progressive: with JS off the marker renders nothing and the table
+   is exactly as it was. */
+.content main .table-filter {
+  margin: 1.4em 0 0.7em;
+}
+
+.content main .table-filter-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  max-width: 420px;
+}
+
+.content main .table-filter-box::before {
+  content: "";
+  position: absolute;
+  inset-inline-start: 11px;
+  width: 15px;
+  height: 15px;
+  background-color: var(--p-fg-faint);
+  -webkit-mask: var(--p-icon-filter) center / contain no-repeat;
+  mask: var(--p-icon-filter) center / contain no-repeat;
+  pointer-events: none;
+}
+
+.content main .table-filter input {
+  width: 100%;
+  font-family: var(--p-font-text);
+  font-size: 1.45rem;
+  color: var(--p-fg);
+  background: var(--p-surface);
+  border: 1px solid var(--p-border-strong);
+  border-radius: var(--p-radius);
+  padding: 7px 12px 7px 34px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.content main .table-filter input::placeholder {
+  color: var(--p-fg-faint);
+}
+
+.content main .table-filter input:focus {
+  outline: none;
+  border-color: var(--p-accent);
+  box-shadow: 0 0 0 3px var(--p-accent-tint);
+}
+
+.content main .table-filter-count {
+  margin-inline-start: 12px;
+  font-size: 1.3rem;
+  color: var(--p-fg-faint);
+  white-space: nowrap;
+}
+
+/* A filter is a screen affordance; paper gets the whole table. */
+@media print {
+  .content main .table-filter {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   25. Inline "On this page" (below the rail's breakpoint)
+   ============================================================
+   Section 14's rail appears at 1400px and up. Below that — every
+   1280 and 1366 laptop — a 529-line reference page had no in-page
+   navigation at all. Same link list, folded into a disclosure at the
+   top of the content, closed by default so it costs one line until
+   it is wanted. */
+.content main .page-toc-inline {
+  display: none;
+}
+
+@media (max-width: 1399px) {
+  .content main .page-toc-inline {
+    display: block;
+    border: 1px solid var(--p-border);
+    border-radius: var(--p-radius);
+    margin: 0 0 2em;
+    background: var(--p-surface);
+  }
+
+  /* Section 22's rules are for asides inside the prose; this one is a
+     navigation control and wants its own box. */
+  .content main .page-toc-inline,
+  .content main .page-toc-inline + * {
+    border-block-start: 0;
+  }
+
+  .content main .page-toc-inline > summary {
+    padding: 10px 14px;
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--p-fg-muted);
+  }
+
+  .content main .page-toc-inline[open] > summary {
+    border-block-end: 1px solid var(--p-border);
+  }
+
+  .content main .page-toc-inline .page-toc-inline-count {
+    color: var(--p-fg-faint);
+    font-weight: 400;
+  }
+
+  .content main .page-toc-inline nav {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 8px 14px 12px;
+  }
+
+  .content main .page-toc-inline a {
+    color: var(--p-fg-muted);
+    border-bottom: 0;
+    padding: 4px 0;
+    font-size: 1.4rem;
+    line-height: 1.45;
+  }
+
+  .content main .page-toc-inline a:hover {
+    color: var(--p-accent);
+  }
+
+  .content main .page-toc-inline a.lvl-3 {
+    padding-inline-start: 16px;
+    font-size: 1.35rem;
+  }
+}
+
+@media print {
+  .content main .page-toc-inline {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   25b. Per-row anchors on reference tables
+   ============================================================
+   The finest anchor in the book used to be the section. A config key
+   and an error code are things people link each other to, so the row
+   gets its own id and a link that surfaces on hover. */
+.content main td.has-row-anchor {
+  position: relative;
+}
+
+.content main .row-anchor {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 7px;
+  color: var(--p-fg-faint);
+  border-bottom: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+}
+
+.content main tr:hover .row-anchor,
+.content main .row-anchor:focus-visible {
+  opacity: 1;
+}
+
+.content main .row-anchor:hover {
+  color: var(--p-accent);
+}
+
+.content main .row-anchor .orion-ico {
+  width: 0.92em;
+  height: 0.92em;
+}
+
+/* The row someone was linked to should be findable once they arrive. */
+.content main td:target,
+.content main td:target ~ td {
+  background: var(--p-accent-tint);
+}
+
+@media print {
+  .content main .row-anchor {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   25c. Page footer — named prev/next, and the report links
+   ============================================================
+   mdBook's edge chevrons say a next chapter exists without saying what
+   it is. With `no-section-label` on, this strip is the only place the
+   reading order is written down. */
+.content main .page-foot {
+  margin-top: 4em;
+  padding-top: 1.6em;
+  border-top: 1px solid var(--p-border);
+}
+
+.content main .page-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.content main .page-nav-link {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 16px;
+  border: 1px solid var(--p-border);
+  border-radius: var(--p-radius);
+  border-bottom: 1px solid var(--p-border);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.content main .page-nav-link:hover {
+  border-color: var(--p-border-strong);
+  background: var(--p-surface);
+}
+
+.content main .page-nav-next {
+  text-align: end;
+  align-items: flex-end;
+  grid-column: 2;
+}
+
+.content main .page-nav-kicker {
+  font-size: 1.2rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--p-fg-faint);
+}
+
+.content main .page-nav-link b {
+  font-weight: 600;
+  font-size: 1.5rem;
+  color: var(--p-accent);
+  line-height: 1.35;
+}
+
+.content main .page-report {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  margin-top: 1.8em;
+  font-size: 1.35rem;
+  color: var(--p-fg-faint);
+}
+
+.content main .page-report a {
+  color: var(--p-fg-muted);
+  border-bottom: 1px solid transparent;
+}
+
+.content main .page-report a:hover {
+  color: var(--p-accent);
+  border-bottom-color: color-mix(in srgb, var(--p-accent) 40%, transparent);
+}
+
+@media (max-width: 620px) {
+  .content main .page-nav {
+    grid-template-columns: 1fr;
+  }
+
+  .content main .page-nav-next {
+    grid-column: 1;
+  }
+}
+
+@media print {
+  .content main .page-foot {
+    display: none;
+  }
+}
+
+
+/* ============================================================
+   26. Folded sections (.fold-sections)
+   ============================================================
+   js/extra.js wraps each heading at the marker's level, plus the
+   content under it, in a <details class="fold">. Section 22 already
+   styles a disclosure; these rules are only the differences a folded
+   HEADING needs from a folded aside — it has to keep reading as the
+   heading it was, at the size the rest of the page sets, because the
+   list of them IS the page's index. */
+.content main .fold > summary > h2,
+.content main .fold > summary > h3,
+.content main .fold > summary > h4 {
+  margin: 0;
+  /* The heading owns the row; the summary is only the hit target. */
+  padding: 0;
+  border: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.content main .fold > summary {
+  /* Section 22 pads for a one-line label. A heading brings its own
+     vertical rhythm, so this only needs the gutter for the chevron. */
+  padding: 9px 2px;
+  font-weight: inherit;
+}
+
+.content main .fold > summary::before {
+  /* Nudged to the cap height of the heading rather than the x-height of
+     body text, which is where section 22 puts it. */
+  transform: translateY(0.28em);
+}
+
+.content main .fold[open] > summary::before {
+  transform: translateY(0.28em) rotate(-180deg);
+}
+
+/* An h2 fold is a bigger target than an h3 fold; keep the chevron
+   proportional to the label it opens rather than to the body text. */
+.content main .fold > summary > h2 ~ *,
+.content main .fold > summary > h2 {
+  line-height: 1.3;
+}
+
+.content main .fold > summary:hover > h2,
+.content main .fold > summary:hover > h3,
+.content main .fold > summary:hover > h4 {
+  color: var(--p-accent);
+}
+
+/* mdBook's own anchor stays clickable inside the summary — extra.js stops
+   it toggling — but it should not underline the whole heading on hover. */
+.content main .fold > summary a.header {
+  color: inherit;
+}
+
+/* The Expand all / Collapse all bar, generated into the marker div. */
+.content main .fold-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 0 1.2em;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--p-border);
+}
+
+.content main .fold-controls-count {
+  font-size: 1.3rem;
+  color: var(--p-fg-faint);
+}
+
+.content main .fold-toggle {
+  font-family: var(--p-font-text);
+  font-size: 1.3rem;
+  color: var(--p-accent);
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--p-accent) 35%, transparent);
+  border-radius: var(--p-radius-sm);
+  padding: 3px 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.content main .fold-toggle:hover {
+  background: var(--p-accent-tint);
+  border-color: var(--p-accent);
+}
+
+.content main .fold-toggle:focus-visible {
+  outline: 2px solid var(--p-accent);
+  outline-offset: 2px;
+}
+
+/* On paper the controls are meaningless and every fold is opened by the
+   beforeprint handler, so the chevron gutter would only misalign the
+   headings against the unfolded ones above them. */
+@media print {
+  .content main .fold-controls {
+    display: none;
+  }
+
+  .content main .fold > summary {
+    padding-inline-start: 0;
+  }
 }

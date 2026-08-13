@@ -1,0 +1,130 @@
+# Authoring Workflows
+
+A workflow is a JSON document listing tasks to run in order. This page is how to write one: how request data reaches your logic, how to branch, how tasks reach outside the process, and how errors come back out.
+
+## Start with parse, always
+
+The raw request payload is **not** in the expression context. A workflow that reads request data begins with `parse_json`, which lifts the payload into the data context under a name you choose:
+
+```json
+{ "id": "parse", "name": "Parse payload",
+  "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } } }
+```
+
+Everything downstream then reads `data.order.*`.
+
+> [!WARNING]
+> **Skip this and nothing errors.** `{"var": "payload.total"}` resolves to
+> nothing, conditions referencing `data.*` evaluate against an empty object,
+> every conditional task silently skips, and the response comes back empty. It
+> is the single most common way a first workflow "does nothing".
+
+## Shape the data with `map`
+
+`map` writes values into the context. Each mapping has a `path` to write and a `logic` producing the value — a literal, or a [JSONLogic](../reference/expressions.md) expression over what is already there:
+
+```json
+{ "id": "flag", "name": "Flag order",
+  "function": { "name": "map", "input": { "mappings": [
+    { "path": "data.order.flagged", "logic": true },
+    { "path": "data.order.alert",
+      "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] } }
+  ]}}}
+```
+
+Paths are created if they do not exist. Order matters: a mapping can read what an earlier task wrote.
+
+> [!WARNING]
+> **A misspelled operator is not an error.** `{"catt": [...]}` is not a
+> mis-typed `cat` — it is a literal object, and it lands at the target path
+> verbatim. Inside a condition, that literal is truthy, so the condition always
+> fires. Check names against
+> [Expression Language](../reference/expressions.md) and dry-run before you
+> activate.
+
+## Branch with conditions
+
+Conditions appear at two levels, and picking the wrong one is a common mistake:
+
+| Level | Decides | Use it for |
+|---|---|---|
+| Workflow `condition` | Whether this workflow matches the request at all | Choosing between two pipelines for one channel |
+| Task `condition` | Whether that task runs inside a matched workflow | Branching inside one pipeline |
+
+Most workflows want `"condition": true` at the top and conditions on individual tasks:
+
+```json
+{
+  "condition": true,
+  "tasks": [
+    { "id": "parse", "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } } },
+    { "id": "vip", "condition": { ">=": [{ "var": "data.order.amount" }, 500] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.order.tier", "logic": "vip" }] } } },
+    { "id": "standard", "condition": { "<": [{ "var": "data.order.amount" }, 500] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.order.tier", "logic": "standard" }] } } }
+  ]
+}
+```
+
+Two tasks with mutually exclusive conditions is how you write an if/else. Write the branches so exactly one fires — overlapping conditions both run, and the later one wins on any path they share.
+
+## Reach outside the process
+
+Connector-backed tasks call databases, HTTP APIs, caches, and Kafka. They name a connector rather than a URL, and write their result to an `output` path:
+
+```json
+{ "id": "enrich", "name": "Look up the customer",
+  "function": { "name": "http_call", "input": {
+    "connector": "crm",
+    "method": "GET",
+    "output": "data.customer"
+  }}}
+```
+
+Because the credentials live on the connector and not in the task, your workflow JSON stays safe to commit. See [Connect Databases & APIs](./connectors.md).
+
+**Which data function?** Reach for `data_query` and `data_write` first: one backend-neutral envelope that lowers to SQL, MongoDB, or Elasticsearch. Drop to `db_read`/`db_write` only when you need SQL the dialect cannot express.
+
+## Use the scratch space
+
+The context has three namespaces, and the difference matters:
+
+- `data` — the working document. On a sync channel this *is* the response body, so anything you leave here, the caller sees.
+- `metadata` — what the ingress recorded: channel id, HTTP method, headers, route parameters.
+- `temp_data` — scratch. Intermediate values you need while computing but do not want to return.
+
+Put working state in `temp_data` and keep the response clean:
+
+```json
+{ "path": "temp_data.raw_score", "logic": { "var": "data.risk.score" } }
+```
+
+## Decide what a failure does
+
+By default the first failing task stops the workflow and the caller gets an error envelope. To collect errors and keep going instead, set `continue_on_error`:
+
+```json
+{ "workflow_id": "order-processing", "continue_on_error": true, "tasks": [ "..." ] }
+```
+
+Note the envelope this produces: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code will read that as success, so anything relying on `continue_on_error` must inspect `errors`.
+
+For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow, or `on_reject: "skip"` to skip only that task.
+
+## Test it before you activate it
+
+Check a workflow offline, before it can touch traffic:
+
+```bash
+orion-server lint workflow.json
+orion-server dry-run -w workflow.json -i payload.json
+```
+
+`lint` checks the workflow against the schema; `dry-run` executes it against a sample payload and prints the context each task produced. See [Test Workflows Offline](./testing.md).
+
+## Related
+
+- [Workflow Schema](../reference/workflows.md) — every field, with defaults.
+- [Task Functions](../reference/functions.md) — the input each function takes.
+- [Expression Language](../reference/expressions.md) — the operators you can use in `logic` and `condition`.
+- [Workflow Patterns](../guides/workflow-patterns.md) — the shapes these pieces make once combined.

@@ -1,0 +1,159 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "orion.fullname" . }}
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # maxUnavailable: 0 by default: never remove a replica before its
+  # replacement is Ready, so the /readyz drain sequence always has a
+  # healthy peer taking traffic.
+  strategy:
+    type: {{ .Values.strategy.type }}
+    {{- if eq .Values.strategy.type "RollingUpdate" }}
+    {{- with .Values.strategy.rollingUpdate }}
+    rollingUpdate:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      {{- if or .Values.podAnnotations (and .Values.metrics.enabled .Values.metrics.prometheusAnnotations) }}
+      annotations:
+        {{- if and .Values.metrics.enabled .Values.metrics.prometheusAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- include "orion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # Off, because the kubelet's Docker-link variables are named after the
+      # *Service*: with this Service called `orion`, every replica would be
+      # handed ORION_SERVICE_HOST, ORION_PORT, ORION_PORT_8080_TCP_ADDR and
+      # the rest — names sitting in Orion's own prefix that nothing here
+      # reads. The server ignores them either way (an override is recognised
+      # by its `__` separator, which no service link has); not injecting them
+      # is the cleaner posture.
+      enableServiceLinks: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "orion.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Must exceed drain + force timeout so SIGTERM runs the full graceful
+      # sequence (readyz -> 503, keep serving, bounded in-flight drain)
+      # instead of being cut short by SIGKILL.
+      terminationGracePeriodSeconds: {{ add .Values.server.shutdownDrainSecs .Values.server.shutdownForceTimeoutSecs 10 }}
+      containers:
+        - name: orion
+          image: {{ include "orion.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.server.port }}
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            # Dedicated, unauthenticated /metrics listener. Not routed by the
+            # Ingress, which backends the named `http` port only.
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            {{- include "orion.env" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Holds liveness off while boot does its migration check, cluster
+          # Redis connect and engine build — a slow boot must not CrashLoop.
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # readyz withdraws on SIGTERM (and on lost DB/engine health), so
+          # the endpoints controller pulls the pod before accept stops.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # The root filesystem is read-only; these are the only writable
+          # paths (SQLite temp files spill to /tmp).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "orion.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # Default: soft anti-affinity spreading server replicas across nodes,
+      # so an "HA" install does not ride a single node. Overridden verbatim
+      # by .Values.affinity.
+      affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "orion.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: server
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

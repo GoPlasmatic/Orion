@@ -9,22 +9,23 @@ A workflow is an ordered list of **tasks**, and every task invokes one built-in
   "name": "Look up customer",
   "function": {
     "name": "http_call",
-    "input": { "connector": "crm", "path": "/customers/42", "response_path": "data.customer" }
+    "input": { "connector": "crm", "path": "/customers/42", "output": "data.customer" }
   }
 }
 ```
 
-Functions read from and write to the **data context** — the JSON document that
-flows through the pipeline. By convention the request body is parsed into
-`data.*` by `parse_json`, later tasks read `data.*` in their JSONLogic, and the
-`data` object is what a sync channel returns. See the
-[Workflow Reference](./workflows.md#the-data-context) for the context model and
-how `condition` expressions are evaluated.
+Functions read and write the **data context**, the JSON document that flows
+through the pipeline; a sync channel returns its `data` object as the response.
+The context's exact shape, and how task `condition` expressions are evaluated
+against it, are defined in the
+[Workflow Reference](./workflows.md#the-data-context).
 
 Orion ships **18 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; ten are Orion handlers that talk to [connectors](../features/extensibility.md#connectors)
+engine; ten are Orion handlers that talk to [connectors](./connectors.md)
 or compose channels.
+
+<div class="table-filter" data-label="Filter functions"></div>
 
 | Function | Category | Connector | Purpose |
 |----------|----------|:---------:|---------|
@@ -47,9 +48,25 @@ or compose channels.
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 
+> [!NOTE]
+> The **Category** column above groups the table for reading. It is not the wire
+> value: `GET /api/v1/admin/functions` serves a `category` of either `connector`
+> or `control` for every function, so tooling should branch on those two rather
+> than on the labels here.
+
+> [!NOTE]
 > Wherever an input field is described as **JSONLogic**, you pass a JSONLogic
 > expression that is evaluated against the data context. A plain JSON literal
 > (string, number, object) is also valid JSONLogic and evaluates to itself.
+
+Every field table on this page uses the same **Required** values:
+
+| Value | Meaning |
+|-------|---------|
+| yes | The field must be present. |
+| no | The field is optional; the default applies when it is omitted. |
+| one of … | Exactly one of the listed fields must be present. |
+| conditional | Required only in the case the Description names. |
 
 ---
 
@@ -213,11 +230,11 @@ Like `publish_json`, but serializes to an XML string.
 
 ## Connector functions
 
-These reference a [connector](../features/extensibility.md#connectors) by name —
-credentials and endpoints live in the connector, not the workflow. Orion
-validates their `input` at workflow create/update time and exposes the schema
-via [`GET /api/v1/admin/functions`](../api/admin.md#functions). Every connector
-call is wrapped in a [circuit breaker](../features/resilience.md).
+These reference a [connector](./connectors.md) by name — credentials and
+endpoints live in the connector, not the workflow. Orion validates their
+`input` at workflow create/update time and exposes the schema via
+[`GET /api/v1/admin/functions`](./admin-api.md#functions). Connector calls run
+through [circuit breakers](./connectors.md) when the global breaker is enabled.
 
 ### `http_call`
 
@@ -233,7 +250,7 @@ support. The connector supplies the base URL and auth.
 | `headers` | object | no | `{}` | Extra request headers (string → string) |
 | `body` | any | no | — | Static request body (serialized as JSON) |
 | `body_logic` | JSONLogic | no | — | Compute the body dynamically (use instead of `body`) |
-| `response_path` | string | no | — | Dotted path where the response body is written; omit to discard it |
+| `output` | string | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
 | `timeout_ms` | number | no | `30000` | Per-request timeout in milliseconds |
 
 ```json
@@ -244,7 +261,7 @@ support. The connector supplies the base URL and auth.
     "method": "POST",
     "path": "/charge",
     "body_logic": { "var": "data.payment" },
-    "response_path": "data.charge_result",
+    "output": "data.charge_result",
     "timeout_ms": 5000
   }
 }
@@ -261,11 +278,17 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
-| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include` |
+| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include` — see the [query envelope](./data-dialect.md#query-envelope-data_query) |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
-| `schema` | object | no | identity | Inline entity schema: renames, types, allowlist, relations |
-| `database` | string | MongoDB only | — | Database name (Mongo connectors) |
+| `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
+| `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
 | `output` | string | no | `"data"` | Dotted path where the row array is written |
+
+> [!NOTE]
+> The `schema` requirement is enforced when the query runs, not when the
+> workflow is created: a task without one is accepted at create and refused at
+> its first request, with an error naming the key to add. Every entity the
+> dialect resolves goes through the schema, so no schema-less call can succeed.
 
 ```json
 {
@@ -282,13 +305,24 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
       "limit": 20
     },
     "params": { "cid": { "var": "data.customer_id" } },
+    "schema": {
+      "entities": {
+        "orders": {
+          "columns": {
+            "id": { "type": "int" }, "customer_id": { "type": "int" },
+            "total": { "type": "float" }, "created_at": { "type": "timestamp" }
+          }
+        }
+      }
+    },
     "output": "data.orders"
   }
 }
 ```
 
-Page sizes are bounded by the `[query]` config section (`default_limit` /
-`max_limit`); a query asking for more than the cap is rejected, never clamped.
+Page sizes are bounded by the [`[query]` config section](./configuration.md)
+(`default_limit` / `max_limit`); a query asking for more than the cap is
+rejected, never clamped.
 
 ### `data_write`
 
@@ -301,27 +335,47 @@ for the full envelope, backend mapping, and safety rules.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `write` | object | yes | — | The mutation envelope — fields below |
+| `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside `values`, `set`, and `filter`; each value is JSONLogic resolved against the context |
+| `schema` | object | yes | — | Inline entity schema: renames, allowlist, `writable` flags. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones. Enforced at run time, like `data_query`'s |
+| `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
+| `output` | string | no | `"data"` | Dotted path where the write result is written |
+
+Inside `write`:
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
 | `op` | string | yes | — | `insert` \| `update` \| `delete` \| `upsert` |
 | `target` | string | yes | — | Logical entity → table / collection / index |
-| `values` | object \| array | insert, upsert | — | Row object(s) to insert |
-| `set` | object | update, upsert | — | Column → value/param assignments |
-| `filter` | JSONLogic | update, delete | — | Row selection (same operators as `data_query`) |
-| `on_conflict` | object | upsert | — | `{ "target": [cols], "action": "update" \| "nothing" }` |
+| `values` | object \| array | conditional | — | Row object(s) to insert; required for `insert` and `upsert` |
+| `set` | object | conditional | — | Column → value/param assignments; required for `update`, optional overrides on `upsert` conflict |
+| `filter` | JSONLogic | conditional | — | Row selection for `update`/`delete` (same operators as `data_query`); required unless the unfiltered opt-in below is used |
+| `on_conflict` | object | conditional | — | `{ "target": [cols], "action": "update" \| "nothing" }`; required for `upsert` |
 | `returning` | array | no | — | Columns returned from mutated rows (PostgreSQL/SQLite only) |
 | `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/delete |
-| `params` / `schema` / `database` / `output` | | | | As in `data_query` |
 
 ```json
 {
   "name": "data_write",
   "input": {
     "connector": "orders-db",
-    "op": "update",
-    "target": "orders",
-    "set": { "status": "shipped" },
-    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
     "params": { "id": { "var": "data.order_id" } },
-    "output": "data.write_result"
+    "schema": {
+      "entities": {
+        "orders": {
+          "columns": {
+            "id": { "type": "int", "writable": false }, "status": { "type": "text" }
+          }
+        }
+      }
+    },
+    "output": "data.write_result",
+    "write": {
+      "op": "update",
+      "target": "orders",
+      "set": { "status": "shipped" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] }
+    }
   }
 }
 ```
@@ -331,9 +385,12 @@ Safety guards: unfiltered mutations are rejected unless `"all": true` **and**
 rejected; and a connector's
 [operation gates](./data-dialect.md#connector-operation-gates) can disable
 individual ops entirely. Results are normalized per backend — SQL returns
-`{ "rows_affected": n }` (plus `returning` / `last_insert_id` where supported);
-MongoDB and Elasticsearch return doc-store counts (`inserted`/`ids`,
-`matched`/`modified`, `deleted`).
+`{ "status": "ok", "rows_affected": n }` (plus `returning` / `last_insert_id`
+where supported); MongoDB and Elasticsearch return doc-store counts
+(`inserted`/`ids`, `matched`/`modified`, `deleted`). Every result carries a
+`status`; a bulk insert that applied only some of its rows reports
+`"partial"` with a per-item array — see
+[Bulk writes](./data-dialect.md#bulk-writes).
 
 ### `db_read`
 
@@ -488,7 +545,7 @@ and at most one of `data`/`data_logic`.
 | `channel_logic` | JSONLogic | one of `channel`/`channel_logic` | — | Expression that resolves to the target channel name |
 | `data` | any | no | request payload | Static payload passed to the target channel |
 | `data_logic` | JSONLogic | no | — | Expression that derives the payload |
-| `response_path` | string | no | `"data"` | Dotted path where the called channel's response is stored |
+| `output` | string | no | `"data"` | Dotted path where the called channel's response is stored. Accepts the pre-1.0 name `response_path` |
 | `timeout_ms` | number | no | from config | Per-call timeout in milliseconds |
 
 ```json
@@ -497,7 +554,7 @@ and at most one of `data`/`data_logic`.
   "input": {
     "channel": "customer-lookup",
     "data_logic": { "var": "data.order.customer_id" },
-    "response_path": "data.customer"
+    "output": "data.customer"
   }
 }
 ```
@@ -508,5 +565,16 @@ and at most one of `data`/`data_logic`.
 
 `GET /api/v1/admin/functions` returns the live input schema for the connector and
 composition functions (the data functions are provided by dataflow-rs and are not
-catalogued there). The [Orion CLI MCP server](../tutorials/mcp-setup.md) surfaces
+cataloged there). The [Orion CLI MCP server](../ai/mcp-setup.md) surfaces
 the same schemas to AI assistants so generated workflows use correct field names.
+
+## Related
+
+- [Workflow Reference](./workflows.md) — the workflow schema, the data context,
+  and how task conditions select which tasks run.
+- [Portable Data Dialect](./data-dialect.md) — the full envelope, operator
+  vocabulary, and backend parity rules behind `data_query`/`data_write`.
+- [Connectors](./connectors.md) — per-type connector fields, retries, and
+  circuit-breaker behaviour.
+- [Admin API](./admin-api.md) — creating, validating, and activating the
+  workflows these functions run in.

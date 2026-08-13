@@ -1,0 +1,403 @@
+# Orion Configuration
+#
+# Every setting below is shown with its real default, taken from
+# `src/config/*.rs`. Uncomment only what you want to change — a file with no
+# uncommented settings behaves exactly like no file at all.
+# `tests/integration/config_docs_drift_test.rs` fails the build if any default
+# here stops matching the code, so trust these values.
+#
+# Two ways to override a value without editing this file:
+#
+#   1. Environment variables, `ORION_SECTION__KEY` (double underscore between
+#      levels): ORION_SERVER__PORT=3000, ORION_STORAGE__URL=..., and so on.
+#      Env vars win over this file. Every setting's variable is listed in
+#      docs/src/configuration/reference.md.
+#   2. Placeholders inside this file: `$${VAR}` (required — startup fails if
+#      unset) or `$${VAR:-default}` (optional). `$$` escapes a literal `$`,
+#      which is why the two names above are written with a doubled `$`:
+#      substitution runs over the raw file text, comments included.
+#      The same substitution runs on connector `config_json` blobs at startup,
+#      so secrets stay out of the database:
+#         [storage]
+#         url = "${ORION_DB_URL:-sqlite:orion.db}"
+#      A placeholder in *this* file may name any variable — Orion sees the
+#      file and knows it reads it. A placeholder in a connector `config_json`
+#      cannot be seen while the config loads, so if you point one at a name
+#      shaped like a setting (`ORION_` with a `__` in it), use the reserved
+#      `ORION_SECRET_*` namespace (`$${ORION_SECRET_DB_PASSWORD}`) — a name
+#      that looks like a setting and is not one stops the boot.
+#
+# Convention in this file: a comment indented two or more spaces past the `#`
+# is an illustrative example, not a default.
+#
+# START HERE if you are going to production: set `environment = "production"`
+# below. It turns three footguns into startup errors — see the next section.
+
+# Deployment environment. Any value starting with "prod" (case-insensitive)
+# is a production environment, which makes three checks fatal instead of a
+# warning: admin auth must be enabled, CORS may not be the "*" wildcard, and
+# a cluster may not migrate at boot (cluster.enabled with
+# storage.auto_migrate — every replica would race the others).
+# Overridden by ORION_ENVIRONMENT.
+# environment = "development"
+
+[server]
+# host = "0.0.0.0"
+# port = 8080
+# shutdown_drain_secs = 30           # Grace period for in-flight requests on SIGTERM/SIGINT
+# shutdown_force_timeout_secs = 30   # Hard cap on waiting after the drain window; 0 = wait forever
+# max_admin_body_size = 8388608      # Max request body for /api/v1/admin/* in bytes (8 MB).
+                                     # Separate from ingest.max_payload_size, so raising the
+                                     # limit for a bulk import does not also raise it for the
+                                     # unauthenticated data plane.
+# Return the real task-failure message on the data plane instead of the generic
+# "Task processing failed; full detail is available in the trace". Unset (the
+# default) means on when `environment` is NOT a production variant — the same
+# rule as server.docs.enabled. An explicit true IS REFUSED in production: raw
+# task errors can carry upstream URLs, connector names and driver detail, and
+# the data plane is unauthenticated. Leave it unset.
+# verbose_errors = true
+
+# [server.tls]
+# Terminate HTTPS in Orion itself. Leave disabled when a load balancer or
+# service mesh already terminates TLS. Both paths are required when enabled and
+# must exist at startup — Orion refuses to boot otherwise.
+# enabled = false
+# cert_path = ""                     # PEM certificate chain, e.g. "/etc/orion/tls/tls.crt"
+# key_path = ""                      # PEM private key, e.g. "/etc/orion/tls/tls.key"
+
+# [server.compression]
+# Response compression (gzip). Off by default: the layer is
+# unconditional once inserted and runs DEFLATE per response regardless of size,
+# which costs CPU without saving bytes on small JSON bodies. Turn it on when
+# responses are typically large.
+# enabled = false
+
+# [server.docs]
+# Swagger UI (/docs) and the OpenAPI spec (/api/v1/openapi.json). Both are
+# unauthenticated and the spec publishes the complete admin API surface, so
+# when `enabled` is unset (the default) they are served only when
+# `environment` is NOT a production variant. An explicit true/false always
+# wins. Disabled means the routes are not registered at all (404, not 401).
+# `orion-server dump-openapi` writes the spec offline regardless.
+# enabled = true
+
+[storage]
+# url = "sqlite:orion.db"      # sqlite: / postgres:// / mysql:// — picks the backend at runtime
+# max_connections = 50         # Pool ceiling. Size against the server's own limit:
+                               # N replicas x max_connections must stay under
+                               # Postgres `max_connections`, or replicas will fail to connect.
+# min_connections = 5          # Connections kept warm (0 = none)
+# busy_timeout_ms = 5000       # SQLite busy timeout; ignored by other backends
+# acquire_timeout_secs = 3     # How long a request waits for a pooled connection before erroring
+# idle_timeout_secs = 300      # Close connections idle this long (0 = never)
+# connector_encryption_key = ""  # Encrypt connectors.config_json at rest (AES-256-GCM).
+                                # Empty means plaintext. Set to `openssl rand -hex 32` output;
+                                # prefer the env var form so the key does not sit beside the
+                                # database it protects. Plaintext rows written before the key
+                                # keep loading and re-encrypt on their next write.
+# backup_dir = "./backups"     # Where POST /api/v1/admin/backups writes (SQLite only)
+# backup_retention_count = 10  # Keep only the newest N backups, pruning older ones after
+                               # each successful backup. Unset keeps every backup — they
+                               # accumulate on the same disk as the live database.
+# auto_migrate = true          # Run pending migrations at startup. Set false for multi-replica
+                               # deployments and run `orion-server migrate` as a deploy step;
+                               # startup then fails fast if migrations are still pending.
+# connect_retry_secs = 60      # How long to keep retrying the initial database connection
+                               # (0 = fail fast). A failover takes tens of seconds; without a
+                               # window every replica exits and the restart backoff outlives
+                               # the outage. Ignored for SQLite; the migration check above
+                               # stays fail-fast either way.
+
+[cluster]
+# Multi-instance (HA) coordination. With enabled = false (the default) Orion is
+# a plain single node: no epoch watcher, no shared backends, no job leases.
+# When enabled, N replicas sharing one Postgres/MySQL and one Redis behave as
+# one logical system — config changes made through any node propagate to all,
+# dedup and response caches default to the shared Redis, and background jobs
+# (trace cleanup, audit cleanup, DLQ retry) single-flight behind a lease.
+# Requires postgres:// or mysql:// storage; SQLite is rejected at startup.
+# Prefer auto_migrate = false above, so replicas don't race migrations at boot.
+# enabled = false
+# redis_url = ""                  # Required when enabled, e.g. "redis://redis:6379"
+# epoch_poll_interval_ms = 2000   # How often each node polls for config changes made elsewhere
+# instance_id = ""                # Auto-generated UUID when empty; max 64 chars because it
+                                  # doubles as the Kafka group.instance.id
+
+[ingest]
+# max_payload_size = 1048576   # Max request body in bytes (1 MB) for the data plane.
+                               # The admin API has its own: server.max_admin_body_size
+
+[engine]
+# health_check_timeout_secs = 2            # Timeout for the /readyz cluster-Redis ping
+# max_channel_call_depth = 10              # Recursion limit for channel_call
+# default_channel_call_timeout_ms = 30000  # Default channel_call timeout
+# max_loop_iterations = 10000              # Ceiling on a workflow loop's `max`, refused at
+                                           # write time. 0 removes the ceiling and leaves only
+                                           # the author's own bound
+# global_http_timeout_secs = 30            # Safety net for every outbound HTTP request;
+                                           # shorter connector/task timeouts still win
+# max_pool_cache_entries = 100             # Cached connection pools per external backend (LRU)
+# cache_cleanup_interval_secs = 60         # Sweep interval for expired cache entries
+# max_memory_cache_entries = 100000        # Per-namespace bound on the in-memory caches: the
+                                           # default dedup store, the default response cache, and
+                                           # every (purpose, connector) use of a
+                                           # `backend = "memory"` connector each get their own
+                                           # store with this bound, so worst-case resident
+                                           # entries are this value times the namespace count
+                                           # (2 built-in stores + up to 3 per memory connector).
+                                           # LRU-evicted on insert. 0 disables the bound —
+                                           # entries written without a TTL are then never
+                                           # reclaimed.
+# rollout_sticky_header = ""               # Header identifying the caller for sticky canary
+                                           # bucketing, e.g. "x-user-id". Empty falls back to the
+                                           # forwarded client IP; with neither, each request is
+                                           # bucketed at random and a caller can flip versions
+                                           # between requests.
+# fail_on_connector_load_error = false     # Refuse to start when an enabled connector cannot be
+                                           # loaded (missing env://VAR, unparseable config,
+                                           # unresolvable secret). Default false skips it with a
+                                           # log line, so every workflow using it fails at request
+                                           # time instead — possibly hours later. Set true in
+                                           # production so a bad rollout fails at boot. Startup
+                                           # only; a hot reload never takes the process down.
+
+# [engine.circuit_breaker]
+# Sheds load to a failing dependency after `failure_threshold` consecutive
+# failures, returning 503 CIRCUIT_OPEN until the cooldown lets a probe through.
+# Currently applied to http_call only.
+# enabled = false
+# failure_threshold = 5
+# recovery_timeout_secs = 30    # Cooldown before a half-open probe is admitted
+# max_breakers = 10000          # Tracked breakers before LRU eviction
+
+[trace_queue]                        # Async trace processing, retention and DLQ
+# workers = 4                        # Concurrent async trace workers
+# buffer_size = 1000                 # Channel buffer for pending async traces
+# shutdown_timeout_secs = 30         # Wait for in-flight traces during shutdown
+# retention_hours = 72               # Delete completed traces older than this (0 = keep forever)
+# cleanup_interval_secs = 3600       # How often the trace cleanup job runs
+# processing_timeout_ms = 60000      # Per-trace processing timeout on the async path
+# max_result_size_bytes = 1048576    # Reject (sync) or fail (async) results larger than this
+# max_queue_memory_bytes = 104857600 # Total queued payload bytes before new submissions get 503
+# dlq_retry_enabled = true           # Retry failed async traces from the DLQ table
+# dlq_max_retries = 5                # Attempts before a DLQ row is marked exhausted (>= 1)
+# dlq_poll_interval_secs = 30        # How often the DLQ retry worker polls
+# dlq_batch_size = 20                # Rows claimed per retry tick
+# dlq_lease_secs = 60                # How long a claimed row stays leased to one node; expired
+                                     # leases are re-claimable, which is how a crashed node's
+                                     # work is recovered in cluster mode
+
+[audit]                              # Admin audit-log retention
+# retention_days = 90                # Delete admin audit-log rows older than this (0 = keep
+                                     # forever). Every admin mutation writes one and nothing
+                                     # else removes them, so 0 grows `audit_logs` without bound.
+# cleanup_interval_secs = 3600       # How often the audit cleanup job runs
+# max_pending = 1000                 # Audit rows accepted but not yet written. Admin mutations
+                                     # never wait on the INSERT; past this bound submissions are
+                                     # dropped and counted in orion_audit_events_dropped_total.
+# drain_timeout_secs = 5             # How long shutdown waits for the audit queue to drain. A
+                                     # database that stopped accepting writes must not hold the
+                                     # process open, so the drain gives up and logs the loss.
+                                     # Must be > 0: unlike other timeouts here, 0 does not mean
+                                     # "no bound" — it would skip the drain entirely.
+
+[query]                              # Page-size bounds for the portable `data_query` handler
+# default_limit = 100                # Page size when a query omits `limit`
+# max_limit = 1000                   # Hard cap; a larger request is rejected, never clamped
+# max_skip = 10000                   # Hard cap on the `skip` offset, on every backend; a larger
+                                     # offset is rejected, never clamped
+
+[write]                              # Safety bounds for the portable `data_write` handler
+# max_rows = 1000                    # Hard cap on rows per bulk insert/upsert
+# allow_unfiltered = false           # Permit unfiltered update/delete (still needs "all": true
+                                     # on the call itself)
+
+[kafka]                              # Consumer + producer, compiled into every binary
+# Messages are processed strictly sequentially per consumer — the
+# at-least-once commit contract requires it (an offset commit covers every
+# earlier offset). Scale throughput by running more instances in the same
+# consumer group.
+# enabled = false
+# brokers = ["localhost:9092"]
+# group_id = "orion"
+# topics = []                        # Topic-to-channel mappings; see [[kafka.topics]] below
+# processing_timeout_ms = 60000      # Per-message processing timeout
+# lag_poll_interval_secs = 30        # Consumer lag metric poll interval (0 disables)
+# session_timeout_ms = 45000         # Consumer group session timeout; always applied. In cluster
+                                     # mode it pairs with static group membership so rolling
+                                     # restarts rejoin without a full rebalance
+
+# [[kafka.topics]]                   # Repeat this block per mapping. Channels with a Kafka
+# topic = "incoming-orders"          # protocol also contribute topics from the database;
+# channel = "orders"                 # the two sets are merged at startup.
+
+# [kafka.dlq]
+# Failed messages are published here instead of being dropped. Delivery is
+# at-least-once: an offset only advances on success or a confirmed DLQ write,
+# so with the DLQ disabled a failing message is retried in place rather than
+# lost. Enable it to stop poison messages blocking a partition.
+# enabled = false
+# topic = "orion-dlq"
+
+# [kafka.auth]
+# Broker authentication and TLS, applied to every Kafka client Orion creates
+# (ingest consumer, publish_kafka producer, DLQ producer). This is what makes
+# Confluent Cloud, MSK, and Aiven reachable. Each field maps 1:1 to a
+# librdkafka property; leave a field unset to keep librdkafka's default.
+# GSSAPI and OAUTHBEARER are not available — librdkafka is built without
+# libsasl2.
+# security_protocol = "sasl_ssl"     # plaintext | ssl | sasl_plaintext | sasl_ssl
+# sasl_mechanism = "SCRAM-SHA-256"   # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+# sasl_username = "orion"
+# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or $${KAFKA_PASSWORD}
+# ssl_ca_location = ""               # CA bundle for broker verification, e.g. "/etc/kafka/ca.pem";
+                                     # unset uses the system trust store
+#
+# Worked example — Confluent Cloud (API key as username, secret as password):
+#   [kafka]
+#   enabled = true
+#   brokers = ["pkc-abc12.us-east-1.aws.confluent.cloud:9092"]
+#   group_id = "orion-prod"
+#   [kafka.auth]
+#   security_protocol = "sasl_ssl"
+#   sasl_mechanism = "PLAIN"
+#   sasl_username = "$${CONFLUENT_API_KEY}"
+#   sasl_password = "$${CONFLUENT_API_SECRET}"
+#
+# AWS MSK with IAM is not supported; use MSK's SCRAM-SHA-512 credentials:
+#   security_protocol = "sasl_ssl"
+#   sasl_mechanism = "SCRAM-SHA-512"
+
+# [kafka.extra_config]
+# Raw librdkafka properties, applied after everything Orion sets, so entries
+# here override even [kafka.auth]. Free-form maps do not fit the
+# ORION_SECTION__KEY scheme, so there is no env-var equivalent — TOML only.
+#   "client.id" = "orion-prod-1"
+#   "socket.keepalive.enable" = "true"
+
+[rate_limit]
+# Platform-level limits. Per-channel limits are separate and live in the
+# channel's config_json in the database.
+# enabled = false
+# default_rps = 100             # Requests per second per client identity
+# default_burst = 50            # Burst allowance on top of the sustained rate
+# trusted_proxies = []          # CIDR blocks or bare IPs of reverse proxies whose
+                                # X-Forwarded-For / X-Real-IP header identifies the client.
+                                # IMPORTANT: empty (the default) means forwarded headers are
+                                # NEVER trusted and the direct peer IP is the identity — so
+                                # behind a load balancer every request shares one bucket
+                                # unless you list the balancer here, e.g. ["10.0.0.0/8"].
+                                # Listing an untrusted network lets clients spoof the header
+                                # and mint a fresh bucket per request.
+
+# [rate_limit.endpoints]
+# Per-route-group limits. Setting a group to null makes it fall back to default_rps.
+# admin_rps defaults to 20: admin traffic is interactive and low-volume, and the
+# admin plane holds every mutating operation, so it should not share the
+# anonymous data plane's budget.
+# admin_rps = 20                # Admin API
+# data_rps = 200                # Data plane (unset -> default_rps)
+
+[channel_filter]
+# Which channels this instance loads from the database. Glob patterns matched
+# against the channel name; exclude is applied after include. Use it to run
+# separate fleets off one database — e.g. a public instance serving orders-*
+# and an internal one serving everything else.
+# include = []                  # Empty = load all, e.g. ["orders-*", "payments-*"]
+# exclude = []                  # e.g. ["internal-*"]
+
+[admin_auth]
+# Authentication for /api/v1/admin/* and the trace-read endpoints. Disabled by
+# default so a fresh install is usable; REQUIRED (startup fails without it)
+# once environment starts with "prod".
+# enabled = false
+# api_keys = []                 # Any listed key authorises a request. Multiple entries exist
+                                # for zero-downtime rotation: add the new key, roll clients,
+                                # drop the old one. Each entry is either the plaintext key
+                                # (e.g. "s3cret-key") or "sha256:<64-hex>" — the SHA-256 digest
+                                # of the key — so the config file holds a hash, not a secret.
+                                # Generate one with:  printf %s "$KEY" | shasum -a 256
+# read_only_api_keys = []       # Keys limited to GET/HEAD on the admin plane; every mutating
+                                # method answers 403. Same entry forms as api_keys. For
+                                # dashboards, auditors and CI checks that should never hold a
+                                # credential able to rewrite workflows.
+# header = "Authorization"      # "Authorization" expects `Bearer <key>`; any other value
+                                # (e.g. "X-API-Key") expects the raw key
+
+[cors]
+# allowed_origins = ["*"]       # Exactly ["*"] is permissive CORS. Rejected at startup when
+                                # environment starts with "prod" — list explicit origins
+                                # instead, e.g. ["https://app.example.com"]. Mixing "*" into
+                                # a list of origins is always a config error.
+
+[logging]
+# level = "info"                # trace, debug, info, warn, error
+# format = "pretty"             # pretty or json — use json wherever logs are collected
+
+[metrics]
+# enabled = false               # Collect metrics and serve them at GET /metrics. With this off the
+                                # route is not registered at all, so /metrics 404s rather than
+                                # answering 200 with a permanently empty body.
+# bind_addr = "127.0.0.1:9090"  # Optional dedicated, UNAUTHENTICATED listener serving only
+                                # GET /metrics. Unset (default) keeps the endpoint on the main
+                                # listener, where admin_auth guards it — so every scraper has to
+                                # hold an admin key that can also rewrite workflows. Point this at
+                                # a private interface instead. Plain HTTP; server.tls covers the
+                                # main listener only. Needs enabled = true — set on its own it
+                                # raises no listener and startup warns.
+
+[tracing]                       # OpenTelemetry export; gated at runtime by `enabled`
+# enabled = false
+# otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint (Jaeger, Tempo, OTel Collector)
+# service_name = "orion"        # Service name reported in spans
+# sample_rate = 1.0             # 0.0 (none) to 1.0 (all)
+# debug_profile_enabled = false # Allow per-request profiling: with this on, a request carrying
+                                # `X-Orion-Profile: 1` (or ?profile=1) gets an `_orion.profile`
+                                # object breaking the request down by phase. Leave off in
+                                # production so callers cannot probe internal timing.
+
+[trace_storage]
+# Persistence policy for Orion's own per-request traces (rows in the `traces`
+# table, read via /api/v1/admin/traces). Unrelated to the OTLP export in
+# [tracing] above — the two were one section before 1.0, which is exactly the
+# confusion this split removes.
+# A channel can override this with its `config.tracing` field; unset per-channel
+# fields fall back to what is set here.
+#
+#   sync   — write inline before responding (default): a served request implies
+#            a persisted trace, and throughput is capped by the DB's write rate
+#   async  — enqueue to a bounded background queue, one DB write per task
+#   batch  — bounded queue; workers commit `batch_size` rows per transaction
+#   off    — no persistence on the synchronous endpoint, where the caller
+#            already holds the answer. POST /{channel}/async still writes its
+#            row and still returns a trace_id: submitting async *is* the
+#            request for a result to fetch later.
+#
+# `async` and `batch` lift the throughput cap by letting the request path run
+# ahead of the trace table — which means it can outrun it. What happens then is
+# `async_on_overflow`, and the default ("drop") is silent data loss beyond a
+# WARN log and a counter. Measured on SQLite at c=50: sync sustained ~5.7k req/s
+# and kept every trace; batch sustained ~77k req/s and kept 34% of them. Pick a
+# background mode when traces are telemetry you are willing to sample, not when
+# they are the record of what happened.
+# mode = "sync"
+#
+# Filters, composing with the mode and applied per trace:
+# sample_rate = 1.0                 # Fraction of traces persisted, 0.0-1.0
+# errors_only = false               # Persist only traces that ended with errors
+#
+# Backpressure (async and batch modes):
+# max_pending = 10000               # Bounded queue capacity
+# async_on_overflow = "drop"        # drop | block — what a full queue does to a new trace
+# overflow_block_timeout_ms = 100   # How long "block" waits for capacity before dropping
+#
+# Async mode:
+# async_workers = 4
+#
+# Batch mode:
+# batch_size = 1000                 # Rows per transaction, and the dominant term in
+#                                   # drain rate: 100 drains 26k rows/s, 1000 drains
+#                                   # 45k rows/s. Capped at 1000 by SQLite's bind limit.
+# batch_flush_interval_ms = 100     # Flush a partial batch after this long
+# batch_workers = 4                 # Each worker owns an independent batch

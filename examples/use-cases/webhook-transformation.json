@@ -1,0 +1,58 @@
+{
+  "name": "Webhook Payload Transformation",
+  "description": "Parse incoming webhook and normalize schema via mapping",
+  "workflows": [
+    {
+      "file": "../packages/webhook-transform/workflow.json"
+    }
+  ],
+  "tests": [
+    {
+      "name": "Full webhook pipeline transforms data",
+      "channel": "webhooks",
+      "input": {
+        "origin": "github",
+        "type": "push",
+        "body": {
+          "ref": "refs/heads/main",
+          "commits": 3
+        }
+      },
+      "expect": {
+        ".status": "ok",
+        ".data.normalized.source": "github",
+        ".data.normalized.event_type": "push",
+        ".data.normalized.processed": "true"
+      }
+    },
+    {
+      "name": "Missing optional fields produce null defaults",
+      "channel": "webhooks",
+      "input": {
+        "origin": "stripe",
+        "type": "payment"
+      },
+      "expect": {
+        ".status": "ok",
+        ".data.normalized.source": "stripe",
+        ".data.normalized.event_type": "payment",
+        ".data.normalized.payload": "null"
+      }
+    },
+    {
+      "name": "Dry-run shows execution trace",
+      "dry_run_rule": 0,
+      "input": {
+        "origin": "slack",
+        "type": "message",
+        "body": {
+          "text": "hello"
+        }
+      },
+      "expect": {
+        ".matched": "true",
+        ".trace.steps | length": "2"
+      }
+    }
+  ]
+}

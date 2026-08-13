@@ -1,0 +1,154 @@
+# macOS and Windows compile checks (proposal T20).
+#
+# `dist-workspace.toml` ships aarch64-apple-darwin and x86_64-pc-windows-msvc
+# binaries, but every CI job runs on ubuntu — so before this workflow, those
+# two targets were compiled for the FIRST time when the release tag was
+# pushed (`release.yml` gates `build-local-artifacts` off pull requests and
+# no `pr-run-mode` is set). A platform-specific compile error — rdkafka's
+# cmake + vendored-OpenSSL build and path handling are the usual suspects —
+# surfaced mid-release, after the tag existed, with the Homebrew formula
+# depending on the macOS build succeeding.
+#
+# Build only, deliberately: the test suite's container-gated halves need
+# Docker, and the unit suite runs twice on ubuntu already. What tag time
+# needs from these platforms is a successful compile, so that is what is
+# checked — with `--locked`, matching how cargo-dist builds.
+#
+# A separate workflow rather than a ci.yml job so it can be path-filtered:
+# GitHub has no per-job path filter, and most PRs (docs, helm, workflows)
+# should not pay for two extra-cost runners. Since T28 the tag-time
+# `ci-gate` also consults this workflow: a run that exists for the tagged
+# SHA with no success blocks the release (a docs-only SHA with no run
+# passes) — so a known-broken macOS build can no longer be tagged over.
+name: Cross-OS Build
+
+on:
+  push:
+    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    paths:
+      - "crates/orion-server/src/**"
+      - "crates/orion-server/migrations/**"
+      - "crates/orion-server/build.rs"
+      - "crates/orion-server/Cargo.toml"
+      # dist ships macOS and Windows binaries for orion-cli too, so the
+      # cross-OS proof has to cover it and the crates it links.
+      - "crates/orion-cli/src/**"
+      - "crates/orion-cli/Cargo.toml"
+      - "crates/orion-api/**"
+      - "crates/orion-client/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cross-os-build.yml"
+  pull_request:
+    paths:
+      - "crates/orion-server/src/**"
+      - "crates/orion-server/migrations/**"
+      - "crates/orion-server/build.rs"
+      - "crates/orion-server/Cargo.toml"
+      # dist ships macOS and Windows binaries for orion-cli too, so the
+      # cross-OS proof has to cover it and the crates it links.
+      - "crates/orion-cli/src/**"
+      - "crates/orion-cli/Cargo.toml"
+      - "crates/orion-api/**"
+      - "crates/orion-client/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cross-os-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-os-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest is Apple Silicon (aarch64-apple-darwin);
+        # windows-latest matches x86_64-pc-windows-msvc (cmake preinstalled,
+        # which the Windows-only cmake-build needs); vendored OpenSSL needs
+        # no system package on either. macos-13 (Intel) was removed together
+        # with the x86_64-apple-darwin dist target — its GitHub runners
+        # queue near-indefinitely (see dist-workspace.toml).
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Build
+        run: cargo build --locked --workspace
+
+  # The static-Linux proof (P13). Musl is the audience of the "single binary,
+  # no runtime dependencies" pitch (Alpine/distroless/scratch), and rdkafka's
+  # cmake + vendored-OpenSSL build is exactly the part with a history of
+  # fighting musl — so the target earns its place in dist-workspace.toml by
+  # holding this job green, not by assertion. Promote it there once it has.
+  musl:
+    name: Build (x86_64-unknown-linux-musl)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # musl-tools ships only a C compiler, and rdkafka's cmake configure also
+      # demands a musl g++ — librdkafka's project() declares CXX even though
+      # only the C library is ever linked — so the job needs a full musl cross
+      # toolchain. Bootlin's carries both compilers; musl.cc, the usual
+      # suggestion, times out from GitHub runners. Cached so the 79MB tarball
+      # is fetched only when the pinned version changes.
+      - name: Cache musl cross toolchain
+        id: musl-tc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/musl-tc/x86-64--musl--stable-2025.08-1
+          key: musl-tc-x86-64--musl--stable-2025.08-1
+
+      - name: Install musl cross toolchain (C and C++)
+        if: steps.musl-tc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 -o /tmp/musl-tc.tar.xz \
+            https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarballs/x86-64--musl--stable-2025.08-1.tar.xz
+          mkdir -p "$HOME/musl-tc"
+          tar -C "$HOME/musl-tc" -xf /tmp/musl-tc.tar.xz
+          "$HOME/musl-tc/x86-64--musl--stable-2025.08-1/relocate-sdk.sh"
+
+      - name: Install cmake and add the toolchain to PATH
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake
+          echo "$HOME/musl-tc/x86-64--musl--stable-2025.08-1/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        env:
+          # Plain CC as well as the cc-crate names: librdkafka's configure
+          # build (the unix path — see rdkafka's entry in Cargo.toml) reads
+          # the plain variable, while openssl-sys and friends read the
+          # target-scoped ones.
+          CC: x86_64-buildroot-linux-musl-gcc
+          CC_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-gcc
+          CXX_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-g++
+          AR_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-ar
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-buildroot-linux-musl-gcc
+        run: cargo build --locked --workspace --target x86_64-unknown-linux-musl

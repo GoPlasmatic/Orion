@@ -15,7 +15,7 @@ channel form, send a request from the Data Console, and see the service on the S
   <video class="media-dark" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-dark.webm"></video>
   <video class="media-light" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-light.webm"></video>
 </div>
-<span class="asciinema-caption">▶ Click to play. The same flow as the <a href="../tutorials/cli-setup.html">terminal quickstart</a> — as clicks instead of curl.</span>
+<span class="asciinema-caption">▶ Click to play. The same flow as <a href="first-service.html">Your First Service</a> — as clicks instead of curl.</span>
 
 ## Run it
 
@@ -26,6 +26,14 @@ docker run -p 8081:8080 \
   -e ORION_URL=http://host.docker.internal:8080 \
   ghcr.io/goplasmatic/orion-ui:latest
 ```
+
+> [!IMPORTANT]
+> **Keep the console and the server in step.** The console talks to the admin
+> API, and 1.0 moved ten of its endpoints under a `{"data": …}` envelope
+> ([details](../operate/upgrading-to-1.0.md#every-admin-response-is-now-wrapped-in-data)). A
+> console image built before 1.0 will render empty values against a 1.0 server
+> rather than erroring. `:latest` is fine for a first look; for anything you
+> depend on, pin the tag and move both together.
 
 Open `http://localhost:8081` — `ORION_URL` points at your Orion server and the bundled
 nginx reverse-proxies all `/api/` requests to it. Developing against a local checkout?
@@ -87,3 +95,11 @@ search and drill-down, and a command palette (<kbd>⌘K</kbd>) for jumping anywh
 > All visuals on this page are generated from a live instance by the
 > [recording pipeline](https://github.com/GoPlasmatic/Orion/tree/main/docs/recordings)
 > — re-run `record-ui.sh` and they regenerate.
+
+## Related
+
+- [Your First Service](./first-service.md) — the same flow as four API calls,
+  if you would rather see the wire format.
+- [Run the Examples](./examples.md) — services to import and click through.
+- [Monitoring & Alerts](../operate/monitoring.md) — the metrics behind the
+  dashboard, and what to alert on.

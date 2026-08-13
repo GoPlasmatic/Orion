@@ -1,101 +1,68 @@
 # Orion Examples
 
-Ready-to-deploy [channels and workflows](../docs/src/reference/workflows.md) you
-can POST to a running Orion instance and call immediately.
+Ready-to-deploy example **packages** you can POST to a running Orion instance
+and call immediately. A package is Orion's unit of shipping: the channel,
+workflow, and connector that belong to one service, grouped so they deploy — and
+later export, promote, and version — together.
 
-Most examples are **self-contained and zero-dependency** — they use only the
-built-in data functions (`parse_json`, `map`, and JSONLogic conditions), so they
-run against a fresh `orion-server` with no database, connectors, or external
-services to set up. The exception is [`postgres-orders`](postgres-orders/),
-which ships a `docker compose` file and shows the connector-backed side of
-Orion: `data_query`/`data_write` against a real PostgreSQL database. Every
-workflow is linted and deployed end-to-end in CI.
-
-New to Orion? `./quickstart.sh` deploys your first service (workflow + channel,
-activated, first request sent) against a running instance in one command.
+**The walkthrough lives in the documentation:**
+[Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html)
+— what each package shows, the step-by-step deploy, and how to dry-run a draft
+before activating it.
 
 ## Layout
 
-Each example directory holds three request bodies:
-
-| File | Sent to | Purpose |
-|------|---------|---------|
-| `workflow.json` | `POST /api/v1/admin/workflows` | The task pipeline (the logic) |
-| `channel.json`  | `POST /api/v1/admin/channels`  | The endpoint that routes to the workflow |
-| `request.json`  | `POST /api/v1/data/<route>`    | A sample request to try it |
-| `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the example needs one |
-
-> Requests use the `{ "data": { … } }` envelope. Orion unwraps `data` into the
-> workflow payload, which `parse_json` reads via `"source": "payload"`.
-
-## Run an example
-
-Start Orion (`orion-server`, listening on `http://localhost:8080`), then deploy
-any example in one command:
-
-```bash
-./deploy.sh high-value-order
+```
+examples/
+├── packages/           # each directory = one deployable package
+│   └── <name>/
+├── workflow-tests/     # offline *.case.json regression suite (references packages/)
+├── use-cases/          # live e2e scenarios for the packages (run by tests/e2e)
+├── deploy.sh           # deploy one package end-to-end
+└── quickstart.sh       # your first service in one command
 ```
 
-`deploy.sh` creates and activates the workflow, creates and activates the
-channel (and creates the connector first, if the example has one), then POSTs
-`request.json` and prints the response. It needs `curl` and `python3`.
-Re-running is safe — objects that already exist are skipped.
+## Quick start
 
-### …or step by step
+Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
 
 ```bash
-cd high-value-order
-
-# 1. Create the workflow (saved as a draft)
-curl -X POST http://localhost:8080/api/v1/admin/workflows \
-  -H 'Content-Type: application/json' --data @workflow.json
-
-# 2. Activate it
-curl -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
-
-# 3. Create the channel
-curl -X POST http://localhost:8080/api/v1/admin/channels \
-  -H 'Content-Type: application/json' --data @channel.json
-
-# 4. Activate it
-curl -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
-  -H 'Content-Type: application/json' -d '{"status":"active"}'
-
-# 5. Send a request
-curl -X POST http://localhost:8080/api/v1/data/orders \
-  -H 'Content-Type: application/json' --data @request.json
+./deploy.sh high-value-order          # deploy one package and send its sample request
+./quickstart.sh                       # or: your first service, built from scratch
 ```
 
-> **Tip — test before activating.** Dry-run a draft workflow against sample data
-> without serving any traffic. The `/test` endpoint takes the same `{ "data": … }`
-> envelope and returns an execution trace showing which tasks ran or were skipped:
-> ```bash
-> curl -X POST http://localhost:8080/api/v1/admin/workflows/high-value-order/test \
->   -H 'Content-Type: application/json' --data @high-value-order/request.json
-> ```
+## The packages
 
-## The examples
-
-| Example | Endpoint | What it shows |
+| Package | Endpoint | What it shows |
 |---------|----------|---------------|
-| [`high-value-order`](high-value-order/) | `POST /orders` | Flag orders over a threshold; build an alert string with `cat` |
-| [`order-classification`](order-classification/) | `POST /order-tiers` | Tiered classification driven by task-level conditions |
-| [`iot-sensor-alert`](iot-sensor-alert/) | `POST /sensors` | Range-based severity with `and` / `or` |
-| [`webhook-transform`](webhook-transform/) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
-| [`notification-routing`](notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
-| [`postgres-orders`](postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
+| [`high-value-order`](packages/high-value-order/) | `POST /high-value-orders` | Flag orders over a threshold; build an alert string with `cat` |
+| [`order-classification`](packages/order-classification/) | `POST /order-tiers` | Tiered classification driven by task-level conditions |
+| [`iot-sensor-alert`](packages/iot-sensor-alert/) | `POST /sensors` | Range-based severity with `and` / `or` |
+| [`webhook-transform`](packages/webhook-transform/) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
+| [`notification-routing`](packages/notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
+| [`postgres-orders`](packages/postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
+| [`channel-composition`](packages/channel-composition/) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
+| [`kafka-order-events`](packages/kafka-order-events/) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates — **needs `kafka.enabled = true` and a broker** |
 
-## Beyond these examples
+Every entity carries a `tags: ["pkg:<name>"]` label — that is what marks it as
+belonging to the package, and what `orion-server package export` selects on.
 
-Workflows that talk to external systems — `data_query`/`data_write`,
-`http_call`, `db_read`/`db_write`, `cache_*`, `mongo_read`, `publish_kafka` —
-need a **connector** (`POST /api/v1/admin/connectors`); `postgres-orders` is
-the worked example of that pattern, and `channel_call` composes channels
-in-process. See:
+## Testing
 
-- [Function Reference](../docs/src/reference/functions.md) — every function's input schema
-- [Workflow Reference](../docs/src/reference/workflows.md) — workflow shape, conditions, and lifecycle
-- [Use Cases & Patterns](../docs/src/tutorials/use-cases.md) — connector-backed and composition walkthroughs
-- [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) — deploy with `orion-cli workflows create -f workflow.json`
+```bash
+orion-server test examples/workflow-tests   # offline: real engine, no server or network
+just e2e                                    # live: tests/e2e drives a real server via orion-cli
+```
+
+[`workflow-tests/README.md`](workflow-tests/README.md) documents the case format
+(including connector stubs); [`use-cases/README.md`](use-cases/README.md)
+documents the server-backed scenario format.
+
+## Documentation
+
+- [Run the Examples](https://docs.goplasmatic.io/getting-started/examples.html) — the full walkthrough
+- [Test & Promote a Service](https://docs.goplasmatic.io/getting-started/test-and-promote.html) — from a local run to a second instance
+- [Packages](https://docs.goplasmatic.io/concepts/packages.html) — what a package is and why the boundary sits there
+- [Task Functions](https://docs.goplasmatic.io/reference/functions.html) — every function's input schema
+- [Workflow Schema](https://docs.goplasmatic.io/reference/workflows.html) — workflow shape, conditions, and lifecycle
+- [Orion CLI](../crates/orion-cli/) — deploy with `orion-cli workflows create -f workflow.json`
