@@ -81,7 +81,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 tracing = "0.1"
@@ -104,19 +104,19 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 url = "2"
 ipnet = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 # Optional encryption at rest for connectors.config_json (H3):
 # storage.connector_encryption_key turns it on. AES-256-GCM from RustCrypto —
 # pure Rust, no linkage to the system OpenSSL rdkafka vendors.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "getrandom"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "getrandom"] }
 # Channel `auth.mode = "hmac"`: webhook signature verification over the raw
 # request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
 # and hmac 0.13 would pull a second digest major into the tree.
-hmac = "0.12"
+hmac = "0.13"
 hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
 # encodings are accepted, so both decoders are needed.
-base64 = "0.22"
+base64 = "0.23"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
@@ -185,7 +185,7 @@ redis = { version = "1.5", default-features = false, features = ["tokio-comp", "
 rcgen = "0.14"
 # Pre-main initializer: the one place `std::env::set_var` is sound in a
 # multi-threaded test binary (secret_references_test's env:// fixture).
-ctor = "0.4"
+ctor = "1.0"
 # Property-based tests: the SQL renderer's value-independence invariant and
 # route-matching totality (in-crate #[cfg(test)] modules).
 proptest = "1"

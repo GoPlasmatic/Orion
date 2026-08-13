@@ -22,7 +22,11 @@ use tower::ServiceExt;
 /// and every other `ORION_*` name is now refused at startup as a misspelled
 /// override. That is exactly the convention an operator follows for an
 /// `env://` secret they want to keep in the ORION namespace.
-#[ctor::ctor]
+/// `ctor(unsafe)` rather than a bare `ctor`: 1.0 made the marker mandatory
+/// because a pre-main constructor runs before the Rust runtime is initialised,
+/// so the obligation was always there — 0.4 just did not make you write it.
+/// It is the same obligation the SAFETY note below already discharges.
+#[ctor::ctor(unsafe)]
 fn install_b5_env_fixture() {
     // SAFETY: runs pre-main on the sole thread of the process; no concurrent
     // reader of the environment can exist yet.

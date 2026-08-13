@@ -16,7 +16,7 @@
 //! with no key configured is a loud error, never silently served as the
 //! literal `enc:v1:…` string.
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, Generate, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -54,9 +54,16 @@ impl ConfigCipher {
                     .to_string(),
             });
         };
-        let key = Key::<Aes256Gcm>::from_slice(&bytes);
+        // `try_from`, not the deprecated `from_slice`: sha2/aes-gcm 0.11 moved
+        // to crypto-common's `Array`, whose panicking slice constructor is on
+        // its way out. The length is already guaranteed by the filter above,
+        // so the error arm is unreachable — but it is a Result now, and
+        // unwrapping in the key path is not worth the line it would save.
+        let key = Key::<Aes256Gcm>::try_from(bytes.as_slice()).map_err(|_| {
+            OrionError::internal("connector encryption key was not 32 bytes after hex decoding")
+        })?;
         Ok(Self {
-            cipher: Aes256Gcm::new(key),
+            cipher: Aes256Gcm::new(&key),
         })
     }
 
@@ -67,7 +74,13 @@ impl ConfigCipher {
 
     /// Encrypt a config document for storage.
     pub fn encrypt(&self, plaintext: &str) -> Result<String, OrionError> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        // `Nonce::generate()` is aes-gcm 0.11's spelling of what was
+        // `Aes256Gcm::generate_nonce(&mut OsRng)`: nonce generation moved from
+        // AeadCore onto the `Generate` trait, and OsRng moved out of the aead
+        // root into `aead::rand_core`. Both draw from the OS CSPRNG and both
+        // panic if it fails, so the failure semantics here are unchanged.
+        // Requires the `getrandom` feature, which this crate already enables.
+        let nonce = Nonce::generate();
         let ciphertext = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
@@ -92,9 +105,13 @@ impl ConfigCipher {
                 OrionError::internal("stored connector config has a malformed encryption envelope")
             })?;
         let (nonce, ciphertext) = payload.split_at(NONCE_LEN);
+        // Same deprecation as in from_hex; split_at already fixed the width.
+        let nonce = Nonce::try_from(nonce).map_err(|_| {
+            OrionError::internal("stored connector config has a malformed encryption envelope")
+        })?;
         let plaintext = self
             .cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|_| {
                 // Wrong key or tampered row — GCM authenticates, so the two
                 // are indistinguishable by design. Loud either way.

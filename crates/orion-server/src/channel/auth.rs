@@ -17,7 +17,10 @@
 //! this" case; `hmac` covers inbound webhooks, whose signature is computed over
 //! the **raw body** and so must be checked before the JSON is parsed.
 
-use hmac::{Hmac, Mac};
+// KeyInit is what carries `new_from_slice` from hmac 0.13 on: the constructor
+// moved off the concrete Hmac type onto the crypto-common trait, so it has to
+// be in scope to be called.
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 use crate::channel::config::{AuthMode, ChannelAuthConfig};
