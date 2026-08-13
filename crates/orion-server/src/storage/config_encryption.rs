@@ -109,18 +109,15 @@ impl ConfigCipher {
         let nonce = Nonce::try_from(nonce).map_err(|_| {
             OrionError::internal("stored connector config has a malformed encryption envelope")
         })?;
-        let plaintext = self
-            .cipher
-            .decrypt(&nonce, ciphertext)
-            .map_err(|_| {
-                // Wrong key or tampered row — GCM authenticates, so the two
-                // are indistinguishable by design. Loud either way.
-                OrionError::internal(
-                    "stored connector config failed to decrypt: wrong \
+        let plaintext = self.cipher.decrypt(&nonce, ciphertext).map_err(|_| {
+            // Wrong key or tampered row — GCM authenticates, so the two
+            // are indistinguishable by design. Loud either way.
+            OrionError::internal(
+                "stored connector config failed to decrypt: wrong \
                      storage.connector_encryption_key, or the row was modified \
                      outside Orion",
-                )
-            })?;
+            )
+        })?;
         String::from_utf8(plaintext)
             .map_err(|_| OrionError::internal("decrypted connector config is not UTF-8"))
     }
