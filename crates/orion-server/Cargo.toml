@@ -79,7 +79,7 @@ harness = true
 dataflow-rs = { version = "3.3.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
-sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
