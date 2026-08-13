@@ -10,16 +10,26 @@
   // GitHub Actions workflow and no API-token secret are involved — the build
   // runs on Cloudflare's side, so nothing in GitHub needs credentials.
   //
-  // Three settings live in the Cloudflare dashboard rather than this file,
+  // These settings live in the Cloudflare dashboard rather than this file,
   // because Workers Builds owns them (Workers → orion-docs → Settings →
   // Build). Record of what they must be:
-  //   • Build command    : bash docs/build.sh
-  //   • Deploy command   : npx wrangler deploy
+  //   • Git branch       : main
   //   • Root directory   : docs
-  //   • Branch           : main
-  //   • Include paths    : docs/*   (openapi.json is regenerated on API
-  //                        changes and is not part of the published book, so
-  //                        an unfiltered docs/** would redeploy for nothing)
+  //   • Build command    : bash build.sh
+  //   • Deploy command   : npx wrangler deploy
+  //   • Include paths    : docs/*
+  //   • Exclude paths    : docs/openapi.json
+  //
+  // Root directory is where BOTH commands run, which is why the build command
+  // is `bash build.sh` and not `bash docs/build.sh` — the latter would look
+  // for docs/docs/build.sh. (build.sh cd's to the repo root itself, so it
+  // reads docs/src and writes docs/book either way, and `npx wrangler deploy`
+  // finds this file and resolves ./book against it.)
+  //
+  // Watch paths are repository-relative, unlike the commands. The exclude is
+  // load-bearing: openapi.json is regenerated whenever the API changes and is
+  // not part of the published book, so without it every route change would
+  // rebuild and redeploy the docs for nothing.
   //
   // Everything else — the mdBook version, llms-full.txt, the _redirects and
   // _headers staging — is deliberately inside docs/build.sh so it stays in the
