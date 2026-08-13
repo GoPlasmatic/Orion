@@ -185,7 +185,7 @@ redis = { version = "1.5", default-features = false, features = ["tokio-comp", "
 rcgen = "0.14"
 # Pre-main initializer: the one place `std::env::set_var` is sound in a
 # multi-threaded test binary (secret_references_test's env:// fixture).
-ctor = "0.4"
+ctor = "1.0"
 # Property-based tests: the SQL renderer's value-independence invariant and
 # route-matching totality (in-crate #[cfg(test)] modules).
 proptest = "1"
