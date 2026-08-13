@@ -108,7 +108,7 @@ sha2 = "0.10"
 # Optional encryption at rest for connectors.config_json (H3):
 # storage.connector_encryption_key turns it on. AES-256-GCM from RustCrypto —
 # pure Rust, no linkage to the system OpenSSL rdkafka vendors.
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "getrandom"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "getrandom"] }
 # Channel `auth.mode = "hmac"`: webhook signature verification over the raw
 # request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
 # and hmac 0.13 would pull a second digest major into the tree.

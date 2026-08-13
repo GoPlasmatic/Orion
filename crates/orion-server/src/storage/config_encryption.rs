@@ -16,7 +16,7 @@
 //! with no key configured is a loud error, never silently served as the
 //! literal `enc:v1:…` string.
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, Generate, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -67,7 +67,13 @@ impl ConfigCipher {
 
     /// Encrypt a config document for storage.
     pub fn encrypt(&self, plaintext: &str) -> Result<String, OrionError> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        // `Nonce::generate()` is aes-gcm 0.11's spelling of what was
+        // `Aes256Gcm::generate_nonce(&mut OsRng)`: nonce generation moved from
+        // AeadCore onto the `Generate` trait, and OsRng moved out of the aead
+        // root into `aead::rand_core`. Both draw from the OS CSPRNG and both
+        // panic if it fails, so the failure semantics here are unchanged.
+        // Requires the `getrandom` feature, which this crate already enables.
+        let nonce = Nonce::generate();
         let ciphertext = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
