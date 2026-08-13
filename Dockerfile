@@ -46,7 +46,7 @@ RUN cargo build --profile dist --locked -p orion-server
 
 # Runtime stage. Named so `docker build --target` can address it, like the
 # stages above (T23).
-FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime
 
 # OCI identity on the image itself (T23): docker-release.yml injects the full
 # metadata-action label set at push time, but a local `docker build` — the
