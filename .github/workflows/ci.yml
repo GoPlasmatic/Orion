@@ -551,7 +551,15 @@ jobs:
   # passes in seconds.
   mutants:
     name: Mutation Testing (changed code)
-    runs-on: ubuntu-22.04
+    # The one job off the repo-wide ubuntu-22.04 pin. cargo-mutants ships
+    # prebuilt binaries linked against glibc 2.39 from v27.1.0 (2026-06-02)
+    # on, and 22.04 carries glibc 2.35 — the install step died with
+    # "cargo-mutants: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39'
+    # not found". That pin exists so shipped binaries stay loadable on older
+    # glibc; this job ships nothing, so it does not apply here. Bumping the
+    # runner rather than pinning an older cargo-mutants keeps the tool on
+    # `latest` like every other install-action call in this file.
+    runs-on: ubuntu-24.04
     # PR-only: --in-diff needs two commits to compare, and on a branch push
     # there is no natural base to diff against.
     if: github.event_name == 'pull_request'
