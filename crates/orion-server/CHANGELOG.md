@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-12
+## [1.0.0] - 2026-08-14
 
 **Highlights.** The promotion story: an `orion-server package` CLI
 (export / lint / plan / apply / diff) over a new receipts API, upsert
@@ -2561,6 +2561,21 @@ follows.
   the file would land on one arbitrary node; use managed-DB snapshots/PITR.
 - `docs/src/features/scalability.md` and `availability.md` rewritten around
   cluster mode (the multi-node curl-loop reload workaround is obsolete).
+
+- **Dependency major upgrades.** `sea-query` 0.32 → 1.0, which moved the
+  comparison operators (`.eq`, `.lte`, `.is_in`, `.like`, …) off `Expr` onto
+  the `ExprTrait` trait, and replaced `sea-query-binder` 0.7 with its
+  successor `sea-query-sqlx` 0.8 as the sqlx binder. Also `aes-gcm` 0.10 →
+  0.11 (nonce generation moved to `Generate`), `sha2` 0.10 → 0.11, `hmac`
+  0.12 → 0.13, `base64` 0.22 → 0.23, `tower-http` 0.6 → 0.7, `ctor` 0.4 →
+  1.0, and — in the CLI — `rmcp` 1.4 → 3.1 and `tabled` 0.20 → 0.21. No
+  behaviour change is intended by any of these; they land before 1.0 so the
+  1.x line starts on current majors.
+
+- The documentation moved from GitHub Pages to
+  [docs.goplasmatic.io](https://docs.goplasmatic.io/) on Cloudflare, and the
+  book build now lives in this repo. Crate `homepage`/`documentation`
+  metadata points at the new address.
 
 ### Removed
 

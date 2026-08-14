@@ -18,19 +18,33 @@ The workspace has two releasable packages, `orion-server` and `orion-cli`,
 **versioned in lockstep**. A bare `v*` tag (e.g. `v1.0.0`, `v1.0.0-rc.1`) is
 the joint release: dist announces every dist-able package sitting at the
 tagged version, so one tag yields one GitHub release carrying both sets of
-archives, both installers and both tap formulae, while crates-publish
-publishes both crates and both docker-release workflows build their image.
-Keeping the two `version` fields equal is the whole mechanism — let them
-drift and the bare tag silently releases only the package that matches.
+archives, both installers and both tap formulae, and both docker-release
+workflows build their image. Keeping the two `version` fields equal is the
+whole mechanism — let them drift and the bare tag silently releases only the
+package that matches.
+
+**Only `orion-server` is published to crates.io.** `orion-cli` is not, and
+this is deliberate: the `orion-cli` name on crates.io was registered in
+January 2021 by an unrelated Lisp compiler
+([github.com/wafelack/orion](https://github.com/wafelack/orion)) and is owned
+by that author's account. All three of its versions are yanked, but yanking
+never frees a name, so a publish would fail with "not an owner" — and it
+would fail *after* the rider crates and `orion-server` were already live and
+unyankable-in-place. Nothing regresses: the CLI has never shipped through
+crates.io (before the monorepo merge it lived in `GoPlasmatic/Orion-cli`,
+which had no crates.io pipeline at all), and it still reaches users through
+the dist installers, the Homebrew tap, `ghcr.io/goplasmatic/orion-cli` and
+`cargo install --git`, which is what the install docs describe. Securing the
+name would be the only prerequisite to adding it back.
 
 The package-prefixed tags are the out-of-band path for shipping one package
 alone: `orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` each release exactly
-their own package (release.yml's dist plan, docker-release-cli.yml with its
-MCP-registry publish, and crates-publish all route on the prefix).
+their own package (release.yml's dist plan and docker-release-cli.yml with
+its MCP-registry publish route on the prefix; crates-publish does too, and an
+`orion-cli-v*` tag simply gives it nothing to publish).
 
 Because lockstep means a bare tag names a version one package may not have
-reached, both CLI pipelines degrade rather than fail on a mismatch:
-crates-publish skips a crate whose version is already on crates.io, and
+reached, the CLI's pipelines degrade rather than fail on a mismatch:
 docker-release-cli's `prepare` job skips the CLI image when a bare tag's
 version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
 `orion-cli-v*` tag that disagrees is still a hard error — that one is a
@@ -39,7 +53,7 @@ mistake, not a server-only release.
 The two shared library crates (`orion-api`,
 `orion-client`) are never tagged: crates-publish publishes them automatically
 as riders — in dependency order, skipping versions already on crates.io —
-right before the binary crate, since crates.io refuses a crate whose
+right before `orion-server`, since crates.io refuses a crate whose
 dependency it doesn't host. The corollary for maintainers: any change to a
 rider crate must bump its version, or the rider skips it and the released
 binary resolves the older crates.io content. A server-release tag starts three independent
@@ -57,7 +71,8 @@ pipelines, all gated on a successful CI run for the tagged commit (T10):
   fails itself. `latest` is only applied to non-prerelease versions
   (`latest=auto`), so an rc never becomes `latest`. The Helm chart publishes
   after the manifest exists.
-- **`crates-publish.yml`**: runs `cargo publish --locked` to crates.io. It
+- **`crates-publish.yml`**: runs `cargo publish --locked` to crates.io for
+  the rider crates and `orion-server` (not `orion-cli` — see above). It
   skips prerelease tags (anything containing `alpha`/`beta`/`rc`/`pre`), so
   the rc rehearsal does not publish a crate — the real tag is its first
   execution.

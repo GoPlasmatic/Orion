@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-12
+## [1.0.0] - 2026-08-14
 
 Orion server v1.0 compatibility release, developed in the Orion monorepo
 (the CLI moved from GoPlasmatic/Orion-cli to GoPlasmatic/Orion as
@@ -55,6 +55,20 @@ lives at the repo root — `tests/e2e/`, with its data-driven use cases in
   workflow, unknown channels are refused, archiving a channel's workflow
   quarantines it, and the server config template uses `storage.url` /
   `[trace_queue]`.
+- **Dependency major upgrades**: `rmcp` 1.4 → 3.1 (keeping the MCP server
+  reachable) and `tabled` 0.20 → 0.21, plus the workspace-wide sweep
+  recorded in the server's changelog. No CLI behaviour change is intended.
+
+### Distribution
+
+- **`orion-cli` is not published to crates.io.** The name there belongs to an
+  unrelated crate registered in 2021, so `cargo install orion-cli` does not
+  and will not reach this tool. Install it from the Homebrew tap
+  (`brew install GoPlasmatic/tap/orion-cli`), the shell/PowerShell installers
+  attached to each GitHub release, `ghcr.io/goplasmatic/orion-cli`, or
+  `cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-cli`.
+  This matches how every previous CLI release shipped; only the server crate
+  and the two shared libraries go to crates.io.
 
 ## [0.2.1]
 
@@ -112,3 +126,15 @@ Earlier release. See the Git history for details.
 ## [0.1.0]
 
 Initial release.
+
+<!-- Releases through 0.2.1 were tagged in the former GoPlasmatic/Orion-cli
+     repository; 1.0.0 onward are tagged in the GoPlasmatic/Orion monorepo.
+     The history spans two repositories, so pre-1.0 entries link to their
+     release pages rather than to a compare range. -->
+
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/GoPlasmatic/Orion/releases/tag/v1.0.0
+[0.2.1]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.2.1
+[0.2.0]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.2.0
+[0.1.1]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.1.1
+[0.1.0]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.1.0

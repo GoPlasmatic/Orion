@@ -43,39 +43,57 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Two releasable packages share this repo, versioned in lockstep. A
-      # package-prefixed tag (orion-cli-v1.0.1, orion-server-v1.1.0) publishes
-      # exactly that package — the out-of-band patch path. A bare v* tag is the
-      # joint release and publishes both, matching the set dist announces for
-      # the same tag (release.yml covers every dist-able package at the tagged
-      # version, so the crates.io side has to cover the same ground or the
-      # GitHub release ships a CLI that `cargo install` cannot reach).
+      # Two releasable packages share this repo, but only orion-server is
+      # published to crates.io.
+      #
+      # orion-cli deliberately is NOT, and this is not an oversight to correct:
+      # the `orion-cli` name on crates.io was registered in January 2021 by an
+      # unrelated project (a Lisp compiler, github.com/wafelack/orion) and is
+      # owned by that author's account, not ours. Its three versions are all
+      # yanked, but yanking never frees a name — `cargo publish -p orion-cli`
+      # would 403 with "not an owner", and it would do so *after* the rider
+      # crates and orion-server were already live and unyankable-in-place.
+      #
+      # Nothing regresses by leaving it out. The CLI has never shipped through
+      # crates.io: before the monorepo merge it lived in GoPlasmatic/Orion-cli,
+      # which had no crates.io pipeline at all, and its four releases went out
+      # via GitHub releases, the cargo-dist installers, the Homebrew tap and
+      # ghcr.io/goplasmatic/orion-cli. Those are still its channels, and the
+      # install docs already point at `cargo install --git` rather than a bare
+      # `cargo install orion-cli` for exactly this reason.
+      #
+      # Do not add orion-cli here without first securing the name on crates.io.
       - name: Determine packages from tag
         id: pkg
         run: |
           case "${GITHUB_REF_NAME}" in
-            orion-cli-*)    packages="orion-cli" ;;
-            orion-server-*) packages="orion-server" ;;
-            *)              packages="orion-server orion-cli" ;;
+            orion-cli-*) packages="" ;;              # CLI-only tag: nothing to publish
+            *)           packages="orion-server" ;;  # bare v* and orion-server-v*
           esac
           echo "packages=${packages}" >> "$GITHUB_OUTPUT"
-          echo "Publishing: ${packages}"
+          if [ -n "${packages}" ]; then
+            echo "Publishing: ${packages}"
+          else
+            echo "::notice::${GITHUB_REF_NAME} is a CLI-only tag and orion-cli is not published to crates.io — nothing to do."
+          fi
 
       # The shared library crates (orion-api, orion-client) have no release
       # cycle of their own — no tag ever names them. They ride along here:
-      # crates.io refuses a crate whose dependency isn't on crates.io, so
-      # whichever binary tag ships first with a not-yet-published version
-      # publishes it in passing. Each is skipped when its version already
-      # exists, which makes the step idempotent across the server and CLI
-      # tags that share it. `cargo publish` blocks until the index has the
-      # crate, so each subsequent publish can resolve it immediately. Listed
-      # in dependency order: orion-client depends on orion-api.
+      # crates.io refuses a crate whose dependency isn't on crates.io, so the
+      # server tag that first carries a not-yet-published version publishes it
+      # in passing. Each is skipped when its version already exists, which
+      # makes the step idempotent across repeated tags. `cargo publish` blocks
+      # until the index has the crate, so each subsequent publish can resolve
+      # it immediately. Listed in dependency order: orion-client depends on
+      # orion-api. Both are dependencies of orion-server, so they are still
+      # required even though the CLI no longer publishes.
       #
       # Corollary (the one rule this places on development): any change to a
       # rider crate must bump its version. A same-version change would be
       # skipped here and the binary would publish against the older crates.io
       # content while the repo builds against the newer local content.
       - name: Publish rider crates (only unpublished versions)
+        if: ${{ steps.pkg.outputs.packages != '' }}
         run: |
           for crate in orion-api orion-client; do
             version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
@@ -89,15 +107,14 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
-      # Skip-if-present, for the same reason the rider step has it: on a bare
-      # tag this publishes two packages whose versions are equal today but need
-      # not stay that way. A server-only patch released as v1.0.1 would
-      # otherwise fail the whole job trying to re-publish an unchanged
-      # orion-cli 1.0.0 — after the server crate is already live and
-      # unyankable-in-place. Skipping keeps the joint tag safe when only one
-      # package moved, and an out-of-band orion-cli-v* tag remains available
-      # when the CLI needs to ship alone.
+      # Skip-if-present, for the same reason the rider step has it: a re-run of
+      # this job, or a tag re-pushed after a downstream pipeline failed, must
+      # not fail trying to re-publish a version that is already live and
+      # unyankable-in-place. The loop keeps its shape (rather than collapsing
+      # to a single `cargo publish -p orion-server`) so that restoring a second
+      # publishable package later is a one-line change to the `case` above.
       - name: Publish
+        if: ${{ steps.pkg.outputs.packages != '' }}
         run: |
           for crate in ${{ steps.pkg.outputs.packages }}; do
             version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
