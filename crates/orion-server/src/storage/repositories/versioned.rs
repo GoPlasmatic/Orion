@@ -5,7 +5,7 @@
 //! column sets, draft merging, and workflow rollout arithmetic — stay in the
 //! owning repository.
 
-use sea_query::{Asterisk, Condition, DynIden, Expr, Order, Query};
+use sea_query::{Asterisk, Condition, DynIden, Expr, ExprTrait, Order, Query};
 
 use crate::errors::OrionError;
 use crate::storage::models::EntityStatus;
@@ -165,7 +165,7 @@ pub(crate) async fn list_versions<T: DbRow>(
 
 /// The `SELECT * WHERE id = ? AND status = 'draft'` both draft-consuming
 /// paths (update, activate) start from.
-fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_binder::SqlxValues) {
+fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_sqlx::SqlxValues) {
     build_sqlx(
         Query::select()
             .column(Asterisk)

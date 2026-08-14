@@ -1,7 +1,7 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use sea_query::{Asterisk, Condition, Expr, IntoIden, Order, Query};
+use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Order, Query};
 use serde::Deserialize;
 
 use super::helpers::{Page, Projection};
@@ -218,17 +218,17 @@ fn completed_values(
     let task_trace_val = super::helpers::optional_string_value(row.task_trace_json);
     let channel_id_val = super::helpers::optional_string_value(row.channel_id);
     [
-        Expr::val(id).into(),
-        Expr::val("completed").into(),
-        Expr::val(row.channel).into(),
-        Expr::val(channel_id_val).into(),
-        Expr::val(row.mode).into(),
-        Expr::val(input_val).into(),
-        Expr::val(row.result_json).into(),
-        Expr::val(row.duration_ms).into(),
-        Expr::val(now).into(),
-        Expr::val(now).into(),
-        Expr::val(task_trace_val).into(),
+        Expr::val(id),
+        Expr::val("completed"),
+        Expr::val(row.channel),
+        Expr::val(channel_id_val),
+        Expr::val(row.mode),
+        Expr::val(input_val),
+        Expr::val(row.result_json),
+        Expr::val(row.duration_ms),
+        Expr::val(now),
+        Expr::val(now),
+        Expr::val(task_trace_val),
     ]
 }
 
@@ -458,13 +458,13 @@ impl TraceRepository for SqlTraceRepository {
                     Traces::AccessTokenHash,
                 ])
                 .values_panic([
-                    Expr::val(id.as_str()).into(),
-                    Expr::val("pending").into(),
-                    Expr::val(channel).into(),
-                    Expr::val(channel_id_val).into(),
-                    Expr::val(mode).into(),
-                    Expr::val(input_val).into(),
-                    Expr::val(token_hash_val).into(),
+                    Expr::val(id.as_str()),
+                    Expr::val("pending"),
+                    Expr::val(channel),
+                    Expr::val(channel_id_val),
+                    Expr::val(mode),
+                    Expr::val(input_val),
+                    Expr::val(token_hash_val),
                 ]);
 
             // D23: the INSERT and the row it wrote travel together.

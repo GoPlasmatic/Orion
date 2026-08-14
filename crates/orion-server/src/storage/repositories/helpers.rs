@@ -1,4 +1,4 @@
-use sea_query::{Asterisk, Condition, DynIden, Order, Query};
+use sea_query::{Asterisk, Condition, DynIden, ExprTrait, Order, Query};
 use serde::Serialize;
 
 use crate::errors::OrionError;
@@ -95,7 +95,7 @@ pub fn sql_now_plus_secs(backend: crate::storage::DbBackend, secs: u64) -> Strin
 pub async fn fetch_required<T: DbRow>(
     pool: &DbPool,
     sql: &str,
-    values: sea_query_binder::SqlxValues,
+    values: sea_query_sqlx::SqlxValues,
     err: impl FnOnce() -> OrionError,
 ) -> Result<T, OrionError> {
     pool.fetch_optional_as::<T>(sql, values)
@@ -209,7 +209,7 @@ pub(crate) fn page_select(page: &Page) -> sea_query::SelectStatement {
 pub async fn ensure_absent<T: DbRow>(
     pool: &DbPool,
     sql: &str,
-    values: sea_query_binder::SqlxValues,
+    values: sea_query_sqlx::SqlxValues,
     err: impl FnOnce() -> OrionError,
 ) -> Result<(), OrionError> {
     if pool.fetch_optional_as::<T>(sql, values).await?.is_some() {
@@ -222,7 +222,7 @@ pub async fn ensure_absent<T: DbRow>(
 pub async fn fetch_required_tx<T: DbRow>(
     tx: &mut DbTransaction,
     sql: &str,
-    values: sea_query_binder::SqlxValues,
+    values: sea_query_sqlx::SqlxValues,
     err: impl FnOnce() -> OrionError,
 ) -> Result<T, OrionError> {
     tx.fetch_optional_as::<T>(sql, values)
@@ -237,7 +237,10 @@ pub async fn fetch_required_tx<T: DbRow>(
 /// - `offset`: defaults to 0, clamped to >= 0
 pub fn clamp_pagination(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
     let limit = limit.unwrap_or(50).clamp(1, 1000);
-    let offset = offset.unwrap_or(0).max(0);
+    // `Ord::max`, not `ExprTrait::max`: sea-query 1.0 blanket-implements
+    // `ExprTrait` for everything that converts into an `Expr`, so a bare
+    // `.max(0)` on an integer is ambiguous wherever that trait is in scope.
+    let offset = Ord::max(offset.unwrap_or(0), 0);
     (limit, offset)
 }
 
@@ -283,7 +286,7 @@ pub async fn snapshot_pages<T: DbRow>(
     if crate::storage::get_backend() == crate::storage::DbBackend::Postgres {
         tx.execute_query(
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-            sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+            sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
         )
         .await?;
     }
@@ -396,14 +399,14 @@ impl WriteStatement<'_> {
         }
     }
 
-    fn build_returning_all(&mut self) -> (String, sea_query_binder::SqlxValues) {
+    fn build_returning_all(&mut self) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
             Self::Insert(q) => crate::storage::build_sqlx(q.returning_all()),
             Self::Update(q) => crate::storage::build_sqlx(q.returning_all()),
         }
     }
 
-    fn build(&mut self) -> (String, sea_query_binder::SqlxValues) {
+    fn build(&mut self) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
             Self::Insert(q) => crate::storage::build_sqlx(&mut **q),
             Self::Update(q) => crate::storage::build_sqlx(&mut **q),
@@ -579,7 +582,7 @@ mod tests {
     #[test]
     fn optional_string_some() {
         let v = optional_string_value(Some("hello"));
-        assert_eq!(v, sea_query::Value::String(Some(Box::new("hello".into()))));
+        assert_eq!(v, sea_query::Value::String(Some("hello".into())));
     }
 
     #[test]

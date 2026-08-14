@@ -8,7 +8,7 @@
 //! dialects are the builder's problem, not ours.
 
 use async_trait::async_trait;
-use sea_query::{Expr, Query, SimpleExpr};
+use sea_query::{Expr, ExprTrait, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::schema::{ConfigEpoch, JobLeases};

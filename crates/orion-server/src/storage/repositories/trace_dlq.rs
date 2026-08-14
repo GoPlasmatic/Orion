@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, IntoIden, Query, SimpleExpr};
+use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 // D28: both row shapes this repository reads — `TraceDlqEntry` and the
@@ -193,7 +193,13 @@ pub trait TraceDlqRepository: Send + Sync {
 
 /// Due = past `next_retry_at`, retries left, and no live lease
 /// (`claimed_until` NULL or expired). All time comparisons use the DB clock.
-fn due_condition(now: &str) -> Condition {
+///
+/// `now` is `&'static str` because sea-query 1.0's `Expr::cust` takes
+/// `Into<Cow<'static, str>>`, and the only thing that ever reaches it here is
+/// `helpers::sql_now`, whose per-backend clock expressions are literals. The
+/// type states the invariant the module doc claims above: the raw SQL is the
+/// clock, nothing caller-derived.
+fn due_condition(now: &'static str) -> Condition {
     Condition::all()
         .add(Expr::col(TraceDlq::NextRetryAt).lte(Expr::cust(now)))
         .add(not_exhausted())
@@ -212,7 +218,7 @@ fn due_condition(now: &str) -> Condition {
 fn claim_update_query(
     claimant: &str,
     limit: i64,
-    now: &str,
+    now: &'static str,
     lease_until: &str,
     skip_locked: bool,
 ) -> sea_query::UpdateStatement {
@@ -221,7 +227,7 @@ fn claim_update_query(
         .from(TraceDlq::Table)
         .cond_where(due_condition(now))
         .order_by(TraceDlq::NextRetryAt, sea_query::Order::Asc)
-        .limit(limit.max(0) as u64)
+        .limit(Ord::max(limit, 0) as u64)
         .to_owned();
     if skip_locked {
         due_ids.lock_with_behavior(
@@ -232,7 +238,7 @@ fn claim_update_query(
     let mut update = Query::update()
         .table(TraceDlq::Table)
         .value(TraceDlq::ClaimedBy, claimant)
-        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until))
+        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until.to_owned()))
         .and_where(Expr::col(TraceDlq::Id).in_subquery(due_ids))
         .to_owned();
     update.returning_all();
@@ -243,13 +249,13 @@ fn claim_update_query(
 /// MySQL 8 has SKIP LOCKED but no `UPDATE … RETURNING`, and the model carries
 /// no lease columns, so the pre-UPDATE rows are already what the caller
 /// needs — no read-back.
-fn claim_select_query(limit: i64, now: &str) -> sea_query::SelectStatement {
+fn claim_select_query(limit: i64, now: &'static str) -> sea_query::SelectStatement {
     let mut select = Query::select()
         .column(Asterisk)
         .from(TraceDlq::Table)
         .cond_where(due_condition(now))
         .order_by(TraceDlq::NextRetryAt, sea_query::Order::Asc)
-        .limit(limit.max(0) as u64)
+        .limit(Ord::max(limit, 0) as u64)
         .to_owned();
     select.lock_with_behavior(
         sea_query::LockType::Update,
@@ -267,7 +273,7 @@ fn lease_claimed_query<'a>(
     Query::update()
         .table(TraceDlq::Table)
         .value(TraceDlq::ClaimedBy, claimant)
-        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until))
+        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until.to_owned()))
         .and_where(Expr::col(TraceDlq::Id).is_in(ids))
         .to_owned()
 }
@@ -331,15 +337,15 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                     TraceDlq::NextRetryAt,
                 ])
                 .values_panic([
-                    Expr::val(id.as_str()).into(),
-                    Expr::val(trace_id).into(),
-                    Expr::val(channel).into(),
-                    Expr::val(payload_json).into(),
-                    Expr::val(metadata_json).into(),
-                    Expr::val(error_message).into(),
-                    Expr::val(retry_count.max(0)).into(),
-                    Expr::val(max_retries).into(),
-                    Expr::val(next_retry).into(),
+                    Expr::val(id.as_str()),
+                    Expr::val(trace_id),
+                    Expr::val(channel),
+                    Expr::val(payload_json),
+                    Expr::val(metadata_json),
+                    Expr::val(error_message),
+                    Expr::val(Ord::max(retry_count, 0)),
+                    Expr::val(max_retries),
+                    Expr::val(next_retry),
                 ]);
 
             // D23: the INSERT and the row it wrote travel together. A miss on

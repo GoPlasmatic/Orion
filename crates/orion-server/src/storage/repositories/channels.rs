@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Condition, Expr, Query};
+use sea_query::{Condition, Expr, ExprTrait, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -261,22 +261,22 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> sea_query::InsertStatement
             Channels::TagsJson,
         ])
         .values_panic([
-            Expr::val(row.channel_id).into(),
-            Expr::val(row.version).into(),
-            Expr::val(row.name).into(),
-            Expr::val(row.description).into(),
-            Expr::val(row.channel_type).into(),
-            Expr::val(row.protocol).into(),
-            Expr::val(row.methods_json).into(),
-            Expr::val(row.route_pattern).into(),
-            Expr::val(row.topic).into(),
-            Expr::val(row.consumer_group).into(),
-            Expr::val(row.transport_config_json).into(),
-            Expr::val(row.workflow_id).into(),
-            Expr::val(row.config_json).into(),
-            Expr::val(row.status).into(),
-            Expr::val(row.priority).into(),
-            Expr::val(row.tags_json).into(),
+            Expr::val(row.channel_id),
+            Expr::val(row.version),
+            Expr::val(row.name),
+            Expr::val(row.description),
+            Expr::val(row.channel_type),
+            Expr::val(row.protocol),
+            Expr::val(row.methods_json),
+            Expr::val(row.route_pattern),
+            Expr::val(row.topic),
+            Expr::val(row.consumer_group),
+            Expr::val(row.transport_config_json),
+            Expr::val(row.workflow_id),
+            Expr::val(row.config_json),
+            Expr::val(row.status),
+            Expr::val(row.priority),
+            Expr::val(row.tags_json),
         ]);
     q
 }

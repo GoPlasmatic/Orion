@@ -21,7 +21,7 @@ async fn backdate_next_retry(pool: &DbPool, id: &str) {
             "UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') \
              WHERE id = '{id}'"
         ),
-        sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+        sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
     )
     .await
     .expect("backdate next_retry_at");
