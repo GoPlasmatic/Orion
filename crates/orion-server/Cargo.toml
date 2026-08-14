@@ -1,6 +1,6 @@
 [package]
 name = "orion-server"
-version = "1.0.0"
+version = "1.0.0-rc.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Turn business logic into live REST/Kafka services. Declare workflows as JSON and Orion runs them, with rate limiting, circuit breakers, versioning, and observability built in"
