@@ -3,11 +3,25 @@
 #
 # Everything the published site contains beyond plain `mdbook build` output
 # lives here rather than in CI config, because the site is deployed by
-# Cloudflare Workers Builds — Cloudflare clones this repo and runs
-# `bash docs/build.sh` (see docs/wrangler.jsonc for the full deploy picture).
+# Cloudflare Workers Builds — Cloudflare clones this repo and, from the `docs`
+# root directory, runs `bash build.sh` (see docs/wrangler.jsonc for the full
+# deploy picture).
 # Keeping the steps in the repo means the dashboard holds one command, and
 # `just docs` locally produces byte-for-byte what Cloudflare serves.
 # Same arrangement as docs/lint.sh — the logic is in the script, CI only calls it.
+
+# Re-exec under bash when started by another shell. The dashboard's "Build
+# command" field is the one deploy setting nothing in this repo can lint, and
+# it has now been wrong twice: `bash docs/build.sh` (fixed in 6481c0b5, which
+# resolved to docs/docs/build.sh) and `sh build.sh`, which reaches the line
+# below and dies with "Illegal option -o pipefail" because /bin/sh is dash.
+# `pipefail` is load-bearing here — this script pipes curl into tar — so the
+# fix is to get bash, not to drop the option. Keep this guard POSIX-clean: it
+# runs *before* we know we are in bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
