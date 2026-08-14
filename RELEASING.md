@@ -99,6 +99,19 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    — they release in lockstep, and a bare tag only announces the packages that
    match it (one commit; `Cargo.lock` updates with it), push, and wait
    for CI to go green on that commit — the release pipelines gate on it.
+
+   **Regenerate the OpenAPI spec in the same commit**, or CI fails:
+
+   ```bash
+   cargo run -- dump-openapi > docs/openapi.json
+   ```
+
+   `docs/openapi.json` embeds `info.version` from `CARGO_PKG_VERSION`, and
+   `openapi_test::committed_openapi_json_is_up_to_date` compares the committed
+   file against what the binary emits. Every version bump therefore breaks
+   three CI jobs (Test, Test Coverage and MSRV all run the suite) until the
+   spec is regenerated. This applies to **each** bump — the one here and the
+   one back to `1.0.0` in step 8.
 2. **Tag and push:**
 
    ```bash
@@ -143,7 +156,8 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    tag. Do this after the last feature commit lands — an entry dated before
    its content silently drops whatever shipped in between.
 8. **For the real release:** set `version = "1.0.0"` back in both crate
-   manifests, land, wait for CI, then
+   manifests **and regenerate `docs/openapi.json` again** (step 1's command —
+   the spec currently records the rc version), land, wait for CI, then
    `git tag v1.0.0 && git push origin refs/tags/v1.0.0`.
 9. **Publish the docs:** nothing to merge — releases are cut from `main`, so
    the tagged commit is already the one `docs.goplasmatic.io` builds from.
@@ -153,6 +167,18 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    runs outside GitHub, so check the Cloudflare dashboard (Workers →
    orion-docs → Deployments), not the Actions tab, and confirm the upgrade
    guide and the new version strings are actually being served.
+
+   **As of 2026-08-14 this Worker does not exist yet**: `docs.goplasmatic.io`
+   resolves nowhere, while the apex `goplasmatic.io` serves normally from the
+   same (Cloudflare-hosted) zone. Since `custom_domain: true` in
+   `docs/wrangler.jsonc` makes wrangler create the DNS record and edge
+   certificate on its first successful deploy, the missing record means no
+   deploy has ever succeeded. Create the `orion-docs` Worker — Workers &
+   Pages → Create application → Import a repository, named **exactly**
+   `orion-docs` to match `wrangler.jsonc`, with the build settings recorded
+   in that file's header — before the real tag, because `orion-server`'s
+   `homepage` and `documentation` metadata point at that hostname and are
+   frozen into the crates.io listing at publish time.
 
 ## The benchmark session (C13 — closed for 1.0.0)
 
