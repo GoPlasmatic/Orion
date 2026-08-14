@@ -17,26 +17,26 @@
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
 </div>
 
-Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it's live a second later. No rebuild, no restart, no downtime.
+Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it is live a second later. No rebuild, no restart, no downtime.
 
-Everything around that logic is the runtime's job, and it works the same way for every service you put on it: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. That's the glue you'd otherwise write again for every microservice, agent backend, stream processor, and data pipeline.
+Everything around that logic is the runtime's job, and it works the same way for every service you put on it: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. That is the glue you would otherwise write again for every microservice, agent backend, stream processor, and data pipeline.
 
-It ships as a single Rust binary on Tokio and Axum, storing your service definitions in an embedded database. There's nothing to containerize and nothing to provision.
+It ships as a single Rust binary on Tokio and Axum, storing your service definitions in an embedded database. There is nothing to containerize and nothing to provision.
 
-**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [What you can build](#what-you-can-build) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
+**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [What you get](#what-you-get) · [What you can build](#what-you-can-build) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
 
 ---
 
-## Why Orion?
+## What You Get
 
-Open a small internal microservice and count the lines. HTTP server setup, connection pools, a Prometheus exporter, OpenTelemetry wiring, retry loops, a circuit breaker, health checks, a Dockerfile, a deploy manifest. Somewhere in the middle sits the logic you actually cared about, and it's maybe fifty lines long. Orion runs that middle part for you and provides everything around it, the same way, for every service.
+Open a small internal microservice and count the lines. HTTP server setup, connection pools, a Prometheus exporter, OpenTelemetry wiring, retry loops, a circuit breaker, health checks, a Dockerfile, a deploy manifest. Somewhere in the middle sits the logic you actually cared about, and it is maybe fifty lines long. Orion runs that middle part for you and provides everything around it, the same way, for every service.
 
-* **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
-* **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
-* **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-command rollback mean AI output can't quietly break production.
-* **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
-* **📦 One binary, one file:** a single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
-* **🦀 Measured, not claimed:** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
+* **No service to build.** Post a JSON document and you have a live REST or Kafka endpoint. No Dockerfile, no CI pipeline, no server code.
+* **Production features included.** Rate limiting, circuit breakers, timeouts, caching, and payload validation are things you configure on a channel instead of writing.
+* **Safe for AI-written logic.** Draft-before-activate, dry-run, percentage rollout, and one-command rollback mean AI output cannot quietly break production.
+* **Services that call services.** `channel_call` runs another workflow in-process, so composition costs no network hop and no serialization.
+* **One binary, one file.** A single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
+* **Measured, not claimed.** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
 
 ---
 
@@ -52,7 +52,7 @@ No code. No Dockerfile. No CI pipeline. Just a running service.
     </picture>
   </a>
   <br>
-  <strong><a href="https://docs.goplasmatic.io/getting-started/console.html">▶ Watch the 60-second demo</a></strong>
+  <strong><a href="https://docs.goplasmatic.io/getting-started/console.html">Watch the 60-second demo</a></strong>
   <br>
   <em>Zero to a live service in under a minute: declare the logic, validate and dry-run it, give it an endpoint, then send a request. Tracing and metrics are already on. Prefer a terminal? The same flow is four curl calls, below.</em>
 </div>
@@ -70,7 +70,7 @@ orion-server
 curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/examples/quickstart.sh | bash
 ```
 
-The script talks to the same admin API you'd use in production. It creates a **workflow** (the logic: flag any order over $10,000 for review) and a **channel** (the endpoint: `POST /orders`), activates both, and sends a first test order. Re-running it is safe. Cloned the repo? Run `./examples/quickstart.sh` instead.
+The script talks to the same admin API you would use in production. It creates a **workflow** (the logic: flag any order over $10,000 for review) and a **channel** (the endpoint: `POST /orders`), activates both, and sends a first test order. Re-running it is safe. Cloned the repo? Run `./examples/quickstart.sh` instead.
 
 <details>
 <summary><b>What the script does: the four API calls, spelled out</b></summary>
@@ -147,7 +147,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 }
 ```
 
-That's it. The business logic is a JSON document, deploying it was an API call, and rate limiting, metrics, health checks, and request tracing were already active when it went live. Change the threshold? One API call. No rebuild, no redeploy, no restart.
+That is it. The business logic is a JSON document, deploying it was an API call, and rate limiting, metrics, health checks, and request tracing were already active when it went live. Change the threshold? One API call. No rebuild, no redeploy, no restart.
 
 > **Prefer to describe the service instead of writing it?** Workflow JSON is easy for LLMs to generate. Tell your AI assistant *"flag orders over $10,000 for manual review with an alert message"* and deploy what it returns. [AI Writes Services, Not Code](#ai-writes-services-not-code) shows the safe path from prompt to production.
 
@@ -158,10 +158,10 @@ That's it. The business logic is a JSON document, deploying it was an API call, 
 Orion carries the same infrastructure across five kinds of service:
 
 - **[Microservices](https://docs.goplasmatic.io/guides/worked-examples.html):** one channel and one workflow make a service, and Orion answers the request in-process — nothing you built sits in the path.
-- **[AI agent tools](https://docs.goplasmatic.io/ai/claude-code.html):** an agent calls your channels as tools over HTTP, and through the MCP server in `orion-cli` an assistant drafts, dry-runs, activates, and rolls back those workflows itself.
-- **[Business rules & decision APIs](https://docs.goplasmatic.io/build/workflows.html):** pricing tiers, eligibility checks, routing decisions — written as JSONLogic conditions over the request and returned as the response body.
-- **[Kafka event consumers](https://docs.goplasmatic.io/guides/kafka-channels.html):** a topic is the ingress — consume records, transform and enrich them as they arrive, publish results onward, and send poison messages to a dead-letter topic instead of letting one stall the partition.
-- **[Webhook & data ingestion](https://docs.goplasmatic.io/build/connectors.html):** normalize payloads from Stripe, GitHub or Shopify, then read and write across PostgreSQL, MySQL, SQLite, MongoDB and Elasticsearch through one portable dialect.
+- **[AI Agent Tools](https://docs.goplasmatic.io/ai/claude-code.html):** an agent calls your channels as tools over HTTP. Through the MCP server in `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
+- **[Business Rules & Decision APIs](https://docs.goplasmatic.io/build/workflows.html):** pricing tiers, eligibility checks, routing decisions. Write the rules as JSONLogic conditions over the request, branch between them, and return the result as the response body.
+- **[Kafka Event Consumers](https://docs.goplasmatic.io/guides/kafka-channels.html):** a topic is the ingress: consume records, transform and enrich them as they arrive, publish results onward, and send poison messages to a dead-letter topic instead of letting one stall the partition.
+- **[Webhook & Data Ingestion](https://docs.goplasmatic.io/build/connectors.html):** normalize payloads from Stripe, GitHub or Shopify, then read and write across PostgreSQL, MySQL, SQLite, MongoDB and Elasticsearch through one portable dialect. Credentials stay on the connector, so the workflow JSON is safe to commit.
 
 See [Worked Examples](https://docs.goplasmatic.io/guides/worked-examples.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
 
@@ -169,20 +169,38 @@ See [Worked Examples](https://docs.goplasmatic.io/guides/worked-examples.html) f
 
 ## Is Orion Right for You?
 
-| If you need to... | Orion? | Why |
-|---|:-:|---|
-| Turn business logic into live REST/Kafka services | **Yes** | Define logic as JSON workflows, deploy with one API call |
-| Let AI generate and manage business logic | **Yes** | Built-in validation, dry-run testing, and draft-before-activate safety |
-| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels, governance included |
-| Use a rule engine like Drools | **Not quite** | Orion uses [JSONLogic](https://jsonlogic.com) via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) for conditions and transforms. Lightweight and AI-friendly, but not a full RETE-based rule engine with complex fact networks |
-| Embed a workflow engine library in your app | **No** | Orion is a standalone runtime, not a library. For an embeddable workflow engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) which Orion is built on |
-| Manage services from a browser dashboard | **Yes** | [Orion UI](https://github.com/GoPlasmatic/Orion-ui) manages workflows, channels, and connectors, visualizes pipelines, and monitors health. Orion itself stays API-first |
-| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow. Orion is optimized for request-response and event processing |
-| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy. Orion focuses on service logic, not proxy features |
-| General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data. Use custom services or serverless for arbitrary compute |
-| Stateful workflows with human-in-the-loop approvals | No | Use [Temporal](https://temporal.io) or BPMN engines. Orion workflows are stateless request pipelines |
+All of that puts Orion next to a lot of familiar tools without being quite any of them: it is the service itself, not a proxy in front of one and not a coordinator over several. Here are the neighbours — what each kind of tool is for, and how it relates to Orion.
 
-Longer, tool-by-tool discussion (Temporal, Kong, Drools, n8n, dataflow-rs): [Is Orion Right for You?](https://docs.goplasmatic.io/comparison.html)
+| What you are weighing | Examples | What it is for | How it relates to Orion |
+|---|---|---|---|
+| Building it yourself | Spring Boot, FastAPI, Express, Go | A service you compile, deploy and own end to end | **Replaces**, for services that fit a pipeline |
+| [Durable execution engines](https://docs.goplasmatic.io/compare/durable-execution.html) | Temporal, Restate, Step Functions, Airflow | Work that must survive a restart, or wait hours for a human | **Pairs with**. Orion retries a run from the start, never from where it stopped |
+| [API gateways](https://docs.goplasmatic.io/compare/api-gateways.html) | Kong, Envoy, APISIX, KrakenD | Policing and routing traffic to the services behind them | **Pairs with**. The services behind it run inside Orion's runtime |
+| MCP tool servers | Hand-written MCP servers, FastMCP, LangChain tools | Exposing your systems to an LLM as callable tools | **Replaces**, and adds drafts, rollout and rollback |
+| [Automation platforms](https://docs.goplasmatic.io/compare/automation-platforms.html) | n8n, Zapier, Make, Node-RED | Wiring SaaS apps together quickly, at low volume | **Different job**. Orion carries production request traffic |
+| Stream & integration tools | Camel, NiFi, Redpanda Connect, Flink | Moving and reshaping data between systems continuously | **Overlaps**. Orion handles each record on its own; windowing and engine-managed state are theirs |
+| [Rule engines](https://docs.goplasmatic.io/compare/rule-engines.html) | Drools, OPA, GoRules | Evaluating many rules over an accumulating fact base | **Overlaps**. In Orion each step feeds the next, in the order you wrote; re-firing rules until they settle is theirs |
+| [Embedding dataflow-rs](https://docs.goplasmatic.io/compare/dataflow-rs.html) | dataflow-rs | Running workflow tasks inside your own Rust program | **Sits under**. It is the engine Orion wraps |
+
+Four words carry the last column:
+
+- **Replaces.** Orion does this job instead.
+- **Pairs with.** Both live in the same estate, each doing its own job.
+- **Sits under.** It is a component of Orion, not an alternative to it.
+- **Different job.** The overlap is superficial.
+
+> [!WARNING]
+> **Plan for authentication before you expose a channel.** The admin plane authenticates by configuration; a data channel authenticates only if it declares an `auth` block (API key or HMAC signature). There is no built-in JWT/OIDC verification and no mTLS termination. If your channels are reachable by anything you do not control, front them with a gateway, service mesh, or reverse proxy. See [Secure an Instance](https://docs.goplasmatic.io/operate/security.html) for what to configure.
+
+**Orion is the wrong tool when:**
+
+- **The work spans hours or days, or waits for a human.** Orion runs inside a request and forgets.
+- **Something has to *start* on a schedule.** Orion runs when it is called, over REST, plain HTTP, or a Kafka topic. There is no timer and no cron.
+- **You need gRPC, WebSockets, or a streaming response.** REST, plain HTTP and Kafka are the whole ingress surface.
+- **The logic needs a real programming language.** There is no plugin mechanism, no scripting runtime and no WASM sandbox. [What you can extend](https://docs.goplasmatic.io/concepts/how-orion-works.html#what-you-can-extend) states the boundary exactly.
+- **The request needs heavy computation.** Task functions parse, map, validate and talk to other systems. Image processing, model inference and large in-memory joins are not what Orion is for.
+
+The trade is this: your logic has to be expressible as a pipeline of Orion's task functions and JSONLogic. You give up writing arbitrary code, and in exchange every service you put on the runtime gets the same guards, versioning and traces without you writing any of it. The tool-by-tool discussion, including where each neighbour wins, is in [Is Orion Right for You?](https://docs.goplasmatic.io/comparison.html).
 
 ---
 
@@ -234,7 +252,7 @@ Orion is API-first, and everything it does is also point-and-click. [Orion UI](h
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
+**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you are done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
 
 ```json
 {
@@ -248,7 +266,7 @@ When AI generates a microservice, you still need to add health checks, metrics, 
 }
 ```
 
-No MCP client? Paste the [**prompt pack**](https://docs.goplasmatic.io/ai/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It's a self-contained context block with Orion's schemas, conventions, and API calls.
+No MCP client? Paste the [**prompt pack**](https://docs.goplasmatic.io/ai/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It is a self-contained context block with Orion's schemas, conventions, and API calls.
 
 ```
 You: "Classify orders into VIP (>=500, 15% discount), Premium (100-500, 5%), and Standard tiers"
@@ -277,7 +295,7 @@ graph TD
     style F fill:#293c4e,stroke:#61afef,stroke-width:2px,color:#61afef
 ```
 
-Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails. It's the same governance hand-written workflows get. Roll back to any previous version instantly.
+Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails. It is the same governance hand-written workflows get. Roll back to any previous version instantly.
 
 The workflows, channels, and connectors of one service form a **package** — Orion's unit of shipping, and what makes one instance a modular monolith: many services side by side, each promoted and rolled back independently. `orion-server package` is the promotion story: `export` computes the dependency closure from a source instance into one JSON artifact (git is the registry), `lint` and `plan` check it with zero writes, `apply` stages and activates everything in dependency order with a single engine reload and a version-immutable package receipt, and `diff` reports drift. The bulk import endpoints (`POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true`, then drop `dry_run` to commit) remain the low-level primitive when you need to script a single batch. See [Packages & Promotion](https://docs.goplasmatic.io/operate/promotion.html).
 
@@ -306,7 +324,7 @@ Every channel gets production-grade features without writing a line of code. Con
 | **Input validation** | Reject bad requests at the boundary | JSONLogic with access to headers, query params, path params |
 | **Backpressure** | Shed load when overwhelmed, return 503 | `max_concurrent_per_node` (semaphore-based) |
 | **CORS** | Control browser cross-origin access | `origin_allow_list` per channel |
-| **Circuit breakers** | Stop cascading failures to external services | Automatic per connector, admin API to inspect/reset |
+| **Circuit breakers** | Stop cascading failures to external services | Off by default; enable per connector, admin API to inspect/reset |
 | **Versioning** | Draft → active → archived lifecycle | Automatic version history, rollout percentages, instant rollback |
 | **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on, zero configuration |
 | **Health checks** | Component-level status with degradation detection | `GET /health`, automatic |
@@ -367,13 +385,12 @@ Connectors are named, reusable connections to external systems. Configure once, 
 | Connector type | Systems | Features |
 |---------------|---------|----------|
 | **HTTP** | Any REST API, webhook, or service | Bearer / Basic / API key auth, retry with backoff, SSRF protection |
-| **Database** | PostgreSQL, MySQL, SQLite | Parameterized queries, connection pooling, read + write operations |
+| **Database** | PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme | Parameterized queries, connection pooling, read + write operations; BSON-to-JSON conversion on `mongodb://` |
 | **Cache** | In-memory (built-in) or Redis | TTL-based expiry, also powers deduplication and response caching |
-| **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
 | **Elasticsearch** | Any Elasticsearch cluster | Portable `data_query`/`data_write` rendered to Query DSL and `_bulk`, via the shared HTTP client |
 | **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
 
-Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Database and Elasticsearch connectors also carry **per-operation gates** (`operations: { read, insert, update, delete, upsert, raw_write }`). Set `"delete": false` and no workflow can delete through that connector, no matter what its tasks say. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](https://docs.goplasmatic.io/reference/connectors.html) for configuration examples and auth options.
+Any connector can be given **circuit breaker protection** — off by default, and once enabled, failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Database and Elasticsearch connectors also carry **per-operation gates** (`operations: { read, insert, update, delete, upsert, raw_write }`). Set `"delete": false` and no workflow can delete through that connector, no matter what its tasks say. Secrets are masked in API responses and encrypted at rest with AES-256-GCM when `storage.connector_encryption_key` is set, and any string field can use an `env://VAR_NAME` or `vault://path#field` reference resolved at load, so production credentials never sit in the saved config. See [Connectors Guide](https://docs.goplasmatic.io/reference/connectors.html) for configuration examples and auth options.
 
 ---
 
@@ -433,7 +450,7 @@ helm install orion oci://ghcr.io/goplasmatic/charts/orion
 docker compose -f docker-compose.ha.yml up
 ```
 
-**Same channel definitions work in any topology:** one instance, an HA cluster — or dedicated capacity by splitting channels across instance pools with include/exclude filters. The definition doesn't change; only the deployment config does.
+**Same channel definitions work in any topology:** one instance, an HA cluster — or dedicated capacity by splitting channels across instance pools with include/exclude filters. The definition does not change; only the deployment config does.
 
 ## Performance
 
@@ -549,7 +566,7 @@ Using Orion in a project, a company, or a side quest? Add yourself to [ADOPTERS.
 
 ## Contributing
 
-Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request, we'd love to hear from you. **[CONTRIBUTING.md](CONTRIBUTING.md)** has everything: dev setup, how to run the container-gated tests, the PR checklist, and commit conventions. The project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); notable changes are tracked per package in the [server CHANGELOG](crates/orion-server/CHANGELOG.md) and the [CLI CHANGELOG](crates/orion-cli/CHANGELOG.md).
+Contributions welcome! Whether it is a bug fix, new connector, documentation improvement, or feature request, we would love to hear from you. **[CONTRIBUTING.md](CONTRIBUTING.md)** has everything: dev setup, how to run the container-gated tests, the PR checklist, and commit conventions. The project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); notable changes are tracked per package in the [server CHANGELOG](crates/orion-server/CHANGELOG.md) and the [CLI CHANGELOG](crates/orion-cli/CHANGELOG.md).
 
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Ask questions:** [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions)
@@ -559,7 +576,7 @@ Contributions welcome! Whether it's a bug fix, new connector, documentation impr
 
 ## Support the Project
 
-If Orion looks useful, a ⭐ on this repo is the easiest way to help other developers find it. Beyond that: share what you build in [Discussions](https://github.com/GoPlasmatic/Orion/discussions), add yourself to [ADOPTERS.md](ADOPTERS.md), or send this to a colleague who's tired of building a new service for every bit of business logic.
+If Orion looks useful, a star on this repo is the easiest way to help other developers find it. Beyond that: share what you build in [Discussions](https://github.com/GoPlasmatic/Orion/discussions), add yourself to [ADOPTERS.md](ADOPTERS.md), or send this to a colleague who is tired of building a new service for every bit of business logic.
 
 ## License
 
