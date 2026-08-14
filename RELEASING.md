@@ -90,8 +90,23 @@ Nothing rides `workflow_dispatch` dry runs for signing: `dry_run` skips the
 
 ## First signed release: the `v1.0.0-rc.1` run (P12)
 
-The signing/attestation pipeline shipped without ever executing. The rc run
-is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
+**P12 is closed for 1.0.0.** The signing/attestation pipeline had shipped
+without ever executing; the `v1.0.0-rc.1` tag on `ff7b15a2` ran it and it
+passed, both in CI and independently off-runner:
+
+- The `merge` job's *"Verify what is attached to the published tag"* step
+  passed `cosign verify` + `gh attestation verify` —
+  <https://github.com/GoPlasmatic/Orion/actions/runs/31780773339>
+- Re-verified from a developer machine (2026-08-14): `cosign verify` reported
+  all three checks, and `gh attestation verify` exited 0, both resolving
+  `ghcr.io/goplasmatic/orion:1.0.0-rc.1` to digest
+  `sha256:9cc1fa0cb7e78860e59855a1a56bd393bcbc6a75b2ab8df916dbb2496040b40b`
+  carrying a cosign signature, an SPDX SBOM and SLSA provenance.
+
+The procedure below is what was run, kept as the routine for the next
+release. Nothing here is outstanding work for 1.0.0 — but do repeat it: the
+rc run is what proves the pipeline still signs, and step 4's off-runner check
+is what proves it independently of the runner that produced the artifact.
 
 1. **Version bump (required):** dist refuses a tag whose version is not the
    package version. On `main` set `version = "1.0.0-rc.1"` in
