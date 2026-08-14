@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "orion-cli"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "orion-server"
-version = "1.0.0-rc.1"
+version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "arc-swap",
