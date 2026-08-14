@@ -11,7 +11,7 @@
 //! version bump.
 
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Order, Query};
+use sea_query::{Asterisk, Expr, ExprTrait, Order, Query};
 use serde::Deserialize;
 
 use crate::errors::OrionError;

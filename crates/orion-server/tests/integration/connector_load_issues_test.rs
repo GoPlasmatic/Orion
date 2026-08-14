@@ -384,7 +384,7 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
            VALUES ('f16-fatal', 'f16-fatal', 'http',
                    '{"url":"https://example.com","auth":{"type":"bearer","token":"env://ORION_F16_NEVER_SET"}}',
                    true)"#,
-        sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+        sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
     )
     .await
     .expect("seed broken connector");
@@ -446,7 +446,7 @@ async fn a_stored_storage_connector_reports_the_removal() {
            VALUES ('legacy-uploads', 'legacy-uploads', 'storage',
                    '{"provider":"s3","bucket":"my-uploads","region":"us-east-1"}',
                    true)"#,
-        sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+        sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
     )
     .await
     .expect("seed a 0.3.x storage connector");

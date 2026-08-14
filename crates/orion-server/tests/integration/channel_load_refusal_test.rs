@@ -31,10 +31,7 @@ async fn insert_raw_active_channel(
     );
     state
         .db_pool
-        .execute_query(
-            &sql,
-            sea_query_binder::SqlxValues(sea_query::Values(vec![])),
-        )
+        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
         .await
         .expect("raw channel insert");
 }
@@ -302,7 +299,7 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
                '/quarantined/{id}', '{}', '{ not json', 'active', 0)";
     state
         .db_pool
-        .execute_query(sql, sea_query_binder::SqlxValues(sea_query::Values(vec![])))
+        .execute_query(sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
         .await
         .expect("raw channel insert");
 

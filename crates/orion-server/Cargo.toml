@@ -79,8 +79,16 @@ harness = true
 dataflow-rs = { version = "3.3.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
-sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+# `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.8.x is the
+# line that keeps sqlx 0.8 and MSRV 1.88; 0.9 moves to sqlx 0.9 / Rust 1.94.
+# It lists `jiff-sqlx` (Unlicense OR MIT) as an optional dependency behind
+# `with-jiff`, which is off here — so the crate lands in Cargo.lock but is
+# never compiled, and `cargo deny` clears it via the MIT arm of that
+# expression (`Unlicense` is not in deny.toml's allowlist).
+# `default-features = false` on sea-query also opts out of 1.0's new `itoa`
+# (integer-formatting fast path) and `audit` defaults; neither is needed.
+sea-query-sqlx = { version = "0.8.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }

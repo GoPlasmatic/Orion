@@ -11,7 +11,7 @@ use std::path::Path;
 
 use orion::config::StorageConfig;
 use sea_query::Values;
-use sea_query_binder::SqlxValues;
+use sea_query_sqlx::SqlxValues;
 
 use crate::common::ScratchDir;
 

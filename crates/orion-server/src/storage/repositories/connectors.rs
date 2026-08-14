@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, IntoIden, Order, Query};
+use sea_query::{Asterisk, Expr, ExprTrait, IntoIden, Order, Query};
 use serde::Deserialize;
 
 use super::helpers::{Page, PaginatedResult, Projection};

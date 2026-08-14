@@ -19,7 +19,7 @@ use orion::storage::repositories::workflows::{
 };
 use orion::storage::schema::{Channels, Workflows};
 use orion::storage::{DbPool, build_sqlx, models};
-use sea_query::{Expr, Query};
+use sea_query::{Expr, ExprTrait, Query};
 use serde_json::json;
 
 async fn pool() -> DbPool {

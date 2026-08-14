@@ -23,7 +23,7 @@ async fn state_with_key() -> orion::server::state::AppState {
 
 /// Read the raw stored column, bypassing the repository (and its decryption).
 async fn raw_config_json(state: &orion::server::state::AppState, name: &str) -> String {
-    use sea_query::{Expr, Query};
+    use sea_query::{Expr, ExprTrait, Query};
     let (sql, values) = orion::storage::build_sqlx(
         Query::select()
             .column(orion::storage::schema::Connectors::ConfigJson)

@@ -181,7 +181,7 @@ impl AsyncFunctionHandler for DataWriteHandler {
 async fn execute_sql(
     pool: &sqlx::AnyPool,
     sql: &str,
-    values: sea_query_binder::SqlxValues,
+    values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
     timeout_ms: Option<u64>,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
@@ -207,7 +207,7 @@ async fn execute_sql(
 async fn run_write_statement<'e, E>(
     executor: E,
     sql: &str,
-    values: sea_query_binder::SqlxValues,
+    values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
     budget: &QueryBudget,
 ) -> Result<Value, DataflowError>

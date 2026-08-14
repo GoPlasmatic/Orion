@@ -7,11 +7,11 @@
 //! injection-safe and quoted per dialect.
 
 use sea_query::{
-    Alias, Asterisk, Condition, Expr, Func, LikeExpr, MysqlQueryBuilder, NullOrdering, OnConflict,
-    Order, OrderedStatement, PostgresQueryBuilder, Query, SelectStatement, SimpleExpr,
+    Alias, Asterisk, Condition, Expr, ExprTrait, Func, LikeExpr, MysqlQueryBuilder, NullOrdering,
+    OnConflict, Order, OrderedStatement, PostgresQueryBuilder, Query, SelectStatement, SimpleExpr,
     SqliteQueryBuilder, Value as SeaValue, WindowStatement,
 };
-use sea_query_binder::{SqlxBinder, SqlxValues};
+use sea_query_sqlx::{SqlxBinder, SqlxValues};
 
 use crate::config::QueryConfig;
 use crate::query::IncludePlan;
@@ -592,7 +592,7 @@ fn render_delete(
 
 /// An IR value as a bound `SimpleExpr` (a NULL binds as SQL NULL).
 fn value_expr(v: &Value) -> SimpleExpr {
-    Expr::val(to_sea_value(v)).into()
+    Expr::val(to_sea_value(v))
 }
 
 /// Dialect-specific `(sql, values)` for any write statement (Insert/Update/Delete).

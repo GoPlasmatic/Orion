@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use sea_query::{Condition, Expr, IntoIden, Order, Query, SimpleExpr};
+use sea_query::{Condition, Expr, ExprTrait, IntoIden, Order, Query, SimpleExpr};
 
 use super::helpers::{Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
@@ -128,15 +128,15 @@ impl AuditLogRepository for SqlAuditLogRepository {
                 AuditLogs::ResourceId,
             ];
             let mut row: Vec<SimpleExpr> = vec![
-                Expr::val(id.as_str()).into(),
-                Expr::val(principal).into(),
-                Expr::val(action).into(),
-                Expr::val(resource_type).into(),
-                Expr::val(resource_id).into(),
+                Expr::val(id.as_str()),
+                Expr::val(principal),
+                Expr::val(action),
+                Expr::val(resource_type),
+                Expr::val(resource_id),
             ];
             if let Some(d) = details {
                 columns.push(AuditLogs::Details);
-                row.push(Expr::val(d).into());
+                row.push(Expr::val(d));
             }
 
             let (sql, values) = build_sqlx(

@@ -482,7 +482,7 @@ async fn insert_trace(pool: &orion::storage::DbPool, id: &str, created: chrono::
                VALUES (?, 'ch', 'sync', 'completed', ?, ?)";
     pool.execute_query(
         sql,
-        sea_query_binder::SqlxValues(sea_query::Values(vec![
+        sea_query_sqlx::SqlxValues(sea_query::Values(vec![
             id.into(),
             created.into(),
             created.into(),
@@ -496,7 +496,7 @@ async fn count_traces(pool: &orion::storage::DbPool) -> i64 {
     let (n,): (i64,) = pool
         .fetch_one_as::<(i64,)>(
             "SELECT COUNT(*) FROM traces",
-            sea_query_binder::SqlxValues(sea_query::Values(vec![])),
+            sea_query_sqlx::SqlxValues(sea_query::Values(vec![])),
         )
         .await
         .expect("count");

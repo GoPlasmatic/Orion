@@ -34,7 +34,7 @@ pub mod schema;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use sea_query_binder::SqlxBinder;
+use sea_query_sqlx::SqlxBinder;
 
 use crate::config::StorageConfig;
 use crate::errors::OrionError;
@@ -174,7 +174,7 @@ impl DbPool {
     pub async fn fetch_all_as<T: DbRow>(
         &self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<Vec<T>, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(p).await)
     }
@@ -182,7 +182,7 @@ impl DbPool {
     pub async fn fetch_one_as<T: DbRow>(
         &self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<T, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_one(p).await)
     }
@@ -190,7 +190,7 @@ impl DbPool {
     pub async fn fetch_optional_as<T: DbRow>(
         &self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<Option<T>, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(p).await)
     }
@@ -198,7 +198,7 @@ impl DbPool {
     pub async fn execute_query(
         &self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<u64, sqlx::Error> {
         dispatch_pool!(self, p => {
             let r = sqlx::query_with(sql, values).execute(p).await?;
@@ -209,7 +209,7 @@ impl DbPool {
     pub async fn fetch_scalar<T>(
         &self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<T, sqlx::Error>
     where
         T: Send + Unpin + 'static,
@@ -264,7 +264,7 @@ impl DbTransaction {
     pub async fn fetch_all_as<T: DbRow>(
         &mut self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<Vec<T>, sqlx::Error> {
         dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(&mut **tx).await)
     }
@@ -272,7 +272,7 @@ impl DbTransaction {
     pub async fn fetch_optional_as<T: DbRow>(
         &mut self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<Option<T>, sqlx::Error> {
         dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(&mut **tx).await)
     }
@@ -280,7 +280,7 @@ impl DbTransaction {
     pub async fn execute_query(
         &mut self,
         sql: &str,
-        values: sea_query_binder::SqlxValues,
+        values: sea_query_sqlx::SqlxValues,
     ) -> Result<u64, sqlx::Error> {
         dispatch_tx!(self, tx => {
             let r = sqlx::query_with(sql, values).execute(&mut **tx).await?;
@@ -294,7 +294,7 @@ impl DbTransaction {
 // ============================================================
 
 /// Build a SQL string and bound values using the runtime-detected backend.
-pub fn build_sqlx<S: SqlxBinder>(stmt: &mut S) -> (String, sea_query_binder::SqlxValues) {
+pub fn build_sqlx<S: SqlxBinder>(stmt: &mut S) -> (String, sea_query_sqlx::SqlxValues) {
     match get_backend() {
         DbBackend::Sqlite => stmt.build_sqlx(sea_query::SqliteQueryBuilder),
         DbBackend::Postgres => stmt.build_sqlx(sea_query::PostgresQueryBuilder),

@@ -1,7 +1,7 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
 use dataflow_rs::Workflow as DataflowWorkflow;
-use sea_query::{Asterisk, Condition, Expr, Order, Query};
+use sea_query::{Asterisk, Condition, Expr, ExprTrait, Order, Query};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OrionError;
@@ -230,18 +230,18 @@ fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> sea_query::InsertStateme
             Workflows::ContinueOnError,
         ])
         .values_panic([
-            Expr::val(row.workflow_id).into(),
-            Expr::val(row.version).into(),
-            Expr::val(row.name).into(),
-            Expr::val(row.description).into(),
-            Expr::val(row.priority).into(),
-            Expr::val(row.status).into(),
-            Expr::val(row.rollout_pct).into(),
-            Expr::val(row.condition_json).into(),
-            Expr::val(row.tasks_json).into(),
-            Expr::val(row.tags_json).into(),
-            Expr::val(row.loop_json).into(),
-            Expr::val(row.continue_on_error).into(),
+            Expr::val(row.workflow_id),
+            Expr::val(row.version),
+            Expr::val(row.name),
+            Expr::val(row.description),
+            Expr::val(row.priority),
+            Expr::val(row.status),
+            Expr::val(row.rollout_pct),
+            Expr::val(row.condition_json),
+            Expr::val(row.tasks_json),
+            Expr::val(row.tags_json),
+            Expr::val(row.loop_json),
+            Expr::val(row.continue_on_error),
         ]);
     q
 }
@@ -300,7 +300,7 @@ async fn activate_partial_rollout(
 fn set_workflow_archived_query(
     workflow_id: &str,
     version: i64,
-) -> (String, sea_query_binder::SqlxValues) {
+) -> (String, sea_query_sqlx::SqlxValues) {
     let mut q = Query::update();
     q.table(Workflows::Table)
         .value(Workflows::Status, EntityStatus::Archived.as_str())
@@ -315,7 +315,7 @@ fn set_workflow_rollout_query(
     workflow_id: &str,
     version: i64,
     pct: i64,
-) -> (String, sea_query_binder::SqlxValues) {
+) -> (String, sea_query_sqlx::SqlxValues) {
     let mut q = Query::update();
     q.table(Workflows::Table)
         .value(Workflows::RolloutPercentage, pct)
@@ -330,7 +330,7 @@ fn activate_workflow_version_query(
     workflow_id: &str,
     version: i64,
     pct: i64,
-) -> (String, sea_query_binder::SqlxValues) {
+) -> (String, sea_query_sqlx::SqlxValues) {
     let mut q = Query::update();
     q.table(Workflows::Table)
         .value(Workflows::Status, EntityStatus::Active.as_str())
