@@ -304,16 +304,49 @@ jobs:
       # binary links the older crates.io content while the repo builds the
       # newer local one — a divergence nothing else in CI can see, because the
       # workspace always resolves the path dependency.
+      #
+      # Runs on pushes as well as pull requests. It was `pull_request`-only,
+      # which was fine while everything arrived through a PR — but work lands
+      # on main directly now, and on that path the guard did not run at all.
+      # A rider change pushed straight to main would have gone unnoticed until
+      # the release resolved the wrong crates.io content, which is the exact
+      # failure this exists to prevent.
       - name: Rider crates changed must have their version bumped
-        if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
+          set -uo pipefail
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE"
+          else
+            base="$PUSH_BEFORE"
+          fi
+
+          # `before` is all-zeros on a branch's first push, and after a force
+          # push it can name a commit this clone no longer has. Neither gives a
+          # range to diff, so fall back to the first parent — that still
+          # inspects the pushed tip instead of quietly passing. A root commit
+          # has no parent and leaves nothing to compare, which is the one case
+          # that legitimately skips.
+          if [ -z "$base" ] \
+             || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git rev-parse --verify --quiet HEAD^ || true)"
+          fi
+          if [ -z "$base" ]; then
+            echo "::warning::no base commit to diff against; rider check skipped"
+            exit 0
+          fi
+          echo "Comparing against ${base} (event: ${EVENT_NAME})"
+
           status=0
           for crate in orion-api orion-client; do
-            changed=$(git diff --name-only "$BASE_SHA"...HEAD -- "crates/$crate/" | grep -v '/CHANGELOG.md$' || true)
+            changed=$(git diff --name-only "$base"...HEAD -- "crates/$crate/" | grep -v '/CHANGELOG.md$' || true)
             [ -n "$changed" ] || continue
-            if git diff -U0 "$BASE_SHA"...HEAD -- "crates/$crate/Cargo.toml" \
+            if git diff -U0 "$base"...HEAD -- "crates/$crate/Cargo.toml" \
                  | grep -qE '^\+version = '; then
               echo "::notice::$crate changed and its version was bumped"
             else
