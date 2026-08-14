@@ -38,11 +38,13 @@ impl Drop for ScratchDir {
 struct Server {
     child: Child,
     port: u16,
+    label: &'static str,
+    log: std::path::PathBuf,
     _dir: ScratchDir,
 }
 
 impl Server {
-    fn start() -> Self {
+    fn start(label: &'static str) -> Self {
         let dir = ScratchDir::new("db");
         // Bind-then-drop to pick a free port; the tiny race is acceptable in
         // a test that retries readiness anyway.
@@ -52,6 +54,17 @@ impl Server {
             .expect("addr")
             .port();
         let db = dir.path().join("e2e.db");
+        // Capture the server's own output instead of discarding it. When this
+        // test fails on an HTTP 500 the CLI can only report the sanitised
+        // envelope ("An internal storage error occurred") — the sqlx error
+        // behind it is logged server-side by errors.rs's
+        // `tracing::error!(error.category = "storage", ...)`, which at the
+        // `warn` level below does reach this file. Sending it to /dev/null
+        // meant a CI failure named the symptom and destroyed the cause; the
+        // Drop impl replays it on panic.
+        let log = dir.path().join("server.log");
+        let out = std::fs::File::create(&log).expect("create server log");
+        let err = out.try_clone().expect("clone server log handle");
         let child = Command::new(orion_bin())
             .env(
                 "ORION_STORAGE__URL",
@@ -59,13 +72,15 @@ impl Server {
             )
             .env("ORION_SERVER__PORT", port.to_string())
             .env("ORION_LOGGING__LEVEL", "warn")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(out))
+            .stderr(std::process::Stdio::from(err))
             .spawn()
             .expect("spawn orion-server");
         Self {
             child,
             port,
+            label,
+            log,
             _dir: dir,
         }
     }
@@ -91,6 +106,21 @@ impl Drop for Server {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        // Only on the way out of a failing test: replay what the server logged
+        // so the panic message and the cause land in the same CI output. This
+        // runs before `_dir` is dropped (Rust runs a type's own Drop before its
+        // fields'), so the scratch dir still exists to read from.
+        if std::thread::panicking()
+            && let Ok(text) = std::fs::read_to_string(&self.log)
+        {
+            let text = text.trim();
+            if !text.is_empty() {
+                eprintln!(
+                    "--- {} server log (port {}) ---\n{}\n--- end {} server log ---",
+                    self.label, self.port, text, self.label
+                );
+            }
+        }
     }
 }
 
@@ -163,8 +193,8 @@ async fn seed(client: &reqwest::Client, base: &str) {
 #[tokio::test]
 async fn package_promotes_between_real_instances() {
     let client = reqwest::Client::new();
-    let source = Server::start();
-    let target = Server::start();
+    let source = Server::start("source");
+    let target = Server::start("target");
     source.wait_ready(&client).await;
     target.wait_ready(&client).await;
     seed(&client, &source.url()).await;
