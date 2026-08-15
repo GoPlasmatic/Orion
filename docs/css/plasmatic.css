@@ -848,6 +848,22 @@ pre > .buttons {
   color: var(--p-fg);
 }
 
+/* Privacy link injected at the sidebar's foot by extra.js — quiet by design:
+   findable from every page without competing with the chapter list. */
+.sidebar-privacy {
+  display: block;
+  padding: 14px 12px 18px;
+  margin-top: 18px;
+  font-size: 0.8rem;
+  color: var(--p-fg-faint);
+  text-decoration: none;
+}
+
+.sidebar-privacy:hover {
+  color: var(--p-fg-muted);
+  text-decoration: underline;
+}
+
 .chapter li.part-title {
   font-family: var(--p-font-text);
   font-weight: 600;

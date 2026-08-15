@@ -501,6 +501,34 @@
   }
 })();
 
+// ── Privacy link at the sidebar's foot ──
+// This site records analytics sessions (Microsoft Clarity), so the privacy
+// notice must be reachable from every page. The book has no footer to hang it
+// on; the sidebar's foot is the conventional slot. Injected for the same
+// reason as the logo above it: mdBook has no config key for this.
+(function () {
+  function inject() {
+    var scrollbox =
+      document.querySelector("mdbook-sidebar-scrollbox") ||
+      document.querySelector(".sidebar-scrollbox");
+    if (!scrollbox || scrollbox.querySelector(".sidebar-privacy")) return;
+
+    var link = document.createElement("a");
+    link.className = "sidebar-privacy";
+    link.href = "https://goplasmatic.io/privacy";
+    link.textContent = "Privacy";
+    link.setAttribute("rel", "noopener");
+
+    scrollbox.appendChild(link);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", inject);
+  } else {
+    inject();
+  }
+})();
+
 // ── Section folding ──
 // Opt in from the markdown with an empty marker div at the top of the page,
 // matching the .doc-cards / .table-filter convention:
