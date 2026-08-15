@@ -5,7 +5,7 @@ name = "orion-cli"
 # what puts the server and the CLI in one release, with one set of installers
 # and one tap push. The package-prefixed `orion-cli-vX.Y.Z` tag still works for
 # an out-of-band CLI patch between server releases.
-version = "1.0.0"
+version = "1.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
