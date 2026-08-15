@@ -252,8 +252,19 @@ jobs:
   publish-mcp:
     name: Publish to MCP Registry
     needs: [prepare, merge]
-    # Runs on version tags, or on manual dispatch with tag_override (re-publish path)
-    if: ${{ !inputs.dry_run && (github.ref_type == 'tag' || inputs.tag_override != '') }}
+    # Runs on version tags, or on manual dispatch with tag_override (re-publish path).
+    # Skip prereleases (tags containing alpha, beta, rc, pre): the registry has no
+    # prerelease notion — whatever publishes becomes the current listing. The image
+    # itself still builds and pushes above; only the listing is held back. The guard
+    # reads ref_name, not tag_override, on purpose: dispatch with tag_override is a
+    # deliberate act and stays able to re-publish an rc.
+    if: >-
+      ${{ !inputs.dry_run
+          && (github.ref_type == 'tag' || inputs.tag_override != '')
+          && !contains(github.ref_name, 'alpha')
+          && !contains(github.ref_name, 'beta')
+          && !contains(github.ref_name, 'rc')
+          && !contains(github.ref_name, 'pre') }}
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
