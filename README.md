@@ -466,8 +466,9 @@ docker compose -f docker-compose.ha.yml up
 | Simple workflow (1 task) | 5,655 | 8.7 ms | 12.6 ms |
 | Loaded estate (12 channels) | 5,167 | 9.6 ms | 18.9 ms |
 | Complex workflow (4 tasks) | 5,151 | 9.7 ms | 22.2 ms |
+| Cluster: 2 nodes behind a load balancer, one host | 8,309 | 6.0 ms | 11.7 ms |
 
-Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.7 ms) while straight-line throughput reads lower; the record's `SUMMARY.md` carries the honest comparison, including what changed on the hot path in 1.0 (always-on per-task Prometheus timing) and the capture conditions. Zero errors across every scenario, including 56 engine hot-reloads under sustained load. Run `./crates/orion-server/tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./crates/orion-server/tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer (not part of this record — the capture host had no Docker).
+Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.7 ms) while straight-line throughput reads lower; the record's `SUMMARY.md` carries the honest comparison, including what changed on the hot path in 1.0 (always-on per-task Prometheus timing) and the capture conditions. The cluster row is two nodes in Docker behind nginx with shared Postgres and Redis, all on the same machine — 1.47× a single native instance, with the record noting that a single host saturates there (a third node on the same machine buys contention, not capacity; multi-host scaling is still unmeasured). Zero errors across every scenario, including 56 engine hot-reloads under sustained load. Run `./crates/orion-server/tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./crates/orion-server/tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer.
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 

@@ -8,9 +8,10 @@ the 1.0 record, not the fully isolated host `RELEASING.md` §C13 prescribes —
 a coding-agent session was resident during the runs (file edits only, no
 builds). Treat small deltas against other records accordingly.
 
-**Not in this record:** the cluster scenario (`bench.sh cluster`, scenario G).
-The capture host has no Docker, so the HA compose stack could not run. The
-single-instance record matches the v0.2.0 scenario coverage exactly.
+The cluster scenario was not captured in the original session (the capture
+host had no Docker); it was added 2026-08-15 in a follow-up session on the
+same hardware class — see "Cluster scaling" below for its numbers and its
+own run conditions.
 
 ## Headline numbers
 
@@ -56,6 +57,41 @@ channel guard work added through the 1.0 audits; the run-condition caveats
 above also apply. Zero errors anywhere, including 56 hot reloads under
 sustained load.
 
+## Cluster scaling (captured 2026-08-15)
+
+The C13 carry-over from the release session (#257): scenario G through the HA
+compose stack's load balancer, at N=2 and — via `docker-compose.ha.n3.yml` —
+N=3.
+
+**Run conditions.** Apple M2 Pro, 10 cores (6P + 4E), 16 GB RAM, macOS 26.6.1
+(25G76), AC power — the same hardware class as the record above, and the same
+caveat: a coding-agent session was resident (file edits between runs, nothing
+during a measured window). The system under test is the released image
+`ghcr.io/goplasmatic/orion:1.0.0`
+(`sha256:1e8d0b81b1704a31808f7e5e91247ccfc17c4d99d31cd1aa022289f25e49c942`)
+under Docker Desktop 29.7.2, whose VM held all 10 host CPUs and 13.6 GB.
+Harness from `main` (`091c15c4`). Each N got a fresh stack (fresh Postgres
+volume), a discarded 5 s warm-up pass, then one measured 30 s run at c=50,
+matching the session settings above.
+
+| Scenario | Req/sec | Avg (ms) | P99 (ms) | Errors | vs B (5,655.2) |
+|---|---:|---:|---:|---:|---:|
+| G: Cluster via LB, N=2 | 8308.74 | 6.00 | 11.70 | 0 | 1.47× |
+| G: Cluster via LB, N=3 | 7338.14 | 6.70 | 12.60 | 0 | 1.30× |
+
+The N=3 result was confirmed with a repeat run (7,275.2 req/s, within 0.9%).
+The load balancer's split was even to within 15 requests per node at N=3.
+
+Reading it honestly: **everything shares one 10-core host** — the LB, every
+Orion node, Postgres, Redis, and the `hey` load generator, with the nodes
+inside Docker's VM. Two nodes reach 1.47× a single native instance (73.5%
+per-node efficiency, a figure that also absorbs the Docker VM boundary, the
+nginx hop, and Postgres-for-SQLite in place of the native record's storage).
+At N=3 throughput *falls*: the host is saturated at N=2, so the third node
+buys contention, not capacity. Treat the N=3 line as a single-host saturation
+measurement, not a scaling one — horizontal efficiency at N≥3 needs one host
+per node, which remains open on #257. Zero errors at every N.
+
 ## Reproducing
 
 ```bash
@@ -64,6 +100,8 @@ BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.s
 
 Pass `BENCH_OUTPUT_DIR=crates/orion-server/tests/benchmark/results/<your-tag>` to redirect output.
 Per-scenario raw `hey` reports are in the sibling `.txt` files in this
-directory. The cluster scenario needs the HA compose stack:
-`docker compose -f docker-compose.ha.yml up -d`, then
+directory (`G_cluster_lb_n2.txt` / `G_cluster_lb_n3.txt` for the cluster
+runs). The cluster scenario needs the HA compose stack:
+`docker compose -f docker-compose.ha.yml up -d --wait` (add
+`-f docker-compose.ha.n3.yml` for N=3), then
 `BENCH_RELEASE=1 ./crates/orion-server/tests/benchmark/bench.sh cluster`.
