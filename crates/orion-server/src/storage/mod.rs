@@ -223,9 +223,36 @@ impl DbPool {
         dispatch_pool!(self, p => sqlx::query_scalar_with::<_, T, _>(sql, values).fetch_one(p).await)
     }
 
+    /// Begin a deferred transaction. Fine for read-only transactions and for
+    /// transactions whose *first* statement is a write; a transaction that
+    /// SELECTs before its first write must use [`Self::begin_write_tx`] (D30).
     pub async fn begin_tx(&self) -> Result<DbTransaction, sqlx::Error> {
         match self {
             DbPool::Sqlite(p) => Ok(DbTransaction::Sqlite(p.begin().await?)),
+            DbPool::Postgres(p) => Ok(DbTransaction::Postgres(p.begin().await?)),
+            DbPool::Mysql(p) => Ok(DbTransaction::Mysql(p.begin().await?)),
+        }
+    }
+
+    /// Begin a transaction that will read first and write later (D30).
+    ///
+    /// On SQLite this issues `BEGIN IMMEDIATE`, taking the write lock at
+    /// BEGIN. A plain deferred BEGIN pins a WAL read snapshot at the first
+    /// SELECT; if any other connection (e.g. the async audit-log writer)
+    /// commits before this transaction's first write, the read→write upgrade
+    /// fails with SQLITE_BUSY_SNAPSHOT (extended code 517), which the busy
+    /// handler never retries — the transaction can only be rolled back and
+    /// replayed (issue #254). With the lock held from BEGIN the snapshot
+    /// cannot go stale, and contention degrades to plain SQLITE_BUSY,
+    /// absorbed by the connection's `busy_timeout`.
+    ///
+    /// Postgres and MySQL take row locks at the first write and resolve this
+    /// internally; they keep a plain `begin()`.
+    pub async fn begin_write_tx(&self) -> Result<DbTransaction, sqlx::Error> {
+        match self {
+            DbPool::Sqlite(p) => Ok(DbTransaction::Sqlite(
+                p.begin_with("BEGIN IMMEDIATE").await?,
+            )),
             DbPool::Postgres(p) => Ok(DbTransaction::Postgres(p.begin().await?)),
             DbPool::Mysql(p) => Ok(DbTransaction::Mysql(p.begin().await?)),
         }

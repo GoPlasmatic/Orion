@@ -263,6 +263,9 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     // statement, not a read-then-write transaction: a tx that reads first and
     // writes second deadlocks against a concurrent activate's tx doing the
     // same (and on WAL SQLite is an unretryable SQLITE_BUSY_SNAPSHOT).
+    // Read-then-write transactions that cannot collapse into one statement
+    // take `DbPool::begin_write_tx` instead (D30), which starts SQLite with
+    // BEGIN IMMEDIATE so no read snapshot exists to go stale.
     //
     // On SQLite the statement also stamps `updated_at` itself: the column is
     // normally maintained by an AFTER UPDATE trigger whose second write

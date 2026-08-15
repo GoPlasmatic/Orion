@@ -87,6 +87,7 @@ mod scenario_webhook_test;
 mod secret_references_test;
 mod security_test;
 mod shutdown_test;
+mod sqlite_busy_snapshot_test;
 mod sqlite_upgrade_test;
 mod status_dry_run_test;
 mod task_trace_test;

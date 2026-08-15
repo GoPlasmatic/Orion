@@ -628,7 +628,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
         }
 
         crate::metrics::timed_db_op("workflows.activate", async {
-            let mut tx = self.pool.begin_tx().await?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             let draft: Workflow =
                 versioned::require_draft_tx(&mut tx, &spec(), workflow_id).await?;
@@ -686,7 +686,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
         }
 
         crate::metrics::timed_db_op("workflows.update_rollout", async {
-            let mut tx = self.pool.begin_tx().await?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             // Get active versions ordered by version DESC (newest first)
             let (sql, values) = build_sqlx(

@@ -607,7 +607,7 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn activate(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.activate", async {
-            let mut tx = self.pool.begin_tx().await?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             let draft: Channel = versioned::require_draft_tx(&mut tx, &spec(), channel_id).await?;
 

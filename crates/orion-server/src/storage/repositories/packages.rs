@@ -106,7 +106,7 @@ impl PackageRepository for SqlPackageRepository {
     ) -> Result<PackageReceipt, OrionError> {
         crate::metrics::timed_db_op("packages.put", async {
             let backend = crate::storage::get_backend();
-            let mut tx = self.pool.begin_tx().await?;
+            let mut tx = self.pool.begin_write_tx().await?;
 
             let (sql, values) = build_sqlx(&mut receipt_select(name, &req.version));
             let existing: Option<PackageReceipt> = tx.fetch_optional_as(&sql, values).await?;
