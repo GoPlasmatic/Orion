@@ -220,14 +220,17 @@ produces numbers worse than none.
    ```
 
 4. **Cluster scenario** *(skipped for 1.0.0 — see above)*: bring up the HA compose stack
-   (`docker compose -f docker-compose.ha.yml up -d`, N=2), then:
+   (`docker compose -f docker-compose.ha.yml up -d --wait`, N=2), then:
 
    ```bash
    BENCH_RELEASE=1 ./crates/orion-server/tests/benchmark/bench.sh cluster
    ```
 
-   Repeat at N=3. Scenario G compares against scenario B for per-node
-   cluster overhead; compute scaling efficiency at N=2 and N=3.
+   Repeat at N=3 by adding the third-node overlay
+   (`docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml up -d --wait`
+   — the base stack is hard-wired to two nodes, and the overlay carries the
+   three-server nginx upstream). Scenario G compares against scenario B for
+   per-node cluster overhead; compute scaling efficiency at N=2 and N=3.
 5. **Record:** commit the run outputs under
    `crates/orion-server/tests/benchmark/results/v1.0.0/` — one `.txt` per scenario plus a
    `SUMMARY.md` recording the hardware (CPU model, cores, RAM, OS) and the

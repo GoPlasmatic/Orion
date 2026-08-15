@@ -1,0 +1,49 @@
+# N=3 overlay for the HA reference topology: a third orion node, and the LB
+# fed the three-server upstream list. Exists for the benchmark runbook
+# (RELEASING.md step 4: cluster scaling at N=2 and N=3) — the base stack is
+# the production reference and stays at two nodes.
+#
+#   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
+#   docker compose -f docker-compose.ha.yml -f docker-compose.ha.n3.yml up -d --wait
+#
+# orion-c repeats the base file's x-orion-common / x-orion-env content
+# instead of referencing it: YAML anchors do not cross files, so this block
+# must be kept in sync with docker-compose.ha.yml by hand. Composable with
+# docker-compose.ha.build.yml the same way orion-a/b are (list it last).
+
+services:
+  orion-c:
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
+    restart: unless-stopped
+    stop_grace_period: 45s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    environment:
+      ORION_STORAGE__URL: "postgres://orion:orion@postgres:5432/orion"
+      ORION_STORAGE__AUTO_MIGRATE: "false"
+      ORION_CLUSTER__ENABLED: "true"
+      ORION_CLUSTER__REDIS_URL: "redis://redis:6379"
+      ORION_SERVER__SHUTDOWN_DRAIN_SECS: "10"
+      ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS: "20"
+      ORION_LOGGING__FORMAT: "json"
+      ORION_ENVIRONMENT: "production"
+      ORION_ADMIN_AUTH__ENABLED: "true"
+      ORION_ADMIN_AUTH__API_KEYS: "${ORION_ADMIN_API_KEYS:?set ORION_ADMIN_API_KEYS (comma-separated admin API keys)}"
+      ORION_CORS__ALLOWED_ORIGINS: "${ORION_CORS_ALLOWED_ORIGINS:-}"
+      ORION_CLUSTER__INSTANCE_ID: "node-c"
+
+  lb:
+    volumes:
+      - ./deploy/ha/nginx.n3.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      orion-c:
+        condition: service_healthy
