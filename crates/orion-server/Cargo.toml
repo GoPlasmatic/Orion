@@ -176,6 +176,9 @@ md-5 = "0.11"
 argon2 = "0.5.3"
 bcrypt = "0.19.3"
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls-tls", "rustls-native-certs"] }
+# aws_lc_rs: the same crypto backend the in-tree rustls stack uses — one
+# provider, not two.
+jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 
 # Windows cannot run librdkafka's configure build, so it keeps cmake-build —
 # features unify additively with the base rdkafka entry above, per target.

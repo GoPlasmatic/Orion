@@ -209,24 +209,36 @@ fn mask_connector_in_place(value: &mut Value, key: Option<&str>) {
     }
 }
 
-/// Mask a channel config in place (H3): exactly `auth.keys[*]` and
-/// `auth.secret`, the two fields of the closed `ChannelConfig` schema that
-/// hold credentials. Resolvable references (`env://NAME`) survive for the
-/// same reason they do on connectors: the stored config never held the
-/// value, and masking the pointer breaks export → import.
+/// Mask a channel config in place (H3): the credential fields of the closed
+/// `ChannelConfig` schema — `auth.keys[*]`, `auth.secret`, the `auth.secrets`
+/// rotation list (#264), and `auth.jwt_keys[*].key` (#267). Resolvable
+/// references (`env://NAME`) survive for the same reason they do on
+/// connectors: the stored config never held the value, and masking the
+/// pointer breaks export → import.
 pub fn mask_channel_config(config: &mut Value) {
     let Some(auth) = config.get_mut("auth") else {
         return;
     };
-    if let Some(keys) = auth.get_mut("keys")
-        && let Value::Array(items) = keys
-    {
-        for item in items.iter_mut() {
-            mask_channel_secret_leaf(item);
+    for list in ["keys", "secrets"] {
+        if let Some(keys) = auth.get_mut(list)
+            && let Value::Array(items) = keys
+        {
+            for item in items.iter_mut() {
+                mask_channel_secret_leaf(item);
+            }
         }
     }
     if let Some(secret) = auth.get_mut("secret") {
         mask_channel_secret_leaf(secret);
+    }
+    if let Some(jwt_keys) = auth.get_mut("jwt_keys")
+        && let Value::Array(entries) = jwt_keys
+    {
+        for entry in entries.iter_mut() {
+            if let Some(key) = entry.get_mut("key") {
+                mask_channel_secret_leaf(key);
+            }
+        }
     }
 }
 

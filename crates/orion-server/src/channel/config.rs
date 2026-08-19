@@ -188,6 +188,121 @@ pub struct ChannelAuthConfig {
     /// set field overrides its preset row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preset: Option<String>,
+
+    /// **`jwt`** — static verification keys. At least one of `jwt_keys` /
+    /// `jwks_url` is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt_keys: Option<Vec<JwtKeyEntry>>,
+
+    /// **`jwt`** — a JWKS document URL (HTTPS only); cached process-wide with
+    /// single-flight refresh and stale-serve.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
+
+    /// **`jwt`** — the mandatory, non-empty algorithm allowlist. Checked
+    /// before anything else about a token; `alg: none` is unrepresentable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithms: Option<Vec<String>>,
+
+    /// **`jwt`** — accepted `iss` value(s); string or array. Absent skips the
+    /// check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<StringOrVec>,
+
+    /// **`jwt`** — accepted `aud` value(s); string or array. Absent skips the
+    /// check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<StringOrVec>,
+
+    /// **`jwt`** — clock-skew allowance for `exp`/`nbf`, seconds. Default 30,
+    /// capped at 300.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leeway_secs: Option<u64>,
+
+    /// **`jwt`** — whether a token must carry `exp` (RFC 8725 default true).
+    /// Opting out is loud, deliberate config for non-expiring internal tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_exp: Option<bool>,
+
+    /// **`jwt`** — whether a token is required at all. `false` admits
+    /// token-less requests with no `metadata.auth` key; a present-but-invalid
+    /// token is still rejected ("optional" never means "invalid passes").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
+
+    /// **`jwt`** — where the token is presented. Default: the
+    /// `Authorization` header with the `Bearer` scheme. Query parameters are
+    /// deliberately not offered (RFC 6750 §2.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<JwtSource>,
+
+    /// **`jwt`** — token size cap. Default 8192.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_token_bytes: Option<usize>,
+
+    /// **`jwt`** — which verified claims reach `metadata.auth.claims`.
+    /// Absent → all of them (verified claims are not secrets from the
+    /// workflow that admitted them); the list is the opt-in filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claims_to_metadata: Option<Vec<String>>,
+
+    /// **`jwt`** — JSONLogic over `{"claims": …}`, evaluated after successful
+    /// verification. Falsy → **403** `insufficient_scope` (RFC 6750): role
+    /// and scope checks are authorization, not validation, and the wire
+    /// should say so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_logic: Option<Value>,
+}
+
+/// A string, or an array of strings — the JWT `iss`/`aud` convenience shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrVec {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StringOrVec {
+    pub fn into_vec(&self) -> Vec<String> {
+        match self {
+            Self::One(s) => vec![s.clone()],
+            Self::Many(v) => v.clone(),
+        }
+    }
+}
+
+/// One static JWT verification key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JwtKeyEntry {
+    /// Algorithm this key verifies (`HS256` … `EdDSA`).
+    pub algorithm: String,
+    /// The material: an HS secret or a public-key PEM; literal or a secret
+    /// reference (`env://`, `vault://`).
+    pub key: String,
+    /// Optional key id for `kid` routing; rotation = old + new entries under
+    /// distinct kids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
+    /// How an HS secret becomes bytes: `utf8` (default) / `base64` / `hex` —
+    /// the #259 precedent, for Supabase-class base64 secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_encoding: Option<String>,
+}
+
+/// Where a channel's JWT is presented.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, untagged)]
+pub enum JwtSource {
+    /// A header, minus an optional scheme prefix (`Bearer `).
+    Header {
+        header: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scheme: Option<String>,
+    },
+    /// A cookie by name — an extraction point only; sessions/CSRF stay out
+    /// of scope.
+    Cookie { cookie: String },
 }
 
 /// Test/struct-update convenience; production configs always deserialize,
@@ -209,6 +324,18 @@ impl Default for ChannelAuthConfig {
             timestamp: None,
             tolerance_secs: None,
             preset: None,
+            jwt_keys: None,
+            jwks_url: None,
+            algorithms: None,
+            issuer: None,
+            audience: None,
+            leeway_secs: None,
+            require_exp: None,
+            required: None,
+            source: None,
+            max_token_bytes: None,
+            claims_to_metadata: None,
+            authorization_logic: None,
         }
     }
 }
@@ -224,6 +351,10 @@ pub enum AuthMode {
     /// timestamped templates, Stripe's packed header, provider presets, and
     /// sha1/sha512 are all data on [`ChannelAuthConfig`].
     Hmac,
+    /// A bearer JWT (#267): verified at ingress against static keys and/or a
+    /// JWKS, with the verified claims — never the token — exposed at
+    /// `metadata.auth.claims.*` and to `authorization_logic`.
+    Jwt,
 }
 
 /// How a sync channel turns its workflow's output into an HTTP response.

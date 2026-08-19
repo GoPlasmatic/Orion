@@ -214,6 +214,17 @@ pub fn build_custom_functions(
         Box::new(functions::crypto::CryptoHandler),
     );
 
+    // Self-contained JWT surfaces (#267): issuance and mid-workflow
+    // verification, sharing the channel mode's core and JWKS cache.
+    fns.insert(
+        "jwt_sign".to_string(),
+        Box::new(functions::jwt_sign::JwtSignHandler),
+    );
+    fns.insert(
+        "jwt_verify".to_string(),
+        Box::new(functions::jwt_verify::JwtVerifyHandler),
+    );
+
     fns.insert(
         "send_email".to_string(),
         Box::new(functions::send_email::SendEmailHandler {

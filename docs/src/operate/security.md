@@ -68,10 +68,13 @@ answer a uniform `401` that never reveals which part failed. The full contract �
 fields, defaults, and why Kafka and `channel_call` are exempt — is
 [Channel Configuration › Authentication](../reference/channel-config.md#authentication).
 
-**There is no built-in JWT/OIDC verification and no mTLS termination.** If you
-need either, front Orion with a gateway, service mesh, or reverse proxy that
-verifies tokens, and let Orion serve the traffic that proxy admits. That is the
-deployment Orion expects today.
+**JWT verification is built in; OIDC flows and mTLS termination are not.** The
+`jwt` auth mode verifies bearer tokens at ingress (static keys or a JWKS) and
+exposes the verified claims at `metadata.auth.claims.*` — identity reaches the
+workflow without a header-forwarding proxy whose stripping rules Orion cannot
+validate. What stays out of scope is the IdP half (discovery, PKCE, userinfo)
+and client-certificate termination: for those, front Orion with a gateway or
+service mesh, and let the `jwt` mode verify what it forwards.
 
 ## Terminate TLS
 

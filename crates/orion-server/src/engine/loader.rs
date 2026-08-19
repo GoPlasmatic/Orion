@@ -94,6 +94,8 @@ pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
     "db_read",
     "db_write",
     "http_call",
+    "jwt_sign",
+    "jwt_verify",
     "mongo_read",
     "publish_kafka",
     "send_email",

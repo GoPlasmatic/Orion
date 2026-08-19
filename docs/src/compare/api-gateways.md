@@ -64,7 +64,8 @@ gateway's compensating features, not one that makes the gateway redundant.
 ## Choose an API gateway when
 
 - You have services from more than one team, in more than one language.
-- You need JWT/OIDC verification or mTLS, and you need it in one place.
+- You need OIDC flows or mTLS, and you need them in one place. (JWT
+  *verification* is built into Orion's channels; the IdP dance is not.)
 - Identity, TLS and IP policy must be enforced before traffic reaches anything
   you wrote.
 - You want traffic shifted between whole services, not between versions of one.

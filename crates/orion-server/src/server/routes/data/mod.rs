@@ -290,6 +290,21 @@ pub(crate) async fn dynamic_handler(
         guards::GuardVerdict::Admitted(admission) => admission,
     };
 
+    // #267: verified claims join the message metadata at `auth.claims` — the
+    // one merge point both the sync path and the async queue flow through.
+    // The token itself never gets here; guards discarded it after verifying.
+    let mut admission = admission;
+    let metadata = match admission.auth_claims.take() {
+        Some(claims) => {
+            let mut merged = metadata;
+            if let Some(obj) = merged.as_object_mut() {
+                obj.insert("auth".to_string(), serde_json::json!({ "claims": claims }));
+            }
+            merged
+        }
+        None => metadata,
+    };
+
     if is_async {
         return submit_async(
             &state,

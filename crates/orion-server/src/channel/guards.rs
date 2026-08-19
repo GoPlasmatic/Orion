@@ -259,6 +259,10 @@ pub struct Admission {
     /// declares one, else the transport's default — clamped to the
     /// transport's ceiling in either case.
     pub timeout_ms: Option<u64>,
+    /// Verified JWT claims (#267), for the caller to place at
+    /// `metadata.auth.claims` when building the message. `None` for the
+    /// party-level auth modes and for optional-auth requests without a token.
+    pub auth_claims: Option<Value>,
     /// The idempotency key this delivery holds, when the channel deduplicates
     /// and a key was resolved.
     ///
@@ -373,18 +377,36 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         )
         .await?;
     }
-    if set.auth {
-        check_auth(req.channel, req.runtime, req.header, req.raw_body)?;
-    }
+    let auth_claims = if set.auth {
+        check_auth(
+            req.channel,
+            req.runtime,
+            req.header,
+            req.raw_body,
+            req.datalogic,
+        )
+        .await?
+    } else {
+        None
+    };
     if set.origin_allow_list {
         check_allowed_origin(req.channel, req.runtime, req.origin)?;
     }
     if set.validation {
+        // Verified claims join the metadata the channel's own logic sees, so
+        // "claim vs request" checks are one-line JSONLogic.
+        let metadata_with_auth = auth_claims.as_ref().map(|claims| {
+            let mut merged = req.metadata.clone();
+            if let Some(obj) = merged.as_object_mut() {
+                obj.insert("auth".to_string(), json!({ "claims": claims }));
+            }
+            merged
+        });
         validate_input(
             req.channel,
             req.runtime,
             req.data,
-            req.metadata,
+            metadata_with_auth.as_ref().unwrap_or(req.metadata),
             req.datalogic,
         )?;
     }
@@ -433,6 +455,7 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         cache_store,
         timeout_ms: effective_timeout_ms(req.runtime, req.default_timeout_ms, req.max_timeout_ms),
         dedup_claim,
+        auth_claims,
     }))
 }
 
@@ -489,7 +512,7 @@ pub fn effective_timeout_ms(
 }
 
 /// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
-fn is_truthy(val: &Value) -> bool {
+pub(crate) fn is_truthy(val: &Value) -> bool {
     match val {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -513,22 +536,26 @@ fn is_truthy(val: &Value) -> bool {
 /// The refusal is `401` with one message for every cause. Distinguishing
 /// "no header" from "wrong key" from "malformed signature" would tell an
 /// unauthenticated caller which half of the credential they had right.
-fn check_auth(
+async fn check_auth(
     channel: &str,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
     header: HeaderLookup<'_>,
     raw_body: Option<&[u8]>,
-) -> Result<(), OrionError> {
+    datalogic: &datalogic_rs::Engine,
+) -> Result<Option<Value>, OrionError> {
     let Some(cfg) = channel_config else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(ref auth) = cfg.auth else {
-        return Ok(());
+        return Ok(None);
     };
-    auth.authenticate(header, raw_body).inspect_err(|_| {
-        metrics::record_message(channel, "unauthorized");
-        tracing::warn!(channel = %channel, "Channel authentication failed");
-    })
+    auth.authenticate(header, raw_body, datalogic)
+        .await
+        .map(|outcome| outcome.claims)
+        .inspect_err(|_| {
+            metrics::record_message(channel, "unauthorized");
+            tracing::warn!(channel = %channel, "Channel authentication failed");
+        })
 }
 
 /// N24: this is a **server-side origin allow-list**, not CORS. It sets no
@@ -1392,7 +1419,7 @@ mod tests {
                 ..Default::default()
             };
             self.auth = Some(
-                crate::channel::auth::CompiledAuth::compile(&cfg)
+                crate::channel::auth::CompiledAuth::compile(&cfg, None)
                     .await
                     .expect("test auth compiles"),
             );

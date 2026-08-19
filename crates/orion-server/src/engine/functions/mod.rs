@@ -13,6 +13,8 @@ pub mod data_query;
 pub mod data_write;
 pub mod db_read;
 pub mod db_write;
+pub mod jwt_sign;
+pub mod jwt_verify;
 pub mod mongo_read;
 pub mod send_email;
 pub mod storage_head;

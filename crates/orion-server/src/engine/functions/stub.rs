@@ -301,6 +301,11 @@ pub fn build_stub_functions(
             // from the local environment; a missing variable is an honest
             // failure, not a gap in stubbing.)
             "crypto" => Box::new(super::crypto::CryptoHandler),
+            // Same reasoning: deterministic given their inputs (jwt_verify
+            // with a JWKS does fetch keys — an offline dry-run without them
+            // fails honestly rather than fabricating a verification).
+            "jwt_sign" => Box::new(super::jwt_sign::JwtSignHandler),
+            "jwt_verify" => Box::new(super::jwt_verify::JwtVerifyHandler),
             _ => Box::new(StubHandler {
                 function,
                 stubs: stubs.clone(),

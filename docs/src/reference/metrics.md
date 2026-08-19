@@ -7,6 +7,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | Name | Type | Labels | Description |
 |------|------|--------|-------------|
 | `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`; identifies the build each replica runs. |
+| `orion_jwt_rejections_total` | Counter | `reason` | JWTs refused at channel auth, by typed cause (`expired`, `bad_signature`, `alg_rejected`, …) — the wire answer stays uniform; the dashboard does not have to. |
 | `orion_messages_total` | Counter | `channel`, `status` | Messages processed, by outcome: `ok`, `error`, `timeout`, or `duplicate`. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Message processing latency. |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |

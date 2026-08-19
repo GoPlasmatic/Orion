@@ -34,11 +34,11 @@ Four words carry the last column:
 > [!WARNING]
 > **Plan for authentication before you expose a channel.** The admin plane
 > authenticates by configuration; a data channel authenticates only if it
-> declares an `auth` block (API key or HMAC signature). There is no built-in
-> JWT/OIDC verification and no mTLS termination. If your channels are reachable
-> by anything you do not control, front them with a gateway, service mesh, or
-> reverse proxy. See [Secure an Instance](./operate/security.md) for what to
-> configure.
+> declares an `auth` block (API key, HMAC signature, or JWT — the `jwt` mode
+> verifies bearer tokens and exposes the claims to channel logic and the
+> workflow). OIDC *flows* (discovery, PKCE, userinfo) and mTLS termination
+> remain out of scope: for those, front Orion with a gateway or service mesh.
+> See [Secure an Instance](./operate/security.md) for what to configure.
 
 ## Orion is a good fit when
 
@@ -65,8 +65,9 @@ Four words carry the last column:
   no scripting runtime and no WASM sandbox.
   [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)
   states the boundary exactly.
-- **You need JWT/OIDC or mTLS at the data plane** with nothing in front. See the
-  warning above.
+- **You need full OIDC flows or mTLS at the data plane** with nothing in front.
+  JWT verification itself is built in; the login redirect dance and client
+  certificates are not. See the warning above.
 - **The request needs heavy computation.** Task functions parse, map, validate
   and talk to other systems. Image processing, model inference and large
   in-memory joins are not what Orion is for.

@@ -20,9 +20,9 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **22 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **24 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; fourteen are Orion handlers that talk to [connectors](./connectors.md),
+engine; sixteen are Orion handlers that talk to [connectors](./connectors.md),
 compose channels, or compute locally.
 
 <div class="table-filter" data-label="Filter functions"></div>
@@ -51,6 +51,8 @@ compose channels, or compute locally.
 | [`storage_head`](#storage_head) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 | [`crypto`](#crypto) | Utility | — | Digests, HMAC compute/verify, password hashing |
+| [`jwt_sign`](#jwt_sign) | Utility | — | Mint a signed JWT (login, refresh, client assertions) |
+| [`jwt_verify`](#jwt_verify) | Utility | — | Verify a JWT against static keys or a JWKS |
 
 > [!NOTE]
 > The **Category** column above groups the table for reading. It is not the wire
@@ -768,6 +770,59 @@ for a bad credential.
 ```
 
 ---
+
+### `jwt_sign`
+
+Mints a compact JWS — login access/refresh pairs, RFC 7523 client assertions.
+Self-contained like `crypto`: no connector, real execution in dry-run, and the
+signing key (a literal or an `env://`/`vault://` reference) lives only inside
+the call. `iat` is stamped automatically; a token must expire deliberately —
+`expires_in`, or an explicit `exp` claim.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `algorithm` | string | yes | — | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384`, `EdDSA` |
+| `key` | string | yes | — | HS secret or RS/ES/Ed **private**-key PEM; literal or secret reference |
+| `key_encoding` | string | no | `"utf8"` | How an HS secret becomes bytes: `utf8`, `base64`, `hex` |
+| `claims` | object | no | `{}` | Claim values fold `{"var": …}` nodes — compose computed claims with a `map` task first |
+| `expires_in` | number \| string | conditional | — | Lifetime (seconds or `"<n>s\|m\|h\|d"`) → `exp`. Required unless `claims.exp` is explicit |
+| `issuer` / `audience` / `not_before` | — | no | — | Conveniences for `iss` / `aud` / `nbf` (offset from now); explicit fields win over same-named claims entries |
+| `kid` | string | no | — | Key id stamped into the header, for rotation-aware verifiers |
+| `output` | string | no | `"data"` | Where the token (string) is stored |
+
+### `jwt_verify`
+
+Verifies a JWS mid-workflow — provider id_tokens for social login, refresh
+tokens, partner assertions — against static keys and/or a JWKS (the same
+process-wide cache as the channel's `jwt` mode: single-flight refresh,
+stale-serve, `kid`-rotation refetch). Rejections are typed task errors
+(`continue_on_error` branches on them); the reason is named, the token never
+is.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `token` | string | yes | — | The compact JWS |
+| `algorithms` | array | yes | — | Mandatory non-empty allowlist — `alg: none` and downgrades are unrepresentable |
+| `keys` | array | one of | — | `[{algorithm, key, kid?, key_encoding?}]` — public halves for the asymmetric families |
+| `jwks_url` | string | one of | — | HTTPS JWKS URL |
+| `issuer` / `audience` | string \| array | no | — | Accepted `iss`/`aud` values; `env://` references resolve (OAuth client ids) |
+| `leeway_secs` | number | no | `30` | Clock-skew allowance, capped at 300 |
+| `require_exp` | boolean | no | `true` | RFC 8725: tokens must expire unless deliberately opted out |
+| `output` | string | no | `"data"` | Where the verified claims object is stored |
+
+```json
+{
+  "name": "jwt_verify",
+  "input": {
+    "token": { "var": "data.id_token" },
+    "algorithms": ["RS256"],
+    "jwks_url": "https://provider.example.com/certs",
+    "issuer": "https://accounts.provider.example.com",
+    "audience": "env://OAUTH_CLIENT_ID",
+    "output": "temp_data.verified_claims"
+  }
+}
+```
 
 ## Inspecting schemas at runtime
 

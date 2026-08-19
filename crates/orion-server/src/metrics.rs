@@ -96,6 +96,12 @@ pub fn init_metrics_with_instance(instance_id: Option<&str>) -> PrometheusHandle
 /// record messages. Expect the per-channel rate to be higher than the old
 /// series on any deployment that consumes from Kafka — that is the blind spot
 /// closing, not double counting.
+/// One refused JWT, by typed reason (#267) — the wire stays uniform, the
+/// operator's dashboard does not have to.
+pub fn record_jwt_rejection(reason: &'static str) {
+    counter!("orion_jwt_rejections_total", "reason" => reason).increment(1);
+}
+
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;

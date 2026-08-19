@@ -40,6 +40,7 @@ pub mod config;
 pub mod connector;
 pub mod engine;
 pub mod errors;
+pub mod jwt;
 pub mod kafka;
 pub mod metrics;
 pub mod preflight;

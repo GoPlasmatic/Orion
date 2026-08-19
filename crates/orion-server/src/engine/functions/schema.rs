@@ -115,6 +115,8 @@ use super::data_write::{DATA_WRITE_ENVELOPE_FIELDS, DATA_WRITE_FIELDS};
 use super::db_read::DB_READ_FIELDS;
 use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
+use super::jwt_sign::JWT_SIGN_FIELDS;
+use super::jwt_verify::JWT_VERIFY_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
 use super::send_email::SEND_EMAIL_FIELDS;
@@ -186,6 +188,20 @@ const REGISTRY: &[FunctionSchema] = &[
         // more here than anywhere: a typoed field on a crypto op would
         // silently mean "use the default".
         input_fields: CRYPTO_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "jwt_sign",
+        description: "Mint a signed JWT (login, refresh, client assertions).",
+        category: "utility",
+        input_fields: JWT_SIGN_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "jwt_verify",
+        description: "Verify a JWT mid-workflow (provider id_tokens, refresh tokens) against static keys or a JWKS.",
+        category: "utility",
+        input_fields: JWT_VERIFY_FIELDS,
         deny_unknown: true,
     },
     FunctionSchema {
@@ -430,6 +446,28 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     // authoring-time rules and the execution path read the same tables.
     if function_name == "crypto" {
         for (suffix, code, message) in super::crypto::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+
+    // Cross-field: the JWT functions' algorithm tables and key-source rules.
+    if function_name == "jwt_sign" {
+        for (suffix, code, message) in super::jwt_sign::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+    if function_name == "jwt_verify" {
+        for (suffix, code, message) in super::jwt_verify::validate_static_input(obj) {
             let path = if suffix.is_empty() {
                 input_path.clone()
             } else {
