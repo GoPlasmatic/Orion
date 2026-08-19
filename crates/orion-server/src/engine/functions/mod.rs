@@ -8,6 +8,7 @@ pub mod stub;
 
 pub mod cache_read;
 pub mod cache_write;
+pub mod crypto;
 pub mod data_query;
 pub mod data_write;
 pub mod db_read;

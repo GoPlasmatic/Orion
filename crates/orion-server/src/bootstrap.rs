@@ -210,14 +210,20 @@ pub async fn build_engine_components(
         })?;
 
     // Shared datalogic engine — used by handlers for template evaluation and
-    // by the channel registry to pre-compile per-channel JSONLogic.
-    let datalogic_engine = Arc::new(datalogic_rs::Engine::new());
+    // by the channel registry to pre-compile per-channel JSONLogic. Carries
+    // Orion's custom operators so channel-level expressions speak the same
+    // vocabulary as workflow logic.
+    let datalogic_engine = Arc::new(
+        crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build(),
+    );
 
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
-    let engine: Arc<crate::engine::EngineHandle> = Arc::new(crate::engine::EngineHandle::new(
-        Arc::new(dataflow_rs::Engine::builder().build()?),
-    ));
+    let engine: Arc<crate::engine::EngineHandle> =
+        Arc::new(crate::engine::EngineHandle::new(Arc::new(
+            crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+                .build()?,
+        )));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(crate::connector::cache_backend::CachePool::new(
@@ -361,8 +367,12 @@ impl EngineComponents {
         // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
         // carries it across every subsequent reload, so this is the only place
         // it needs setting.
-        let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?
-            .with_observer(Arc::new(crate::engine::MetricsObserver));
+        let built_engine =
+            crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+                .with_workflows(workflows)
+                .with_handlers(custom_functions)
+                .build()?
+                .with_observer(Arc::new(crate::engine::MetricsObserver));
         serving.engine.store(Arc::new(built_engine));
 
         Ok((serving, channels, active_workflows.len()))

@@ -20,10 +20,10 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **18 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **19 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; ten are Orion handlers that talk to [connectors](./connectors.md)
-or compose channels.
+engine; eleven are Orion handlers that talk to [connectors](./connectors.md),
+compose channels, or compute locally.
 
 <div class="table-filter" data-label="Filter functions"></div>
 
@@ -47,6 +47,7 @@ or compose channels.
 | [`mongo_read`](#mongo_read) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
+| [`crypto`](#crypto) | Utility | — | Digests, HMAC compute/verify, password hashing |
 
 > [!NOTE]
 > The **Category** column above groups the table for reading. It is not the wire
@@ -248,9 +249,11 @@ support. The connector supplies the base URL and auth.
 | `path` | string | no | — | Path appended to the connector's base URL |
 | `path_logic` | JSONLogic | no | — | Compute the path dynamically (use instead of `path`) |
 | `headers` | object | no | `{}` | Extra request headers (string → string) |
-| `body` | any | no | — | Static request body (serialized as JSON) |
+| `body` | any | no | — | Static request body |
 | `body_logic` | JSONLogic | no | — | Compute the body dynamically (use instead of `body`) |
+| `body_format` | string | no | `"json"` | How the body becomes request bytes: `json`, `form`, or `text` — see below |
 | `output` | string | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
+| `response_format` | string | no | `"json"` | How the response is captured at `output`: `json` (parsed) or `text` (a plain string) |
 | `timeout_ms` | number | no | `30000` | Per-request timeout in milliseconds |
 
 ```json
@@ -263,6 +266,43 @@ support. The connector supplies the base URL and auth.
     "body_logic": { "var": "data.payment" },
     "output": "data.charge_result",
     "timeout_ms": 5000
+  }
+}
+```
+
+**Body formats.** `json` (the default) serializes the body as JSON. `form`
+URL-encodes an object's entries as `application/x-www-form-urlencoded` pairs —
+what OAuth 2.0 token endpoints and form-style APIs require: scalars encode
+directly, arrays of scalars become repeated keys (`to=a&to=b`), `null` entries
+are skipped (so one body shape with conditionally-null entries expresses
+optional parameters), and nested values are rejected — a bracket path like
+`"metadata[order_id]"` is just an ordinary key. `text` sends a string body
+verbatim, which with an explicit `content-type` header covers XML, CSV, or any
+other textual payload. Each format stamps its own `content-type`
+(`application/json`, `application/x-www-form-urlencoded`,
+`text/plain; charset=utf-8`); a `content-type` set in `headers` or on the
+connector replaces the stamp — it changes the label, never the bytes.
+
+**Response formats.** `json` (the default) parses the response and fails if it
+is not valid JSON. `text` captures the body as a plain string — for gateways
+that answer `text/plain` — leaving the size cap and the non-2xx error path
+unchanged. Unknown values on either axis are rejected when the workflow is
+created, and a static `body` is shape-checked against `body_format` at the same
+time; a `body_logic` body gets the same check per request.
+
+```json
+{
+  "name": "http_call",
+  "input": {
+    "connector": "webex-oauth",
+    "method": "POST",
+    "path": "/v1/access_token",
+    "body_format": "form",
+    "body_logic": {
+      "grant_type": "refresh_token",
+      "refresh_token": { "var": "temp_data.refresh_token" }
+    },
+    "output": "temp_data.token_response"
   }
 }
 ```
@@ -561,11 +601,69 @@ and at most one of `data`/`data_logic`.
 
 ---
 
+## Utility functions
+
+### `crypto`
+
+Digests, HMACs (compute **and** verify), and password hashing as one operation
+envelope — self-contained: no connector, no egress, so dry-run and
+`orion-server test` execute it for real. The `op` field selects the operation;
+each op takes the subset of fields below, checked at workflow create/validate
+(an op × algorithm pair outside the capability table, a missing `key`, or an
+out-of-bounds cost parameter is an authoring-time error).
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `op` | string | yes | — | `hash` \| `hmac` \| `hmac_verify` \| `password_hash` \| `password_verify` |
+| `algorithm` | string | no | per op | `hash`: `sha256` (default), `sha512`, plus `sha1`/`md5` for legacy interop. `hmac`/`hmac_verify`: `sha256` (default), `sha512`, `sha1`. `password_hash`: `argon2id` (default), `bcrypt`. `password_verify` auto-detects from the stored hash |
+| `data` | any | for hash/hmac ops | — | Bytes to digest. A string is UTF-8 (see `input_encoding`); any other JSON value is hashed as its compact serialization, key order preserved |
+| `input_encoding` | string | no | `"utf8"` | How a *string* `data` becomes bytes: `utf8`, `hex`, `base64` |
+| `key` | string | for hmac ops | — | A literal or a secret reference (`env://NAME`, `vault://…`) resolved like connector secrets — never in traces or errors. Literals are fine for development; use references in production (workflows are not encrypted at rest) |
+| `key_encoding` | string | no | `"utf8"` | How the resolved key becomes bytes: `utf8`, `hex`, `base64` — for APIs that issue binary signing keys |
+| `signature` | string | for `hmac_verify` | — | The presented MAC; hex or base64, auto-detected. Compared in constant time — never verify a MAC with `==` |
+| `password` | string | for password ops | — | The submitted password |
+| `hash` | string | for `password_verify` | — | The stored hash; scheme auto-detected from its `$argon2*$`/`$2*$` prefix, which is also the rehash-on-login discriminator |
+| `encoding` | string | no | `"hex"` | Output encoding for `hash`/`hmac`: `hex`, `base64`, `base64url` (unpadded, the JWS form) |
+| `params` | object | no | safe defaults | `password_hash` cost tuning, bounded: argon2id `memory_kib` (8192–131072, default 19456), `iterations` (1–10, default 2), `parallelism` (1–4, default 1); bcrypt `cost` (10–14, default 12) |
+| `output` | string | no | `"data"` | Dotted result path. String for `hash`/`hmac`/`password_hash`; boolean for `hmac_verify`/`password_verify` |
+
+Wrong password or wrong signature → `false`; a *malformed* stored hash or an
+undecodable signature is a task error, so data corruption is never mistaken
+for a bad credential.
+
+```json
+{
+  "name": "crypto",
+  "input": {
+    "op": "hmac",
+    "algorithm": "sha256",
+    "key": "env://ZOOM_WEBHOOK_SECRET",
+    "data": { "var": "data.payload.plainToken" },
+    "encoding": "hex",
+    "output": "temp_data.encrypted_token"
+  }
+}
+```
+
+```json
+{
+  "name": "crypto",
+  "input": {
+    "op": "password_verify",
+    "password": { "var": "data.password" },
+    "hash": { "var": "temp_data.user.password_hash" },
+    "output": "temp_data.password_ok"
+  }
+}
+```
+
+---
+
 ## Inspecting schemas at runtime
 
-`GET /api/v1/admin/functions` returns the live input schema for the connector and
-composition functions (the data functions are provided by dataflow-rs and are not
-cataloged there). The [Orion CLI MCP server](../ai/mcp-setup.md) surfaces
+`GET /api/v1/admin/functions` returns the live input schema for the connector,
+composition, and utility functions (the data functions are provided by
+dataflow-rs and are not cataloged there). The [Orion CLI MCP server](../ai/mcp-setup.md) surfaces
 the same schemas to AI assistants so generated workflows use correct field names.
 
 ## Related

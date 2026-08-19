@@ -883,15 +883,24 @@ async fn probe_http(
     state: &AppState,
     http: &crate::connector::HttpConnectorConfig,
 ) -> Result<(), String> {
-    let url = crate::engine::functions::http_common::build_url(&http.url, None);
-    match crate::engine::functions::http_common::execute_request(
+    use crate::engine::functions::http_common;
+
+    let url = http_common::build_url(&http.url, None);
+    match http_common::execute_request(
         &state.http_client,
-        &reqwest::Method::GET,
-        &url,
-        None,
         http,
-        None,
-        std::time::Duration::from_secs(5),
+        http_common::RequestSpec {
+            method: &reqwest::Method::GET,
+            url: &url,
+            task_headers: None,
+            body: None,
+            body_format: http_common::BodyFormat::default(),
+            // Text, not Json: this probes reachability and credentials, and a
+            // 2xx whose body happens not to be JSON is still a reachable
+            // endpoint.
+            response_format: http_common::ResponseFormat::Text,
+            timeout: std::time::Duration::from_secs(5),
+        },
     )
     .await
     {

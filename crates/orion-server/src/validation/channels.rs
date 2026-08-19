@@ -387,7 +387,9 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
             )
         })?;
 
-    let dl = datalogic_rs::Engine::new();
+    // Operator parity with the runtime guard engine (bootstrap's shared
+    // datalogic instance): what compiles there must compile here.
+    let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
     if let Some(ref logic) = parsed.validation_logic {
         dl.compile(logic).map_err(|e| {
             OrionError::invalid_field(

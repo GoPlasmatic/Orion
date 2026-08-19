@@ -163,10 +163,19 @@ const OPERATORS: &[OperatorCase] = &[
         || json!({"format_date": [{"parse_date": ["2026-07-31", "yyyy-MM-dd"]}, "yyyy"]}),
         || json!("2026"),
     ),
+    // The trailing IANA-zone argument (datalogic-rs 5.2) rides this row: the
+    // UTC instant formats as IST wall-clock, which only chrono-tz can do —
+    // a build without it fails here, not in a user's calendar grouping.
+    // (The zoneless form is covered by the `parse_date` row above.)
     (
         "format_date",
-        || json!({"format_date": [{"datetime": ["2026-07-31T00:00:00Z"]}, "yyyy-MM-dd"]}),
-        || json!("2026-07-31"),
+        || {
+            json!({"format_date": [
+                {"datetime": ["2026-07-31T00:00:00Z"]},
+                "yyyy-MM-dd HH:mm",
+                "Asia/Kolkata"]})
+        },
+        || json!("2026-07-31 05:30"),
     ),
     // Units are plural. A singular unit is not an error — `"day"` returns 0 —
     // so this pins the spelling that actually measures something.
@@ -222,6 +231,35 @@ const OPERATORS: &[OperatorCase] = &[
     ("abs", || json!({"abs": [-7]}), || json!(7)),
     ("ceil", || json!({"ceil": [4.25]}), || json!(5)),
     ("floor", || json!({"floor": [4.25]}), || json!(4)),
+    // `group_by`'s second argument is evaluated per element (`{"var": ""}` is
+    // the element itself); the result is an insertion-ordered array of
+    // {key, items} rows, consumable by map/filter without object take-apart.
+    (
+        "group_by",
+        || json!({"group_by": [{"var": "nums"}, {"%": [{"var": ""}, 2]}]}),
+        || json!([{"key": 1, "items": [3, 1]}, {"key": 0, "items": [2]}]),
+    ),
+    (
+        "distinct",
+        || json!({"distinct": [[1, 2, 1, 3, 2]]}),
+        || json!([1, 2, 3]),
+    ),
+    // ---- ext-object ----
+    (
+        "keys",
+        || json!({"keys": [{"var": "obj"}]}),
+        || json!(["a", "b"]),
+    ),
+    (
+        "values",
+        || json!({"values": [{"var": "obj"}]}),
+        || json!([1, 2]),
+    ),
+    (
+        "entries",
+        || json!({"entries": [{"var": "obj"}]}),
+        || json!([{"key": "a", "value": 1}, {"key": "b", "value": 2}]),
+    ),
     // ---- ext-control / error-handling ----
     (
         "??",
@@ -258,6 +296,42 @@ const OPERATORS: &[OperatorCase] = &[
         "throw",
         || json!({"try": [{"throw": ["boom"]}, "caught"]}),
         || json!("caught"),
+    ),
+    // ---- orion custom operators (src/engine/operators.rs, #259c) ----
+    // Not feature-gated: they are registered by Orion itself on every engine
+    // it builds, so a failure here means a construction site lost the
+    // registration, not that a cargo feature moved.
+    (
+        "base64_encode",
+        // A non-string encodes as its canonical JSON text ("4" → "NA==") —
+        // and the standard form is padded where base64url below is not.
+        || json!({"base64_encode": [{"var": "n"}]}),
+        || json!("NA=="),
+    ),
+    (
+        "base64_decode",
+        || json!({"base64_decode": ["V2lkZ2V0"]}),
+        || json!("Widget"),
+    ),
+    (
+        "base64url_encode",
+        || json!({"base64url_encode": [{"var": "n"}]}),
+        || json!("NA"),
+    ),
+    (
+        "base64url_decode",
+        || json!({"base64url_decode": ["V2lkZ2V0"]}),
+        || json!("Widget"),
+    ),
+    (
+        "hex_encode",
+        || json!({"hex_encode": [{"var": "s"}]}),
+        || json!("576964676574"),
+    ),
+    (
+        "hex_decode",
+        || json!({"hex_decode": ["576964676574"]}),
+        || json!("Widget"),
     ),
 ];
 
@@ -305,14 +379,18 @@ fn context() -> Value {
         "csv": "a,b",
         "nums": [3, 1, 2],
         "tier": "silver",
+        "obj": {"a": 1, "b": 2},
     })
 }
 
 /// Evaluate one JSONLogic expression through the same pair the channel guards
-/// drive (`src/channel/guards.rs`): `compile`, then `session().eval_into()`.
+/// drive (`src/channel/guards.rs`): `compile`, then `session().eval_into()` —
+/// on an engine carrying Orion's custom operators, like every engine the
+/// server builds (bootstrap wires them into the guard engine and the workflow
+/// engines alike).
 fn try_eval(logic: &Value) -> Result<Value, String> {
     use dataflow_rs::datalogic_rs as datalogic;
-    let engine = datalogic::Engine::new();
+    let engine = orion::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build();
     let compiled = engine.compile(logic).map_err(|e| e.to_string())?;
     engine
         .session()

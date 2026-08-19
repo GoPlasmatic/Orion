@@ -204,17 +204,7 @@ fn decode_signature(presented: &str) -> Option<Vec<u8>> {
 /// learn and production credentials never have to sit in a stored channel
 /// config.
 async fn resolve_secret(value: &str, field: &str) -> Result<String, String> {
-    let mut json = serde_json::Value::String(value.to_string());
-    crate::connector::secrets::resolve_in_place(
-        &mut json,
-        &crate::connector::secrets::default_resolvers(),
-        field,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    json.as_str()
-        .map(str::to_string)
-        .ok_or_else(|| format!("{field} did not resolve to a string"))
+    crate::connector::secrets::resolve_secret_string(value, field).await
 }
 
 #[cfg(test)]

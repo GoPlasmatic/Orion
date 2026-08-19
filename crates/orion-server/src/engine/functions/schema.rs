@@ -109,6 +109,7 @@ pub struct FunctionSchema {
 use super::cache_read::CACHE_READ_FIELDS;
 use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
+use super::crypto::CRYPTO_FIELDS;
 use super::data_query::DATA_QUERY_FIELDS;
 use super::data_write::{DATA_WRITE_ENVELOPE_FIELDS, DATA_WRITE_FIELDS};
 use super::db_read::DB_READ_FIELDS;
@@ -173,6 +174,16 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
         deny_unknown: false,
+    },
+    FunctionSchema {
+        name: "crypto",
+        description: "Digests, HMAC compute/verify, and password hashing — a self-contained operation envelope.",
+        category: "utility",
+        // The handler itself tolerates extra keys, but strictness matters
+        // more here than anywhere: a typoed field on a crypto op would
+        // silently mean "use the default".
+        input_fields: CRYPTO_FIELDS,
+        deny_unknown: true,
     },
     FunctionSchema {
         name: "http_call",
@@ -387,6 +398,68 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         ));
     }
 
+    // Cross-field: crypto's operation envelope. The op × algorithm capability
+    // table, per-op required fields, encoding vocabularies and params bounds
+    // all live next to the handler (`crypto::validate_static_input`), so the
+    // authoring-time rules and the execution path read the same tables.
+    if function_name == "crypto" {
+        for (suffix, code, message) in super::crypto::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+
+    // Cross-field: http_call's format axes. dataflow-rs carries `body_format`
+    // and `response_format` as uninterpreted strings, so the value table is
+    // enforced here — an unknown value is an authoring-time error, never a
+    // request-time surprise. A *static* `body` is shape-checked against the
+    // format too, by the same `encode_body` the request path runs, so the two
+    // layers cannot drift; a `body_logic` body only exists per message and
+    // gets that check at request time.
+    if function_name == "http_call" {
+        use super::http_common::{BodyFormat, ResponseFormat, encode_body};
+        use dataflow_rs::engine::error::DataflowError;
+
+        // A non-string value is already a TYPE_MISMATCH from the field loop.
+        let body_format = match BodyFormat::parse(obj.get("body_format").and_then(Value::as_str)) {
+            Ok(f) => Some(f),
+            Err(msg) => {
+                errors.push(FieldError::new(
+                    format!("{input_path}.body_format"),
+                    "INVALID",
+                    msg,
+                ));
+                None
+            }
+        };
+        if let Err(msg) = ResponseFormat::parse(obj.get("response_format").and_then(Value::as_str))
+        {
+            errors.push(FieldError::new(
+                format!("{input_path}.response_format"),
+                "INVALID",
+                msg,
+            ));
+        }
+        if let (Some(format), Some(body)) = (body_format, obj.get("body"))
+            && format != BodyFormat::Json
+            && let Err(e) = encode_body(body, format)
+        {
+            let msg = match e {
+                DataflowError::Validation(m) => m,
+                other => other.to_string(),
+            };
+            errors.push(FieldError::new(
+                format!("{input_path}.body"),
+                "INVALID",
+                msg,
+            ));
+        }
+    }
+
     errors
 }
 
@@ -477,6 +550,77 @@ mod tests {
             "tasks[0]",
         );
         assert!(errs.is_empty(), "{:?}", errs);
+    }
+
+    #[test]
+    fn http_call_unknown_format_values_are_authoring_time_errors() {
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "multipart", "response_format": "base64"}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert_eq!(errs[0].path, "tasks[0].function.input.body_format");
+        assert_eq!(errs[0].code, "INVALID");
+        assert_eq!(errs[1].path, "tasks[0].function.input.response_format");
+        assert_eq!(errs[1].code, "INVALID");
+    }
+
+    #[test]
+    fn http_call_known_format_values_validate() {
+        let errs = validate_input(
+            "http_call",
+            &json!({
+                "connector": "c",
+                "method": "POST",
+                "body_format": "form",
+                // Scalars, an array of scalars, a null, and a bracket-path
+                // key — the full supported form surface.
+                "body": {
+                    "grant_type": "refresh_token",
+                    "retries": 3,
+                    "to": ["+15551111111", "+15552222222"],
+                    "optional": null,
+                    "metadata[order_id]": "6735",
+                },
+                "response_format": "text",
+                "output": "temp_data.token",
+            }),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn http_call_static_body_is_shape_checked_against_the_format() {
+        // A nested value under 'form' is caught at authoring time by the same
+        // encoder the request path runs.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "form", "body": {"bad": {"nested": 1}}}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "tasks[0].function.input.body");
+        assert_eq!(errs[0].code, "INVALID");
+        assert!(errs[0].message.contains("'bad'"), "{}", errs[0].message);
+
+        // 'text' requires a string body.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "text", "body": {"a": 1}}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "INVALID");
+
+        // A body_logic body only exists per message — nothing to check here.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "form", "body_logic": {"var": "data.form"}}),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
     }
 
     #[test]

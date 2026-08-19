@@ -59,6 +59,18 @@ impl AsyncFunctionHandler for HttpCallHandler {
                     &input.connector,
                 )?;
 
+                // The format axes are values-as-data on dataflow-rs's config;
+                // this parse is the value table that interprets them. Workflow
+                // validation checks the same table at authoring time, so this
+                // refusal only fires for definitions that bypassed it — and,
+                // like the method check above, it is message-independent, so
+                // it is reported before anything the message can change (F58).
+                let body_format = http_common::BodyFormat::parse(input.body_format.as_deref())
+                    .map_err(dataflow_rs::engine::error::DataflowError::Validation)?;
+                let response_format =
+                    http_common::ResponseFormat::parse(input.response_format.as_deref())
+                        .map_err(dataflow_rs::engine::error::DataflowError::Validation)?;
+
                 // `resolve_path` / `resolve_body` are dataflow-rs's own
                 // sanctioned read of the (static, logic) pairs: they apply the
                 // static fallback, coerce a non-string path to compact JSON,
@@ -110,12 +122,16 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 let response_body = super::retry_with_policy(policy, "HTTP call", || {
                     http_common::execute_request(
                         &self.client,
-                        &method,
-                        &url,
-                        Some(&input.headers),
                         http_config,
-                        body.as_ref(),
-                        timeout,
+                        http_common::RequestSpec {
+                            method: &method,
+                            url: &url,
+                            task_headers: Some(&input.headers),
+                            body: body.as_ref(),
+                            body_format,
+                            response_format,
+                            timeout,
+                        },
                     )
                 })
                 .await?;
@@ -197,6 +213,16 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         alias: None,
     },
     FieldSchema {
+        name: "body_format",
+        description: "How the body becomes request bytes: 'json' (default), 'form' \
+                      (URL-encoded key/value pairs), or 'text' (string sent verbatim). \
+                      Sets the content-type unless a header names one explicitly.",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+        alias: None,
+    },
+    FieldSchema {
         name: "output",
         description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
         kind: FieldKind::String,
@@ -205,6 +231,15 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
         // Orion used to rewrite the key in the storage repository instead.
         alias: Some("response_path"),
+    },
+    FieldSchema {
+        name: "response_format",
+        description: "How the response bytes are captured at `output`: 'json' \
+                      (default, parsed) or 'text' (a plain string).",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "timeout_ms",

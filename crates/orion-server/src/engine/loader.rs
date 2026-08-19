@@ -88,6 +88,7 @@ pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
     "cache_read",
     "cache_write",
     "channel_call",
+    "crypto",
     "data_query",
     "data_write",
     "db_read",
@@ -126,10 +127,12 @@ fn custom_input_parse_check(name: &str, input: &serde_json::Value) -> Result<(),
             // `TemplateCompiler::new` is crate-private, so this cannot call
             // `Template::compile` — it compiles the same raw JSON against an
             // engine configured the way `LogicCompiler` configures its own
-            // (templating on), which is the property that matters.
-            let engine = datalogic_rs::Engine::builder()
-                .with_templating(true)
-                .build();
+            // (templating on, Orion's operators registered), which is the
+            // property that matters.
+            let engine = crate::engine::operators::add_to_datalogic(
+                datalogic_rs::Engine::builder().with_templating(true),
+            )
+            .build();
             for (label, template) in [
                 ("channel_logic", parsed.channel_logic.as_ref()),
                 ("data_logic", parsed.data_logic.as_ref()),

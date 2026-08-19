@@ -180,7 +180,7 @@ fn the_summary_table_parses() {
     let categories: BTreeSet<&str> = rows.iter().map(|r| r.category.as_str()).collect();
     assert_eq!(
         categories,
-        BTreeSet::from(["Composition", "Connector", "Data"]),
+        BTreeSet::from(["Composition", "Connector", "Data", "Utility"]),
         "unexpected Category values in the summary table"
     );
 }

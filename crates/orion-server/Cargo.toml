@@ -69,14 +69,14 @@ harness = true
 [dependencies]
 # `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
 # feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
-# `ext-control` and `error-handling`. Without it datalogic compiles with only
-# the core opcode set, and a workflow cannot call `now`, format a date,
-# uppercase a string or measure a length — see
-# docs/src/reference/expressions.md#available-operators for the resulting
+# `ext-control`, `error-handling` and (since 3.4/5.2) `ext-object`. Without it
+# datalogic compiles with only the core opcode set, and a workflow cannot call
+# `now`, format a date, uppercase a string, measure a length or group a list —
+# see docs/src/reference/expressions.md#available-operators for the resulting
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.3.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.4.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -171,6 +171,10 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 
 # TCP socket configuration
 socket2 = "0.6"
+sha1 = "0.11"
+md-5 = "0.11"
+argon2 = "0.5.3"
+bcrypt = "0.19.3"
 
 # Windows cannot run librdkafka's configure build, so it keeps cmake-build —
 # features unify additively with the base rdkafka entry above, per target.

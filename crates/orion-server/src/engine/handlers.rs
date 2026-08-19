@@ -200,6 +200,12 @@ pub fn build_custom_functions(
         }),
     );
 
+    // Self-contained (no connector, no deps): digests, MACs, password hashing.
+    fns.insert(
+        "crypto".to_string(),
+        Box::new(functions::crypto::CryptoHandler),
+    );
+
     // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)
     fns.insert(
         "publish_kafka".to_string(),

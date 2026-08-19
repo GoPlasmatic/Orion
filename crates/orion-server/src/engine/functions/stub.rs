@@ -296,6 +296,11 @@ pub fn build_stub_functions(
             "channel_call" => Box::new(ChannelCallStub {
                 stubs: stubs.clone(),
             }),
+            // Deterministic and offline — dry-run executes it for real, so a
+            // stub would only hide behavior. (An env:// key still resolves
+            // from the local environment; a missing variable is an honest
+            // failure, not a gap in stubbing.)
+            "crypto" => Box::new(super::crypto::CryptoHandler),
             _ => Box::new(StubHandler {
                 function,
                 stubs: stubs.clone(),

@@ -715,6 +715,189 @@ async fn test_validate_workflow_with_connector_warning() {
 }
 
 #[tokio::test]
+async fn test_http_call_format_axes_validated_at_create() {
+    let app = common::test_app().await;
+
+    // Known values and a well-shaped static form body — scalars, an array of
+    // scalars, a conditionally-null entry — are accepted.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "OAuth Token Call",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Token",
+                    "function": {
+                        "name": "http_call",
+                        "input": {
+                            "connector": "oauth",
+                            "method": "POST",
+                            "path": "/token",
+                            "body_format": "form",
+                            "body": {
+                                "grant_type": "client_credentials",
+                                "scope": ["read", "write"],
+                                "audience": null
+                            },
+                            "response_format": "text",
+                            "output": "temp_data.token"
+                        }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Unknown format values are refused when the workflow is created — an
+    // authoring-time 400 naming both fields, never a request-time surprise.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Bad Formats",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Call",
+                    "function": {
+                        "name": "http_call",
+                        "input": {
+                            "connector": "oauth",
+                            "body_format": "multipart",
+                            "response_format": "base64"
+                        }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let details = body["error"]["details"].to_string();
+    assert!(details.contains("body_format"), "{details}");
+    assert!(details.contains("response_format"), "{details}");
+
+    // A static body whose shape contradicts the format is caught the same way.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Nested Form Body",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Call",
+                    "function": {
+                        "name": "http_call",
+                        "input": {
+                            "connector": "oauth",
+                            "body_format": "form",
+                            "body": {"metadata": {"nested": true}}
+                        }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let details = body["error"]["details"].to_string();
+    assert!(details.contains("metadata"), "{details}");
+}
+
+#[tokio::test]
+async fn test_crypto_op_envelope_validated_at_create() {
+    let app = common::test_app().await;
+
+    // The Zoom CRC shape from #259 — a valid hmac task is accepted as a draft.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Zoom CRC",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Sign",
+                    "function": {
+                        "name": "crypto",
+                        "input": {
+                            "op": "hmac",
+                            "algorithm": "sha256",
+                            "key": "env://ZOOM_WEBHOOK_SECRET",
+                            "data": {"var": "data.payload.plainToken"},
+                            "encoding": "hex",
+                            "output": "temp_data.encrypted_token"
+                        }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // The capability table is enforced at create: fast-hash-for-passwords,
+    // a MAC without a key, an out-of-bounds cost, and a field that does not
+    // apply to the op are each a named 400, never a request-time surprise.
+    for (input, expected_field) in [
+        (
+            json!({"op": "password_hash", "algorithm": "sha256", "password": "x"}),
+            "algorithm",
+        ),
+        (json!({"op": "hmac", "data": "x"}), "key"),
+        (
+            json!({"op": "password_hash", "password": "x", "params": {"cost": 42}}),
+            "params",
+        ),
+        (json!({"op": "hash", "data": "x", "key": "why"}), "key"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(json!({
+                    "name": "Bad Crypto",
+                    "condition": true,
+                    "tasks": [{
+                        "id": "t1",
+                        "name": "Bad",
+                        "function": {"name": "crypto", "input": input}
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {input}"
+        );
+        let body = body_json(resp).await;
+        let details = body["error"]["details"].to_string();
+        assert!(
+            details.contains(expected_field),
+            "{input} should have reported on `{expected_field}`, got {details}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_validate_workflow_with_empty_name() {
     let app = common::test_app().await;
 
