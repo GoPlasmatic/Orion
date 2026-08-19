@@ -100,6 +100,32 @@ pub trait ConnectorRepository: Send + Sync {
     /// bounds are ignored), read as one consistent snapshot (K12) — the
     /// export contract.
     async fn snapshot(&self, filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError>;
+
+    // -- Managed-OAuth2 runtime state (#268) --
+    //
+    // A separate table rather than a column on `connectors`: that table is
+    // declarative, user-authored config (export/import, masking, content
+    // hashing all treat it that way), and rotation state mutating it would
+    // race its owner. `state_json` is encrypted at rest exactly like
+    // `config_json` when `storage.connector_encryption_key` is set.
+
+    /// The stored OAuth2 token state for `connector_name`, decrypted.
+    /// `None` when the connector has never refreshed on this estate.
+    async fn get_oauth_state(
+        &self,
+        connector_name: &str,
+    ) -> Result<Option<crate::storage::models::ConnectorOauthStateRow>, OrionError>;
+
+    /// Upsert the OAuth2 token state for `connector_name`.
+    async fn put_oauth_state(
+        &self,
+        connector_name: &str,
+        fingerprint: &str,
+        state_json: &str,
+    ) -> Result<(), OrionError>;
+
+    /// Drop the OAuth2 token state for `connector_name` (no-op when absent).
+    async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError>;
 }
 
 // -- SQL implementation --
@@ -332,6 +358,20 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn delete(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("connectors.delete", async {
+            // Read the name first: the OAuth2 runtime state (#268) keys on it,
+            // and a deleted connector must not leave token state behind. A raw
+            // scalar read, not `get_by_id` — decrypting the config has no
+            // business gating a delete.
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Connectors::Name)
+                    .from(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Id).eq(id)),
+            );
+            let name: String = self.pool.fetch_scalar(&sql, values).await.map_err(|_| {
+                OrionError::NotFound(format!("Connector '{id}' not found"))
+            })?;
+
             let (sql, values) = build_sqlx(
                 Query::delete()
                     .from_table(Connectors::Table)
@@ -344,6 +384,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 return Err(OrionError::NotFound(format!("Connector '{id}' not found")));
             }
 
+            self.delete_oauth_state(&name).await?;
             Ok(())
         })
         .await
@@ -422,6 +463,92 @@ impl ConnectorRepository for SqlConnectorRepository {
             })
             .await
             .and_then(|row| self.open_row(row))
+        })
+        .await
+    }
+
+    async fn get_oauth_state(
+        &self,
+        connector_name: &str,
+    ) -> Result<Option<crate::storage::models::ConnectorOauthStateRow>, OrionError> {
+        use crate::storage::schema::ConnectorOauthState as S;
+        crate::metrics::timed_db_op("connectors.get_oauth_state", async {
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .columns([S::Fingerprint, S::StateJson])
+                    .from(S::Table)
+                    .and_where(Expr::col(S::ConnectorName).eq(connector_name)),
+            );
+            let row = self
+                .pool
+                .fetch_optional_as::<crate::storage::models::ConnectorOauthStateRow>(&sql, values)
+                .await?;
+            match row {
+                None => Ok(None),
+                Some(mut row) => {
+                    // The same at-rest contract as `config_json`: decrypt when
+                    // the key is set; an encrypted row with no key is a loud
+                    // error, never the literal envelope served as state.
+                    use crate::storage::config_encryption::ConfigCipher;
+                    row.state_json = match &self.cipher {
+                        Some(cipher) => cipher.decrypt(&row.state_json)?,
+                        None if ConfigCipher::is_encrypted(&row.state_json) => {
+                            return Err(OrionError::internal(format!(
+                                "oauth state for connector '{connector_name}' is encrypted \
+                                 at rest but storage.connector_encryption_key is not set"
+                            )));
+                        }
+                        None => row.state_json,
+                    };
+                    Ok(Some(row))
+                }
+            }
+        })
+        .await
+    }
+
+    async fn put_oauth_state(
+        &self,
+        connector_name: &str,
+        fingerprint: &str,
+        state_json: &str,
+    ) -> Result<(), OrionError> {
+        use crate::storage::schema::ConnectorOauthState as S;
+        crate::metrics::timed_db_op("connectors.put_oauth_state", async {
+            let stored = self.store_form(state_json)?;
+            let now = Expr::cust(super::helpers::sql_now(crate::storage::get_backend()));
+            let mut insert = Query::insert()
+                .into_table(S::Table)
+                .columns([S::ConnectorName, S::Fingerprint, S::StateJson, S::UpdatedAt])
+                .values_panic([
+                    connector_name.into(),
+                    fingerprint.into(),
+                    stored.into(),
+                    now,
+                ])
+                .to_owned();
+            insert.on_conflict(
+                sea_query::OnConflict::column(S::ConnectorName)
+                    .update_columns([S::Fingerprint, S::StateJson, S::UpdatedAt])
+                    .to_owned(),
+            );
+            let (sql, values) = build_sqlx(&mut insert);
+            self.pool.execute_query(&sql, values).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError> {
+        use crate::storage::schema::ConnectorOauthState as S;
+        crate::metrics::timed_db_op("connectors.delete_oauth_state", async {
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(S::Table)
+                    .and_where(Expr::col(S::ConnectorName).eq(connector_name)),
+            );
+            self.pool.execute_query(&sql, values).await?;
+            Ok(())
         })
         .await
     }

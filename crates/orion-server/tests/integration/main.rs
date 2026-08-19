@@ -63,6 +63,7 @@ mod migration_guard_test;
 mod mongodb_test;
 mod mysql_test;
 mod openapi_test;
+mod oauth2_connector_test;
 mod output_field_test;
 mod p1_promotion_test;
 mod p2_api_test;

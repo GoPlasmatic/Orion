@@ -140,6 +140,17 @@ const READABLE_KEYS: &[&str] = &[
     "presign_get",
     "presign_put",
     "head",
+    // managed-OAuth2 structure (#268) — the credential halves
+    // (`client_secret`, `refresh_token`) are masked by default; the
+    // token endpoint stays visible for the same reason `url` does
+    "grant",
+    "token_url",
+    "client_id",
+    "client_auth",
+    "scopes",
+    "audience",
+    "resource",
+    "refresh_margin_secs",
     // limits & timeouts
     "max_connections",
     "connect_timeout_ms",
@@ -855,6 +866,57 @@ mod tests {
         assert_eq!(val["database"], "******");
     }
 
+    /// #268: the oauth2 block's credential halves mask; its structure — the
+    /// grant, the token endpoint, the client id, the tuning — stays readable,
+    /// and a secret *reference* survives so export → import keeps working.
+    #[test]
+    fn oauth2_credentials_mask_and_structure_stays_readable() {
+        let config = r#"{"type":"http","url":"https://api.example.com","auth":{
+            "type":"oauth2","grant":"refresh_token",
+            "token_url":"https://idp.example.com/oauth2/token",
+            "client_id":"svc-app","client_secret":"cs-literal",
+            "client_auth":"basic",
+            "refresh_token":"rt-literal",
+            "scopes":["api.read"],"audience":"https://api.example.com",
+            "refresh_margin_secs":60}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        let auth = &val["auth"];
+        assert_eq!(auth["client_secret"], MASK);
+        assert_eq!(auth["refresh_token"], MASK);
+        assert_eq!(auth["grant"], "refresh_token");
+        assert_eq!(auth["token_url"], "https://idp.example.com/oauth2/token");
+        assert_eq!(auth["client_id"], "svc-app");
+        assert_eq!(auth["client_auth"], "basic");
+        assert_eq!(auth["scopes"][0], "api.read");
+        assert_eq!(auth["audience"], "https://api.example.com");
+        assert_eq!(auth["refresh_margin_secs"], 60);
+
+        let with_refs = r#"{"type":"http","url":"https://x","auth":{
+            "type":"oauth2","grant":"client_credentials","token_url":"https://idp/t",
+            "client_id":"env://CID","client_secret":"env://CSECRET"}}"#;
+        let masked = mask_connector_secrets(with_refs);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(
+            val["auth"]["client_secret"], "env://CSECRET",
+            "a reference is a pointer, not the secret"
+        );
+    }
+
+    /// #268: `extra_params` values mask by default — the fail-closed rule for
+    /// keys the structs did not anticipate. Author them as `env://` refs when
+    /// they must round-trip an export.
+    #[test]
+    fn oauth2_extra_params_values_mask_by_default() {
+        let config = r#"{"type":"http","url":"https://x","auth":{
+            "type":"oauth2","grant":"client_credentials","token_url":"https://idp/t",
+            "client_id":"c","client_secret":"s",
+            "extra_params":{"tenant_hint":"acme"}}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(val["auth"]["extra_params"]["tenant_hint"], MASK);
+    }
+
     #[test]
     fn kafka_sasl_password_shape_is_masked() {
         // Mirrors the `[kafka.auth]` shape added in Phase 4.
@@ -1438,8 +1500,10 @@ mod tests {
     fn every_connector_struct_field_is_classified() {
         // `connection_string` is a credential bundle; `auth` (when None it
         // serializes as a null leaf) holds only credentials and identities,
-        // each covered by behaviour tests.
-        const EXPECTED_MASKED: &[&str] = &["connection_string", "auth"];
+        // each covered by behaviour tests. The oauth2 block's two credential
+        // halves (#268) are the deliberate masks of an otherwise-readable
+        // structure.
+        const EXPECTED_MASKED: &[&str] = &["connection_string", "auth", "client_secret", "refresh_token"];
 
         fn walk(v: &Value, out: &mut Vec<String>) {
             if let Value::Object(map) = v {
@@ -1454,6 +1518,7 @@ mod tests {
 
         for sample in [
             r#"{"type":"http","url":"https://x"}"#,
+            r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"refresh_token","token_url":"https://idp/t","client_id":"c","client_secret":"s","refresh_token":"rt","scopes":["a"],"audience":"aud","resource":"res"}}"#,
             r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,

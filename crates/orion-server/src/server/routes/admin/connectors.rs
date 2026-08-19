@@ -796,9 +796,12 @@ async fn probe_connector(
             probe_cache(state, name, cache).await,
         ),
         ConnectorConfig::Http(http) => (
-            "GET the configured URL",
+            // #268: for a managed-OAuth2 connector this acquires a real
+            // token first, so the probe validates the whole OAuth setup —
+            // token URL, credentials, grant — before any workflow needs it.
+            "GET the configured URL (acquiring the OAuth2 token first, if managed)",
             true,
-            probe_http(state, http).await,
+            probe_http(state, name, http).await,
         ),
         ConnectorConfig::Smtp(smtp) => (
             "SMTP connect + EHLO + auth (no mail sent)",
@@ -980,9 +983,20 @@ async fn probe_smtp(
 /// it never sent the credential.
 async fn probe_http(
     state: &AppState,
+    name: &str,
     http: &crate::connector::HttpConnectorConfig,
 ) -> Result<(), String> {
     use crate::engine::functions::http_common;
+
+    // #268: the effective auth — for oauth2 this is a real token acquisition
+    // through the manager, which is precisely the setup this probe validates.
+    let auth = crate::connector::oauth::effective_auth(
+        state.connector_registry.oauth(),
+        name,
+        http,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let url = http_common::build_url(&http.url, None);
     match http_common::execute_request(
@@ -999,6 +1013,7 @@ async fn probe_http(
             // endpoint.
             response_format: http_common::ResponseFormat::Text,
             timeout: std::time::Duration::from_secs(5),
+            auth: auth.as_deref(),
         },
     )
     .await

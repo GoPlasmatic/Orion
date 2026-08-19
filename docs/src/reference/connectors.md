@@ -8,7 +8,7 @@ There are exactly seven connector types:
 |------|-------|----------------|
 | [`http`](#http) | REST APIs and webhooks | `http_call` |
 | [`kafka`](#kafka) | Kafka topics (produce only) | `publish_kafka` |
-| [`db`](#db) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read` |
+| [`db`](#db) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | [`cache`](#cache) | Redis or in-process memory | `cache_read`, `cache_write` |
 | [`es`](#es) | Elasticsearch | `data_query`, `data_write` |
 | [`smtp`](#smtp) | Transactional email over SMTP | `send_email` |
@@ -72,7 +72,7 @@ The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret 
 
 ## Authentication
 
-`http` and `es` connectors accept an `auth` object with three schemes:
+`http` and `es` connectors accept an `auth` object. Three schemes carry **static** credentials:
 
 | Scheme | Fields | Example |
 |--------|--------|---------|
@@ -80,7 +80,43 @@ The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret 
 | `basic` | `username`, `password` | `{ "type": "basic", "username": "svc", "password": "env://SVC_PASSWORD" }` |
 | `apikey` | `header`, `key` | `{ "type": "apikey", "header": "X-API-Key", "key": "env://API_KEY" }` |
 
+The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches, refreshes, and (under rotation) persists the token itself. `http` connectors only.
+
 `db` and `cache` connectors carry credentials inside their connection URL instead. The `kafka` connector has no credential field; broker authentication is server configuration ([Kafka settings](./configuration.md#kafka)).
+
+### Managed OAuth2
+
+```json
+"auth": {
+  "type": "oauth2",
+  "grant": "refresh_token",
+  "token_url": "https://idp.example.com/oauth2/token",
+  "client_id": "env://OAUTH_CLIENT_ID",
+  "client_secret": "env://OAUTH_CLIENT_SECRET",
+  "refresh_token": "env://OAUTH_REFRESH_TOKEN_SEED",
+  "scopes": ["api.read"]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `grant` | string | yes | — | `client_credentials` (server-to-server; tokens re-acquired on expiry) or `refresh_token` (rotating service apps) |
+| `token_url` | string | yes | — | The IdP's token endpoint. Gets the same SSRF validation as the connector's own URL (`allow_private_urls` opts out) |
+| `client_id` / `client_secret` | string | yes | — | The OAuth client. `client_secret` is masked on reads |
+| `client_auth` | string | no | `basic` | How the client authenticates to the token endpoint (RFC 6749 §2.3.1): `basic` (HTTP Basic) or `body` (form parameters) |
+| `refresh_token` | string | conditional | — | The bootstrap **seed** — required by the `refresh_token` grant, refused by `client_credentials`. Masked on reads |
+| `scopes` | array | no | — | Space-joined into the `scope` parameter |
+| `audience` / `resource` | string | no | — | The corresponding token-request parameters (Auth0- / RFC 8707-style IdPs) |
+| `extra_params` | object | no | — | Extra form parameters for provider quirks. Reserved names (`grant_type`, `client_id`, …) are refused; values are masked on reads (use `env://` refs if they must round-trip an export) |
+| `refresh_margin_secs` | integer | no | `60` | Refresh this many seconds before expiry (max 3600) |
+
+**Lifecycle.** Tokens are acquired lazily, cached in memory, and refreshed behind the margin — **single-flight**, so concurrent requests wait on the in-flight refresh instead of racing it (the race that, under rotation, invalidates the winner's new token). One acquisition serves every request in the cache window; a 401 from the API drops the cached token so the next call refetches. Token-endpoint outcomes land in the [`orion_oauth_token_requests_total`](./metrics.md) counter, and `POST /api/v1/admin/connectors/{id}/test` acquires a **real token**, validating the whole setup before any workflow depends on it.
+
+**Rotation persistence.** When a refresh response carries a new refresh token, Orion persists it — with the access token and its expiry — to the `connector_oauth_state` table, encrypted when [`storage.connector_encryption_key`](./configuration.md#storage) is set. The connector's own config is never mutated: it stays the declarative seed. The state row is stamped with a fingerprint of the `auth` block, so **editing the connector discards stale state — which is also the recovery story for a burned token: update the connector with a fresh seed, and the seed wins.** In cluster mode a refresh takes a job lease and other nodes adopt the persisted token instead of rotating against each other.
+
+**Failures.** An unreachable token endpoint is retryable and trips the connector's circuit breaker like any outage. A rejection (`invalid_grant`, `invalid_client`) is a non-retryable error naming the OAuth error code, negative-cached for 30 s so a burned token is never retry-looped against the IdP — and it deliberately does not trip the API's breaker (a credential failure says nothing about the API's health).
+
+The `password` grant (ROPC) is deliberately absent — removed in OAuth 2.1. Future grants (`jwt-bearer`, token exchange, device code) are new `grant` values, not new auth types.
 
 ### Header precedence
 
@@ -152,7 +188,7 @@ Calls REST APIs and webhooks through [`http_call`](./functions.md#http_call).
 | `url` | string | yes | — | Base URL for every request through this connector |
 | `method` | string | no | `""` | Default HTTP method when the task sets none |
 | `headers` | object | no | `{}` | Default headers for every request — see [Header precedence](#header-precedence) |
-| `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, or `apikey` |
+| `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, `apikey`, or managed [`oauth2`](#managed-oauth2) |
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](#retries-http-only) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](#retries-http-only) |
 | `max_response_size` | integer | no | `10485760` | Maximum response body size in bytes (10 MB); a larger response fails the call |

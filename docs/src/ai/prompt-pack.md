@@ -64,6 +64,10 @@ claims at metadata.auth.claims),
 send_email (SMTP connector), storage_presign, storage_head (object storage),
 publish_json, publish_xml, publish_kafka, log.
 
+http connectors can carry auth type "oauth2" — Orion manages the token
+lifecycle itself (acquisition, caching, single-flight refresh, rotation
+persistence); workflows never handle the token.
+
 ## Channel JSON
 
 {

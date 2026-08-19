@@ -279,6 +279,102 @@ pub enum AuthConfig {
     Bearer { token: String },
     Basic { username: String, password: String },
     ApiKey { header: String, key: String },
+    /// Managed OAuth2 (#268): Orion acquires, caches and refreshes the access
+    /// token itself — see [`crate::connector::oauth`]. `http` connectors only;
+    /// authoring validation refuses it elsewhere. Boxed: the block is an
+    /// order of magnitude wider than the static variants, and every stored
+    /// `Option<AuthConfig>` would carry that width inline.
+    OAuth2(Box<OAuth2Config>),
+}
+
+/// The `auth.type = "oauth2"` block (#268). The lifecycle machinery consuming
+/// it (cache, margin, single-flight, rotation persistence) is grant-agnostic;
+/// `grant` is an **open value set** so a future grant (`jwt-bearer`, token
+/// exchange, device code) is a new value with its own request shape, not a new
+/// auth type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuth2Config {
+    /// `"client_credentials"` or `"refresh_token"` — parsed by
+    /// [`OAuth2Grant::parse`], validated at authoring time.
+    pub grant: String,
+    /// The IdP's token endpoint. Gets the same SSRF validation as the
+    /// connector's own endpoint (`allow_private_urls` opts out).
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// How the client authenticates to the token endpoint (RFC 6749 §2.3.1):
+    /// `"basic"` (HTTP Basic, the RFC-recommended default) or `"body"`
+    /// (`client_id`/`client_secret` as form parameters).
+    #[serde(default = "default_client_auth")]
+    pub client_auth: String,
+    /// The bootstrap **seed** for the `refresh_token` grant. Rotated values
+    /// are persisted to `connector_oauth_state`, never written back here; a
+    /// state row for the current config fingerprint overrides this seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Requested scopes, space-joined per RFC 6749 §3.3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// `audience` token-request parameter (Auth0-style IdPs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+    /// `resource` token-request parameter (RFC 8707 / Azure-style IdPs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// Escape hatch for provider quirks: extra form parameters on the token
+    /// request. Reserved parameter names are refused at authoring time.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_params: HashMap<String, String>,
+    /// Refresh this many seconds before the token expires. Default 60.
+    #[serde(default = "default_refresh_margin_secs")]
+    pub refresh_margin_secs: u64,
+}
+
+fn default_client_auth() -> String {
+    "basic".to_string()
+}
+
+fn default_refresh_margin_secs() -> u64 {
+    60
+}
+
+/// The grants this build implements. An open set: a new grant is a new
+/// variant + validation row + request shape in `connector/oauth.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuth2Grant {
+    ClientCredentials,
+    RefreshToken,
+}
+
+impl OAuth2Grant {
+    pub const VALUES: &'static str = "client_credentials/refresh_token";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "client_credentials" => OAuth2Grant::ClientCredentials,
+            "refresh_token" => OAuth2Grant::RefreshToken,
+            _ => return None,
+        })
+    }
+}
+
+/// The client-authentication spellings of RFC 6749 §2.3.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuth2ClientAuth {
+    Basic,
+    Body,
+}
+
+impl OAuth2ClientAuth {
+    pub const VALUES: &'static str = "basic/body";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "basic" => OAuth2ClientAuth::Basic,
+            "body" => OAuth2ClientAuth::Body,
+            _ => return None,
+        })
+    }
 }
 
 /// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone —

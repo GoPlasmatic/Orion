@@ -23,6 +23,25 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
         AuthConfig::Bearer { token } => req.header("authorization", format!("Bearer {token}")),
         AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
         AuthConfig::ApiKey { header, key } => req.header(header, key),
+        // #268: never applied raw — `effective_auth` resolves oauth2 to a
+        // Bearer token before any request is built, and authoring validation
+        // refuses oauth2 on the surfaces that do not resolve (es). Reaching
+        // this arm sends no credential, so the endpoint refuses loudly
+        // instead of receiving a config blob as a header.
+        AuthConfig::OAuth2(_) => req,
+    }
+}
+
+/// Map a token-acquisition failure into the engine's error vocabulary along
+/// the estate's F42 split: transport-class failures are retryable `Io` (they
+/// trip the breaker like any dependency outage); rejections and config
+/// problems are non-retryable connector detail — a credential failure is not
+/// evidence about the API's health.
+pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> DataflowError {
+    if e.retryable() {
+        DataflowError::Io(e.to_string())
+    } else {
+        crate::errors::connector_detail_error(e.to_string())
     }
 }
 
@@ -200,6 +219,13 @@ pub struct RequestSpec<'a> {
     pub body_format: BodyFormat,
     pub response_format: ResponseFormat,
     pub timeout: Duration,
+    /// The auth to apply — the *effective* auth, resolved by the caller
+    /// (#268): static variants pass `http_config.auth.as_ref()` through;
+    /// `oauth2` connectors resolve a Bearer token via
+    /// [`crate::connector::oauth::effective_auth`] first. A parameter rather
+    /// than a read of `http_config.auth`, because resolving a token is async
+    /// state the connector config cannot carry.
+    pub auth: Option<&'a AuthConfig>,
 }
 
 /// Execute an HTTP request with connector config applied.
@@ -225,6 +251,7 @@ pub async fn execute_request(
         body_format,
         response_format,
         timeout,
+        auth,
     } = spec;
     let original = url::Url::parse(url)
         .map_err(|e| DataflowError::Validation(format!("Invalid URL '{url}': {e}")))?;
@@ -270,7 +297,7 @@ pub async fn execute_request(
             }
 
             // Apply auth headers (override connector defaults)
-            if let Some(ref auth) = http_config.auth {
+            if let Some(auth) = auth {
                 req = apply_auth(req, auth);
             }
         }
@@ -579,6 +606,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/test", addr),
                 task_headers: None,
@@ -636,6 +664,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::POST,
                 url: &format!("http://{}/post-test", addr),
                 task_headers: Some(&headers),
@@ -681,6 +710,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/error", addr),
                 task_headers: None,
@@ -728,6 +758,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/text", addr),
                 task_headers: None,
@@ -777,6 +808,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/large", addr),
                 task_headers: None,
@@ -826,6 +858,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/slow", addr),
                 task_headers: None,
@@ -860,6 +893,7 @@ mod tests {
             &client,
             &http_config,
             RequestSpec {
+                auth: http_config.auth.as_ref(),
                 method: &reqwest::Method::GET,
                 url: "http://127.0.0.1:1/test",
                 task_headers: None,
@@ -931,6 +965,7 @@ mod tests {
             &redirectless_client(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/redirect", addr),
                 task_headers: None,
@@ -968,6 +1003,7 @@ mod tests {
             &redirectless_client(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/a", addr),
                 task_headers: None,
@@ -999,6 +1035,7 @@ mod tests {
             &redirectless_client(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/loop", addr),
                 task_headers: None,
@@ -1038,6 +1075,7 @@ mod tests {
             &redirectless_client(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::POST,
                 url: &format!("http://{}/submit", addr),
                 task_headers: None,
@@ -1178,6 +1216,7 @@ mod tests {
             &reqwest::Client::new(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::POST,
                 url: &format!("http://{}/echo", addr),
                 task_headers: None,
@@ -1212,6 +1251,7 @@ mod tests {
             &reqwest::Client::new(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::POST,
                 url: &format!("http://{}/echo", addr),
                 task_headers: Some(&headers),
@@ -1241,6 +1281,7 @@ mod tests {
             &reqwest::Client::new(),
             &localhost_config(addr),
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/text", addr),
                 task_headers: None,
@@ -1276,6 +1317,7 @@ mod tests {
             &reqwest::Client::new(),
             &config,
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/fail", addr),
                 task_headers: None,
@@ -1294,6 +1336,7 @@ mod tests {
             &reqwest::Client::new(),
             &config,
             RequestSpec {
+                auth: None,
                 method: &reqwest::Method::GET,
                 url: &format!("http://{}/large", addr),
                 task_headers: None,

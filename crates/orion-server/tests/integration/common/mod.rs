@@ -136,6 +136,17 @@ async fn test_state_inner(
         orion::bootstrap::build_engine_components(&config, &repos, channel_registry.clone())
             .await
             .expect("engine components");
+    // #268: the managed-OAuth2 runtime, single-node shape (no lease) — what
+    // the probe and http_call paths need for oauth2 connectors under test.
+    components
+        .serving
+        .connector_registry
+        .oauth()
+        .init(orion::connector::oauth::OAuthRuntimeDeps {
+            http_client: components.serving.http_client.clone(),
+            repo: repos.connectors.clone(),
+            lease: None,
+        });
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (components, channels, active_workflow_count) = components
         .load_channels_and_build_engine(&config, &repos, &channel_registry)

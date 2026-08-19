@@ -102,6 +102,21 @@ pub fn record_jwt_rejection(reason: &'static str) {
     counter!("orion_jwt_rejections_total", "reason" => reason).increment(1);
 }
 
+/// One managed-OAuth2 token-endpoint request (#268). `outcome` is a bounded
+/// set: `ok`, `rejected` (invalid_grant and friends — non-retryable),
+/// `transport_error` (unreachable/5xx — retryable).
+pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_oauth_token_requests_total",
+        "connector" => connector.to_owned(),
+        "outcome" => outcome
+    )
+    .increment(1);
+}
+
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;
