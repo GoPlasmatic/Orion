@@ -102,6 +102,22 @@ impl Channel {
 }
 
 // ============================================================
+// Connector OAuth2 runtime state (#268)
+// ============================================================
+
+/// One `connector_oauth_state` row: the managed-OAuth2 token state for a
+/// connector. `state_json` is served decrypted by the repository (encrypted
+/// at rest with `storage.connector_encryption_key` when set, exactly like
+/// `connectors.config_json`); `fingerprint` hashes the oauth2 auth block the
+/// state was minted under, so stale state is discarded when the connector's
+/// config changes.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ConnectorOauthStateRow {
+    pub fingerprint: String,
+    pub state_json: String,
+}
+
+// ============================================================
 // Connector
 // ============================================================
 

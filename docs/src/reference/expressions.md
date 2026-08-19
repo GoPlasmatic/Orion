@@ -63,7 +63,7 @@ this table against the engine, so it cannot drift from what actually runs.
 | `now` | `{ "now": [] }` | Current instant, as an RFC 3339 string |
 | `datetime` | `{ "datetime": ["2026-07-31T00:00:00Z"] }` | Build a datetime from an RFC 3339 string |
 | `parse_date` | `{ "parse_date": [{ "var": "data.when" }, "yyyy-MM-dd"] }` | Parse with an explicit format |
-| `format_date` | `{ "format_date": [{ "now": [] }, "yyyy-MM-dd"] }` | Format a datetime |
+| `format_date` | `{ "format_date": [{ "now": [] }, "yyyy-MM-dd", "Asia/Kolkata"] }` | Format a datetime, optionally in an IANA timezone |
 | `date_diff` | `{ "date_diff": [a, b, "days"] }` | Whole units between two datetimes |
 | `timestamp` | `{ "timestamp": ["1d"] }` | Build a **duration** from a duration string |
 
@@ -71,6 +71,13 @@ Format strings use the JSONLogic vocabulary: `yyyy`, `MM`, `dd`, `HH`, `mm`,
 `ss`. Orion translates it to the underlying `strftime` spec, so raw
 `%Y`-style patterns also work. Prefer the `yyyy` form; it is the documented
 one.
+
+`format_date` and `parse_date` accept an optional trailing IANA zone name
+(`"Asia/Kolkata"`, `"America/New_York"`): `format_date` renders the instant as
+that zone's wall-clock (DST-correct), and `parse_date` reads a naive input as
+wall-clock time *in* that zone. A misspelled literal zone fails when the
+expression is compiled, not per request. Do not add fixed offsets by hand —
+`{ "+": [ts, { "timestamp": "5h30m" }] }` is wrong in any zone with DST.
 
 ### Strings (`ext-string`)
 
@@ -90,6 +97,20 @@ one.
 | `slice` | `{ "slice": [{ "var": "data.items" }, 0, 2] }` | Sub-array by start/end |
 | `abs` | `{ "abs": [{ "var": "data.delta" }] }` | Absolute value |
 | `ceil` / `floor` | `{ "ceil": [{ "var": "data.price" }] }` | Round up / down |
+| `group_by` | `{ "group_by": [{ "var": "data.meetings" }, { "format_date": [{ "var": "start" }, "dd MMM yyyy", "Asia/Kolkata" ] }] }` | Collapse on a computed key → array of `{key, items}` rows, insertion-ordered |
+| `distinct` | `{ "distinct": [{ "var": "data.tags" }] }` | Deduplicate, first occurrence wins; add a key expression to dedupe by computed key |
+
+`group_by`'s second argument is evaluated **per element** — inside it, `var`
+paths are element-relative and `{ "var": "" }` is the element itself. The
+result is an *array* of `{key, items}` groups (not an object), so it composes
+directly with `map` / `filter` / `sort`.
+
+### Objects (`ext-object`)
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `keys` / `values` | `{ "keys": [{ "var": "data.totals" }] }` | An object's keys / values as arrays |
+| `entries` | `{ "entries": [{ "var": "data.totals" }] }` | `[{key, value}]` rows — iterate any object with `map` |
 
 ### Control (`ext-control`, `error-handling`)
 
@@ -100,6 +121,37 @@ one.
 | `exists` | `{ "exists": ["data", "order", "id"] }` | Path presence — see [Sharp edges](#sharp-edges) |
 | `switch` / `match` | see [Sharp edges](#sharp-edges) | Multi-way branch |
 | `try` / `throw` | `{ "try": [expr, fallback] }` | Catch / raise an evaluation error |
+
+### Encoding (Orion operators)
+
+Registered by Orion itself rather than gated by a cargo feature — available on
+every expression surface (conditions, `map` logic, `body_logic`, channel
+guards). A string encodes as its UTF-8 bytes; any other value encodes as its
+compact-JSON text (key order preserved); `null` is an error. Decoders are
+strict: the input must be valid for the alphabet — base64 accepts padded and
+unpadded input — and the decoded bytes must be valid UTF-8. Binary payloads
+belong to the `crypto` function's `input_encoding` instead.
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `base64_encode` / `base64_decode` | `{ "base64_encode": [{ "var": "data.raw" }] }` | Standard base64 (RFC 4648 §4, padded; decode tolerates unpadded) |
+| `base64url_encode` / `base64url_decode` | `{ "base64url_encode": [{ "var": "data.claims" }] }` | URL-safe base64, unpadded — the JWS form |
+| `hex_encode` / `hex_decode` | `{ "hex_encode": [{ "var": "data.token" }] }` | Lowercase hex |
+
+### Randomness (Orion operators)
+
+CSPRNG-backed value generation — never constant-folded, so every evaluation
+draws fresh; there is deliberately no seed parameter, and range/alphabet
+sampling is uniform (no modulo bias). The first argument selects the
+generator kind; a new kind is a table row, never a new operator. Bad
+arguments (unknown kind, inverted bounds, out-of-range length, an alphabet
+with duplicate characters) are evaluation-time errors naming what is
+allowed. Values are drawn live in dry-run and `orion-server test` too — like
+`now`, avoid asserting exact outputs in regression cases.
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `random` | `{ "random": ["digits", 6] }` | Kind-selected generation: `["uuid"]` / `["uuid", "v7"]` (canonical UUID; v7 is time-sortable), `["digits", n]` (exactly-n digits, leading zeros kept — the OTP shape, n ≤ 64), `["int", min, max]` (inclusive, within ±2⁵³−1), `["string", len, alphabet?]` (len ≤ 1024; named sets `alphanumeric` (default) / `hex` / `numeric` / `url-safe`, or a custom string of 2–256 distinct characters), `["bytes", n, encoding?]` (n ≤ 1024; `hex` default / `base64` / `base64url` per the encoding table above) |
 
 ## Sharp edges
 

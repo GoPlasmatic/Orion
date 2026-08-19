@@ -633,7 +633,11 @@ pub(crate) async fn test_workflow(
     let custom_fns =
         crate::engine::build_custom_functions(crate::engine::HandlerDeps::from_state(&state));
     let test_engine =
-        dataflow_rs::Engine::new(vec![df_workflow], custom_fns).map_err(OrionError::Engine)?;
+        crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+            .with_workflow(df_workflow)
+            .with_handlers(custom_fns)
+            .build()
+            .map_err(OrionError::Engine)?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {
@@ -906,7 +910,9 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_task_array_shape(req, &mut errors);
 
-    let dl = datalogic_rs::Engine::new();
+    // Orion's custom operators are registered so a condition using them
+    // compiles here exactly as it will on the serving engine.
+    let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
 
     if let Some(tasks) = req.tasks.as_array() {
         validate_tasks(tasks, &dl, state, &mut errors, &mut warnings).await;

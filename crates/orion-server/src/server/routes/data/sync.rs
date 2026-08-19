@@ -466,6 +466,8 @@ pub(super) async fn process_sync_for_channel(
         // a second delivery and belongs in the `409` branch, whatever this
         // one's outcome turns out to be.
         dedup_claim: _dedup_claim,
+        // Already merged into `metadata` by the caller (data/mod.rs).
+        auth_claims: _,
     } = admission;
 
     // O1: `channel` is safe to use as a metric label below because the caller

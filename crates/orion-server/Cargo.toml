@@ -1,6 +1,6 @@
 [package]
 name = "orion-server"
-version = "1.0.1"
+version = "1.1.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Turn business logic into live REST/Kafka services. Declare workflows as JSON and Orion runs them, with rate limiting, circuit breakers, versioning, and observability built in"
@@ -69,14 +69,14 @@ harness = true
 [dependencies]
 # `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
 # feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
-# `ext-control` and `error-handling`. Without it datalogic compiles with only
-# the core opcode set, and a workflow cannot call `now`, format a date,
-# uppercase a string or measure a length — see
-# docs/src/reference/expressions.md#available-operators for the resulting
+# `ext-control`, `error-handling` and (since 3.4/5.2) `ext-object`. Without it
+# datalogic compiles with only the core opcode set, and a workflow cannot call
+# `now`, format a date, uppercase a string, measure a length or group a list —
+# see docs/src/reference/expressions.md#available-operators for the resulting
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.3.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.4.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -98,7 +98,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "que
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # The shared wire contract (DTOs, enums, error envelope, import report). The
 # server enables `utoipa` so the shared types publish in its OpenAPI document.
@@ -125,6 +125,9 @@ hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
 # encodings are accepted, so both decoders are needed.
 base64 = "0.23"
+# Request bodies as reqwest sends them: `Bytes` clones are refcount bumps,
+# so the per-attempt body attach in http_common never copies the payload.
+bytes = "1"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
@@ -153,7 +156,7 @@ mongodb = { version = "3", default-features = false, features = ["compat-3-0-0",
 # dead for the process lifetime after one Redis restart (proposal D15).
 # `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
 # must come from Redis's own clock (N8).
-redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
+redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install
@@ -171,6 +174,14 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 
 # TCP socket configuration
 socket2 = "0.6"
+sha1 = "0.11"
+md-5 = "0.11"
+argon2 = "0.5.3"
+bcrypt = "0.19.3"
+lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "pool", "hostname", "builder", "tokio1", "tokio1-rustls-tls", "rustls-native-certs"] }
+# aws_lc_rs: the same crypto backend the in-tree rustls stack uses — one
+# provider, not two.
+jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
 
 # Windows cannot run librdkafka's configure build, so it keeps cmake-build —
 # features unify additively with the base rdkafka entry above, per target.
@@ -187,7 +198,7 @@ testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "m
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.
-redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 # In-process self-signed certificate generation for the TLS tests (no
 # external `openssl` CLI dependency).
 rcgen = "0.14"

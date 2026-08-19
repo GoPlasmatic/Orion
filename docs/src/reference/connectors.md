@@ -2,17 +2,19 @@
 
 A **connector** is a named connection to an external system — an API, a database, a cache, a Kafka cluster, or a search cluster. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
 
-There are exactly five connector types:
+There are exactly seven connector types:
 
 | Type | Backs | Task functions |
 |------|-------|----------------|
 | [`http`](#http) | REST APIs and webhooks | `http_call` |
 | [`kafka`](#kafka) | Kafka topics (produce only) | `publish_kafka` |
-| [`db`](#db) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read` |
+| [`db`](#db) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | [`cache`](#cache) | Redis or in-process memory | `cache_read`, `cache_write` |
 | [`es`](#es) | Elasticsearch | `data_query`, `data_write` |
+| [`smtp`](#smtp) | Transactional email over SMTP | `send_email` |
+| [`storage`](#storage) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
-Type values match case-insensitively. Any other value is refused with the valid list. A stored connector of a type that no longer exists (such as the removed `storage` type) fails to load and surfaces as a connector load issue.
+Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.
 
 The task functions and their inputs are specified in the [Function Reference](./functions.md).
 
@@ -70,7 +72,7 @@ The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret 
 
 ## Authentication
 
-`http` and `es` connectors accept an `auth` object with three schemes:
+`http` and `es` connectors accept an `auth` object. Three schemes carry **static** credentials:
 
 | Scheme | Fields | Example |
 |--------|--------|---------|
@@ -78,7 +80,43 @@ The api-path is exactly what follows `/v1/` in Vault's HTTP API. A KV v2 secret 
 | `basic` | `username`, `password` | `{ "type": "basic", "username": "svc", "password": "env://SVC_PASSWORD" }` |
 | `apikey` | `header`, `key` | `{ "type": "apikey", "header": "X-API-Key", "key": "env://API_KEY" }` |
 
+The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches, refreshes, and (under rotation) persists the token itself. `http` connectors only.
+
 `db` and `cache` connectors carry credentials inside their connection URL instead. The `kafka` connector has no credential field; broker authentication is server configuration ([Kafka settings](./configuration.md#kafka)).
+
+### Managed OAuth2
+
+```json
+"auth": {
+  "type": "oauth2",
+  "grant": "refresh_token",
+  "token_url": "https://idp.example.com/oauth2/token",
+  "client_id": "env://OAUTH_CLIENT_ID",
+  "client_secret": "env://OAUTH_CLIENT_SECRET",
+  "refresh_token": "env://OAUTH_REFRESH_TOKEN_SEED",
+  "scopes": ["api.read"]
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `grant` | string | yes | — | `client_credentials` (server-to-server; tokens re-acquired on expiry) or `refresh_token` (rotating service apps) |
+| `token_url` | string | yes | — | The IdP's token endpoint. Gets the same SSRF validation as the connector's own URL (`allow_private_urls` opts out) |
+| `client_id` / `client_secret` | string | yes | — | The OAuth client. `client_secret` is masked on reads |
+| `client_auth` | string | no | `basic` | How the client authenticates to the token endpoint (RFC 6749 §2.3.1): `basic` (HTTP Basic) or `body` (form parameters) |
+| `refresh_token` | string | conditional | — | The bootstrap **seed** — required by the `refresh_token` grant, refused by `client_credentials`. Masked on reads |
+| `scopes` | array | no | — | Space-joined into the `scope` parameter |
+| `audience` / `resource` | string | no | — | The corresponding token-request parameters (Auth0- / RFC 8707-style IdPs) |
+| `extra_params` | object | no | — | Extra form parameters for provider quirks. Reserved names (`grant_type`, `client_id`, …) are refused; values are masked on reads (use `env://` refs if they must round-trip an export) |
+| `refresh_margin_secs` | integer | no | `60` | Refresh this many seconds before expiry (max 3600) |
+
+**Lifecycle.** Tokens are acquired lazily, cached in memory, and refreshed behind the margin — **single-flight**, so concurrent requests wait on the in-flight refresh instead of racing it (the race that, under rotation, invalidates the winner's new token). One acquisition serves every request in the cache window; a 401 from the API drops the cached token so the next call refetches. Token-endpoint outcomes land in the [`orion_oauth_token_requests_total`](./metrics.md) counter, and `POST /api/v1/admin/connectors/{id}/test` acquires a **real token**, validating the whole setup before any workflow depends on it.
+
+**Rotation persistence.** When a refresh response carries a new refresh token, Orion persists it — with the access token and its expiry — to the `connector_oauth_state` table, encrypted when [`storage.connector_encryption_key`](./configuration.md#storage) is set. The connector's own config is never mutated: it stays the declarative seed. The state row is stamped with a fingerprint of the `auth` block, so **editing the connector discards stale state — which is also the recovery story for a burned token: update the connector with a fresh seed, and the seed wins.** In cluster mode a refresh takes a job lease and other nodes adopt the persisted token instead of rotating against each other.
+
+**Failures.** An unreachable token endpoint is retryable and trips the connector's circuit breaker like any outage. A rejection (`invalid_grant`, `invalid_client`) is a non-retryable error naming the OAuth error code, negative-cached for 30 s so a burned token is never retry-looped against the IdP — and it deliberately does not trip the API's breaker (a credential failure says nothing about the API's health).
+
+The `password` grant (ROPC) is deliberately absent — removed in OAuth 2.1. Future grants (`jwt-bearer`, token exchange, device code) are new `grant` values, not new auth types.
 
 ### Header precedence
 
@@ -99,13 +137,14 @@ Every connector type carries an `operations` block that limits what workflows ma
 
 | Type | Gate | Blocks |
 |------|------|--------|
-| `db`, `es` | `read` | `data_query`, `db_read`, `mongo_read` |
-| `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation |
+| `db`, `es` | `read` | `data_query`, `db_read`, `mongo_read`, `mongo_aggregate` |
+| `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation, and the matching `mongo_write` op (`insert_*` → `insert`, `update_*`/`replace_one` → `update` — or `upsert` when `"upsert": true` — `delete_*` → `delete`) |
 | `db`, `es` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
 | `cache` | `read` | `cache_read` |
 | `cache` | `write` | `cache_write`, plus channel stores backed by the connector (see below) |
 | `kafka` | `publish` | `publish_kafka` |
 | `http` | `methods` | Any method not on the allow-list (see below) |
+| `storage` | `presign_get`, `presign_put`, `head` | The matching storage function/method |
 
 To make a `db` connector fully delete-proof, disable both `delete` and `raw_write`:
 
@@ -149,7 +188,7 @@ Calls REST APIs and webhooks through [`http_call`](./functions.md#http_call).
 | `url` | string | yes | — | Base URL for every request through this connector |
 | `method` | string | no | `""` | Default HTTP method when the task sets none |
 | `headers` | object | no | `{}` | Default headers for every request — see [Header precedence](#header-precedence) |
-| `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, or `apikey` |
+| `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, `apikey`, or managed [`oauth2`](#managed-oauth2) |
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](#retries-http-only) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](#retries-http-only) |
 | `max_response_size` | integer | no | `10485760` | Maximum response body size in bytes (10 MB); a larger response fails the call |
@@ -209,13 +248,14 @@ Runs parameterized queries against PostgreSQL, MySQL, SQLite, or MongoDB. The `c
 | `allow_private_urls` | boolean | no | `false` | Allow private and internal IP addresses (SSRF protection). Ignored for `sqlite:`, which opens a file |
 | `operations` | object | no | all allowed | `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` — see [Operation gates](#operation-gates) |
 | `dialect` | object | no | both guards off | [Dialect guards](#dialect-guards) |
+| `aggregate_write_stages` | boolean | no | `false` | MongoDB only: permit the `$out`/`$merge` write stages in [`mongo_aggregate`](./functions.md#mongo_aggregate) pipelines. The one default-deny gate — an aggregation must not silently write |
 
 Two ways to talk to it: the portable [`data_query` / `data_write`](./data-dialect.md) dialect, which runs unchanged against SQL, MongoDB, and Elasticsearch; or raw SQL via [`db_read` / `db_write`](./functions.md#db_read).
 
 There is no `retry` field: a statement that timed out may already have been applied, so database calls are never re-driven — see [Retries](#retries-http-only). Bound the call with `connect_timeout_ms` and `query_timeout_ms` instead.
 
 > [!NOTE]
-> A `mongodb://` or `mongodb+srv://` scheme makes this a MongoDB connector. `data_query` and `data_write` run against it unchanged (pass a `database` field in the task input); raw `find()` filters use [`mongo_read`](./functions.md#mongo_read).
+> A `mongodb://` or `mongodb+srv://` scheme makes this a MongoDB connector. `data_query` and `data_write` run against it unchanged (pass a `database` field in the task input); the raw-native surface is the [`mongo_read`](./functions.md#mongo_read) / [`mongo_write`](./functions.md#mongo_write) / [`mongo_aggregate`](./functions.md#mongo_aggregate) trio, whose documents are extended JSON (`$oid`, `$date`, nested shapes).
 
 ### Dialect guards
 
@@ -280,6 +320,88 @@ An Elasticsearch cluster driven by the portable dialect: [`data_query`](./functi
 | `dialect` | object | no | both guards off | [Dialect guards](#dialect-guards) |
 
 There is no `retry` field: the dialect drives `_bulk` and the by-query mutations through this connector as well as `_search`, and none are safe to re-send blind — see [Retries](#retries-http-only). ES-specific dialect semantics (the `_id` rename, forced refresh, capability limits) live in the [Portable Data Dialect](./data-dialect.md#elasticsearch-notes) reference.
+
+## `smtp`
+
+An SMTP server for [`send_email`](./functions.md#send_email) — the
+lowest-common-denominator mail transport that self-hosted and enterprise
+environments already run. Transport, credentials, TLS mode, and the default
+sender live here; the message lives on the task.
+
+```json
+{
+  "name": "mailer",
+  "connector_type": "smtp",
+  "config": {
+    "type": "smtp",
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "tls": "starttls",
+    "auth": { "type": "basic", "username": "env://SMTP_USER", "password": "env://SMTP_PASS" },
+    "from": "Orion <noreply@example.in>"
+  }
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `host` | string | yes | — | Server hostname — a host, not a URL |
+| `port` | integer | no | `587` | `587` pairs with `starttls`, `465` with `implicit`, `25` with internal relays |
+| `tls` | string | no | `"starttls"` | `starttls` \| `implicit` \| `none`. Certificates validate against the platform trust store — install a private CA at the OS level; there is deliberately no skip-verification knob. `none` is for local dev relays and draws a validation warning |
+| `auth` | object | no | `{"type": "none"}` | `none` (unauthenticated smarthost) or `basic` with `username`/`password` (secret references accepted). Future mechanisms are new tagged variants |
+| `from` | string | yes | — | Default sender; `addr@example.com` or `Name <addr@example.com>` |
+| `allow_from_override` | boolean | no | `false` | Let a task supply its own `from` |
+| `allow_private_urls` | boolean | no | `false` | Allow private and internal addresses — the usual opt-in for an internal relay |
+| `timeout_ms` | integer | no | `10000` | Per-send timeout (connect + protocol exchange) |
+
+`POST /api/v1/admin/connectors/{name}/test` probes connect + EHLO + TLS +
+authentication without sending mail, through the same pooled transport real
+sends use. There is no `retry` field, and `send_email` never retries on its
+own: SMTP has no idempotency key, so a re-driven timeout is a duplicate
+email — see [Retries](#retries-http-only).
+
+## `storage`
+
+S3-compatible object storage for [`storage_presign`](./functions.md#storage_presign)
+and [`storage_head`](./functions.md#storage_head) — a deliberately
+**zero-data-path** surface: presigning is local SigV4 arithmetic over the
+connector's credentials, `storage_head` is one bounded metadata request, and
+object bytes never move through the runtime. Works against any S3-compatible
+store: AWS, Linode/Akamai, Cloudflare R2, Backblaze B2, Wasabi, and
+self-hosted Garage / SeaweedFS / RustFS (usually with `force_path_style`).
+
+```json
+{
+  "name": "media",
+  "connector_type": "storage",
+  "config": {
+    "type": "storage",
+    "endpoint": "https://ap-south-1.linodeobjects.com",
+    "region": "ap-south-1",
+    "bucket": "media-bucket",
+    "access_key": "env://S3_ACCESS_KEY",
+    "secret_key": "env://S3_SECRET_KEY"
+  }
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `provider` | string | no | `"s3"` | Signing scheme. `s3` covers every S3-compatible store; GCS/Azure later are new values |
+| `endpoint` | string | yes | — | Base URL, e.g. `https://s3.us-east-1.amazonaws.com` |
+| `region` | string | yes | — | SigV4 signing region |
+| `bucket` | string | yes | — | The bucket this connector reaches — deliberately connector-owned: a second bucket is a second connector |
+| `access_key` | string | yes | — | Access key id (masked on reads — use `env://` references) |
+| `secret_key` | string | yes | — | Secret key; literal or `env://VAR` |
+| `session_token` | string | no | — | STS temporary-credential token, signed as `X-Amz-Security-Token` |
+| `force_path_style` | boolean | no | `false` | Path-style addressing (`endpoint/bucket/key`) — most self-hosted stores want `true` |
+| `allow_private_urls` | boolean | no | `false` | Allow a private/internal endpoint for `storage_head`'s network call |
+| `timeout_ms` | integer | no | `10000` | `storage_head` timeout; presigning makes no network call |
+| `operations` | object | no | all allowed | `presign_get` / `presign_put` / `head` — `presign_put: false` makes a media connector read-only |
+
+`POST /api/v1/admin/connectors/{name}/test` performs one signed HEAD of the
+bucket. There is no retry field: presigning is local computation, and
+`storage_head` follows the estate rule that only `http` connectors retry.
 
 ## Retries (HTTP only)
 

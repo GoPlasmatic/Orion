@@ -680,7 +680,7 @@ impl ChannelRegistry {
         // worst possible reading of the operator's intent.
         let auth = match parsed_config.auth.as_ref() {
             Some(cfg) => Some(
-                crate::channel::auth::CompiledAuth::compile(cfg)
+                crate::channel::auth::CompiledAuth::compile(cfg, Some(deps.datalogic))
                     .await
                     .map_err(|e| {
                         tracing::error!(

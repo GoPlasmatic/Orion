@@ -242,7 +242,7 @@ Sheds load to a failing dependency: after `failure_threshold` consecutive failur
 | `engine.circuit_breaker.recovery_timeout_secs` | `30` | `ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS` | How long the breaker stays open before probing. |
 | `engine.circuit_breaker.max_breakers` | `10000` | `ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS` | Rarely — bounds the tracked `channel:connector` pairs before LRU eviction. |
 
-Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else, and the state is per node. Every connector-backed task function passes through its breaker — `http_call`, `db_read`/`db_write`, `cache_read`/`cache_write`, `mongo_read`, `publish_kafka` and the portable `data_query`/`data_write` dialect — not just HTTP.
+Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else, and the state is per node. Every connector-backed task function passes through its breaker — `http_call`, `db_read`/`db_write`, `cache_read`/`cache_write`, `mongo_read`/`mongo_write`/`mongo_aggregate`, `publish_kafka` and the portable `data_query`/`data_write` dialect — not just HTTP.
 
 ## Trace Queue
 

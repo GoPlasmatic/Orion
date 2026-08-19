@@ -48,6 +48,9 @@ pub struct ConnectorRegistry {
     load_issues: RwLock<Vec<ConnectorLoadIssue>>,
     /// See [`ConnectorRegistry::config_generation`].
     generation: AtomicU64,
+    /// Managed OAuth2 token lifecycle (#268) — per-connector runtime state
+    /// living beside the circuit breakers, keyed off the same identity.
+    oauth: super::oauth::OAuthTokenManager,
 }
 
 /// An enabled connector that could not be loaded into the registry (F16).
@@ -82,7 +85,16 @@ impl ConnectorRegistry {
             cb_config,
             load_issues: RwLock::new(Vec::new()),
             generation: AtomicU64::new(CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed)),
+            oauth: super::oauth::OAuthTokenManager::new(),
         }
+    }
+
+    /// The managed-OAuth2 token manager (#268). Inert until
+    /// [`super::oauth::OAuthTokenManager::init`] runs in bootstrap; a bare
+    /// registry (unit tests) refuses oauth2 with a clear error rather than
+    /// panicking.
+    pub fn oauth(&self) -> &super::oauth::OAuthTokenManager {
+        &self.oauth
     }
 
     /// A token identifying *this registry instance and the connector set it
@@ -241,27 +253,12 @@ impl ConnectorRegistry {
             // storing them in the database. Substitution failures (missing
             // required var, malformed syntax) skip the connector and log —
             // matching how an unparseable config_json is handled below.
-            // `storage` was accepted, validated, persisted and listed for the
-            // whole 0.x line with no handler behind it (proposal F15), so any
-            // workflow referencing one failed at request time. It is removed in
-            // 1.0. Stored rows would otherwise surface as a bare serde "unknown
-            // variant `storage`", which says nothing about what to do; name the
-            // removal and the remedy instead.
-            if connector.connector_type == "storage" {
-                tracing::error!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    "Connector type 'storage' was removed in 1.0; it never had a handler. \
-                     Delete this connector, or disable it, to clear this issue."
-                );
-                issues.push(issue(
-                    "removed_type",
-                    "connector type 'storage' was removed in 1.0 (it never had a handler); \
-                     delete or disable this connector"
-                        .to_string(),
-                ));
-                continue;
-            }
+            // `storage` spent the 0.x line as an accepted type with no handler
+            // (F15) and was removed in 1.0; #265 reinstates the name *with* a
+            // handler and a real config shape. A stored 0.x row now parses
+            // against that shape like any other connector — and reports a
+            // config-parse load issue if it doesn't fit, which names exactly
+            // what to fix.
             let source_label = format!("connector '{}' config_json", connector.name);
             let resolved = match crate::config::env_substitute::substitute(
                 &connector.config_json,
@@ -430,6 +427,10 @@ pub(crate) mod test_support {
 
     pub(crate) struct StubConnectorRepo {
         rows: std::sync::Mutex<Vec<Connector>>,
+        /// In-memory `connector_oauth_state` (#268): name → (fingerprint,
+        /// state_json). Functional rather than `unreachable!` because the
+        /// token-manager tests exercise rotation persistence through it.
+        oauth_state: std::sync::Mutex<std::collections::HashMap<String, (String, String)>>,
     }
 
     impl StubConnectorRepo {
@@ -437,6 +438,7 @@ pub(crate) mod test_support {
         pub(crate) fn with(rows: Vec<(&str, &str, &str)>) -> Self {
             Self {
                 rows: std::sync::Mutex::new(rows.into_iter().map(row).collect()),
+                oauth_state: std::sync::Mutex::new(std::collections::HashMap::new()),
             }
         }
 
@@ -494,6 +496,41 @@ pub(crate) mod test_support {
         }
         async fn snapshot(&self, _filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError> {
             unreachable!("not used by load_from_repo")
+        }
+        async fn get_oauth_state(
+            &self,
+            connector_name: &str,
+        ) -> Result<Option<crate::storage::models::ConnectorOauthStateRow>, OrionError> {
+            Ok(self
+                .oauth_state
+                .lock()
+                .expect("test")
+                .get(connector_name)
+                .map(
+                    |(fingerprint, state_json)| crate::storage::models::ConnectorOauthStateRow {
+                        fingerprint: fingerprint.clone(),
+                        state_json: state_json.clone(),
+                    },
+                ))
+        }
+        async fn put_oauth_state(
+            &self,
+            connector_name: &str,
+            fingerprint: &str,
+            state_json: &str,
+        ) -> Result<(), OrionError> {
+            self.oauth_state.lock().expect("test").insert(
+                connector_name.to_string(),
+                (fingerprint.to_string(), state_json.to_string()),
+            );
+            Ok(())
+        }
+        async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError> {
+            self.oauth_state
+                .lock()
+                .expect("test")
+                .remove(connector_name);
+            Ok(())
         }
     }
 }

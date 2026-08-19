@@ -19,6 +19,8 @@ pub enum ConnectorConfig {
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
     Es(EsConnectorConfig),
+    Smtp(SmtpConnectorConfig),
+    Storage(StorageConnectorConfig),
 }
 
 impl ConnectorConfig {
@@ -33,6 +35,8 @@ impl ConnectorConfig {
             ConnectorConfig::Db(_) => ConnectorType::Db,
             ConnectorConfig::Cache(_) => ConnectorType::Cache,
             ConnectorConfig::Es(_) => ConnectorType::Es,
+            ConnectorConfig::Smtp(_) => ConnectorType::Smtp,
+            ConnectorConfig::Storage(_) => ConnectorType::Storage,
         }
     }
 
@@ -272,9 +276,113 @@ fn default_max_response_size() -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
-    Bearer { token: String },
-    Basic { username: String, password: String },
-    ApiKey { header: String, key: String },
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
+    ApiKey {
+        header: String,
+        key: String,
+    },
+    /// Managed OAuth2 (#268): Orion acquires, caches and refreshes the access
+    /// token itself — see [`crate::connector::oauth`]. `http` connectors only;
+    /// authoring validation refuses it elsewhere. Boxed: the block is an
+    /// order of magnitude wider than the static variants, and every stored
+    /// `Option<AuthConfig>` would carry that width inline.
+    OAuth2(Box<OAuth2Config>),
+}
+
+/// The `auth.type = "oauth2"` block (#268). The lifecycle machinery consuming
+/// it (cache, margin, single-flight, rotation persistence) is grant-agnostic;
+/// `grant` is an **open value set** so a future grant (`jwt-bearer`, token
+/// exchange, device code) is a new value with its own request shape, not a new
+/// auth type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuth2Config {
+    /// `"client_credentials"` or `"refresh_token"` — parsed by
+    /// [`OAuth2Grant::parse`], validated at authoring time.
+    pub grant: String,
+    /// The IdP's token endpoint. Gets the same SSRF validation as the
+    /// connector's own endpoint (`allow_private_urls` opts out).
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    /// How the client authenticates to the token endpoint (RFC 6749 §2.3.1):
+    /// `"basic"` (HTTP Basic, the RFC-recommended default) or `"body"`
+    /// (`client_id`/`client_secret` as form parameters).
+    #[serde(default = "default_client_auth")]
+    pub client_auth: String,
+    /// The bootstrap **seed** for the `refresh_token` grant. Rotated values
+    /// are persisted to `connector_oauth_state`, never written back here; a
+    /// state row for the current config fingerprint overrides this seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Requested scopes, space-joined per RFC 6749 §3.3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+    /// `audience` token-request parameter (Auth0-style IdPs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+    /// `resource` token-request parameter (RFC 8707 / Azure-style IdPs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// Escape hatch for provider quirks: extra form parameters on the token
+    /// request. Reserved parameter names are refused at authoring time.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra_params: HashMap<String, String>,
+    /// Refresh this many seconds before the token expires. Default 60.
+    #[serde(default = "default_refresh_margin_secs")]
+    pub refresh_margin_secs: u64,
+}
+
+fn default_client_auth() -> String {
+    "basic".to_string()
+}
+
+fn default_refresh_margin_secs() -> u64 {
+    60
+}
+
+/// The grants this build implements. An open set: a new grant is a new
+/// variant + validation row + request shape in `connector/oauth.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuth2Grant {
+    ClientCredentials,
+    RefreshToken,
+}
+
+impl OAuth2Grant {
+    pub const VALUES: &'static str = "client_credentials/refresh_token";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "client_credentials" => OAuth2Grant::ClientCredentials,
+            "refresh_token" => OAuth2Grant::RefreshToken,
+            _ => return None,
+        })
+    }
+}
+
+/// The client-authentication spellings of RFC 6749 §2.3.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuth2ClientAuth {
+    Basic,
+    Body,
+}
+
+impl OAuth2ClientAuth {
+    pub const VALUES: &'static str = "basic/body";
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "basic" => OAuth2ClientAuth::Basic,
+            "body" => OAuth2ClientAuth::Body,
+            _ => return None,
+        })
+    }
 }
 
 /// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone —
@@ -359,6 +467,13 @@ pub struct DbConnectorConfig {
     /// Which tables the portable dialect may reach through this connector.
     #[serde(default)]
     pub dialect: DialectGuards,
+    /// Permit the aggregation write stages (`$out`/`$merge`) in
+    /// `mongo_aggregate` pipelines (#263). Default **false** — the one
+    /// deliberate default-deny among the gates, because "aggregation" reads as
+    /// a read operation and must not silently write. MongoDB connectors only;
+    /// a SQL connector never reaches the aggregate handler.
+    #[serde(default)]
+    pub aggregate_write_stages: bool,
 }
 
 /// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`
@@ -414,6 +529,190 @@ pub struct EsConnectorConfig {
     pub dialect: DialectGuards,
 }
 
+/// SMTP connector (#262): the transport and credentials behind `send_email`.
+/// Message logic (recipients, subject, bodies) lives on the task, matching
+/// the transport/logic split every other connector type uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmtpConnectorConfig {
+    /// SMTP server hostname or IP — a host, not a URL.
+    pub host: String,
+    /// 587 (submission/STARTTLS) by default; 465 pairs with `implicit`, 25
+    /// with internal relays.
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    /// Connection security. There is deliberately no skip-verification knob:
+    /// certificates validate against the platform trust store, so private-CA
+    /// relays work by installing the CA at the OS level.
+    #[serde(default)]
+    pub tls: SmtpTls,
+    /// `none` (internal smarthosts) or `basic`; future mechanisms (xoauth2)
+    /// are new tagged variants here, invisible to workflows.
+    #[serde(default)]
+    pub auth: SmtpAuth,
+    /// Default sender. Accepts `addr@example.com` or `Name <addr@example.com>`.
+    pub from: String,
+    /// Whether a task-level `from` may override the default. Off by default:
+    /// most submission servers enforce the envelope sender anyway, and an
+    /// override should be a connector decision, not a workflow's.
+    #[serde(default)]
+    pub allow_from_override: bool,
+    /// Allow connecting to private/internal addresses. Default false, the
+    /// same S6 posture as every other connector endpoint — internal relays
+    /// are common and opt in explicitly.
+    #[serde(default)]
+    pub allow_private_urls: bool,
+    /// Per-send timeout in milliseconds (connect + protocol exchange).
+    #[serde(default = "default_smtp_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_timeout_ms() -> u64 {
+    10_000
+}
+
+/// How the SMTP connection is secured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// Plaintext connect, upgrade via STARTTLS (port 587 convention).
+    #[default]
+    Starttls,
+    /// TLS from the first byte (port 465 convention).
+    Implicit,
+    /// No TLS at all — dev/localhost relays only; flagged by validation.
+    None,
+}
+
+/// SMTP authentication. Tagged like the HTTP connector's `AuthConfig`, so new
+/// mechanisms are additive variants.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SmtpAuth {
+    /// Unauthenticated — internal smarthosts that trust by network position.
+    #[default]
+    None,
+    /// LOGIN/PLAIN with a username and password (secret references accepted).
+    Basic { username: String, password: String },
+}
+
+/// Object-storage connector (#265): a scoped, zero-data-path surface —
+/// `storage_presign` computes URLs locally over these credentials, and
+/// `storage_head` makes one bounded metadata request. Object bytes never move
+/// through the runtime; that invariant is the type's scoping rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageConnectorConfig {
+    /// Which signing scheme the store speaks. `s3` covers every S3-compatible
+    /// store (AWS, Linode, Garage, SeaweedFS, RustFS, R2, Wasabi); GCS signed
+    /// URLs or Azure SAS later are new tagged values here — the functions
+    /// never change.
+    #[serde(default)]
+    pub provider: StorageProvider,
+    /// Base endpoint URL, e.g. `https://ap-south-1.linodeobjects.com`.
+    pub endpoint: String,
+    /// Signing region (SigV4 credential scope).
+    pub region: String,
+    /// The bucket this connector reaches. Deliberately connector-owned, not a
+    /// task field: the connector is the unit of scoping and gating, and a
+    /// task-level override would silently widen what a workflow can reach.
+    pub bucket: String,
+    /// Access key id — a credential identifier; masked on reads like its
+    /// secret half, so use `env://` references, which survive export/import.
+    pub access_key: String,
+    /// Secret access key; literal or `env://VAR`.
+    pub secret_key: String,
+    /// STS temporary-credential session token, signed as
+    /// `X-Amz-Security-Token` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    /// Path-style addressing (`endpoint/bucket/key`) instead of
+    /// virtual-hosted (`bucket.endpoint/key`). Most self-hosted stores
+    /// (Garage, SeaweedFS, RustFS) want `true`.
+    #[serde(default)]
+    pub force_path_style: bool,
+    /// Allow a private/internal endpoint for `storage_head`'s network call —
+    /// the S6 posture of every connector endpoint; a LAN-hosted store opts in.
+    #[serde(default)]
+    pub allow_private_urls: bool,
+    /// `storage_head` request timeout in milliseconds. Presigning makes no
+    /// network call and ignores this.
+    #[serde(default = "default_storage_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Which operations workflows may run through this connector.
+    #[serde(default)]
+    pub operations: StorageOperationGates,
+}
+
+fn default_storage_timeout_ms() -> u64 {
+    10_000
+}
+
+impl StorageConnectorConfig {
+    /// The `(scheme, host, canonical path)` for one object key — or the
+    /// bucket root when `key` is `None` (the connectivity probe). Addressing
+    /// style is decided here and nowhere else: virtual-hosted
+    /// (`bucket.endpoint`) by default, path-style under `force_path_style`.
+    pub fn address(&self, key: Option<&str>) -> Result<(String, String, String), String> {
+        let url = url::Url::parse(&self.endpoint)
+            .map_err(|e| format!("storage endpoint '{}' is not a URL: {e}", self.endpoint))?;
+        let scheme = url.scheme().to_string();
+        let host = url
+            .host_str()
+            .ok_or_else(|| format!("storage endpoint '{}' has no host", self.endpoint))?;
+        let host_port = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        let key_path = match key {
+            Some(k) => crate::connector::sigv4::encode_path(k),
+            None => "/".to_string(),
+        };
+        Ok(if self.force_path_style {
+            let bucket = crate::connector::sigv4::uri_encode(&self.bucket, false);
+            let path = if key_path == "/" {
+                format!("/{bucket}")
+            } else {
+                format!("/{bucket}{key_path}")
+            };
+            (scheme, host_port, path)
+        } else {
+            (scheme, format!("{}.{host_port}", self.bucket), key_path)
+        })
+    }
+}
+
+/// The signing scheme a storage connector speaks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageProvider {
+    #[default]
+    S3,
+}
+
+/// Storage-connector operation gates (F22e). Everything defaults to allowed;
+/// `presign_put: false` makes a media connector read-only in its config
+/// without touching workflows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageOperationGates {
+    pub presign_get: bool,
+    pub presign_put: bool,
+    pub head: bool,
+}
+
+impl Default for StorageOperationGates {
+    fn default() -> Self {
+        Self {
+            presign_get: true,
+            presign_put: true,
+            head: true,
+        }
+    }
+}
+
 /// A connection string targets MongoDB when it uses a `mongodb` scheme;
 /// otherwise it is a SQL connector (dialect from the URL scheme). The `db`
 /// connector type covers both, so this is the only thing that separates them.
@@ -422,7 +721,8 @@ pub fn is_mongo_url(connection_string: &str) -> bool {
 }
 
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es"];
+pub const VALID_CONNECTOR_TYPES: &[&str] =
+    &["http", "kafka", "db", "cache", "es", "smtp", "storage"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
@@ -442,6 +742,8 @@ pub enum ConnectorType {
     Db,
     Cache,
     Es,
+    Smtp,
+    Storage,
 }
 
 impl ConnectorType {
@@ -452,6 +754,8 @@ impl ConnectorType {
             Self::Db => "db",
             Self::Cache => "cache",
             Self::Es => "es",
+            Self::Smtp => "smtp",
+            Self::Storage => "storage",
         }
     }
 
@@ -474,6 +778,10 @@ impl ConnectorType {
             Self::Cache => &["read", "write"],
             Self::Kafka => &["publish"],
             Self::Http => &["methods"],
+            // Send-only: there is exactly one operation, so a gate would be
+            // an accepted-but-never-read field. Disable the connector instead.
+            Self::Smtp => &[],
+            Self::Storage => &["presign_get", "presign_put", "head"],
         }
     }
 }
@@ -493,6 +801,8 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
             "db" => Ok(Self::Db),
             "cache" => Ok(Self::Cache),
             "es" => Ok(Self::Es),
+            "smtp" => Ok(Self::Smtp),
+            "storage" => Ok(Self::Storage),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 VALID_CONNECTOR_TYPES,
@@ -717,16 +1027,29 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// `storage` was an accepted connector type with no handler behind it
-    /// (proposal F15): it validated, persisted, and listed, and every workflow
-    /// referencing it failed at request time. Removed in 1.0 — the type must
-    /// now be refused at the door.
+    /// `storage` spent 0.x as an accepted type with no handler (F15) and was
+    /// removed in 1.0. #265 reinstates the name *with* a handler — which is
+    /// what the removal message said was missing — behind a real config
+    /// shape, so a bare 0.x-style row (no endpoint/region/credentials) still
+    /// fails to parse rather than loading as a half-configured connector.
     #[test]
-    fn storage_connector_type_is_rejected() {
+    fn storage_connector_type_parses_with_the_265_shape() {
         let json = r#"{"type":"storage","provider":"s3","bucket":"my-bucket"}"#;
         serde_json::from_str::<ConnectorConfig>(json)
-            .expect_err("`storage` must no longer deserialize");
-        assert!(!VALID_CONNECTOR_TYPES.contains(&"storage"));
+            .expect_err("a 0.x-style storage row lacks the required fields");
+
+        let json = r#"{"type":"storage","endpoint":"https://ap-south-1.linodeobjects.com",
+            "region":"ap-south-1","bucket":"media","access_key":"AK","secret_key":"SK"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Storage(storage) => {
+                assert_eq!(storage.provider, StorageProvider::S3);
+                assert!(!storage.force_path_style);
+                assert!(storage.operations.presign_get);
+            }
+            _ => unreachable!("expected storage config"),
+        }
+        assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
     }
 
     #[test]

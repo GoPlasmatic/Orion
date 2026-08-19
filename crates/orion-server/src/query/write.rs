@@ -586,14 +586,16 @@ fn resolve_value_node(node: &Json, params: &Params, at: &str) -> Result<ir::Valu
                 at: at.to_string(),
             })
         })?;
-        return json_to_value(resolved, at);
+        return json_to_value(resolved, params, at);
     }
-    json_to_value(node, at)
+    json_to_value(node, params, at)
 }
 
 /// Convert a JSON scalar to the IR value, restricted to the `AnyPool`-safe set
-/// (Null/Bool/Int/Float/Str). Arrays and objects are not bindable column values.
-fn json_to_value(j: &Json, at: &str) -> Result<ir::Value, WriteError> {
+/// (Null/Bool/Int/Float/Str) plus the extended-JSON wrappers (#263 — `$oid`,
+/// `$date`; native on MongoDB, a capability error on SQL/ES). Other arrays and
+/// objects are not bindable column values.
+fn json_to_value(j: &Json, params: &Params, at: &str) -> Result<ir::Value, WriteError> {
     Ok(match j {
         Json::Null => ir::Value::Null,
         Json::Bool(b) => ir::Value::Bool(*b),
@@ -607,7 +609,20 @@ fn json_to_value(j: &Json, at: &str) -> Result<ir::Value, WriteError> {
             }
         }
         Json::String(s) => ir::Value::Str(s.clone()),
-        Json::Array(_) | Json::Object(_) => {
+        Json::Object(m) => {
+            match crate::query::lower::extended_json_value(m, params, at)
+                .map_err(WriteError::Query)?
+            {
+                Some(v) => v,
+                None => {
+                    return Err(WriteError::Query(QueryError::NotRepresentable {
+                        what: "an array/object column value".to_string(),
+                        at: at.to_string(),
+                    }));
+                }
+            }
+        }
+        Json::Array(_) => {
             return Err(WriteError::Query(QueryError::NotRepresentable {
                 what: "an array/object column value".to_string(),
                 at: at.to_string(),
@@ -762,6 +777,46 @@ mod tests {
             matches!(err, WriteError::Query(QueryError::NotRepresentable { .. })),
             "{err}"
         );
+    }
+
+    /// #263: the extended-JSON wrappers are the carve-out from the object
+    /// refusal above — a portable write can set an ObjectId reference and a
+    /// typed date (native on Mongo; capability error at the SQL/ES renderers).
+    #[test]
+    fn extended_json_wrappers_are_representable_column_values() {
+        let w = resolve(json!({
+            "op": "insert",
+            "target": "orders",
+            "values": {
+                "owner": { "$oid": "665f1f77bcf86cd799439011" },
+                "placed_at": { "$date": "2024-05-04T00:00:00Z" }
+            }
+        }))
+        .expect("wrappers resolve");
+        let ResolvedWrite::Insert { columns, rows, .. } = w else {
+            unreachable!("insert resolves to Insert");
+        };
+        let owner = columns.iter().position(|c| c == "owner").expect("owner");
+        let placed = columns.iter().position(|c| c == "placed_at").expect("at");
+        assert!(matches!(rows[0][owner], ir::Value::ObjectId(_)), "{rows:?}");
+        assert_eq!(rows[0][placed], ir::Value::DateTime(1_714_780_800_000));
+    }
+
+    /// …in `set` too, and a bad payload is a located envelope error.
+    #[test]
+    fn wrapper_validation_errors_name_the_column() {
+        let err = resolve(json!({
+            "op": "update",
+            "target": "orders",
+            "set": { "owner": { "$oid": "not-hex" } },
+            "filter": { "==": [{"field": "id"}, 1] }
+        }))
+        .expect_err("bad oid payload");
+        assert!(
+            matches!(err, WriteError::Query(QueryError::InvalidEnvelope(_))),
+            "{err}"
+        );
+        assert!(err.to_string().contains("owner"), "{err}");
     }
 
     // -- params ------------------------------------------------------------

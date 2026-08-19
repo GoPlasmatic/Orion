@@ -37,6 +37,16 @@ pub enum OrionError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    /// A refused bearer token (#267): 401 carrying `WWW-Authenticate: Bearer`
+    /// (RFC 6750). `wire_description` is the one cause named on the wire —
+    /// expiry, which a client answers with a refresh; every other cause stays
+    /// uniform.
+    #[error("Unauthorized: {message}")]
+    UnauthorizedToken {
+        message: String,
+        wire_description: Option<&'static str>,
+    },
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -192,6 +202,11 @@ impl OrionError {
             OrionError::Unauthorized(msg) => {
                 (StatusCode::UNAUTHORIZED, codes::UNAUTHORIZED, msg.clone())
             }
+            OrionError::UnauthorizedToken { message, .. } => (
+                StatusCode::UNAUTHORIZED,
+                codes::UNAUTHORIZED,
+                message.clone(),
+            ),
             OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, codes::FORBIDDEN, msg.clone()),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, codes::CONFLICT, msg.clone()),
             OrionError::UnsupportedMediaType(msg) => (
@@ -345,6 +360,17 @@ impl IntoResponse for OrionError {
             OrionError::Validation { details, .. } => details.clone(),
             _ => Vec::new(),
         };
+        let bearer_challenge = match &self {
+            OrionError::UnauthorizedToken {
+                wire_description, ..
+            } => Some(match wire_description {
+                Some(desc) => {
+                    format!("Bearer error=\"invalid_token\", error_description=\"{desc}\"")
+                }
+                None => "Bearer error=\"invalid_token\"".to_string(),
+            }),
+            _ => None,
+        };
 
         self.log_internal_detail();
         let (status, code, message) = self.response_parts();
@@ -373,6 +399,15 @@ impl IntoResponse for OrionError {
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static("1"),
             );
+        }
+        // A refused bearer token answers with the RFC 6750 challenge — the
+        // same error-owns-its-header principle as `retry-after` above.
+        if let Some(challenge) = bearer_challenge
+            && let Ok(value) = axum::http::HeaderValue::from_str(&challenge)
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::WWW_AUTHENTICATE, value);
         }
         response
     }
@@ -770,6 +805,7 @@ mod tests {
             OrionError::NotFound(_) => "NotFound",
             OrionError::Validation { .. } => "Validation",
             OrionError::Unauthorized(_) => "Unauthorized",
+            OrionError::UnauthorizedToken { .. } => "UnauthorizedToken",
             OrionError::Forbidden(_) => "Forbidden",
             OrionError::Conflict(_) => "Conflict",
             OrionError::Internal { .. } => "Internal",
@@ -791,7 +827,7 @@ mod tests {
     /// The number of variants [`variant_name`] enumerates. Bumping this is the
     /// second half of the prompt: the compile error says "name the variant",
     /// this assertion says "and state its wire contract below".
-    const VARIANT_COUNT: usize = 18;
+    const VARIANT_COUNT: usize = 19;
 
     /// One sample per variant with the `(status, code)` it must answer with.
     ///
@@ -807,6 +843,14 @@ mod tests {
                 OrionError::NotFound("workflow xyz".into()),
                 StatusCode::NOT_FOUND,
                 "NOT_FOUND",
+            ),
+            (
+                OrionError::UnauthorizedToken {
+                    message: "Channel authentication failed".into(),
+                    wire_description: Some("token expired"),
+                },
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
             ),
             (
                 OrionError::validation("invalid"),

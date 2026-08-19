@@ -55,8 +55,18 @@ Built-in task functions (get exact input schemas from
 GET /api/v1/admin/functions, always check before using one):
 parse_json, parse_xml, filter, map, validation, http_call, channel_call,
 data_query, data_write (portable, backend-neutral DB read/write, preferred),
-db_read, db_write (raw SQL escape hatch), cache_read, cache_write, mongo_read,
+db_read, db_write (raw SQL escape hatch), cache_read, cache_write,
+mongo_read, mongo_write, mongo_aggregate (raw MongoDB; documents are extended
+JSON — $oid/$date/nested shapes),
+crypto (hash/hmac/hmac_verify/password_hash/password_verify),
+jwt_sign, jwt_verify (tokens; channel auth mode "jwt" exposes verified
+claims at metadata.auth.claims),
+send_email (SMTP connector), storage_presign, storage_head (object storage),
 publish_json, publish_xml, publish_kafka, log.
+
+http connectors can carry auth type "oauth2" — Orion manages the token
+lifecycle itself (acquisition, caching, single-flight refresh, rotation
+persistence); workflows never handle the token.
 
 ## Channel JSON
 

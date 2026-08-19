@@ -484,6 +484,34 @@ pub fn require_kafka_connector<'a>(
     }
 }
 
+/// Extracts the `SmtpConnectorConfig` from a `ConnectorConfig`, returning a
+/// validation error if the connector is not an SMTP type.
+pub fn require_smtp_connector<'a>(
+    config: &'a ConnectorConfig,
+    name: &str,
+) -> Result<&'a crate::connector::SmtpConnectorConfig, DataflowError> {
+    match config {
+        ConnectorConfig::Smtp(c) => Ok(c),
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not an SMTP connector"
+        ))),
+    }
+}
+
+/// Extracts the `StorageConnectorConfig` from a `ConnectorConfig`, returning a
+/// validation error if the connector is not a storage type.
+pub fn require_storage_connector<'a>(
+    config: &'a ConnectorConfig,
+    name: &str,
+) -> Result<&'a crate::connector::StorageConnectorConfig, DataflowError> {
+    match config {
+        ConnectorConfig::Storage(c) => Ok(c),
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not a storage connector"
+        ))),
+    }
+}
+
 /// Extracts the `CacheConnectorConfig` from a `ConnectorConfig`, returning a
 /// validation error if the connector is not a cache type.
 pub fn require_cache_connector<'a>(
@@ -593,6 +621,71 @@ pub fn resolve_required_str(
             "{handler_name} '{field}' must resolve to a string or number, got {}",
             json_type_name(&other)
         ))),
+    }
+}
+
+/// `"900"`-less duration spelling: `<n>` followed by one of `s m h d`.
+pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (number, unit) = s.split_at(s.len().saturating_sub(1));
+    let multiplier = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => {
+            return Err(format!(
+                "'{s}' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\""
+            ));
+        }
+    };
+    let n: u64 = number.parse().map_err(|_| {
+        format!("'{s}' is not a duration — the part before the unit must be a number")
+    })?;
+    n.checked_mul(multiplier)
+        .ok_or_else(|| format!("'{s}' overflows"))
+}
+
+/// Seconds from an already-fetched duration value: integer seconds or a
+/// [`parse_duration_secs`] string, either possibly a `{"var": ..}` node.
+/// Bounds stay with the caller — they differ per field.
+pub fn resolve_duration_secs(
+    raw: &Value,
+    ctx: &TaskContext<'_>,
+    handler_name: &str,
+    field: &str,
+) -> Result<u64, DataflowError> {
+    match resolve_value(raw, ctx) {
+        Value::Number(n) => n.as_u64().ok_or_else(|| {
+            DataflowError::Validation(format!(
+                "{handler_name}: '{field}' must be a positive integer"
+            ))
+        }),
+        Value::String(s) => parse_duration_secs(&s)
+            .map_err(|e| DataflowError::Validation(format!("{handler_name}: '{field}': {e}"))),
+        _ => Err(DataflowError::Validation(format!(
+            "{handler_name}: '{field}' must be seconds (integer) or a duration like \"24h\""
+        ))),
+    }
+}
+
+/// Resolve an optional input field to a string: absent, null, or resolving to
+/// null → `None`; a resolved non-string is an error naming the field.
+pub fn resolve_optional_str(
+    input: &Value,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<String>, DataflowError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => match resolve_value(raw, ctx) {
+            Value::String(s) => Ok(Some(s)),
+            Value::Null => Ok(None),
+            _ => Err(DataflowError::Validation(format!(
+                "{handler_name}: '{field}' must resolve to a string"
+            ))),
+        },
     }
 }
 
@@ -780,7 +873,7 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
-    const HANDLERS: [&str; 9] = [
+    const HANDLERS: [&str; 14] = [
         "cache_read",
         "cache_write",
         "db_read",
@@ -788,8 +881,13 @@ mod observability_tests {
         "data_query",
         "data_write",
         "mongo_read",
+        "mongo_write",
+        "mongo_aggregate",
         "http_call",
         "publish_kafka",
+        "send_email",
+        "storage_presign",
+        "storage_head",
     ];
 
     fn handler_source(handler: &str) -> String {

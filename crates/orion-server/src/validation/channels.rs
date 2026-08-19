@@ -387,7 +387,19 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
             )
         })?;
 
-    let dl = datalogic_rs::Engine::new();
+    // #264: the structural half of auth compilation runs here, so a broken
+    // auth config — missing keys/secret, bad template, unknown preset, half a
+    // replay guard — is a 400 naming the problem instead of a reload-time
+    // quarantine. Secret references stay unresolved: a bundle must validate
+    // on hosts that hold none of the production secrets.
+    if let Some(ref auth) = parsed.auth {
+        crate::channel::auth::CompiledAuth::validate_config(auth)
+            .map_err(|e| OrionError::invalid_field("channel.config.auth", "INVALID", e))?;
+    }
+
+    // Operator parity with the runtime guard engine (bootstrap's shared
+    // datalogic instance): what compiles there must compile here.
+    let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
     if let Some(ref logic) = parsed.validation_logic {
         dl.compile(logic).map_err(|e| {
             OrionError::invalid_field(

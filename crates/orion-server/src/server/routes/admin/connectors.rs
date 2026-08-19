@@ -42,6 +42,7 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
     state.caches.sql_pool_cache.evict(connector_name).await;
     state.caches.cache_pool.evict_pool(connector_name).await;
     state.caches.mongo_pool_cache.evict(connector_name).await;
+    state.caches.smtp_pool_cache.evict(connector_name).await;
     tracing::debug!(
         connector = connector_name,
         "Evicted cached connection pools"
@@ -606,6 +607,19 @@ pub(crate) async fn validate_connector(
         });
     }
 
+    // An SMTP connector without TLS moves credentials and message content in
+    // cleartext. Legitimate for a localhost/dev relay, so a warning — but a
+    // loud one, per the #262 design.
+    if req.connector_type == crate::connector::ConnectorType::Smtp
+        && req.config.get("tls").and_then(serde_json::Value::as_str) == Some("none")
+    {
+        warnings.push(super::ValidationIssue {
+            field: "config.tls".to_string(),
+            message: "tls is 'none': credentials and message content travel in                       cleartext. Acceptable only for a local dev relay — use                       'starttls' (587) or 'implicit' (465) anywhere real."
+                .to_string(),
+        });
+    }
+
     Ok(Json(super::ValidationEnvelope::new(errors, warnings)))
 }
 
@@ -782,9 +796,22 @@ async fn probe_connector(
             probe_cache(state, name, cache).await,
         ),
         ConnectorConfig::Http(http) => (
-            "GET the configured URL",
+            // #268: for a managed-OAuth2 connector this acquires a real
+            // token first, so the probe validates the whole OAuth setup —
+            // token URL, credentials, grant — before any workflow needs it.
+            "GET the configured URL (acquiring the OAuth2 token first, if managed)",
             true,
-            probe_http(state, http).await,
+            probe_http(state, name, http).await,
+        ),
+        ConnectorConfig::Smtp(smtp) => (
+            "SMTP connect + EHLO + auth (no mail sent)",
+            true,
+            probe_smtp(state, name, smtp).await,
+        ),
+        ConnectorConfig::Storage(storage) => (
+            "signed HEAD of the bucket",
+            true,
+            probe_storage(state, storage).await,
         ),
         ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
             "not implemented for this connector type",
@@ -869,6 +896,72 @@ async fn probe_cache(
         })
 }
 
+/// One signed HEAD of the bucket root — reachability plus whether the store
+/// accepts the credentials. Any HTTP status is "reachable and answering":
+/// a 403 here usually means the credentials lack bucket-level HeadBucket
+/// rights while object operations still work, and a probe should not report
+/// a permission nuance as an outage; a transport error is the real failure.
+async fn probe_storage(
+    state: &AppState,
+    storage: &crate::connector::StorageConnectorConfig,
+) -> Result<(), String> {
+    use crate::connector::sigv4;
+
+    let (scheme, host, path) = storage.address(None)?;
+    if !storage.allow_private_urls
+        && let Err(msg) =
+            crate::validation::validate_url_not_private(&format!("{scheme}://{host}{path}")).await
+    {
+        return Err(format!("SSRF protection: {msg}"));
+    }
+    let amz_date = sigv4::amz_date_now();
+    let ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
+    let mut req = state
+        .http_client
+        .head(format!("{scheme}://{host}{path}"))
+        .timeout(std::time::Duration::from_millis(storage.timeout_ms));
+    for (name, value) in sigv4::sign_headers(&ctx, "HEAD") {
+        req = req.header(name, value);
+    }
+    match req.send().await {
+        Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+            Ok(())
+        }
+        Ok(response) => Err(format!("the store answered HTTP {}", response.status())),
+        // S21: transport errors can carry the endpoint; that is the
+        // diagnostic, credentials never appear in it.
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Connect, EHLO, negotiate TLS and authenticate against an SMTP connector —
+/// without sending mail.
+///
+/// Goes through the same cached transport `send_email` uses, so what this
+/// probes is what real sends get: the pool-open path (including the S6
+/// private-address check), the TLS mode, and the credentials — lettre
+/// authenticates as part of establishing the connection, so a refused
+/// password surfaces here instead of on the first OTP email.
+async fn probe_smtp(
+    state: &AppState,
+    name: &str,
+    smtp: &crate::connector::SmtpConnectorConfig,
+) -> Result<(), String> {
+    let transport = state
+        .caches
+        .smtp_pool_cache
+        .get_transport(name, smtp)
+        .await
+        .map_err(|e| e.to_string())?;
+    match transport.test_connection().await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("the SMTP server did not answer the probe NOOP".to_string()),
+        // The lettre error names the host/port and the server's reply — the
+        // diagnostic an operator needs; credentials never appear in it.
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Issue one request against an HTTP connector's configured URL.
 ///
 /// Goes through `http_common::execute_request` — the same function `http_call`
@@ -881,17 +974,35 @@ async fn probe_cache(
 /// it never sent the credential.
 async fn probe_http(
     state: &AppState,
+    name: &str,
     http: &crate::connector::HttpConnectorConfig,
 ) -> Result<(), String> {
-    let url = crate::engine::functions::http_common::build_url(&http.url, None);
-    match crate::engine::functions::http_common::execute_request(
+    use crate::engine::functions::http_common;
+
+    // #268: the effective auth — for oauth2 this is a real token acquisition
+    // through the manager, which is precisely the setup this probe validates.
+    let auth =
+        crate::connector::oauth::effective_auth(state.connector_registry.oauth(), name, http)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let url = http_common::build_url(&http.url, None);
+    match http_common::execute_request(
         &state.http_client,
-        &reqwest::Method::GET,
-        &url,
-        None,
         http,
-        None,
-        std::time::Duration::from_secs(5),
+        http_common::RequestSpec {
+            method: &reqwest::Method::GET,
+            url: &url,
+            task_headers: None,
+            body: None,
+            body_format: http_common::BodyFormat::default(),
+            // Text, not Json: this probes reachability and credentials, and a
+            // 2xx whose body happens not to be JSON is still a reachable
+            // endpoint.
+            response_format: http_common::ResponseFormat::Text,
+            timeout: std::time::Duration::from_secs(5),
+            auth: auth.as_deref(),
+        },
     )
     .await
     {

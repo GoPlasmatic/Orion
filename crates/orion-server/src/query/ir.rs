@@ -229,8 +229,12 @@ impl FieldRef {
 }
 
 /// A literal operand value — always a scalar. Only these variants ever become
-/// bound parameters, and each maps to an `AnyPool`-safe `sea_query::Value`
-/// (never Decimal/Json/Uuid, which panic under the `sqlx-any` binder).
+/// bound parameters. The first five map to an `AnyPool`-safe
+/// `sea_query::Value` (never Decimal/Json/Uuid, which panic under the
+/// `sqlx-any` binder); the two tagged variants (#263) are validated during
+/// lowering, render natively on MongoDB, and are a
+/// [`crate::query::error::QueryError::FeatureUnsupportedByTarget`] on SQL and
+/// Elasticsearch — parity-or-error, never a silently different comparison.
 ///
 /// Lists are deliberately not representable here: the only place the dialect
 /// accepts one is the `in` haystack, which lowering carries as `Cond::In`'s
@@ -244,4 +248,12 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
+    /// A BSON ObjectId, accepted from the `{"$oid": "<24 hex>"}` wrapper.
+    /// Stored as the raw 12 bytes so rendering is infallible — the hex is
+    /// validated where the error can be located, during lowering.
+    ObjectId([u8; 12]),
+    /// An instant, accepted from `{"$date": …}` (RFC 3339 string, epoch
+    /// milliseconds, or canonical `{"$numberLong": "…"}`), normalised to epoch
+    /// milliseconds during lowering.
+    DateTime(i64),
 }

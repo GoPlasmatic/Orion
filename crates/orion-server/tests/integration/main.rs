@@ -62,6 +62,7 @@ mod metrics_endpoint_test;
 mod migration_guard_test;
 mod mongodb_test;
 mod mysql_test;
+mod oauth2_connector_test;
 mod openapi_test;
 mod output_field_test;
 mod p1_promotion_test;

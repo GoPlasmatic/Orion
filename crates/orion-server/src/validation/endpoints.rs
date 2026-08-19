@@ -127,6 +127,28 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
         // The HTTP connector's URL is scheme-checked by its own branch in
         // `validate_connector_config`, which predates this module.
         ConnectorConfig::Http(_) => Ok(()),
+        ConnectorConfig::Storage(storage) => {
+            require_scheme("endpoint", &storage.endpoint, &["http", "https"])?;
+            Ok(())
+        }
+        ConnectorConfig::Smtp(smtp) => {
+            // `host` is a hostname, not a URL — the common slip is pasting a
+            // `smtp://` or `smtps://` URI, which would otherwise fail at the
+            // first send with a DNS error for a host literally containing '/'.
+            if smtp.host.trim().is_empty() {
+                return Err(OrionError::validation(
+                    "SMTP connector requires a non-empty 'host'".to_string(),
+                ));
+            }
+            if smtp.host.contains("://") {
+                return Err(OrionError::validation(format!(
+                    "SMTP 'host' must be a hostname, not a URL — got '{}'; \
+                     the port and TLS mode are separate fields",
+                    smtp.host
+                )));
+            }
+            Ok(())
+        }
         ConnectorConfig::Es(es) => {
             require_scheme("URL", &es.url, ES_SCHEMES)?;
             Ok(())
@@ -335,6 +357,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         })
     }
 
@@ -495,6 +518,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         assert!(check_db_endpoint("c", &cfg).await.is_err());
         cfg.allow_private_urls = true;
@@ -534,6 +558,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         let err = check_db_endpoint("meta", &cfg).await.expect_err("test");
         assert!(err.to_string().contains("169.254.169.254"), "{err}");
@@ -560,6 +585,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         check_db_endpoint("local", &cfg).await.expect("test");
     }

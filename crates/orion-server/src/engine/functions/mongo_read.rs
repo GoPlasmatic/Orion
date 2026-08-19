@@ -5,17 +5,20 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use futures::TryStreamExt;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, is_mongo, require_db_connector, resolve_value, timed_query,
-    to_connect_error,
+    ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error,
+};
+use super::mongo_common::{
+    docs_to_json, drain_capped, require_mongo_connector, resolve_document, resolve_u64,
 };
 use super::schema::{FieldKind, FieldSchema};
+use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
+use crate::query::QueryError;
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "mongo_read";
@@ -24,9 +27,10 @@ const NAME: &str = "mongo_read";
 pub struct MongoReadHandler {
     pub pool_cache: Arc<MongoPoolCache>,
     pub registry: Arc<ConnectorRegistry>,
-    /// Hard row cap, from `query.max_limit` (F10): an unbounded `find` must
-    /// not OOM the process.
-    pub max_rows: usize,
+    /// The `[query]` bounds: `max_limit` caps both an explicit `limit` and the
+    /// drained result size (F10 — an unbounded `find` must not OOM the
+    /// process); `max_skip` bounds `skip` (W12).
+    pub limits: QueryConfig,
 }
 
 #[async_trait]
@@ -55,20 +59,38 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let filter_doc = bson::to_document(&filter_val)
             .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
 
+        // #263: optional find options — additive; a task naming none behaves
+        // exactly as before.
+        let projection = resolve_document(input, "projection", NAME, ctx)?;
+        let sort = resolve_document(input, "sort", NAME, ctx)?;
+        let limit = resolve_u64(input, "limit", NAME, ctx)?;
+        let skip = resolve_u64(input, "skip", NAME, ctx)?;
+        // The dialect's reject-never-clamp rule for both bounds. An absent
+        // `limit` deliberately does NOT fall back to `default_limit`: the
+        // pre-#263 contract is "everything the filter matches, capped", and a
+        // silent page-size default would change existing tasks' results.
+        if let Some(l) = limit
+            && l > self.limits.max_limit
+        {
+            return Err(QueryError::LimitExceeded {
+                requested: l,
+                max: self.limits.max_limit,
+            }
+            .into());
+        }
+        if let Some(s) = skip
+            && s > self.limits.max_skip
+        {
+            return Err(QueryError::SkipExceeded {
+                requested: s,
+                max: self.limits.max_skip,
+            }
+            .into());
+        }
+
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, Some("read")).await?;
-            let db_config = require_db_connector(&connector_config, call.connector)?;
-            // `require_db_connector` only checks the ConnectorConfig variant, so
-            // a SQL connector reached the Mongo driver and produced an opaque
-            // driver error instead of a validation one. `data_query` already
-            // makes this distinction; `mongo_read` did not (proposal F29).
-            if !is_mongo(&db_config.connection_string) {
-                return Err(DataflowError::Validation(format!(
-                    "{NAME} requires a MongoDB connector, but '{}' has a non-MongoDB \
-                     connection string (expected a mongodb:// or mongodb+srv:// URL)",
-                    call.connector
-                )));
-            }
+            let db_config = require_mongo_connector(&connector_config, NAME, call.connector)?;
 
             let client = self
                 .pool_cache
@@ -77,31 +99,29 @@ impl AsyncFunctionHandler for MongoReadHandler {
                 .map_err(to_connect_error)?;
 
             let coll = client.database(database).collection::<Document>(collection);
-            let max_rows = self.max_rows;
+            let cap = self.limits.max_limit as usize;
             let docs: Vec<Document> = timed_query(db_config.query_timeout_ms, call.name, async {
                 // F11: the Mongo driver has no per-query timeout of its
                 // own here — timed_query bounds connect + find + drain.
-                let mut cursor = coll.find(filter_doc).await.map_err(|e| e.to_string())?;
-                let mut docs: Vec<Document> = Vec::new();
-                while let Some(doc) = cursor.try_next().await.map_err(|e| e.to_string())? {
-                    if docs.len() >= max_rows {
-                        return Err(format!(
-                            "{NAME} result exceeds query.max_limit ({max_rows} \
-                             documents) — add a filter/limit or raise the cap"
-                        ));
-                    }
-                    docs.push(doc);
+                let mut find = coll.find(filter_doc);
+                if let Some(p) = projection {
+                    find = find.projection(p);
                 }
-                Ok(docs)
+                if let Some(s) = sort {
+                    find = find.sort(s);
+                }
+                if let Some(sk) = skip {
+                    find = find.skip(sk);
+                }
+                if let Some(l) = limit {
+                    find = find.limit(l as i64);
+                }
+                let cursor = find.await.map_err(|e| e.to_string())?;
+                drain_capped(cursor, cap, NAME).await
             })
             .await?;
 
-            let result: Vec<Value> = docs
-                .iter()
-                .filter_map(|doc| serde_json::to_value(doc).ok())
-                .collect();
-
-            apply_output(ctx, call.output, Value::Array(result));
+            apply_output(ctx, call.output, docs_to_json(&docs));
             Ok(TaskOutcome::Success)
         })
         .await
@@ -143,8 +163,40 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "filter",
-        description: "Mongo find() filter document. Defaults to {}. Accepts {\"var\": \"path\"} to read the value from the message.",
+        description: "Mongo find() filter document (extended JSON: $oid, $date, ... work). Defaults to {}. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+        alias: None,
+    },
+    FieldSchema {
+        name: "projection",
+        description: "Mongo projection document (e.g. {\"name\": 1, \"_id\": 0}). Accepts {\"var\": \"path\"}.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+        alias: None,
+    },
+    FieldSchema {
+        name: "sort",
+        description: "Mongo sort document (e.g. {\"created_at\": -1}). Accepts {\"var\": \"path\"}.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+        alias: None,
+    },
+    FieldSchema {
+        name: "limit",
+        description: "Maximum documents to return; must not exceed query.max_limit. Accepts {\"var\": \"path\"}.",
+        kind: FieldKind::Number,
+        required: false,
+        resolvable: true,
+        alias: None,
+    },
+    FieldSchema {
+        name: "skip",
+        description: "Documents to skip before returning; must not exceed query.max_skip. Accepts {\"var\": \"path\"}.",
+        kind: FieldKind::Number,
         required: false,
         resolvable: true,
         alias: None,

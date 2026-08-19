@@ -72,6 +72,11 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "cache_read",
     "cache_write",
     "mongo_read",
+    "mongo_write",
+    "mongo_aggregate",
+    "send_email",
+    "storage_presign",
+    "storage_head",
 ];
 
 /// Which connector types a given function can actually run against.
@@ -86,16 +91,19 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 /// `None` means the function takes no connector. The slices are non-empty and
 /// ordered as they should read in an error message.
 pub fn required_connector_types(function: &str) -> Option<&'static [ConnectorType]> {
-    use ConnectorType::{Cache, Db, Es, Http, Kafka};
+    use ConnectorType::{Cache, Db, Es, Http, Kafka, Smtp, Storage};
     Some(match function {
         "http_call" => &[Http],
         "publish_kafka" => &[Kafka],
+        "send_email" => &[Smtp],
+        "storage_presign" | "storage_head" => &[Storage],
         "cache_read" | "cache_write" => &[Cache],
-        // `db_read`/`db_write` speak raw SQL and `mongo_read` speaks Mongo, but
-        // both backends are one `ConnectorConfig::Db` variant distinguished by
-        // the connection-string scheme — which the handlers check at call time
-        // (`reject_mongo_connector`, `is_mongo`). The type gate stops at `db`.
-        "db_read" | "db_write" | "mongo_read" => &[Db],
+        // `db_read`/`db_write` speak raw SQL and the `mongo_*` trio speaks
+        // Mongo, but both backends are one `ConnectorConfig::Db` variant
+        // distinguished by the connection-string scheme — which the handlers
+        // check at call time (`reject_mongo_connector`, `is_mongo`). The type
+        // gate stops at `db`.
+        "db_read" | "db_write" | "mongo_read" | "mongo_write" | "mongo_aggregate" => &[Db],
         // The portable dialect is the one pair that spans backends.
         "data_query" | "data_write" => &[Db, Es],
         _ => return None,
@@ -111,7 +119,10 @@ pub fn required_connector_types(function: &str) -> Option<&'static [ConnectorTyp
 /// connector actually being Mongo, and that is checked at activation rather
 /// than at first request (F52).
 pub fn requires_mongo_database(function: &str) -> bool {
-    matches!(function, "mongo_read" | "data_query" | "data_write")
+    matches!(
+        function,
+        "mongo_read" | "mongo_write" | "mongo_aggregate" | "data_query" | "data_write"
+    )
 }
 
 /// Everything the ten custom handlers need to be constructed.
@@ -134,6 +145,7 @@ pub struct HandlerDeps<'a> {
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
+    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
 }
 
 impl<'a> HandlerDeps<'a> {
@@ -154,6 +166,7 @@ impl<'a> HandlerDeps<'a> {
             cache_pool: state.caches.cache_pool.clone(),
             sql_pool_cache: state.caches.sql_pool_cache.clone(),
             mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
+            smtp_pool_cache: state.caches.smtp_pool_cache.clone(),
         }
     }
 }
@@ -179,6 +192,7 @@ pub fn build_custom_functions(
         cache_pool,
         sql_pool_cache,
         mongo_pool_cache,
+        smtp_pool_cache,
     } = deps;
     let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
@@ -197,6 +211,46 @@ pub fn build_custom_functions(
             channel_registry,
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
+        }),
+    );
+
+    // Self-contained (no connector, no deps): digests, MACs, password hashing.
+    fns.insert(
+        "crypto".to_string(),
+        Box::new(functions::crypto::CryptoHandler),
+    );
+
+    // Self-contained JWT surfaces (#267): issuance and mid-workflow
+    // verification, sharing the channel mode's core and JWKS cache.
+    fns.insert(
+        "jwt_sign".to_string(),
+        Box::new(functions::jwt_sign::JwtSignHandler),
+    );
+    fns.insert(
+        "jwt_verify".to_string(),
+        Box::new(functions::jwt_verify::JwtVerifyHandler),
+    );
+
+    fns.insert(
+        "send_email".to_string(),
+        Box::new(functions::send_email::SendEmailHandler {
+            registry: registry.clone(),
+            smtp_pool: smtp_pool_cache,
+        }),
+    );
+
+    fns.insert(
+        "storage_presign".to_string(),
+        Box::new(functions::storage_presign::StoragePresignHandler {
+            registry: registry.clone(),
+        }),
+    );
+
+    fns.insert(
+        "storage_head".to_string(),
+        Box::new(functions::storage_head::StorageHeadHandler {
+            registry: registry.clone(),
+            client: client.clone(),
         }),
     );
 
@@ -271,13 +325,29 @@ pub fn build_custom_functions(
         }),
     );
 
-    // Register MongoDB handler (mongo_read)
+    // Register the MongoDB trio (mongo_read, mongo_write, mongo_aggregate)
     fns.insert(
         "mongo_read".to_string(),
         Box::new(functions::mongo_read::MongoReadHandler {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: registry.clone(),
+            limits: query_config.clone(),
+        }),
+    );
+    fns.insert(
+        "mongo_write".to_string(),
+        Box::new(functions::mongo_write::MongoWriteHandler {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: registry.clone(),
+            write_config: write_config.clone(),
+        }),
+    );
+    fns.insert(
+        "mongo_aggregate".to_string(),
+        Box::new(functions::mongo_aggregate::MongoAggregateHandler {
             pool_cache: mongo_pool_cache,
             registry: registry.clone(),
-            max_rows: query_config.max_limit as usize,
+            limits: query_config.clone(),
         }),
     );
 

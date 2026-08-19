@@ -389,6 +389,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let components =
         bootstrap::build_engine_components(&config, &repos, channel_registry.clone()).await?;
 
+    // #268: hand the managed-OAuth2 token manager its runtime — the shared
+    // client, the encrypted state store, and (in cluster mode) the refresh
+    // lease that keeps N nodes from rotating against each other.
+    components
+        .serving
+        .connector_registry
+        .oauth()
+        .init(orion::connector::oauth::OAuthRuntimeDeps {
+            http_client: components.serving.http_client.clone(),
+            repo: repos.connectors.clone(),
+            lease: config.cluster.enabled.then(|| {
+                std::sync::Arc::new(orion::cluster::JobLeaseGate::new(
+                    cluster.repo.clone(),
+                    cluster.instance_id.clone(),
+                ))
+            }),
+        });
+
     // Readiness flag — set after engine is fully initialized
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 

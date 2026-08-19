@@ -502,3 +502,335 @@ async fn channel_create_rejects_the_mask_sentinel() {
         "{body}"
     );
 }
+
+// ============================================================
+// #264: activation-time auth validation + generalized HMAC config
+// ============================================================
+
+#[tokio::test]
+async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
+    let app = common::test_app().await;
+
+    for (auth, expected) in [
+        // Each of these was previously accepted and only failed at engine
+        // reload, taking the channel into quarantine.
+        (json!({"mode": "api_key"}), "auth.keys"),
+        (json!({"mode": "hmac"}), "auth.secret"),
+        (
+            json!({"mode": "hmac", "secret": "s", "preset": "gitlab"}),
+            "preset",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s", "message": "v0:{ts}:{body}"}),
+            "placeholder",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s", "tolerance_secs": 300}),
+            "auth.timestamp",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s",
+                   "signature_prefix": "v0=", "signature_key": "v1"}),
+            "mutually exclusive",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/channels",
+                Some(json!({
+                    "name": "bad-auth-channel",
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "route_pattern": "/hooks/bad",
+                    "methods": ["POST"],
+                    "workflow_id": "wf-x",
+                    "config": {"auth": auth}
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {auth}"
+        );
+        let body = body_json(resp).await;
+        assert!(
+            body["error"].to_string().contains(expected),
+            "{auth} should have reported '{expected}', got {}",
+            body["error"]
+        );
+    }
+
+    // A preset config with an env:// secret is structurally fine and must be
+    // accepted even though the variable is unset on this host — resolution
+    // stays load-time so bundles validate anywhere.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "zoom-hooks",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "route_pattern": "/hooks/zoom",
+                "methods": ["POST"],
+                "workflow_id": "wf-x",
+                "config": {"auth": {"mode": "hmac", "preset": "zoom",
+                                     "secret": "env://UNSET_ZOOM_SECRET_264"}}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+// ============================================================
+// #267: the jwt mode, end to end
+// ============================================================
+
+const JWT_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn jwt_channel_config(extra: Value) -> Value {
+    let mut auth = json!({
+        "mode": "jwt",
+        "algorithms": ["HS256"],
+        "jwt_keys": [{"algorithm": "HS256", "key": JWT_SECRET}],
+    });
+    if let (Some(auth_obj), Some(extra_obj)) = (auth.as_object_mut(), extra.as_object()) {
+        for (k, v) in extra_obj {
+            auth_obj.insert(k.clone(), v.clone());
+        }
+    }
+    json!({ "auth": auth })
+}
+
+fn mint_jwt(claims: Value) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(JWT_SECRET.as_bytes()),
+    )
+    .expect("test")
+}
+
+fn fresh_claims() -> Value {
+    json!({
+        "sub": "user-42",
+        "roles": ["teacher"],
+        "exp": chrono::Utc::now().timestamp() + 3600,
+    })
+}
+
+/// A workflow that copies the verified identity out of metadata, proving the
+/// claims actually reach workflow logic — the whole point of the mode.
+fn claims_echo_workflow(id: &str) -> Value {
+    json!({
+        "workflow_id": id, "name": id, "condition": true,
+        "tasks": [{
+            "id": "t1", "name": "copy claim",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.whoami", "logic": {"var": "metadata.auth.claims.sub"}}
+            ]}}
+        }]
+    })
+}
+
+#[tokio::test]
+async fn a_verified_jwt_exposes_claims_to_the_workflow() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "me",
+        claims_echo_workflow("me-wf"),
+        jwt_channel_config(json!({})),
+    )
+    .await;
+
+    // No token → 401 with the RFC 6750 challenge.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/me",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let challenge = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(challenge.starts_with("Bearer"), "{challenge}");
+
+    // A valid token → the workflow reads claims.sub from its context.
+    let token = mint_jwt(fresh_claims());
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/me",
+            ("Authorization", &format!("Bearer {token}")),
+            json!({"data": {}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["whoami"], "user-42");
+
+    // An expired token → 401 whose challenge names expiry — the one hinted
+    // cause — so clients know to refresh.
+    let mut expired = fresh_claims();
+    expired["exp"] = json!(chrono::Utc::now().timestamp() - 3600);
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/me",
+            ("Authorization", &format!("Bearer {}", mint_jwt(expired))),
+            json!({"data": {}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let challenge = resp
+        .headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    assert!(challenge.contains("token expired"), "{challenge}");
+}
+
+#[tokio::test]
+async fn authorization_logic_answers_403_for_verified_but_insufficient_claims() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "admin-only",
+        claims_echo_workflow("admin-wf"),
+        jwt_channel_config(json!({
+            "authorization_logic": {"in": ["admin", {"var": "claims.roles"}]}
+        })),
+    )
+    .await;
+
+    // Verified teacher → 403, not 401: the identity held, the rights did not.
+    let token = mint_jwt(fresh_claims());
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/admin-only",
+            ("Authorization", &format!("Bearer {token}")),
+            json!({"data": {}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let mut admin = fresh_claims();
+    admin["roles"] = json!(["admin"]);
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/admin-only",
+            ("Authorization", &format!("Bearer {}", mint_jwt(admin))),
+            json!({"data": {}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn optional_jwt_admits_tokenless_and_still_rejects_invalid() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "maybe-auth",
+        claims_echo_workflow("maybe-wf"),
+        jwt_channel_config(json!({"required": false})),
+    )
+    .await;
+
+    // No token: served, with no identity in context (the mapping writes null).
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/maybe-auth",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["data"]["whoami"].is_null());
+
+    // Garbage token: still 401 — optional never means invalid passes.
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/maybe-auth",
+            ("Authorization", "Bearer not.a.token"),
+            json!({"data": {}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn broken_jwt_configs_are_refused_at_create() {
+    let app = common::test_app().await;
+    for (auth, expected) in [
+        (json!({"mode": "jwt"}), "algorithms"),
+        (
+            json!({"mode": "jwt", "algorithms": ["HS256"]}),
+            "jwt_keys and/or auth.jwks_url",
+        ),
+        (
+            json!({"mode": "jwt", "algorithms": ["ES512"],
+                   "jwt_keys": [{"algorithm": "HS256", "key": "k"}]}),
+            "ES512",
+        ),
+        (
+            json!({"mode": "jwt", "algorithms": ["RS256"],
+                   "jwks_url": "http://issuer.example.com/jwks"}),
+            "HTTPS",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/channels",
+                Some(json!({
+                    "name": "bad-jwt",
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "route_pattern": "/hooks/jwt",
+                    "methods": ["POST"],
+                    "workflow_id": "wf-x",
+                    "config": {"auth": auth}
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {auth}"
+        );
+        let body = body_json(resp).await;
+        assert!(
+            body["error"].to_string().contains(expected),
+            "{auth} should have reported '{expected}', got {}",
+            body["error"]
+        );
+    }
+}

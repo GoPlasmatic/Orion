@@ -122,6 +122,35 @@ const READABLE_KEYS: &[&str] = &[
     "url",
     "brokers",
     "topic",
+    // smtp structure (#262) — the credential halves (`username` is above,
+    // `password` is denylisted) stay as they are
+    "host",
+    "port",
+    "tls",
+    "from",
+    "allow_from_override",
+    "timeout_ms",
+    // storage structure (#265) — both credential fields and the session
+    // token are caught by the secret vocabulary
+    "provider",
+    "endpoint",
+    "region",
+    "bucket",
+    "force_path_style",
+    "presign_get",
+    "presign_put",
+    "head",
+    // managed-OAuth2 structure (#268) — the credential halves
+    // (`client_secret`, `refresh_token`) are masked by default; the
+    // token endpoint stays visible for the same reason `url` does
+    "grant",
+    "token_url",
+    "client_id",
+    "client_auth",
+    "scopes",
+    "audience",
+    "resource",
+    "refresh_margin_secs",
     // limits & timeouts
     "max_connections",
     "connect_timeout_ms",
@@ -143,6 +172,7 @@ const READABLE_KEYS: &[&str] = &[
     "write",
     "publish",
     "methods",
+    "aggregate_write_stages",
     // dialect guards
     "require_schema",
     "allowed_entities",
@@ -191,24 +221,36 @@ fn mask_connector_in_place(value: &mut Value, key: Option<&str>) {
     }
 }
 
-/// Mask a channel config in place (H3): exactly `auth.keys[*]` and
-/// `auth.secret`, the two fields of the closed `ChannelConfig` schema that
-/// hold credentials. Resolvable references (`env://NAME`) survive for the
-/// same reason they do on connectors: the stored config never held the
-/// value, and masking the pointer breaks export → import.
+/// Mask a channel config in place (H3): the credential fields of the closed
+/// `ChannelConfig` schema — `auth.keys[*]`, `auth.secret`, the `auth.secrets`
+/// rotation list (#264), and `auth.jwt_keys[*].key` (#267). Resolvable
+/// references (`env://NAME`) survive for the same reason they do on
+/// connectors: the stored config never held the value, and masking the
+/// pointer breaks export → import.
 pub fn mask_channel_config(config: &mut Value) {
     let Some(auth) = config.get_mut("auth") else {
         return;
     };
-    if let Some(keys) = auth.get_mut("keys")
-        && let Value::Array(items) = keys
-    {
-        for item in items.iter_mut() {
-            mask_channel_secret_leaf(item);
+    for list in ["keys", "secrets"] {
+        if let Some(keys) = auth.get_mut(list)
+            && let Value::Array(items) = keys
+        {
+            for item in items.iter_mut() {
+                mask_channel_secret_leaf(item);
+            }
         }
     }
     if let Some(secret) = auth.get_mut("secret") {
         mask_channel_secret_leaf(secret);
+    }
+    if let Some(jwt_keys) = auth.get_mut("jwt_keys")
+        && let Value::Array(entries) = jwt_keys
+    {
+        for entry in entries.iter_mut() {
+            if let Some(key) = entry.get_mut("key") {
+                mask_channel_secret_leaf(key);
+            }
+        }
     }
 }
 
@@ -824,6 +866,57 @@ mod tests {
         assert_eq!(val["database"], "******");
     }
 
+    /// #268: the oauth2 block's credential halves mask; its structure — the
+    /// grant, the token endpoint, the client id, the tuning — stays readable,
+    /// and a secret *reference* survives so export → import keeps working.
+    #[test]
+    fn oauth2_credentials_mask_and_structure_stays_readable() {
+        let config = r#"{"type":"http","url":"https://api.example.com","auth":{
+            "type":"oauth2","grant":"refresh_token",
+            "token_url":"https://idp.example.com/oauth2/token",
+            "client_id":"svc-app","client_secret":"cs-literal",
+            "client_auth":"basic",
+            "refresh_token":"rt-literal",
+            "scopes":["api.read"],"audience":"https://api.example.com",
+            "refresh_margin_secs":60}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        let auth = &val["auth"];
+        assert_eq!(auth["client_secret"], MASK);
+        assert_eq!(auth["refresh_token"], MASK);
+        assert_eq!(auth["grant"], "refresh_token");
+        assert_eq!(auth["token_url"], "https://idp.example.com/oauth2/token");
+        assert_eq!(auth["client_id"], "svc-app");
+        assert_eq!(auth["client_auth"], "basic");
+        assert_eq!(auth["scopes"][0], "api.read");
+        assert_eq!(auth["audience"], "https://api.example.com");
+        assert_eq!(auth["refresh_margin_secs"], 60);
+
+        let with_refs = r#"{"type":"http","url":"https://x","auth":{
+            "type":"oauth2","grant":"client_credentials","token_url":"https://idp/t",
+            "client_id":"env://CID","client_secret":"env://CSECRET"}}"#;
+        let masked = mask_connector_secrets(with_refs);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(
+            val["auth"]["client_secret"], "env://CSECRET",
+            "a reference is a pointer, not the secret"
+        );
+    }
+
+    /// #268: `extra_params` values mask by default — the fail-closed rule for
+    /// keys the structs did not anticipate. Author them as `env://` refs when
+    /// they must round-trip an export.
+    #[test]
+    fn oauth2_extra_params_values_mask_by_default() {
+        let config = r#"{"type":"http","url":"https://x","auth":{
+            "type":"oauth2","grant":"client_credentials","token_url":"https://idp/t",
+            "client_id":"c","client_secret":"s",
+            "extra_params":{"tenant_hint":"acme"}}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(val["auth"]["extra_params"]["tenant_hint"], MASK);
+    }
+
     #[test]
     fn kafka_sasl_password_shape_is_masked() {
         // Mirrors the `[kafka.auth]` shape added in Phase 4.
@@ -1407,8 +1500,20 @@ mod tests {
     fn every_connector_struct_field_is_classified() {
         // `connection_string` is a credential bundle; `auth` (when None it
         // serializes as a null leaf) holds only credentials and identities,
-        // each covered by behaviour tests.
-        const EXPECTED_MASKED: &[&str] = &["connection_string", "auth"];
+        // each covered by behaviour tests. The oauth2 block's two credential
+        // halves (#268), SMTP's `password` (#262), and storage's credential
+        // trio (#265) are the deliberate masks of otherwise-readable
+        // structures.
+        const EXPECTED_MASKED: &[&str] = &[
+            "connection_string",
+            "auth",
+            "client_secret",
+            "refresh_token",
+            "password",
+            "access_key",
+            "secret_key",
+            "session_token",
+        ];
 
         fn walk(v: &Value, out: &mut Vec<String>) {
             if let Value::Object(map) = v {
@@ -1423,10 +1528,13 @@ mod tests {
 
         for sample in [
             r#"{"type":"http","url":"https://x"}"#,
+            r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"refresh_token","token_url":"https://idp/t","client_id":"c","client_secret":"s","refresh_token":"rt","scopes":["a"],"audience":"aud","resource":"res"}}"#,
             r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
             r#"{"type":"es","url":"https://es:9200"}"#,
+            r#"{"type":"smtp","host":"mail.example.test","from":"noreply@example.test","auth":{"type":"basic","username":"u","password":"p"}}"#,
+            r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,
         ] {
             let parsed: crate::connector::ConnectorConfig =
                 serde_json::from_str(sample).expect("sample parses");

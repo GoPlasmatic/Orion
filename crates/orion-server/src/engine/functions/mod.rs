@@ -8,11 +8,20 @@ pub mod stub;
 
 pub mod cache_read;
 pub mod cache_write;
+pub mod crypto;
 pub mod data_query;
 pub mod data_write;
 pub mod db_read;
 pub mod db_write;
+pub mod jwt_sign;
+pub mod jwt_verify;
+pub mod mongo_aggregate;
+pub mod mongo_common;
 pub mod mongo_read;
+pub mod mongo_write;
+pub mod send_email;
+pub mod storage_head;
+pub mod storage_presign;
 
 use std::future::Future;
 use std::time::Duration;
@@ -107,6 +116,58 @@ where
     }
 
     Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
+}
+
+/// Test-only shared harness: run `tasks` through a real engine with `fns`
+/// registered, seed `data` (unless null) into the message context, and return
+/// the message's final `data` — or the first task error, formatted. The
+/// per-handler test modules each used to hand-roll these ~25 lines.
+#[cfg(test)]
+pub(crate) async fn run_test_tasks(
+    fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    tasks: Value,
+    data: Value,
+) -> Result<Value, String> {
+    let workflow: dataflow_rs::Workflow = serde_json::from_value(serde_json::json!({
+        "id": "w", "name": "w", "condition": true, "tasks": tasks
+    }))
+    .map_err(|e| e.to_string())?;
+    let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
+    let mut message = dataflow_rs::Message::from_value(&serde_json::json!({}));
+    if !data.is_null() {
+        dataflow_rs::engine::utils::set_nested_value(
+            &mut message.context,
+            "data",
+            dataflow_rs::datavalue::OwnedDataValue::from(&data),
+        );
+    }
+    engine
+        .process_message(&mut message)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(err) = message.errors().first() {
+        return Err(format!("{err:?}"));
+    }
+    Ok(message.data().into())
+}
+
+/// One-task convenience over [`run_test_tasks`].
+#[cfg(test)]
+pub(crate) async fn run_test_task(
+    name: &str,
+    handler: dataflow_rs::BoxedFunctionHandler,
+    input: Value,
+    data: Value,
+) -> Result<Value, String> {
+    let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
+        Default::default();
+    fns.insert(name.to_string(), handler);
+    run_test_tasks(
+        fns,
+        serde_json::json!([{"id": "t", "name": "t", "function": {"name": name, "input": input}}]),
+        data,
+    )
+    .await
 }
 
 #[cfg(test)]

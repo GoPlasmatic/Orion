@@ -38,6 +38,8 @@ pub struct Caches {
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     /// External MongoDB connection pool cache — shared so admin routes can evict stale pools.
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
+    /// SMTP transport cache — shared so admin routes can evict stale pools.
+    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
 }
 
 /// Owned fields shared across all route handlers.

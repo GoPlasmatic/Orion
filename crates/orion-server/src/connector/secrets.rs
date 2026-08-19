@@ -275,6 +275,25 @@ impl SecretResolver for VaultSecretResolver {
     }
 }
 
+/// Resolve one string that may be a secret reference (`env://VAR`, …); a
+/// literal passes through unchanged.
+///
+/// The single-value convenience over [`resolve_in_place`] with the default
+/// resolver registry — channel auth and the `crypto` task function both drive
+/// it, so a workflow author has exactly one reference mechanism to learn and
+/// production key material never has to sit in a stored definition.
+/// `field` names the referencing field in error messages; the resolved value
+/// itself never appears in one.
+pub async fn resolve_secret_string(value: &str, field: &str) -> Result<String, String> {
+    let mut json = Value::String(value.to_string());
+    resolve_in_place(&mut json, &default_resolvers(), field)
+        .await
+        .map_err(|e| e.to_string())?;
+    json.as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{field} did not resolve to a string"))
+}
+
 /// Walk `value`, replacing each `scheme://reference` string with the value
 /// from the matching resolver. Strings without a recognized scheme pass
 /// through unchanged. Other JSON types (numbers, bools, null) are never

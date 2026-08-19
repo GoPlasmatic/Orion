@@ -15,6 +15,7 @@
 //! input structs use deserialize-time defaults that don't show up in derived
 //! schemas, and we want to keep the validator dependency-free.
 
+use dataflow_rs::engine::error::DataflowError;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -84,6 +85,14 @@ pub struct FieldSchema {
     pub alias: Option<&'static str>,
 }
 
+/// A function's cross-field authoring-time validator: `(path-suffix, code,
+/// message)` triples over a static input object; an empty suffix addresses
+/// the input object itself. Each one lives next to its handler (conventionally
+/// named `validate_static_input`) so the rules it applies are the execution
+/// path's own tables.
+pub type StaticValidator =
+    fn(&serde_json::Map<String, Value>) -> Vec<(&'static str, &'static str, String)>;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionSchema {
     pub name: &'static str,
@@ -99,6 +108,13 @@ pub struct FunctionSchema {
     /// time turns that into a 400 naming the field. Orion's own handlers take
     /// freeform `serde_json::Value` inputs and keep ignoring extra keys.
     pub deny_unknown: bool,
+    /// Cross-field rules beyond the per-field table (op × algorithm tables,
+    /// key-source rules, stage allowlists, …), registered here so
+    /// `validate_input` dispatches them from the same table that declares the
+    /// function — a new function's rules are one field, never another
+    /// hand-copied block.
+    #[serde(skip)]
+    pub validate_static: Option<StaticValidator>,
 }
 
 // F53: each function's field table lives in the module implementing it, so a
@@ -109,13 +125,21 @@ pub struct FunctionSchema {
 use super::cache_read::CACHE_READ_FIELDS;
 use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
+use super::crypto::CRYPTO_FIELDS;
 use super::data_query::DATA_QUERY_FIELDS;
 use super::data_write::{DATA_WRITE_ENVELOPE_FIELDS, DATA_WRITE_FIELDS};
 use super::db_read::DB_READ_FIELDS;
 use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
+use super::jwt_sign::JWT_SIGN_FIELDS;
+use super::jwt_verify::JWT_VERIFY_FIELDS;
+use super::mongo_aggregate::MONGO_AGGREGATE_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
+use super::mongo_write::MONGO_WRITE_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
+use super::send_email::SEND_EMAIL_FIELDS;
+use super::storage_head::STORAGE_HEAD_FIELDS;
+use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 
 const REGISTRY: &[FunctionSchema] = &[
     FunctionSchema {
@@ -124,6 +148,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "cache_write",
@@ -131,6 +156,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "db_read",
@@ -138,6 +164,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "db_write",
@@ -145,6 +172,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "data_query",
@@ -152,6 +180,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "data_write",
@@ -159,13 +188,33 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DATA_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "mongo_read",
-        description: "Run find() against a MongoDB connector.",
+        description: "Run find() against a MongoDB connector, with optional projection/sort/limit/skip.",
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "mongo_write",
+        description: "Write documents to a MongoDB connector: insert/update/replace/delete, nested documents as extended JSON.",
+        category: "connector",
+        // Strict: a typoed `upsert` or `ordered` silently changes what a
+        // write does — the crypto/send_email rationale exactly.
+        input_fields: MONGO_WRITE_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::mongo_write::validate_static_input),
+    },
+    FunctionSchema {
+        name: "mongo_aggregate",
+        description: "Run an aggregation pipeline against a MongoDB connector (stage-allowlisted; $out/$merge behind a connector opt-in).",
+        category: "connector",
+        input_fields: MONGO_AGGREGATE_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
     FunctionSchema {
         name: "channel_call",
@@ -173,6 +222,34 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
         deny_unknown: false,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "crypto",
+        description: "Digests, HMAC compute/verify, and password hashing — a self-contained operation envelope.",
+        category: "utility",
+        // The handler itself tolerates extra keys, but strictness matters
+        // more here than anywhere: a typoed field on a crypto op would
+        // silently mean "use the default".
+        input_fields: CRYPTO_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::crypto::validate_static_input),
+    },
+    FunctionSchema {
+        name: "jwt_sign",
+        description: "Mint a signed JWT (login, refresh, client assertions).",
+        category: "utility",
+        input_fields: JWT_SIGN_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::jwt_sign::validate_static_input),
+    },
+    FunctionSchema {
+        name: "jwt_verify",
+        description: "Verify a JWT mid-workflow (provider id_tokens, refresh tokens) against static keys or a JWKS.",
+        category: "utility",
+        input_fields: JWT_VERIFY_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::jwt_verify::validate_static_input),
     },
     FunctionSchema {
         name: "http_call",
@@ -180,6 +257,33 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
         deny_unknown: true,
+        validate_static: None,
+    },
+    FunctionSchema {
+        name: "send_email",
+        description: "Send an email through an SMTP connector.",
+        category: "connector",
+        // Same rationale as crypto: a typoed field on an email (a lost `bcc`,
+        // a misspelled `reply_to`) silently changes who gets what.
+        input_fields: SEND_EMAIL_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::send_email::validate_static_input),
+    },
+    FunctionSchema {
+        name: "storage_presign",
+        description: "Compute a time-limited presigned URL for one object — no data path.",
+        category: "connector",
+        input_fields: STORAGE_PRESIGN_FIELDS,
+        deny_unknown: true,
+        validate_static: Some(super::storage_presign::validate_static_input),
+    },
+    FunctionSchema {
+        name: "storage_head",
+        description: "Object metadata (exists/size/etag) from a storage connector.",
+        category: "connector",
+        input_fields: STORAGE_HEAD_FIELDS,
+        deny_unknown: true,
+        validate_static: None,
     },
     FunctionSchema {
         name: "publish_kafka",
@@ -187,6 +291,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: PUBLISH_KAFKA_FIELDS,
         deny_unknown: true,
+        validate_static: None,
     },
 ];
 
@@ -387,7 +492,96 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         ));
     }
 
+    // Cross-field rules registered on the schema entry — each lives next to
+    // its handler as `validate_static_input` and shares the execution path's
+    // tables (#263 and friends), so the authoring-time rules and the runtime
+    // cannot drift, and a new function's rules are one registry field.
+    if let Some(validate) = schema.validate_static {
+        for (suffix, code, message) in validate(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+
+    // Cross-field: http_call's format axes. dataflow-rs carries `body_format`
+    // and `response_format` as uninterpreted strings, so the value table is
+    // enforced here — an unknown value is an authoring-time error, never a
+    // request-time surprise. A *static* `body` is shape-checked against the
+    // format too, by the same `encode_body` the request path runs, so the two
+    // layers cannot drift; a `body_logic` body only exists per message and
+    // gets that check at request time.
+    if function_name == "http_call" {
+        use super::http_common::{BodyFormat, ResponseFormat, encode_body};
+
+        // A non-string value is already a TYPE_MISMATCH from the field loop.
+        let body_format = match BodyFormat::parse(obj.get("body_format").and_then(Value::as_str)) {
+            Ok(f) => Some(f),
+            Err(msg) => {
+                errors.push(FieldError::new(
+                    format!("{input_path}.body_format"),
+                    "INVALID",
+                    msg,
+                ));
+                None
+            }
+        };
+        if let Err(msg) = ResponseFormat::parse(obj.get("response_format").and_then(Value::as_str))
+        {
+            errors.push(FieldError::new(
+                format!("{input_path}.response_format"),
+                "INVALID",
+                msg,
+            ));
+        }
+        if let (Some(format), Some(body)) = (body_format, obj.get("body"))
+            && format != BodyFormat::Json
+            && let Err(e) = encode_body(body, format)
+        {
+            let msg = match e {
+                DataflowError::Validation(m) => m,
+                other => other.to_string(),
+            };
+            errors.push(FieldError::new(
+                format!("{input_path}.body"),
+                "INVALID",
+                msg,
+            ));
+        }
+    }
+
     errors
+}
+
+/// Drop the `"{handler}: "` prefix a handler's validation error carries — as
+/// a `FieldError` message the field path already provides the context. Shared
+/// by the `validate_static_input` implementations that reuse their execution
+/// path's error-producing parsers.
+pub(super) fn strip_handler_prefix(handler: &str, e: &DataflowError) -> String {
+    let s = e.to_string();
+    match s.split_once(&format!("{handler}: ")) {
+        Some((_, msg)) => msg.to_string(),
+        None => s,
+    }
+}
+
+/// The `&'static str` spelling of `key` in `fields` — for the
+/// `validate_static_input` tuples, whose path suffixes must be static.
+/// `fallback` covers keys outside the table (unreachable for real inputs,
+/// merely safe for arbitrary ones).
+pub(super) fn static_field_name(
+    fields: &[FieldSchema],
+    key: &str,
+    fallback: &'static str,
+) -> &'static str {
+    fields
+        .iter()
+        .map(|f| f.name)
+        .find(|n| *n == key)
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]
@@ -477,6 +671,77 @@ mod tests {
             "tasks[0]",
         );
         assert!(errs.is_empty(), "{:?}", errs);
+    }
+
+    #[test]
+    fn http_call_unknown_format_values_are_authoring_time_errors() {
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "multipart", "response_format": "base64"}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 2, "{errs:?}");
+        assert_eq!(errs[0].path, "tasks[0].function.input.body_format");
+        assert_eq!(errs[0].code, "INVALID");
+        assert_eq!(errs[1].path, "tasks[0].function.input.response_format");
+        assert_eq!(errs[1].code, "INVALID");
+    }
+
+    #[test]
+    fn http_call_known_format_values_validate() {
+        let errs = validate_input(
+            "http_call",
+            &json!({
+                "connector": "c",
+                "method": "POST",
+                "body_format": "form",
+                // Scalars, an array of scalars, a null, and a bracket-path
+                // key — the full supported form surface.
+                "body": {
+                    "grant_type": "refresh_token",
+                    "retries": 3,
+                    "to": ["+15551111111", "+15552222222"],
+                    "optional": null,
+                    "metadata[order_id]": "6735",
+                },
+                "response_format": "text",
+                "output": "temp_data.token",
+            }),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    #[test]
+    fn http_call_static_body_is_shape_checked_against_the_format() {
+        // A nested value under 'form' is caught at authoring time by the same
+        // encoder the request path runs.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "form", "body": {"bad": {"nested": 1}}}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].path, "tasks[0].function.input.body");
+        assert_eq!(errs[0].code, "INVALID");
+        assert!(errs[0].message.contains("'bad'"), "{}", errs[0].message);
+
+        // 'text' requires a string body.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "text", "body": {"a": 1}}),
+            "tasks[0]",
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "INVALID");
+
+        // A body_logic body only exists per message — nothing to check here.
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": "c", "body_format": "form", "body_logic": {"var": "data.form"}}),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
     }
 
     #[test]

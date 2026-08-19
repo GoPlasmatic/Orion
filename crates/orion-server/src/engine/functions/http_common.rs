@@ -23,6 +23,25 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
         AuthConfig::Bearer { token } => req.header("authorization", format!("Bearer {token}")),
         AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
         AuthConfig::ApiKey { header, key } => req.header(header, key),
+        // #268: never applied raw — `effective_auth` resolves oauth2 to a
+        // Bearer token before any request is built, and authoring validation
+        // refuses oauth2 on the surfaces that do not resolve (es). Reaching
+        // this arm sends no credential, so the endpoint refuses loudly
+        // instead of receiving a config blob as a header.
+        AuthConfig::OAuth2(_) => req,
+    }
+}
+
+/// Map a token-acquisition failure into the engine's error vocabulary along
+/// the estate's F42 split: transport-class failures are retryable `Io` (they
+/// trip the breaker like any dependency outage); rejections and config
+/// problems are non-retryable connector detail — a credential failure is not
+/// evidence about the API's health.
+pub fn oauth_error_to_dataflow(e: crate::connector::oauth::OAuthError) -> DataflowError {
+    if e.retryable() {
+        DataflowError::Io(e.to_string())
+    } else {
+        crate::errors::connector_detail_error(e.to_string())
     }
 }
 
@@ -31,26 +50,221 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
 /// returns here and passes SSRF validation before being followed.
 const MAX_REDIRECTS: usize = 5;
 
+/// How the resolved `body` becomes request bytes — the server-side value table
+/// behind `http_call`'s `body_format` field. dataflow-rs carries the field as
+/// an uninterpreted string precisely so a new encoding lands here as a new
+/// variant, with no upstream release.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BodyFormat {
+    #[default]
+    Json,
+    Form,
+    Text,
+}
+
+impl BodyFormat {
+    /// Parse the wire value. `None` — the field absent — is today's JSON
+    /// behavior, so every pre-existing workflow encodes as before.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("json") => Ok(Self::Json),
+            Some("form") => Ok(Self::Form),
+            Some("text") => Ok(Self::Text),
+            Some(other) => Err(format!(
+                "unknown body_format '{other}' — expected one of 'json', 'form', 'text'"
+            )),
+        }
+    }
+}
+
+/// How response bytes become the captured value — the value table behind
+/// `http_call`'s `response_format` field.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResponseFormat {
+    #[default]
+    Json,
+    Text,
+}
+
+impl ResponseFormat {
+    /// Parse the wire value. `None` is today's JSON behavior.
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("json") => Ok(Self::Json),
+            Some("text") => Ok(Self::Text),
+            Some(other) => Err(format!(
+                "unknown response_format '{other}' — expected one of 'json', 'text'"
+            )),
+        }
+    }
+}
+
+/// A request body encoded per the task's `body_format`: the bytes to send and
+/// the `content-type` stamped when no explicit header names one. `Bytes`, not
+/// `Vec<u8>`: the body is attached per attempt (redirect hops, retries), and
+/// a `Bytes` clone is a refcount bump instead of a payload copy.
+#[derive(Debug)]
+pub struct EncodedBody {
+    pub bytes: bytes::Bytes,
+    pub content_type: &'static str,
+}
+
+/// Turn a resolved body into bytes per `format`.
+///
+/// Shape errors name the offending key: a `body_logic` body only exists per
+/// message, so this error is the only diagnosis its author ever sees.
+/// Workflow validation runs the same function over a *static* `body` at
+/// authoring time (see `schema::validate_input`), keeping the two layers from
+/// drifting.
+pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
+    let encoded = match format {
+        BodyFormat::Json => EncodedBody {
+            bytes: serde_json::to_vec(body)
+                .map_err(|e| {
+                    DataflowError::Validation(format!(
+                        "Failed to serialize request body as JSON: {e}"
+                    ))
+                })?
+                .into(),
+            content_type: "application/json",
+        },
+        BodyFormat::Form => EncodedBody {
+            bytes: encode_form(body)?.into_bytes().into(),
+            content_type: "application/x-www-form-urlencoded",
+        },
+        BodyFormat::Text => match body {
+            Value::String(s) => EncodedBody {
+                bytes: s.clone().into_bytes().into(),
+                content_type: "text/plain; charset=utf-8",
+            },
+            other => {
+                return Err(DataflowError::Validation(format!(
+                    "body_format 'text' requires the body to be a string, got {}",
+                    json_type_name(other)
+                )));
+            }
+        },
+    };
+    Ok(encoded)
+}
+
+/// URL-encode a body object as `key=value` pairs.
+///
+/// Scalars encode directly; arrays of scalars become repeated keys (`to=a&to=b`
+/// — the multi-value convention of the common form APIs); `null` entries are
+/// skipped so one body shape with conditionally-null entries expresses optional
+/// parameters. Anything nested is refused: form encoding has no canonical
+/// nesting. Bracket-path conventions need no support here — `"metadata[id]"`
+/// is an ordinary top-level key.
+fn encode_form(body: &Value) -> dataflow_rs::Result<String> {
+    let Some(obj) = body.as_object() else {
+        return Err(DataflowError::Validation(format!(
+            "body_format 'form' requires the body to be an object of key/value pairs, got {}",
+            json_type_name(body)
+        )));
+    };
+    let mut ser = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in obj {
+        match value {
+            Value::Null => {}
+            Value::Array(items) => {
+                for item in items {
+                    let scalar =
+                        scalar_form_value(item).ok_or_else(|| form_value_error(key, item))?;
+                    ser.append_pair(key, &scalar);
+                }
+            }
+            other => {
+                let scalar =
+                    scalar_form_value(other).ok_or_else(|| form_value_error(key, other))?;
+                ser.append_pair(key, &scalar);
+            }
+        }
+    }
+    Ok(ser.finish())
+}
+
+/// A scalar's form-encoding text: strings verbatim, numbers and booleans in
+/// their canonical JSON spelling. `None` for anything that is not a scalar.
+fn scalar_form_value(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn form_value_error(key: &str, value: &Value) -> DataflowError {
+    DataflowError::Validation(format!(
+        "body_format 'form' cannot encode '{key}' ({}): entries must be scalars \
+         or arrays of scalars — form encoding has no canonical nesting",
+        json_type_name(value)
+    ))
+}
+
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// The per-call half of one HTTP request — what varies task to task, as
+/// opposed to the connector-level `HttpConnectorConfig`.
+#[derive(Debug)]
+pub struct RequestSpec<'a> {
+    pub method: &'a reqwest::Method,
+    pub url: &'a str,
+    pub task_headers: Option<&'a std::collections::HashMap<String, String>>,
+    pub body: Option<&'a Value>,
+    pub body_format: BodyFormat,
+    pub response_format: ResponseFormat,
+    pub timeout: Duration,
+    /// The auth to apply — the *effective* auth, resolved by the caller
+    /// (#268): static variants pass `http_config.auth.as_ref()` through;
+    /// `oauth2` connectors resolve a Bearer token via
+    /// [`crate::connector::oauth::effective_auth`] first. A parameter rather
+    /// than a read of `http_config.auth`, because resolving a token is async
+    /// state the connector config cannot carry.
+    pub auth: Option<&'a AuthConfig>,
+}
+
 /// Execute an HTTP request with connector config applied.
 ///
 /// Builds the request with connector headers, auth, optional task-level headers,
-/// optional body, and timeout. Returns the parsed JSON response. Redirects are
-/// followed manually (up to `MAX_REDIRECTS`) with SSRF re-validation per hop.
-#[tracing::instrument(skip(client, task_headers, http_config, body))]
+/// optional body (encoded per `body_format`), and timeout. Returns the response
+/// captured per `response_format`. Redirects are followed manually (up to
+/// `MAX_REDIRECTS`) with SSRF re-validation per hop.
+#[tracing::instrument(
+    skip(client, http_config, spec),
+    fields(method = ?spec.method, url = spec.url, timeout = ?spec.timeout)
+)]
 pub async fn execute_request(
     client: &reqwest::Client,
-    method: &reqwest::Method,
-    url: &str,
-    task_headers: Option<&std::collections::HashMap<String, String>>,
     http_config: &HttpConnectorConfig,
-    body: Option<&Value>,
-    timeout: Duration,
+    spec: RequestSpec<'_>,
 ) -> dataflow_rs::Result<Value> {
+    let RequestSpec {
+        method,
+        url,
+        task_headers,
+        body,
+        body_format,
+        response_format,
+        timeout,
+        auth,
+    } = spec;
     let original = url::Url::parse(url)
         .map_err(|e| DataflowError::Validation(format!("Invalid URL '{url}': {e}")))?;
     let mut current = original.clone();
     let mut method = method.clone();
-    let mut body = body;
+    // Encoded once — the bytes are identical on every retry and redirect hop.
+    let mut body = body.map(|b| encode_body(b, body_format)).transpose()?;
 
     for _ in 0..=MAX_REDIRECTS {
         // SSRF protection: block requests to private/internal IPs.
@@ -89,14 +303,24 @@ pub async fn execute_request(
             }
 
             // Apply auth headers (override connector defaults)
-            if let Some(ref auth) = http_config.auth {
+            if let Some(auth) = auth {
                 req = apply_auth(req, auth);
             }
         }
 
-        // Apply default content-type and body
-        if let Some(b) = body {
-            req = req.header("content-type", "application/json").json(b);
+        // Apply the body and its format's content-type. The format decides the
+        // bytes; the stamp is only a default — an explicit content-type (task-
+        // or connector-level) wins, and must not be *joined* by the stamp:
+        // `RequestBuilder::header` appends, so stamping unconditionally would
+        // put two content-type headers on the wire.
+        if let Some(enc) = &body {
+            let explicit_content_type = own_endpoint
+                && (task_headers.is_some_and(has_content_type)
+                    || has_content_type(&http_config.headers));
+            if !explicit_content_type {
+                req = req.header("content-type", enc.content_type);
+            }
+            req = req.body(enc.bytes.clone());
         }
 
         // Apply task-level headers LAST (highest priority — workflow developer's explicit choice wins)
@@ -128,7 +352,13 @@ pub async fn execute_request(
             continue;
         }
 
-        return read_json_response(response, &current, http_config.max_response_size).await;
+        return read_response(
+            response,
+            &current,
+            http_config.max_response_size,
+            response_format,
+        )
+        .await;
     }
 
     Err(DataflowError::function_execution(
@@ -143,6 +373,14 @@ fn same_endpoint(a: &url::Url, b: &url::Url) -> bool {
     a.host_str().is_some()
         && a.host_str() == b.host_str()
         && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// Whether a header map names `content-type` explicitly — the signal to
+/// withhold the body format's default stamp.
+fn has_content_type(headers: &std::collections::HashMap<String, String>) -> bool {
+    headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"))
 }
 
 /// The target of a redirect response, resolved against the current URL.
@@ -181,15 +419,19 @@ fn redirect_target(
     Ok(Some(next))
 }
 
-/// Read a (non-redirect) response body as JSON, enforcing `max_size`.
+/// Read a (non-redirect) response body per `format`, enforcing `max_size`.
+///
+/// Only the final parse step is format-dispatched — the size cap, the non-2xx
+/// error path, and the streaming reads are identical for every format.
 ///
 /// The limit is enforced *while streaming*: a chunked response with no
 /// `Content-Length` must not get to sit fully in memory before the size
 /// check — that is the exact OOM the limit exists to prevent.
-async fn read_json_response(
+async fn read_response(
     mut response: reqwest::Response,
     url: &url::Url,
     max_size: usize,
+    format: ResponseFormat,
 ) -> dataflow_rs::Result<Value> {
     let status = response.status();
 
@@ -241,13 +483,18 @@ async fn read_json_response(
         body_bytes.extend_from_slice(&chunk);
     }
 
-    let response_body: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
-        DataflowError::function_execution(
-            format!("Failed to parse response from {url} as JSON: {e}"),
-            None,
-        )
-    })?;
-    Ok(response_body)
+    match format {
+        ResponseFormat::Json => serde_json::from_slice(&body_bytes).map_err(|e| {
+            DataflowError::function_execution(
+                format!("Failed to parse response from {url} as JSON: {e}"),
+                None,
+            )
+        }),
+        // Lossy on invalid UTF-8, matching the error-path body capture above.
+        ResponseFormat::Text => Ok(Value::String(
+            String::from_utf8_lossy(&body_bytes).into_owned(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -363,12 +610,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            &format!("http://{}/test", addr),
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/test", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -416,12 +668,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::POST,
-            &format!("http://{}/post-test", addr),
-            Some(&headers),
             &http_config,
-            Some(&body),
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::POST,
+                url: &format!("http://{}/post-test", addr),
+                task_headers: Some(&headers),
+                body: Some(&body),
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -457,12 +714,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            &format!("http://{}/error", addr),
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/error", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -500,12 +762,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            &format!("http://{}/text", addr),
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/text", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -545,12 +812,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            &format!("http://{}/large", addr),
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/large", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -590,12 +862,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            &format!("http://{}/slow", addr),
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_millis(100), // Very short timeout
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/slow", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_millis(100), // Very short timeout,
+            },
         )
         .await;
 
@@ -620,12 +897,17 @@ mod tests {
 
         let result = execute_request(
             &client,
-            &reqwest::Method::GET,
-            "http://127.0.0.1:1/test",
-            None,
             &http_config,
-            None,
-            std::time::Duration::from_secs(1),
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url: "http://127.0.0.1:1/test",
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(1),
+            },
         )
         .await;
 
@@ -687,12 +969,17 @@ mod tests {
 
         let result = execute_request(
             &redirectless_client(),
-            &reqwest::Method::GET,
-            &format!("http://{}/redirect", addr),
-            None,
             &localhost_config(addr),
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/redirect", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -720,12 +1007,17 @@ mod tests {
 
         let result = execute_request(
             &redirectless_client(),
-            &reqwest::Method::GET,
-            &format!("http://{}/a", addr),
-            None,
             &localhost_config(addr),
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/a", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -747,12 +1039,17 @@ mod tests {
 
         let result = execute_request(
             &redirectless_client(),
-            &reqwest::Method::GET,
-            &format!("http://{}/loop", addr),
-            None,
             &localhost_config(addr),
-            None,
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/loop", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
@@ -782,16 +1079,283 @@ mod tests {
         let body = serde_json::json!({"data": "payload"});
         let result = execute_request(
             &redirectless_client(),
-            &reqwest::Method::POST,
-            &format!("http://{}/submit", addr),
-            None,
             &localhost_config(addr),
-            Some(&body),
-            std::time::Duration::from_secs(5),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::POST,
+                url: &format!("http://{}/submit", addr),
+                task_headers: None,
+                body: Some(&body),
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
         )
         .await;
 
         assert_eq!(result.expect("test")["done"], true);
+    }
+
+    // -- Format axes (#261) --
+
+    #[test]
+    fn test_format_value_tables() {
+        // Absent and "json" are today's behavior; unknown values are refused
+        // with the allowed set named — the same table validate_input enforces
+        // at authoring time.
+        assert_eq!(BodyFormat::parse(None).expect("test"), BodyFormat::Json);
+        assert_eq!(
+            BodyFormat::parse(Some("json")).expect("test"),
+            BodyFormat::Json
+        );
+        assert_eq!(
+            BodyFormat::parse(Some("form")).expect("test"),
+            BodyFormat::Form
+        );
+        assert_eq!(
+            BodyFormat::parse(Some("text")).expect("test"),
+            BodyFormat::Text
+        );
+        let err = BodyFormat::parse(Some("multipart")).expect_err("test");
+        assert!(err.contains("'json', 'form', 'text'"), "{err}");
+
+        assert_eq!(
+            ResponseFormat::parse(None).expect("test"),
+            ResponseFormat::Json
+        );
+        assert_eq!(
+            ResponseFormat::parse(Some("text")).expect("test"),
+            ResponseFormat::Text
+        );
+        let err = ResponseFormat::parse(Some("base64")).expect_err("test");
+        assert!(err.contains("'json', 'text'"), "{err}");
+    }
+
+    #[test]
+    fn test_encode_form_scalars_arrays_and_null() {
+        let body = serde_json::json!({
+            "grant_type": "refresh_token",
+            "retries": 3,
+            "dry_run": false,
+            "to": ["+15551111111", "+15552222222"],
+            "optional": null,
+        });
+        let enc = encode_body(&body, BodyFormat::Form).expect("test");
+        assert_eq!(enc.content_type, "application/x-www-form-urlencoded");
+        let encoded = String::from_utf8(enc.bytes.to_vec()).expect("test");
+        // Scalars canonical, arrays as repeated keys, nulls skipped, reserved
+        // characters percent-encoded.
+        assert_eq!(
+            encoded,
+            "grant_type=refresh_token&retries=3&dry_run=false\
+             &to=%2B15551111111&to=%2B15552222222"
+        );
+    }
+
+    #[test]
+    fn test_encode_form_bracket_keys_need_no_special_support() {
+        // Stripe-style nesting is an ordinary top-level key.
+        let body = serde_json::json!({"metadata[order_id]": "6735"});
+        let enc = encode_body(&body, BodyFormat::Form).expect("test");
+        assert_eq!(
+            String::from_utf8(enc.bytes.to_vec()).expect("test"),
+            "metadata%5Border_id%5D=6735"
+        );
+    }
+
+    #[test]
+    fn test_encode_form_rejects_nesting_naming_the_key() {
+        for body in [
+            serde_json::json!({"ok": "v", "bad": {"nested": true}}),
+            serde_json::json!({"ok": "v", "bad": [["nested"]]}),
+            serde_json::json!({"ok": "v", "bad": [null]}),
+        ] {
+            let err = encode_body(&body, BodyFormat::Form)
+                .expect_err("test")
+                .to_string();
+            assert!(err.contains("'bad'"), "should name the key: {err}");
+        }
+        // And a body that is not an object at all.
+        let err = encode_body(&serde_json::json!(["a", "b"]), BodyFormat::Form)
+            .expect_err("test")
+            .to_string();
+        assert!(err.contains("requires the body to be an object"), "{err}");
+    }
+
+    #[test]
+    fn test_encode_text_requires_string() {
+        let enc = encode_body(&serde_json::json!("<doc/>"), BodyFormat::Text).expect("test");
+        assert_eq!(enc.content_type, "text/plain; charset=utf-8");
+        assert_eq!(enc.bytes.as_ref(), b"<doc/>");
+
+        let err = encode_body(&serde_json::json!({"a": 1}), BodyFormat::Text)
+            .expect_err("test")
+            .to_string();
+        assert!(err.contains("requires the body to be a string"), "{err}");
+    }
+
+    /// Echoes back the request's body and every `content-type` header value,
+    /// so wire tests can assert what actually left the client.
+    fn echo_app() -> axum::Router {
+        axum::Router::new().route(
+            "/echo",
+            axum::routing::post(|headers: axum::http::HeaderMap, body: String| async move {
+                let content_types: Vec<String> = headers
+                    .get_all("content-type")
+                    .iter()
+                    .map(|v| v.to_str().unwrap_or_default().to_string())
+                    .collect();
+                axum::Json(serde_json::json!({
+                    "content_types": content_types,
+                    "body": body,
+                }))
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_form_body_on_the_wire() {
+        let addr = spawn_mock(echo_app()).await;
+        let body = serde_json::json!({"grant_type": "client_credentials", "scope": "a b"});
+
+        let result = execute_request(
+            &reqwest::Client::new(),
+            &localhost_config(addr),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::POST,
+                url: &format!("http://{}/echo", addr),
+                task_headers: None,
+                body: Some(&body),
+                body_format: BodyFormat::Form,
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect("test");
+
+        assert_eq!(result["body"], "grant_type=client_credentials&scope=a+b");
+        assert_eq!(
+            result["content_types"],
+            serde_json::json!(["application/x-www-form-urlencoded"])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_text_body_with_explicit_content_type_wins_alone() {
+        // The task's explicit content-type replaces the stamp rather than
+        // joining it — exactly one content-type header may reach the wire.
+        let addr = spawn_mock(echo_app()).await;
+        let body = serde_json::json!("<Envelope/>");
+        let headers = std::collections::HashMap::from([(
+            "Content-Type".to_string(),
+            "application/xml".to_string(),
+        )]);
+
+        let result = execute_request(
+            &reqwest::Client::new(),
+            &localhost_config(addr),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::POST,
+                url: &format!("http://{}/echo", addr),
+                task_headers: Some(&headers),
+                body: Some(&body),
+                body_format: BodyFormat::Text,
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect("test");
+
+        assert_eq!(result["body"], "<Envelope/>");
+        assert_eq!(
+            result["content_types"],
+            serde_json::json!(["application/xml"])
+        );
+    }
+
+    #[tokio::test]
+    async fn test_response_format_text_captures_plain_body() {
+        let mock_app =
+            axum::Router::new().route("/text", axum::routing::get(|| async { "OK id=12345" }));
+        let addr = spawn_mock(mock_app).await;
+
+        let result = execute_request(
+            &reqwest::Client::new(),
+            &localhost_config(addr),
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/text", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::Text,
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect("test");
+
+        assert_eq!(result, serde_json::json!("OK id=12345"));
+    }
+
+    #[tokio::test]
+    async fn test_response_format_text_keeps_error_and_size_paths() {
+        // Only the final parse is format-dispatched: a non-2xx still errors,
+        // and the streaming size cap still applies.
+        let mock_app = axum::Router::new()
+            .route(
+                "/fail",
+                axum::routing::get(|| async {
+                    (axum::http::StatusCode::BAD_GATEWAY, "upstream said no")
+                }),
+            )
+            .route("/large", axum::routing::get(|| async { "x".repeat(200) }));
+        let addr = spawn_mock(mock_app).await;
+        let mut config = localhost_config(addr);
+        config.max_response_size = 50;
+
+        let err = execute_request(
+            &reqwest::Client::new(),
+            &config,
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/fail", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::Text,
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect_err("test")
+        .to_string();
+        assert!(err.contains("502"), "{err}");
+
+        let err = execute_request(
+            &reqwest::Client::new(),
+            &config,
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/large", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::Text,
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect_err("test")
+        .to_string();
+        assert!(err.contains("exceed"), "{err}");
     }
 
     #[test]

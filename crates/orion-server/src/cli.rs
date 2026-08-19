@@ -307,7 +307,14 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // with no stub file: an unstubbed call then reports which stub to add,
     // rather than the `FunctionNotFound` an empty map used to give.
     let functions = orion::engine::functions::stub::build_stub_functions(stubs);
-    Ok(dataflow_rs::Engine::new(vec![df_workflow], functions)?)
+    // Custom operators are registered here too: a dry-run must speak the same
+    // expression vocabulary as the serving engine.
+    Ok(
+        orion::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+            .with_workflow(df_workflow)
+            .with_handlers(functions)
+            .build()?,
+    )
 }
 
 /// Dry-run a workflow against an input JSON file.

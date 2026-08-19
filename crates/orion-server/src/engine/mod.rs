@@ -20,6 +20,7 @@ pub mod functions;
 pub mod handlers;
 pub mod loader;
 pub mod observer;
+pub mod operators;
 pub mod profile;
 pub mod refs;
 pub mod reload;
