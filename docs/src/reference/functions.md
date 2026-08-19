@@ -20,9 +20,9 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **24 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **26 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; sixteen are Orion handlers that talk to [connectors](./connectors.md),
+engine; eighteen are Orion handlers that talk to [connectors](./connectors.md),
 compose channels, or compute locally.
 
 <div class="table-filter" data-label="Filter functions"></div>
@@ -45,6 +45,8 @@ compose channels, or compute locally.
 | [`cache_read`](#cache_read) | Connector | Cache | Read a value from Redis or the in-memory cache |
 | [`cache_write`](#cache_write) | Connector | Cache | Write a value to cache with optional TTL |
 | [`mongo_read`](#mongo_read) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
+| [`mongo_write`](#mongo_write) | Connector | MongoDB | Insert/update/replace/delete documents, nested shapes included |
+| [`mongo_aggregate`](#mongo_aggregate) | Connector | MongoDB | Run a stage-allowlisted aggregation pipeline |
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`send_email`](#send_email) | Connector | SMTP | Send transactional email through an SMTP connector |
 | [`storage_presign`](#storage_presign) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
@@ -527,13 +529,26 @@ The raw escape hatch for MongoDB reads: runs a `find()` with a hand-written
 Mongo filter document and writes the matched documents as a JSON array. For
 backend-portable queries, prefer [`data_query`](#data_query).
 
+Documents are **extended JSON**: BSON types with an extended-JSON spelling —
+`{"$oid": "…"}` for an ObjectId, `{"$date": "…"}` for a typed date, and the
+rest of the family — become real BSON values in the filter, and come back in
+their canonical spellings in the output, so a value read from one document can
+drive the next task's filter unchanged.
+
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the MongoDB connector |
 | `database` | string | yes | — | Database name |
 | `collection` | string | yes | — | Collection name |
-| `filter` | object | no | `{}` | MongoDB find filter document |
+| `filter` | object | no | `{}` | MongoDB find filter document (extended JSON) |
+| `projection` | object | no | all fields | MongoDB projection document, e.g. `{"name": 1, "_id": 0}` |
+| `sort` | object | no | natural order | MongoDB sort document, e.g. `{"created_at": -1}` |
+| `limit` | number | no | unlimited* | Maximum documents to return; must not exceed `query.max_limit` |
+| `skip` | number | no | `0` | Documents to skip; must not exceed `query.max_skip` |
 | `output` | string | no | `"data"` | Dotted path where matched documents are written |
+
+\* an unlimited read is still bounded: a result larger than `query.max_limit`
+is an error rather than an OOM.
 
 ```json
 {
@@ -542,8 +557,101 @@ backend-portable queries, prefer [`data_query`](#data_query).
     "connector": "mongo",
     "database": "shop",
     "collection": "customers",
-    "filter": { "tier": "vip" },
+    "filter": { "tier": "vip", "since": { "$gte": { "$date": "2024-01-01T00:00:00Z" } } },
+    "sort": { "since": -1 },
+    "limit": 50,
     "output": "data.vips"
+  }
+}
+```
+
+### `mongo_write`
+
+The write twin of [`mongo_read`](#mongo_read): inserts, updates, replaces, or
+deletes documents with hand-written Mongo documents — nested arrays and
+objects included, since every document field is extended JSON. For
+backend-portable mutations, prefer [`data_write`](#data_write).
+
+`op` is an open value set; each op reads a specific subset of the fields
+below, and naming a field the op ignores is an authoring-time error.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of the MongoDB connector |
+| `database` | string | yes | — | Database name |
+| `collection` | string | yes | — | Collection name |
+| `op` | string | yes | — | `insert_one`, `insert_many`, `update_one`, `update_many`, `replace_one`, `delete_one`, or `delete_many` |
+| `document` | object | conditional | — | The document for `insert_one` / `replace_one` (a replacement must be a plain document, no `$` operators) |
+| `documents` | array | conditional | — | Documents for `insert_many`; the batch is capped by `write.max_rows` |
+| `filter` | object | conditional | — | Selection filter for update/replace/delete ops (extended JSON) |
+| `update` | object | conditional | — | Update document for `update_one`/`update_many`; top-level keys must be atomic operators (`$set`, `$inc`, `$push`, …) |
+| `upsert` | bool | no | `false` | Insert when nothing matches (update/replace ops). Gated as `upsert` on the connector when true, `update` otherwise |
+| `ordered` | bool | no | `true` | `insert_many` only: stop at the first failure (`true`) or attempt every document (`false`) |
+| `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/replace/delete — also requires `write.allow_unfiltered` in config |
+| `output` | string | no | `"data"` | Dotted path where the write result is written |
+
+The result mirrors `data_write`'s Mongo envelopes: inserts report
+`{ "status", "inserted", "ids" }` (a partially applied `insert_many` reports
+per-item outcomes and audits as **207**, exactly like `data_write`); updates
+and replaces report `{ "status", "matched", "modified", "upserted_id"? }`;
+deletes report `{ "status", "deleted" }`.
+
+```json
+{
+  "name": "mongo_write",
+  "input": {
+    "connector": "mongo",
+    "database": "shop",
+    "collection": "meetings",
+    "op": "update_one",
+    "filter": { "_id": { "$oid": { "var": "data.payload.object.id" } } },
+    "update": { "$set": {
+      "payload": { "var": "data.payload" },
+      "updated_at": { "$date": { "var": "metadata.timestamp" } },
+      "deleted": false
+    } },
+    "upsert": true,
+    "output": "temp_data.write_result"
+  }
+}
+```
+
+### `mongo_aggregate`
+
+Runs an aggregation pipeline — the surface `find()` cannot reach: `$group`,
+`$unwind`, `$lookup`, `$facet`, and the rest. Stages are extended JSON, and
+**stage names are allowlisted**: the read-only stages are always available,
+while the write stages `$out`/`$merge` run only on a connector that sets
+[`aggregate_write_stages: true`](./connectors.md#db) (default
+false — an aggregation must not silently write). An unknown stage is refused
+by name, at authoring time for a literal pipeline and again at runtime after
+`{"var": ..}` substitution, so message data cannot smuggle a stage in.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of the MongoDB connector |
+| `database` | string | yes | — | Database name |
+| `collection` | string | yes | — | Collection name |
+| `pipeline` | array | yes | — | Aggregation stages, each `{"$stage": …}` (extended JSON) |
+| `allow_disk_use` | bool | no | `false` | Let the server spill large stages to disk |
+| `output` | string | no | `"data"` | Dotted path where result documents are written |
+
+Results are bounded by `query.max_limit` like `mongo_read`; a `$out`/`$merge`
+pipeline returns an empty array (Mongo's own contract for those stages).
+
+```json
+{
+  "name": "mongo_aggregate",
+  "input": {
+    "connector": "mongo",
+    "database": "shop",
+    "collection": "recordings",
+    "pipeline": [
+      { "$match": { "meetingId": { "var": "data.meeting_id" } } },
+      { "$unwind": "$videos" },
+      { "$group": { "_id": "$videos.quality", "count": { "$sum": 1 } } }
+    ],
+    "output": "temp_data.by_quality"
   }
 }
 ```

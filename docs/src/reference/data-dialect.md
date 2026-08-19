@@ -12,9 +12,10 @@ Two functions implement it:
 - [`data_write`](./functions.md#data_write) — writes: insert, update, delete,
   and upsert.
 
-The raw functions (`db_read`, `db_write`, `mongo_read`) remain the **escape
-hatch** for anything outside the portable vocabulary — hand-written SQL, CTEs,
-multi-table statements, aggregations.
+The raw functions (`db_read`/`db_write` for SQL; `mongo_read`/`mongo_write`/
+`mongo_aggregate` for MongoDB) remain the **escape hatch** for anything
+outside the portable vocabulary — hand-written SQL, CTEs, multi-table
+statements, aggregation pipelines, nested document writes.
 
 ```json
 {
@@ -96,6 +97,31 @@ produces literal values, never SQL or query text:
 Every resolved value is a **bound parameter** (SQL) or a document value
 (Mongo/ES). No user value is ever string-interpolated — the dialect is
 injection-safe by construction.
+
+### Extended-JSON values
+
+Two extended-JSON wrappers are accepted wherever a scalar value is — filter
+comparisons, `in` haystacks, and `data_write`'s `values`/`set`:
+
+| Wrapper | Meaning | Accepted payloads |
+|---------|---------|-------------------|
+| `{ "$oid": "<24 hex>" }` | A BSON ObjectId | hex string |
+| `{ "$date": … }` | A BSON typed date | RFC 3339 string, epoch milliseconds, or canonical `{"$numberLong": "<millis>"}` |
+
+The payload may itself be a `{ "param": "p" }` node, so a per-request id
+composes as `{ "$oid": { "param": "id" } }`; and a param whose *value* is a
+wrapper object (message data echoing a `mongo_read` result, which serializes
+ObjectIds and dates in exactly these spellings) coerces the same way.
+
+The payload is validated during lowering — a malformed `$oid` is a located
+envelope error on every backend. On **MongoDB** the wrappers render as native
+BSON values, so filtering on a real `_id` or a date range matches typed data
+instead of silently missing. On **SQL and Elasticsearch** they raise the
+standard capability error (`FeatureUnsupportedByTarget`) — an ISO date on
+those backends is already expressible as a plain string; the wrapper exists
+for BSON's typed values, and rendering it as anything else would compare
+differently than on Mongo. Any other object or array value remains
+not-representable, exactly as before.
 
 ## Query envelope (`data_query`)
 
@@ -252,6 +278,7 @@ Elasticsearch. The table below is the complete list of divergences.
 | The document key (`_id`) | **Explicit everywhere.** Neither MongoDB nor Elasticsearch maps a logical `id` to `_id` implicitly — declare the rename (`{"columns": {"id": {"name": "_id"}}}`). Without it, `id` is an ordinary document field |
 | ES upsert conflict target | Must resolve to the document `_id` (declare a schema rename); anything else is rejected |
 | Text-match case sensitivity | **Backend-defined; the dialect does not normalize it.** PostgreSQL `LIKE` is case-sensitive; SQLite's `LIKE` folds ASCII only; MySQL follows the column's collation (case-insensitive under the default `_ci` collations); MongoDB `$regex` is case-sensitive; Elasticsearch follows the field mapping (`keyword` exact, `text` analyzer-folded). Use a `keyword` mapping or a binary collation when an exact match matters |
+| [Extended-JSON values](#extended-json-values) (`$oid`, `$date`) | Native BSON on MongoDB. Rejected on SQL and Elasticsearch (`FeatureUnsupportedByTarget`) — a malformed payload is a located envelope error on every backend |
 
 <details><summary>Why case sensitivity is not normalized</summary>
 
@@ -448,8 +475,8 @@ of what workflows ask for. Everything defaults to allowed:
 
 | Gate | Blocks |
 |------|--------|
-| `read` | `data_query`, `db_read`, `mongo_read` |
-| `insert` / `update` / `delete` / `upsert` | the matching `data_write` op |
+| `read` | `data_query`, `db_read`, `mongo_read`, `mongo_aggregate` |
+| `insert` / `update` / `delete` / `upsert` | the matching `data_write` op, and the matching `mongo_write` op |
 | `raw_write` | the raw-SQL `db_write` escape hatch |
 
 A gated call fails with a validation error naming the operation and connector
@@ -471,16 +498,19 @@ through `data_query` — nothing stops a workflow from selecting the whole
 database.
 
 **These guards bound `data_query`/`data_write`, not the connector.** The raw
-escape hatches — `db_read`, `db_write`, `mongo_read` — run on the same
-connector, carry no entity name a guard could match, and are bounded only by
-`operations`. So:
+escape hatches — `db_read`, `db_write`, and the `mongo_read`/`mongo_write`/
+`mongo_aggregate` trio — run on the same connector, carry no entity name a
+guard could match, and are bounded only by `operations`. So:
 
-- **Writes** are fully bounded by `allowed_entities` once `"raw_write": false`
-  leaves `data_write` as the only write path.
-- **Reads are not**, because `read` gates `data_query`, `db_read` and
-  `mongo_read` together: a connector that permits the dialect permits raw SQL
-  and raw `find` too. Bound those at the database credential — a role that can
-  only see the allowlisted tables — or keep raw reads on a separate connector.
+- **SQL writes** are fully bounded by `allowed_entities` once
+  `"raw_write": false` leaves `data_write` as the only write path; on MongoDB
+  the per-op gates also cover `mongo_write`, but its collection names are not
+  matched against the guard.
+- **Reads are not**, because `read` gates `data_query`, `db_read`,
+  `mongo_read` and `mongo_aggregate` together: a connector that permits the
+  dialect permits raw SQL and raw `find` too. Bound those at the database
+  credential — a role that can only see the allowlisted tables — or keep raw
+  reads on a separate connector.
 - On MongoDB the task's `database` field is not checked against the guard
   either, so an allowlisted collection name can be read from any database the
   credential can see. Scope the credential, not just the list.

@@ -808,7 +808,7 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
-    const HANDLERS: [&str; 12] = [
+    const HANDLERS: [&str; 14] = [
         "cache_read",
         "cache_write",
         "db_read",
@@ -816,6 +816,8 @@ mod observability_tests {
         "data_query",
         "data_write",
         "mongo_read",
+        "mongo_write",
+        "mongo_aggregate",
         "http_call",
         "publish_kafka",
         "send_email",

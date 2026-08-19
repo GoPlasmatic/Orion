@@ -101,8 +101,8 @@ Every connector type carries an `operations` block that limits what workflows ma
 
 | Type | Gate | Blocks |
 |------|------|--------|
-| `db`, `es` | `read` | `data_query`, `db_read`, `mongo_read` |
-| `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation |
+| `db`, `es` | `read` | `data_query`, `db_read`, `mongo_read`, `mongo_aggregate` |
+| `db`, `es` | `insert`, `update`, `delete`, `upsert` | The matching `data_write` operation, and the matching `mongo_write` op (`insert_*` → `insert`, `update_*`/`replace_one` → `update` — or `upsert` when `"upsert": true` — `delete_*` → `delete`) |
 | `db`, `es` | `raw_write` | `db_write` — raw SQL cannot be classified per operation |
 | `cache` | `read` | `cache_read` |
 | `cache` | `write` | `cache_write`, plus channel stores backed by the connector (see below) |
@@ -212,13 +212,14 @@ Runs parameterized queries against PostgreSQL, MySQL, SQLite, or MongoDB. The `c
 | `allow_private_urls` | boolean | no | `false` | Allow private and internal IP addresses (SSRF protection). Ignored for `sqlite:`, which opens a file |
 | `operations` | object | no | all allowed | `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` — see [Operation gates](#operation-gates) |
 | `dialect` | object | no | both guards off | [Dialect guards](#dialect-guards) |
+| `aggregate_write_stages` | boolean | no | `false` | MongoDB only: permit the `$out`/`$merge` write stages in [`mongo_aggregate`](./functions.md#mongo_aggregate) pipelines. The one default-deny gate — an aggregation must not silently write |
 
 Two ways to talk to it: the portable [`data_query` / `data_write`](./data-dialect.md) dialect, which runs unchanged against SQL, MongoDB, and Elasticsearch; or raw SQL via [`db_read` / `db_write`](./functions.md#db_read).
 
 There is no `retry` field: a statement that timed out may already have been applied, so database calls are never re-driven — see [Retries](#retries-http-only). Bound the call with `connect_timeout_ms` and `query_timeout_ms` instead.
 
 > [!NOTE]
-> A `mongodb://` or `mongodb+srv://` scheme makes this a MongoDB connector. `data_query` and `data_write` run against it unchanged (pass a `database` field in the task input); raw `find()` filters use [`mongo_read`](./functions.md#mongo_read).
+> A `mongodb://` or `mongodb+srv://` scheme makes this a MongoDB connector. `data_query` and `data_write` run against it unchanged (pass a `database` field in the task input); the raw-native surface is the [`mongo_read`](./functions.md#mongo_read) / [`mongo_write`](./functions.md#mongo_write) / [`mongo_aggregate`](./functions.md#mongo_aggregate) trio, whose documents are extended JSON (`$oid`, `$date`, nested shapes).
 
 ### Dialect guards
 

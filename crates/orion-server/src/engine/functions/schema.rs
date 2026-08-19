@@ -117,7 +117,9 @@ use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
 use super::jwt_sign::JWT_SIGN_FIELDS;
 use super::jwt_verify::JWT_VERIFY_FIELDS;
+use super::mongo_aggregate::MONGO_AGGREGATE_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
+use super::mongo_write::MONGO_WRITE_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
 use super::send_email::SEND_EMAIL_FIELDS;
 use super::storage_head::STORAGE_HEAD_FIELDS;
@@ -168,10 +170,26 @@ const REGISTRY: &[FunctionSchema] = &[
     },
     FunctionSchema {
         name: "mongo_read",
-        description: "Run find() against a MongoDB connector.",
+        description: "Run find() against a MongoDB connector, with optional projection/sort/limit/skip.",
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
         deny_unknown: false,
+    },
+    FunctionSchema {
+        name: "mongo_write",
+        description: "Write documents to a MongoDB connector: insert/update/replace/delete, nested documents as extended JSON.",
+        category: "connector",
+        // Strict: a typoed `upsert` or `ordered` silently changes what a
+        // write does — the crypto/send_email rationale exactly.
+        input_fields: MONGO_WRITE_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "mongo_aggregate",
+        description: "Run an aggregation pipeline against a MongoDB connector (stage-allowlisted; $out/$merge behind a connector opt-in).",
+        category: "connector",
+        input_fields: MONGO_AGGREGATE_FIELDS,
+        deny_unknown: true,
     },
     FunctionSchema {
         name: "channel_call",
@@ -438,6 +456,31 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
             "REQUIRED",
             "channel_call requires either 'channel' (static) or 'channel_logic' (dynamic)",
         ));
+    }
+
+    // Cross-field: the MongoDB write ops' conditional requirements
+    // (op-specific fields, the operator-vs-plain document rules) and the
+    // aggregation stage allowlist — both next to their handlers, shared with
+    // the execution path (#263).
+    if function_name == "mongo_write" {
+        for (suffix, code, message) in super::mongo_write::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+    if function_name == "mongo_aggregate" {
+        for (suffix, code, message) in super::mongo_aggregate::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
     }
 
     // Cross-field: crypto's operation envelope. The op × algorithm capability

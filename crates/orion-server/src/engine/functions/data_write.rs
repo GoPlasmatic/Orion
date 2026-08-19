@@ -31,7 +31,8 @@ const NAME: &str = "data_write";
 /// Audit status for a bulk write that applied some but not all of its items
 /// (F28) — HTTP 207 Multi-Status, the code that exists for exactly this. Below
 /// 400, so the workflow continues; not 200, so the trace shows it happened.
-const PARTIAL_STATUS: u16 = 207;
+/// Shared with `mongo_write` (#263), whose bulk inserts classify identically.
+pub(super) const PARTIAL_STATUS: u16 = 207;
 
 /// Executes a portable `data_write` — one backend-neutral mutation envelope
 /// (`op`/`target`/`values`/`set`/`filter`/`on_conflict`/`returning`) that renders
@@ -326,7 +327,7 @@ async fn execute_mongo(
 /// which documents landed, so it stays a plain execution error. An *empty*
 /// list counts as `None` for the same reason: reporting no failed item for a
 /// call that failed would turn the error into a success.
-fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize, Value)>> {
+pub(super) fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize, Value)>> {
     let mongodb::error::ErrorKind::InsertMany(bulk) = e.kind.as_ref() else {
         return None;
     };
@@ -354,7 +355,7 @@ fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize, Value)>> 
 ///
 /// Nothing applied is still a hard error — there is no partial state to
 /// describe, and a silent no-op would be worse than a failed workflow.
-fn bulk_result(
+pub(super) fn bulk_result(
     outcome: query::bulk::BulkOutcome,
     what: &str,
 ) -> Result<(Value, TaskOutcome), DataflowError> {

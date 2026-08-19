@@ -357,6 +357,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         })
     }
 
@@ -517,6 +518,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         assert!(check_db_endpoint("c", &cfg).await.is_err());
         cfg.allow_private_urls = true;
@@ -556,6 +558,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         let err = check_db_endpoint("meta", &cfg).await.expect_err("test");
         assert!(err.to_string().contains("169.254.169.254"), "{err}");
@@ -582,6 +585,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
             dialect: Default::default(),
+            aggregate_write_stages: false,
         };
         check_db_endpoint("local", &cfg).await.expect("test");
     }

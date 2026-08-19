@@ -247,6 +247,11 @@ fn to_bson(v: &Value) -> Bson {
         Value::Int(i) => Bson::Int64(*i),
         Value::Float(f) => Bson::Double(*f),
         Value::Str(s) => Bson::String(s.clone()),
+        // #263: the tagged values, validated during lowering, become the native
+        // BSON types here — the whole point: a filter on a real ObjectId `_id`
+        // or a date range matches instead of silently missing.
+        Value::ObjectId(bytes) => Bson::ObjectId(mongodb::bson::oid::ObjectId::from_bytes(*bytes)),
+        Value::DateTime(ms) => Bson::DateTime(mongodb::bson::DateTime::from_millis(*ms)),
     }
 }
 
@@ -500,6 +505,29 @@ mod tests {
         assert_eq!(q.filter, doc! { "_id": { "$eq": "u1" } });
     }
 
+    /// #263: the tagged values become native BSON — an ObjectId `_id` filter
+    /// and a date range now *match*, instead of comparing a string/number
+    /// against a typed value and silently missing.
+    #[test]
+    fn test_tagged_values_render_native_bson() {
+        let q = mongo(json!({
+            "source": "meetings",
+            "filter": { "and": [
+                { "==": [{"field": "_id"}, { "$oid": "665f1f77bcf86cd799439011" }] },
+                { ">": [{"field": "created_at"}, { "$date": "2024-05-04T00:00:00Z" }] }
+            ] }
+        }));
+        let oid = mongodb::bson::oid::ObjectId::parse_str("665f1f77bcf86cd799439011")
+            .expect("valid test oid");
+        assert_eq!(
+            q.filter,
+            doc! { "$and": [
+                { "_id": { "$eq": oid } },
+                { "created_at": { "$gt": mongodb::bson::DateTime::from_millis(1_714_780_800_000) } }
+            ] }
+        );
+    }
+
     #[test]
     fn test_membership_and_range() {
         let q = mongo(json!({
@@ -720,6 +748,31 @@ mod tests {
                     doc! { "id": "u1", "name": "Ada" },
                     doc! { "id": "u2", "name": "Bob" },
                 ],
+            }
+        );
+    }
+
+    /// #263: tagged values in `set`/`values` write native BSON types.
+    #[test]
+    fn test_write_set_renders_tagged_values_natively() {
+        let mw = render_write(&resolve(json!({
+            "op": "update", "target": "meetings",
+            "set": { "expires_at": { "$date": 1_714_780_800_000_i64 } },
+            "filter": { "==": [{ "field": "_id" }, { "$oid": "665f1f77bcf86cd799439011" }] }
+        })))
+        .expect("render");
+        let oid = mongodb::bson::oid::ObjectId::parse_str("665f1f77bcf86cd799439011")
+            .expect("valid test oid");
+        assert_eq!(
+            mw,
+            MongoWrite::Update {
+                collection: "meetings".to_string(),
+                filter: doc! { "_id": { "$eq": oid } },
+                update: doc! { "$set": {
+                    "expires_at": mongodb::bson::DateTime::from_millis(1_714_780_800_000)
+                } },
+                upsert: false,
+                multi: true,
             }
         );
     }

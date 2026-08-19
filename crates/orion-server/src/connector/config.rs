@@ -363,6 +363,13 @@ pub struct DbConnectorConfig {
     /// Which tables the portable dialect may reach through this connector.
     #[serde(default)]
     pub dialect: DialectGuards,
+    /// Permit the aggregation write stages (`$out`/`$merge`) in
+    /// `mongo_aggregate` pipelines (#263). Default **false** — the one
+    /// deliberate default-deny among the gates, because "aggregation" reads as
+    /// a read operation and must not silently write. MongoDB connectors only;
+    /// a SQL connector never reaches the aggregate handler.
+    #[serde(default)]
+    pub aggregate_write_stages: bool,
 }
 
 /// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`

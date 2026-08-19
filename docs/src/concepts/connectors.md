@@ -32,7 +32,7 @@ credential, and one circuit breaker. Change the endpoint and both follow.
 | Type | Reaches | Used by |
 |---|---|---|
 | `http` | Any HTTP API | `http_call` |
-| `db` | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read` |
+| `db` | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | `cache` | Redis, or process memory | `cache_read`, `cache_write` |
 | `es` | Elasticsearch | `data_query`, `data_write` |
 | `kafka` | A Kafka cluster (producing) | `publish_kafka` |

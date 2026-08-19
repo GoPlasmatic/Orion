@@ -370,7 +370,13 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
                         name: name.to_string(),
                         at: at.to_string(),
                     })?;
-                return literal_operand(resolved, at);
+                return literal_operand(resolved, ctx.params, at);
+            }
+            // The extended-JSON wrappers (#263) sit at the value position like
+            // any other literal, so they are tried before the unknown-operator
+            // fallthrough.
+            if let Some(v) = extended_json_value(map, ctx.params, at)? {
+                return Ok(Operand::Val(v));
             }
             match single_entry(map) {
                 Some((inner_op, _)) => Err(QueryError::UnsupportedInQuery {
@@ -380,7 +386,7 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
                 None => Err(not_representable("object literal operand", at)),
             }
         }
-        other => literal_operand(other, at),
+        other => literal_operand(other, ctx.params, at),
     }
 }
 
@@ -390,14 +396,14 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
 /// lowering, where `at` names the real filter location — so every backend
 /// refuses it identically instead of one erroring late and others nesting
 /// silently.
-fn literal_operand(j: &Json, at: &str) -> Result<Operand, QueryError> {
+fn literal_operand(j: &Json, params: &Params, at: &str) -> Result<Operand, QueryError> {
     match j {
         Json::Array(arr) => arr
             .iter()
-            .map(|e| json_to_value(e, at))
+            .map(|e| json_to_value(e, params, at))
             .collect::<Result<Vec<_>, _>>()
             .map(Operand::List),
-        other => Ok(Operand::Val(json_to_value(other, at)?)),
+        other => Ok(Operand::Val(json_to_value(other, params, at)?)),
     }
 }
 
@@ -433,7 +439,7 @@ fn rel_name(node: &Json, at: &str) -> Result<String, QueryError> {
         })
 }
 
-fn json_to_value(j: &Json, at: &str) -> Result<Value, QueryError> {
+fn json_to_value(j: &Json, params: &Params, at: &str) -> Result<Value, QueryError> {
     Ok(match j {
         Json::Null => Value::Null,
         Json::Bool(b) => Value::Bool(*b),
@@ -453,7 +459,108 @@ fn json_to_value(j: &Json, at: &str) -> Result<Value, QueryError> {
         // Only list *elements* reach this arm (a top-level array becomes an
         // `Operand::List` in `literal_operand`), so an array here is a nested list.
         Json::Array(_) => return Err(not_representable("nested list literal", at)),
-        Json::Object(_) => return Err(not_representable("object literal value", at)),
+        Json::Object(m) => match extended_json_value(m, params, at)? {
+            Some(v) => v,
+            None => return Err(not_representable("object literal value", at)),
+        },
+    })
+}
+
+/// Interpret the extended-JSON wrapper spellings into tagged IR values (#263).
+///
+/// `Ok(None)` means "not a wrapper" — the caller applies its ordinary object
+/// handling (reject, or try other single-key meanings). The recognised set:
+///
+/// * `{"$oid": "<24 hex>"}` → [`Value::ObjectId`], hex validated here so the
+///   error carries the real filter/values location and every backend sees the
+///   same refusal.
+/// * `{"$date": …}` → [`Value::DateTime`] in epoch milliseconds, from an
+///   RFC 3339 string, an integer (millis), or the canonical extended-JSON
+///   `{"$numberLong": "<millis>"}` — the spelling `mongo_read` results carry,
+///   so a value read from one document can filter the next query unchanged.
+///
+/// A wrapper's payload may itself be a `{"param": name}` node, resolved from
+/// `params` before coercion — so a per-request id composes as
+/// `{"$oid": {"param": "id"}}` exactly like any other dialect value.
+///
+/// Shared with the write envelope (`query/write.rs`), which accepts the same
+/// wrappers in `values`/`set`. Future wrappers (`$uuid`, `$numberDecimal`, …)
+/// are one match arm plus one IR variant each.
+pub(crate) fn extended_json_value(
+    map: &Map<String, Json>,
+    params: &Params,
+    at: &str,
+) -> Result<Option<Value>, QueryError> {
+    if map.len() != 1 {
+        return Ok(None);
+    }
+    let (key, raw) = map.iter().next().expect("len checked as 1");
+    if key != "$oid" && key != "$date" {
+        return Ok(None);
+    }
+    // Fold a `{"param": name}` payload first, mirroring `parse_operand`.
+    let payload = match raw.as_object().and_then(|m| {
+        (m.len() == 1)
+            .then(|| m.get("param"))
+            .flatten()
+            .and_then(Json::as_str)
+    }) {
+        Some(name) => ctx_param(params, name, at)?,
+        None => raw,
+    };
+    match key.as_str() {
+        "$oid" => {
+            let hex = payload.as_str().ok_or_else(|| {
+                QueryError::InvalidEnvelope(format!("$oid at {at} expects a hex string"))
+            })?;
+            let oid = mongodb::bson::oid::ObjectId::parse_str(hex).map_err(|_| {
+                QueryError::InvalidEnvelope(format!(
+                    "$oid at {at} is not a valid ObjectId (expected 24 hex characters)"
+                ))
+            })?;
+            Ok(Some(Value::ObjectId(oid.bytes())))
+        }
+        "$date" => Ok(Some(Value::DateTime(date_millis(payload, at)?))),
+        _ => unreachable!("key checked above"),
+    }
+}
+
+/// The three accepted `$date` payload spellings, normalised to epoch millis.
+fn date_millis(payload: &Json, at: &str) -> Result<i64, QueryError> {
+    match payload {
+        Json::String(s) => mongodb::bson::DateTime::parse_rfc3339_str(s)
+            .map(|d| d.timestamp_millis())
+            .map_err(|_| {
+                QueryError::InvalidEnvelope(format!(
+                    "$date at {at} is not an RFC 3339 datetime string"
+                ))
+            }),
+        Json::Number(n) => n.as_i64().ok_or_else(|| {
+            QueryError::InvalidEnvelope(format!(
+                "$date at {at} must be integer epoch milliseconds"
+            ))
+        }),
+        Json::Object(m) if m.len() == 1 && m.contains_key("$numberLong") => m
+            .get("$numberLong")
+            .and_then(Json::as_str)
+            .and_then(|s| s.parse::<i64>().ok())
+            .ok_or_else(|| {
+                QueryError::InvalidEnvelope(format!(
+                    "$date at {at}: $numberLong expects a stringified integer"
+                ))
+            }),
+        _ => Err(QueryError::InvalidEnvelope(format!(
+            "$date at {at} expects an RFC 3339 string, epoch milliseconds, or \
+             {{\"$numberLong\": \"<millis>\"}}"
+        ))),
+    }
+}
+
+/// A params lookup with the standard missing-param error.
+fn ctx_param<'a>(params: &'a Params, name: &str, at: &str) -> Result<&'a Json, QueryError> {
+    params.get(name).ok_or_else(|| QueryError::MissingParam {
+        name: name.to_string(),
+        at: at.to_string(),
     })
 }
 
@@ -965,5 +1072,154 @@ mod tests {
         )
         .expect_err("unknown relation");
         assert!(matches!(err, QueryError::UnknownRelation { .. }));
+    }
+
+    // ---- Extended-JSON tagged values (#263) ----
+
+    const OID: &str = "665f1f77bcf86cd799439011";
+
+    fn oid_bytes() -> [u8; 12] {
+        mongodb::bson::oid::ObjectId::parse_str(OID)
+            .expect("valid test oid")
+            .bytes()
+    }
+
+    /// The headline defect: filtering on a real `_id` used to be
+    /// unrepresentable (object literal → error), so callers fell back to plain
+    /// strings that silently matched nothing on Mongo.
+    #[test]
+    fn test_oid_wrapper_lowers_to_a_tagged_value() {
+        let c = lower(
+            &json!({ "==": [{"field": "_id"}, { "$oid": OID }] }),
+            &Params::new(),
+        )
+        .expect("lower");
+        assert_eq!(
+            c,
+            Cond::Compare {
+                field: FieldRef::identity("_id"),
+                op: CmpOp::Eq,
+                value: Value::ObjectId(oid_bytes()),
+            }
+        );
+    }
+
+    /// All three `$date` spellings normalise to the same epoch milliseconds —
+    /// including the canonical `{"$numberLong": …}` form `mongo_read` output
+    /// carries, so a value read from one document filters the next query.
+    #[test]
+    fn test_date_wrapper_spellings_agree() {
+        for payload in [
+            json!("2024-05-04T00:00:00Z"),
+            json!(1_714_780_800_000_i64),
+            json!({ "$numberLong": "1714780800000" }),
+        ] {
+            let c = lower(
+                &json!({ ">": [{"field": "created_at"}, { "$date": payload }] }),
+                &Params::new(),
+            )
+            .expect("lower");
+            assert_eq!(
+                c,
+                Cond::Compare {
+                    field: FieldRef::identity("created_at"),
+                    op: CmpOp::Gt,
+                    value: Value::DateTime(1_714_780_800_000),
+                },
+                "payload {payload} must lower to the same instant"
+            );
+        }
+    }
+
+    /// A wrapper payload may be a `{"param": ..}` node — the per-request id
+    /// composes exactly like any other dialect value.
+    #[test]
+    fn test_wrapper_payload_resolves_params() {
+        let mut params = Params::new();
+        params.insert("id".to_string(), json!(OID));
+        let c = lower(
+            &json!({ "==": [{"field": "_id"}, { "$oid": { "param": "id" } }] }),
+            &params,
+        )
+        .expect("lower");
+        assert!(
+            matches!(c, Cond::Compare { value: Value::ObjectId(b), .. } if b == oid_bytes()),
+            "{c:?}"
+        );
+    }
+
+    /// …and a param *value* carrying the wrapper object (message data echoing
+    /// a `mongo_read` result) coerces the same way.
+    #[test]
+    fn test_param_value_carrying_a_wrapper_coerces() {
+        let mut params = Params::new();
+        params.insert("id".to_string(), json!({ "$oid": OID }));
+        let c = lower(
+            &json!({ "==": [{"field": "_id"}, { "param": "id" }] }),
+            &params,
+        )
+        .expect("lower");
+        assert!(
+            matches!(c, Cond::Compare { value: Value::ObjectId(b), .. } if b == oid_bytes()),
+            "{c:?}"
+        );
+    }
+
+    /// Wrappers work as `in` haystack elements.
+    #[test]
+    fn test_wrappers_in_a_haystack() {
+        let c = lower(
+            &json!({ "in": [{"field": "_id"}, [{ "$oid": OID }, { "$oid": OID }]] }),
+            &Params::new(),
+        )
+        .expect("lower");
+        assert!(
+            matches!(&c, Cond::In { values, .. } if values.len() == 2
+                && values.iter().all(|v| *v == Value::ObjectId(oid_bytes()))),
+            "{c:?}"
+        );
+    }
+
+    /// A bad payload is a located envelope error — validated at lowering, so
+    /// every backend sees the same refusal at the real filter location.
+    #[test]
+    fn test_invalid_wrapper_payloads_are_located_errors() {
+        for (filter, needle) in [
+            (json!({ "==": [{"field": "_id"}, { "$oid": "nope" }] }), "$oid"),
+            (
+                json!({ "==": [{"field": "at"}, { "$date": "not a date" }] }),
+                "$date",
+            ),
+            (
+                json!({ "==": [{"field": "at"}, { "$date": { "$numberLong": "x" } }] }),
+                "$numberLong",
+            ),
+        ] {
+            let err = lower(&filter, &Params::new()).expect_err("invalid payload");
+            assert!(
+                matches!(err, QueryError::InvalidEnvelope(_)),
+                "{err:?}"
+            );
+            assert!(err.to_string().contains(needle), "{err}");
+        }
+    }
+
+    /// The carve-out is exactly two spellings: any other single-key `$` object
+    /// stays an unknown operator, and a plain object stays not-representable.
+    #[test]
+    fn test_other_objects_keep_their_pre_263_refusals() {
+        let err = lower(
+            &json!({ "==": [{"field": "x"}, { "$regex": "a.*" }] }),
+            &Params::new(),
+        )
+        .expect_err("not a wrapper");
+        assert!(matches!(err, QueryError::UnsupportedInQuery { .. }), "{err:?}");
+
+        let err = lower(
+            &json!({ "==": [{"field": "x"}, { "a": 1, "b": 2 }] }),
+            &Params::new(),
+        )
+        .expect_err("plain object");
+        assert!(matches!(err, QueryError::NotRepresentable { .. }), "{err:?}");
     }
 }

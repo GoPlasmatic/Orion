@@ -161,6 +161,7 @@ const READABLE_KEYS: &[&str] = &[
     "write",
     "publish",
     "methods",
+    "aggregate_write_stages",
     // dialect guards
     "require_schema",
     "allowed_entities",

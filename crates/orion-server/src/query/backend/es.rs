@@ -98,7 +98,7 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
         Cond::Not(inner) => json!({ "bool": { "must_not": [query_json(inner, prefix)?] } }),
         Cond::Compare { field, op, value } => {
             let f = fname(field, prefix);
-            let v = to_json(value);
+            let v = to_json(value)?;
             match op {
                 CmpOp::Eq => json!({ "term": { f: v } }),
                 CmpOp::Ne => json!({ "bool": { "must_not": [{ "term": { f: v } }] } }),
@@ -114,7 +114,7 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
             negated,
         } => {
             let f = fname(field, prefix);
-            let vs: Vec<Json> = values.iter().map(to_json).collect();
+            let vs: Vec<Json> = values.iter().map(to_json).collect::<Result<_, _>>()?;
             let terms = json!({ "terms": { f: vs } });
             if *negated {
                 json!({ "bool": { "must_not": [terms] } })
@@ -142,11 +142,11 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
             let mut range = serde_json::Map::new();
             range.insert(
                 if *low_incl { "gte" } else { "gt" }.to_string(),
-                to_json(low),
+                to_json(low)?,
             );
             range.insert(
                 if *high_incl { "lte" } else { "lt" }.to_string(),
-                to_json(high),
+                to_json(high)?,
             );
             let clause = json!({ "range": { f: Json::Object(range) } });
             if *negated {
@@ -227,13 +227,26 @@ fn fname(field: &FieldRef, prefix: &str) -> String {
     }
 }
 
-fn to_json(v: &Value) -> Json {
-    match v {
+/// Render an IR value into the search/write body. The tagged BSON values
+/// (#263) have no Elasticsearch form and refuse with the dialect's standard
+/// capability error — an ISO date is already expressible as a plain string;
+/// the wrapper exists for BSON's *typed* date, which only MongoDB has.
+fn to_json(v: &Value) -> Result<Json, QueryError> {
+    Ok(match v {
         Value::Null => Json::Null,
         Value::Bool(b) => Json::Bool(*b),
         Value::Int(i) => json!(i),
         Value::Float(f) => json!(f),
         Value::Str(s) => Json::String(s.clone()),
+        Value::ObjectId(_) => return Err(es_unsupported("an ObjectId ($oid) value")),
+        Value::DateTime(_) => return Err(es_unsupported("a typed date ($date) value")),
+    })
+}
+
+fn es_unsupported(feature: &str) -> QueryError {
+    QueryError::FeatureUnsupportedByTarget {
+        feature: feature.to_string(),
+        target: "elasticsearch".to_string(),
     }
 }
 
@@ -311,7 +324,7 @@ pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
                     Some(i) => id_string(&row[i], "values")?,
                     None => None,
                 };
-                docs.push((id, source_doc(columns, row, "_id")));
+                docs.push((id, source_doc(columns, row, "_id")?));
             }
             EsWrite::BulkInsert {
                 index: table.clone(),
@@ -329,7 +342,7 @@ pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
             for (i, (col, v)) in set.iter().enumerate() {
                 source.push_str(&format!("ctx._source[params.f{i}] = params.v{i};"));
                 params.insert(format!("f{i}"), Json::String(col.clone()));
-                params.insert(format!("v{i}"), to_json(v));
+                params.insert(format!("v{i}"), to_json(v).map_err(WriteError::from)?);
             }
             EsWrite::UpdateByQuery {
                 index: table.clone(),
@@ -384,7 +397,7 @@ fn render_es_upsert(
             at: "values".to_string(),
         })
     })?;
-    let doc = source_doc(columns, plan.row, "_id");
+    let doc = source_doc(columns, plan.row, "_id")?;
 
     Ok(match plan.mode {
         super::UpsertMode::Replace => {
@@ -405,7 +418,7 @@ fn render_es_upsert(
             // `$setOnInsert`).
             let mut set_doc = serde_json::Map::new();
             for (col, v) in &plan.on_conflict {
-                set_doc.insert((*col).to_string(), to_json(v));
+                set_doc.insert((*col).to_string(), to_json(v).map_err(WriteError::from)?);
             }
             let mut merged = match &doc {
                 Json::Object(m) => m.clone(),
@@ -501,14 +514,14 @@ fn reject_id_in_set(set: &[(String, Value)]) -> Result<(), WriteError> {
 
 /// The row as a `_source` document, excluding the `skip` column (`_id` lives in
 /// the action/path — ES rejects it inside `_source`).
-fn source_doc(columns: &[String], row: &[Value], skip: &str) -> Json {
+fn source_doc(columns: &[String], row: &[Value], skip: &str) -> Result<Json, WriteError> {
     let mut m = serde_json::Map::new();
     for (col, v) in columns.iter().zip(row) {
         if col != skip {
-            m.insert(col.clone(), to_json(v));
+            m.insert(col.clone(), to_json(v).map_err(WriteError::from)?);
         }
     }
-    Json::Object(m)
+    Ok(Json::Object(m))
 }
 
 /// Coerce an `_id` value to the string form ES document ids use. `Null` means
@@ -543,6 +556,28 @@ mod tests {
 
     fn limits() -> QueryConfig {
         QueryConfig::default()
+    }
+
+    /// #263: the tagged BSON values have no Elasticsearch form and refuse with
+    /// the standard capability error (an ISO date is already expressible as a
+    /// plain string; the wrapper is BSON's *typed* date).
+    #[test]
+    fn tagged_values_are_a_capability_error() {
+        let err = crate::query::translate_es(
+            &json!({
+                "source": "t",
+                "filter": { ">": [{"field": "at"}, { "$date": "2024-05-04T00:00:00Z" }] }
+            }),
+            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
+            &limits(),
+        )
+        .expect_err("no ES form for a typed date");
+        assert!(
+            matches!(&err, QueryError::FeatureUnsupportedByTarget { target, .. } if target == "elasticsearch"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("$date"), "{err}");
     }
 
     /// Local translate helper (mirrors crate::query::translate_es).
