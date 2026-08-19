@@ -138,6 +138,21 @@ belong to the `crypto` function's `input_encoding` instead.
 | `base64url_encode` / `base64url_decode` | `{ "base64url_encode": [{ "var": "data.claims" }] }` | URL-safe base64, unpadded — the JWS form |
 | `hex_encode` / `hex_decode` | `{ "hex_encode": [{ "var": "data.token" }] }` | Lowercase hex |
 
+### Randomness (Orion operators)
+
+CSPRNG-backed value generation — never constant-folded, so every evaluation
+draws fresh; there is deliberately no seed parameter, and range/alphabet
+sampling is uniform (no modulo bias). The first argument selects the
+generator kind; a new kind is a table row, never a new operator. Bad
+arguments (unknown kind, inverted bounds, out-of-range length, an alphabet
+with duplicate characters) are evaluation-time errors naming what is
+allowed. Values are drawn live in dry-run and `orion-server test` too — like
+`now`, avoid asserting exact outputs in regression cases.
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `random` | `{ "random": ["digits", 6] }` | Kind-selected generation: `["uuid"]` / `["uuid", "v7"]` (canonical UUID; v7 is time-sortable), `["digits", n]` (exactly-n digits, leading zeros kept — the OTP shape, n ≤ 64), `["int", min, max]` (inclusive, within ±2⁵³−1), `["string", len, alphabet?]` (len ≤ 1024; named sets `alphanumeric` (default) / `hex` / `numeric` / `url-safe`, or a custom string of 2–256 distinct characters), `["bytes", n, encoding?]` (n ≤ 1024; `hex` default / `base64` / `base64url` per the encoding table above) |
+
 ## Sharp edges
 
 Five operators take a shape or a value that is easy to get wrong. Each bullet

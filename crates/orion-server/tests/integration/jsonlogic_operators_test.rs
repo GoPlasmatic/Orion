@@ -297,7 +297,7 @@ const OPERATORS: &[OperatorCase] = &[
         || json!({"try": [{"throw": ["boom"]}, "caught"]}),
         || json!("caught"),
     ),
-    // ---- orion custom operators (src/engine/operators.rs, #259c) ----
+    // ---- orion custom operators (src/engine/operators.rs, #259c/#260) ----
     // Not feature-gated: they are registered by Orion itself on every engine
     // it builds, so a failure here means a construction site lost the
     // registration, not that a cargo feature moved.
@@ -333,6 +333,11 @@ const OPERATORS: &[OperatorCase] = &[
         || json!({"hex_decode": ["576964676574"]}),
         || json!("Widget"),
     ),
+    // The degenerate min == max range pins registration and evaluation
+    // deterministically — the entropy-bearing kinds (uuid, digits, string,
+    // bytes) are shape-asserted in the operator's own unit tests, the same
+    // division of labor `now` gets.
+    ("random", || json!({"random": ["int", 5, 5]}), || json!(5)),
 ];
 
 /// Operator names documented in the "Available operators" section.

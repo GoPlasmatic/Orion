@@ -1,9 +1,11 @@
-//! Orion's custom JSONLogic operators — the encoding glue of #259(c).
+//! Orion's custom JSONLogic operators — the encoding glue of #259(c) and the
+//! `random` generator of #260.
 //!
-//! Six pure operators (`base64_encode`/`base64_decode`, `base64url_encode`/
-//! `base64url_decode`, `hex_encode`/`hex_decode`) registered on every engine
-//! that evaluates authored expressions, so they compose inside conditions,
-//! `map` logic, `body_logic` — anywhere JSONLogic runs. They are Orion's
+//! Six pure encoding operators (`base64_encode`/`base64_decode`,
+//! `base64url_encode`/`base64url_decode`, `hex_encode`/`hex_decode`) plus the
+//! CSPRNG-backed `random`, registered on every engine that evaluates authored
+//! expressions, so they compose inside conditions, `map` logic, `body_logic`
+//! — anywhere JSONLogic runs. They are Orion's
 //! vocabulary, not datalogic-rs's: the implementations live here and enter
 //! each engine through `dataflow_rs`'s `with_datalogic_operator` passthrough
 //! (or `datalogic_rs`'s own `add_operator` for the engines Orion builds
@@ -141,6 +143,175 @@ impl CustomOperator for Decode {
     }
 }
 
+/// The generator kinds `random` accepts — the extensible axis of #260. A new
+/// generator is a row here (plus its arm), never a new operator name.
+const RANDOM_KINDS: &[&str] = &["uuid", "digits", "int", "string", "bytes"];
+
+/// Bounds that keep a workflow from configuring a DoS on itself.
+const MAX_STRING_LENGTH: i64 = 1024;
+const MAX_BYTES: i64 = 1024;
+const MAX_DIGITS: i64 = 64;
+/// JSON's exactly-representable integer range (±2⁵³−1): `int` bounds live
+/// inside it so every consumer — including JavaScript ones — sees the exact
+/// value.
+const MAX_SAFE_INT: i64 = 9_007_199_254_740_991;
+
+/// `random` — CSPRNG-backed value generation, kind-selected (#260).
+///
+/// Never constant-folded and never CSE-memoized: datalogic's optimizers
+/// classify every custom operator as opaque and impure (the `now` treatment),
+/// so a fresh value per evaluation is structural. The CSPRNG is `rand`'s
+/// ThreadRng (OS-seeded); there is deliberately no seed parameter, and range
+/// and alphabet sampling go through `rand`'s uniform machinery — no modulo
+/// bias, which is a real property for OTPs.
+///
+/// A custom operator has no compile-time specialisation hook, so an unknown
+/// kind or an out-of-bounds argument is an evaluation-time error naming what
+/// is allowed — the trade #260 records.
+struct Random;
+
+impl CustomOperator for Random {
+    fn evaluate<'a>(
+        &self,
+        args: &[&'a DataValue<'a>],
+        _ctx: &mut EvalContext<'_, 'a>,
+        arena: &'a datalogic::bumpalo::Bump,
+    ) -> datalogic::Result<&'a DataValue<'a>> {
+        use rand::RngExt;
+
+        let Some(kind) = args.first().and_then(|v| v.as_str()) else {
+            return Err(Error::custom_message(format!(
+                "random requires a generator kind as its first argument — one of {}",
+                RANDOM_KINDS.join(", ")
+            )));
+        };
+        let mut rng = rand::rng();
+        match kind {
+            "uuid" => {
+                let id = match args.get(1).and_then(|v| v.as_str()) {
+                    None | Some("v4") => uuid::Uuid::new_v4(),
+                    // Time-ordered for index-friendly ids; embeds the creation
+                    // instant, which is why v4 stays the default.
+                    Some("v7") => uuid::Uuid::now_v7(),
+                    Some(other) => {
+                        return Err(Error::custom_message(format!(
+                            "random uuid version '{other}' is not supported — 'v4' (default) or 'v7'"
+                        )));
+                    }
+                };
+                Ok(arena.string(&id.to_string()))
+            }
+            "digits" => {
+                let n = int_arg(args, 1, "digits count", 1, MAX_DIGITS)?;
+                let code: String = (0..n)
+                    .map(|_| char::from(b'0' + rng.random_range(0..10u8)))
+                    .collect();
+                Ok(arena.string(&code))
+            }
+            "int" => {
+                let min = int_arg(args, 1, "min", -MAX_SAFE_INT, MAX_SAFE_INT)?;
+                let max = int_arg(args, 2, "max", -MAX_SAFE_INT, MAX_SAFE_INT)?;
+                if min > max {
+                    return Err(Error::custom_message(format!(
+                        "random int bounds are inverted: min {min} > max {max}"
+                    )));
+                }
+                Ok(arena.i64(rng.random_range(min..=max)))
+            }
+            "string" => {
+                let length = int_arg(args, 1, "length", 1, MAX_STRING_LENGTH)?;
+                let alphabet = alphabet_chars(args.get(2).copied())?;
+                let s: String = (0..length)
+                    .map(|_| alphabet[rng.random_range(0..alphabet.len())])
+                    .collect();
+                Ok(arena.string(&s))
+            }
+            "bytes" => {
+                let n = int_arg(args, 1, "byte count", 1, MAX_BYTES)?;
+                let codec = match args.get(2).and_then(|v| v.as_str()) {
+                    None | Some("hex") => Codec::Hex,
+                    Some("base64") => Codec::Base64,
+                    Some("base64url") => Codec::Base64Url,
+                    Some(other) => {
+                        return Err(Error::custom_message(format!(
+                            "random bytes encoding '{other}' is not supported — \
+                             hex (default), base64, base64url"
+                        )));
+                    }
+                };
+                let mut buf = vec![0u8; n as usize];
+                rng.fill(buf.as_mut_slice());
+                Ok(arena.string(&encode_bytes(codec, &buf)))
+            }
+            other => Err(Error::custom_message(format!(
+                "random kind '{other}' is not supported — one of {}",
+                RANDOM_KINDS.join(", ")
+            ))),
+        }
+    }
+}
+
+/// A required integer argument inside `[min, max]`, named plainly on failure.
+fn int_arg(
+    args: &[&DataValue<'_>],
+    index: usize,
+    what: &str,
+    min: i64,
+    max: i64,
+) -> Result<i64, Error> {
+    let Some(n) = args.get(index).and_then(|v| v.as_i64()) else {
+        return Err(Error::custom_message(format!(
+            "random requires {what} (an integer) as argument {index}"
+        )));
+    };
+    if n < min || n > max {
+        return Err(Error::custom_message(format!(
+            "random {what} must be between {min} and {max}, got {n}"
+        )));
+    }
+    Ok(n)
+}
+
+/// The character set for `random string`: a named alphabet, or a custom one
+/// given as a literal string of **distinct** characters — a duplicate would
+/// silently bias sampling toward it, so it is rejected instead.
+fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Vec<char>, Error> {
+    const ALPHANUMERIC: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let spec = match arg.map(|v| v.as_str()) {
+        None => None,
+        Some(Some(s)) => Some(s),
+        Some(None) => {
+            return Err(Error::custom_message(
+                "random string alphabet must be a string — a named set or the characters themselves",
+            ));
+        }
+    };
+    let chars: Vec<char> = match spec {
+        None | Some("alphanumeric") => ALPHANUMERIC.chars().collect(),
+        Some("hex") => "0123456789abcdef".chars().collect(),
+        Some("numeric") => "0123456789".chars().collect(),
+        Some("url-safe") => ALPHANUMERIC.chars().chain(['-', '_']).collect(),
+        Some(custom) => {
+            let chars: Vec<char> = custom.chars().collect();
+            let mut seen = std::collections::BTreeSet::new();
+            if let Some(dup) = chars.iter().find(|c| !seen.insert(**c)) {
+                return Err(Error::custom_message(format!(
+                    "random string alphabet repeats '{dup}' — duplicates would bias \
+                     sampling, so every character must be distinct"
+                )));
+            }
+            if chars.len() < 2 || chars.len() > 256 {
+                return Err(Error::custom_message(format!(
+                    "random string alphabet must have 2–256 distinct characters, got {}",
+                    chars.len()
+                )));
+            }
+            chars
+        }
+    };
+    Ok(chars)
+}
+
 /// Every operator Orion registers, name first. One list so the two
 /// registration paths below (and the vocabulary test) cannot drift.
 fn all() -> impl Iterator<Item = (&'static str, OrionOperator)> {
@@ -149,18 +320,22 @@ fn all() -> impl Iterator<Item = (&'static str, OrionOperator)> {
         ("base64url_encode", "base64url_decode", Codec::Base64Url),
         ("hex_encode", "hex_decode", Codec::Hex),
     ];
-    CODECS.into_iter().flat_map(|(enc, dec, codec)| {
-        [
-            (enc, OrionOperator::Encode(Encode { name: enc, codec })),
-            (dec, OrionOperator::Decode(Decode { name: dec, codec })),
-        ]
-    })
+    CODECS
+        .into_iter()
+        .flat_map(|(enc, dec, codec)| {
+            [
+                (enc, OrionOperator::Encode(Encode { name: enc, codec })),
+                (dec, OrionOperator::Decode(Decode { name: dec, codec })),
+            ]
+        })
+        .chain([("random", OrionOperator::Random(Random))])
 }
 
 /// The concrete operator behind one registered name.
 enum OrionOperator {
     Encode(Encode),
     Decode(Decode),
+    Random(Random),
 }
 
 impl CustomOperator for OrionOperator {
@@ -173,6 +348,7 @@ impl CustomOperator for OrionOperator {
         match self {
             OrionOperator::Encode(op) => op.evaluate(args, ctx, arena),
             OrionOperator::Decode(op) => op.evaluate(args, ctx, arena),
+            OrionOperator::Random(op) => op.evaluate(args, ctx, arena),
         }
     }
 }
@@ -204,7 +380,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn eval(logic: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub(super) fn eval(logic: serde_json::Value) -> Result<serde_json::Value, String> {
         // Templating mode, like every engine Orion runs expressions on.
         let e = add_to_datalogic(datalogic::Engine::builder().with_templating(true)).build();
         let out = e
@@ -293,5 +469,125 @@ mod tests {
     fn encoding_null_is_an_error_not_the_string_null() {
         let err = eval(json!({"base64_encode": [{"var": "data.absent"}]})).expect_err("test");
         assert!(err.contains("null"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod random_tests {
+    use super::tests::eval;
+    use serde_json::json;
+
+    #[test]
+    fn degenerate_int_range_is_deterministic() {
+        // min == max pins the value — the same case the operator vocabulary
+        // table uses, so registration is asserted without asserting entropy.
+        assert_eq!(
+            eval(json!({"random": ["int", 5, 5]})).expect("test"),
+            json!(5)
+        );
+    }
+
+    #[test]
+    fn int_stays_inside_inclusive_bounds() {
+        for _ in 0..200 {
+            let v = eval(json!({"random": ["int", -3, 3]})).expect("test");
+            let n = v.as_i64().expect("integer result");
+            assert!((-3..=3).contains(&n), "{n}");
+        }
+    }
+
+    #[test]
+    fn uuid_versions_have_their_version_nibble() {
+        for (args, nibble) in [
+            (json!(["uuid"]), '4'),
+            (json!(["uuid", "v4"]), '4'),
+            (json!(["uuid", "v7"]), '7'),
+        ] {
+            let v = eval(json!({"random": args})).expect("test");
+            let s = v.as_str().expect("string result");
+            assert_eq!(s.len(), 36, "{s}");
+            assert_eq!(s.chars().nth(14), Some(nibble), "{s}");
+        }
+        // Two draws differ — the "is it actually random" smoke test.
+        assert_ne!(
+            eval(json!({"random": ["uuid"]})).expect("test"),
+            eval(json!({"random": ["uuid"]})).expect("test"),
+        );
+    }
+
+    #[test]
+    fn digits_keep_length_and_charset() {
+        for _ in 0..50 {
+            let v = eval(json!({"random": ["digits", 6]})).expect("test");
+            let s = v.as_str().expect("string result");
+            assert_eq!(s.len(), 6, "{s}");
+            assert!(s.chars().all(|c| c.is_ascii_digit()), "{s}");
+        }
+    }
+
+    #[test]
+    fn string_kinds_respect_their_alphabets() {
+        let v = eval(json!({"random": ["string", 24]})).expect("test");
+        let s = v.as_str().expect("test");
+        assert_eq!(s.len(), 24);
+        assert!(s.chars().all(|c| c.is_ascii_alphanumeric()), "{s}");
+
+        let v = eval(json!({"random": ["string", 32, "hex"]})).expect("test");
+        assert!(
+            v.as_str()
+                .expect("test")
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "{v}"
+        );
+
+        // Custom alphabet: only its characters appear.
+        let v = eval(json!({"random": ["string", 40, "AB"]})).expect("test");
+        assert!(
+            v.as_str()
+                .expect("test")
+                .chars()
+                .all(|c| c == 'A' || c == 'B'),
+            "{v}"
+        );
+    }
+
+    #[test]
+    fn bytes_encode_per_the_pinned_table() {
+        let v = eval(json!({"random": ["bytes", 8]})).expect("test");
+        let s = v.as_str().expect("test");
+        assert_eq!(s.len(), 16, "hex doubles: {s}");
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()), "{s}");
+
+        // base64url of 32 bytes is 43 chars, unpadded — the JWS form.
+        let v = eval(json!({"random": ["bytes", 32, "base64url"]})).expect("test");
+        let s = v.as_str().expect("test");
+        assert_eq!(s.len(), 43, "{s}");
+        assert!(!s.ends_with('='), "{s}");
+    }
+
+    #[test]
+    fn bad_arguments_are_named_evaluation_errors() {
+        for (logic, expected) in [
+            (
+                json!({"random": ["melt"]}),
+                "one of uuid, digits, int, string, bytes",
+            ),
+            (json!({"random": ["uuid", "v9"]}), "'v4' (default) or 'v7'"),
+            (json!({"random": ["int", 9, 3]}), "inverted"),
+            (json!({"random": ["int", 1]}), "max"),
+            (json!({"random": ["digits", 0]}), "between 1 and 64"),
+            (json!({"random": ["string", 2000]}), "between 1 and 1024"),
+            (json!({"random": ["string", 8, "ABBA"]}), "repeats 'B'"),
+            (json!({"random": ["string", 8, "A"]}), "2–256"),
+            (
+                json!({"random": ["bytes", 16, "base32"]}),
+                "hex (default), base64, base64url",
+            ),
+            (json!({"random": []}), "generator kind"),
+        ] {
+            let err = eval(logic.clone()).expect_err("test");
+            assert!(err.contains(expected), "{logic}: {err}");
+        }
     }
 }
