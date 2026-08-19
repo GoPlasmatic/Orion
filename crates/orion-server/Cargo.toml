@@ -156,7 +156,7 @@ mongodb = { version = "3", default-features = false, features = ["compat-3-0-0",
 # dead for the process lifetime after one Redis restart (proposal D15).
 # `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
 # must come from Redis's own clock (N8).
-redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
+redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install
@@ -198,7 +198,7 @@ testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "m
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.
-redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 # In-process self-signed certificate generation for the TLS tests (no
 # external `openssl` CLI dependency).
 rcgen = "0.14"
