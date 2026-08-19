@@ -97,6 +97,8 @@ pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
     "mongo_read",
     "publish_kafka",
     "send_email",
+    "storage_head",
+    "storage_presign",
 ];
 
 /// Run the same `serde` deserialization that `dataflow_rs`'s

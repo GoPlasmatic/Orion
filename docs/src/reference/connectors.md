@@ -2,7 +2,7 @@
 
 A **connector** is a named connection to an external system — an API, a database, a cache, a Kafka cluster, or a search cluster. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
 
-There are exactly five connector types:
+There are exactly seven connector types:
 
 | Type | Backs | Task functions |
 |------|-------|----------------|
@@ -11,8 +11,10 @@ There are exactly five connector types:
 | [`db`](#db) | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read` |
 | [`cache`](#cache) | Redis or in-process memory | `cache_read`, `cache_write` |
 | [`es`](#es) | Elasticsearch | `data_query`, `data_write` |
+| [`smtp`](#smtp) | Transactional email over SMTP | `send_email` |
+| [`storage`](#storage) | S3-compatible object storage (presign + metadata only) | `storage_presign`, `storage_head` |
 
-Type values match case-insensitively. Any other value is refused with the valid list. A stored connector of a type that no longer exists (such as the removed `storage` type) fails to load and surfaces as a connector load issue.
+Type values match case-insensitively. Any other value is refused with the valid list. A stored connector whose config no longer parses fails to load and surfaces as a connector load issue.
 
 The task functions and their inputs are specified in the [Function Reference](./functions.md).
 
@@ -106,6 +108,7 @@ Every connector type carries an `operations` block that limits what workflows ma
 | `cache` | `write` | `cache_write`, plus channel stores backed by the connector (see below) |
 | `kafka` | `publish` | `publish_kafka` |
 | `http` | `methods` | Any method not on the allow-list (see below) |
+| `storage` | `presign_get`, `presign_put`, `head` | The matching storage function/method |
 
 To make a `db` connector fully delete-proof, disable both `delete` and `raw_write`:
 
@@ -319,6 +322,49 @@ authentication without sending mail, through the same pooled transport real
 sends use. There is no `retry` field, and `send_email` never retries on its
 own: SMTP has no idempotency key, so a re-driven timeout is a duplicate
 email — see [Retries](#retries-http-only).
+
+## `storage`
+
+S3-compatible object storage for [`storage_presign`](./functions.md#storage_presign)
+and [`storage_head`](./functions.md#storage_head) — a deliberately
+**zero-data-path** surface: presigning is local SigV4 arithmetic over the
+connector's credentials, `storage_head` is one bounded metadata request, and
+object bytes never move through the runtime. Works against any S3-compatible
+store: AWS, Linode/Akamai, Cloudflare R2, Backblaze B2, Wasabi, and
+self-hosted Garage / SeaweedFS / RustFS (usually with `force_path_style`).
+
+```json
+{
+  "name": "media",
+  "connector_type": "storage",
+  "config": {
+    "type": "storage",
+    "endpoint": "https://ap-south-1.linodeobjects.com",
+    "region": "ap-south-1",
+    "bucket": "media-bucket",
+    "access_key": "env://S3_ACCESS_KEY",
+    "secret_key": "env://S3_SECRET_KEY"
+  }
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `provider` | string | no | `"s3"` | Signing scheme. `s3` covers every S3-compatible store; GCS/Azure later are new values |
+| `endpoint` | string | yes | — | Base URL, e.g. `https://s3.us-east-1.amazonaws.com` |
+| `region` | string | yes | — | SigV4 signing region |
+| `bucket` | string | yes | — | The bucket this connector reaches — deliberately connector-owned: a second bucket is a second connector |
+| `access_key` | string | yes | — | Access key id (masked on reads — use `env://` references) |
+| `secret_key` | string | yes | — | Secret key; literal or `env://VAR` |
+| `session_token` | string | no | — | STS temporary-credential token, signed as `X-Amz-Security-Token` |
+| `force_path_style` | boolean | no | `false` | Path-style addressing (`endpoint/bucket/key`) — most self-hosted stores want `true` |
+| `allow_private_urls` | boolean | no | `false` | Allow a private/internal endpoint for `storage_head`'s network call |
+| `timeout_ms` | integer | no | `10000` | `storage_head` timeout; presigning makes no network call |
+| `operations` | object | no | all allowed | `presign_get` / `presign_put` / `head` — `presign_put: false` makes a media connector read-only |
+
+`POST /api/v1/admin/connectors/{name}/test` performs one signed HEAD of the
+bucket. There is no retry field: presigning is local computation, and
+`storage_head` follows the estate rule that only `http` connectors retry.
 
 ## Retries (HTTP only)
 

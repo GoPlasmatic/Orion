@@ -122,6 +122,24 @@ const READABLE_KEYS: &[&str] = &[
     "url",
     "brokers",
     "topic",
+    // smtp structure (#262) — the credential halves (`username` is above,
+    // `password` is denylisted) stay as they are
+    "host",
+    "port",
+    "tls",
+    "from",
+    "allow_from_override",
+    "timeout_ms",
+    // storage structure (#265) — both credential fields and the session
+    // token are caught by the secret vocabulary
+    "provider",
+    "endpoint",
+    "region",
+    "bucket",
+    "force_path_style",
+    "presign_get",
+    "presign_put",
+    "head",
     // limits & timeouts
     "max_connections",
     "connect_timeout_ms",

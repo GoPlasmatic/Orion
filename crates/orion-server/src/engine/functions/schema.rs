@@ -118,6 +118,8 @@ use super::http_call::HTTP_CALL_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
 use super::send_email::SEND_EMAIL_FIELDS;
+use super::storage_head::STORAGE_HEAD_FIELDS;
+use super::storage_presign::STORAGE_PRESIGN_FIELDS;
 
 const REGISTRY: &[FunctionSchema] = &[
     FunctionSchema {
@@ -200,6 +202,20 @@ const REGISTRY: &[FunctionSchema] = &[
         // Same rationale as crypto: a typoed field on an email (a lost `bcc`,
         // a misspelled `reply_to`) silently changes who gets what.
         input_fields: SEND_EMAIL_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "storage_presign",
+        description: "Compute a time-limited presigned URL for one object — no data path.",
+        category: "connector",
+        input_fields: STORAGE_PRESIGN_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "storage_head",
+        description: "Object metadata (exists/size/etag) from a storage connector.",
+        category: "connector",
+        input_fields: STORAGE_HEAD_FIELDS,
         deny_unknown: true,
     },
     FunctionSchema {
@@ -414,6 +430,19 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     // authoring-time rules and the execution path read the same tables.
     if function_name == "crypto" {
         for (suffix, code, message) in super::crypto::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+
+    // Cross-field: storage_presign's method table, per-method fields, and
+    // literal expires_in bounds — all next to the handler.
+    if function_name == "storage_presign" {
+        for (suffix, code, message) in super::storage_presign::validate_static_input(obj) {
             let path = if suffix.is_empty() {
                 input_path.clone()
             } else {

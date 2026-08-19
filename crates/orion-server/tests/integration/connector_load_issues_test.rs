@@ -425,12 +425,13 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
 /// `GET /connectors`, and every workflow referencing one failed at request
 /// time. It is removed in 1.0.
 ///
-/// The type can no longer be created through the API, so the only way a row
-/// exists is an upgrade from 0.3.x. That row must produce a load issue naming
-/// the removal and the remedy, not the bare serde `unknown variant
-/// \`storage\`` an operator cannot act on.
+/// #265 reinstated the `storage` type *with* a handler and a real config
+/// shape. A 0.3.x row — the config-only surface F15 removed — lacks that
+/// shape (no endpoint, no credentials), so it now reports a config-parse
+/// load issue naming the missing fields: strictly more actionable than the
+/// old blanket removal notice, and a correctly-shaped row simply loads.
 #[tokio::test]
-async fn a_stored_storage_connector_reports_the_removal() {
+async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
     sqlx::any::install_default_drivers();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
@@ -459,18 +460,9 @@ async fn a_stored_storage_connector_reports_the_removal() {
     let issues = registry.load_issues().await;
     assert_eq!(issues.len(), 1, "expected one load issue: {issues:?}");
     assert_eq!(issues[0].connector, "legacy-uploads");
-    assert_eq!(
-        issues[0].stage, "removed_type",
-        "a removed type is its own stage, not a generic deserialize failure"
-    );
     assert!(
-        issues[0].reason.contains("removed in 1.0"),
-        "the reason must say the type is gone: {}",
-        issues[0].reason
-    );
-    assert!(
-        issues[0].reason.contains("delete or disable"),
-        "the reason must say what to do about it: {}",
+        issues[0].reason.contains("endpoint"),
+        "the reason must name a missing #265 field: {}",
         issues[0].reason
     );
 }

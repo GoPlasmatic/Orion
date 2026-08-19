@@ -20,6 +20,7 @@ pub enum ConnectorConfig {
     Cache(CacheConnectorConfig),
     Es(EsConnectorConfig),
     Smtp(SmtpConnectorConfig),
+    Storage(StorageConnectorConfig),
 }
 
 impl ConnectorConfig {
@@ -35,6 +36,7 @@ impl ConnectorConfig {
             ConnectorConfig::Cache(_) => ConnectorType::Cache,
             ConnectorConfig::Es(_) => ConnectorType::Es,
             ConnectorConfig::Smtp(_) => ConnectorType::Smtp,
+            ConnectorConfig::Storage(_) => ConnectorType::Storage,
         }
     }
 
@@ -486,6 +488,120 @@ pub enum SmtpAuth {
     Basic { username: String, password: String },
 }
 
+/// Object-storage connector (#265): a scoped, zero-data-path surface —
+/// `storage_presign` computes URLs locally over these credentials, and
+/// `storage_head` makes one bounded metadata request. Object bytes never move
+/// through the runtime; that invariant is the type's scoping rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageConnectorConfig {
+    /// Which signing scheme the store speaks. `s3` covers every S3-compatible
+    /// store (AWS, Linode, Garage, SeaweedFS, RustFS, R2, Wasabi); GCS signed
+    /// URLs or Azure SAS later are new tagged values here — the functions
+    /// never change.
+    #[serde(default)]
+    pub provider: StorageProvider,
+    /// Base endpoint URL, e.g. `https://ap-south-1.linodeobjects.com`.
+    pub endpoint: String,
+    /// Signing region (SigV4 credential scope).
+    pub region: String,
+    /// The bucket this connector reaches. Deliberately connector-owned, not a
+    /// task field: the connector is the unit of scoping and gating, and a
+    /// task-level override would silently widen what a workflow can reach.
+    pub bucket: String,
+    /// Access key id — a credential identifier; masked on reads like its
+    /// secret half, so use `env://` references, which survive export/import.
+    pub access_key: String,
+    /// Secret access key; literal or `env://VAR`.
+    pub secret_key: String,
+    /// STS temporary-credential session token, signed as
+    /// `X-Amz-Security-Token` when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+    /// Path-style addressing (`endpoint/bucket/key`) instead of
+    /// virtual-hosted (`bucket.endpoint/key`). Most self-hosted stores
+    /// (Garage, SeaweedFS, RustFS) want `true`.
+    #[serde(default)]
+    pub force_path_style: bool,
+    /// Allow a private/internal endpoint for `storage_head`'s network call —
+    /// the S6 posture of every connector endpoint; a LAN-hosted store opts in.
+    #[serde(default)]
+    pub allow_private_urls: bool,
+    /// `storage_head` request timeout in milliseconds. Presigning makes no
+    /// network call and ignores this.
+    #[serde(default = "default_storage_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Which operations workflows may run through this connector.
+    #[serde(default)]
+    pub operations: StorageOperationGates,
+}
+
+fn default_storage_timeout_ms() -> u64 {
+    10_000
+}
+
+impl StorageConnectorConfig {
+    /// The `(scheme, host, canonical path)` for one object key — or the
+    /// bucket root when `key` is `None` (the connectivity probe). Addressing
+    /// style is decided here and nowhere else: virtual-hosted
+    /// (`bucket.endpoint`) by default, path-style under `force_path_style`.
+    pub fn address(&self, key: Option<&str>) -> Result<(String, String, String), String> {
+        let url = url::Url::parse(&self.endpoint)
+            .map_err(|e| format!("storage endpoint '{}' is not a URL: {e}", self.endpoint))?;
+        let scheme = url.scheme().to_string();
+        let host = url
+            .host_str()
+            .ok_or_else(|| format!("storage endpoint '{}' has no host", self.endpoint))?;
+        let host_port = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        };
+        let key_path = match key {
+            Some(k) => crate::connector::sigv4::encode_path(k),
+            None => "/".to_string(),
+        };
+        Ok(if self.force_path_style {
+            let bucket = crate::connector::sigv4::uri_encode(&self.bucket, false);
+            let path = if key_path == "/" {
+                format!("/{bucket}")
+            } else {
+                format!("/{bucket}{key_path}")
+            };
+            (scheme, host_port, path)
+        } else {
+            (scheme, format!("{}.{host_port}", self.bucket), key_path)
+        })
+    }
+}
+
+/// The signing scheme a storage connector speaks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StorageProvider {
+    #[default]
+    S3,
+}
+
+/// Storage-connector operation gates (F22e). Everything defaults to allowed;
+/// `presign_put: false` makes a media connector read-only in its config
+/// without touching workflows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageOperationGates {
+    pub presign_get: bool,
+    pub presign_put: bool,
+    pub head: bool,
+}
+
+impl Default for StorageOperationGates {
+    fn default() -> Self {
+        Self {
+            presign_get: true,
+            presign_put: true,
+            head: true,
+        }
+    }
+}
+
 /// A connection string targets MongoDB when it uses a `mongodb` scheme;
 /// otherwise it is a SQL connector (dialect from the URL scheme). The `db`
 /// connector type covers both, so this is the only thing that separates them.
@@ -494,7 +610,8 @@ pub fn is_mongo_url(connection_string: &str) -> bool {
 }
 
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es", "smtp"];
+pub const VALID_CONNECTOR_TYPES: &[&str] =
+    &["http", "kafka", "db", "cache", "es", "smtp", "storage"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
@@ -515,6 +632,7 @@ pub enum ConnectorType {
     Cache,
     Es,
     Smtp,
+    Storage,
 }
 
 impl ConnectorType {
@@ -526,6 +644,7 @@ impl ConnectorType {
             Self::Cache => "cache",
             Self::Es => "es",
             Self::Smtp => "smtp",
+            Self::Storage => "storage",
         }
     }
 
@@ -551,6 +670,7 @@ impl ConnectorType {
             // Send-only: there is exactly one operation, so a gate would be
             // an accepted-but-never-read field. Disable the connector instead.
             Self::Smtp => &[],
+            Self::Storage => &["presign_get", "presign_put", "head"],
         }
     }
 }
@@ -571,6 +691,7 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
             "cache" => Ok(Self::Cache),
             "es" => Ok(Self::Es),
             "smtp" => Ok(Self::Smtp),
+            "storage" => Ok(Self::Storage),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 VALID_CONNECTOR_TYPES,
@@ -795,16 +916,29 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// `storage` was an accepted connector type with no handler behind it
-    /// (proposal F15): it validated, persisted, and listed, and every workflow
-    /// referencing it failed at request time. Removed in 1.0 — the type must
-    /// now be refused at the door.
+    /// `storage` spent 0.x as an accepted type with no handler (F15) and was
+    /// removed in 1.0. #265 reinstates the name *with* a handler — which is
+    /// what the removal message said was missing — behind a real config
+    /// shape, so a bare 0.x-style row (no endpoint/region/credentials) still
+    /// fails to parse rather than loading as a half-configured connector.
     #[test]
-    fn storage_connector_type_is_rejected() {
+    fn storage_connector_type_parses_with_the_265_shape() {
         let json = r#"{"type":"storage","provider":"s3","bucket":"my-bucket"}"#;
         serde_json::from_str::<ConnectorConfig>(json)
-            .expect_err("`storage` must no longer deserialize");
-        assert!(!VALID_CONNECTOR_TYPES.contains(&"storage"));
+            .expect_err("a 0.x-style storage row lacks the required fields");
+
+        let json = r#"{"type":"storage","endpoint":"https://ap-south-1.linodeobjects.com",
+            "region":"ap-south-1","bucket":"media","access_key":"AK","secret_key":"SK"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Storage(storage) => {
+                assert_eq!(storage.provider, StorageProvider::S3);
+                assert!(!storage.force_path_style);
+                assert!(storage.operations.presign_get);
+            }
+            _ => unreachable!("expected storage config"),
+        }
+        assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
     }
 
     #[test]

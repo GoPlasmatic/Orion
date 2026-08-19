@@ -127,6 +127,10 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
         // The HTTP connector's URL is scheme-checked by its own branch in
         // `validate_connector_config`, which predates this module.
         ConnectorConfig::Http(_) => Ok(()),
+        ConnectorConfig::Storage(storage) => {
+            require_scheme("endpoint", &storage.endpoint, &["http", "https"])?;
+            Ok(())
+        }
         ConnectorConfig::Smtp(smtp) => {
             // `host` is a hostname, not a URL — the common slip is pasting a
             // `smtp://` or `smtps://` URI, which would otherwise fail at the

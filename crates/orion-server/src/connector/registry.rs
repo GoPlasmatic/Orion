@@ -241,27 +241,12 @@ impl ConnectorRegistry {
             // storing them in the database. Substitution failures (missing
             // required var, malformed syntax) skip the connector and log —
             // matching how an unparseable config_json is handled below.
-            // `storage` was accepted, validated, persisted and listed for the
-            // whole 0.x line with no handler behind it (proposal F15), so any
-            // workflow referencing one failed at request time. It is removed in
-            // 1.0. Stored rows would otherwise surface as a bare serde "unknown
-            // variant `storage`", which says nothing about what to do; name the
-            // removal and the remedy instead.
-            if connector.connector_type == "storage" {
-                tracing::error!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    "Connector type 'storage' was removed in 1.0; it never had a handler. \
-                     Delete this connector, or disable it, to clear this issue."
-                );
-                issues.push(issue(
-                    "removed_type",
-                    "connector type 'storage' was removed in 1.0 (it never had a handler); \
-                     delete or disable this connector"
-                        .to_string(),
-                ));
-                continue;
-            }
+            // `storage` spent the 0.x line as an accepted type with no handler
+            // (F15) and was removed in 1.0; #265 reinstates the name *with* a
+            // handler and a real config shape. A stored 0.x row now parses
+            // against that shape like any other connector — and reports a
+            // config-parse load issue if it doesn't fit, which names exactly
+            // what to fix.
             let source_label = format!("connector '{}' config_json", connector.name);
             let resolved = match crate::config::env_substitute::substitute(
                 &connector.config_json,

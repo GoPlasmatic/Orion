@@ -498,6 +498,20 @@ pub fn require_smtp_connector<'a>(
     }
 }
 
+/// Extracts the `StorageConnectorConfig` from a `ConnectorConfig`, returning a
+/// validation error if the connector is not a storage type.
+pub fn require_storage_connector<'a>(
+    config: &'a ConnectorConfig,
+    name: &str,
+) -> Result<&'a crate::connector::StorageConnectorConfig, DataflowError> {
+    match config {
+        ConnectorConfig::Storage(c) => Ok(c),
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not a storage connector"
+        ))),
+    }
+}
+
 /// Extracts the `CacheConnectorConfig` from a `ConnectorConfig`, returning a
 /// validation error if the connector is not a cache type.
 pub fn require_cache_connector<'a>(
@@ -794,7 +808,7 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
-    const HANDLERS: [&str; 10] = [
+    const HANDLERS: [&str; 12] = [
         "cache_read",
         "cache_write",
         "db_read",
@@ -805,6 +819,8 @@ mod observability_tests {
         "http_call",
         "publish_kafka",
         "send_email",
+        "storage_presign",
+        "storage_head",
     ];
 
     fn handler_source(handler: &str) -> String {

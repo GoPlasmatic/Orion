@@ -5212,7 +5212,8 @@
           "db",
           "cache",
           "es",
-          "smtp"
+          "smtp",
+          "storage"
         ]
       },
       "CreateChannelRequest": {

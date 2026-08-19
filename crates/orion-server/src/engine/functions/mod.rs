@@ -15,6 +15,8 @@ pub mod db_read;
 pub mod db_write;
 pub mod mongo_read;
 pub mod send_email;
+pub mod storage_head;
+pub mod storage_presign;
 
 use std::future::Future;
 use std::time::Duration;

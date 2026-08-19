@@ -1736,3 +1736,140 @@ async fn test_send_email_workflow_validation_at_create() {
         );
     }
 }
+
+// ============================================================
+// Storage connector (#265)
+// ============================================================
+
+#[tokio::test]
+async fn test_storage_connector_create_mask_and_validation() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "media",
+                "connector_type": "storage",
+                "config": {
+                    "endpoint": "https://ap-south-1.linodeobjects.com",
+                    "region": "ap-south-1",
+                    "bucket": "media-bucket",
+                    "access_key": "AKIAEXAMPLE",
+                    "secret_key": "supersecret"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    // Credentials mask; the structural fields stay readable.
+    assert_ne!(body["data"]["config"]["secret_key"], json!("supersecret"));
+    assert_ne!(body["data"]["config"]["access_key"], json!("AKIAEXAMPLE"));
+    assert_eq!(
+        body["data"]["config"]["endpoint"],
+        json!("https://ap-south-1.linodeobjects.com")
+    );
+    assert_eq!(body["data"]["config"]["bucket"], json!("media-bucket"));
+    assert_eq!(body["data"]["config"]["region"], json!("ap-south-1"));
+
+    // A non-http(s) endpoint is refused at the door.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "bad-media",
+                "connector_type": "storage",
+                "config": {
+                    "endpoint": "s3://bucket",
+                    "region": "r",
+                    "bucket": "b",
+                    "access_key": "a",
+                    "secret_key": "s"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_storage_presign_workflow_validation_at_create() {
+    let app = common::test_app().await;
+
+    // The playback shape from #265 is accepted as a draft.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Playback URL",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1", "name": "Presign",
+                    "function": {"name": "storage_presign", "input": {
+                        "connector": "media",
+                        "key": {"var": "temp_data.object_key"},
+                        "expires_in": "7d",
+                        "output": "temp_data.play_url"
+                    }}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Authoring-time refusals: over-cap TTL, unknown method, a PUT-only
+    // field on GET — each a named 400.
+    for (input, expected) in [
+        (
+            json!({"connector": "m", "key": "k", "expires_in": "30d"}),
+            "expires_in",
+        ),
+        (
+            json!({"connector": "m", "method": "DELETE", "key": "k", "expires_in": 60}),
+            "method",
+        ),
+        (
+            json!({"connector": "m", "key": "k", "expires_in": 60,
+                   "content_type": "video/mp4"}),
+            "PUT only",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(json!({
+                    "name": "Bad Presign",
+                    "condition": true,
+                    "tasks": [{
+                        "id": "t1", "name": "Presign",
+                        "function": {"name": "storage_presign", "input": input}
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {input}"
+        );
+        let body = body_json(resp).await;
+        let details = body["error"]["details"].to_string();
+        assert!(
+            details.contains(expected),
+            "{input} should have reported '{expected}', got {details}"
+        );
+    }
+}

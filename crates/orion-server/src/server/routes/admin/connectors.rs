@@ -805,6 +805,11 @@ async fn probe_connector(
             true,
             probe_smtp(state, name, smtp).await,
         ),
+        ConnectorConfig::Storage(storage) => (
+            "signed HEAD of the bucket",
+            true,
+            probe_storage(state, storage).await,
+        ),
         ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
             "not implemented for this connector type",
             false,
@@ -886,6 +891,53 @@ async fn probe_cache(
              error is in the server log"
                 .to_string()
         })
+}
+
+/// One signed HEAD of the bucket root — reachability plus whether the store
+/// accepts the credentials. Any HTTP status is "reachable and answering":
+/// a 403 here usually means the credentials lack bucket-level HeadBucket
+/// rights while object operations still work, and a probe should not report
+/// a permission nuance as an outage; a transport error is the real failure.
+async fn probe_storage(
+    state: &AppState,
+    storage: &crate::connector::StorageConnectorConfig,
+) -> Result<(), String> {
+    use crate::connector::sigv4;
+
+    let (scheme, host, path) = storage.address(None)?;
+    if !storage.allow_private_urls
+        && let Err(msg) =
+            crate::validation::validate_url_not_private(&format!("{scheme}://{host}{path}")).await
+    {
+        return Err(format!("SSRF protection: {msg}"));
+    }
+    let amz_date = sigv4::amz_date_now();
+    let ctx = sigv4::SigningContext {
+        access_key: &storage.access_key,
+        secret_key: &storage.secret_key,
+        session_token: storage.session_token.as_deref(),
+        region: &storage.region,
+        service: "s3",
+        host: &host,
+        path: &path,
+        amz_date: &amz_date,
+    };
+    let mut req = state
+        .http_client
+        .head(format!("{scheme}://{host}{path}"))
+        .timeout(std::time::Duration::from_millis(storage.timeout_ms));
+    for (name, value) in sigv4::sign_headers(&ctx, "HEAD") {
+        req = req.header(name, value);
+    }
+    match req.send().await {
+        Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
+            Ok(())
+        }
+        Ok(response) => Err(format!("the store answered HTTP {}", response.status())),
+        // S21: transport errors can carry the endpoint; that is the
+        // diagnostic, credentials never appear in it.
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Connect, EHLO, negotiate TLS and authenticate against an SMTP connector —

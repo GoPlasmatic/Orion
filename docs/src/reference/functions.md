@@ -20,9 +20,9 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **20 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **22 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; twelve are Orion handlers that talk to [connectors](./connectors.md),
+engine; fourteen are Orion handlers that talk to [connectors](./connectors.md),
 compose channels, or compute locally.
 
 <div class="table-filter" data-label="Filter functions"></div>
@@ -47,6 +47,8 @@ compose channels, or compute locally.
 | [`mongo_read`](#mongo_read) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`send_email`](#send_email) | Connector | SMTP | Send transactional email through an SMTP connector |
+| [`storage_presign`](#storage_presign) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
+| [`storage_head`](#storage_head) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 | [`crypto`](#crypto) | Utility | — | Digests, HMAC compute/verify, password hashing |
 
@@ -617,6 +619,63 @@ first, then reference it:
     "subject": "Your verification code",
     "text": { "var": "temp_data.mail_body" },
     "output": "temp_data.mail_result"
+  }
+}
+```
+
+### `storage_presign`
+
+Computes a time-limited presigned URL for one object in a
+[storage connector](./connectors.md#storage)'s bucket — **pure local
+computation**: no bytes move through the runtime, and the client talks to the
+object store directly. GET presigns downloads; PUT presigns direct client
+uploads. Each method answers to its own connector gate (`presign_get` /
+`presign_put`).
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of the storage connector |
+| `method` | string | no | `"GET"` | `GET` \| `PUT` — an open value set |
+| `key` | string | yes | — | Object key within the connector's bucket |
+| `expires_in` | number \| string | yes | — | URL lifetime: integer seconds or `"<n>s\|m\|h\|d"`; at most 7 days (S3's own ceiling) |
+| `response_content_type` | string | no | — | GET only: forces the answered Content-Type; signed, so the client cannot alter it |
+| `response_content_disposition` | string | no | — | GET only: forces Content-Disposition — the download-filename knob; signed |
+| `content_type` | string | no | — | PUT only: the Content-Type the uploader must send — a signed header, so any other type is refused by the store |
+| `output` | string | no | `"data"` | Where the presigned URL (string) is stored |
+
+```json
+{
+  "name": "storage_presign",
+  "input": {
+    "connector": "media",
+    "key": { "var": "temp_data.object_key" },
+    "expires_in": "7d",
+    "output": "temp_data.play_url"
+  }
+}
+```
+
+### `storage_head`
+
+One SigV4-signed HEAD for object metadata. A missing object is **data, not
+failure**: 404 answers `{ "exists": false }` — "is it there yet?" is the
+question this function exists to ask — while auth failures, timeouts, and
+other statuses fail the task. One attempt inside the circuit breaker; a
+workflow can loop if it wants polling.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of the storage connector |
+| `key` | string | yes | — | Object key within the connector's bucket |
+| `output` | string | no | `"data"` | Where `{ exists, size, etag, last_modified, content_type }` is stored |
+
+```json
+{
+  "name": "storage_head",
+  "input": {
+    "connector": "media",
+    "key": { "var": "temp_data.object_key" },
+    "output": "temp_data.object_meta"
   }
 }
 ```

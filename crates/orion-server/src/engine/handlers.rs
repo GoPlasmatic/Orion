@@ -73,6 +73,8 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "cache_write",
     "mongo_read",
     "send_email",
+    "storage_presign",
+    "storage_head",
 ];
 
 /// Which connector types a given function can actually run against.
@@ -87,11 +89,12 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 /// `None` means the function takes no connector. The slices are non-empty and
 /// ordered as they should read in an error message.
 pub fn required_connector_types(function: &str) -> Option<&'static [ConnectorType]> {
-    use ConnectorType::{Cache, Db, Es, Http, Kafka, Smtp};
+    use ConnectorType::{Cache, Db, Es, Http, Kafka, Smtp, Storage};
     Some(match function {
         "http_call" => &[Http],
         "publish_kafka" => &[Kafka],
         "send_email" => &[Smtp],
+        "storage_presign" | "storage_head" => &[Storage],
         "cache_read" | "cache_write" => &[Cache],
         // `db_read`/`db_write` speak raw SQL and `mongo_read` speaks Mongo, but
         // both backends are one `ConnectorConfig::Db` variant distinguished by
@@ -216,6 +219,21 @@ pub fn build_custom_functions(
         Box::new(functions::send_email::SendEmailHandler {
             registry: registry.clone(),
             smtp_pool: smtp_pool_cache,
+        }),
+    );
+
+    fns.insert(
+        "storage_presign".to_string(),
+        Box::new(functions::storage_presign::StoragePresignHandler {
+            registry: registry.clone(),
+        }),
+    );
+
+    fns.insert(
+        "storage_head".to_string(),
+        Box::new(functions::storage_head::StorageHeadHandler {
+            registry: registry.clone(),
+            client: client.clone(),
         }),
     );
 

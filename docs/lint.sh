@@ -90,8 +90,8 @@ fi
 ##    *correct* is asserted by functions_docs_drift_test against the schema
 ##    registry and the page's own summary table — this check only stops the
 ##    number being restated somewhere it would later drift.
-stray=$(git grep -I -lE '20 functions|20 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
-[ -z "$stray" ] || err "function count '20' stated outside reference/functions.md: $stray"
+stray=$(git grep -I -lE '22 functions|22 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
+[ -z "$stray" ] || err "function count '22' stated outside reference/functions.md: $stray"
 
 ## 6. No internal review IDs in user docs. The audit IDs (K…, R…, F…, N…, S…)
 ##    are repo-internal: they resolve to nothing a reader can open. Every page
