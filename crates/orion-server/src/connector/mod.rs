@@ -8,14 +8,16 @@ pub mod pool_cache;
 pub mod redis_pool;
 mod registry;
 pub mod secrets;
+pub mod smtp_pool;
 
 pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 
 pub use config::{
     AuthConfig, CacheConnectorConfig, CacheOperationGates, ConnectorConfig, ConnectorType,
     DbConnectorConfig, DialectGuards, EsConnectorConfig, HttpConnectorConfig, HttpOperationGates,
-    KafkaConnectorConfig, KafkaOperationGates, OperationGates, RetryConfig, VALID_CACHE_BACKENDS,
-    VALID_CONNECTOR_TYPES, VALID_HTTP_METHODS, is_mongo_url,
+    KafkaConnectorConfig, KafkaOperationGates, OperationGates, RetryConfig, SmtpAuth,
+    SmtpConnectorConfig, SmtpTls, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES, VALID_HTTP_METHODS,
+    is_mongo_url,
 };
 pub(crate) use masking::MASK;
 pub use masking::{

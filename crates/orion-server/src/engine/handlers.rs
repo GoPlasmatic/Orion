@@ -72,6 +72,7 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "cache_read",
     "cache_write",
     "mongo_read",
+    "send_email",
 ];
 
 /// Which connector types a given function can actually run against.
@@ -86,10 +87,11 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 /// `None` means the function takes no connector. The slices are non-empty and
 /// ordered as they should read in an error message.
 pub fn required_connector_types(function: &str) -> Option<&'static [ConnectorType]> {
-    use ConnectorType::{Cache, Db, Es, Http, Kafka};
+    use ConnectorType::{Cache, Db, Es, Http, Kafka, Smtp};
     Some(match function {
         "http_call" => &[Http],
         "publish_kafka" => &[Kafka],
+        "send_email" => &[Smtp],
         "cache_read" | "cache_write" => &[Cache],
         // `db_read`/`db_write` speak raw SQL and `mongo_read` speaks Mongo, but
         // both backends are one `ConnectorConfig::Db` variant distinguished by
@@ -134,6 +136,7 @@ pub struct HandlerDeps<'a> {
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
+    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
 }
 
 impl<'a> HandlerDeps<'a> {
@@ -154,6 +157,7 @@ impl<'a> HandlerDeps<'a> {
             cache_pool: state.caches.cache_pool.clone(),
             sql_pool_cache: state.caches.sql_pool_cache.clone(),
             mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
+            smtp_pool_cache: state.caches.smtp_pool_cache.clone(),
         }
     }
 }
@@ -179,6 +183,7 @@ pub fn build_custom_functions(
         cache_pool,
         sql_pool_cache,
         mongo_pool_cache,
+        smtp_pool_cache,
     } = deps;
     let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
@@ -204,6 +209,14 @@ pub fn build_custom_functions(
     fns.insert(
         "crypto".to_string(),
         Box::new(functions::crypto::CryptoHandler),
+    );
+
+    fns.insert(
+        "send_email".to_string(),
+        Box::new(functions::send_email::SendEmailHandler {
+            registry: registry.clone(),
+            smtp_pool: smtp_pool_cache,
+        }),
     );
 
     // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)

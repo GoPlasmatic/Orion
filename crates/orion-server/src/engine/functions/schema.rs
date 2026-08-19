@@ -117,6 +117,7 @@ use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
 use super::publish_kafka::PUBLISH_KAFKA_FIELDS;
+use super::send_email::SEND_EMAIL_FIELDS;
 
 const REGISTRY: &[FunctionSchema] = &[
     FunctionSchema {
@@ -190,6 +191,15 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "HTTP request to an HTTP connector with retry + circuit breaker.",
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
+        deny_unknown: true,
+    },
+    FunctionSchema {
+        name: "send_email",
+        description: "Send an email through an SMTP connector.",
+        category: "connector",
+        // Same rationale as crypto: a typoed field on an email (a lost `bcc`,
+        // a misspelled `reply_to`) silently changes who gets what.
+        input_fields: SEND_EMAIL_FIELDS,
         deny_unknown: true,
     },
     FunctionSchema {
@@ -404,6 +414,20 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     // authoring-time rules and the execution path read the same tables.
     if function_name == "crypto" {
         for (suffix, code, message) in super::crypto::validate_static_input(obj) {
+            let path = if suffix.is_empty() {
+                input_path.clone()
+            } else {
+                format!("{input_path}.{suffix}")
+            };
+            errors.push(FieldError::new(path, code, message));
+        }
+    }
+
+    // Cross-field: send_email's message shape — body presence, the
+    // protected-header rule, and static address parsing all live next to the
+    // handler (`send_email::validate_static_input`).
+    if function_name == "send_email" {
+        for (suffix, code, message) in super::send_email::validate_static_input(obj) {
             let path = if suffix.is_empty() {
                 input_path.clone()
             } else {

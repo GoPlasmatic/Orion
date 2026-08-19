@@ -42,6 +42,7 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
     state.caches.sql_pool_cache.evict(connector_name).await;
     state.caches.cache_pool.evict_pool(connector_name).await;
     state.caches.mongo_pool_cache.evict(connector_name).await;
+    state.caches.smtp_pool_cache.evict(connector_name).await;
     tracing::debug!(
         connector = connector_name,
         "Evicted cached connection pools"
@@ -606,6 +607,19 @@ pub(crate) async fn validate_connector(
         });
     }
 
+    // An SMTP connector without TLS moves credentials and message content in
+    // cleartext. Legitimate for a localhost/dev relay, so a warning — but a
+    // loud one, per the #262 design.
+    if req.connector_type == crate::connector::ConnectorType::Smtp
+        && req.config.get("tls").and_then(serde_json::Value::as_str) == Some("none")
+    {
+        warnings.push(super::ValidationIssue {
+            field: "config.tls".to_string(),
+            message: "tls is 'none': credentials and message content travel in                       cleartext. Acceptable only for a local dev relay — use                       'starttls' (587) or 'implicit' (465) anywhere real."
+                .to_string(),
+        });
+    }
+
     Ok(Json(super::ValidationEnvelope::new(errors, warnings)))
 }
 
@@ -786,6 +800,11 @@ async fn probe_connector(
             true,
             probe_http(state, http).await,
         ),
+        ConnectorConfig::Smtp(smtp) => (
+            "SMTP connect + EHLO + auth (no mail sent)",
+            true,
+            probe_smtp(state, name, smtp).await,
+        ),
         ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
             "not implemented for this connector type",
             false,
@@ -867,6 +886,34 @@ async fn probe_cache(
              error is in the server log"
                 .to_string()
         })
+}
+
+/// Connect, EHLO, negotiate TLS and authenticate against an SMTP connector —
+/// without sending mail.
+///
+/// Goes through the same cached transport `send_email` uses, so what this
+/// probes is what real sends get: the pool-open path (including the S6
+/// private-address check), the TLS mode, and the credentials — lettre
+/// authenticates as part of establishing the connection, so a refused
+/// password surfaces here instead of on the first OTP email.
+async fn probe_smtp(
+    state: &AppState,
+    name: &str,
+    smtp: &crate::connector::SmtpConnectorConfig,
+) -> Result<(), String> {
+    let transport = state
+        .caches
+        .smtp_pool_cache
+        .get_transport(name, smtp)
+        .await
+        .map_err(|e| e.to_string())?;
+    match transport.test_connection().await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("the SMTP server did not answer the probe NOOP".to_string()),
+        // The lettre error names the host/port and the server's reply — the
+        // diagnostic an operator needs; credentials never appear in it.
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Issue one request against an HTTP connector's configured URL.

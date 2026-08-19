@@ -69,6 +69,33 @@ pub fn validate_connector_config(
         )));
     }
 
+    // SMTP: the fields a send cannot proceed without are checked at the door.
+    // `from` may be a secret-style reference only in theory — sender addresses
+    // are not secrets — so a literal parse failure is a hard error here rather
+    // than a first-send surprise.
+    if let ConnectorConfig::Smtp(smtp) = &parsed {
+        if smtp.port == 0 {
+            return Err(OrionError::validation(
+                "SMTP 'port' must be nonzero".to_string(),
+            ));
+        }
+        if smtp.from.trim().is_empty() {
+            return Err(OrionError::validation(
+                "SMTP connector requires 'from' (the default sender address)".to_string(),
+            ));
+        }
+        if let Err(e) = crate::engine::functions::send_email::parse_mailbox("from", &smtp.from) {
+            return Err(OrionError::validation(e.to_string()));
+        }
+        if let crate::connector::SmtpAuth::Basic { username, .. } = &smtp.auth
+            && username.trim().is_empty()
+        {
+            return Err(OrionError::validation(
+                "SMTP auth type 'basic' requires a non-empty 'username'".to_string(),
+            ));
+        }
+    }
+
     // F22e: an HTTP connector's operation gate is a method allow-list, so a
     // typo in it would not fail closed loudly — it would refuse every call at
     // request time, one workflow at a time. Check it at the door instead,

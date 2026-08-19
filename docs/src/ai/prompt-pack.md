@@ -57,7 +57,7 @@ parse_json, parse_xml, filter, map, validation, http_call, channel_call,
 data_query, data_write (portable, backend-neutral DB read/write, preferred),
 db_read, db_write (raw SQL escape hatch), cache_read, cache_write, mongo_read,
 crypto (hash/hmac/hmac_verify/password_hash/password_verify),
-publish_json, publish_xml, publish_kafka, log.
+send_email (SMTP connector), publish_json, publish_xml, publish_kafka, log.
 
 ## Channel JSON
 

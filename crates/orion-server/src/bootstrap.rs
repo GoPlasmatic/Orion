@@ -141,6 +141,7 @@ pub struct ServingComponents {
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
+    pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
 }
 
@@ -239,6 +240,9 @@ pub async fn build_engine_components(
     let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(
         config.engine.max_pool_cache_entries,
     ));
+    let smtp_pool_cache = Arc::new(crate::connector::smtp_pool::SmtpPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
 
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
     let mut custom_functions = crate::engine::build_custom_functions(crate::engine::HandlerDeps {
@@ -252,6 +256,7 @@ pub async fn build_engine_components(
         cache_pool: cache_pool.clone(),
         sql_pool_cache: sql_pool_cache.clone(),
         mongo_pool_cache: mongo_pool_cache.clone(),
+        smtp_pool_cache: smtp_pool_cache.clone(),
     });
 
     let kafka_producer = setup_kafka_producer(
@@ -270,6 +275,7 @@ pub async fn build_engine_components(
             cache_pool,
             sql_pool_cache,
             mongo_pool_cache,
+            smtp_pool_cache,
             kafka_producer,
         },
         custom_functions,
@@ -739,6 +745,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         cache_pool,
         sql_pool_cache,
         mongo_pool_cache,
+        smtp_pool_cache,
         kafka_producer,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
@@ -756,6 +763,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
             cache_pool,
             sql_pool_cache,
             mongo_pool_cache,
+            smtp_pool_cache,
         },
         channel_registry,
         trace_queue,

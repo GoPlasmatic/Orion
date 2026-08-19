@@ -19,6 +19,7 @@ pub enum ConnectorConfig {
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
     Es(EsConnectorConfig),
+    Smtp(SmtpConnectorConfig),
 }
 
 impl ConnectorConfig {
@@ -33,6 +34,7 @@ impl ConnectorConfig {
             ConnectorConfig::Db(_) => ConnectorType::Db,
             ConnectorConfig::Cache(_) => ConnectorType::Cache,
             ConnectorConfig::Es(_) => ConnectorType::Es,
+            ConnectorConfig::Smtp(_) => ConnectorType::Smtp,
         }
     }
 
@@ -414,6 +416,76 @@ pub struct EsConnectorConfig {
     pub dialect: DialectGuards,
 }
 
+/// SMTP connector (#262): the transport and credentials behind `send_email`.
+/// Message logic (recipients, subject, bodies) lives on the task, matching
+/// the transport/logic split every other connector type uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmtpConnectorConfig {
+    /// SMTP server hostname or IP — a host, not a URL.
+    pub host: String,
+    /// 587 (submission/STARTTLS) by default; 465 pairs with `implicit`, 25
+    /// with internal relays.
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    /// Connection security. There is deliberately no skip-verification knob:
+    /// certificates validate against the platform trust store, so private-CA
+    /// relays work by installing the CA at the OS level.
+    #[serde(default)]
+    pub tls: SmtpTls,
+    /// `none` (internal smarthosts) or `basic`; future mechanisms (xoauth2)
+    /// are new tagged variants here, invisible to workflows.
+    #[serde(default)]
+    pub auth: SmtpAuth,
+    /// Default sender. Accepts `addr@example.com` or `Name <addr@example.com>`.
+    pub from: String,
+    /// Whether a task-level `from` may override the default. Off by default:
+    /// most submission servers enforce the envelope sender anyway, and an
+    /// override should be a connector decision, not a workflow's.
+    #[serde(default)]
+    pub allow_from_override: bool,
+    /// Allow connecting to private/internal addresses. Default false, the
+    /// same S6 posture as every other connector endpoint — internal relays
+    /// are common and opt in explicitly.
+    #[serde(default)]
+    pub allow_private_urls: bool,
+    /// Per-send timeout in milliseconds (connect + protocol exchange).
+    #[serde(default = "default_smtp_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_smtp_timeout_ms() -> u64 {
+    10_000
+}
+
+/// How the SMTP connection is secured.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpTls {
+    /// Plaintext connect, upgrade via STARTTLS (port 587 convention).
+    #[default]
+    Starttls,
+    /// TLS from the first byte (port 465 convention).
+    Implicit,
+    /// No TLS at all — dev/localhost relays only; flagged by validation.
+    None,
+}
+
+/// SMTP authentication. Tagged like the HTTP connector's `AuthConfig`, so new
+/// mechanisms are additive variants.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SmtpAuth {
+    /// Unauthenticated — internal smarthosts that trust by network position.
+    #[default]
+    None,
+    /// LOGIN/PLAIN with a username and password (secret references accepted).
+    Basic { username: String, password: String },
+}
+
 /// A connection string targets MongoDB when it uses a `mongodb` scheme;
 /// otherwise it is a SQL connector (dialect from the URL scheme). The `db`
 /// connector type covers both, so this is the only thing that separates them.
@@ -422,7 +494,7 @@ pub fn is_mongo_url(connection_string: &str) -> bool {
 }
 
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es", "smtp"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
@@ -442,6 +514,7 @@ pub enum ConnectorType {
     Db,
     Cache,
     Es,
+    Smtp,
 }
 
 impl ConnectorType {
@@ -452,6 +525,7 @@ impl ConnectorType {
             Self::Db => "db",
             Self::Cache => "cache",
             Self::Es => "es",
+            Self::Smtp => "smtp",
         }
     }
 
@@ -474,6 +548,9 @@ impl ConnectorType {
             Self::Cache => &["read", "write"],
             Self::Kafka => &["publish"],
             Self::Http => &["methods"],
+            // Send-only: there is exactly one operation, so a gate would be
+            // an accepted-but-never-read field. Disable the connector instead.
+            Self::Smtp => &[],
         }
     }
 }
@@ -493,6 +570,7 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
             "db" => Ok(Self::Db),
             "cache" => Ok(Self::Cache),
             "es" => Ok(Self::Es),
+            "smtp" => Ok(Self::Smtp),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 VALID_CONNECTOR_TYPES,

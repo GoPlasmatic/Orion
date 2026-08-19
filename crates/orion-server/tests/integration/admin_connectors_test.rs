@@ -1559,3 +1559,180 @@ async fn probing_an_unknown_connector_is_404() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ============================================================
+// SMTP connector (#262)
+// ============================================================
+
+#[tokio::test]
+async fn test_smtp_connector_create_mask_and_validation() {
+    let app = common::test_app().await;
+
+    // A well-formed SMTP connector is accepted, and the password is masked on
+    // the way back out like every other credential.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "mailer",
+                "connector_type": "smtp",
+                "config": {
+                    "host": "smtp.example.test",
+                    "port": 587,
+                    "tls": "starttls",
+                    "auth": {"type": "basic", "username": "u", "password": "hunter2"},
+                    "from": "Orion <noreply@example.test>"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_ne!(body["data"]["config"]["auth"]["password"], json!("hunter2"));
+
+    // Malformed configs are refused at the door, naming the problem.
+    for (config, expected) in [
+        // A pasted URL where a hostname belongs.
+        (
+            json!({"host": "smtp://smtp.example.test", "from": "a@b.test"}),
+            "hostname",
+        ),
+        // The default sender must parse.
+        (
+            json!({"host": "smtp.example.test", "from": "not an address"}),
+            "email address",
+        ),
+        // Basic auth without a username.
+        (
+            json!({"host": "smtp.example.test", "from": "a@b.test",
+                   "auth": {"type": "basic", "username": "", "password": "p"}}),
+            "username",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/connectors",
+                Some(json!({
+                    "name": "bad-mailer",
+                    "connector_type": "smtp",
+                    "config": config
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {config}"
+        );
+        let body = body_json(resp).await;
+        assert!(
+            body["error"].to_string().contains(expected),
+            "{config} should have reported '{expected}', got {}",
+            body["error"]
+        );
+    }
+
+    // `tls: "none"` is legal (dev relays) but draws the loud warning.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/validate",
+            Some(json!({
+                "name": "dev-mailer",
+                "connector_type": "smtp",
+                "config": {"host": "localhost", "tls": "none", "from": "a@b.test"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], json!(true));
+    let warnings = body["data"]["warnings"].to_string();
+    assert!(warnings.contains("cleartext"), "{warnings}");
+}
+
+#[tokio::test]
+async fn test_send_email_workflow_validation_at_create() {
+    let app = common::test_app().await;
+
+    // The full message shape is accepted as a draft.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "OTP Mail",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1", "name": "Send",
+                    "function": {"name": "send_email", "input": {
+                        "connector": "mailer",
+                        "to": {"var": "data.email"},
+                        "bcc": ["Audit <audit@example.test>"],
+                        "subject": "Your code",
+                        "text": {"var": "temp_data.mail_body"},
+                        "headers": {"Auto-Submitted": "auto-generated"},
+                        "output": "temp_data.mail"
+                    }}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Authoring-time refusals: no body, a protected header, a bad static
+    // address — each a named 400.
+    for (input, expected) in [
+        (
+            json!({"connector": "m", "to": "a@b.test", "subject": "s"}),
+            "'text' or 'html'",
+        ),
+        (
+            json!({"connector": "m", "to": "a@b.test", "subject": "s",
+                   "text": "b", "headers": {"From": "x@y.test"}}),
+            "structured field",
+        ),
+        (
+            json!({"connector": "m", "to": "not-an-address", "subject": "s", "text": "b"}),
+            "email address",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(json!({
+                    "name": "Bad Mail",
+                    "condition": true,
+                    "tasks": [{
+                        "id": "t1", "name": "Send",
+                        "function": {"name": "send_email", "input": input}
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {input}"
+        );
+        let body = body_json(resp).await;
+        let details = body["error"]["details"].to_string();
+        assert!(
+            details.contains(expected),
+            "{input} should have reported {expected}, got {details}"
+        );
+    }
+}

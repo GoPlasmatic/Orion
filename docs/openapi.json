@@ -5211,7 +5211,8 @@
           "kafka",
           "db",
           "cache",
-          "es"
+          "es",
+          "smtp"
         ]
       },
       "CreateChannelRequest": {

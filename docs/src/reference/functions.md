@@ -20,9 +20,9 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **19 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **20 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; eleven are Orion handlers that talk to [connectors](./connectors.md),
+engine; twelve are Orion handlers that talk to [connectors](./connectors.md),
 compose channels, or compute locally.
 
 <div class="table-filter" data-label="Filter functions"></div>
@@ -46,14 +46,15 @@ compose channels, or compute locally.
 | [`cache_write`](#cache_write) | Connector | Cache | Write a value to cache with optional TTL |
 | [`mongo_read`](#mongo_read) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
+| [`send_email`](#send_email) | Connector | SMTP | Send transactional email through an SMTP connector |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 | [`crypto`](#crypto) | Utility | — | Digests, HMAC compute/verify, password hashing |
 
 > [!NOTE]
 > The **Category** column above groups the table for reading. It is not the wire
-> value: `GET /api/v1/admin/functions` serves a `category` of either `connector`
-> or `control` for every function, so tooling should branch on those two rather
-> than on the labels here.
+> value: `GET /api/v1/admin/functions` serves a `category` of `connector`,
+> `control`, or `utility` for every function, so tooling should branch on those
+> rather than on the labels here.
 
 > [!NOTE]
 > Wherever an input field is described as **JSONLogic**, you pass a JSONLogic
@@ -569,6 +570,56 @@ published.
 ```
 
 ---
+
+### `send_email`
+
+Sends transactional email through an [SMTP connector](./connectors.md#smtp).
+Transport, credentials, TLS mode, and the default sender live on the
+connector; the message lives here. **No automatic retries**: a timeout after
+the message body is transmitted is indistinguishable from an accepted
+message, and SMTP has no idempotency key — a retry would be a duplicate
+email. The circuit breaker still applies.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of the SMTP connector |
+| `to` | string \| array | yes | — | Recipient(s); each is `addr@example.com` or `Name <addr@example.com>` |
+| `cc` / `bcc` | string \| array | no | — | Same address forms |
+| `subject` | string | yes | — | UTF-8 subject |
+| `text` | string | one of `text`/`html` | — | Plain-text body |
+| `html` | string | one of `text`/`html` | — | HTML body; with `text` too, the message is `multipart/alternative` |
+| `from` | string | no | connector `from` | Honored only when the connector sets `allow_from_override` |
+| `reply_to` | string | no | — | Reply-To address |
+| `headers` | object | no | — | Extra headers (string values). Structured names (`From`, `To`, `Subject`, `Content-Type`, …) are rejected — this is for `List-Unsubscribe`, `Auto-Submitted`, correlation IDs |
+| `output` | string | no | `"data"` | Where `{ "message_id", "response" }` is stored — the generated Message-ID (for correlation/threading) and the server's acceptance line |
+
+A wrong address fails at workflow create when static (naming the field and
+index) and at send time when resolved from the message. Rejected recipients
+fail the task with the server's reply — no partial-success reporting.
+
+Like every connector function, resolvable fields fold `{ "var": … }` nodes —
+they do not evaluate arbitrary JSONLogic. Compose a body with a `map` task
+first, then reference it:
+
+```json
+{
+  "name": "map",
+  "input": { "mappings": [
+    { "path": "temp_data.mail_body",
+      "logic": { "cat": ["Your OTP is ", { "var": "temp_data.otp" }] } }
+  ] }
+},
+{
+  "name": "send_email",
+  "input": {
+    "connector": "mailer",
+    "to": { "var": "data.email" },
+    "subject": "Your verification code",
+    "text": { "var": "temp_data.mail_body" },
+    "output": "temp_data.mail_result"
+  }
+}
+```
 
 ## Composition functions
 
