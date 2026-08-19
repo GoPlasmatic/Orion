@@ -264,7 +264,7 @@ jobs:
       - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2 (tool from `with`)
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
         with:
           tool: cargo-deny
 
@@ -376,7 +376,7 @@ jobs:
           persist-credentials: false
 
       - name: Install mdbook
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
         with:
           tool: mdbook@0.5.4
 
@@ -515,7 +515,7 @@ jobs:
           sudo swapon /swapfile
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2 (tool from `with`)
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
         with:
           tool: cargo-llvm-cov
 
@@ -583,7 +583,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2 (tool from `with`)
+        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
         with:
           tool: cargo-mutants
 
