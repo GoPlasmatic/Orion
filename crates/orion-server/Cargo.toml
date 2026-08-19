@@ -125,6 +125,9 @@ hex = "0.4"
 # Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
 # encodings are accepted, so both decoders are needed.
 base64 = "0.23"
+# Request bodies as reqwest sends them: `Bytes` clones are refcount bumps,
+# so the per-attempt body attach in http_common never copies the payload.
+bytes = "1"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"

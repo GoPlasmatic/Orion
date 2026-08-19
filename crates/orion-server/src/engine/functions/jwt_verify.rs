@@ -70,11 +70,10 @@ impl AsyncFunctionHandler for JwtVerifyHandler {
 
         let jwks_url = match input.get("jwks_url").and_then(Value::as_str) {
             None => None,
-            Some(url) if url.starts_with("https://") => Some(url.to_string()),
             Some(url) => {
-                return Err(validation(&format!(
-                    "'jwks_url' must be HTTPS (got '{url}')"
-                )));
+                crate::jwt::validate_jwks_url(url)
+                    .map_err(|e| validation(&format!("'jwks_url' {e}")))?;
+                Some(url.to_string())
             }
         };
         if static_keys.is_empty() && jwks_url.is_none() {
@@ -90,13 +89,14 @@ impl AsyncFunctionHandler for JwtVerifyHandler {
             leeway_secs: input
                 .get("leeway_secs")
                 .and_then(Value::as_u64)
-                .unwrap_or(30)
-                .min(300),
+                .unwrap_or(crate::jwt::DEFAULT_LEEWAY_SECS)
+                .min(crate::jwt::MAX_LEEWAY_SECS),
             require_exp: input
                 .get("require_exp")
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
-            max_token_bytes: 8_192,
+            max_token_bytes: crate::jwt::DEFAULT_MAX_TOKEN_BYTES,
+            validations: std::sync::OnceLock::new(),
         };
 
         let claims = verifier.verify(&token).await.map_err(|reason| {
@@ -202,13 +202,9 @@ pub(super) fn validate_static_input(
         ));
     }
     if let Some(url) = obj.get("jwks_url").and_then(Value::as_str)
-        && !url.starts_with("https://")
+        && let Err(e) = crate::jwt::validate_jwks_url(url)
     {
-        errors.push((
-            "jwks_url",
-            "INVALID",
-            format!("'jwks_url' must be HTTPS (got '{url}')"),
-        ));
+        errors.push(("jwks_url", "INVALID", format!("'jwks_url' {e}")));
     }
     errors
 }
@@ -309,16 +305,6 @@ mod tests {
         verify_input: Value,
         data: Value,
     ) -> Result<Value, String> {
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [
-                {"id": "sign", "name": "sign",
-                 "function": {"name": "jwt_sign", "input": sign_input}},
-                {"id": "verify", "name": "verify",
-                 "function": {"name": "jwt_verify", "input": verify_input}},
-            ]
-        }))
-        .map_err(|e| e.to_string())?;
         let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
             Default::default();
         fns.insert(
@@ -326,21 +312,17 @@ mod tests {
             Box::new(super::super::jwt_sign::JwtSignHandler),
         );
         fns.insert("jwt_verify".to_string(), Box::new(JwtVerifyHandler));
-        let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
-        dataflow_rs::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            dataflow_rs::datavalue::OwnedDataValue::from(&data),
-        );
-        engine
-            .process_message(&mut message)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(err) = message.errors().first() {
-            return Err(format!("{err:?}"));
-        }
-        Ok(message.data().into())
+        crate::engine::functions::run_test_tasks(
+            fns,
+            json!([
+                {"id": "sign", "name": "sign",
+                 "function": {"name": "jwt_sign", "input": sign_input}},
+                {"id": "verify", "name": "verify",
+                 "function": {"name": "jwt_verify", "input": verify_input}},
+            ]),
+            data,
+        )
+        .await
     }
 
     const HS_SECRET: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -515,6 +497,7 @@ mod tests {
             leeway_secs: 30,
             require_exp: true,
             max_token_bytes: 8192,
+            validations: std::sync::OnceLock::new(),
         };
 
         // kid "old" verifies from the first fetch.

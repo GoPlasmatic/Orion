@@ -915,16 +915,7 @@ async fn probe_storage(
         return Err(format!("SSRF protection: {msg}"));
     }
     let amz_date = sigv4::amz_date_now();
-    let ctx = sigv4::SigningContext {
-        access_key: &storage.access_key,
-        secret_key: &storage.secret_key,
-        session_token: storage.session_token.as_deref(),
-        region: &storage.region,
-        service: "s3",
-        host: &host,
-        path: &path,
-        amz_date: &amz_date,
-    };
+    let ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
     let mut req = state
         .http_client
         .head(format!("{scheme}://{host}{path}"))
@@ -990,13 +981,10 @@ async fn probe_http(
 
     // #268: the effective auth — for oauth2 this is a real token acquisition
     // through the manager, which is precisely the setup this probe validates.
-    let auth = crate::connector::oauth::effective_auth(
-        state.connector_registry.oauth(),
-        name,
-        http,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let auth =
+        crate::connector::oauth::effective_auth(state.connector_registry.oauth(), name, http)
+            .await
+            .map_err(|e| e.to_string())?;
 
     let url = http_common::build_url(&http.url, None);
     match http_common::execute_request(

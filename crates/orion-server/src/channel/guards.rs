@@ -395,13 +395,9 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     if set.validation {
         // Verified claims join the metadata the channel's own logic sees, so
         // "claim vs request" checks are one-line JSONLogic.
-        let metadata_with_auth = auth_claims.as_ref().map(|claims| {
-            let mut merged = req.metadata.clone();
-            if let Some(obj) = merged.as_object_mut() {
-                obj.insert("auth".to_string(), json!({ "claims": claims }));
-            }
-            merged
-        });
+        let metadata_with_auth = auth_claims
+            .as_ref()
+            .map(|claims| merge_auth_claims(req.metadata.clone(), claims.clone()));
         validate_input(
             req.channel,
             req.runtime,
@@ -476,6 +472,22 @@ pub async fn admit(req: GuardRequest<'_>) -> Result<Admission, OrionError> {
             "{transport:?} does not enable the response cache"
         ))),
     }
+}
+
+/// Merge verified claims into request metadata at `auth.claims` (#267) — the
+/// one definition of the shape that both the channel's own `validation_logic`
+/// (in [`apply_guards`]) and the workflow message (the data route) see, so a
+/// change to it (say, adding `auth.mode`) cannot skew the two surfaces.
+pub fn merge_auth_claims(
+    mut metadata: serde_json::Value,
+    claims: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(obj) = metadata.as_object_mut() {
+        let mut auth = serde_json::Map::with_capacity(1);
+        auth.insert("claims".to_string(), claims);
+        obj.insert("auth".to_string(), serde_json::Value::Object(auth));
+    }
+    metadata
 }
 
 /// The deadline for a message on this channel: the channel's declared

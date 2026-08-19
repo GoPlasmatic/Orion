@@ -23,7 +23,7 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::Hmac;
 use md5::Md5;
 use serde_json::Value;
 use sha1::Sha1;
@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256, Sha512};
 
 use super::connector_helpers::{apply_output, resolve_required_str, resolve_value};
 use super::schema::{FieldKind, FieldSchema};
-use crate::engine::operators::{Codec, decode_bytes, encode_bytes};
+use crate::engine::operators::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "crypto";
@@ -140,12 +140,12 @@ fn algorithm<'i>(
 /// The output `encoding` for `hash`/`hmac` results (default hex).
 fn output_codec(input: &Value) -> Result<Codec, DataflowError> {
     match literal_str(input, "encoding")? {
-        None | Some("hex") => Ok(Codec::Hex),
-        Some("base64") => Ok(Codec::Base64),
-        Some("base64url") => Ok(Codec::Base64Url),
-        Some(other) => Err(validation(&format!(
-            "unknown encoding '{other}' — expected one of hex, base64, base64url"
-        ))),
+        None => Ok(Codec::Hex),
+        Some(name) => Codec::parse(name).ok_or_else(|| {
+            validation(&format!(
+                "unknown encoding '{name}' — expected one of hex, base64, base64url"
+            ))
+        }),
     }
 }
 
@@ -241,22 +241,10 @@ async fn hmac_key(input: &Value) -> Result<Vec<u8>, DataflowError> {
     }
 }
 
-fn mac_compute<M: Mac + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = M::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
-
-fn mac_verify<M: Mac + KeyInit>(key: &[u8], data: &[u8], signature: &[u8]) -> bool {
-    let mut mac = M::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data);
-    // Constant-time and length-checked — the reason `hmac_verify` exists at
-    // all: without it the obvious spelling is `==` on the computed MAC.
-    mac.verify_slice(signature).is_ok()
-}
-
-/// The presented MAC of an `hmac_verify`: hex or base64 (either form),
-/// auto-detected — the same rule channel auth applies to inbound signatures.
+/// The presented MAC of an `hmac_verify`: hex, base64, or base64url,
+/// auto-detected. (Channel HMAC auth's auto-detection is deliberately
+/// narrower — hex then standard base64, its pre-#264 behaviour — so the two
+/// rules are related but not identical.)
 fn decode_presented_signature(s: &str) -> Result<Vec<u8>, DataflowError> {
     decode_bytes(Codec::Hex, s)
         .or_else(|_| decode_bytes(Codec::Base64, s))
@@ -340,38 +328,78 @@ fn check_param_keys(params: Option<&Value>, allowed: &[&str]) -> Result<(), Data
     Ok(())
 }
 
-async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, DataflowError> {
-    let algorithm = algorithm(input, PASSWORD_ALGORITHMS, "argon2id")?;
-    let password = resolve_required_str(input, "password", NAME, ctx)?;
-    let params = input.get("params");
+/// The effective (bounds-checked, defaulted) cost knobs of one
+/// `password_hash` call.
+enum PasswordParams {
+    Argon2id {
+        memory_kib: u32,
+        iterations: u32,
+        parallelism: u32,
+    },
+    Bcrypt {
+        cost: u32,
+    },
+}
 
+/// Check `params` for `algorithm` — key allowlist, defaults, bounds — and
+/// return the effective values. One function feeding both the execution path
+/// (which uses the values) and authoring-time validation (which discards
+/// them), so the two surfaces cannot drift. `algorithm` must already have
+/// passed the capability table.
+fn password_params(
+    algorithm: &str,
+    params: Option<&Value>,
+) -> Result<PasswordParams, DataflowError> {
     match algorithm {
         "argon2id" => {
             check_param_keys(params, &["memory_kib", "iterations", "parallelism"])?;
-            let memory = cost_param(
-                params,
-                "memory_kib",
-                ARGON2_DEFAULT_MEMORY_KIB,
-                &ARGON2_MEMORY_KIB_RANGE,
-            )?;
-            let iterations = cost_param(
-                params,
-                "iterations",
-                ARGON2_DEFAULT_ITERATIONS,
-                &ARGON2_ITERATIONS_RANGE,
-            )?;
-            let parallelism = cost_param(
-                params,
-                "parallelism",
-                ARGON2_DEFAULT_PARALLELISM,
-                &ARGON2_PARALLELISM_RANGE,
-            )?;
+            Ok(PasswordParams::Argon2id {
+                memory_kib: cost_param(
+                    params,
+                    "memory_kib",
+                    ARGON2_DEFAULT_MEMORY_KIB,
+                    &ARGON2_MEMORY_KIB_RANGE,
+                )?,
+                iterations: cost_param(
+                    params,
+                    "iterations",
+                    ARGON2_DEFAULT_ITERATIONS,
+                    &ARGON2_ITERATIONS_RANGE,
+                )?,
+                parallelism: cost_param(
+                    params,
+                    "parallelism",
+                    ARGON2_DEFAULT_PARALLELISM,
+                    &ARGON2_PARALLELISM_RANGE,
+                )?,
+            })
+        }
+        "bcrypt" => {
+            check_param_keys(params, &["cost"])?;
+            Ok(PasswordParams::Bcrypt {
+                cost: cost_param(params, "cost", BCRYPT_DEFAULT_COST, &BCRYPT_COST_RANGE)?,
+            })
+        }
+        other => unreachable!("password algorithm '{other}' passed validation"),
+    }
+}
+
+async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, DataflowError> {
+    let algorithm = algorithm(input, PASSWORD_ALGORITHMS, "argon2id")?;
+    let password = resolve_required_str(input, "password", NAME, ctx)?;
+
+    match password_params(algorithm, input.get("params"))? {
+        PasswordParams::Argon2id {
+            memory_kib,
+            iterations,
+            parallelism,
+        } => {
             // Memory-hard by design, so off the async worker (W: ~20 MiB and
             // tens of milliseconds per call at the defaults).
             spawn_hashing(move || {
                 use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
                 use argon2::{Algorithm, Argon2, Params, Version};
-                let params = Params::new(memory, iterations, parallelism, None)
+                let params = Params::new(memory_kib, iterations, parallelism, None)
                     .map_err(|e| format!("argon2 parameters were rejected: {e}"))?;
                 let salt = SaltString::generate(&mut OsRng);
                 Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
@@ -381,9 +409,7 @@ async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value,
             })
             .await
         }
-        "bcrypt" => {
-            check_param_keys(params, &["cost"])?;
-            let cost = cost_param(params, "cost", BCRYPT_DEFAULT_COST, &BCRYPT_COST_RANGE)?;
+        PasswordParams::Bcrypt { cost } => {
             spawn_hashing(move || {
                 bcrypt::hash(&password, cost)
                     .map(Value::String)
@@ -391,7 +417,6 @@ async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value,
             })
             .await
         }
-        other => unreachable!("password algorithm '{other}' passed validation"),
     }
 }
 
@@ -557,46 +582,17 @@ pub(super) fn validate_static_input(
         ));
     }
 
-    // `params` keys and bounds, per the (defaulted) algorithm.
+    // `params` keys and bounds, per the (defaulted) algorithm — the same
+    // `password_params` the execution path runs. An unknown algorithm is
+    // already reported above and has no params table to check.
     if op == "password_hash" {
-        let params = obj.get("params");
         let algorithm = obj
             .get("algorithm")
             .and_then(Value::as_str)
             .unwrap_or("argon2id");
-        let check: Result<(), DataflowError> = (|| {
-            match algorithm {
-                "argon2id" => {
-                    check_param_keys(params, &["memory_kib", "iterations", "parallelism"])?;
-                    cost_param(
-                        params,
-                        "memory_kib",
-                        ARGON2_DEFAULT_MEMORY_KIB,
-                        &ARGON2_MEMORY_KIB_RANGE,
-                    )?;
-                    cost_param(
-                        params,
-                        "iterations",
-                        ARGON2_DEFAULT_ITERATIONS,
-                        &ARGON2_ITERATIONS_RANGE,
-                    )?;
-                    cost_param(
-                        params,
-                        "parallelism",
-                        ARGON2_DEFAULT_PARALLELISM,
-                        &ARGON2_PARALLELISM_RANGE,
-                    )?;
-                }
-                "bcrypt" => {
-                    check_param_keys(params, &["cost"])?;
-                    cost_param(params, "cost", BCRYPT_DEFAULT_COST, &BCRYPT_COST_RANGE)?;
-                }
-                // Unknown algorithm already reported above.
-                _ => {}
-            }
-            Ok(())
-        })();
-        if let Err(e) = check {
+        if PASSWORD_ALGORITHMS.contains(&algorithm)
+            && let Err(e) = password_params(algorithm, obj.get("params"))
+        {
             errors.push(("params", "INVALID", strip_name(&e)));
         }
     }
@@ -610,29 +606,16 @@ fn is_resolvable(v: &Value) -> bool {
     v.as_object().is_some_and(|o| o.contains_key("var"))
 }
 
-/// Map a field key to its `&'static str` — every key this function can flag
-/// is in [`CRYPTO_FIELDS`], so the fallback is unreachable for real inputs
-/// and merely safe for arbitrary ones.
 fn field_name(key: &str) -> &'static str {
-    CRYPTO_FIELDS
-        .iter()
-        .map(|f| f.name)
-        .find(|n| *n == key)
-        .unwrap_or("op")
+    super::schema::static_field_name(CRYPTO_FIELDS, key, "op")
 }
 
 fn field_exists(key: &str) -> bool {
     CRYPTO_FIELDS.iter().any(|f| f.name == key)
 }
 
-/// Drop the `"crypto: "` prefix [`validation`] adds — as a `FieldError`
-/// message the field path already carries the context.
 fn strip_name(e: &DataflowError) -> String {
-    let s = e.to_string();
-    match s.split_once(&format!("{NAME}: ")) {
-        Some((_, msg)) => msg.to_string(),
-        None => s,
-    }
+    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --
@@ -759,30 +742,7 @@ mod tests {
 
     /// Build an engine with one crypto task and run one message through it.
     async fn run(input: Value, data: Value) -> Result<Value, String> {
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t",
-                       "function": {"name": "crypto", "input": input}}]
-        }))
-        .map_err(|e| e.to_string())?;
-        let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert("crypto".to_string(), Box::new(CryptoHandler));
-        let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
-        dataflow_rs::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            dataflow_rs::datavalue::OwnedDataValue::from(&data),
-        );
-        engine
-            .process_message(&mut message)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(err) = message.errors().first() {
-            return Err(format!("{err:?}"));
-        }
-        Ok(message.data().into())
+        crate::engine::functions::run_test_task(NAME, Box::new(CryptoHandler), input, data).await
     }
 
     #[tokio::test]

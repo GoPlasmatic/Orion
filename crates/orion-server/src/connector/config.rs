@@ -276,9 +276,17 @@ fn default_max_response_size() -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
-    Bearer { token: String },
-    Basic { username: String, password: String },
-    ApiKey { header: String, key: String },
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
+    ApiKey {
+        header: String,
+        key: String,
+    },
     /// Managed OAuth2 (#268): Orion acquires, caches and refreshes the access
     /// token itself — see [`crate::connector::oauth`]. `http` connectors only;
     /// authoring validation refuses it elsewhere. Boxed: the block is an

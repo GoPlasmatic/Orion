@@ -15,6 +15,7 @@
 //! input structs use deserialize-time defaults that don't show up in derived
 //! schemas, and we want to keep the validator dependency-free.
 
+use dataflow_rs::engine::error::DataflowError;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -84,6 +85,14 @@ pub struct FieldSchema {
     pub alias: Option<&'static str>,
 }
 
+/// A function's cross-field authoring-time validator: `(path-suffix, code,
+/// message)` triples over a static input object; an empty suffix addresses
+/// the input object itself. Each one lives next to its handler (conventionally
+/// named `validate_static_input`) so the rules it applies are the execution
+/// path's own tables.
+pub type StaticValidator =
+    fn(&serde_json::Map<String, Value>) -> Vec<(&'static str, &'static str, String)>;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionSchema {
     pub name: &'static str,
@@ -99,6 +108,13 @@ pub struct FunctionSchema {
     /// time turns that into a 400 naming the field. Orion's own handlers take
     /// freeform `serde_json::Value` inputs and keep ignoring extra keys.
     pub deny_unknown: bool,
+    /// Cross-field rules beyond the per-field table (op × algorithm tables,
+    /// key-source rules, stage allowlists, …), registered here so
+    /// `validate_input` dispatches them from the same table that declares the
+    /// function — a new function's rules are one field, never another
+    /// hand-copied block.
+    #[serde(skip)]
+    pub validate_static: Option<StaticValidator>,
 }
 
 // F53: each function's field table lives in the module implementing it, so a
@@ -132,6 +148,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "cache_write",
@@ -139,6 +156,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "db_read",
@@ -146,6 +164,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "db_write",
@@ -153,6 +172,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "data_query",
@@ -160,6 +180,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "data_write",
@@ -167,6 +188,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DATA_WRITE_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "mongo_read",
@@ -174,6 +196,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "mongo_write",
@@ -183,6 +206,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // write does — the crypto/send_email rationale exactly.
         input_fields: MONGO_WRITE_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::mongo_write::validate_static_input),
     },
     FunctionSchema {
         name: "mongo_aggregate",
@@ -190,6 +214,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: MONGO_AGGREGATE_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
     FunctionSchema {
         name: "channel_call",
@@ -197,6 +222,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
         deny_unknown: false,
+        validate_static: None,
     },
     FunctionSchema {
         name: "crypto",
@@ -207,6 +233,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // silently mean "use the default".
         input_fields: CRYPTO_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::crypto::validate_static_input),
     },
     FunctionSchema {
         name: "jwt_sign",
@@ -214,6 +241,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "utility",
         input_fields: JWT_SIGN_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::jwt_sign::validate_static_input),
     },
     FunctionSchema {
         name: "jwt_verify",
@@ -221,6 +249,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "utility",
         input_fields: JWT_VERIFY_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::jwt_verify::validate_static_input),
     },
     FunctionSchema {
         name: "http_call",
@@ -228,6 +257,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
         deny_unknown: true,
+        validate_static: None,
     },
     FunctionSchema {
         name: "send_email",
@@ -237,6 +267,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // a misspelled `reply_to`) silently changes who gets what.
         input_fields: SEND_EMAIL_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::send_email::validate_static_input),
     },
     FunctionSchema {
         name: "storage_presign",
@@ -244,6 +275,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: STORAGE_PRESIGN_FIELDS,
         deny_unknown: true,
+        validate_static: Some(super::storage_presign::validate_static_input),
     },
     FunctionSchema {
         name: "storage_head",
@@ -251,6 +283,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: STORAGE_HEAD_FIELDS,
         deny_unknown: true,
+        validate_static: None,
     },
     FunctionSchema {
         name: "publish_kafka",
@@ -258,6 +291,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: PUBLISH_KAFKA_FIELDS,
         deny_unknown: true,
+        validate_static: None,
     },
 ];
 
@@ -458,86 +492,12 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         ));
     }
 
-    // Cross-field: the MongoDB write ops' conditional requirements
-    // (op-specific fields, the operator-vs-plain document rules) and the
-    // aggregation stage allowlist — both next to their handlers, shared with
-    // the execution path (#263).
-    if function_name == "mongo_write" {
-        for (suffix, code, message) in super::mongo_write::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-    if function_name == "mongo_aggregate" {
-        for (suffix, code, message) in super::mongo_aggregate::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-
-    // Cross-field: crypto's operation envelope. The op × algorithm capability
-    // table, per-op required fields, encoding vocabularies and params bounds
-    // all live next to the handler (`crypto::validate_static_input`), so the
-    // authoring-time rules and the execution path read the same tables.
-    if function_name == "crypto" {
-        for (suffix, code, message) in super::crypto::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-
-    // Cross-field: the JWT functions' algorithm tables and key-source rules.
-    if function_name == "jwt_sign" {
-        for (suffix, code, message) in super::jwt_sign::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-    if function_name == "jwt_verify" {
-        for (suffix, code, message) in super::jwt_verify::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-
-    // Cross-field: storage_presign's method table, per-method fields, and
-    // literal expires_in bounds — all next to the handler.
-    if function_name == "storage_presign" {
-        for (suffix, code, message) in super::storage_presign::validate_static_input(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-
-    // Cross-field: send_email's message shape — body presence, the
-    // protected-header rule, and static address parsing all live next to the
-    // handler (`send_email::validate_static_input`).
-    if function_name == "send_email" {
-        for (suffix, code, message) in super::send_email::validate_static_input(obj) {
+    // Cross-field rules registered on the schema entry — each lives next to
+    // its handler as `validate_static_input` and shares the execution path's
+    // tables (#263 and friends), so the authoring-time rules and the runtime
+    // cannot drift, and a new function's rules are one registry field.
+    if let Some(validate) = schema.validate_static {
+        for (suffix, code, message) in validate(obj) {
             let path = if suffix.is_empty() {
                 input_path.clone()
             } else {
@@ -556,7 +516,6 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     // gets that check at request time.
     if function_name == "http_call" {
         use super::http_common::{BodyFormat, ResponseFormat, encode_body};
-        use dataflow_rs::engine::error::DataflowError;
 
         // A non-string value is already a TYPE_MISMATCH from the field loop.
         let body_format = match BodyFormat::parse(obj.get("body_format").and_then(Value::as_str)) {
@@ -595,6 +554,34 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     }
 
     errors
+}
+
+/// Drop the `"{handler}: "` prefix a handler's validation error carries — as
+/// a `FieldError` message the field path already provides the context. Shared
+/// by the `validate_static_input` implementations that reuse their execution
+/// path's error-producing parsers.
+pub(super) fn strip_handler_prefix(handler: &str, e: &DataflowError) -> String {
+    let s = e.to_string();
+    match s.split_once(&format!("{handler}: ")) {
+        Some((_, msg)) => msg.to_string(),
+        None => s,
+    }
+}
+
+/// The `&'static str` spelling of `key` in `fields` — for the
+/// `validate_static_input` tuples, whose path suffixes must be static.
+/// `fallback` covers keys outside the table (unreachable for real inputs,
+/// merely safe for arbitrary ones).
+pub(super) fn static_field_name(
+    fields: &[FieldSchema],
+    key: &str,
+    fallback: &'static str,
+) -> &'static str {
+    fields
+        .iter()
+        .map(|f| f.name)
+        .find(|n| *n == key)
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]

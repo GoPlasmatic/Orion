@@ -83,14 +83,13 @@ pub async fn decoding_keys(
     }
     // Unknown kid: the issuer may have rotated since we cached. One forced
     // refetch, floored, then the answer stands.
-    if kid.is_some() {
-        if let Some(entry) = fresh_entry(url, true).await {
-            let matched = select(&entry, kid, alg);
-            if !matched.is_empty() {
-                return Ok(matched);
-            }
+    if kid.is_some()
+        && let Some(entry) = fresh_entry(url, true).await
+    {
+        let matched = select(&entry, kid, alg);
+        if !matched.is_empty() {
+            return Ok(matched);
         }
-        return Err(RejectReason::UnknownKid);
     }
     Err(RejectReason::UnknownKid)
 }
@@ -110,35 +109,35 @@ fn select(entry: &Entry, kid: Option<&str>, alg: Algorithm) -> Vec<Arc<DecodingK
         .collect()
 }
 
+/// Whether an entry needs a (re)fetch: absent, expired, or a forced refetch
+/// the floor allows. One predicate for the lock-free pre-check and the
+/// re-check under the single-flight lock — the triple condition is subtle
+/// enough that two hand-negated copies would drift.
+fn needs_fetch(entry: Option<&Arc<Entry>>, force: bool) -> bool {
+    match entry {
+        None => true,
+        Some(entry) => {
+            entry.fetched_at.elapsed() > entry.ttl
+                || (force
+                    && entry
+                        .last_forced
+                        .is_none_or(|at| at.elapsed() > REFETCH_FLOOR))
+        }
+    }
+}
+
 /// The cache entry for `url`, refreshed when expired (or when `force`d and
 /// the floor allows). Stale-serves on refresh failure.
 async fn fresh_entry(url: &str, force: bool) -> Option<Arc<Entry>> {
     let existing = cache().entries.read().await.get(url).cloned();
-    let needs_fetch = match &existing {
-        None => true,
-        Some(entry) => {
-            let expired = entry.fetched_at.elapsed() > entry.ttl;
-            let force_allowed = force
-                && entry
-                    .last_forced
-                    .is_none_or(|at| at.elapsed() > REFETCH_FLOOR);
-            expired || force_allowed
-        }
-    };
-    if !needs_fetch {
+    if !needs_fetch(existing.as_ref(), force) {
         return existing;
     }
 
     let _flight = cache().fetch.lock().await;
     // Someone else may have fetched while we queued.
     let current = cache().entries.read().await.get(url).cloned();
-    if let Some(entry) = &current
-        && entry.fetched_at.elapsed() <= entry.ttl
-        && !(force
-            && entry
-                .last_forced
-                .is_none_or(|at| at.elapsed() > REFETCH_FLOOR))
-    {
+    if !needs_fetch(current.as_ref(), force) {
         return current;
     }
 

@@ -307,9 +307,7 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
     gated["config"]["operations"] = json!({ "delete": false });
     common::create_connector(&app, gated).await;
 
-    let task = |id: &str, name: &str, input: serde_json::Value| {
-        json!({ "id": id, "name": name, "function": { "name": "mongo_write", "input": input } })
-    };
+    let task = |id: &str, name: &str, input: serde_json::Value| json!({ "id": id, "name": name, "function": { "name": "mongo_write", "input": input } });
 
     // Insert: nested arrays and objects pass through, and `$date` becomes a
     // typed BSON date.
@@ -393,7 +391,10 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
     let body = common::body_json(resp).await;
     let items = body["data"]["items"].as_array().expect("items");
     assert_eq!(items.len(), 1, "{items:?}");
-    assert_eq!(items[0]["payload"]["object"]["participants"][1]["name"], "Bob");
+    assert_eq!(
+        items[0]["payload"]["object"]["participants"][1]["name"],
+        "Bob"
+    );
     assert!(
         items[0]["starts_at"].get("$date").is_some(),
         "a $date input must be stored typed, not as a string: {:?}",
@@ -435,26 +436,34 @@ async fn test_mongo_write_crud_round_trip_with_nested_documents() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
-    assert_eq!(body["data"]["res"]["matched"], 1, "the $oid round-trip must target the document: {body}");
+    assert_eq!(
+        body["data"]["res"]["matched"], 1,
+        "the $oid round-trip must target the document: {body}"
+    );
     assert_eq!(body["data"]["res"]["modified"], 1, "{body}");
 
     // The delete gate holds: the gated connector refuses, the open one deletes.
-    for (connector, channel, expect_ok) in
-        [("mw-gated", "mw-del-gated", false), ("mw-crud", "mw-del", true)]
-    {
+    for (connector, channel, expect_ok) in [
+        ("mw-gated", "mw-del-gated", false),
+        ("mw-crud", "mw-del", true),
+    ] {
         common::create_and_activate_channel(
             &app,
             channel,
             common::workflow_with_tasks(
                 &format!("MwDelete-{connector}"),
-                json!([task("t1", "Delete", json!({
-                    "connector": connector,
-                    "database": "orion_test",
-                    "collection": "meetings",
-                    "op": "delete_many",
-                    "filter": { "topic": "quarterly" },
-                    "output": "data.res"
-                }))]),
+                json!([task(
+                    "t1",
+                    "Delete",
+                    json!({
+                        "connector": connector,
+                        "database": "orion_test",
+                        "collection": "meetings",
+                        "op": "delete_many",
+                        "filter": { "topic": "quarterly" },
+                        "output": "data.res"
+                    })
+                )]),
             ),
         )
         .await;
@@ -597,11 +606,11 @@ async fn test_mongo_aggregate_and_dialect_tagged_values() {
         .collection::<mongodb::bson::Document>("recordings");
     coll.insert_many([
         mongodb::bson::doc! {"meeting": "m1", "quality": "hd",
-            "at": mongodb::bson::DateTime::from_millis(1_760_000_000_000)},
+        "at": mongodb::bson::DateTime::from_millis(1_760_000_000_000)},
         mongodb::bson::doc! {"meeting": "m1", "quality": "hd",
-            "at": mongodb::bson::DateTime::from_millis(1_770_000_000_000)},
+        "at": mongodb::bson::DateTime::from_millis(1_770_000_000_000)},
         mongodb::bson::doc! {"meeting": "m1", "quality": "sd",
-            "at": mongodb::bson::DateTime::from_millis(1_780_000_000_000)},
+        "at": mongodb::bson::DateTime::from_millis(1_780_000_000_000)},
     ])
     .await
     .expect("seed");

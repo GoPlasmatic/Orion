@@ -506,12 +506,12 @@ pub(crate) mod test_support {
                 .lock()
                 .expect("test")
                 .get(connector_name)
-                .map(|(fingerprint, state_json)| {
-                    crate::storage::models::ConnectorOauthStateRow {
+                .map(
+                    |(fingerprint, state_json)| crate::storage::models::ConnectorOauthStateRow {
                         fingerprint: fingerprint.clone(),
                         state_json: state_json.clone(),
-                    }
-                }))
+                    },
+                ))
         }
         async fn put_oauth_state(
             &self,
@@ -526,7 +526,10 @@ pub(crate) mod test_support {
             Ok(())
         }
         async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError> {
-            self.oauth_state.lock().expect("test").remove(connector_name);
+            self.oauth_state
+                .lock()
+                .expect("test")
+                .remove(connector_name);
             Ok(())
         }
     }

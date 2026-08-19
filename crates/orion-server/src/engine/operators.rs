@@ -26,11 +26,18 @@
 //!   valid UTF-8 — JSONLogic values are strings, so binary payloads belong to
 //!   the `crypto` function's `input_encoding` path instead. Invalid input is
 //!   an evaluation error, never a lossy guess.
+//!
+//! Being the one home of the byte/text model, this module also hosts the
+//! shared HMAC primitives ([`mac_compute`]/[`mac_verify`]) that the `crypto`
+//! function, channel HMAC auth, and SigV4 signing all spell identically.
+
+use std::borrow::Cow;
 
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use dataflow_rs::datalogic_rs::operator::EvalContext;
 use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
+use hmac::{KeyInit, Mac};
 
 /// Standard-alphabet decoder that accepts padded and unpadded input.
 /// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]
@@ -58,6 +65,20 @@ pub(crate) enum Codec {
     Hex,
 }
 
+impl Codec {
+    /// The canonical name → codec table (`hex`, `base64`, `base64url`) —
+    /// one vocabulary for every surface that names an encoding. Callers own
+    /// their defaults and error wording.
+    pub(crate) fn parse(name: &str) -> Option<Codec> {
+        match name {
+            "hex" => Some(Codec::Hex),
+            "base64" => Some(Codec::Base64),
+            "base64url" => Some(Codec::Base64Url),
+            _ => None,
+        }
+    }
+}
+
 /// Canonical encoding of `bytes` per the #259 table: hex lowercase, base64
 /// standard padded, base64url unpadded (the JWS form).
 pub(crate) fn encode_bytes(codec: Codec, bytes: &[u8]) -> String {
@@ -78,18 +99,39 @@ pub(crate) fn decode_bytes(codec: Codec, s: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// The text an encoder operates on: strings as-is, other values as their
-/// compact-JSON form, `null`/absent as an error naming the operator.
-fn encode_text(op: &'static str, args: &[&DataValue<'_>]) -> Result<String, Error> {
+/// Compute an HMAC over `data` — the one spelling of the MAC primitive that
+/// the `crypto` function and SigV4 signing share.
+pub(crate) fn mac_compute<M: Mac + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut mac = M::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Verify an HMAC — constant-time and length-checked (`verify_slice`), which
+/// is the reason the verify surfaces exist at all: without this helper the
+/// obvious spelling is `==` on the computed MAC. Shared by the `crypto`
+/// function's `hmac_verify` and channel HMAC auth.
+pub(crate) fn mac_verify<M: Mac + KeyInit>(key: &[u8], data: &[u8], signature: &[u8]) -> bool {
+    let Ok(mut mac) = M::new_from_slice(key) else {
+        return false;
+    };
+    mac.update(data);
+    mac.verify_slice(signature).is_ok()
+}
+
+/// The text an encoder operates on: strings as-is (borrowed — no copy on the
+/// common case), other values as their compact-JSON form, `null`/absent as an
+/// error naming the operator.
+fn encode_text<'v>(op: &'static str, args: &[&'v DataValue<'v>]) -> Result<Cow<'v, str>, Error> {
     let Some(v) = args.first() else {
         return Err(Error::custom_message(format!("{op} requires one argument")));
     };
     match v.as_str() {
-        Some(s) => Ok(s.to_string()),
+        Some(s) => Ok(Cow::Borrowed(s)),
         None if v.is_null() => Err(Error::custom_message(format!(
             "{op} of null — the argument is missing or resolved to nothing"
         ))),
-        None => Ok(v.to_string()),
+        None => Ok(Cow::Owned(v.to_string())),
     }
 }
 
@@ -229,15 +271,13 @@ impl CustomOperator for Random {
             "bytes" => {
                 let n = int_arg(args, 1, "byte count", 1, MAX_BYTES)?;
                 let codec = match args.get(2).and_then(|v| v.as_str()) {
-                    None | Some("hex") => Codec::Hex,
-                    Some("base64") => Codec::Base64,
-                    Some("base64url") => Codec::Base64Url,
-                    Some(other) => {
-                        return Err(Error::custom_message(format!(
-                            "random bytes encoding '{other}' is not supported — \
+                    None => Codec::Hex,
+                    Some(name) => Codec::parse(name).ok_or_else(|| {
+                        Error::custom_message(format!(
+                            "random bytes encoding '{name}' is not supported — \
                              hex (default), base64, base64url"
-                        )));
-                    }
+                        ))
+                    })?,
                 };
                 let mut buf = vec![0u8; n as usize];
                 rng.fill(buf.as_mut_slice());
@@ -272,11 +312,23 @@ fn int_arg(
     Ok(n)
 }
 
+/// The named alphabets, materialized once — `random string` samples on every
+/// evaluation and must not rebuild its character set each time.
+static ALPHANUMERIC_CHARS: std::sync::LazyLock<Vec<char>> =
+    std::sync::LazyLock::new(|| ALPHANUMERIC.chars().collect());
+static HEX_CHARS: std::sync::LazyLock<Vec<char>> =
+    std::sync::LazyLock::new(|| "0123456789abcdef".chars().collect());
+static NUMERIC_CHARS: std::sync::LazyLock<Vec<char>> =
+    std::sync::LazyLock::new(|| "0123456789".chars().collect());
+static URL_SAFE_CHARS: std::sync::LazyLock<Vec<char>> =
+    std::sync::LazyLock::new(|| ALPHANUMERIC.chars().chain(['-', '_']).collect());
+
+const ALPHANUMERIC: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
 /// The character set for `random string`: a named alphabet, or a custom one
 /// given as a literal string of **distinct** characters — a duplicate would
 /// silently bias sampling toward it, so it is rejected instead.
-fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Vec<char>, Error> {
-    const ALPHANUMERIC: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Cow<'static, [char]>, Error> {
     let spec = match arg.map(|v| v.as_str()) {
         None => None,
         Some(Some(s)) => Some(s),
@@ -286,11 +338,11 @@ fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Vec<char>, Error> {
             ));
         }
     };
-    let chars: Vec<char> = match spec {
-        None | Some("alphanumeric") => ALPHANUMERIC.chars().collect(),
-        Some("hex") => "0123456789abcdef".chars().collect(),
-        Some("numeric") => "0123456789".chars().collect(),
-        Some("url-safe") => ALPHANUMERIC.chars().chain(['-', '_']).collect(),
+    let chars: Cow<'static, [char]> = match spec {
+        None | Some("alphanumeric") => Cow::Borrowed(ALPHANUMERIC_CHARS.as_slice()),
+        Some("hex") => Cow::Borrowed(HEX_CHARS.as_slice()),
+        Some("numeric") => Cow::Borrowed(NUMERIC_CHARS.as_slice()),
+        Some("url-safe") => Cow::Borrowed(URL_SAFE_CHARS.as_slice()),
         Some(custom) => {
             let chars: Vec<char> = custom.chars().collect();
             let mut seen = std::collections::BTreeSet::new();
@@ -306,7 +358,7 @@ fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Vec<char>, Error> {
                     chars.len()
                 )));
             }
-            chars
+            Cow::Owned(chars)
         }
     };
     Ok(chars)

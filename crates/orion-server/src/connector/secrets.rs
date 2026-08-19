@@ -275,16 +275,6 @@ impl SecretResolver for VaultSecretResolver {
     }
 }
 
-/// Walk `value`, replacing each `scheme://reference` string with the value
-/// from the matching resolver. Strings without a recognized scheme pass
-/// through unchanged. Other JSON types (numbers, bools, null) are never
-/// modified.
-///
-/// Three phases rather than one recursive walk (H3c): collect the distinct
-/// references synchronously, resolve each **once** (a document repeating a
-/// reference costs one lookup — which matters now that a lookup can be an
-/// HTTP round trip), then substitute synchronously. It also sidesteps async
-/// recursion, which would otherwise need per-level boxing.
 /// Resolve one string that may be a secret reference (`env://VAR`, …); a
 /// literal passes through unchanged.
 ///
@@ -304,6 +294,16 @@ pub async fn resolve_secret_string(value: &str, field: &str) -> Result<String, S
         .ok_or_else(|| format!("{field} did not resolve to a string"))
 }
 
+/// Walk `value`, replacing each `scheme://reference` string with the value
+/// from the matching resolver. Strings without a recognized scheme pass
+/// through unchanged. Other JSON types (numbers, bools, null) are never
+/// modified.
+///
+/// Three phases rather than one recursive walk (H3c): collect the distinct
+/// references synchronously, resolve each **once** (a document repeating a
+/// reference costs one lookup — which matters now that a lookup can be an
+/// HTTP round trip), then substitute synchronously. It also sidesteps async
+/// recursion, which would otherwise need per-level boxing.
 pub async fn resolve_in_place(
     value: &mut Value,
     resolvers: &[Box<dyn SecretResolver>],

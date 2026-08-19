@@ -109,7 +109,7 @@ impl ChannelConfig {
 ///
 /// Absent (the default) keeps a channel unauthenticated, so nothing that is
 /// stored today changes behaviour.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelAuthConfig {
     /// Which scheme this channel enforces.
@@ -305,46 +305,16 @@ pub enum JwtSource {
     Cookie { cookie: String },
 }
 
-/// Test/struct-update convenience; production configs always deserialize,
-/// where `mode` is required.
-impl Default for ChannelAuthConfig {
-    fn default() -> Self {
-        Self {
-            mode: AuthMode::ApiKey,
-            keys: None,
-            header: None,
-            scheme: None,
-            secret: None,
-            secrets: None,
-            signature_prefix: None,
-            signature_key: None,
-            algorithm: None,
-            message: None,
-            encoding: None,
-            timestamp: None,
-            tolerance_secs: None,
-            preset: None,
-            jwt_keys: None,
-            jwks_url: None,
-            algorithms: None,
-            issuer: None,
-            audience: None,
-            leeway_secs: None,
-            require_exp: None,
-            required: None,
-            source: None,
-            max_token_bytes: None,
-            claims_to_metadata: None,
-            authorization_logic: None,
-        }
-    }
-}
-
 /// The authentication scheme a channel enforces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     /// A shared secret presented in a header, compared in constant time.
+    ///
+    /// Also the derived `Default` for `ChannelAuthConfig` — a test/
+    /// struct-update convenience; production configs always deserialize,
+    /// where `mode` is required.
+    #[default]
     ApiKey,
     /// An HMAC over a configurable signing string (default: the **raw request
     /// body**, SHA-256) — the scheme webhook providers use. Zoom/Slack-style

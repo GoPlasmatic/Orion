@@ -536,9 +536,7 @@ fn date_millis(payload: &Json, at: &str) -> Result<i64, QueryError> {
                 ))
             }),
         Json::Number(n) => n.as_i64().ok_or_else(|| {
-            QueryError::InvalidEnvelope(format!(
-                "$date at {at} must be integer epoch milliseconds"
-            ))
+            QueryError::InvalidEnvelope(format!("$date at {at} must be integer epoch milliseconds"))
         }),
         Json::Object(m) if m.len() == 1 && m.contains_key("$numberLong") => m
             .get("$numberLong")
@@ -1185,7 +1183,10 @@ mod tests {
     #[test]
     fn test_invalid_wrapper_payloads_are_located_errors() {
         for (filter, needle) in [
-            (json!({ "==": [{"field": "_id"}, { "$oid": "nope" }] }), "$oid"),
+            (
+                json!({ "==": [{"field": "_id"}, { "$oid": "nope" }] }),
+                "$oid",
+            ),
             (
                 json!({ "==": [{"field": "at"}, { "$date": "not a date" }] }),
                 "$date",
@@ -1196,10 +1197,7 @@ mod tests {
             ),
         ] {
             let err = lower(&filter, &Params::new()).expect_err("invalid payload");
-            assert!(
-                matches!(err, QueryError::InvalidEnvelope(_)),
-                "{err:?}"
-            );
+            assert!(matches!(err, QueryError::InvalidEnvelope(_)), "{err:?}");
             assert!(err.to_string().contains(needle), "{err}");
         }
     }
@@ -1213,13 +1211,19 @@ mod tests {
             &Params::new(),
         )
         .expect_err("not a wrapper");
-        assert!(matches!(err, QueryError::UnsupportedInQuery { .. }), "{err:?}");
+        assert!(
+            matches!(err, QueryError::UnsupportedInQuery { .. }),
+            "{err:?}"
+        );
 
         let err = lower(
             &json!({ "==": [{"field": "x"}, { "a": 1, "b": 2 }] }),
             &Params::new(),
         )
         .expect_err("plain object");
-        assert!(matches!(err, QueryError::NotRepresentable { .. }), "{err:?}");
+        assert!(
+            matches!(err, QueryError::NotRepresentable { .. }),
+            "{err:?}"
+        );
     }
 }

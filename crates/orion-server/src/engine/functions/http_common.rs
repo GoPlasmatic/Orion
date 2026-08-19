@@ -100,10 +100,12 @@ impl ResponseFormat {
 }
 
 /// A request body encoded per the task's `body_format`: the bytes to send and
-/// the `content-type` stamped when no explicit header names one.
+/// the `content-type` stamped when no explicit header names one. `Bytes`, not
+/// `Vec<u8>`: the body is attached per attempt (redirect hops, retries), and
+/// a `Bytes` clone is a refcount bump instead of a payload copy.
 #[derive(Debug)]
 pub struct EncodedBody {
-    pub bytes: Vec<u8>,
+    pub bytes: bytes::Bytes,
     pub content_type: &'static str,
 }
 
@@ -117,18 +119,22 @@ pub struct EncodedBody {
 pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<EncodedBody> {
     let encoded = match format {
         BodyFormat::Json => EncodedBody {
-            bytes: serde_json::to_vec(body).map_err(|e| {
-                DataflowError::Validation(format!("Failed to serialize request body as JSON: {e}"))
-            })?,
+            bytes: serde_json::to_vec(body)
+                .map_err(|e| {
+                    DataflowError::Validation(format!(
+                        "Failed to serialize request body as JSON: {e}"
+                    ))
+                })?
+                .into(),
             content_type: "application/json",
         },
         BodyFormat::Form => EncodedBody {
-            bytes: encode_form(body)?.into_bytes(),
+            bytes: encode_form(body)?.into_bytes().into(),
             content_type: "application/x-www-form-urlencoded",
         },
         BodyFormat::Text => match body {
             Value::String(s) => EncodedBody {
-                bytes: s.clone().into_bytes(),
+                bytes: s.clone().into_bytes().into(),
                 content_type: "text/plain; charset=utf-8",
             },
             other => {
@@ -1136,7 +1142,7 @@ mod tests {
         });
         let enc = encode_body(&body, BodyFormat::Form).expect("test");
         assert_eq!(enc.content_type, "application/x-www-form-urlencoded");
-        let encoded = String::from_utf8(enc.bytes).expect("test");
+        let encoded = String::from_utf8(enc.bytes.to_vec()).expect("test");
         // Scalars canonical, arrays as repeated keys, nulls skipped, reserved
         // characters percent-encoded.
         assert_eq!(
@@ -1152,7 +1158,7 @@ mod tests {
         let body = serde_json::json!({"metadata[order_id]": "6735"});
         let enc = encode_body(&body, BodyFormat::Form).expect("test");
         assert_eq!(
-            String::from_utf8(enc.bytes).expect("test"),
+            String::from_utf8(enc.bytes.to_vec()).expect("test"),
             "metadata%5Border_id%5D=6735"
         );
     }
@@ -1180,7 +1186,7 @@ mod tests {
     fn test_encode_text_requires_string() {
         let enc = encode_body(&serde_json::json!("<doc/>"), BodyFormat::Text).expect("test");
         assert_eq!(enc.content_type, "text/plain; charset=utf-8");
-        assert_eq!(enc.bytes, b"<doc/>");
+        assert_eq!(enc.bytes.as_ref(), b"<doc/>");
 
         let err = encode_body(&serde_json::json!({"a": 1}), BodyFormat::Text)
             .expect_err("test")

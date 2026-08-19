@@ -73,7 +73,10 @@ async fn start_api() -> String {
                 axum::Json(json!({ "error": "missing or stale token" })),
             );
         }
-        (StatusCode::OK, axum::Json(json!({ "orders": [ { "id": 7 } ] })))
+        (
+            StatusCode::OK,
+            axum::Json(json!({ "orders": [ { "id": 7 } ] })),
+        )
     }
     let app = axum::Router::new().route("/", axum::routing::get(orders));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -174,11 +177,8 @@ async fn the_probe_exercises_the_whole_oauth_setup() {
     let token_url = start_idp(Arc::clone(&idp)).await;
     let api_url = start_api().await;
 
-    let id = common::create_connector(
-        &app,
-        oauth2_connector("probe-ok", &api_url, &token_url),
-    )
-    .await;
+    let id =
+        common::create_connector(&app, oauth2_connector("probe-ok", &api_url, &token_url)).await;
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -222,7 +222,11 @@ async fn the_admin_read_masks_oauth2_credentials() {
     let app = common::test_app().await;
     let id = common::create_connector(
         &app,
-        oauth2_connector("masked", "https://api.example.com", "https://idp.example.com/t"),
+        oauth2_connector(
+            "masked",
+            "https://api.example.com",
+            "https://idp.example.com/t",
+        ),
     )
     .await;
     let resp = app

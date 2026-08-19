@@ -66,16 +66,7 @@ impl AsyncFunctionHandler for StorageHeadHandler {
             }
 
             let amz_date = sigv4::amz_date_now();
-            let sig_ctx = sigv4::SigningContext {
-                access_key: &storage.access_key,
-                secret_key: &storage.secret_key,
-                session_token: storage.session_token.as_deref(),
-                region: &storage.region,
-                service: "s3",
-                host: &host,
-                path: &path,
-                amz_date: &amz_date,
-            };
+            let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
             let mut req = self
                 .client
                 .head(&url)
@@ -233,31 +224,16 @@ mod tests {
         registry
             .insert_for_test("media", ConnectorConfig::Storage(config))
             .await;
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t",
-                       "function": {"name": NAME, "input": input}}]
-        }))
-        .map_err(|e| e.to_string())?;
-        let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert(
-            NAME.to_string(),
+        crate::engine::functions::run_test_task(
+            NAME,
             Box::new(StorageHeadHandler {
                 registry,
                 client: reqwest::Client::new(),
             }),
-        );
-        let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
-        engine
-            .process_message(&mut message)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(err) = message.errors().first() {
-            return Err(format!("{err:?}"));
-        }
-        Ok(message.data().into())
+            input,
+            Value::Null,
+        )
+        .await
     }
 
     #[tokio::test]

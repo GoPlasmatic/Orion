@@ -16,6 +16,28 @@ pub mod jwks;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Validation};
 use serde_json::Value;
 
+/// The clock-skew policy both verify surfaces share: this default, capped at
+/// this maximum (the channel mode refuses a larger configured value, the
+/// `jwt_verify` task clamps).
+pub const DEFAULT_LEEWAY_SECS: u64 = 30;
+pub const MAX_LEEWAY_SECS: u64 = 300;
+/// Default cap on the size of a presented token.
+pub const DEFAULT_MAX_TOKEN_BYTES: usize = 8_192;
+
+/// Refuse a non-HTTPS JWKS URL — keys fetched over plaintext are keys an
+/// on-path attacker chose. One rule for every surface that configures one;
+/// callers prefix the field name.
+pub fn validate_jwks_url(url: &str) -> Result<(), String> {
+    if url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!(
+            "must be HTTPS — keys fetched over plaintext are keys an on-path \
+             attacker chose (got '{url}')"
+        ))
+    }
+}
+
 /// Why a token was refused. `as_str` feeds metrics/trace labels; the wire
 /// response stays uniform (see `RejectReason::wire_description`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +104,11 @@ pub struct Verifier {
     pub leeway_secs: u64,
     pub require_exp: bool,
     pub max_token_bytes: usize,
+    /// One `jsonwebtoken::Validation` per allowed algorithm, built on first
+    /// use — `set_issuer`/`set_audience` allocate `HashSet<String>`s, and the
+    /// channel mode's Verifier is long-lived, so rebuilding them per request
+    /// would be per-request garbage. Constructors pass `OnceLock::new()`.
+    pub validations: std::sync::OnceLock<Vec<(Algorithm, Validation)>>,
 }
 
 impl Verifier {
@@ -119,7 +146,7 @@ impl Verifier {
                     }
             }) {
                 saw_candidate = true;
-                match try_key(token, &candidate.key, &validation) {
+                match try_key(token, &candidate.key, validation) {
                     Ok(claims) => return Ok(claims),
                     // A wrong signature may just be the wrong key — keep
                     // trying. Any *claim* failure means the signature held,
@@ -135,7 +162,7 @@ impl Verifier {
             let keys = jwks::decoding_keys(url, kid, header.alg).await?;
             for key in &keys {
                 saw_candidate = true;
-                match try_key(token, key, &validation) {
+                match try_key(token, key, validation) {
                     Ok(claims) => return Ok(claims),
                     Err(RejectReason::BadSignature) => last = Some(RejectReason::BadSignature),
                     Err(other) => return Err(other),
@@ -150,7 +177,22 @@ impl Verifier {
         })
     }
 
-    fn validation(&self, alg: Algorithm) -> Validation {
+    /// The cached `Validation` for one allowed algorithm. `alg` must have
+    /// passed the allowlist check, which is also what bounds the cache.
+    fn validation(&self, alg: Algorithm) -> &Validation {
+        let validations = self.validations.get_or_init(|| {
+            self.algorithms
+                .iter()
+                .map(|&a| (a, self.build_validation(a)))
+                .collect()
+        });
+        validations
+            .iter()
+            .find_map(|(a, v)| (*a == alg).then_some(v))
+            .expect("algorithm allowlist membership checked before key routing")
+    }
+
+    fn build_validation(&self, alg: Algorithm) -> Validation {
         let mut v = Validation::new(alg);
         v.leeway = self.leeway_secs;
         v.validate_exp = true;

@@ -368,9 +368,11 @@ impl ConnectorRepository for SqlConnectorRepository {
                     .from(Connectors::Table)
                     .and_where(Expr::col(Connectors::Id).eq(id)),
             );
-            let name: String = self.pool.fetch_scalar(&sql, values).await.map_err(|_| {
-                OrionError::NotFound(format!("Connector '{id}' not found"))
-            })?;
+            let name: String = self
+                .pool
+                .fetch_scalar(&sql, values)
+                .await
+                .map_err(|_| OrionError::NotFound(format!("Connector '{id}' not found")))?;
 
             let (sql, values) = build_sqlx(
                 Query::delete()

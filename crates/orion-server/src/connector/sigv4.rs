@@ -12,8 +12,10 @@
 //! and [`sign_headers`] (`Authorization`-header auth — `storage_head`'s one
 //! HEAD request, and the connectivity probe).
 
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::Hmac;
 use sha2::{Digest, Sha256};
+
+use crate::engine::operators::mac_compute;
 
 /// Everything the signing chain needs to know about one request's identity.
 /// Secrets arrive already resolved (the connector registry resolves `env://`
@@ -38,7 +40,29 @@ pub struct SigningContext<'a> {
     pub amz_date: &'a str,
 }
 
-impl SigningContext<'_> {
+impl<'a> SigningContext<'a> {
+    /// The context a storage connector's request signs with — the one
+    /// assembly of connector credentials + addressing that all three storage
+    /// surfaces (`storage_presign`, `storage_head`, the connectivity probe)
+    /// share, so a new signing input is added here once.
+    pub fn for_storage(
+        storage: &'a super::StorageConnectorConfig,
+        host: &'a str,
+        path: &'a str,
+        amz_date: &'a str,
+    ) -> Self {
+        Self {
+            access_key: &storage.access_key,
+            secret_key: &storage.secret_key,
+            session_token: storage.session_token.as_deref(),
+            region: &storage.region,
+            service: "s3",
+            host,
+            path,
+            amz_date,
+        }
+    }
+
     fn date(&self) -> &str {
         &self.amz_date[..8]
     }
@@ -61,9 +85,7 @@ impl SigningContext<'_> {
 }
 
 fn hmac_sha256(key: &[u8], data: &str) -> Vec<u8> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data.as_bytes());
-    mac.finalize().into_bytes().to_vec()
+    mac_compute::<Hmac<Sha256>>(key, data.as_bytes())
 }
 
 fn sha256_hex(data: &[u8]) -> String {

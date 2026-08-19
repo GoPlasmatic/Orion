@@ -27,7 +27,8 @@ use lettre::{AsyncTransport, Message};
 use serde_json::{Value, json};
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_smtp_connector, resolve_value, to_connect_error,
+    ConnectorCall, apply_output, require_smtp_connector, resolve_optional_str, resolve_value,
+    to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::smtp_pool::SmtpPoolCache;
@@ -79,15 +80,15 @@ impl AsyncFunctionHandler for SendEmailHandler {
             .ok_or_else(|| validation("requires 'to' (an address or an array of addresses)"))?;
         let cc = address_list(input, "cc", ctx)?.unwrap_or_default();
         let bcc = address_list(input, "bcc", ctx)?.unwrap_or_default();
-        let subject = resolved_string(input, "subject", ctx)?
+        let subject = resolve_optional_str(input, "subject", NAME, ctx)?
             .ok_or_else(|| validation("requires 'subject'"))?;
-        let text = resolved_string(input, "text", ctx)?;
-        let html = resolved_string(input, "html", ctx)?;
+        let text = resolve_optional_str(input, "text", NAME, ctx)?;
+        let html = resolve_optional_str(input, "html", NAME, ctx)?;
         if text.is_none() && html.is_none() {
             return Err(validation("requires at least one of 'text' or 'html'"));
         }
-        let from_override = resolved_string(input, "from", ctx)?;
-        let reply_to = resolved_string(input, "reply_to", ctx)?
+        let from_override = resolve_optional_str(input, "from", NAME, ctx)?;
+        let reply_to = resolve_optional_str(input, "reply_to", NAME, ctx)?
             .map(|s| parse_mailbox("reply_to", &s))
             .transpose()?;
 
@@ -97,18 +98,18 @@ impl AsyncFunctionHandler for SendEmailHandler {
 
             let from = sender(smtp_config, from_override.as_deref(), call.connector)?;
             let message_id = generated_message_id(&from);
-            let message = build_message(
-                &from,
-                &message_id,
-                &to,
-                &cc,
-                &bcc,
-                &subject,
-                reply_to.clone(),
-                input.get("headers"),
-                text.clone(),
-                html.clone(),
-            )?;
+            let message = build_message(MessageParts {
+                from: &from,
+                message_id: &message_id,
+                to: &to,
+                cc: &cc,
+                bcc: &bcc,
+                subject: &subject,
+                reply_to,
+                headers: input.get("headers"),
+                text,
+                html,
+            })?;
 
             let transport = self
                 .smtp_pool
@@ -138,23 +139,6 @@ impl AsyncFunctionHandler for SendEmailHandler {
 
 fn validation(msg: &str) -> DataflowError {
     DataflowError::Validation(format!("{NAME}: {msg}"))
-}
-
-/// A resolvable string field: absent/null → `None`; non-string after
-/// resolution is an error naming the field.
-fn resolved_string(
-    input: &Value,
-    field: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<String>, DataflowError> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(raw) => match resolve_value(raw, ctx) {
-            Value::String(s) => Ok(Some(s)),
-            Value::Null => Ok(None),
-            _ => Err(validation(&format!("'{field}' must resolve to a string"))),
-        },
-    }
 }
 
 /// An address field: one address or an array, each `addr@x` or
@@ -252,20 +236,36 @@ fn check_headers_field(input: &Value) -> Result<(), DataflowError> {
     }
 }
 
-/// Assemble the RFC 5322 message.
-#[allow(clippy::too_many_arguments)]
-fn build_message(
-    from: &Mailbox,
-    message_id: &str,
-    to: &[Mailbox],
-    cc: &[Mailbox],
-    bcc: &[Mailbox],
-    subject: &str,
+/// Everything [`build_message`] assembles, gathered so the call site reads by
+/// name instead of by a ten-argument positional list (three adjacent
+/// `&[Mailbox]`s would make a swapped `cc`/`bcc` invisible).
+struct MessageParts<'a> {
+    from: &'a Mailbox,
+    message_id: &'a str,
+    to: &'a [Mailbox],
+    cc: &'a [Mailbox],
+    bcc: &'a [Mailbox],
+    subject: &'a str,
     reply_to: Option<Mailbox>,
-    headers: Option<&Value>,
+    headers: Option<&'a Value>,
     text: Option<String>,
     html: Option<String>,
-) -> Result<Message, DataflowError> {
+}
+
+/// Assemble the RFC 5322 message.
+fn build_message(parts: MessageParts<'_>) -> Result<Message, DataflowError> {
+    let MessageParts {
+        from,
+        message_id,
+        to,
+        cc,
+        bcc,
+        subject,
+        reply_to,
+        headers,
+        text,
+        html,
+    } = parts;
     let mut builder = Message::builder()
         .from(from.clone())
         .subject(subject)
@@ -358,23 +358,12 @@ pub(super) fn validate_static_input(
     errors
 }
 
-/// Map a field key to its `&'static str` from the schema table.
 fn field_name(key: &str) -> &'static str {
-    SEND_EMAIL_FIELDS
-        .iter()
-        .map(|f| f.name)
-        .find(|n| *n == key)
-        .unwrap_or("to")
+    super::schema::static_field_name(SEND_EMAIL_FIELDS, key, "to")
 }
 
-/// Drop the `"send_email: "` prefix [`validation`] adds — as a `FieldError`
-/// message the field path already carries the context.
 fn strip_name(e: &DataflowError) -> String {
-    let s = e.to_string();
-    match s.split_once(&format!("{NAME}: ")) {
-        Some((_, msg)) => msg.to_string(),
-        None => s,
-    }
+    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --
@@ -557,36 +546,16 @@ mod tests {
         registry
             .insert_for_test("mailer", ConnectorConfig::Smtp(config))
             .await;
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t",
-                       "function": {"name": NAME, "input": input}}]
-        }))
-        .map_err(|e| e.to_string())?;
-        let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert(
-            NAME.to_string(),
+        crate::engine::functions::run_test_task(
+            NAME,
             Box::new(SendEmailHandler {
                 registry,
                 smtp_pool: std::sync::Arc::new(SmtpPoolCache::new(4)),
             }),
-        );
-        let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
-        dataflow_rs::engine::utils::set_nested_value(
-            &mut message.context,
-            "data",
-            dataflow_rs::datavalue::OwnedDataValue::from(&data),
-        );
-        engine
-            .process_message(&mut message)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(err) = message.errors().first() {
-            return Err(format!("{err:?}"));
-        }
-        Ok(message.data().into())
+            input,
+            data,
+        )
+        .await
     }
 
     #[tokio::test]

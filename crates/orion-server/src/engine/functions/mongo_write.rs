@@ -26,7 +26,9 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
 
-use super::connector_helpers::{ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error, to_exec_error};
+use super::connector_helpers::{
+    ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error, to_exec_error,
+};
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{require_document, require_mongo_connector, resolve_document};
 use super::schema::{FieldKind, FieldSchema};
@@ -89,7 +91,11 @@ impl MongoOp {
         match self {
             MongoOp::InsertOne | MongoOp::InsertMany => "insert",
             MongoOp::UpdateOne | MongoOp::UpdateMany | MongoOp::ReplaceOne => {
-                if upsert { "upsert" } else { "update" }
+                if upsert {
+                    "upsert"
+                } else {
+                    "update"
+                }
             }
             MongoOp::DeleteOne | MongoOp::DeleteMany => "delete",
         }
@@ -136,10 +142,7 @@ impl AsyncFunctionHandler for MongoWriteHandler {
         let database = call.require_str(input, "database")?;
         let collection = call.require_str(input, "collection")?;
         let op = MongoOp::parse(call.require_str(input, "op")?).ok_or_else(|| {
-            DataflowError::Validation(format!(
-                "{NAME} 'op' must be one of {}",
-                MongoOp::VALUES
-            ))
+            DataflowError::Validation(format!("{NAME} 'op' must be one of {}", MongoOp::VALUES))
         })?;
         let upsert = literal_bool(input, "upsert");
         let ordered = input
@@ -242,8 +245,8 @@ fn prepare(
             let doc = require_document(input, "document", NAME, ctx)?;
             if let Some(key) = doc.keys().find(|k| k.starts_with('$')) {
                 return Err(DataflowError::Validation(format!(
-                    "{NAME} replacement 'document' must be a plain document, but has \
-                     operator key '{key}' — use op 'update_one' for operator updates"
+                    "{NAME} {}",
+                    replace_plain_message(key)
                 )));
             }
             Prepared::Replace {
@@ -291,6 +294,24 @@ fn guard_unfiltered(
     Ok(())
 }
 
+/// One wording per shape rule, shared verbatim by the runtime refusal and
+/// authoring-time validation ([`validate_static_input`]) — the two surfaces
+/// must state the same rule.
+fn update_operators_message(plain_key: &str) -> String {
+    format!(
+        "'update' must use atomic operators ($set, $inc, $push, …), but has \
+         plain key '{plain_key}' — use op 'replace_one' to overwrite the \
+         whole document"
+    )
+}
+
+fn replace_plain_message(operator_key: &str) -> String {
+    format!(
+        "replacement 'document' must be a plain document, but has operator \
+         key '{operator_key}' — use op 'update_one' for operator updates"
+    )
+}
+
 /// An update document must be operator-shaped (`$set`, `$inc`, …): the driver
 /// refuses a plain document anyway, but with a message that does not say what
 /// to do instead.
@@ -302,9 +323,8 @@ fn require_update_operators(update: &Document) -> Result<(), DataflowError> {
     }
     if let Some(key) = update.keys().find(|k| !k.starts_with('$')) {
         return Err(DataflowError::Validation(format!(
-            "{NAME} 'update' must use atomic operators ({{\"$set\": {{..}}}}, \
-             \"$inc\", \"$push\", …), but has plain key '{key}' — use op \
-             'replace_one' to overwrite the whole document"
+            "{NAME} {}",
+            update_operators_message(key)
         )));
     }
     Ok(())
@@ -328,9 +348,9 @@ fn resolve_documents_array(
     input: &Value,
     ctx: &TaskContext<'_>,
 ) -> Result<Vec<Document>, DataflowError> {
-    let raw = input.get("documents").ok_or_else(|| {
-        DataflowError::Validation(format!("{NAME} requires 'documents' field"))
-    })?;
+    let raw = input
+        .get("documents")
+        .ok_or_else(|| DataflowError::Validation(format!("{NAME} requires 'documents' field")))?;
     let resolved = resolve_value(raw, ctx);
     let Value::Array(items) = resolved else {
         return Err(DataflowError::Validation(format!(
@@ -532,7 +552,15 @@ pub(super) fn validate_static_input(
     }
 
     // A field the op would silently ignore is an authoring mistake.
-    for field in ["document", "documents", "filter", "update", "upsert", "ordered", "all"] {
+    for field in [
+        "document",
+        "documents",
+        "filter",
+        "update",
+        "upsert",
+        "ordered",
+        "all",
+    ] {
         if input.contains_key(field) && !op.allowed_fields().contains(&field) {
             errs.push((
                 field,
@@ -548,16 +576,16 @@ pub(super) fn validate_static_input(
         && matches!(op, MongoOp::UpdateOne | MongoOp::UpdateMany)
     {
         if update.is_empty() {
-            errs.push(("update", "empty_update", "'update' must not be empty".to_string()));
+            errs.push((
+                "update",
+                "empty_update",
+                "'update' must not be empty".to_string(),
+            ));
         } else if let Some(key) = update.keys().find(|k| !k.starts_with('$')) {
             errs.push((
                 "update",
                 "update_requires_operators",
-                format!(
-                    "'update' must use atomic operators ($set, $inc, …), but has \
-                     plain key '{key}' — use op 'replace_one' to overwrite the \
-                     whole document"
-                ),
+                update_operators_message(key),
             ));
         }
     }
@@ -568,10 +596,7 @@ pub(super) fn validate_static_input(
         errs.push((
             "document",
             "replace_document_is_plain",
-            format!(
-                "replacement 'document' must be a plain document, but has operator \
-                 key '{key}' — use op 'update_one' for operator updates"
-            ),
+            replace_plain_message(key),
         ));
     }
     errs

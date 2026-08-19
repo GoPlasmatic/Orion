@@ -1501,9 +1501,19 @@ mod tests {
         // `connection_string` is a credential bundle; `auth` (when None it
         // serializes as a null leaf) holds only credentials and identities,
         // each covered by behaviour tests. The oauth2 block's two credential
-        // halves (#268) are the deliberate masks of an otherwise-readable
-        // structure.
-        const EXPECTED_MASKED: &[&str] = &["connection_string", "auth", "client_secret", "refresh_token"];
+        // halves (#268), SMTP's `password` (#262), and storage's credential
+        // trio (#265) are the deliberate masks of otherwise-readable
+        // structures.
+        const EXPECTED_MASKED: &[&str] = &[
+            "connection_string",
+            "auth",
+            "client_secret",
+            "refresh_token",
+            "password",
+            "access_key",
+            "secret_key",
+            "session_token",
+        ];
 
         fn walk(v: &Value, out: &mut Vec<String>) {
             if let Value::Object(map) = v {
@@ -1523,6 +1533,8 @@ mod tests {
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,
             r#"{"type":"es","url":"https://es:9200"}"#,
+            r#"{"type":"smtp","host":"mail.example.test","from":"noreply@example.test","auth":{"type":"basic","username":"u","password":"p"}}"#,
+            r#"{"type":"storage","endpoint":"https://s3.example.test","region":"r","bucket":"b","access_key":"AK","secret_key":"SK","session_token":"st"}"#,
         ] {
             let parsed: crate::connector::ConnectorConfig =
                 serde_json::from_str(sample).expect("sample parses");

@@ -161,31 +161,12 @@ pub fn validate_connector_config(
     Ok(())
 }
 
-/// F22e: refuse an `operations` object carrying a key this connector type does
-/// not read.
-///
-/// The gate structs are `#[serde(default)]` and connector configs do not use
-/// `deny_unknown_fields` (legacy rows must keep loading), so a misspelled gate
-/// key deserializes into a fully open gate — `{"operations": {"writes": false}}`
-/// on a cache would answer 201 and gate nothing. The values are already
-/// checked here for the HTTP method allow-list; this is the same door for the
-/// keys, for every type.
 /// The keys `RetryConfig` reads. Mirrors the struct the way the gate lists
 /// mirror theirs; `retry_allowed_keys_match_retry_config` below pins the two
 /// together, so adding a `RetryConfig` field without updating this list is a
 /// test failure rather than a valid config the boundary rejects.
 const ALLOWED_RETRY_KEYS: &[&str] = &["max_retries", "retry_delay_ms"];
 
-/// F60: the same door as [`validate_operation_gate_keys`], for `retry`.
-/// `RetryConfig` is all-`serde(default)` with no `deny_unknown_fields`
-/// (legacy rows must keep loading), so `{"retry": {"max_attempts": 5}}`
-/// deserialized into the default policy and changed nothing — the operator
-/// believed retries were configured. And only the HTTP connector *reads*
-/// `retry` at all (F7 removed the inert copies on db and es), so a
-/// correctly-spelled block on any other type is the same
-/// believed-configured-but-inert mistake and is refused whole. Refused at
-/// the CRUD boundary only; stored rows keep loading, exactly like the gate
-/// check above.
 /// The oauth2 auth block's structural rules (#268). Everything here is
 /// determined by the block alone — no secret is resolved and no network is
 /// touched, so the same check serves create, update, import and
@@ -245,8 +226,7 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
         }
         OAuth2Grant::ClientCredentials if o.refresh_token.is_some() => {
             return Err(OrionError::validation(
-                "'refresh_token' does not apply to the client_credentials grant"
-                    .to_string(),
+                "'refresh_token' does not apply to the client_credentials grant".to_string(),
             ));
         }
         _ => {}
@@ -283,6 +263,16 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
     Ok(())
 }
 
+/// F60: the same door as [`validate_operation_gate_keys`], for `retry`.
+/// `RetryConfig` is all-`serde(default)` with no `deny_unknown_fields`
+/// (legacy rows must keep loading), so `{"retry": {"max_attempts": 5}}`
+/// deserialized into the default policy and changed nothing — the operator
+/// believed retries were configured. And only the HTTP connector *reads*
+/// `retry` at all (F7 removed the inert copies on db and es), so a
+/// correctly-spelled block on any other type is the same
+/// believed-configured-but-inert mistake and is refused whole. Refused at
+/// the CRUD boundary only; stored rows keep loading, exactly like the gate
+/// check below.
 fn validate_retry_keys(
     connector_type: ConnectorType,
     config: &serde_json::Value,
@@ -319,6 +309,15 @@ fn validate_retry_keys(
     )))
 }
 
+/// F22e: refuse an `operations` object carrying a key this connector type does
+/// not read.
+///
+/// The gate structs are `#[serde(default)]` and connector configs do not use
+/// `deny_unknown_fields` (legacy rows must keep loading), so a misspelled gate
+/// key deserializes into a fully open gate — `{"operations": {"writes": false}}`
+/// on a cache would answer 201 and gate nothing. The values are already
+/// checked here for the HTTP method allow-list; this is the same door for the
+/// keys, for every type.
 fn validate_operation_gate_keys(
     connector_type: ConnectorType,
     config: &serde_json::Value,
@@ -417,9 +416,7 @@ mod tests {
     /// refuse it — never the first request.
     #[test]
     fn oauth2_auth_shape_is_judged_at_the_door() {
-        let base = |auth: serde_json::Value| {
-            json!({ "url": "https://api.example.com", "method": "GET", "auth": auth })
-        };
+        let base = |auth: serde_json::Value| json!({ "url": "https://api.example.com", "method": "GET", "auth": auth });
         let ok = base(json!({
             "type": "oauth2", "grant": "client_credentials",
             "token_url": "https://idp.example.com/token",
@@ -497,8 +494,7 @@ mod tests {
             "auth": { "type": "oauth2", "grant": "client_credentials",
                 "token_url": "https://idp/t", "client_id": "c", "client_secret": "s" }
         });
-        let err =
-            validate_connector_config(ConnectorType::Es, &es).expect_err("es must refuse");
+        let err = validate_connector_config(ConnectorType::Es, &es).expect_err("es must refuse");
         assert!(err.to_string().contains("http connectors only"), "{err}");
     }
 

@@ -82,20 +82,6 @@ pub fn init_metrics_with_instance(instance_id: Option<&str>) -> PrometheusHandle
 // Counter helpers
 // ---------------------------------------------------------------------------
 
-/// Count one message through a channel, whatever its outcome.
-///
-/// O14: this is now the *only* per-channel invocation counter.
-/// `orion_channel_executions_total{channel}` used to be incremented next to
-/// the `status="ok"` arm of this one, so it was `orion_messages_total` minus
-/// the label that says how the message ended — strictly less information
-/// under a second name.
-///
-/// `sum by (channel) (orion_messages_total)` is the replacement, and it is a
-/// **superset**, not an identity: the deleted counter had two call sites, both
-/// on the HTTP path, and never saw the Kafka ingest or DLQ paths that also
-/// record messages. Expect the per-channel rate to be higher than the old
-/// series on any deployment that consumes from Kafka — that is the blind spot
-/// closing, not double counting.
 /// One refused JWT, by typed reason (#267) — the wire stays uniform, the
 /// operator's dashboard does not have to.
 pub fn record_jwt_rejection(reason: &'static str) {
@@ -117,6 +103,20 @@ pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
     .increment(1);
 }
 
+/// Count one message through a channel, whatever its outcome.
+///
+/// O14: this is now the *only* per-channel invocation counter.
+/// `orion_channel_executions_total{channel}` used to be incremented next to
+/// the `status="ok"` arm of this one, so it was `orion_messages_total` minus
+/// the label that says how the message ended — strictly less information
+/// under a second name.
+///
+/// `sum by (channel) (orion_messages_total)` is the replacement, and it is a
+/// **superset**, not an identity: the deleted counter had two call sites, both
+/// on the HTTP path, and never saw the Kafka ingest or DLQ paths that also
+/// record messages. Expect the per-channel rate to be higher than the old
+/// series on any deployment that consumes from Kafka — that is the blind spot
+/// closing, not double counting.
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;

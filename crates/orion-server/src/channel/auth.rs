@@ -20,7 +20,7 @@
 // KeyInit is what carries `new_from_slice` from hmac 0.13 on: the constructor
 // moved off the concrete Hmac type onto the crypto-common trait, so it has to
 // be in scope to be called.
-use hmac::{Hmac, KeyInit, Mac};
+use hmac::Hmac;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
@@ -29,7 +29,7 @@ use crate::channel::guards::HeaderLookup;
 use crate::config::constant_time_eq;
 use dataflow_rs::datalogic_rs::{Engine as DatalogicEngine, Logic};
 
-use crate::engine::operators::{Codec, decode_bytes};
+use crate::engine::operators::{Codec, decode_bytes, mac_verify};
 use crate::errors::OrionError;
 
 /// A channel's authentication policy, resolved and pre-hashed at load time.
@@ -257,6 +257,7 @@ impl CompiledAuth {
                         leeway_secs: plan.leeway_secs,
                         require_exp: plan.require_exp,
                         max_token_bytes: plan.max_token_bytes,
+                        validations: std::sync::OnceLock::new(),
                     },
                     required: plan.required,
                     source: plan.source,
@@ -404,9 +405,14 @@ impl CompiledJwt {
             .map_err(|reason| self.refuse(reason))?;
 
         // 6. Authorization: verified identity, insufficient rights → 403
-        // (RFC 6750 insufficient_scope), distinct from every 401 above.
-        if let Some(logic) = &self.authorization {
-            let context = serde_json::json!({ "claims": claims });
+        // (RFC 6750 insufficient_scope), distinct from every 401 above. The
+        // claims move into the eval context and back out afterwards — the
+        // evaluation only borrows it, and `json!` would deep-copy the whole
+        // claims object on every request.
+        let claims = if let Some(logic) = &self.authorization {
+            let mut context = serde_json::Map::with_capacity(1);
+            context.insert("claims".to_string(), claims);
+            let context = serde_json::Value::Object(context);
             let allowed = datalogic
                 .session()
                 .eval_into::<serde_json::Value, _>(logic, &context)
@@ -418,7 +424,13 @@ impl CompiledJwt {
                         .to_string(),
                 ));
             }
-        }
+            match context {
+                serde_json::Value::Object(mut map) => map.remove("claims").expect("inserted above"),
+                _ => unreachable!("built as an object above"),
+            }
+        } else {
+            claims
+        };
 
         // 7. Filter and expose. The token string dies here.
         let exposed = match &self.claims_filter {
@@ -536,12 +548,12 @@ impl CompiledHmac {
             };
             for secret in &self.secrets {
                 let ok = match self.algorithm {
-                    HmacAlgorithm::Sha1 => verify_mac::<Hmac<Sha1>>(secret, &message, &signature),
+                    HmacAlgorithm::Sha1 => mac_verify::<Hmac<Sha1>>(secret, &message, &signature),
                     HmacAlgorithm::Sha256 => {
-                        verify_mac::<Hmac<Sha256>>(secret, &message, &signature)
+                        mac_verify::<Hmac<Sha256>>(secret, &message, &signature)
                     }
                     HmacAlgorithm::Sha512 => {
-                        verify_mac::<Hmac<Sha512>>(secret, &message, &signature)
+                        mac_verify::<Hmac<Sha512>>(secret, &message, &signature)
                     }
                 };
                 if ok {
@@ -566,14 +578,6 @@ impl CompiledHmac {
             }),
         }
     }
-}
-
-fn verify_mac<M: Mac + KeyInit>(secret: &[u8], message: &[u8], signature: &[u8]) -> bool {
-    let Ok(mut mac) = M::new_from_slice(secret) else {
-        return false;
-    };
-    mac.update(message);
-    mac.verify_slice(signature).is_ok()
 }
 
 /// The value(s) of `key` in a comma-separated `k=v` packed header
@@ -747,14 +751,12 @@ fn hmac_plan(cfg: &ChannelAuthConfig) -> Result<(HmacPlan, Vec<String>), String>
     .as_deref()
     {
         None => None,
-        Some("hex") => Some(Codec::Hex),
-        Some("base64") => Some(Codec::Base64),
-        Some("base64url") => Some(Codec::Base64Url),
-        Some(other) => {
-            return Err(format!(
-                "auth.encoding '{other}' is not supported — hex, base64, base64url                  (omit it for auto-detection)"
-            ));
-        }
+        Some(name) => Some(Codec::parse(name).ok_or_else(|| {
+            format!(
+                "auth.encoding '{name}' is not supported — hex, base64, base64url \
+                 (omit it for auto-detection)"
+            )
+        })?),
     };
 
     let message = parse_template(
@@ -915,10 +917,6 @@ struct JwtKeyPlan {
     key_encoding: Option<String>,
 }
 
-const JWT_MAX_LEEWAY_SECS: u64 = 300;
-const JWT_DEFAULT_LEEWAY_SECS: u64 = 30;
-const JWT_DEFAULT_MAX_TOKEN_BYTES: usize = 8_192;
-
 fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
     let algorithm_names = cfg
         .algorithms
@@ -949,11 +947,7 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
     let jwks_url = match &cfg.jwks_url {
         None => None,
         Some(url) => {
-            if !url.starts_with("https://") {
-                return Err(format!(
-                    "auth.jwks_url must be HTTPS — keys fetched over plaintext are                      keys an on-path attacker chose (got '{url}')"
-                ));
-            }
+            crate::jwt::validate_jwks_url(url).map_err(|e| format!("auth.jwks_url {e}"))?;
             Some(url.clone())
         }
     };
@@ -961,10 +955,11 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
         return Err("auth.mode = \"jwt\" requires auth.jwt_keys and/or auth.jwks_url".to_string());
     }
 
-    let leeway_secs = cfg.leeway_secs.unwrap_or(JWT_DEFAULT_LEEWAY_SECS);
-    if leeway_secs > JWT_MAX_LEEWAY_SECS {
+    let leeway_secs = cfg.leeway_secs.unwrap_or(crate::jwt::DEFAULT_LEEWAY_SECS);
+    if leeway_secs > crate::jwt::MAX_LEEWAY_SECS {
         return Err(format!(
-            "auth.leeway_secs must be at most {JWT_MAX_LEEWAY_SECS}, got {leeway_secs}"
+            "auth.leeway_secs must be at most {}, got {leeway_secs}",
+            crate::jwt::MAX_LEEWAY_SECS
         ));
     }
 
@@ -1001,7 +996,9 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
         require_exp: cfg.require_exp.unwrap_or(true),
         required: cfg.required.unwrap_or(true),
         source,
-        max_token_bytes: cfg.max_token_bytes.unwrap_or(JWT_DEFAULT_MAX_TOKEN_BYTES),
+        max_token_bytes: cfg
+            .max_token_bytes
+            .unwrap_or(crate::jwt::DEFAULT_MAX_TOKEN_BYTES),
     })
 }
 
@@ -1134,9 +1131,7 @@ mod tests {
     }
 
     fn sign_hex(secret: &str, body: &[u8]) -> String {
-        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac key");
-        mac.update(body);
-        hex::encode(mac.finalize().into_bytes())
+        hex::encode(sign::<Hmac<Sha256>>(secret.as_bytes(), body))
     }
 
     #[tokio::test]
@@ -1177,10 +1172,9 @@ mod tests {
             .await
             .expect("compiles");
         let body = br#"{"order":1}"#;
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"whsec").expect("hmac key");
-        mac.update(body);
         use base64::Engine;
-        let sig = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+        let sig =
+            base64::engine::general_purpose::STANDARD.encode(sign::<Hmac<Sha256>>(b"whsec", body));
         let headers = [("X-Signature", sig)];
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
         assert!(
@@ -1271,11 +1265,7 @@ mod tests {
     }
     // -- #264: templates, presets, rotation, replay windows --
 
-    fn sign<M: Mac + KeyInit>(secret: &[u8], message: &[u8]) -> Vec<u8> {
-        let mut mac = M::new_from_slice(secret).expect("hmac key");
-        mac.update(message);
-        mac.finalize().into_bytes().to_vec()
-    }
+    use crate::engine::operators::mac_compute as sign;
 
     fn preset_config(preset: &str, secret: &str) -> ChannelAuthConfig {
         ChannelAuthConfig {

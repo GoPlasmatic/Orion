@@ -10,11 +10,12 @@
 //! ## Lifecycle
 //!
 //! Tokens are acquired lazily on first use, cached per connector, and
-//! refreshed `refresh_margin_secs` before expiry. Refreshes are
-//! **single-flight**: one `Mutex` per connector serialises the token check and
-//! the refresh, so concurrent requests wait on the in-flight result instead of
-//! racing it — the race that, under refresh-token rotation, makes the losers
-//! invalidate the winner's new token.
+//! refreshed `refresh_margin_secs` before expiry. A comfortably-fresh token
+//! under an unchanged config is served lock-free (`ArcSwap`); everything else
+//! falls to the per-connector `Mutex`, which makes refreshes
+//! **single-flight**: concurrent requests wait on the in-flight result instead
+//! of racing it — the race that, under refresh-token rotation, makes the
+//! losers invalidate the winner's new token.
 //!
 //! ## Rotation persistence
 //!
@@ -156,7 +157,18 @@ impl EntryState {
     }
 }
 
+/// The lock-free fast path: the last published token and the config it was
+/// minted under. Written only by the slow path (holding `TokenEntry::state`),
+/// read without any lock on every request — the common case is a cached token
+/// comfortably inside its lifetime under an unchanged config, and it must not
+/// queue behind an in-flight refresh or pay a serialize+hash fingerprint.
+struct FastToken {
+    config: Option<OAuth2Config>,
+    token: Option<CachedToken>,
+}
+
 struct TokenEntry {
+    fast: arc_swap::ArcSwap<FastToken>,
     state: tokio::sync::Mutex<EntryState>,
 }
 
@@ -197,6 +209,11 @@ impl OAuthTokenManager {
             && let Ok(mut st) = entry.state.try_lock()
         {
             st.token = None;
+            let config = entry.fast.load().config.clone();
+            entry.fast.store(Arc::new(FastToken {
+                config,
+                token: None,
+            }));
         }
     }
 
@@ -223,8 +240,23 @@ impl OAuthTokenManager {
                 OAuth2Grant::VALUES
             ))
         })?;
-        let fingerprint = fingerprint(cfg);
+        let margin = Duration::from_secs(cfg.refresh_margin_secs.min(3600));
         let entry = self.entry(connector).await;
+
+        // Fast path: exactly the condition the slow path answers from cache
+        // (unchanged config, token comfortably fresh), without the mutex —
+        // so requests never serialize behind an in-flight refresh while the
+        // current token is still valid past the margin.
+        {
+            let fast = entry.fast.load();
+            if fast.config.as_ref() == Some(cfg)
+                && let Some(token) = fresh_token(&fast.token, margin)
+            {
+                return Ok(token);
+            }
+        }
+
+        let fingerprint = fingerprint(cfg);
         let mut st = entry.state.lock().await;
 
         // The connector was edited since this state was minted: everything —
@@ -233,7 +265,8 @@ impl OAuthTokenManager {
             *st = EntryState::fresh(fingerprint.clone());
         }
 
-        let margin = Duration::from_secs(cfg.refresh_margin_secs.min(3600));
+        // Re-check under the lock: a queued caller usually finds the winner's
+        // freshly published token here.
         if let Some(token) = fresh_token(&st.token, margin) {
             return Ok(token);
         }
@@ -250,8 +283,16 @@ impl OAuthTokenManager {
                     .await
             }
             OAuth2Grant::RefreshToken => {
-                self.refresh_flow(deps, connector, cfg, &fingerprint, allow_private_urls, &mut st)
-                    .await
+                self.refresh_flow(
+                    deps,
+                    connector,
+                    cfg,
+                    &fingerprint,
+                    margin,
+                    allow_private_urls,
+                    &mut st,
+                )
+                .await
             }
         };
         if let Err(e) = &result
@@ -259,6 +300,12 @@ impl OAuthTokenManager {
         {
             st.rejected = Some((Instant::now(), e.to_string()));
         }
+        // Publish for the fast path, whatever happened, while the lock is
+        // still held (its writers are ordered by the mutex).
+        entry.fast.store(Arc::new(FastToken {
+            config: Some(cfg.clone()),
+            token: st.token.clone(),
+        }));
         result
     }
 
@@ -269,6 +316,10 @@ impl OAuthTokenManager {
         let mut entries = self.entries.write().await;
         Arc::clone(entries.entry(connector.to_string()).or_insert_with(|| {
             Arc::new(TokenEntry {
+                fast: arc_swap::ArcSwap::new(Arc::new(FastToken {
+                    config: None,
+                    token: None,
+                })),
                 state: tokio::sync::Mutex::new(EntryState::fresh(String::new())),
             })
         }))
@@ -296,23 +347,21 @@ impl OAuthTokenManager {
         for (k, v) in &cfg.extra_params {
             params.push((k.as_str(), v.clone()));
         }
-        let response =
-            request_token(deps, connector, cfg, allow_private_urls, params).await?;
-        let token = cache_token(st, &response);
-        Ok(token)
+        let response = request_token(deps, connector, cfg, allow_private_urls, params).await?;
+        Ok(cache_token(st, &response).access_token)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn refresh_flow(
         &self,
         deps: &OAuthRuntimeDeps,
         connector: &str,
         cfg: &OAuth2Config,
         fingerprint: &str,
+        margin: Duration,
         allow_private_urls: bool,
         st: &mut EntryState,
     ) -> Result<String, OAuthError> {
-        let margin = Duration::from_secs(cfg.refresh_margin_secs.min(3600));
-
         // First use in this process: the freshest refresh token may be a
         // rotation another node (or a previous run) persisted — and its
         // access token may still be perfectly good.
@@ -358,7 +407,7 @@ impl OAuthTokenManager {
         let current_rt = st
             .refresh_token
             .clone()
-            .unwrap_or_default();
+            .expect("ensured above: persisted, adopted, or seeded");
         let mut params: Vec<(&str, String)> = vec![
             ("grant_type", "refresh_token".to_string()),
             ("refresh_token", current_rt.clone()),
@@ -366,21 +415,16 @@ impl OAuthTokenManager {
         for (k, v) in &cfg.extra_params {
             params.push((k.as_str(), v.clone()));
         }
-        let response =
-            request_token(deps, connector, cfg, allow_private_urls, params).await?;
-        let token = cache_token(st, &response);
+        let response = request_token(deps, connector, cfg, allow_private_urls, params).await?;
+        let cached = cache_token(st, &response);
 
         // Rotation: the response's refresh token (when present) replaces the
         // one just spent. Persist token + rotation before anyone else asks.
         let next_rt = response.refresh_token.clone().unwrap_or(current_rt);
         st.refresh_token = Some(next_rt.clone());
         let persisted = PersistedState {
-            access_token: token.clone(),
-            expires_at_epoch_ms: st
-                .token
-                .as_ref()
-                .map(|t| t.expires_at_epoch_ms)
-                .unwrap_or_default(),
+            access_token: cached.access_token.clone(),
+            expires_at_epoch_ms: cached.expires_at_epoch_ms,
             refresh_token: next_rt,
         };
         match serde_json::to_string(&persisted) {
@@ -407,7 +451,7 @@ impl OAuthTokenManager {
                 tracing::error!(connector, error = %e, "OAuth2 state did not serialize");
             }
         }
-        Ok(token)
+        Ok(cached.access_token)
     }
 }
 
@@ -417,18 +461,20 @@ fn fresh_token(token: &Option<CachedToken>, margin: Duration) -> Option<String> 
     (Instant::now() + margin < token.expires_at).then(|| token.access_token.clone())
 }
 
-/// Store a token response in the entry and hand back the access token.
-fn cache_token(st: &mut EntryState, response: &TokenResponse) -> String {
+/// Store a token response in the entry and hand back the cached form — the
+/// caller reads the expiry from it rather than re-deriving it from `st`.
+fn cache_token(st: &mut EntryState, response: &TokenResponse) -> CachedToken {
     let ttl = response
         .expires_in
         .unwrap_or(DEFAULT_TOKEN_TTL_SECS)
         .max(MIN_TOKEN_TTL_SECS);
-    st.token = Some(CachedToken {
+    let token = CachedToken {
         access_token: response.access_token.clone(),
         expires_at: Instant::now() + Duration::from_secs(ttl),
         expires_at_epoch_ms: epoch_ms_now().saturating_add(ttl * 1000),
-    });
-    response.access_token.clone()
+    };
+    st.token = Some(token.clone());
+    token
 }
 
 /// Adopt a persisted access token when it is still fresh under `margin`.
@@ -543,10 +589,7 @@ async fn request_token_inner(
             OAuth2ClientAuth::VALUES
         ))
     })?;
-    let mut req = deps
-        .http_client
-        .post(&cfg.token_url)
-        .timeout(TOKEN_TIMEOUT);
+    let mut req = deps.http_client.post(&cfg.token_url).timeout(TOKEN_TIMEOUT);
     match client_auth {
         OAuth2ClientAuth::Basic => {
             req = req.basic_auth(&cfg.client_id, Some(&cfg.client_secret));
@@ -602,7 +645,12 @@ async fn request_token_inner(
             .and_then(|e| e.as_str())
             .unwrap_or("no error code");
         if let Some(desc) = json.get("error_description").and_then(|d| d.as_str()) {
-            tracing::warn!(status = status.as_u16(), code, desc, "OAuth2 token request rejected");
+            tracing::warn!(
+                status = status.as_u16(),
+                code,
+                desc,
+                "OAuth2 token request rejected"
+            );
         }
         if status.is_client_error() {
             return Err(OAuthError::Rejected(format!(
@@ -811,7 +859,11 @@ mod tests {
         assert_eq!(get("grant_type").as_deref(), Some("client_credentials"));
         assert_eq!(get("scope").as_deref(), Some("api.read api.write"));
         assert_eq!(get("audience").as_deref(), Some("https://api.example.com"));
-        assert_eq!(get("client_id"), None, "basic auth puts nothing in the body");
+        assert_eq!(
+            get("client_id"),
+            None,
+            "basic auth puts nothing in the body"
+        );
     }
 
     #[tokio::test]
@@ -823,11 +875,17 @@ mod tests {
             client_auth: "body".to_string(),
             ..cc_config(&url)
         };
-        manager.access_token("crm", &cfg, true).await.expect("token");
+        manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
         assert!(!*idp.last_had_basic.lock().expect("test"));
         let form = idp.last_form.lock().expect("test").clone();
         assert!(form.iter().any(|(k, v)| k == "client_id" && v == "cid"));
-        assert!(form.iter().any(|(k, v)| k == "client_secret" && v == "csecret"));
+        assert!(
+            form.iter()
+                .any(|(k, v)| k == "client_secret" && v == "csecret")
+        );
     }
 
     /// The single-flight guarantee: concurrent first requests produce one
@@ -865,7 +923,10 @@ mod tests {
         let manager = manager_with(Arc::clone(&repo) as Arc<StubConnectorRepo>);
         let cfg = rt_config(&url, "rt-1");
 
-        manager.access_token("crm", &cfg, true).await.expect("token");
+        manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
         assert_eq!(
             idp.last_refresh_token.lock().expect("test").as_deref(),
             Some("rt-1"),
@@ -879,8 +940,7 @@ mod tests {
             .expect("read")
             .expect("state row");
         assert_eq!(row.fingerprint, fingerprint(&cfg));
-        let persisted: PersistedState =
-            serde_json::from_str(&row.state_json).expect("state json");
+        let persisted: PersistedState = serde_json::from_str(&row.state_json).expect("state json");
         assert_eq!(persisted.refresh_token, "rt-2");
         assert_eq!(persisted.access_token, "at-1");
 
@@ -891,7 +951,10 @@ mod tests {
             200,
             json!({ "access_token": "at-2", "expires_in": 3600, "refresh_token": "rt-3" }),
         );
-        manager.access_token("crm", &cfg, true).await.expect("token");
+        manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
         assert_eq!(
             idp.last_refresh_token.lock().expect("test").as_deref(),
             Some("rt-2")
@@ -920,7 +983,10 @@ mod tests {
         .expect("seed state");
 
         let manager = manager_with(Arc::clone(&repo) as Arc<StubConnectorRepo>);
-        let token = manager.access_token("crm", &cfg, true).await.expect("token");
+        let token = manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
         assert_eq!(token, "adopted");
         assert_eq!(idp.hits(), 0, "adoption costs no token request");
     }
@@ -949,7 +1015,10 @@ mod tests {
 
         let manager = manager_with(Arc::clone(&repo) as Arc<StubConnectorRepo>);
         let cfg = rt_config(&url, "rt-reseeded");
-        manager.access_token("crm", &cfg, true).await.expect("token");
+        manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
         assert_eq!(
             idp.last_refresh_token.lock().expect("test").as_deref(),
             Some("rt-reseeded"),

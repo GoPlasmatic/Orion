@@ -13,9 +13,10 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
-use super::connector_helpers::{apply_output, resolve_value};
+use super::connector_helpers::{
+    apply_output, parse_duration_secs, resolve_duration_secs, resolve_value,
+};
 use super::schema::{FieldKind, FieldSchema};
-use super::storage_presign::parse_duration_secs;
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "jwt_sign";
@@ -55,13 +56,12 @@ impl AsyncFunctionHandler for JwtSignHandler {
 
         // Claims: a resolvable object — {"var": ..} nodes fold, like every
         // connector function; computed claims are composed with `map` first.
-        let claims_input = input
-            .get("claims")
-            .cloned()
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let mut claims = match resolve_value(&claims_input, ctx) {
-            Value::Object(map) => map,
-            _ => return Err(validation("'claims' must resolve to an object")),
+        let mut claims = match input.get("claims") {
+            None => serde_json::Map::new(),
+            Some(raw) => match resolve_value(raw, ctx) {
+                Value::Object(map) => map,
+                _ => return Err(validation("'claims' must resolve to an object")),
+            },
         };
 
         let now = chrono::Utc::now().timestamp();
@@ -76,13 +76,13 @@ impl AsyncFunctionHandler for JwtSignHandler {
             claims.insert("aud".to_string(), resolve_value(aud, ctx));
         }
         if let Some(nbf) = input.get("not_before") {
-            let offset = duration_field(nbf, ctx, "not_before")?;
+            let offset = resolve_duration_secs(nbf, ctx, NAME, "not_before")?;
             claims.insert("nbf".to_string(), Value::from(now + offset as i64));
         }
         claims.insert("iat".to_string(), Value::from(now));
         match input.get("expires_in") {
             Some(raw) if !raw.is_null() => {
-                let secs = duration_field(raw, ctx, "expires_in")?;
+                let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
                 if secs == 0 || secs > MAX_EXPIRES_SECS {
                     return Err(validation(&format!(
                         "'expires_in' must be between 1 second and {MAX_EXPIRES_SECS} \
@@ -120,21 +120,6 @@ fn validation(msg: &str) -> DataflowError {
     DataflowError::Validation(format!("{NAME}: {msg}"))
 }
 
-/// Seconds from an integer or a `"<n>s|m|h|d"` string (resolvable).
-fn duration_field(raw: &Value, ctx: &TaskContext<'_>, field: &str) -> Result<u64, DataflowError> {
-    match resolve_value(raw, ctx) {
-        Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| validation(&format!("'{field}' must be a positive integer"))),
-        Value::String(s) => {
-            parse_duration_secs(&s).map_err(|e| validation(&format!("'{field}': {e}")))
-        }
-        _ => Err(validation(&format!(
-            "'{field}' must be seconds (integer) or a duration like \"24h\""
-        ))),
-    }
-}
-
 // -- Authoring-time validation (shared with schema::validate_input) --
 
 pub(super) fn validate_static_input(
@@ -142,18 +127,12 @@ pub(super) fn validate_static_input(
 ) -> Vec<(&'static str, &'static str, String)> {
     let mut errors: Vec<(&'static str, &'static str, String)> = Vec::new();
 
-    match obj.get("algorithm").and_then(Value::as_str) {
-        None => {
-            if obj.get("algorithm").is_none() {
-                // The required-field loop reports the absence; a non-string is
-                // its TYPE_MISMATCH.
-            }
-        }
-        Some(name) => {
-            if let Err(e) = crate::jwt::parse_algorithm(name) {
-                errors.push(("algorithm", "INVALID", e));
-            }
-        }
+    // A missing or non-string `algorithm` is the field loop's REQUIRED /
+    // TYPE_MISMATCH; only a present string is judged here.
+    if let Some(name) = obj.get("algorithm").and_then(Value::as_str)
+        && let Err(e) = crate::jwt::parse_algorithm(name)
+    {
+        errors.push(("algorithm", "INVALID", e));
     }
     if obj.get("expires_in").is_none_or(Value::is_null) {
         let has_exp = obj

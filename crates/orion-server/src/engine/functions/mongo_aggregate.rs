@@ -180,22 +180,36 @@ fn pipeline_stages(resolved: &Value) -> Result<Vec<(String, &Value)>, DataflowEr
     let mut stages = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
         let (name, _) = stage_entry(item).ok_or_else(|| {
-            DataflowError::Validation(format!(
-                "{NAME} pipeline[{i}] must be an object with exactly one \
-                 $-prefixed stage key (e.g. {{\"$match\": {{..}}}})"
-            ))
+            DataflowError::Validation(format!("{NAME} {}", stage_shape_message(i)))
         })?;
         if !is_known_stage(name) {
             return Err(DataflowError::Validation(format!(
-                "{NAME} pipeline[{i}] stage '{name}' is not in the allowed stage \
-                 set (read stages: {}; write stages, connector-gated: {})",
-                READ_STAGES.join(", "),
-                WRITE_STAGES.join(", ")
+                "{NAME} {}",
+                unknown_stage_message(i, name)
             )));
         }
         stages.push((name.to_string(), item));
     }
     Ok(stages)
+}
+
+/// One wording per pipeline shape rule, shared verbatim by the runtime check
+/// and authoring-time validation ([`validate_static_input`]) — the two
+/// surfaces must state the same rule.
+fn stage_shape_message(i: usize) -> String {
+    format!(
+        "pipeline[{i}] must be an object with exactly one $-prefixed stage \
+         key (e.g. {{\"$match\": {{..}}}})"
+    )
+}
+
+fn unknown_stage_message(i: usize, name: &str) -> String {
+    format!(
+        "pipeline[{i}] stage '{name}' is not in the allowed stage set \
+         (read stages: {}; write stages, connector-gated: {})",
+        READ_STAGES.join(", "),
+        WRITE_STAGES.join(", ")
+    )
 }
 
 /// The `($stage, body)` of a stage object, if it has exactly that shape.
@@ -246,24 +260,10 @@ pub(super) fn validate_static_input(
             continue; // a stage substituted from the message: runtime's call
         }
         match stage_entry(item) {
-            None => errs.push((
-                "pipeline",
-                "invalid_pipeline",
-                format!(
-                    "pipeline[{i}] must be an object with exactly one $-prefixed \
-                     stage key (e.g. {{\"$match\": {{..}}}})"
-                ),
-            )),
-            Some((name, _)) if !is_known_stage(name) => errs.push((
-                "pipeline",
-                "unknown_stage",
-                format!(
-                    "pipeline[{i}] stage '{name}' is not in the allowed stage set \
-                     (read stages: {}; write stages, connector-gated: {})",
-                    READ_STAGES.join(", "),
-                    WRITE_STAGES.join(", ")
-                ),
-            )),
+            None => errs.push(("pipeline", "invalid_pipeline", stage_shape_message(i))),
+            Some((name, _)) if !is_known_stage(name) => {
+                errs.push(("pipeline", "unknown_stage", unknown_stage_message(i, name)))
+            }
             Some(_) => {}
         }
     }

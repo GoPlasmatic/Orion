@@ -320,10 +320,7 @@ fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> Result<SimpleExpr
 
 fn in_expr(field: &FieldRef, values: &[Value], negated: bool) -> Result<SimpleExpr, QueryError> {
     let col = col_expr(field);
-    let vals: Vec<SeaValue> = values
-        .iter()
-        .map(to_sea_value)
-        .collect::<Result<_, _>>()?;
+    let vals: Vec<SeaValue> = values.iter().map(to_sea_value).collect::<Result<_, _>>()?;
     Ok(if negated {
         col.is_not_in(vals)
     } else {

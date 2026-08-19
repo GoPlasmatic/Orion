@@ -16,8 +16,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_op, require_storage_connector, resolve_required_str,
-    resolve_value,
+    ConnectorCall, apply_output, parse_duration_secs, require_op, require_storage_connector,
+    resolve_duration_secs, resolve_optional_str, resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::{ConnectorRegistry, sigv4};
@@ -49,10 +49,11 @@ impl AsyncFunctionHandler for StoragePresignHandler {
 
         let key = resolve_required_str(input, "key", NAME, ctx)?;
         let expires_secs = expires_in(input, ctx)?;
-        let response_content_type = resolved_opt_str(input, "response_content_type", ctx)?;
+        let response_content_type =
+            resolve_optional_str(input, "response_content_type", NAME, ctx)?;
         let response_content_disposition =
-            resolved_opt_str(input, "response_content_disposition", ctx)?;
-        let content_type = resolved_opt_str(input, "content_type", ctx)?;
+            resolve_optional_str(input, "response_content_disposition", NAME, ctx)?;
+        let content_type = resolve_optional_str(input, "content_type", NAME, ctx)?;
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
@@ -82,16 +83,7 @@ impl AsyncFunctionHandler for StoragePresignHandler {
             }
 
             let amz_date = sigv4::amz_date_now();
-            let sig_ctx = sigv4::SigningContext {
-                access_key: &storage.access_key,
-                secret_key: &storage.secret_key,
-                session_token: storage.session_token.as_deref(),
-                region: &storage.region,
-                service: "s3",
-                host: &host,
-                path: &path,
-                amz_date: &amz_date,
-            };
+            let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
             let url = sigv4::presign_url(
                 &sig_ctx,
                 &scheme,
@@ -167,22 +159,6 @@ fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), Dataf
     }
 }
 
-/// An optional resolvable string field.
-fn resolved_opt_str(
-    input: &Value,
-    field: &str,
-    ctx: &TaskContext<'_>,
-) -> Result<Option<String>, DataflowError> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(raw) => match resolve_value(raw, ctx) {
-            Value::String(s) => Ok(Some(s)),
-            Value::Null => Ok(None),
-            _ => Err(validation(&format!("'{field}' must resolve to a string"))),
-        },
-    }
-}
-
 /// The TTL: integer seconds or a single-unit duration string, bounded by
 /// S3's own 7-day cap.
 fn expires_in(input: &Value, ctx: &TaskContext<'_>) -> Result<u64, DataflowError> {
@@ -191,19 +167,7 @@ fn expires_in(input: &Value, ctx: &TaskContext<'_>) -> Result<u64, DataflowError
             "requires 'expires_in' (seconds, or \"<n>s|m|h|d\")",
         ));
     };
-    let secs = match resolve_value(raw, ctx) {
-        Value::Number(n) => n
-            .as_u64()
-            .ok_or_else(|| validation("'expires_in' must be a positive integer"))?,
-        Value::String(s) => {
-            parse_duration_secs(&s).map_err(|e| validation(&format!("'expires_in': {e}")))?
-        }
-        _ => {
-            return Err(validation(
-                "'expires_in' must be seconds (integer) or a duration like \"7d\"",
-            ));
-        }
-    };
+    let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
     if secs == 0 || secs > MAX_EXPIRES_SECS {
         return Err(validation(&format!(
             "'expires_in' must be between 1 second and {MAX_EXPIRES_SECS} (7 days — \
@@ -211,28 +175,6 @@ fn expires_in(input: &Value, ctx: &TaskContext<'_>) -> Result<u64, DataflowError
         )));
     }
     Ok(secs)
-}
-
-/// `"900"`-less duration spelling: `<n>` followed by one of `s m h d`.
-pub(super) fn parse_duration_secs(s: &str) -> Result<u64, String> {
-    let s = s.trim();
-    let (number, unit) = s.split_at(s.len().saturating_sub(1));
-    let multiplier = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3_600,
-        "d" => 86_400,
-        _ => {
-            return Err(format!(
-                "'{s}' is not a duration — \"<n>s\", \"<n>m\", \"<n>h\" or \"<n>d\""
-            ));
-        }
-    };
-    let n: u64 = number.parse().map_err(|_| {
-        format!("'{s}' is not a duration — the part before the unit must be a number")
-    })?;
-    n.checked_mul(multiplier)
-        .ok_or_else(|| format!("'{s}' overflows"))
 }
 
 // -- Authoring-time validation (shared with schema::validate_input) --
@@ -295,13 +237,8 @@ pub(super) fn validate_static_input(
     errors
 }
 
-/// Drop the handler-name prefix for `FieldError` messages.
 fn strip_name(e: &DataflowError) -> String {
-    let s = e.to_string();
-    match s.split_once(&format!("{NAME}: ")) {
-        Some((_, msg)) => msg.to_string(),
-        None => s,
-    }
+    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --
@@ -407,28 +344,13 @@ mod tests {
         registry
             .insert_for_test("media", ConnectorConfig::Storage(config))
             .await;
-        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
-            "id": "w", "name": "w", "condition": true,
-            "tasks": [{"id": "t", "name": "t",
-                       "function": {"name": NAME, "input": input}}]
-        }))
-        .map_err(|e| e.to_string())?;
-        let mut fns: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler> =
-            Default::default();
-        fns.insert(
-            NAME.to_string(),
+        crate::engine::functions::run_test_task(
+            NAME,
             Box::new(StoragePresignHandler { registry }),
-        );
-        let engine = dataflow_rs::Engine::new(vec![workflow], fns).map_err(|e| e.to_string())?;
-        let mut message = dataflow_rs::Message::from_value(&json!({}));
-        engine
-            .process_message(&mut message)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(err) = message.errors().first() {
-            return Err(format!("{err:?}"));
-        }
-        Ok(message.data().into())
+            input,
+            Value::Null,
+        )
+        .await
     }
 
     #[tokio::test]

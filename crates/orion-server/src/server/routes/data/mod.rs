@@ -295,13 +295,7 @@ pub(crate) async fn dynamic_handler(
     // The token itself never gets here; guards discarded it after verifying.
     let mut admission = admission;
     let metadata = match admission.auth_claims.take() {
-        Some(claims) => {
-            let mut merged = metadata;
-            if let Some(obj) = merged.as_object_mut() {
-                obj.insert("auth".to_string(), serde_json::json!({ "claims": claims }));
-            }
-            merged
-        }
+        Some(claims) => guards::merge_auth_claims(metadata, claims),
         None => metadata,
     };
 
