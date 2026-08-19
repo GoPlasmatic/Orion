@@ -137,10 +137,80 @@ pub struct ChannelAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
 
+    /// **`hmac`** — additional accepted secrets, each tried in constant time —
+    /// zero-downtime rotation, the list shape `keys` already has. Merged with
+    /// `secret`; at least one of the two is required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<Vec<String>>,
+
     /// **`hmac`** — prefix stripped from the signature header before decoding,
-    /// e.g. `sha256=` for GitHub. Defaults to none.
+    /// e.g. `sha256=` for GitHub. Defaults to none. Mutually exclusive with
+    /// `signature_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_prefix: Option<String>,
+
+    /// **`hmac`** — extract the signature from a comma-separated `k=v` packed
+    /// header instead: the value(s) of this key (Stripe's `v1`). Mutually
+    /// exclusive with `signature_prefix`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_key: Option<String>,
+
+    /// **`hmac`** — MAC algorithm: `sha1` | `sha256` (default) | `sha512`.
+    /// The provider chooses; refusing sha1 would only leave those webhooks
+    /// unauthenticated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+
+    /// **`hmac`** — the signing-string template: literals plus `{body}`
+    /// (required), `{header:<name>}`, and `{header:<name>:<key>}` for packed
+    /// headers. Defaults to `{body}` — today's raw-body behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+
+    /// **`hmac`** — pins the presented signature encoding: `hex` | `base64` |
+    /// `base64url`. Absent keeps auto-detection (hex first, then base64).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<String>,
+
+    /// **`hmac`** — where the unix-seconds timestamp lives: `<header>` or
+    /// `<header>:<key>` for packed headers. Paired with `tolerance_secs`;
+    /// either alone is a config error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+
+    /// **`hmac`** — replay window in seconds around `timestamp`; requests
+    /// outside it are refused before the MAC is computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tolerance_secs: Option<u64>,
+
+    /// **`hmac`** — provider preset (`zoom` | `slack` | `stripe` | `github` |
+    /// `shopify` | `webex`) expanding to the explicit fields; an explicitly
+    /// set field overrides its preset row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+}
+
+/// Test/struct-update convenience; production configs always deserialize,
+/// where `mode` is required.
+impl Default for ChannelAuthConfig {
+    fn default() -> Self {
+        Self {
+            mode: AuthMode::ApiKey,
+            keys: None,
+            header: None,
+            scheme: None,
+            secret: None,
+            secrets: None,
+            signature_prefix: None,
+            signature_key: None,
+            algorithm: None,
+            message: None,
+            encoding: None,
+            timestamp: None,
+            tolerance_secs: None,
+            preset: None,
+        }
+    }
 }
 
 /// The authentication scheme a channel enforces.
@@ -149,8 +219,10 @@ pub struct ChannelAuthConfig {
 pub enum AuthMode {
     /// A shared secret presented in a header, compared in constant time.
     ApiKey,
-    /// An HMAC-SHA256 over the **raw request body**, hex or base64 encoded.
-    /// This is what Stripe, GitHub and Shopify webhooks are authenticated with.
+    /// An HMAC over a configurable signing string (default: the **raw request
+    /// body**, SHA-256) — the scheme webhook providers use. Zoom/Slack-style
+    /// timestamped templates, Stripe's packed header, provider presets, and
+    /// sha1/sha512 are all data on [`ChannelAuthConfig`].
     Hmac,
 }
 

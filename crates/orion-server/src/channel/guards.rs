@@ -1389,9 +1389,7 @@ mod tests {
                 mode: crate::channel::config::AuthMode::ApiKey,
                 keys: Some(vec![key.to_string()]),
                 header: Some("X-API-Key".to_string()),
-                scheme: None,
-                secret: None,
-                signature_prefix: None,
+                ..Default::default()
             };
             self.auth = Some(
                 crate::channel::auth::CompiledAuth::compile(&cfg)

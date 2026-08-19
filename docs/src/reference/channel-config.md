@@ -100,7 +100,15 @@ Guard keys go in a `config` object beside these fields:
 | `header` | string | no | `Authorization` (`api_key`) / `X-Signature` (`hmac`) | Header carrying the credential. |
 | `scheme` | string | no | `Bearer ` when `header` is `Authorization`; none otherwise | `api_key` only: expected prefix on the header value. |
 | `secret` | string | `hmac` | — | Shared secret; literal or `env://VAR`. |
-| `signature_prefix` | string | no | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. |
+| `secrets` | array of strings | no | — | `hmac` only: additional accepted secrets, each tried in constant time — zero-downtime rotation. Merged with `secret`; at least one of the two is required. |
+| `signature_prefix` | string | no | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. Mutually exclusive with `signature_key`. |
+| `signature_key` | string | no | none | `hmac` only: extract the signature from a comma-separated `k=v` packed header instead — Stripe's `v1`. Every occurrence is tried. |
+| `algorithm` | string | no | `sha256` | `hmac` only: `sha1`, `sha256`, or `sha512`. The provider chooses; refusing `sha1` would only leave those webhooks unauthenticated. |
+| `message` | string | no | `{body}` | `hmac` only: the signing-string template — literals plus `{body}` (required), `{header:<name>}`, and `{header:<name>:<key>}` for packed headers. Strictly parsed at create time. |
+| `encoding` | string | no | auto-detect | `hmac` only: pins the presented signature encoding (`hex`, `base64`, `base64url`). Absent keeps auto-detection: hex first, then base64. |
+| `timestamp` | string | no | — | `hmac` only: where the unix-seconds timestamp lives — `<header>` or `<header>:<key>`. Paired with `tolerance_secs`; either alone is a create-time error. |
+| `tolerance_secs` | integer | no | — | `hmac` only: replay window in seconds around `timestamp`; requests outside it are refused before the MAC is computed. |
+| `preset` | string | no | — | `hmac` only: `zoom`, `slack`, `stripe`, `github`, `shopify`, or `webex` — expands to the fields above; an explicitly set field overrides its preset row. |
 
 **`api_key`** compares the presented key in constant time against the SHA-256 of each accepted key. Listing several keys enables rotation without a window of refusals:
 
@@ -114,22 +122,47 @@ Guard keys go in a `config` object beside these fields:
 }
 ```
 
-**`hmac`** verifies an HMAC-SHA256 over the raw request body — the scheme Stripe, GitHub, and Shopify webhooks use. Verification runs on the bytes exactly as received, before any parsing. Hex and base64 signature encodings are both accepted:
+**`hmac`** verifies an HMAC over a configurable signing string — by default the raw request body with SHA-256, exactly the pre-1.1 behavior. Verification runs on the bytes exactly as received, before any parsing, in constant time, against every listed secret.
+
+Most providers are one preset:
+
+```json
+{ "auth": { "mode": "hmac", "preset": "zoom",   "secret": "env://ZOOM_WEBHOOK_SECRET" } }
+{ "auth": { "mode": "hmac", "preset": "stripe", "secret": "env://STRIPE_WEBHOOK_SECRET" } }
+{ "auth": { "mode": "hmac", "preset": "slack",  "secret": "env://SLACK_SIGNING_SECRET", "tolerance_secs": 60 } }
+```
+
+| Preset | Scheme it expands to |
+|---|---|
+| `zoom` | SHA-256 over `v0:{header:x-zm-request-timestamp}:{body}`, `v0=` hex in `x-zm-signature`, 300 s window |
+| `slack` | SHA-256 over `v0:{header:x-slack-request-timestamp}:{body}`, `v0=` hex in `x-slack-signature`, 300 s window |
+| `stripe` | SHA-256 over `{header:stripe-signature:t}.{body}`, signature from the packed header's `v1` key(s), 300 s window |
+| `github` | SHA-256 over `{body}`, `sha256=` hex in `x-hub-signature-256` |
+| `shopify` | SHA-256 over `{body}`, base64 in `x-shopify-hmac-sha256` |
+| `webex` | SHA-1 over `{body}`, hex in `x-spark-signature` |
+
+An unlisted provider is the explicit form — configuration, never code:
 
 ```json
 {
   "auth": {
     "mode": "hmac",
-    "secret": "env://GITHUB_WEBHOOK_SECRET",
-    "header": "X-Hub-Signature-256",
-    "signature_prefix": "sha256="
+    "secret": "env://PARTNER_WEBHOOK_SECRET",
+    "message": "v1:{header:x-request-timestamp}:{body}",
+    "header": "x-partner-signature",
+    "signature_prefix": "v1=",
+    "timestamp": "x-request-timestamp",
+    "tolerance_secs": 300
   }
 }
 ```
 
+One named non-goal: **Twilio**, whose base string needs the full public URL plus re-sorted form parameters — a per-provider algorithm, not a concatenation.
+
 Rules:
 
-- **A failure is always `401` with one message**, whatever the cause. The response never reveals whether the header was missing, the key wrong, or the signature malformed.
+- **A failure is always `401` with one message**, whatever the cause. The response never reveals whether the header was missing, the key wrong, the signature malformed, or the timestamp stale. A template header missing from the request refuses — never empty-string substitution — and the replay window is checked before any MAC work.
+- **Auth configs are validated structurally at create/update/validate/import**: a missing `secret`, an unknown preset, a malformed template, or half a replay guard is a `400` naming the problem — not a channel quarantined at the next reload.
 - **`env://` references resolve at channel load.** An `auth` block that cannot be built — an unset `env://` secret, for example — quarantines the channel rather than serving it unauthenticated.
 - **`auth.keys` and `auth.secret` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
 - **Kafka and `channel_call` are exempt by design.** A Kafka record carries no header and no signature; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.

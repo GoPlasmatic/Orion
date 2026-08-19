@@ -51,7 +51,7 @@ const B64_URL_LENIENT: GeneralPurpose = GeneralPurpose::new(
 /// Which alphabet an [`Encode`]/[`Decode`] instance speaks. Shared with the
 /// `crypto` function so the two features implement the #259 encoding table
 /// exactly once.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Codec {
     Base64,
     Base64Url,

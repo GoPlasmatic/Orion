@@ -502,3 +502,88 @@ async fn channel_create_rejects_the_mask_sentinel() {
         "{body}"
     );
 }
+
+// ============================================================
+// #264: activation-time auth validation + generalized HMAC config
+// ============================================================
+
+#[tokio::test]
+async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
+    let app = common::test_app().await;
+
+    for (auth, expected) in [
+        // Each of these was previously accepted and only failed at engine
+        // reload, taking the channel into quarantine.
+        (json!({"mode": "api_key"}), "auth.keys"),
+        (json!({"mode": "hmac"}), "auth.secret"),
+        (
+            json!({"mode": "hmac", "secret": "s", "preset": "gitlab"}),
+            "preset",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s", "message": "v0:{ts}:{body}"}),
+            "placeholder",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s", "tolerance_secs": 300}),
+            "auth.timestamp",
+        ),
+        (
+            json!({"mode": "hmac", "secret": "s",
+                   "signature_prefix": "v0=", "signature_key": "v1"}),
+            "mutually exclusive",
+        ),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/channels",
+                Some(json!({
+                    "name": "bad-auth-channel",
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "route_pattern": "/hooks/bad",
+                    "methods": ["POST"],
+                    "workflow_id": "wf-x",
+                    "config": {"auth": auth}
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {auth}"
+        );
+        let body = body_json(resp).await;
+        assert!(
+            body["error"].to_string().contains(expected),
+            "{auth} should have reported '{expected}', got {}",
+            body["error"]
+        );
+    }
+
+    // A preset config with an env:// secret is structurally fine and must be
+    // accepted even though the variable is unset on this host — resolution
+    // stays load-time so bundles validate anywhere.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "zoom-hooks",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "route_pattern": "/hooks/zoom",
+                "methods": ["POST"],
+                "workflow_id": "wf-x",
+                "config": {"auth": {"mode": "hmac", "preset": "zoom",
+                                     "secret": "env://UNSET_ZOOM_SECRET_264"}}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}
