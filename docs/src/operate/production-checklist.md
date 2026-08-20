@@ -18,7 +18,7 @@ rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
 | **Admin auth** | `admin_auth.enabled = true` with at least one strong key, ideally `sha256:<digest>`. Add a second key so rotation needs no downtime. | [Secure an Instance](./security.md#authenticate-the-admin-plane) |
 | **Data-plane auth** | Decide per channel: an `auth` block, or a proxy in front. The data plane is open by default. | [Secure an Instance](./security.md#decide-how-the-data-plane-authenticates) |
 | **TLS** | Terminate it — `server.tls` here, or at a load balancer in front. | [Secure an Instance](./security.md#terminate-tls) |
-| **CORS** | Replace `["*"]` with explicit origins. | [Channel Configuration](../reference/channel-config.md#cors--origins) |
+| **CORS** | Replace `["*"]` with explicit origins. Declare any custom request header your browser client sends; `allow_credentials` requires explicit origins. | [Configuration › CORS](../reference/configuration.md#cors) |
 | **Trusted proxies** | `rate_limit.trusted_proxies` if anything proxies to Orion — otherwise every caller shares one rate-limit bucket. | [Secure an Instance](./security.md#trust-the-right-proxies) |
 | **Secrets** | Every connector authored with `env://` or `vault://`, never a literal. Set `storage.connector_encryption_key`. | [Secure an Instance](./security.md#keep-credentials-out-of-the-database) |
 | **API docs** | `server.docs.enabled = false` in production, so the admin surface is not published to anonymous callers. | [OpenAPI](../reference/openapi.md) |

@@ -15,7 +15,8 @@ Channel Types: sync (blocking response), async (returns trace ID)
 Protocols: http, rest, kafka
 
 Optional fields: description, methods, route_pattern, topic, consumer_group,
-  priority, config (rate_limit, timeout_ms, cors, backpressure, input_validation)
+  priority, config (rate_limit, timeout_ms, origin_allow_list, backpressure,
+  validation_logic, deduplication, cache, response, auth, tracing)
 
 Examples:
   orion-cli channels create -f channel.json

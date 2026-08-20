@@ -329,6 +329,7 @@ mod tests {
             // Must also fix CORS for production
             cors: CorsConfig {
                 allowed_origins: vec!["https://example.com".to_string()],
+                ..Default::default()
             },
             ..AppConfig::default()
         };
@@ -355,6 +356,76 @@ mod tests {
         assert!(validate_config(&config).is_ok());
     }
 
+    /// The rule that matters most: without it, tower-http's
+    /// `ensure_usable_cors_rules` asserts inside `Layer::layer` and the process
+    /// **panics at boot** rather than failing config validation. The Fetch spec
+    /// forbids the pairing independently, so it could never have worked.
+    #[test]
+    fn test_validate_config_cors_credentials_with_wildcard_origin_refused() {
+        let mut config = AppConfig::default();
+        config.cors.allow_credentials = true;
+        // `allowed_origins` is `["*"]` by default.
+        let err = validate_config(&config)
+            .expect_err("credentials + wildcard must fail validation, not panic the server")
+            .to_string();
+        assert!(err.contains("allow_credentials"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_config_cors_credentials_with_explicit_origin_ok() {
+        let mut config = AppConfig::default();
+        config.cors.allow_credentials = true;
+        config.cors.allowed_origins = vec!["https://app.example.com".to_string()];
+        assert!(validate_config(&config).is_ok());
+    }
+
+    /// `AllowHeaders::list(["*"])` renders as `*` and reports itself as a
+    /// wildcard, so one such entry would silently convert the explicit list
+    /// back into a wildcard and re-arm the credentials assert.
+    #[test]
+    fn test_validate_config_cors_wildcard_in_header_list_refused() {
+        for field in ["allowed", "exposed"] {
+            let mut config = AppConfig::default();
+            config.cors.allowed_origins = vec!["https://app.example.com".to_string()];
+            if field == "allowed" {
+                config.cors.additional_allowed_headers = vec!["*".to_string()];
+            } else {
+                config.cors.additional_exposed_headers = vec!["*".to_string()];
+            }
+            let err = validate_config(&config)
+                .expect_err("a wildcard header entry must be refused")
+                .to_string();
+            assert!(err.contains("must not contain '*'"), "{field}: {err}");
+        }
+    }
+
+    /// Refused, not dropped with a warning the way an unparseable *origin* is:
+    /// a silently ignored header is a preflight that fails for reasons nothing
+    /// explains.
+    #[test]
+    fn test_validate_config_cors_unparseable_header_refused() {
+        let mut config = AppConfig::default();
+        config.cors.allowed_origins = vec!["https://app.example.com".to_string()];
+        config.cors.additional_allowed_headers = vec!["device id".to_string()];
+        let err = validate_config(&config)
+            .expect_err("a header name with a space cannot reach the wire")
+            .to_string();
+        assert!(err.contains("not a valid HTTP header name"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_config_cors_max_age_cap() {
+        let mut config = AppConfig::default();
+        config.cors.max_age_secs = Some(86_401);
+        let err = validate_config(&config)
+            .expect_err("a silently-clamped value must be a startup error")
+            .to_string();
+        assert!(err.contains("max_age_secs"), "{err}");
+
+        config.cors.max_age_secs = Some(86_400);
+        assert!(validate_config(&config).is_ok(), "the cap itself is legal");
+    }
+
     #[test]
     fn test_validate_config_non_production_admin_auth_disabled_ok() {
         let config = AppConfig::default();
@@ -376,6 +447,7 @@ mod tests {
             },
             cors: CorsConfig {
                 allowed_origins: vec!["https://example.com".to_string()],
+                ..Default::default()
             },
             ..AppConfig::default()
         };

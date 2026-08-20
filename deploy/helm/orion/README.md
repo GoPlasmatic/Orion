@@ -73,6 +73,10 @@ open http://localhost:8080/docs
 | `env` | `production` | Orion environment; production enforces admin auth |
 | `adminAuth.apiKeys` / `adminAuth.existingSecret` | — | Admin API keys (required unless devStack) |
 | `cors.allowedOrigins` | `[]` | Browser origins for the admin API (empty = deny) |
+| `cors.additionalAllowedHeaders` | `[]` | Extra request headers to admit, on top of the built-in set |
+| `cors.additionalExposedHeaders` | `[]` | Extra response headers a page script may read |
+| `cors.allowCredentials` | `false` | Allow cookie-based cross-origin requests; needs explicit origins |
+| `cors.maxAgeSecs` | `""` | `Access-Control-Max-Age`; empty omits the header. Max `86400` |
 | `server.shutdownDrainSecs` | `15` | Keep serving after readiness is withdrawn |
 | `server.shutdownForceTimeoutSecs` | `20` | Bound on the post-drain in-flight wait |
 | `autoscaling.enabled` | `false` | CPU-based HPA |

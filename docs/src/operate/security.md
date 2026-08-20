@@ -194,9 +194,25 @@ mistake:
   may do. It is not enforcement — a non-browser client ignores it entirely.
 
 Set the first when a channel should only serve named origins. Set the second so
-browsers behave. Neither is authentication: `Origin` is client-supplied. Both
-are specified in
-[Channel Configuration › CORS & origins](../reference/channel-config.md#cors--origins).
+browsers behave. Neither is authentication: `Origin` is client-supplied. The
+per-channel check is specified in
+[Channel Configuration › CORS & origins](../reference/channel-config.md#cors--origins);
+the instance-level handshake is [Configuration › CORS](../reference/configuration.md#cors).
+
+**Credentialed CORS widens what a browser will do on a user's behalf.**
+`cors.allow_credentials = true` lets any page on a listed origin send the user's
+cookies to Orion and read the response — so the origin list becomes a trust
+boundary, not a convenience. Two consequences worth stating:
+
+- Every origin you list is one that can act as a logged-in user. List the
+  applications you operate, never a wildcard subdomain or a CDN you share.
+- Orion refuses `allow_credentials` together with `allowed_origins = ["*"]` at
+  startup. That is not a nicety: browsers reject the combination anyway, and the
+  underlying layer asserts on it at router construction, so the alternative is a
+  process that crashes at boot.
+
+Credentialed cross-origin sessions usually also need `set-cookie` in
+`cors.additional_exposed_headers` before a page script can see it.
 
 ## Close the surfaces you do not need
 

@@ -275,9 +275,24 @@ pub fn metrics_router(state: AppState) -> Router {
 }
 
 /// Build a CORS layer from configuration.
+///
+/// The header lists are passed explicitly on **both** branches — never
+/// `AllowHeaders::any()`. That is a deliberate behaviour change on the default
+/// config: `CorsLayer::permissive()` emits a literal
+/// `Access-Control-Allow-Headers: *`, and per the Fetch Standard `Authorization`
+/// is a *CORS non-wildcard request-header name* that `*` never covers. So on a
+/// default install a browser calling the admin API with a bearer token failed
+/// preflight, while the named-origin branch worked because it listed
+/// `AUTHORIZATION` by name. Sending the explicit list is strictly widening: it
+/// authorizes everything `*` did, plus the header `*` silently withheld.
 fn build_cors(config: &CorsConfig) -> CorsLayer {
-    if config.allowed_origins.len() == 1 && config.allowed_origins[0] == "*" {
-        CorsLayer::permissive()
+    let wildcard_origin = config.allowed_origins.len() == 1 && config.allowed_origins[0] == "*";
+
+    // `allow_credentials` + a wildcard origin is refused in `CorsConfig::validate`,
+    // which runs before this — tower-http would otherwise assert inside
+    // `Layer::layer` and panic the process at boot.
+    let layer = if wildcard_origin {
+        CorsLayer::new().allow_origin(tower_http::cors::Any)
     } else {
         let origins: Vec<axum::http::HeaderValue> = config
             .allowed_origins
@@ -289,29 +304,31 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
                 })
             })
             .collect();
-        CorsLayer::new()
-            .allow_origin(origins)
-            .allow_methods([
-                axum::http::Method::GET,
-                axum::http::Method::POST,
-                axum::http::Method::PUT,
-                axum::http::Method::PATCH,
-                axum::http::Method::DELETE,
-                axum::http::Method::HEAD,
-                axum::http::Method::OPTIONS,
-            ])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-                axum::http::header::ACCEPT,
-                axum::http::HeaderName::from_static("x-api-key"),
-                axum::http::HeaderName::from_static("idempotency-key"),
-                axum::http::HeaderName::from_static("x-request-id"),
-            ])
-            .expose_headers([
-                axum::http::HeaderName::from_static("x-request-id"),
-                axum::http::header::RETRY_AFTER,
-            ])
+        // `Vary: Origin` keeps deriving itself for the list case; calling
+        // `.vary()` would pin it and disable that derivation.
+        CorsLayer::new().allow_origin(origins)
+    };
+
+    let layer = layer
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::PATCH,
+            axum::http::Method::DELETE,
+            axum::http::Method::HEAD,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers(config.effective_allowed_headers())
+        .expose_headers(config.effective_exposed_headers())
+        .allow_credentials(config.allow_credentials);
+
+    // `None` skips the call entirely, preserving today's behaviour of omitting
+    // the header. `Some(0)` is deliberately *not* the same — it emits
+    // `Access-Control-Max-Age: 0`.
+    match config.max_age_secs {
+        Some(secs) => layer.max_age(std::time::Duration::from_secs(secs)),
+        None => layer,
     }
 }
 
@@ -349,44 +366,212 @@ pub async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
 
-    #[test]
-    fn test_build_cors_permissive() {
+    fn cors(origins: &[&str]) -> CorsConfig {
+        CorsConfig {
+            allowed_origins: origins.iter().map(|o| o.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Drive a real preflight through the layer and hand back the response
+    /// headers. These tests used to assert only "does not panic", which is why
+    /// the `Authorization` defect below went unnoticed for the life of the
+    /// layer.
+    async fn preflight(
+        config: &CorsConfig,
+        origin: &str,
+        request_headers: &str,
+    ) -> axum::http::HeaderMap {
+        let app = Router::new()
+            .route("/x", axum::routing::get(|| async { "ok" }))
+            .layer(build_cors(config));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/x")
+                    .header("Origin", origin)
+                    .header("Access-Control-Request-Method", "GET")
+                    .header("Access-Control-Request-Headers", request_headers)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("preflight");
+        assert_ne!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        resp.headers().clone()
+    }
+
+    /// Drive a real (non-preflight) request. `Access-Control-Expose-Headers`
+    /// is only meaningful on the actual response, never on the preflight, so
+    /// the two have to be asserted separately.
+    async fn actual_request(config: &CorsConfig, origin: &str) -> axum::http::HeaderMap {
+        let app = Router::new()
+            .route("/x", axum::routing::get(|| async { "ok" }))
+            .layer(build_cors(config));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/x")
+                    .header("Origin", origin)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        resp.headers().clone()
+    }
+
+    fn header_list(headers: &axum::http::HeaderMap, name: &str) -> Vec<String> {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| {
+                v.split(',')
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The defect. `CorsLayer::permissive()` emits
+    /// `Access-Control-Allow-Headers: *`, and per the Fetch Standard
+    /// `Authorization` is a CORS non-wildcard request-header name that `*`
+    /// never covers — so on the **default** config a browser calling the admin
+    /// API with a bearer token failed preflight. The fix sends the explicit
+    /// list on both branches; this test is the assertion that would have
+    /// caught it.
+    #[tokio::test]
+    async fn the_wildcard_origin_branch_still_names_authorization() {
+        let headers = preflight(&cors(&["*"]), "https://app.example.com", "authorization").await;
+        let allowed = header_list(&headers, "access-control-allow-headers");
+        assert!(
+            allowed.iter().any(|h| h == "authorization"),
+            "'*' does not authorize Authorization; it must be listed by name, got {allowed:?}"
+        );
+        assert_eq!(
+            headers
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*"),
+            "a wildcard origin config still answers any origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_named_origin_branch_names_authorization_too() {
+        let config = cors(&["https://app.example.com"]);
+        let headers = preflight(&config, "https://app.example.com", "authorization").await;
+        assert!(
+            header_list(&headers, "access-control-allow-headers")
+                .iter()
+                .any(|h| h == "authorization")
+        );
+    }
+
+    /// A custom request header is admitted once declared — the case that was
+    /// inexpressible under any production-legal config.
+    #[tokio::test]
+    async fn a_configured_request_header_passes_preflight() {
         let config = CorsConfig {
-            allowed_origins: vec!["*".to_string()],
+            allowed_origins: vec!["https://app.example.com".to_string()],
+            additional_allowed_headers: vec!["deviceId".to_string()],
+            ..Default::default()
         };
-        // Should not panic
-        let _layer = build_cors(&config);
+        let headers = preflight(
+            &config,
+            "https://app.example.com",
+            "authorization, deviceid",
+        )
+        .await;
+        let allowed = header_list(&headers, "access-control-allow-headers");
+        assert!(allowed.iter().any(|h| h == "deviceid"), "{allowed:?}");
+        // Additive, not replacing: the base list survives.
+        for base in [
+            "authorization",
+            "content-type",
+            "x-api-key",
+            "idempotency-key",
+        ] {
+            assert!(
+                allowed.iter().any(|h| h == base),
+                "the built-in {base} must survive an additional_allowed_headers entry: {allowed:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn credentials_and_exposed_headers_are_emitted_when_configured() {
+        let config = CorsConfig {
+            allowed_origins: vec!["https://app.example.com".to_string()],
+            additional_exposed_headers: vec!["set-cookie".to_string()],
+            allow_credentials: true,
+            max_age_secs: Some(600),
+            ..Default::default()
+        };
+        let headers = preflight(&config, "https://app.example.com", "content-type").await;
+        assert_eq!(
+            headers
+                .get("access-control-allow-credentials")
+                .and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
+        assert_eq!(
+            headers
+                .get("access-control-max-age")
+                .and_then(|v| v.to_str().ok()),
+            Some("600")
+        );
+
+        // Expose-headers rides the actual response, not the preflight.
+        let headers = actual_request(&config, "https://app.example.com").await;
+        let exposed = header_list(&headers, "access-control-expose-headers");
+        assert!(exposed.iter().any(|h| h == "set-cookie"), "{exposed:?}");
+        assert!(
+            exposed.iter().any(|h| h == "x-request-id"),
+            "the built-in exposed headers must survive: {exposed:?}"
+        );
+        assert_eq!(
+            headers
+                .get("access-control-allow-credentials")
+                .and_then(|v| v.to_str().ok()),
+            Some("true"),
+            "the page can only read the response if credentials are allowed on it too"
+        );
+    }
+
+    /// `None` omits the header entirely — today's behaviour, and distinct from
+    /// `Some(0)`, which emits `Access-Control-Max-Age: 0`.
+    #[tokio::test]
+    async fn an_unset_max_age_omits_the_header() {
+        let headers = preflight(
+            &cors(&["https://app.example.com"]),
+            "https://app.example.com",
+            "content-type",
+        )
+        .await;
+        assert!(headers.get("access-control-max-age").is_none());
+        assert_eq!(
+            headers
+                .get("access-control-allow-credentials")
+                .and_then(|v| v.to_str().ok()),
+            None,
+            "credentials off must be byte-identical to not calling the setter"
+        );
     }
 
     #[test]
-    fn test_build_cors_specific_origins() {
-        let config = CorsConfig {
-            allowed_origins: vec![
-                "https://example.com".to_string(),
-                "https://app.example.com".to_string(),
-            ],
-        };
-        let _layer = build_cors(&config);
-    }
-
-    #[test]
-    fn test_build_cors_single_specific_origin() {
-        let config = CorsConfig {
-            allowed_origins: vec!["https://myapp.com".to_string()],
-        };
-        let _layer = build_cors(&config);
-    }
-
-    #[test]
-    fn test_build_cors_invalid_origin_filtered() {
-        let config = CorsConfig {
-            allowed_origins: vec![
-                "https://valid.com".to_string(),
-                "not a valid origin \x00".to_string(),
-            ],
-        };
-        // Should not panic - invalid origins are filtered out
+    fn build_cors_tolerates_an_unparseable_origin() {
+        // Invalid origins are dropped with a warning rather than failing the
+        // build — unchanged behaviour, pinned so the new branches do not alter
+        // it.
+        let config = cors(&["https://valid.com", "not a valid origin \x00"]);
         let _layer = build_cors(&config);
     }
 }

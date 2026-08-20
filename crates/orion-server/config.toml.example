@@ -330,6 +330,23 @@
                                 # environment starts with "prod" — list explicit origins
                                 # instead, e.g. ["https://app.example.com"]. Mixing "*" into
                                 # a list of origins is always a config error.
+# additional_allowed_headers = []   # Request headers to admit on top of the built-in set
+                                # (content-type, authorization, accept, x-api-key,
+                                # idempotency-key, x-request-id). Additive — config can
+                                # extend the list, never narrow it, so adding your own
+                                # header cannot break admin auth or the dedup guard.
+                                # Names are lowercased: deviceId becomes deviceid.
+                                #   additional_allowed_headers = ["deviceid"]
+# additional_exposed_headers = []   # Response headers a page script may read, on top of
+                                # x-request-id and retry-after.
+                                #   additional_exposed_headers = ["set-cookie"]
+# allow_credentials = false     # Emit Access-Control-Allow-Credentials, for cookie-based
+                                # cross-origin sessions. Requires explicit allowed_origins:
+                                # browsers reject credentials paired with "*", and the
+                                # combination is refused at startup.
+# max_age_secs =                # Access-Control-Max-Age. Unset omits the header; 0 is not
+                                # the same as unset. Capped at 86400 — browsers clamp it
+                                # anyway (Chrome 7200, Firefox 86400).
 
 [logging]
 # level = "info"                # trace, debug, info, warn, error

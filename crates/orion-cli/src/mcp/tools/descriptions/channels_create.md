@@ -17,12 +17,18 @@ Optional fields:
 - `topic` (string) — Kafka topic name (for kafka protocol)
 - `consumer_group` (string) — Kafka consumer group
 - `priority` (integer) — route matching priority, higher = matched first
-- `config` (object) — per-channel configuration:
-  - `rate_limit` — `{"rps": 100, "burst": 50}`
+- `config` (object) — per-channel configuration. Unknown keys are **rejected**,
+  so use these names exactly:
+  - `rate_limit` — `{"requests_per_second": 100, "burst": 50}`. Optional
+    `key_headers` (array) declares extra request headers `key_logic` may read,
+    beyond `authorization`, `x-api-key`, `x-forwarded-for`, `x-real-ip`,
+    `user-agent`, `content-type`, `origin`, `x-tenant-id`.
   - `timeout_ms` — processing timeout in milliseconds
-  - `cors` — `{"origins": ["*"]}`
-  - `backpressure` — `{"max_concurrent": 100}`
-  - `input_validation` — JSONLogic expression for request validation
+  - `origin_allow_list` — `["https://app.example.com"]`, a server-side `Origin`
+    check. Cross-origin *CORS* is instance config, not per channel.
+  - `backpressure` — `{"max_concurrent_per_node": 100}`
+  - `validation_logic` — JSONLogic expression for request validation
+  - `deduplication`, `cache`, `response`, `auth`, `tracing`
 
 ## Example
 

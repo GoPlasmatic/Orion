@@ -70,6 +70,9 @@ const NO_DEFAULT: &[&str] = &[
     "rate_limit.endpoints.data_rps",
     // Option<u32>: unset means keep every backup (no pruning).
     "storage.backup_retention_count",
+    // Option<u64>: unset omits Access-Control-Max-Age entirely, which is not
+    // the same as `Some(0)` — that emits the header with value 0.
+    "cors.max_age_secs",
     // Free-form map, and the fields of the `[[kafka.topics]]` array of tables.
     "kafka.extra_config",
     "kafka.topics.topic",

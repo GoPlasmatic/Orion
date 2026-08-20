@@ -387,6 +387,13 @@ async fn test_admin_preflight_is_answered_not_rejected() {
         .uri("/api/v1/admin/workflows")
         .header("Origin", "https://console.example.com")
         .header("Access-Control-Request-Method", "GET")
+        // A browser calling an authenticated admin route sends this. Omitting
+        // it is why the wildcard/`Authorization` defect below survived: the
+        // preflight passed because it never asked for anything.
+        .header(
+            "Access-Control-Request-Headers",
+            "authorization, content-type",
+        )
         .body(Body::empty())
         .unwrap();
 
@@ -400,6 +407,22 @@ async fn test_admin_preflight_is_answered_not_rejected() {
         resp.headers().contains_key("access-control-allow-origin"),
         "preflight response must carry CORS headers, got {:?}",
         resp.headers()
+    );
+
+    // The default config is `allowed_origins = ["*"]`, which used to take the
+    // `CorsLayer::permissive()` branch and answer `Access-Control-Allow-Headers: *`.
+    // Per the Fetch Standard `Authorization` is a CORS non-wildcard
+    // request-header name, so `*` never covers it and a browser calling the
+    // admin API with a bearer token failed preflight on a **default install**.
+    let allowed = resp
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(
+        allowed.split(',').any(|h| h.trim() == "authorization"),
+        "Authorization must be named explicitly; '*' does not authorize it. Got {allowed:?}"
     );
 }
 

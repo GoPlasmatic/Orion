@@ -191,6 +191,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 - name: ORION_CORS__ALLOWED_ORIGINS
   value: {{ join "," .Values.cors.allowedOrigins | quote }}
+- name: ORION_CORS__ADDITIONAL_ALLOWED_HEADERS
+  value: {{ join "," (.Values.cors.additionalAllowedHeaders | default list) | quote }}
+- name: ORION_CORS__ADDITIONAL_EXPOSED_HEADERS
+  value: {{ join "," (.Values.cors.additionalExposedHeaders | default list) | quote }}
+- name: ORION_CORS__ALLOW_CREDENTIALS
+  value: {{ .Values.cors.allowCredentials | default false | quote }}
+{{- if .Values.cors.maxAgeSecs }}
+- name: ORION_CORS__MAX_AGE_SECS
+  value: {{ .Values.cors.maxAgeSecs | quote }}
+{{- end }}
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}

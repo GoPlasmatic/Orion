@@ -45,7 +45,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allowedOrigins": { "type": ["array", "null"], "items": { "type": "string" } }
+        "allowedOrigins": { "type": ["array", "null"], "items": { "type": "string" } },
+        "additionalAllowedHeaders": { "type": ["array", "null"], "items": { "type": "string" } },
+        "additionalExposedHeaders": { "type": ["array", "null"], "items": { "type": "string" } },
+        "allowCredentials": { "type": ["boolean", "null"] },
+        "maxAgeSecs": { "type": ["integer", "string", "null"] }
       }
     },
     "cluster": {

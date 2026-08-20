@@ -361,6 +361,10 @@ where
 
     // CORS
     ov_list!(cors.allowed_origins);
+    ov_list!(cors.additional_allowed_headers);
+    ov_list!(cors.additional_exposed_headers);
+    ov!(cors.allow_credentials: bool);
+    ov_opt!(cors.max_age_secs: u64);
 
     // Channel loading filters
     ov_list!(channel_filter.include);
@@ -535,6 +539,13 @@ mod tests {
             "ORION_CORS__ALLOWED_ORIGINS",
             "https://a.example, https://b.example",
         );
+        env.insert(
+            "ORION_CORS__ADDITIONAL_ALLOWED_HEADERS",
+            "deviceid, x-partner",
+        );
+        env.insert("ORION_CORS__ADDITIONAL_EXPOSED_HEADERS", "set-cookie");
+        env.insert("ORION_CORS__ALLOW_CREDENTIALS", "true");
+        env.insert("ORION_CORS__MAX_AGE_SECS", "600");
         env.insert("ORION_CHANNEL_FILTER__INCLUDE", "orders-*, payments-*");
         env.insert("ORION_CHANNEL_FILTER__EXCLUDE", "internal-*");
 
@@ -602,6 +613,16 @@ mod tests {
                 "https://b.example".to_string()
             ]
         );
+        assert_eq!(
+            config.cors.additional_allowed_headers,
+            vec!["deviceid".to_string(), "x-partner".to_string()]
+        );
+        assert_eq!(
+            config.cors.additional_exposed_headers,
+            vec!["set-cookie".to_string()]
+        );
+        assert!(config.cors.allow_credentials);
+        assert_eq!(config.cors.max_age_secs, Some(600));
         assert_eq!(
             config.channel_filter.include,
             vec!["orders-*".to_string(), "payments-*".to_string()]

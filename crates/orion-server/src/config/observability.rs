@@ -309,15 +309,54 @@ impl Default for TraceStorageConfig {
 pub struct CorsConfig {
     /// Allowed origins. Use `["*"]` (default) for permissive CORS.
     pub allowed_origins: Vec<String>,
+    /// Request headers to admit **in addition to** the built-in set
+    /// (`content-type`, `authorization`, `accept`, `x-api-key`,
+    /// `idempotency-key`, `x-request-id`).
+    ///
+    /// Additive, not a replacement: a key that replaced the list would let an
+    /// operator adding `deviceid` silently drop `authorization` and
+    /// `content-type`, breaking admin auth and every browser JSON call with no
+    /// server-side error anywhere. The base list is not taste — it is what
+    /// admin auth, the dedup guard and the request-id layer read.
+    ///
+    /// Names are lowercased by `HeaderName`, so `deviceId` becomes `deviceid`.
+    /// That is correct (HTTP header names are case-insensitive and the Fetch
+    /// preflight match is byte-lowercase) but surprises operators.
+    pub additional_allowed_headers: Vec<String>,
+    /// Response headers to expose to page scripts **in addition to** the
+    /// built-in set (`x-request-id`, `retry-after`). Same additive rule.
+    pub additional_exposed_headers: Vec<String>,
+    /// Emit `Access-Control-Allow-Credentials: true`, so a browser sends
+    /// cookies and reads `Set-Cookie` cross-origin.
+    ///
+    /// Requires explicit `allowed_origins`: the Fetch spec forbids pairing
+    /// credentials with `Access-Control-Allow-Origin: *`, and tower-http
+    /// asserts on the combination at router construction — so without the
+    /// validation rule below it would panic the process at boot rather than
+    /// fail config validation.
+    pub allow_credentials: bool,
+    /// `Access-Control-Max-Age` in seconds. Unset omits the header entirely,
+    /// which is today's behaviour; note `Some(0)` is *not* the same as unset —
+    /// it emits `Access-Control-Max-Age: 0`.
+    pub max_age_secs: Option<u64>,
 }
 
 impl Default for CorsConfig {
     fn default() -> Self {
         Self {
             allowed_origins: vec!["*".to_string()],
+            additional_allowed_headers: Vec::new(),
+            additional_exposed_headers: Vec::new(),
+            allow_credentials: false,
+            max_age_secs: None,
         }
     }
 }
+
+/// Browsers clamp `Access-Control-Max-Age` well below this (Chrome 7200,
+/// Firefox 86400); a larger value is silently ignored, so refuse it at startup
+/// rather than let an operator believe it took effect.
+const MAX_AGE_CAP_SECS: u64 = 86_400;
 
 impl CorsConfig {
     pub(crate) fn validate(&self, is_production: bool) -> Result<(), OrionError> {
@@ -344,8 +383,147 @@ impl CorsConfig {
                 "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
             );
         }
+
+        let wildcard_origin = self.allowed_origins.len() == 1 && self.allowed_origins[0] == "*";
+
+        // tower-http's `ensure_usable_cors_rules` asserts that credentials are
+        // never combined with a wildcard, and it runs from `Layer::layer` — at
+        // router construction, i.e. process start. Without this rule the
+        // config does not fail validation, it *crashes the server at boot*.
+        // The Fetch spec forbids the combination independently: a browser
+        // rejects a credentialed response carrying
+        // `Access-Control-Allow-Origin: *`, so it could never work anyway.
+        if self.allow_credentials && wildcard_origin {
+            return Err(OrionError::Config {
+                message: "CORS allow_credentials cannot be combined with \
+                          allowed_origins = [\"*\"]. Browsers reject a credentialed response \
+                          carrying 'Access-Control-Allow-Origin: *', so list explicit origins \
+                          in [cors] allowed_origins"
+                    .to_string(),
+            });
+        }
+
+        // Emitting the credentials header with nothing to pair it against is
+        // inert, and the empty list is what the Helm chart and the HA compose
+        // file ship by default — so this is a live shape, not a hypothetical.
+        if self.allow_credentials && self.allowed_origins.is_empty() {
+            tracing::warn!(
+                "CORS allow_credentials is on but allowed_origins is empty, so no \
+                 Access-Control-Allow-Origin is ever emitted and no cross-origin request \
+                 will succeed"
+            );
+        }
+
+        for (field, list) in [
+            (
+                "additional_allowed_headers",
+                &self.additional_allowed_headers,
+            ),
+            (
+                "additional_exposed_headers",
+                &self.additional_exposed_headers,
+            ),
+        ] {
+            for name in list {
+                // `AllowHeaders::list(["*"])` renders as `*` and reports
+                // itself as a wildcard, so one such entry silently converts an
+                // explicit list back into a wildcard and re-arms the
+                // credentials assert above.
+                if name == "*" {
+                    return Err(OrionError::Config {
+                        message: format!(
+                            "CORS {field} must not contain '*'. Set \
+                             allowed_origins = [\"*\"] for permissive CORS instead — a \
+                             wildcard here silently disables the explicit list"
+                        ),
+                    });
+                }
+                // Refuse a bad name rather than dropping it with a warning the
+                // way the origin branch does: a silently ignored header is a
+                // preflight that fails for reasons nothing explains.
+                if axum::http::HeaderName::from_bytes(name.as_bytes()).is_err() {
+                    return Err(OrionError::Config {
+                        message: format!(
+                            "CORS {field} entry '{name}' is not a valid HTTP header name"
+                        ),
+                    });
+                }
+            }
+        }
+
+        if let Some(secs) = self.max_age_secs
+            && secs > MAX_AGE_CAP_SECS
+        {
+            return Err(OrionError::Config {
+                message: format!(
+                    "CORS max_age_secs {secs} exceeds the {MAX_AGE_CAP_SECS}s cap. Browsers \
+                     clamp it anyway (Chrome 7200s, Firefox 86400s), so a larger value is \
+                     silently ignored"
+                ),
+            });
+        }
+
         Ok(())
     }
+
+    /// The request headers admitted on every configuration: what admin auth
+    /// (`authorization`, `x-api-key`), the dedup guard (`idempotency-key`) and
+    /// the request-id layer (`x-request-id`) read, plus the two every JSON
+    /// call needs. Config may extend this list, never narrow it.
+    pub(crate) fn base_allowed_headers() -> [axum::http::HeaderName; 6] {
+        [
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::ACCEPT,
+            axum::http::HeaderName::from_static("x-api-key"),
+            axum::http::HeaderName::from_static("idempotency-key"),
+            axum::http::HeaderName::from_static("x-request-id"),
+        ]
+    }
+
+    /// The response headers exposed to page scripts on every configuration.
+    pub(crate) fn base_exposed_headers() -> [axum::http::HeaderName; 2] {
+        [
+            axum::http::HeaderName::from_static("x-request-id"),
+            axum::http::header::RETRY_AFTER,
+        ]
+    }
+
+    /// Resolve the effective allow-headers list: the base set plus the
+    /// configured additions, deduplicated and order-stable.
+    ///
+    /// Entries are validated at startup, so an unparseable name cannot reach
+    /// here; `filter_map` is a belt-and-braces no-op rather than a policy.
+    pub(crate) fn effective_allowed_headers(&self) -> Vec<axum::http::HeaderName> {
+        merge_headers(
+            Self::base_allowed_headers().to_vec(),
+            &self.additional_allowed_headers,
+        )
+    }
+
+    /// Resolve the effective expose-headers list. See
+    /// [`Self::effective_allowed_headers`].
+    pub(crate) fn effective_exposed_headers(&self) -> Vec<axum::http::HeaderName> {
+        merge_headers(
+            Self::base_exposed_headers().to_vec(),
+            &self.additional_exposed_headers,
+        )
+    }
+}
+
+fn merge_headers(
+    mut base: Vec<axum::http::HeaderName>,
+    additions: &[String],
+) -> Vec<axum::http::HeaderName> {
+    for name in additions {
+        let Ok(parsed) = axum::http::HeaderName::from_bytes(name.as_bytes()) else {
+            continue;
+        };
+        if !base.contains(&parsed) {
+            base.push(parsed);
+        }
+    }
+    base
 }
 
 #[cfg(test)]

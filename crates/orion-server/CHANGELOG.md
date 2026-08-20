@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A browser preflight carrying `Authorization` no longer fails on the default
+  config** ([#271]). `allowed_origins = ["*"]` — the shipped default — took the
+  `CorsLayer::permissive()` branch, which emits a literal
+  `Access-Control-Allow-Headers: *`. Per the Fetch Standard `Authorization` is a
+  *CORS non-wildcard request-header name*: `*` never covers it, and it must be
+  listed explicitly. So on a default install a browser calling the admin API
+  with a bearer token failed preflight, while the named-origin branch worked
+  because it listed `AUTHORIZATION` by name. The single end-to-end preflight
+  test never sent `Access-Control-Request-Headers`, which is why it went
+  unnoticed.
+
+  Orion now sends the explicit allow-headers and expose-headers lists on
+  **both** branches, never `Any`. This is a behaviour change on the default
+  config and a strictly widening one — it authorizes everything `*` did, plus
+  the header `*` silently withheld.
+
 - **A `rate_limit.key_logic` that resolves to nothing no longer collapses every
   caller into one bucket** ([#275]). `key_logic` could only read eight
   hard-coded header names, and a reference to any other header was not an
@@ -59,6 +75,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aggregate `orion_rate_limit_rejections_total`. A non-zero rate here always
   means a channel's `key_logic` or `key_headers` needs attention.
 
+- **`[cors]` gains four settings** ([#271]) — `additional_allowed_headers`,
+  `additional_exposed_headers`, `allow_credentials` and `max_age_secs`, with
+  `ORION_CORS__*` env overrides and Helm values for each. Previously `[cors]`
+  had exactly one key and the rest was hard-coded in Rust, so a browser client
+  sending a custom request header (a `deviceid`, a tenant id, a trace header)
+  could not pass preflight under **any** production-legal configuration, and
+  credentialed cross-origin calls were not expressible at all.
+
+  The two header lists **add to** the built-in sets rather than replacing them.
+  A replacing key would let an operator adding `deviceid` silently drop
+  `authorization`, `content-type` and `x-api-key` — breaking admin auth, the
+  dedup guard and every browser JSON call, with no server-side error anywhere.
+
+  Validation refuses the combinations that would otherwise **panic the process
+  at boot**, since tower-http asserts on them inside `Layer::layer`:
+  `allow_credentials` with a wildcard origin (also forbidden by the Fetch
+  spec), and a literal `"*"` in either header list, which silently converts an
+  explicit list back into a wildcard. An entry that is not a valid header name
+  is refused at startup rather than dropped with a warning, and `max_age_secs`
+  is capped at `86400` because browsers clamp it anyway.
+
+- **The CLI and MCP channel-config help listed keys the server rejects.** Four
+  of the five names in `channels create` guidance were pre-1.0 spellings —
+  `cors` (retired in favour of `origin_allow_list`), `input_validation`
+  (`validation_logic`), `rate_limit.rps` (`requests_per_second`) and
+  `backpressure.max_concurrent` (`max_concurrent_per_node`). Since
+  `ChannelConfig` denies unknown fields, an LLM following that description
+  produced a config the server refused. Corrected, and the remaining valid keys
+  listed. ([#271])
+
+[#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
 
 ## [1.0.0] - 2026-08-14

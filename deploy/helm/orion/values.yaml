@@ -43,6 +43,19 @@ adminAuth:
 # Orion rejects a "*" wildcard in production at boot.
 cors:
   allowedOrigins: []
+  # Request headers to admit on top of the built-in set (content-type,
+  # authorization, accept, x-api-key, idempotency-key, x-request-id). Additive:
+  # this list extends the built-ins, it cannot narrow them.
+  additionalAllowedHeaders: []
+  # Response headers a page script may read, on top of x-request-id and
+  # retry-after — e.g. ["set-cookie"] for a cookie-based login.
+  additionalExposedHeaders: []
+  # Emit Access-Control-Allow-Credentials. Requires a non-empty allowedOrigins:
+  # browsers reject credentials paired with "*", and Orion refuses the
+  # combination at startup rather than crashing at router build.
+  allowCredentials: false
+  # Access-Control-Max-Age in seconds. Empty omits the header. Max 86400.
+  maxAgeSecs: ""
 
 # Orion cluster-mode coordination (multi-instance HA).
 cluster:

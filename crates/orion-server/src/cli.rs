@@ -105,8 +105,15 @@ fn print_config_summary(config: &config::AppConfig) {
         }
     );
     println!(
-        "  cors:            {}",
-        config.cors.allowed_origins.join(", ")
+        "  cors:            {}{}",
+        config.cors.allowed_origins.join(", "),
+        // Credentials change what a listed origin may do on a user's behalf,
+        // so a summary that omits it understates the exposure.
+        if config.cors.allow_credentials {
+            " (credentials allowed)"
+        } else {
+            ""
+        }
     );
     println!(
         "  rate_limiting:   {}",
