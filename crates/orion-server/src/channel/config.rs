@@ -61,6 +61,12 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub tracing: Option<ChannelTracingConfig>,
 
+    /// How the HTTP request becomes `data` and `metadata`. Absent (the
+    /// default) keeps envelope auto-detection, which is what every channel
+    /// does today.
+    #[serde(default)]
+    pub request: Option<ChannelRequestConfig>,
+
     /// How the synchronous HTTP response is built. Absent (the default) is the
     /// fixed `{id, status, data, errors}` envelope with a `200`.
     #[serde(default)]
@@ -341,6 +347,46 @@ pub enum AuthMode {
 /// its workflow's output instead. It is opt-in per channel, so an existing
 /// channel's bytes do not change, and so a workflow that happens to produce an
 /// `_orion` key cannot affect a channel that never asked for it.
+/// How a channel turns the HTTP request body into `data` and `metadata`.
+///
+/// Named `request` to pair with [`ChannelResponseConfig`] — and deliberately
+/// **not** `request_context`, which is already the name of the request-id /
+/// audit module (`crate::server::request_context`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChannelRequestConfig {
+    /// How the parsed body is classified. See [`BodyMode`].
+    #[serde(default)]
+    pub body_mode: BodyMode,
+}
+
+/// Whether a request body is inspected for the Orion envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BodyMode {
+    /// Today's rule, and the default: an object carrying a top-level `data` or
+    /// `metadata` key is the envelope; anything else is the payload.
+    #[default]
+    Auto,
+    /// The parsed body is the payload verbatim, whatever keys it carries, and
+    /// `metadata` starts empty.
+    ///
+    /// For a migrated model that owns the name `data` — the FCM/push payload
+    /// shape among them — `auto` takes that key as the payload and **discards
+    /// every sibling field**, silently, with a normal `200`. On a write
+    /// endpoint that is data loss the caller never learns about, and no
+    /// workflow can recover the dropped fields: the raw body reaches only HMAC
+    /// signing, never the engine message.
+    ///
+    /// A caller cannot supply `metadata` to a payload-mode channel at all —
+    /// the final object is server-stamped keys only. That is a real trade-off,
+    /// and a small security win, since `params`/`query` are stamped only when
+    /// non-empty and a caller-supplied value for them survives in `auto`.
+    Payload,
+    // Leaves room for a future strict `Envelope` variant (400 on a bare
+    // object). Deliberately not shipped, just not foreclosed.
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChannelResponseConfig {

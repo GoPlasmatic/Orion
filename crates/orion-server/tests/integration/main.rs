@@ -17,6 +17,7 @@ mod audit_log_test;
 mod backup_test;
 mod bulk_import_test;
 mod channel_auth_test;
+mod channel_body_mode_test;
 mod channel_call_test;
 mod channel_config_test;
 mod channel_config_validation_test;

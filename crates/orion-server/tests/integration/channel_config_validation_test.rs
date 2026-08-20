@@ -97,7 +97,7 @@ async fn assert_channel_rejected(
 #[tokio::test]
 async fn rejection_matrix_on_create_and_update() {
     // (case name, payload under test, expected details path, expected code)
-    let cases: [(&str, Value, &str, Option<&str>); 10] = [
+    let cases: [(&str, Value, &str, Option<&str>); 12] = [
         // `rate_limit` must be an object with requests_per_second; a
         // number-shaped value fails at deserialize.
         (
@@ -179,6 +179,22 @@ async fn rejection_matrix_on_create_and_update() {
             Some("INVALID"),
         ),
         // Header names are case-insensitive, so these are one name twice.
+        // #278: `body_mode` needs no validation function — `deny_unknown_fields`
+        // plus the enum reject both classes at deserialize, on all five admin
+        // entry points at once. Unlike a `key_headers` typo, every wrong value
+        // here is a hard parse error rather than an invisibly dead feature.
+        (
+            "bad-body-mode",
+            json!({ "config": { "request": { "body_mode": "envelope" } } }),
+            "channel.config",
+            None,
+        ),
+        (
+            "typod-request-key",
+            json!({ "config": { "request": { "bodymode": "payload" } } }),
+            "channel.config",
+            None,
+        ),
         (
             "duplicate-key-header",
             json!({ "config": {

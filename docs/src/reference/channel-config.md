@@ -16,6 +16,7 @@ All `config` keys are optional. An empty `{}` is valid: the channel then runs wi
 | [`backpressure`](#backpressure) | Per-node concurrency cap; excess is shed with `503`. |
 | [`deduplication`](#deduplication) | Idempotency-key replay protection. |
 | [`cache`](#response-caching) | Serve repeated identical requests from a response cache. |
+| [`request`](#request-body) | How the HTTP request body becomes `data` and `metadata`. |
 | [`response`](#response-shaping) | Standard envelope, or workflow-controlled status, headers, and body. |
 | [`validation_logic`](#validation) | JSONLogic predicate; a falsy result rejects the request with `400`. |
 | [`timeout_ms`](#timeouts) | Deadline on workflow execution. |
@@ -345,6 +346,37 @@ Behaviour:
 - A write-gated cache connector is refused for the response cache; see [operation gates](./connectors.md).
 
 **Cluster mode.** With the shared cluster Redis, hits are shared across replicas. A channel whose cache connector is missing, broken, or explicitly in-memory refuses to load; on a single node it falls back to process memory with a warning.
+
+## Request body
+
+`request` controls how the HTTP request body becomes `data` and `metadata`. **HTTP ingresses only** — Kafka parses the whole payload as `data` and builds metadata separately, and `channel_call` inherits the parent's metadata with `data` from the task input, so neither is affected.
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `body_mode` | string | no | `"auto"` | `auto` detects the Orion envelope; `payload` takes the parsed body verbatim. |
+
+Under `auto`, **an object carrying a top-level `data` or `metadata` key is the envelope** — that key becomes the payload and every sibling field is discarded. Anything else (an array, a scalar, an object without those keys) is the payload as it stands, and an empty body is `{}`.
+
+That rule keys on a field *name*, so a request model that owns the name `data` — the standard FCM/push payload shape, among others — is read as an envelope and loses its siblings silently, with a normal `200`. `payload` mode is the opt-out:
+
+```json
+{
+  "config": {
+    "request": { "body_mode": "payload" }
+  }
+}
+```
+
+The two modes differ for **exactly one input shape**: a top-level object carrying `data` or `metadata`. Everything else already took the payload path in both.
+
+Three consequences worth knowing before switching a channel:
+
+- **A caller cannot supply `metadata` at all** in `payload` mode — the metadata object is server-stamped keys only (`channel`, `http_method`, and `params`/`query`/`headers` where applicable). Under `auto`, a caller-supplied `metadata.params` or `metadata.query` survives when the server has none of its own to stamp, so this is a small security win as well as a trade-off.
+- **Downstream, consistently:** `validation_logic` sees the whole body under `data`, and `cache.cache_key_fields` paths resolve against it. HMAC signing is unaffected — it always signed the raw bytes.
+- **`orion-cli send` cannot reach a payload-mode channel.** Every CLI and MCP data path wraps its argument in `{"data": …}`, which a payload-mode channel then delivers as `data = {"data": …}`. Use `curl` for these channels.
+
+> [!WARNING]
+> Flipping a **live** channel from `auto` to `payload` changes its wire contract for any caller currently sending a legitimate `{"data": …}` envelope — that envelope becomes the payload, so the workflow starts reading `data.data.*`. It is a config change with the blast radius of a code change.
 
 ## Response shaping
 

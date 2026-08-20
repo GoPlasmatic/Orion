@@ -4307,7 +4307,7 @@
           }
         ],
         "requestBody": {
-          "description": "Workflow input, in either of two shapes. An object carrying `data` or `metadata` is the **envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+          "description": "Workflow input, in either of two shapes. An object carrying `data` or `metadata` is the **envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`. \n\nThat detection is per channel: a channel configured with `request.body_mode = \"payload\"` takes the whole body as the payload whatever keys it carries, and accepts no caller-supplied `metadata`. Use it when the request model owns the name `data` — under the default `auto` mode such a body is read as an envelope and its sibling fields are discarded.",
           "content": {
             "application/json": {
               "schema": {

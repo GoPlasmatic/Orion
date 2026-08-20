@@ -9,6 +9,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::channel::BodyMode;
 use crate::channel::guards;
 use crate::errors::OrionError;
 use crate::server::extract::{OrionBody, OrionQuery, PeerAddr};
@@ -91,7 +92,11 @@ client-supplied.",
 **envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the \
 server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** \
 the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted \
-(typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+(typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`. \
+\n\nThat detection is per channel: a channel configured with `request.body_mode = \"payload\"` takes the \
+whole body as the payload whatever keys it carries, and accepts no caller-supplied `metadata`. Use it when \
+the request model owns the name `data` — under the default `auto` mode such a body is read as an envelope \
+and its sibling fields are discarded.",
         content_type = "application/json",
     ),
     responses(
@@ -192,12 +197,33 @@ pub(crate) async fn dynamic_handler(
         }
     }
 
-    // R13: envelope, bare payload, or empty — one rule, see `from_body`.
-    let req = ProcessRequest::from_body(&body)?;
+    // Parse now, classify after the channel is known (#278). Splitting the two
+    // is what lets `request.body_mode` decide whether an object carrying
+    // `data` is an envelope — and the split, rather than simply moving
+    // `from_body` below `require_serviceable`, is what keeps every status code
+    // where it is: malformed JSON to an unknown channel stays `400`, not
+    // `404`. The Content-Type `415` check above must likewise stay where it
+    // is, or it flips to `404` for a nonexistent channel.
+    let parsed_body = ProcessRequest::parse_body(&body)?;
 
     // Profile mode: opt-in via header OR ?profile=1 query, gated by global config flag.
     let profile_requested = state.config.tracing.debug_profile_enabled
         && (header_or_query_truthy(&headers, &query_params, "x-orion-profile", "profile"));
+
+    // Per-channel ingress guards apply before the sync/async split (S1):
+    // appending `/async` must not bypass the origin allow-list,
+    // validation_logic, the rate limit, deduplication or backpressure. Which
+    // guards run is the transport's `GuardSet`, not a decision made here.
+    // F35: a channel that failed to load is quarantined, not silently
+    // config-less — serving it here would apply none of its guards.
+    let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
+
+    let body_mode = channel_runtime
+        .as_ref()
+        .and_then(|rt| rt.parsed_config.request.as_ref())
+        .map(|r| r.body_mode)
+        .unwrap_or_default();
+    let req = ProcessRequest::classify(parsed_body, body_mode);
 
     let metadata = build_request_metadata(
         &req.metadata,
@@ -207,14 +233,6 @@ pub(crate) async fn dynamic_handler(
         &query_params,
         &headers,
     );
-
-    // Per-channel ingress guards apply before the sync/async split (S1):
-    // appending `/async` must not bypass the origin allow-list,
-    // validation_logic, the rate limit, deduplication or backpressure. Which
-    // guards run is the transport's `GuardSet`, not a decision made here.
-    // F35: a channel that failed to load is quarantined, not silently
-    // config-less — serving it here would apply none of its guards.
-    let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
     // A name that is not in the registry is not an active channel. Without
     // this check the single-segment fallback above accepted ANY name and ran
     // the engine against an empty workflow set — a 200 "ok" for channels
@@ -603,31 +621,57 @@ impl ProcessRequest {
     /// existing envelope working (they all carry `data`), keeps the empty body
     /// meaning `{}`, and turns the previously-400 bare object into the payload
     /// the caller plainly meant — a strictly widening change.
-    fn from_body(body: &[u8]) -> Result<Self, OrionError> {
+    /// Parse the body, without deciding what it means.
+    ///
+    /// Split from [`Self::classify`] (#278) so the channel's `body_mode` can
+    /// make that decision — and split rather than moved, because the parse
+    /// failure is a `400` that must keep answering `400` even for a channel
+    /// that does not exist.
+    ///
+    /// `None` is an empty body, which is `{}`/`{}` in both modes: turning it
+    /// into `null` under payload mode would break every `GET`/`DELETE` REST
+    /// channel.
+    fn parse_body(body: &[u8]) -> Result<Option<Value>, OrionError> {
         if body.is_empty() {
-            return Ok(Self {
+            return Ok(None);
+        }
+        serde_json::from_slice(body)
+            .map(Some)
+            .map_err(|e| OrionError::validation(format!("Invalid JSON body: {e}")))
+    }
+
+    /// Split a parsed body into `data` and `metadata` per the channel's mode.
+    ///
+    /// The two modes differ for exactly one input shape — a top-level JSON
+    /// *object* containing `data` or `metadata`. Arrays, scalars and objects
+    /// without those keys already take the payload path in both, which makes
+    /// this much smaller than it first appears.
+    fn classify(parsed: Option<Value>, mode: BodyMode) -> Self {
+        let Some(parsed) = parsed else {
+            return Self {
                 data: json!({}),
                 metadata: json!({}),
-            });
-        }
-        let parsed: Value = serde_json::from_slice(body)
-            .map_err(|e| OrionError::validation(format!("Invalid JSON body: {e}")))?;
+            };
+        };
 
         // The envelope's two fields are `Value`, so they are taken straight
         // out of the parsed map rather than re-deserialized — a second pass
         // would rebuild every node of the payload on the hottest endpoint in
         // the product, and could not fail.
         match parsed {
-            Value::Object(mut obj) if obj.contains_key("data") || obj.contains_key("metadata") => {
-                Ok(Self {
+            Value::Object(mut obj)
+                if mode == BodyMode::Auto
+                    && (obj.contains_key("data") || obj.contains_key("metadata")) =>
+            {
+                Self {
                     data: obj.remove("data").unwrap_or_else(empty_object),
                     metadata: obj.remove("metadata").unwrap_or_else(empty_object),
-                })
+                }
             }
-            other => Ok(Self {
+            other => Self {
                 data: other,
                 metadata: json!({}),
-            }),
+            },
         }
     }
 }

@@ -106,6 +106,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **Channel `request.body_mode`** ([#278]) — opt out of envelope detection when
+  a request model owns the name `data`.
+
+  `auto` (the default, and today's behaviour) treats **any** object carrying a
+  top-level `data` or `metadata` key as the Orion envelope: it takes that key
+  as the payload and **discards every sibling field**, silently, with a normal
+  `200`. No log, no metric, no trace annotation, and no way for a workflow to
+  recover the dropped fields — the raw body reaches only HMAC signing, never
+  the engine message. On a write endpoint that is data corruption the caller
+  never learns about, and `data` as a top-level sibling is not an exotic name:
+  it is the standard FCM/push payload shape. The same channel reached over
+  Kafka got its whole body; over HTTP it was truncated.
+
+  `"payload"` takes the parsed body verbatim. The two modes differ for exactly
+  one input shape — a top-level object carrying those keys — so arrays,
+  scalars and objects without them are unaffected. In `payload` mode a caller
+  cannot supply `metadata` at all, which is a documented trade-off and a small
+  security win: under `auto` a caller-supplied `metadata.params`/`.query`
+  survives when the server has none of its own to stamp.
+
+  Inert by default. Note that flipping a **live** channel changes its wire
+  contract for any caller currently sending a legitimate envelope, and that
+  `orion-cli send` wraps unconditionally, so it cannot address a payload-mode
+  channel until `send --raw` lands — use `curl` for those.
+
 - **`account_credentials` OAuth2 grant** ([#273]) — Zoom Server-to-Server
   OAuth, the grant Zoom moved every server-side integration to when it retired
   JWT apps in 2023. Exchanges `grant_type=account_credentials` plus a new
@@ -215,6 +240,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
 [#276]: https://github.com/GoPlasmatic/Orion/issues/276
 [#277]: https://github.com/GoPlasmatic/Orion/issues/277
+[#278]: https://github.com/GoPlasmatic/Orion/issues/278
 
 ## [1.0.0] - 2026-08-14
 

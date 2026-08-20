@@ -119,9 +119,10 @@ orion-cli channels list
 Every call above has a CLI equivalent, and `orion-cli send` replaces the data-plane curl.
 
 One difference to keep in mind: `send` (and `workflows test`) takes the **bare
-business payload** and wraps it in the `{"data": …}` envelope for you, while the
-HTTP data API expects that envelope in the request body. Passing the envelope to
-`send` nests it twice, and the workflow then reads `data.data.*`.
+business payload** and wraps it in the `{"data": …}` envelope for you. The HTTP
+data API accepts either — a bare object is the payload, an object carrying
+`data` or `metadata` is the envelope — but passing an envelope to `send` nests
+it twice, and the workflow then reads `data.data.*`.
 
 ```bash
 orion-cli workflows create -f workflow.json

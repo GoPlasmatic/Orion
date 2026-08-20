@@ -13,8 +13,8 @@ use governor::{Quota, RateLimiter};
 
 // Re-export all public types so that `crate::channel::*` paths continue working.
 pub use config::{
-    BackendErrorPolicy, BackpressureConfig, ChannelCacheConfig, ChannelConfig,
-    ChannelRateLimitConfig, DeduplicationConfig,
+    BackendErrorPolicy, BackpressureConfig, BodyMode, ChannelCacheConfig, ChannelConfig,
+    ChannelRateLimitConfig, ChannelRequestConfig, DeduplicationConfig,
 };
 pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 pub use registry::{ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig, ClusterBackends};

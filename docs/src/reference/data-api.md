@@ -44,6 +44,31 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 ```
 
+### Request body
+
+By default a channel detects the envelope: **an object carrying a top-level `data` or `metadata` key is the envelope; anything else is the payload.**
+
+| Body | `data` becomes | `metadata` becomes |
+|---|---|---|
+| `{"data": {"amount": 5}}` | `{"amount": 5}` | `{}` |
+| `{"amount": 5}` | `{"amount": 5}` | `{}` |
+| `[1, 2, 3]` or `"text"` or `7` | the value itself | `{}` |
+| empty | `{}` | `{}` |
+| `{"metadata": {"a": 1}, "b": 2}` | `{}` | `{"a": 1}` — **`b` is discarded** |
+
+That last row is the sharp edge. Detection keys on a field *name*, so a request model that owns the name `data` is read as an envelope and **every sibling field is dropped** — silently, with a normal `200`. It is not an exotic collision: it is the standard FCM/push payload shape.
+
+Set [`config.request.body_mode`](./channel-config.md#request-body) to `"payload"` on such a channel and the whole body is taken verbatim:
+
+```json
+{ "config": { "request": { "body_mode": "payload" } } }
+```
+
+In `payload` mode a caller cannot supply `metadata` at all — the metadata object is server-stamped keys only. The two modes differ for exactly one input shape (a top-level object carrying `data` or `metadata`); arrays, scalars and objects without those keys behave identically in both.
+
+> [!NOTE]
+> `orion-cli send` wraps its argument in `{"data": …}`, so it cannot address a payload-mode channel without double-nesting. Use `curl` for those until `send --raw` lands.
+
 **Response:**
 
 ```json
