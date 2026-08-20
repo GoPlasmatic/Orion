@@ -576,8 +576,10 @@ async fn check_auth(
 /// router's CORS layer to every route.
 ///
 /// The two do different jobs, and this one is the only enforcement. The
-/// platform layer short-circuits a *genuine preflight* (`OPTIONS` carrying
-/// `Access-Control-Request-Method`) from a disallowed origin, but a
+/// platform layer short-circuits **every `OPTIONS`** from a disallowed origin
+/// — tower-http 0.7 tests the method alone, not the presence of
+/// `Access-Control-Request-Method`, so preflights are also unmetered by the
+/// rate limiter, which sits inside CORS — but a
 /// non-preflighted cross-origin request is passed through with the
 /// `Access-Control-Allow-Origin` header simply omitted — the workflow runs
 /// and only the browser discards the answer — and a non-browser client is

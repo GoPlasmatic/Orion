@@ -190,12 +190,9 @@ fn classify_route(path: &str, data_mounts: &[String]) -> RouteGroup {
 /// first by the caller — a static route always wins over the catch-all, so a
 /// request reaching here under a root mount really is data-plane traffic.
 fn under_a_data_mount(path: &str, data_mounts: &[String]) -> bool {
-    data_mounts.iter().any(|m| {
-        if m == "/" {
-            return true;
-        }
-        path == m || path.starts_with(&format!("{m}/"))
-    })
+    data_mounts
+        .iter()
+        .any(|m| m == "/" || crate::server::routes::path_claims(m, path))
 }
 
 /// Platform rate limiting middleware.

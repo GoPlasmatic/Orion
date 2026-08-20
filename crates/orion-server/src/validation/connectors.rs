@@ -248,22 +248,28 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
         .account_id
         .as_deref()
         .is_some_and(|a| !a.trim().is_empty());
-    match grant {
-        OAuth2Grant::AccountCredentials if !has_account_id => {
+    if grant == OAuth2Grant::AccountCredentials {
+        if !has_account_id {
             return Err(OrionError::validation(
                 "the account_credentials grant requires a non-empty 'account_id' \
                  (Zoom Server-to-Server OAuth)"
                     .to_string(),
             ));
         }
-        OAuth2Grant::AccountCredentials => {}
-        _ if o.account_id.is_some() => {
-            return Err(OrionError::validation(format!(
-                "'account_id' only applies to the account_credentials grant, not {}",
-                o.grant
-            )));
+        // Neither is read by `acquire_account_credentials`, so accepting them
+        // would be the same believed-configured-but-inert mistake the
+        // refresh_token rule above refuses.
+        if o.audience.is_some() || o.resource.is_some() {
+            return Err(OrionError::validation(
+                "'audience' and 'resource' do not apply to the account_credentials grant"
+                    .to_string(),
+            ));
         }
-        _ => {}
+    } else if o.account_id.is_some() {
+        return Err(OrionError::validation(format!(
+            "'account_id' only applies to the account_credentials grant, not {}",
+            o.grant
+        )));
     }
 
     if o.refresh_margin_secs > 3600 {
@@ -308,6 +314,9 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
 /// believed-configured-but-inert mistake and is refused whole. Refused at
 /// the CRUD boundary only; stored rows keep loading, exactly like the gate
 /// check below.
+///
+/// (The function this describes is [`validate_retry_keys`], below.)
+///
 /// Structurally check `query_params`, which only `http` connectors read.
 ///
 /// Connector configs deliberately have no `deny_unknown_fields`, so the block

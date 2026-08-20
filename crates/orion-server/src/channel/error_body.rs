@@ -91,20 +91,16 @@ pub struct RenderContext<'a> {
 /// would make the common case unwritable. Only an identifier-shaped token is
 /// read as a placeholder — and then an unknown one is a hard error rather than
 /// a literal, so a misspelling cannot ship silently.
-fn placeholder_at(chars: &[char], start: usize) -> Option<(String, usize)> {
-    let mut i = start + 1;
-    let mut name = String::new();
-    while let Some(&c) = chars.get(i) {
-        match c {
-            'a'..='z' | '_' => {
-                name.push(c);
-                i += 1;
-            }
-            '}' if !name.is_empty() => return Some((name, i + 1)),
-            _ => return None,
-        }
-    }
-    None
+///
+/// Returns the name and the byte length consumed. Everything involved is
+/// ASCII, so byte slicing is safe and needs no `Vec<char>` copy of the
+/// template.
+fn placeholder_at(rest: &str) -> Option<(&str, usize)> {
+    let body = rest.strip_prefix('{')?;
+    let end = body.find('}')?;
+    let name = &body[..end];
+    let identifier = !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    identifier.then_some((name, end + 2))
 }
 
 /// Compile a template into segments, rejecting an unknown placeholder rather
@@ -112,57 +108,42 @@ fn placeholder_at(chars: &[char], start: usize) -> Option<(String, usize)> {
 /// parser uses, and for the same reason: a silently mistyped placeholder is a
 /// body that ships wrong forever.
 fn parse(template: &str) -> Result<Vec<Segment>, String> {
-    let chars: Vec<char> = template.chars().collect();
     let mut segments = Vec::new();
     let mut literal = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        // `{{` is an escaped literal brace, for a body that needs `{word}`
+    let mut rest = template;
+    while !rest.is_empty() {
+        // `{{` / `}}` escape a literal brace, for a body that needs `{word}`
         // verbatim.
-        if c == '{' && chars.get(i + 1) == Some(&'{') {
-            literal.push('{');
-            i += 2;
+        if let Some(tail) = rest.strip_prefix("{{").or_else(|| rest.strip_prefix("}}")) {
+            literal.push(rest.as_bytes()[0] as char);
+            rest = tail;
             continue;
         }
-        if c == '}' && chars.get(i + 1) == Some(&'}') {
-            literal.push('}');
-            i += 2;
-            continue;
-        }
-        if c == '{' {
-            match placeholder_at(&chars, i) {
-                Some((name, next)) => {
-                    if !literal.is_empty() {
-                        segments.push(Segment::Literal(std::mem::take(&mut literal)));
-                    }
-                    segments.push(match name.as_str() {
-                        "status" => Segment::Status,
-                        "code" => Segment::Code,
-                        "message" => Segment::Message,
-                        "request_id" => Segment::RequestId,
-                        "channel" => Segment::Channel,
-                        "timestamp" => Segment::Timestamp,
-                        other => {
-                            return Err(format!(
-                                "unknown placeholder '{{{other}}}' — expected one of \
-                                 status, code, message, request_id, channel, timestamp"
-                            ));
-                        }
-                    });
-                    i = next;
-                    continue;
-                }
-                // Not identifier-shaped: an ordinary JSON brace.
-                None => {
-                    literal.push('{');
-                    i += 1;
-                    continue;
-                }
+        if let Some((name, consumed)) = placeholder_at(rest) {
+            if !literal.is_empty() {
+                segments.push(Segment::Literal(std::mem::take(&mut literal)));
             }
+            segments.push(match name {
+                "status" => Segment::Status,
+                "code" => Segment::Code,
+                "message" => Segment::Message,
+                "request_id" => Segment::RequestId,
+                "channel" => Segment::Channel,
+                "timestamp" => Segment::Timestamp,
+                other => {
+                    return Err(format!(
+                        "unknown placeholder '{{{other}}}' — expected one of \
+                         status, code, message, request_id, channel, timestamp"
+                    ));
+                }
+            });
+            rest = &rest[consumed..];
+            continue;
         }
-        literal.push(c);
-        i += 1;
+        // Not identifier-shaped: an ordinary character (a JSON brace included).
+        let ch = rest.chars().next().expect("non-empty");
+        literal.push(ch);
+        rest = &rest[ch.len_utf8()..];
     }
     if !literal.is_empty() {
         segments.push(Segment::Literal(literal));

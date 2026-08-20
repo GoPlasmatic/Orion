@@ -52,12 +52,23 @@ pub(crate) const PLATFORM_ROUTES: &[&str] = &[
     "/health", "/healthz", "/readyz", "/metrics", "/docs", "/api",
 ];
 
+/// Whether `prefix` claims `path`: the same string, or `path` sitting under it
+/// at a `/` boundary. Allocation-free, so it is safe on the request path.
+///
+/// One rule, because four sites had grown their own `format!("{p}/")` copy of
+/// it — the mount reserved-prefix check, the mount nesting check, the
+/// rate-limit route classifier, and this function.
+pub(crate) fn path_claims(prefix: &str, path: &str) -> bool {
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
 /// The platform route `served_path` would be shadowed by, if any.
 pub(crate) fn shadowed_platform_route(served_path: &str) -> Option<&'static str> {
     PLATFORM_ROUTES
         .iter()
         .copied()
-        .find(|p| served_path == *p || served_path.starts_with(&format!("{p}/")))
+        .find(|p| path_claims(p, served_path))
 }
 
 /// The main listener's router.

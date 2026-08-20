@@ -155,14 +155,7 @@ fn require_numeric_date(value: &Value, claim: &'static str) -> Result<(), Datafl
     Err(validation(&format!(
         "claims.{claim} must be a number of seconds since the Unix epoch \
          (NumericDate, RFC 7519 §2), got {}",
-        match value {
-            Value::Null => "null",
-            Value::Bool(_) => "a boolean",
-            Value::String(_) => "a string",
-            Value::Array(_) => "an array",
-            Value::Object(_) => "an object",
-            Value::Number(_) => unreachable!("handled above"),
-        }
+        super::http_common::json_type_name(value)
     )))
 }
 

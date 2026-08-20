@@ -84,9 +84,9 @@ impl ChannelConfig {
     /// N24: the pre-1.0 key was `cors: { allowed_origins: [...] }`, which
     /// promised CORS and delivered a rejection check. It set no
     /// `Access-Control-Allow-Origin` and answered no preflight — the router's
-    /// platform CORS layer short-circuits a genuine preflight (`OPTIONS`
-    /// carrying `Access-Control-Request-Method`) before a channel is even
-    /// resolved. The control is real and worth keeping: it is the only
+    /// platform CORS layer short-circuits every `OPTIONS` (tower-http tests
+    /// the method alone, not the presence of `Access-Control-Request-Method`)
+    /// before a channel is even resolved. The control is real and worth keeping: it is the only
     /// *server-side* origin check, and it runs on every request that reaches
     /// the handler, since `[cors]` leaves a non-preflighted cross-origin
     /// request to run and merely omits the response header, and does nothing
@@ -347,6 +347,9 @@ pub enum AuthMode {
 /// its workflow's output instead. It is opt-in per channel, so an existing
 /// channel's bytes do not change, and so a workflow that happens to produce an
 /// `_orion` key cannot affect a channel that never asked for it.
+///
+/// (The struct this describes is [`ChannelResponseConfig`], below.)
+///
 /// How a channel turns the HTTP request body into `data` and `metadata`.
 ///
 /// Named `request` to pair with [`ChannelResponseConfig`] — and deliberately

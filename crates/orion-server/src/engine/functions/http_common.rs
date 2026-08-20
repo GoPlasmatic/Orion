@@ -247,7 +247,7 @@ fn form_value_error(key: &str, value: &Value) -> DataflowError {
     ))
 }
 
-fn json_type_name(v: &Value) -> &'static str {
+pub(super) fn json_type_name(v: &Value) -> &'static str {
     match v {
         Value::Null => "null",
         Value::Bool(_) => "a boolean",
@@ -353,8 +353,9 @@ pub async fn execute_request(
             // percent-encodes, so a secret containing `&`, `=` or a space
             // works, where URL interpolation would break it silently.
             if !http_config.query_params.is_empty() {
-                let params: Vec<(&String, &String)> = http_config.query_params.iter().collect();
-                req = req.query(&params);
+                // The map serializes directly, so this allocates nothing —
+                // and it runs once per redirect hop, per call.
+                req = req.query(&http_config.query_params);
             }
 
             // Apply auth headers (override connector defaults)

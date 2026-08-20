@@ -63,17 +63,45 @@ pub(super) fn resolve_document(
     }
 }
 
+/// Convert already-resolved values into BSON documents, naming the index in
+/// every error — a per-message array only exists at runtime, so this message is
+/// the only diagnosis its author gets.
+///
+/// Split from [`resolve_document_array`] because `mongo_aggregate` must
+/// validate its *resolved* stages against the stage allowlist before
+/// converting, so it cannot use the resolve-and-convert path — but the
+/// conversion itself, and its error wording, are the same job.
+pub(super) fn documents_from_values<'a>(
+    values: impl IntoIterator<Item = &'a Value>,
+    field: &str,
+    handler_name: &str,
+) -> Result<Vec<Document>, DataflowError> {
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            if !item.is_object() {
+                return Err(DataflowError::Validation(format!(
+                    "{handler_name} {field}[{i}] must be an object"
+                )));
+            }
+            bson::to_document(item).map_err(|e| {
+                DataflowError::Validation(format!("{handler_name} {field}[{i}] is not valid: {e}"))
+            })
+        })
+        .collect()
+}
+
 /// [`resolve_document`] for a field holding an **array** of documents.
 ///
-/// One implementation for `insert_many`'s `documents`, `mongo_aggregate`'s
-/// `pipeline` and `mongo_write`'s `array_filters`, which each carried their own
-/// copy. Extended-JSON support (`$oid`, `$date`, …) therefore falls out for
-/// every one of them, which is what makes a typed date comparison inside an
-/// array filter work.
+/// One implementation for `insert_many`'s `documents` and `mongo_write`'s
+/// `array_filters`, which each carried their own copy; `mongo_aggregate`
+/// shares the conversion half through [`documents_from_values`].
+/// Extended-JSON support (`$oid`, `$date`, …) therefore falls out for all
+/// three, which is what makes a typed date comparison inside an array filter
+/// work.
 ///
-/// `None` when the field is absent or null; the index is named in every error,
-/// since a per-message array only exists at runtime and this message is the
-/// only diagnosis its author gets.
+/// `None` when the field is absent or null.
 pub(super) fn resolve_document_array(
     input: &Value,
     field: &str,
@@ -90,18 +118,7 @@ pub(super) fn resolve_document_array(
             "{handler_name} '{field}' must resolve to an array of objects"
         )));
     };
-    let mut docs = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        if !item.is_object() {
-            return Err(DataflowError::Validation(format!(
-                "{handler_name} {field}[{i}] must be an object"
-            )));
-        }
-        docs.push(bson::to_document(item).map_err(|e| {
-            DataflowError::Validation(format!("{handler_name} {field}[{i}] is not valid: {e}"))
-        })?);
-    }
-    Ok(Some(docs))
+    documents_from_values(items.iter(), field, handler_name).map(Some)
 }
 
 /// [`resolve_document`] for a required field.

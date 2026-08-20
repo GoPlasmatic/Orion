@@ -110,6 +110,18 @@ impl MongoOp {
 
     /// The op-specific fields this op accepts (used by authoring-time
     /// validation to refuse a field that would be silently ignored).
+    /// Every op, so the authoring-time check can derive its field set from
+    /// [`Self::allowed_fields`] instead of restating it.
+    pub(super) const ALL: [MongoOp; 7] = [
+        MongoOp::InsertOne,
+        MongoOp::InsertMany,
+        MongoOp::UpdateOne,
+        MongoOp::UpdateMany,
+        MongoOp::ReplaceOne,
+        MongoOp::DeleteOne,
+        MongoOp::DeleteMany,
+    ];
+
     pub(super) fn allowed_fields(self) -> &'static [&'static str] {
         match self {
             MongoOp::InsertOne => &["document"],
@@ -699,19 +711,21 @@ pub(super) fn validate_static_input(
 
     // A field the op would silently ignore is an authoring mistake.
     //
-    // This list and `MongoOp::allowed_fields` are both hand-maintained and
-    // must agree: a field absent HERE is never checked at all, so adding one
-    // to `allowed_fields` alone leaves it accepted on every op.
-    for field in [
-        "document",
-        "documents",
-        "filter",
-        "update",
-        "upsert",
-        "ordered",
-        "all",
-        "array_filters",
-    ] {
+    // Derived from `allowed_fields` rather than restated: a hand-maintained
+    // copy would silently stop checking any field added there but forgotten
+    // here — the exact bug class `field_not_applicable` exists to catch.
+    // Deduped: several fields (`filter`, `upsert`, `all`) appear in more than
+    // one op's list, and a repeat would report the same mistake twice.
+    let mut checked: Vec<&'static str> = Vec::new();
+    for field in MongoOp::ALL
+        .iter()
+        .flat_map(|o| o.allowed_fields())
+        .copied()
+    {
+        if checked.contains(&field) {
+            continue;
+        }
+        checked.push(field);
         if input.contains_key(field) && !op.allowed_fields().contains(&field) {
             errs.push((
                 field,
@@ -745,17 +759,15 @@ pub(super) fn validate_static_input(
     // the same function runs against the resolved value.
     if matches!(op, MongoOp::UpdateOne | MongoOp::UpdateMany)
         && let Some(update) = literal_object(input.get("update"))
-        && let Some(filters) = literal_array(input.get("array_filters"))
-        && let (Ok(update_doc), Some(filter_docs)) = (
-            mongodb::bson::to_document(&Value::Object(update.clone())),
-            filters
-                .iter()
-                .map(|f| {
-                    f.as_object()
-                        .and_then(|o| mongodb::bson::to_document(&Value::Object(o.clone())).ok())
-                })
-                .collect::<Option<Vec<_>>>(),
-        )
+        && let Some(filters) = input.get("array_filters").and_then(Value::as_array)
+        && let Ok(update_doc) = mongodb::bson::to_document(&Value::Object(update.clone()))
+        && let Some(filter_docs) = filters
+            .iter()
+            .map(|f| {
+                f.as_object()
+                    .and_then(|o| mongodb::bson::to_document(&Value::Object(o.clone())).ok())
+            })
+            .collect::<Option<Vec<_>>>()
         && let Err(e) = cross_check_array_filters(&filter_docs, &update_doc)
     {
         errs.push(("array_filters", "unusable_array_filters", e));
@@ -771,11 +783,6 @@ pub(super) fn validate_static_input(
         ));
     }
     errs
-}
-
-/// [`literal_object`] for an array field.
-fn literal_array(node: Option<&Value>) -> Option<&Vec<Value>> {
-    node?.as_array()
 }
 
 /// The literal object under `node`, unless it is a `{"var": ..}` substitution.

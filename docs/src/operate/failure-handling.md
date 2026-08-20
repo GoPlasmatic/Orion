@@ -107,6 +107,22 @@ that only checks the HTTP code will read that as success. Anything relying on
 control — `on_reject: "halt"` stops the workflow, `on_reject: "skip"` skips only
 the current task.
 
+**Reacting to the failure inside the workflow.** A run that continues records
+each failure's code at
+[`metadata._orion_errors`](../reference/workflows.md#branching-on-a-failure), so
+a later task can answer differently depending on *why* the step failed —
+a timeout or dropped connection is worth retrying, a `4xx` from the upstream is
+not:
+
+```json
+{ "id": "queue_for_retry",
+  "condition": { "in": [ { "var": "metadata._orion_errors.0.code" },
+                         ["TIMEOUT_ERROR", "IO_ERROR"] ] } }
+```
+
+Records carry the code, task id and status — never the message, which can embed
+an upstream URL and response body.
+
 ## Shut down without dropping requests
 
 `SIGTERM` and `SIGINT` start a controlled sequence built for load balancers:

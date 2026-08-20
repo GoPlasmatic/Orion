@@ -319,11 +319,11 @@ Every channel gets production-grade features without writing a line of code. Con
 
 | Feature | What it does | Configuration |
 |---------|-------------|---------------|
-| **Rate limiting** | Throttle requests per client or globally | `requests_per_second`, `burst`, JSONLogic key computation |
+| **Rate limiting** | Throttle requests per client or globally | `requests_per_second`, `burst`, JSONLogic key computation over declared `key_headers` |
 | **Timeouts** | Cancel slow workflows, return 504 | `timeout_ms` per channel |
 | **Input validation** | Reject bad requests at the boundary | JSONLogic with access to headers, query params, path params |
 | **Backpressure** | Shed load when overwhelmed, return 503 | `max_concurrent_per_node` (semaphore-based) |
-| **CORS** | Control browser cross-origin access | `origin_allow_list` per channel |
+| **CORS** | Control browser cross-origin access | Instance-level `[cors]`: allowed origins, additional request/response headers, credentials, max-age. Per-channel `origin_allow_list` is a separate server-side `Origin` check |
 | **Circuit breakers** | Stop cascading failures to external services | Off by default; enable per connector, admin API to inspect/reset |
 | **Versioning** | Draft → active → archived lifecycle | Automatic version history, rollout percentages, instant rollback |
 | **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on, zero configuration |
@@ -384,7 +384,7 @@ Connectors are named, reusable connections to external systems. Configure once, 
 
 | Connector type | Systems | Features |
 |---------------|---------|----------|
-| **HTTP** | Any REST API, webhook, or service | Bearer / Basic / API key auth, retry with backoff, SSRF protection |
+| **HTTP** | Any REST API, webhook, or service | Bearer / Basic / API-key / managed OAuth2 auth, secret-safe query parameters, retry with backoff, SSRF protection |
 | **Database** | PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme | Parameterized queries, connection pooling, read + write operations; BSON-to-JSON conversion on `mongodb://` |
 | **Cache** | In-memory (built-in) or Redis | TTL-based expiry, also powers deduplication and response caching |
 | **Elasticsearch** | Any Elasticsearch cluster | Portable `data_query`/`data_write` rendered to Query DSL and `_bulk`, via the shared HTTP client |
@@ -396,7 +396,7 @@ Any connector can be given **circuit breaker protection** — off by default, an
 
 ## Built-in Task Functions
 
-All functions are built into every binary. The dataflow-rs runtime contributes the data-shaping core (`parse_json`, `parse_xml`, `filter`, `map`, `validation`, `publish_json`, `publish_xml`, `log`); Orion adds the connector-backed handlers (`http_call`, `data_query`, `data_write`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `data_query`/`data_write` speak the [portable data dialect](https://docs.goplasmatic.io/reference/data-dialect.html) — write the query once and switch between SQL, MongoDB, and Elasticsearch by switching connectors, with `db_read`/`db_write` as the raw-SQL escape hatch. See the [Function Reference](https://docs.goplasmatic.io/reference/functions.html) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
+All functions are built into every binary. The dataflow-rs runtime contributes the data-shaping core (`parse_json`, `parse_xml`, `filter`, `map`, `validation`, `publish_json`, `publish_xml`, `log`); Orion adds the connector-backed handlers (`http_call`, `data_query`, `data_write`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `mongo_write`, `mongo_aggregate`, `publish_kafka`, `send_email`, `storage_presign`, `storage_head`), the local utilities (`crypto`, `jwt_sign`, `jwt_verify`), and the in-process `channel_call`. `data_query`/`data_write` speak the [portable data dialect](https://docs.goplasmatic.io/reference/data-dialect.html) — write the query once and switch between SQL, MongoDB, and Elasticsearch by switching connectors, with `db_read`/`db_write` as the raw-SQL escape hatch. See the [Function Reference](https://docs.goplasmatic.io/reference/functions.html) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
 
 ---
 

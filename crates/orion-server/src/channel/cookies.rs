@@ -66,13 +66,20 @@ pub(crate) fn lookup<'a>(jar: impl IntoIterator<Item = &'a str>, name: &str) -> 
 /// A listed-but-absent cookie is simply not present — never `null`, never an
 /// error — matching how the `claims_to_metadata` filter behaves.
 pub(crate) fn collect<'a>(
-    jar: impl IntoIterator<Item = &'a str> + Clone,
+    jar: impl IntoIterator<Item = &'a str>,
     allowlist: &[String],
 ) -> serde_json::Map<String, Value> {
+    // One pass over the jar rather than one per allowlisted name: a browser
+    // jar is routinely several KB, and this runs on every request to a channel
+    // that opts in. `entry`-style "first wins" keeps the documented
+    // first-duplicate-wins rule without re-scanning.
     let mut out = serde_json::Map::new();
-    for name in allowlist {
-        if let Some(value) = lookup(jar.clone(), name.as_str()) {
-            out.insert(name.clone(), Value::String(value));
+    for (name, value) in jar.into_iter().flat_map(pairs) {
+        if out.contains_key(name) {
+            continue;
+        }
+        if allowlist.iter().any(|a| a == name) {
+            out.insert(name.to_string(), Value::String(value.to_string()));
         }
     }
     out

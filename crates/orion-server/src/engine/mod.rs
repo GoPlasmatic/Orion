@@ -42,6 +42,17 @@ pub const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
 /// The bare key under `metadata`, for the ingress stamping sites.
 pub const ERROR_CONTEXT_KEY: &str = "_orion_errors";
 
+/// Clear the engine-owned error records from a metadata object.
+///
+/// Lives beside the constant so a new ingress has one call to make rather than
+/// a three-line idiom to copy — and so widening this to the whole `_orion_`
+/// prefix later is a one-line change here instead of an audit of call sites.
+pub fn clear_error_context(metadata: &mut serde_json::Value) {
+    if let Some(map) = metadata.as_object_mut() {
+        map.remove(ERROR_CONTEXT_KEY);
+    }
+}
+
 pub mod functions;
 pub mod handlers;
 pub mod loader;

@@ -92,13 +92,6 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    /// Path prefixes a data mount may never claim.
-    ///
-    /// `/api` covers `/api/v1/admin`, `/api/v1/data`, `/api/v1/openapi.json`
-    /// **and any future `/api/v2`** — that breadth is what makes the invariant
-    /// durable, rather than a list to remember to extend.
-    const RESERVED_MOUNT_PREFIXES: &'static [&'static str] = crate::server::routes::PLATFORM_ROUTES;
-
     /// Structural checks on `data_mounts`.
     ///
     /// Refused rather than sanitized, matching the `verbose_errors` posture
@@ -144,18 +137,17 @@ impl ServerConfig {
                      static prefix; path parameters belong in a channel's route_pattern"
                 )));
             }
-            // Reserved: equal to, under, or containing a platform route.
-            for reserved in Self::RESERVED_MOUNT_PREFIXES {
-                let claims = mount == reserved
-                    || mount.starts_with(&format!("{reserved}/"))
-                    || reserved.starts_with(&format!("{mount}/"));
-                if claims {
-                    return Err(err(format!(
-                        "server.data_mounts entry '{mount}' collides with the platform \
-                         route '{reserved}' — mounting the data plane there would shadow \
-                         it or be shadowed by it"
-                    )));
-                }
+            // Reserved: the same rule the channel-activation gate applies, so
+            // the two cannot drift. (A mount that *contains* a platform route
+            // cannot occur: every `PLATFORM_ROUTES` entry is single-segment,
+            // so a strict prefix of one would have to be `""`, which fails the
+            // leading-`/` check above.)
+            if let Some(reserved) = crate::server::routes::shadowed_platform_route(mount) {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' collides with the platform \
+                     route '{reserved}' — mounting the data plane there would shadow \
+                     it or be shadowed by it"
+                )));
             }
             if seen.contains(&mount.as_str()) {
                 return Err(err(format!(

@@ -171,9 +171,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // without this it would start life carrying — and branching on —
             // the *parent's* failed tasks as if they were its own. Its own
             // failures are recorded by the engine as they happen.
-            if let Some(map) = child_meta.as_object_mut() {
-                map.remove(crate::engine::ERROR_CONTEXT_KEY);
-            }
+            crate::engine::clear_error_context(&mut child_meta);
             // The calling channel, read before the override below replaces
             // it: it is this call's caller identity, so a target's rate limit
             // buckets per calling channel rather than lumping every

@@ -352,9 +352,6 @@ pub(crate) async fn dynamic_handler(
     .await
 }
 
-/// Build the workflow metadata object for a request: the caller-supplied
-/// `metadata` merged with the server-supplied `channel`, `http_method`,
-/// `params`, `query`, and (credential-masked) `headers` keys.
 /// Turn a guard rejection into a response, letting the channel replace the
 /// body when it declares one for that status (#269).
 ///
@@ -414,6 +411,9 @@ fn shape_guard_rejection(
     response
 }
 
+/// Build the workflow metadata object for a request: the caller-supplied
+/// `metadata` merged with the server-supplied `channel`, `http_method`,
+/// `params`, `query`, and (credential-masked) `headers` keys.
 fn build_request_metadata(
     req_metadata: &Value,
     channel: &str,
@@ -442,25 +442,22 @@ fn build_request_metadata(
     // unconditionally at ingress, the way `channel` and `headers` are
     // force-stamped. Without it a caller could pre-seed failures a workflow
     // then branches on.
-    if let Some(map) = metadata.as_object_mut() {
-        map.remove(crate::engine::ERROR_CONTEXT_KEY);
-    }
-    match cookie_allowlist {
-        Some(names) => {
+    crate::engine::clear_error_context(&mut metadata);
+    let cookies = cookie_allowlist
+        .map(|names| {
             let jar = headers
                 .get_all(axum::http::header::COOKIE)
                 .iter()
-                .filter_map(|v| v.to_str().ok())
-                .collect::<Vec<_>>();
-            let found = crate::channel::cookies::collect(jar, names);
-            if found.is_empty() {
-                metadata.as_object_mut().map(|m| m.remove("cookies"));
-            } else {
-                metadata["cookies"] = Value::Object(found);
-            }
-        }
-        None => {
-            metadata.as_object_mut().map(|m| m.remove("cookies"));
+                .filter_map(|v| v.to_str().ok());
+            crate::channel::cookies::collect(jar, names)
+        })
+        .unwrap_or_default();
+    if let Some(map) = metadata.as_object_mut() {
+        // Stamped from the allowlist, removed otherwise — never merged with
+        // whatever the caller sent.
+        map.remove("cookies");
+        if !cookies.is_empty() {
+            map.insert("cookies".to_string(), Value::Object(cookies));
         }
     }
     // F4: stamp the resolved channel name (overriding any caller-supplied

@@ -19,7 +19,7 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use mongodb::bson::{self, Document};
+use mongodb::bson::Document;
 use serde_json::Value;
 
 use super::connector_helpers::{
@@ -114,15 +114,11 @@ impl AsyncFunctionHandler for MongoAggregateHandler {
         let wants_write_stage = stages
             .iter()
             .any(|(name, _)| WRITE_STAGES.contains(&name.as_str()));
-        let pipeline: Vec<Document> = stages
-            .iter()
-            .enumerate()
-            .map(|(i, (_, stage))| {
-                bson::to_document(stage).map_err(|e| {
-                    DataflowError::Validation(format!("{NAME} pipeline[{i}] is not valid: {e}"))
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let pipeline = super::mongo_common::documents_from_values(
+            stages.iter().map(|(_, stage)| *stage),
+            "pipeline",
+            NAME,
+        )?;
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, Some("read")).await?;
