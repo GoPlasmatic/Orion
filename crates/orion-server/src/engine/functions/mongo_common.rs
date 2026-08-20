@@ -63,6 +63,47 @@ pub(super) fn resolve_document(
     }
 }
 
+/// [`resolve_document`] for a field holding an **array** of documents.
+///
+/// One implementation for `insert_many`'s `documents`, `mongo_aggregate`'s
+/// `pipeline` and `mongo_write`'s `array_filters`, which each carried their own
+/// copy. Extended-JSON support (`$oid`, `$date`, …) therefore falls out for
+/// every one of them, which is what makes a typed date comparison inside an
+/// array filter work.
+///
+/// `None` when the field is absent or null; the index is named in every error,
+/// since a per-message array only exists at runtime and this message is the
+/// only diagnosis its author gets.
+pub(super) fn resolve_document_array(
+    input: &Value,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<Vec<Document>>, DataflowError> {
+    let raw = match input.get(field) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(raw) => raw,
+    };
+    let resolved = resolve_value(raw, ctx);
+    let Value::Array(items) = resolved else {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} '{field}' must resolve to an array of objects"
+        )));
+    };
+    let mut docs = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        if !item.is_object() {
+            return Err(DataflowError::Validation(format!(
+                "{handler_name} {field}[{i}] must be an object"
+            )));
+        }
+        docs.push(bson::to_document(item).map_err(|e| {
+            DataflowError::Validation(format!("{handler_name} {field}[{i}] is not valid: {e}"))
+        })?);
+    }
+    Ok(Some(docs))
+}
+
 /// [`resolve_document`] for a required field.
 pub(super) fn require_document(
     input: &Value,

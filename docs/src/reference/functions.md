@@ -388,6 +388,41 @@ for the full envelope, backend mapping, and safety rules.
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
 | `output` | string | no | `"data"` | Dotted path where the write result is written |
 
+#### Updating array elements
+
+Three path forms reach elements inside an array field, and **the simplest one that fits is the right one**:
+
+| Path | Updates | Needs `array_filters` |
+|---|---|---|
+| `sessions.$.active` | the **first** element the `filter` matched | no |
+| `sessions.$[].active` | **every** element, unconditionally | no |
+| `sessions.$[s].active` | every element matching an `array_filters` entry | yes |
+
+For "flip the one embedded entry whose `deviceId` matches", `$` is enough — atomically, in one round trip, with no `array_filters`:
+
+```json
+{ "op": "update_one",
+  "filter": { "_id": {"var": "temp_data.user_id"},
+              "sessions.deviceId": {"var": "data.deviceId"} },
+  "update": { "$set": { "sessions.$.active": false } } }
+```
+
+`array_filters` is for what `$` and `$[]` cannot express: updating **every** element matching a predicate, reaching **nested** arrays (`$[a].items.$[b]`), and using several independent identifiers in one update.
+
+```json
+{ "op": "update_many",
+  "filter": { "_id": {"var": "temp_data.user_id"} },
+  "update": { "$set": { "sessions.$[s].active": false } },
+  "array_filters": [ { "s.expiresAt": { "$lt": { "$date": {"var": "temp_data.now"} } } } ] }
+```
+
+Each entry constrains exactly one identifier (`$and`/`$or`/`$nor` take theirs from their branches). Orion cross-checks the two before the driver call: an identifier with no filter, a filter nothing uses, or `array_filters` with no `$[identifier]` anywhere is a `400` naming the problem — MongoDB refuses all three, but its message would reach you as an opaque `500`.
+
+`upsert: true` is permitted; note that on the *insert* branch there is no array to match. A filter matching no element is **not** an error — the update succeeds with `matched: 1, modified: 0`, which the result envelope reports faithfully.
+
+> [!NOTE]
+> Whole-array `$set` — read the array, modify it in memory, write it back — is racy: two concurrent writers each write the full array and the second silently clobbers the first. Orion has no transaction surface to fix that, so prefer a positional path, which the server applies atomically.
+
 Inside `write`:
 
 | Field | Type | Required | Default | Description |
@@ -584,11 +619,47 @@ below, and naming a field the op ignores is an authoring-time error.
 | `document` | object | conditional | — | The document for `insert_one` / `replace_one` (a replacement must be a plain document, no `$` operators) |
 | `documents` | array | conditional | — | Documents for `insert_many`; the batch is capped by `write.max_rows` |
 | `filter` | object | conditional | — | Selection filter for update/replace/delete ops (extended JSON) |
-| `update` | object | conditional | — | Update document for `update_one`/`update_many`; top-level keys must be atomic operators (`$set`, `$inc`, `$push`, …) |
+| `update` | object | conditional | — | Update document for `update_one`/`update_many`; top-level keys must be atomic operators (`$set`, `$inc`, `$push`, …). Field paths may target array elements — see [Updating array elements](#updating-array-elements) |
+| `array_filters` | array | no | — | `update_one`/`update_many` only: filter documents naming the `$[identifier]` paths used in `update` |
 | `upsert` | bool | no | `false` | Insert when nothing matches (update/replace ops). Gated as `upsert` on the connector when true, `update` otherwise |
 | `ordered` | bool | no | `true` | `insert_many` only: stop at the first failure (`true`) or attempt every document (`false`) |
 | `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/replace/delete — also requires `write.allow_unfiltered` in config |
 | `output` | string | no | `"data"` | Dotted path where the write result is written |
+
+#### Updating array elements
+
+Three path forms reach elements inside an array field, and **the simplest one that fits is the right one**:
+
+| Path | Updates | Needs `array_filters` |
+|---|---|---|
+| `sessions.$.active` | the **first** element the `filter` matched | no |
+| `sessions.$[].active` | **every** element, unconditionally | no |
+| `sessions.$[s].active` | every element matching an `array_filters` entry | yes |
+
+For "flip the one embedded entry whose `deviceId` matches", `$` is enough — atomically, in one round trip, with no `array_filters`:
+
+```json
+{ "op": "update_one",
+  "filter": { "_id": {"var": "temp_data.user_id"},
+              "sessions.deviceId": {"var": "data.deviceId"} },
+  "update": { "$set": { "sessions.$.active": false } } }
+```
+
+`array_filters` is for what `$` and `$[]` cannot express: updating **every** element matching a predicate, reaching **nested** arrays (`$[a].items.$[b]`), and using several independent identifiers in one update.
+
+```json
+{ "op": "update_many",
+  "filter": { "_id": {"var": "temp_data.user_id"} },
+  "update": { "$set": { "sessions.$[s].active": false } },
+  "array_filters": [ { "s.expiresAt": { "$lt": { "$date": {"var": "temp_data.now"} } } } ] }
+```
+
+Each entry constrains exactly one identifier (`$and`/`$or`/`$nor` take theirs from their branches). Orion cross-checks the two before the driver call: an identifier with no filter, a filter nothing uses, or `array_filters` with no `$[identifier]` anywhere is a `400` naming the problem — MongoDB refuses all three, but its message would reach you as an opaque `500`.
+
+`upsert: true` is permitted; note that on the *insert* branch there is no array to match. A filter matching no element is **not** an error — the update succeeds with `matched: 1, modified: 0`, which the result envelope reports faithfully.
+
+> [!NOTE]
+> Whole-array `$set` — read the array, modify it in memory, write it back — is racy: two concurrent writers each write the full array and the second silently clobbers the first. Orion has no transaction surface to fix that, so prefer a positional path, which the server applies atomically.
 
 The result mirrors `data_write`'s Mongo envelopes: inserts report
 `{ "status", "inserted", "ids" }` (a partially applied `insert_many` reports

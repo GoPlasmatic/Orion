@@ -106,6 +106,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **`mongo_write.array_filters`** ([#274]) — `$[identifier]` array-element
+  updates for `update_one`/`update_many`.
+
+  Scoped honestly: the single-element case does **not** need it. `$` — the
+  positional operator — already updates the first element the filter matched,
+  atomically and in one round trip, because Orion never inspects the nested
+  field paths inside `$set`. `$[]` (every element, unconditionally) works too.
+  `array_filters` is for what neither can express: updating **every** element
+  matching a predicate, reaching nested arrays (`$[a].items.$[b]`), and using
+  several independent identifiers in one update. The `$` and `$[]` forms are
+  now documented alongside it, so it does not get cargo-culted into places
+  where `$` was simpler and already worked.
+
+  Most of the value is in the validation. A server-side rejection — MongoDB's
+  genuinely useful *"No array filter found for identifier 's' in path
+  'sessions.$[s].active'"* — reaches the author as an opaque **500
+  `ENGINE_ERROR` with the text discarded**, because a driver error becomes
+  `function_execution` and the catch-all arm replaces the message. Orion now
+  cross-checks the update's `$[identifier]` paths against the declared filters
+  *before* the driver call, so an identifier with no filter, a filter nothing
+  uses, an empty list, or `array_filters` with no `$[identifier]` anywhere is a
+  `400` naming the problem — and, being in `validate_static_input`, is also
+  caught at workflow create/import and by `orion-server lint`.
+
 - **Channel `response.error_bodies`** ([#269]) — per-status replacement bodies
   for ingress guard rejections, for migrating an API whose deployed clients
   parse a different error shape and cannot be changed.
@@ -298,6 +322,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#272]: https://github.com/GoPlasmatic/Orion/issues/272
 [#273]: https://github.com/GoPlasmatic/Orion/issues/273
+[#274]: https://github.com/GoPlasmatic/Orion/issues/274
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
 [#276]: https://github.com/GoPlasmatic/Orion/issues/276
 [#277]: https://github.com/GoPlasmatic/Orion/issues/277

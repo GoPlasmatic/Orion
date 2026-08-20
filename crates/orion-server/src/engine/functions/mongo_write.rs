@@ -27,10 +27,12 @@ use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, apply_output, timed_query, to_connect_error, to_exec_error,
 };
 use super::data_write::{bulk_result, mongo_write_errors};
-use super::mongo_common::{require_document, require_mongo_connector, resolve_document};
+use super::mongo_common::{
+    require_document, require_mongo_connector, resolve_document, resolve_document_array,
+};
 use super::schema::{FieldKind, FieldSchema};
 use crate::config::WriteConfig;
 use crate::connector::ConnectorRegistry;
@@ -112,7 +114,9 @@ impl MongoOp {
         match self {
             MongoOp::InsertOne => &["document"],
             MongoOp::InsertMany => &["documents", "ordered"],
-            MongoOp::UpdateOne | MongoOp::UpdateMany => &["filter", "update", "upsert", "all"],
+            MongoOp::UpdateOne | MongoOp::UpdateMany => {
+                &["filter", "update", "upsert", "all", "array_filters"]
+            }
             MongoOp::ReplaceOne => &["filter", "document", "upsert", "all"],
             MongoOp::DeleteOne | MongoOp::DeleteMany => &["filter", "all"],
         }
@@ -202,6 +206,7 @@ enum Prepared {
         update: Document,
         upsert: bool,
         many: bool,
+        array_filters: Option<Vec<Document>>,
     },
     Replace {
         filter: Document,
@@ -234,11 +239,16 @@ fn prepare(
         MongoOp::UpdateOne | MongoOp::UpdateMany => {
             let update = require_document(input, "update", NAME, ctx)?;
             require_update_operators(&update)?;
+            let array_filters = resolve_document_array(input, "array_filters", NAME, ctx)?;
+            if let Some(ref filters) = array_filters {
+                require_usable_array_filters(filters, &update)?;
+            }
             Prepared::Update {
                 filter: resolve_filter(op, input, ctx)?,
                 update,
                 upsert,
                 many: op == MongoOp::UpdateMany,
+                array_filters,
             }
         }
         MongoOp::ReplaceOne => {
@@ -305,6 +315,152 @@ fn update_operators_message(plain_key: &str) -> String {
     )
 }
 
+/// Collect the `$[identifier]` names an update document references.
+///
+/// `$[]` — every element, unconditionally — carries no identifier and needs no
+/// filter, so it is deliberately not collected. Walks nested documents and
+/// arrays, since a path can appear at any depth inside `$set`/`$push`/….
+fn referenced_identifiers(update: &Document) -> Vec<String> {
+    fn from_key(key: &str, out: &mut Vec<String>) {
+        let mut rest = key;
+        while let Some(start) = rest.find("$[") {
+            let after = &rest[start + 2..];
+            let Some(end) = after.find(']') else { return };
+            let ident = &after[..end];
+            // `$[]` has no identifier.
+            if !ident.is_empty() && !out.iter().any(|o| o == ident) {
+                out.push(ident.to_string());
+            }
+            rest = &after[end + 1..];
+        }
+    }
+    fn walk(doc: &Document, out: &mut Vec<String>) {
+        for (key, value) in doc {
+            from_key(key, out);
+            match value {
+                mongodb::bson::Bson::Document(d) => walk(d, out),
+                mongodb::bson::Bson::Array(items) => {
+                    for item in items {
+                        if let mongodb::bson::Bson::Document(d) = item {
+                            walk(d, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(update, &mut out);
+    out
+}
+
+/// The identifier a single array-filter document constrains.
+///
+/// MongoDB's rule is one top-level identifier per filter document: every
+/// top-level key is `<ident>` or `<ident>.<path>`, except the logical
+/// combinators, whose identifier comes from their branches.
+fn array_filter_identifier(filter: &Document) -> Result<String, String> {
+    fn ident_of(key: &str) -> Option<&str> {
+        let head = key.split('.').next()?;
+        let valid = !head.is_empty()
+            && head.starts_with(|c: char| c.is_ascii_alphabetic())
+            && head.chars().all(|c| c.is_ascii_alphanumeric());
+        valid.then_some(head)
+    }
+    fn collect(doc: &Document, out: &mut Vec<String>) {
+        for (key, value) in doc {
+            if matches!(key.as_str(), "$and" | "$or" | "$nor") {
+                if let mongodb::bson::Bson::Array(items) = value {
+                    for item in items {
+                        if let mongodb::bson::Bson::Document(d) = item {
+                            collect(d, out);
+                        }
+                    }
+                }
+                continue;
+            }
+            if let Some(ident) = ident_of(key)
+                && !out.iter().any(|o| o == ident)
+            {
+                out.push(ident.to_string());
+            }
+        }
+    }
+    let mut idents = Vec::new();
+    collect(filter, &mut idents);
+    match idents.len() {
+        1 => Ok(idents.remove(0)),
+        0 => Err("names no identifier — each entry constrains one \
+                  `$[identifier]`, e.g. {\"s.active\": true}"
+            .to_string()),
+        _ => Err(format!(
+            "names more than one identifier ({}) — MongoDB allows one \
+             top-level identifier per filter document, so split it into \
+             separate entries",
+            idents.join(", ")
+        )),
+    }
+}
+
+/// Cross-check `array_filters` against the update's `$[identifier]` paths.
+///
+/// This is where most of this feature's value is. A server-side rejection —
+/// *"No array filter found for identifier 's' in path 'sessions.$[s].active'"*
+/// — reaches the author as an opaque **500 `ENGINE_ERROR` with the text
+/// discarded**, because a driver error becomes `function_execution` and the
+/// catch-all arm replaces the message. Anything caught before the driver call
+/// raises `Validation`, which is a **400 with the text preserved verbatim** —
+/// and, moved into `validate_static_input`, additionally fires at workflow
+/// create/update/import and in `orion-server lint`.
+fn cross_check_array_filters(filters: &[Document], update: &Document) -> Result<(), String> {
+    if filters.is_empty() {
+        return Err("'array_filters' must not be empty — omit the field instead".to_string());
+    }
+    let mut declared = Vec::with_capacity(filters.len());
+    for (i, filter) in filters.iter().enumerate() {
+        if filter.is_empty() {
+            return Err(format!("array_filters[{i}] must be a non-empty object"));
+        }
+        let ident =
+            array_filter_identifier(filter).map_err(|e| format!("array_filters[{i}] {e}"))?;
+        declared.push(ident);
+    }
+
+    let referenced = referenced_identifiers(update);
+    if referenced.is_empty() {
+        return Err(
+            "'array_filters' is set but 'update' references no `$[identifier]` path — \
+             the filters would never be used. (`$` updates the first match and `$[]` \
+             every element; neither takes a filter.)"
+                .to_string(),
+        );
+    }
+    if let Some(missing) = referenced.iter().find(|r| !declared.contains(r)) {
+        return Err(format!(
+            "'update' references `$[{missing}]` but 'array_filters' declares no filter \
+             for it — MongoDB refuses the update"
+        ));
+    }
+    if let Some(unused) = declared.iter().find(|d| !referenced.contains(d)) {
+        return Err(format!(
+            "'array_filters' declares '{unused}' but 'update' never uses `$[{unused}]` — \
+             MongoDB refuses an unused array filter"
+        ));
+    }
+    Ok(())
+}
+
+/// The runtime half of [`cross_check_array_filters`], for values that only
+/// exist per message.
+fn require_usable_array_filters(
+    filters: &[Document],
+    update: &Document,
+) -> Result<(), DataflowError> {
+    cross_check_array_filters(filters, update)
+        .map_err(|e| DataflowError::Validation(format!("{NAME} {e}")))
+}
+
 fn replace_plain_message(operator_key: &str) -> String {
     format!(
         "replacement 'document' must be a plain document, but has operator \
@@ -348,27 +504,8 @@ fn resolve_documents_array(
     input: &Value,
     ctx: &TaskContext<'_>,
 ) -> Result<Vec<Document>, DataflowError> {
-    let raw = input
-        .get("documents")
-        .ok_or_else(|| DataflowError::Validation(format!("{NAME} requires 'documents' field")))?;
-    let resolved = resolve_value(raw, ctx);
-    let Value::Array(items) = resolved else {
-        return Err(DataflowError::Validation(format!(
-            "{NAME} 'documents' must resolve to an array of objects"
-        )));
-    };
-    let mut docs = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        if !item.is_object() {
-            return Err(DataflowError::Validation(format!(
-                "{NAME} documents[{i}] must be an object"
-            )));
-        }
-        docs.push(mongodb::bson::to_document(item).map_err(|e| {
-            DataflowError::Validation(format!("{NAME} documents[{i}] is not valid: {e}"))
-        })?);
-    }
-    Ok(docs)
+    resolve_document_array(input, "documents", NAME, ctx)?
+        .ok_or_else(|| DataflowError::Validation(format!("{NAME} requires 'documents' field")))
 }
 
 fn literal_bool(input: &Value, field: &str) -> bool {
@@ -429,11 +566,20 @@ async fn execute_write(
             update,
             upsert,
             many,
+            array_filters,
         } => {
             let res = if many {
-                coll.update_many(filter, update).upsert(upsert).await
+                let mut call = coll.update_many(filter, update).upsert(upsert);
+                if let Some(f) = array_filters {
+                    call = call.array_filters(f);
+                }
+                call.await
             } else {
-                coll.update_one(filter, update).upsert(upsert).await
+                let mut call = coll.update_one(filter, update).upsert(upsert);
+                if let Some(f) = array_filters {
+                    call = call.array_filters(f);
+                }
+                call.await
             };
             update_envelope(res)
         }
@@ -552,6 +698,10 @@ pub(super) fn validate_static_input(
     }
 
     // A field the op would silently ignore is an authoring mistake.
+    //
+    // This list and `MongoOp::allowed_fields` are both hand-maintained and
+    // must agree: a field absent HERE is never checked at all, so adding one
+    // to `allowed_fields` alone leaves it accepted on every op.
     for field in [
         "document",
         "documents",
@@ -560,6 +710,7 @@ pub(super) fn validate_static_input(
         "upsert",
         "ordered",
         "all",
+        "array_filters",
     ] {
         if input.contains_key(field) && !op.allowed_fields().contains(&field) {
             errs.push((
@@ -589,6 +740,26 @@ pub(super) fn validate_static_input(
             ));
         }
     }
+    // The `array_filters` cross-check, only when BOTH the update and the
+    // filters are literal — a `{"var": ..}` payload defers to runtime, where
+    // the same function runs against the resolved value.
+    if matches!(op, MongoOp::UpdateOne | MongoOp::UpdateMany)
+        && let Some(update) = literal_object(input.get("update"))
+        && let Some(filters) = literal_array(input.get("array_filters"))
+        && let (Ok(update_doc), Some(filter_docs)) = (
+            mongodb::bson::to_document(&Value::Object(update.clone())),
+            filters
+                .iter()
+                .map(|f| {
+                    f.as_object()
+                        .and_then(|o| mongodb::bson::to_document(&Value::Object(o.clone())).ok())
+                })
+                .collect::<Option<Vec<_>>>(),
+        )
+        && let Err(e) = cross_check_array_filters(&filter_docs, &update_doc)
+    {
+        errs.push(("array_filters", "unusable_array_filters", e));
+    }
     if op == MongoOp::ReplaceOne
         && let Some(doc) = literal_object(input.get("document"))
         && let Some(key) = doc.keys().find(|k| k.starts_with('$'))
@@ -600,6 +771,11 @@ pub(super) fn validate_static_input(
         ));
     }
     errs
+}
+
+/// [`literal_object`] for an array field.
+fn literal_array(node: Option<&Value>) -> Option<&Vec<Value>> {
+    node?.as_array()
 }
 
 /// The literal object under `node`, unless it is a `{"var": ..}` substitution.
@@ -672,8 +848,22 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "update",
-        description: "Update document for update_one/update_many; top-level keys must be atomic operators ($set, $inc, $push, ...). Accepts {\"var\": \"path\"}.",
+        description: "Update document for update_one/update_many; top-level keys must be atomic operators ($set, $inc, $push, ...). Field paths may target array elements with $ (first match), $[] (every element) or $[identifier] (every element an 'array_filters' entry matches). Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+        alias: None,
+    },
+    FieldSchema {
+        name: "array_filters",
+        description: "Array of filter documents naming the $[identifier] paths used in 'update' (update_one/update_many). Each entry constrains one identifier, e.g. {\"s.expiresAt\": {\"$lt\": ...}}. Accepts {\"var\": \"path\"}.",
+        kind: FieldKind::Array,
+        // Resolvable is safe and necessary here. Safe, because the house rule
+        // folds `{"var": …}` nodes only — never arbitrary JSONLogic — and
+        // values pulled from the message are not re-scanned, so a request body
+        // cannot inject a `var` node of its own. Necessary, because the
+        // predicate value almost always comes from the request. `filter` is
+        // already resolvable, so this adds no new class of caller influence.
         required: false,
         resolvable: true,
         alias: None,
@@ -780,6 +970,127 @@ mod tests {
         assert_eq!(errs.len(), 1, "{errs:?}");
         assert_eq!(errs[0].1, "update_requires_operators");
         assert!(errs[0].2.contains("replace_one"), "{}", errs[0].2);
+    }
+
+    /// #274: the happy path — every identifier the update uses has a filter,
+    /// and every filter is used.
+    #[test]
+    fn a_matched_array_filter_set_is_accepted() {
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_many",
+            "filter": { "_id": 1 },
+            "update": { "$set": { "sessions.$[s].active": false } },
+            "array_filters": [{ "s.expiresAt": { "$lt": 100 } }]
+        })));
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// The cross-check that earns this feature its validation. MongoDB's own
+    /// diagnostics for these are genuinely helpful — and reach the author as an
+    /// opaque 500 with the text discarded, because a driver error becomes
+    /// `function_execution`. Caught here they are a 400 with the text intact.
+    #[test]
+    fn array_filter_mismatches_are_named_before_the_driver_sees_them() {
+        // An identifier with no filter.
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_one",
+            "filter": { "_id": 1 },
+            "update": { "$set": { "sessions.$[s].active": false } },
+            "array_filters": [{ "other.x": 1 }]
+        })));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].1, "unusable_array_filters");
+        assert!(errs[0].2.contains("$[s]"), "{}", errs[0].2);
+
+        // A filter nothing uses.
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_one",
+            "filter": { "_id": 1 },
+            "update": { "$set": { "sessions.$[s].active": false } },
+            "array_filters": [{ "s.x": 1 }, { "t.y": 2 }]
+        })));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].2.contains("'t'"), "{}", errs[0].2);
+
+        // Filters supplied but no `$[ident]` anywhere — including the `$[]`
+        // case, which is unconditional and takes no filter.
+        for update in [
+            json!({ "$set": { "sessions.$.active": false } }),
+            json!({ "$set": { "sessions.$[].active": false } }),
+        ] {
+            let errs = validate_static_input(&obj(json!({
+                "op": "update_one",
+                "filter": { "_id": 1 },
+                "update": update,
+                "array_filters": [{ "s.x": 1 }]
+            })));
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            assert!(errs[0].2.contains("never be used"), "{}", errs[0].2);
+        }
+
+        // Empty list, and an empty entry.
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_one", "filter": { "_id": 1 },
+            "update": { "$set": { "s.$[a].x": 1 } },
+            "array_filters": []
+        })));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].2.contains("not be empty"), "{}", errs[0].2);
+
+        // One filter document naming two identifiers.
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_one", "filter": { "_id": 1 },
+            "update": { "$set": { "s.$[a].x": 1, "t.$[b].y": 2 } },
+            "array_filters": [{ "a.x": 1, "b.y": 2 }]
+        })));
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert!(errs[0].2.contains("more than one"), "{}", errs[0].2);
+    }
+
+    /// `$and`/`$or`/`$nor` take their identifier from their branches, so a
+    /// combinator filter is not mistaken for "names no identifier".
+    #[test]
+    fn a_logical_array_filter_resolves_its_identifier() {
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_many",
+            "filter": { "_id": 1 },
+            "update": { "$set": { "sessions.$[s].active": false } },
+            "array_filters": [{ "$and": [{ "s.a": 1 }, { "s.b": 2 }] }]
+        })));
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// A `{"var": …}` payload cannot be checked statically and must defer to
+    /// runtime rather than being refused at authoring time.
+    #[test]
+    fn a_var_array_filter_defers_shape_checks_to_runtime() {
+        let errs = validate_static_input(&obj(json!({
+            "op": "update_one",
+            "filter": { "_id": 1 },
+            "update": { "$set": { "sessions.$[s].active": false } },
+            "array_filters": { "var": "temp_data.filters" }
+        })));
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// `array_filters` applies to the two update ops and nothing else — the
+    /// refusal only happens because the field is in BOTH hand-maintained
+    /// lists.
+    #[test]
+    fn array_filters_is_refused_on_ops_that_cannot_use_it() {
+        for op in ["delete_one", "replace_one", "insert_one"] {
+            let errs = validate_static_input(&obj(json!({
+                "op": op,
+                "filter": { "_id": 1 },
+                "document": { "a": 1 },
+                "array_filters": [{ "s.x": 1 }]
+            })));
+            assert!(
+                errs.iter()
+                    .any(|e| e.0 == "array_filters" && e.1 == "field_not_applicable"),
+                "{op}: {errs:?}"
+            );
+        }
     }
 
     #[test]
