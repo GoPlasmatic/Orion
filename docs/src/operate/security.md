@@ -56,14 +56,17 @@ curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v1/adm
 > anything that can reach the port unless *that channel* declares an `auth`
 > block.
 
-Two modes are built in, both configured per channel:
+Three modes are built in, all configured per channel:
 
 - **`api_key`** — a key compared in constant time against the SHA-256 of each
   accepted key.
-- **`hmac`** — HMAC-SHA256 over the raw request body, verified before parsing.
-  This is the scheme Stripe, GitHub, and Shopify webhooks use.
+- **`hmac`** — a signature (SHA-1/256/512) over a templated signing string —
+  the raw body by default, timestamped schemes via `message` or a `preset` —
+  verified before parsing. This covers the webhook schemes of Stripe, GitHub,
+  Shopify, Slack, Zoom, and Webex.
+- **`jwt`** — bearer-token verification, detailed below.
 
-Both take `env://` references, mask their credential fields in API reads, and
+All three take `env://` references, mask their credential fields in API reads, and
 answer a uniform `401` that never reveals which part failed. The full contract —
 fields, defaults, and why Kafka and `channel_call` are exempt — is
 [Channel Configuration › Authentication](../reference/channel-config.md#authentication).

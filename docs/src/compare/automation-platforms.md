@@ -99,11 +99,14 @@ that logic lives in exactly one place is worth more than either tool.
 
 ## What Orion cannot do here
 
-- **No app catalogue.** There are five connector types — `http`, `kafka`, `db`,
-  `cache`, `es`. Reaching Salesforce means an `http_call` against its API,
-  written by you.
-- **No OAuth flows.** HTTP connector auth is `bearer`, `basic` or `apikey`.
-  There is no authorization-code dance and no token refresh.
+- **No app catalogue.** There are seven connector types — `http`, `kafka`,
+  `db`, `cache`, `es`, `smtp`, `storage`. Reaching Salesforce means an
+  `http_call` against its API, written by you.
+- **No interactive OAuth.** An `http` connector's `oauth2` auth manages the
+  token lifecycle itself — client-credentials and refresh-token grants,
+  acquired, cached and refreshed by Orion — but there is no
+  authorization-code dance: a grant that begins in a browser is completed
+  elsewhere, and Orion is seeded with its refresh token.
 - **No schedules or polling triggers.** Orion runs when it is called. There is
   no cron, no mailbox watcher, and no "every 15 minutes".
 - **No item-based execution model.** A platform runs every node once per input

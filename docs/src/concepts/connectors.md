@@ -36,6 +36,8 @@ credential, and one circuit breaker. Change the endpoint and both follow.
 | `cache` | Redis, or process memory | `cache_read`, `cache_write` |
 | `es` | Elasticsearch | `data_query`, `data_write` |
 | `kafka` | A Kafka cluster (producing) | `publish_kafka` |
+| `smtp` | A mail server (transactional email) | `send_email` |
+| `storage` | S3-compatible object storage | `storage_presign`, `storage_head` |
 
 One `db` type covers both SQL and MongoDB: the connection-string scheme selects
 the backend. Connectors are **unversioned** — unlike channels and workflows, an

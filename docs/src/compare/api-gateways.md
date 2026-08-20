@@ -95,9 +95,10 @@ The normal production shape: gateway at the edge, Orion behind it.
 
 ## What Orion cannot do here
 
-- **No JWT/OIDC verification and no mTLS termination.** Data-plane auth is
-  `api_key` or HMAC over the raw body. Anything else needs a proxy in front —
-  see [Secure an Instance](../operate/security.md).
+- **No OIDC flows and no mTLS termination.** Channels verify `api_key`, HMAC
+  signatures and JWT bearer tokens themselves; the IdP dance (discovery, PKCE,
+  userinfo) and client certificates need a proxy in front — see
+  [Secure an Instance](../operate/security.md).
 - **No load balancing or health-based ejection across upstreams.** Orion is an
   upstream; something else spreads traffic across its replicas.
 - **No WAF, bot management or DDoS controls.**

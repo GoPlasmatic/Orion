@@ -49,7 +49,7 @@ Click a node to expand it; click a capability to open its page.
         { "name": "Admin authentication", "link": "operate/security.html#authenticate-the-admin-plane",
           "children": ["Constant-time comparison", "sha256: digests", "Several keys for rotation", "Startup error in production"] },
         { "name": "Data-plane authentication", "link": "operate/security.html#decide-how-the-data-plane-authenticates",
-          "children": ["api_key per channel", "hmac over the raw body", "jwt with claims in context", "Uniform 401", "No OIDC flows or mTLS"] },
+          "children": ["api_key per channel", "hmac — templates & presets", "jwt with claims in context", "Uniform 401", "No OIDC flows or mTLS"] },
         { "name": "Secrets by reference", "link": "reference/connectors.html#secrets-by-reference",
           "children": ["env:// and vault://", "Masked in API reads", "Optional AES-256-GCM at rest"] },
         { "name": "Payload validation", "link": "reference/channel-config.html#validation",
@@ -98,7 +98,7 @@ Click a node to expand it; click a capability to open its page.
       "name": "Extensibility", "type": "connector",
       "children": [
         { "name": "Connector types", "link": "reference/connectors.html",
-          "children": ["http", "kafka", "db — PG / MySQL / SQLite / Mongo", "cache — Redis or memory", "es"] },
+          "children": ["http", "kafka", "db — PG / MySQL / SQLite / Mongo", "cache — Redis or memory", "es", "smtp — transactional email", "storage — S3-compatible"] },
         { "name": "Task functions", "link": "reference/functions.html",
           "children": ["Parse, map, filter, validate", "HTTP calls", "Portable dialect & raw SQL", "Cache read and write", "Kafka publish"] },
         { "name": "Portable data dialect", "link": "reference/data-dialect.html",
@@ -175,7 +175,7 @@ Click a node to expand it; click a capability to open its page.
 | Area | What the runtime provides |
 |---|---|
 | [Admin authentication](./operate/security.md#authenticate-the-admin-plane) | Keys compared in constant time, storable as `sha256:` digests, several at once so rotation needs no downtime. Missing admin auth is a startup error in production, not a warning. |
-| [Data-plane authentication](./operate/security.md#decide-how-the-data-plane-authenticates) | Per channel: `api_key`, `hmac` verified over the raw body before parsing, or `jwt` with the verified claims exposed to channel logic and the workflow. OIDC flows and mTLS termination stay out of scope — put a gateway in front for those. |
+| [Data-plane authentication](./operate/security.md#decide-how-the-data-plane-authenticates) | Per channel: `api_key`, `hmac` over a templated signing string (raw body by default; provider presets) verified before parsing, or `jwt` with the verified claims exposed to channel logic and the workflow. OIDC flows and mTLS termination stay out of scope — put a gateway in front for those. |
 | [Secrets by reference](./reference/connectors.md#secrets-by-reference) | `env://` and `vault://` references resolved at load, never stored inline. Secret fields are masked in API reads, and the stored config is AES-256-GCM encrypted at rest when `storage.connector_encryption_key` is set (plaintext by default). |
 | [Payload validation](./reference/channel-config.md#validation) | JSONLogic rules per channel, plus a body-size limit, enforced before any workflow logic runs. |
 | [Egress control](./operate/security.md#bound-what-connectors-can-reach) | SSRF protection blocks private and internal addresses unless a connector opts in. [Operation gates](./reference/connectors.md#operation-gates) make a connector read-only, delete-proof, or anything between. |
@@ -207,7 +207,7 @@ Click a node to expand it; click a capability to open its page.
 
 | Area | What the runtime provides |
 |---|---|
-| [Connector types](./reference/connectors.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (Redis or in-memory), and `es`. |
+| [Connector types](./reference/connectors.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (Redis or in-memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
 | [Task functions](./reference/functions.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; Kafka publish. |
 | [Portable data dialect](./reference/data-dialect.md) | One filter-and-envelope syntax lowered to SQL, MongoDB, or an Elasticsearch Query DSL body, so the same task reads from any of them. |
 | [Channel protocols](./reference/channel-config.md#routing--protocol) | REST with route patterns and path parameters, plain HTTP by channel name, and Kafka topics — each of them sync or async where the transport allows. |

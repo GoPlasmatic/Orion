@@ -249,7 +249,7 @@ fn decode_presented_signature(s: &str) -> Result<Vec<u8>, DataflowError> {
     decode_bytes(Codec::Hex, s)
         .or_else(|_| decode_bytes(Codec::Base64, s))
         .or_else(|_| decode_bytes(Codec::Base64Url, s))
-        .map_err(|_| validation("'signature' is neither hex nor base64"))
+        .map_err(|_| validation("'signature' is not hex, base64, or base64url"))
 }
 
 async fn hmac_op(
@@ -681,8 +681,8 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "signature",
-        description: "The presented MAC to check (hmac_verify); hex or base64, \
-                      auto-detected. Compared in constant time.",
+        description: "The presented MAC to check (hmac_verify); hex, base64, or \
+                      base64url, auto-detected. Compared in constant time.",
         kind: FieldKind::String,
         required: false,
         resolvable: true,

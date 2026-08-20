@@ -840,7 +840,7 @@ out-of-bounds cost parameter is an authoring-time error).
 | `input_encoding` | string | no | `"utf8"` | How a *string* `data` becomes bytes: `utf8`, `hex`, `base64` |
 | `key` | string | for hmac ops | — | A literal or a secret reference (`env://NAME`, `vault://…`) resolved like connector secrets — never in traces or errors. Literals are fine for development; use references in production (workflows are not encrypted at rest) |
 | `key_encoding` | string | no | `"utf8"` | How the resolved key becomes bytes: `utf8`, `hex`, `base64` — for APIs that issue binary signing keys |
-| `signature` | string | for `hmac_verify` | — | The presented MAC; hex or base64, auto-detected. Compared in constant time — never verify a MAC with `==` |
+| `signature` | string | for `hmac_verify` | — | The presented MAC; hex, base64, or base64url, auto-detected. Compared in constant time — never verify a MAC with `==` |
 | `password` | string | for password ops | — | The submitted password |
 | `hash` | string | for `password_verify` | — | The stored hash; scheme auto-detected from its `$argon2*$`/`$2*$` prefix, which is also the rehash-on-login discriminator |
 | `encoding` | string | no | `"hex"` | Output encoding for `hash`/`hmac`: `hex`, `base64`, `base64url` (unpadded, the JWS form) |
