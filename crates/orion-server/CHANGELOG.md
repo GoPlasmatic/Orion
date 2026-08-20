@@ -51,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the header. Fix such a channel by adding the name to the new
   `rate_limit.key_headers` (below), or by correcting the path.
 
+- **`jwt_sign` honors an explicit `claims.iat`** ([#272]). It was stamped
+  unconditionally, silently discarding an author-supplied value — while every
+  other registered claim the function touches (`iss`, `aud`, `nbf`, `exp`) is
+  author-controllable. `iat` is the one with no dedicated input field, so
+  nothing more specific existed to beat a claims entry and the entry should
+  simply have won.
+
+  Two consequences went with it. A revocation-pivot scheme — compare
+  `claims.iat` against a stored `last_login_at` — could not forward-date a
+  token minted in the same second as the pivot it must survive, pushing a
+  tolerance into every consumer. And because `iat` moved every run, minted
+  token bytes moved every run, so **no offline `orion-server test` case could
+  ever assert a `jwt_sign` result** — a gap in Orion's own regression story for
+  the flows JWT support was added for. A fully pinned claim set now mints
+  byte-identical tokens.
+
+  `iat` and `exp` supplied through `claims` are now also required to be numbers
+  (NumericDate, RFC 7519 §2). `exp` previously got no such check, so a string
+  date minted a token every verifier rejects later; both are refused at sign
+  time instead.
+
 - **`rate_limit.requests_per_second: 0` is refused at authoring time.** It was
   accepted and floored to `1` by the limiter, so asking for "admit nothing"
   quietly got one request per second. Stored channels are unaffected until
@@ -129,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   listed. ([#271])
 
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
+[#272]: https://github.com/GoPlasmatic/Orion/issues/272
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
 [#276]: https://github.com/GoPlasmatic/Orion/issues/276
 

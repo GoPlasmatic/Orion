@@ -361,6 +361,112 @@ mod tests {
         }
     }
 
+    /// #272: an author-supplied `iat` survives into the token instead of being
+    /// overwritten by the ambient clock.
+    ///
+    /// `iat` is the only registered claim `jwt_sign` touches that has no
+    /// dedicated input field, so nothing more specific exists to beat a claims
+    /// entry — the entry should simply win, exactly as an explicit `exp` does.
+    /// The round trip through `jwt_verify` proves nothing downstream rejects a
+    /// back-dated token: neither `jwt_verify` nor the channel `jwt` auth mode
+    /// inspects `iat`.
+    #[tokio::test]
+    async fn an_explicit_iat_claim_survives_signing() {
+        let back_dated = chrono::Utc::now().timestamp() - 86_400;
+        let out = round_trip(
+            json!({"algorithm": "HS256", "key": HS_SECRET,
+                   "claims": {"sub": "u1", "iat": back_dated},
+                   "expires_in": 300, "output": "data.token"}),
+            json!({"token": {"var": "data.token"},
+                   "algorithms": ["HS256"],
+                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
+                   "output": "data.claims"}),
+            json!({}),
+        )
+        .await
+        .expect("a back-dated iat must sign and verify");
+        assert_eq!(
+            out["claims"]["iat"], back_dated,
+            "an explicit iat must not be overwritten by the ambient clock"
+        );
+    }
+
+    /// The other half: with no `iat` supplied it is still stamped, so the
+    /// change is additive and no existing workflow loses the claim.
+    #[tokio::test]
+    async fn an_absent_iat_is_still_stamped() {
+        let before = chrono::Utc::now().timestamp();
+        let out = round_trip(
+            json!({"algorithm": "HS256", "key": HS_SECRET, "claims": {},
+                   "expires_in": 300, "output": "data.token"}),
+            json!({"token": {"var": "data.token"},
+                   "algorithms": ["HS256"],
+                   "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
+                   "output": "data.claims"}),
+            json!({}),
+        )
+        .await
+        .expect("sign");
+        let iat = out["claims"]["iat"].as_i64().expect("iat is stamped");
+        assert!(
+            iat >= before && iat <= chrono::Utc::now().timestamp(),
+            "an unsupplied iat is stamped to now, got {iat}"
+        );
+    }
+
+    /// A non-numeric registered date mints a token every verifier rejects, so
+    /// it is refused at sign time where the message can name the claim. `exp`
+    /// takes the same rule — it previously got no check at all when supplied
+    /// through `claims`.
+    #[tokio::test]
+    async fn a_non_numeric_registered_date_is_refused_at_signing() {
+        for (claim, claims) in [
+            (
+                "iat",
+                json!({"iat": "2026-08-20T00:00:00Z", "exp": 9_999_999_999i64}),
+            ),
+            ("exp", json!({"exp": "2026-08-20T00:00:00Z"})),
+        ] {
+            let err = round_trip(
+                json!({"algorithm": "HS256", "key": HS_SECRET,
+                       "claims": claims, "output": "data.token"}),
+                json!({"token": "x", "algorithms": ["HS256"],
+                       "keys": [{"algorithm": "HS256", "key": HS_SECRET}]}),
+                json!({}),
+            )
+            .await
+            .expect_err("a string date must be refused");
+            assert!(
+                err.contains(&format!("claims.{claim}")) && err.contains("NumericDate"),
+                "{claim}: {err}"
+            );
+        }
+    }
+
+    /// Determinism is the structural win: with `iat` and `exp` both pinned, one
+    /// input mints byte-identical tokens, so an offline `*.case.json` case can
+    /// finally assert a `jwt_sign` result. Before this change `iat` moved every
+    /// run and no golden test was possible.
+    #[tokio::test]
+    async fn a_fully_pinned_claim_set_mints_a_deterministic_token() {
+        let sign = json!({"algorithm": "HS256", "key": HS_SECRET,
+                          "claims": {"sub": "u1", "iat": 1_700_000_000i64,
+                                     "exp": 1_900_000_000i64},
+                          "output": "data.token"});
+        let verify = json!({"token": {"var": "data.token"},
+                            "algorithms": ["HS256"],
+                            "keys": [{"algorithm": "HS256", "key": HS_SECRET}],
+                            "output": "data.claims"});
+        let first = round_trip(sign.clone(), verify.clone(), json!({}))
+            .await
+            .expect("sign");
+        let second = round_trip(sign, verify, json!({})).await.expect("sign");
+        assert_eq!(
+            first["token"], second["token"],
+            "a fully pinned claim set must mint the same bytes every run"
+        );
+    }
+
     /// Cross-family confusion (acceptance criterion 2): an HS-signed token
     /// against an RS allowlist — and the reverse — must die at the allowlist,
     /// as a typed task error naming the reason.

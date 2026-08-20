@@ -884,8 +884,9 @@ for a bad credential.
 Mints a compact JWS — login access/refresh pairs, RFC 7523 client assertions.
 Self-contained like `crypto`: no connector, real execution in dry-run, and the
 signing key (a literal or an `env://`/`vault://` reference) lives only inside
-the call. `iat` is stamped automatically; a token must expire deliberately —
-`expires_in`, or an explicit `exp` claim.
+the call. `iat` is stamped automatically **unless the claims object supplies
+one**; a token must expire deliberately — `expires_in`, or an explicit `exp`
+claim.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -894,9 +895,16 @@ the call. `iat` is stamped automatically; a token must expire deliberately —
 | `key_encoding` | string | no | `"utf8"` | How an HS secret becomes bytes: `utf8`, `base64`, `hex` |
 | `claims` | object | no | `{}` | Claim values fold `{"var": …}` nodes — compose computed claims with a `map` task first |
 | `expires_in` | number \| string | conditional | — | Lifetime (seconds or `"<n>s\|m\|h\|d"`) → `exp`. Required unless `claims.exp` is explicit |
+| `claims.iat` | number | no | now | Issue time. Supplying one wins — there is no `issued_at` field, so nothing more specific can beat it. Back- or forward-dating is what revocation-pivot schemes need, and it is the only way a minted token can be asserted byte-for-byte offline |
 | `issuer` / `audience` / `not_before` | — | no | — | Conveniences for `iss` / `aud` / `nbf` (offset from now); explicit fields win over same-named claims entries |
 | `kid` | string | no | — | Key id stamped into the header, for rotation-aware verifiers |
 | `output` | string | no | `"data"` | Where the token (string) is stored |
+
+`iat` and `exp` supplied through `claims` must be **numbers** — seconds since
+the Unix epoch (NumericDate, RFC 7519 §2). A string date is refused at sign
+time rather than minting a token every verifier rejects later. Nothing in Orion
+makes a trust decision on `iat`: neither `jwt_verify` nor the channel `jwt`
+mode inspects it, so a back-dated token verifies normally.
 
 ### `jwt_verify`
 

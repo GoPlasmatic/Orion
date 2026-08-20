@@ -79,7 +79,25 @@ impl AsyncFunctionHandler for JwtSignHandler {
             let offset = resolve_duration_secs(nbf, ctx, NAME, "not_before")?;
             claims.insert("nbf".to_string(), Value::from(now + offset as i64));
         }
-        claims.insert("iat".to_string(), Value::from(now));
+        // `iat` is stamped only when the claims object does not supply one.
+        //
+        // Unlike `iss`/`aud`/`nbf`/`exp`, `iat` has no dedicated input field —
+        // so there is nothing "more specific" to beat a claims entry, and the
+        // entry should simply win. Overwriting it with an ambient value made
+        // two things impossible: a revocation-pivot scheme cannot forward-date
+        // a token minted in the same second as the pivot it must survive, and
+        // no offline `*.case.json` case can assert a minted token, because the
+        // bytes moved every run.
+        //
+        // `iat` is not security-bearing in Orion — nothing in the runtime makes
+        // a trust decision on it — so author control costs no check. (`exp`,
+        // which is, has been author-settable since #267 for the same reason:
+        // a non-expiring token must be a deliberate, visible choice.)
+        if let Some(iat) = claims.get("iat") {
+            require_numeric_date(iat, "iat")?;
+        } else {
+            claims.insert("iat".to_string(), Value::from(now));
+        }
         match input.get("expires_in") {
             Some(raw) if !raw.is_null() => {
                 let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
@@ -93,7 +111,12 @@ impl AsyncFunctionHandler for JwtSignHandler {
             }
             // A token without an expiry must be a stated decision, not an
             // omission: either expires_in, or an explicit exp claim.
-            _ if claims.contains_key("exp") => {}
+            _ if claims.contains_key("exp") => {
+                // Same rule as `iat`: a non-numeric registered date mints a
+                // token every verifier rejects, so refuse it here rather than
+                // ship it.
+                require_numeric_date(&claims["exp"], "exp")?;
+            }
             _ => {
                 return Err(validation(
                     "requires 'expires_in' (or an explicit 'exp' claim — non-expiring \
@@ -118,6 +141,29 @@ impl AsyncFunctionHandler for JwtSignHandler {
 
 fn validation(msg: &str) -> DataflowError {
     DataflowError::Validation(format!("{NAME}: {msg}"))
+}
+
+/// A registered date claim must be a JSON number — NumericDate, RFC 7519 §2.
+///
+/// A string or object here mints a token that every verifier rejects later,
+/// which surfaces as an opaque failure at the far end of an integration. Refuse
+/// it at sign time instead, where the message can name the claim.
+fn require_numeric_date(value: &Value, claim: &'static str) -> Result<(), DataflowError> {
+    if value.is_number() {
+        return Ok(());
+    }
+    Err(validation(&format!(
+        "claims.{claim} must be a number of seconds since the Unix epoch \
+         (NumericDate, RFC 7519 §2), got {}",
+        match value {
+            Value::Null => "null",
+            Value::Bool(_) => "a boolean",
+            Value::String(_) => "a string",
+            Value::Array(_) => "an array",
+            Value::Object(_) => "an object",
+            Value::Number(_) => unreachable!("handled above"),
+        }
+    )))
 }
 
 // -- Authoring-time validation (shared with schema::validate_input) --
