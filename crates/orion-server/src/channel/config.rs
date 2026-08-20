@@ -420,6 +420,15 @@ pub struct ChannelResponseConfig {
     /// allowlist grants what the workflow may set, it does not override what
     /// the protocol layer owns.
     pub allowed_headers: Option<Vec<String>>,
+
+    /// Per-channel replacement bodies for ingress guard rejections, keyed by
+    /// HTTP status (or `"default"`) — see [`crate::channel::error_body`].
+    ///
+    /// **Independent of `mode`.** An `envelope` channel can use these; the two
+    /// settings answer different questions, and `mode` covers only the success
+    /// path. Absent (the default) keeps the platform envelope byte for byte.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_bodies: Option<super::error_body::ErrorBodies>,
 }
 
 /// Whether a channel returns the standard envelope or a workflow-shaped

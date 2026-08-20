@@ -67,7 +67,7 @@ Each `errors[]` entry:
 | `message` | string | The failure text, sanitized by default — see [Message sanitization](#message-sanitization-verbose_errors). |
 | `task_id` | string | The failing task. Omitted for workflow-level failures. |
 
-Two shapes never appear here. Ingress rejections — auth, rate limiting, `validation_logic`, a deduplication replay, backpressure — answer with the [error envelope](#the-error-envelope) and a registry code, such as `429 RATE_LIMITED` or `409 CONFLICT`. And a [shaped channel](./data-api.md#shaped-responses) replaces the envelope entirely with a workflow-controlled status, headers, and body.
+Three shapes never appear here. Ingress rejections — auth, rate limiting, `validation_logic`, a deduplication replay, backpressure — answer with the [error envelope](#the-error-envelope) and a registry code, such as `429 RATE_LIMITED` or `409 CONFLICT`. A [shaped channel](./data-api.md#shaped-responses) replaces the envelope entirely with a workflow-controlled status, headers, and body. And a channel declaring [`response.error_bodies`](./channel-config.md#error-bodies) replaces the *bytes* of a guard rejection with its own template — the status, the code and the error-owned headers stay exactly as the platform set them, and only the body changes.
 
 ### The async acknowledgment
 

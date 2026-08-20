@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod config;
 pub mod cookies;
+pub mod error_body;
 pub mod guards;
 pub mod rate_limit_backend;
 pub mod registry;

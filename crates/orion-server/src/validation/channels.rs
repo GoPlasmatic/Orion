@@ -427,6 +427,21 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
     if let Some(ref request) = parsed.request {
         validate_cookies_to_metadata(request)?;
     }
+    if let Some(ref response) = parsed.response
+        && let Some(ref bodies) = response.error_bodies
+    {
+        for (key, entry) in bodies {
+            crate::channel::error_body::validate(key, entry).map_err(|e| {
+                OrionError::invalid_field(
+                    // Field-pathed to the offending entry, so an author with
+                    // several templates is told which one.
+                    format!("channel.config.response.error_bodies.{key}"),
+                    "INVALID",
+                    e,
+                )
+            })?;
+        }
+    }
     Ok(())
 }
 

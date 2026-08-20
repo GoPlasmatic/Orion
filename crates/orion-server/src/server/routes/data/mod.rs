@@ -266,7 +266,7 @@ pub(crate) async fn dynamic_handler(
     } else {
         guards::Transport::HttpSync
     };
-    let admission = match guards::apply_guards(guards::GuardRequest {
+    let guard_verdict = match guards::apply_guards(guards::GuardRequest {
         transport,
         channel: &channel,
         runtime: &channel_runtime,
@@ -295,8 +295,18 @@ pub(crate) async fn dynamic_handler(
         // caller's patience, not a shared resource.
         max_timeout_ms: None,
     })
-    .await?
+    .await
     {
+        // #269: the one `?` that fourteen guard rejections funnelled through.
+        // A channel may replace the BYTES of a refusal; the platform still
+        // decides the status.
+        Err(err) => {
+            return Ok(shape_guard_rejection(err, &channel, &runtime));
+        }
+        Ok(verdict) => verdict,
+    };
+
+    let admission = match guard_verdict {
         guards::GuardVerdict::CacheHit(body) => {
             let shaped = runtime
                 .parsed_config
@@ -345,6 +355,65 @@ pub(crate) async fn dynamic_handler(
 /// Build the workflow metadata object for a request: the caller-supplied
 /// `metadata` merged with the server-supplied `channel`, `http_method`,
 /// `params`, `query`, and (credential-masked) `headers` keys.
+/// Turn a guard rejection into a response, letting the channel replace the
+/// body when it declares one for that status (#269).
+///
+/// **The error builds its own response and this edits it.** Rendering afresh
+/// would silently drop `retry-after` on a `429` and `WWW-Authenticate` on a
+/// refused bearer token, and would skip `log_internal_detail()` — so wrapping
+/// inherits all of that, and stays correct against future error-owned headers.
+///
+/// Soft failure throughout: a template that no longer renders falls back to
+/// the platform envelope rather than turning an authoring slip into a 500.
+fn shape_guard_rejection(
+    err: OrionError,
+    channel: &str,
+    runtime: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+) -> Response {
+    use crate::channel::error_body;
+
+    let Some(bodies) = runtime
+        .parsed_config
+        .response
+        .as_ref()
+        .and_then(|r| r.error_bodies.as_ref())
+    else {
+        return err.into_response();
+    };
+
+    let (status, code, message) = err.response_parts();
+    let Some(entry) = error_body::lookup(bodies, status.as_u16()) else {
+        return err.into_response();
+    };
+    let ctx = error_body::RenderContext {
+        status: status.as_u16(),
+        code,
+        message: &message,
+        channel,
+    };
+    let Some(rendered) = error_body::render(&entry.body, &ctx) else {
+        return err.into_response();
+    };
+    let content_type = entry.content_type.as_deref().unwrap_or("application/json");
+    let Ok(content_type) = axum::http::HeaderValue::from_str(content_type) else {
+        return err.into_response();
+    };
+
+    // Build the real response first — metrics and trace annotations have
+    // already fired inside the guard, and the headers above ride on this — then
+    // swap only the body and its content type.
+    let mut response = err.into_response();
+    response
+        .headers_mut()
+        .insert(axum::http::header::CONTENT_TYPE, content_type);
+    *response.body_mut() = axum::body::Body::from(rendered);
+    // The platform envelope's length no longer applies.
+    response
+        .headers_mut()
+        .remove(axum::http::header::CONTENT_LENGTH);
+    response
+}
+
 fn build_request_metadata(
     req_metadata: &Value,
     channel: &str,

@@ -17,7 +17,7 @@ All `config` keys are optional. An empty `{}` is valid: the channel then runs wi
 | [`deduplication`](#deduplication) | Idempotency-key replay protection. |
 | [`cache`](#response-caching) | Serve repeated identical requests from a response cache. |
 | [`request`](#request-body) | How the HTTP request body becomes `data` and `metadata`. |
-| [`response`](#response-shaping) | Standard envelope, or workflow-controlled status, headers, and body. |
+| [`response`](#response-shaping) | Standard envelope, or workflow-controlled status, headers, and body — and [per-status guard-rejection bodies](#error-bodies). |
 | [`validation_logic`](#validation) | JSONLogic predicate; a falsy result rejects the request with `400`. |
 | [`timeout_ms`](#timeouts) | Deadline on workflow execution. |
 | [`origin_allow_list`](#cors--origins) | Server-side `Origin` header check. |
@@ -412,6 +412,49 @@ Two further limits worth knowing:
 - **`rate_limit.key_logic` still cannot see cookies.** Its context is `{client_ip, channel, headers}`, and `cookie` is not among the readable headers. Per-cookie rate limiting stays out of reach.
 
 `channel_call` propagates metadata verbatim, so an allowlisted cookie reaches sub-channels — the same way verified claims do.
+
+## Error bodies
+
+Every ingress guard rejection answers with the platform envelope `{"error": {"code", "message", "request_id"}}`. `response.error_bodies` lets a channel replace those **bytes** — for a migrated API whose deployed clients parse a different shape. **The platform still decides the status.**
+
+```json
+{
+  "config": {
+    "response": {
+      "error_bodies": {
+        "default": { "body": "{\"errorCode\":\"{status}\",\"message\":\"{message}\"}" },
+        "401": { "body": "{\"status\":401,\"error\":\"SESSION_EXPIRED\",\"message\":\"{message}\"}" },
+        "429": { "body": "…", "content_type": "application/json" }
+      }
+    }
+  }
+}
+```
+
+Keys are HTTP statuses (`400`–`599`) plus an optional `"default"`. `error_bodies` is **independent of `mode`** — an `envelope` channel can use it, since the two settings answer different questions and `mode` covers only the success path.
+
+| Placeholder | Value |
+|---|---|
+| `{status}` / `{code}` | The status and the stable error code |
+| `{message}` | The platform's message — already redacted, since it comes from the same chokepoint the envelope uses |
+| `{request_id}` | The correlation id the envelope carries |
+| `{channel}` | The resolved channel name |
+| `{timestamp}` | RFC 3339, milliseconds, UTC |
+
+A placeholder is `{` + a lowercase identifier + `}` and nothing else, so ordinary JSON braces need no escaping; write `{{` and `}}` for a literal brace pair. An **unknown** placeholder is refused at authoring time rather than shipped as a literal — a misspelled `{mesage}` is a body that would be wrong forever.
+
+Applies to the fourteen ingress guard rejections — rate limit (`429`, `503`), auth (`401`, `403`), origin (`403`), validation (`400`), dedup (`409`, `503`) and backpressure (`503`) — on both the sync and `/async` paths, which run the same guards.
+
+**Not shapeable:** `413` (produced by the body extractor before any channel is known), the global rate-limit `429`, CORS preflights, and pre-resolution rejections (`404`, `415`, malformed JSON). Post-guard errors (`504`, `500`) are out of scope for now.
+
+> [!IMPORTANT]
+> **No cause-selectable bodies.** Keying is by status, never by *why* a request was refused. A uniform `401` is an anti-oracle: the response never reveals whether the header was missing, the key was wrong, the signature was malformed or the timestamp was stale. Keying by cause would rebuild exactly that credential oracle. Status is also the honest key — two rejections already share `RATE_LIMITED` and three share `SERVICE_UNAVAILABLE`.
+
+Three further guarantees:
+
+- **Error-owned headers survive.** `retry-after` on a `429` and `WWW-Authenticate` on a refused token are attached by the error itself and are preserved when the body is replaced.
+- **Metrics and traces are unaffected.** Rejection counters fire before the response is built, so an operator loses no visibility when a channel changes its bytes.
+- **Soft failure.** A template that no longer renders falls back to the platform envelope rather than 500ing — a cosmetic authoring slip must not become an outage. Templates are capped at 4 KiB so a refusal cannot become an amplification primitive, and there is no JSONLogic: there is no engine at guard time, and evaluating expressions over attacker-influenced input on the cheapest-must-be path would be new attack surface for no gain.
 
 ## Response shaping
 

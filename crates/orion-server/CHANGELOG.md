@@ -106,6 +106,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **Channel `response.error_bodies`** ([#269]) — per-status replacement bodies
+  for ingress guard rejections, for migrating an API whose deployed clients
+  parse a different error shape and cannot be changed.
+
+  It also finishes a job `response.mode = "shaped"` started. A shaped channel
+  already replaces the envelope on the success path, including a `200`
+  carrying task errors — but any `OrionError` returns `Err` from the handler
+  and never reached shaping, so a shaped channel spoke its own dialect for a
+  `200` and Orion's for a `401`. Nine response-shaping tests existed and none
+  covered a guard rejection.
+
+  **The platform still decides the status; the channel decides the bytes.**
+  Keyed by HTTP status (plus an optional `"default"`), never by rejection
+  *cause* — a uniform `401` is an anti-oracle, and keying by cause would
+  rebuild exactly the credential oracle it exists to prevent. Placeholders are
+  a closed set (`{status}`, `{code}`, `{message}`, `{request_id}`,
+  `{channel}`, `{timestamp}`), all already on the wire, and an unknown one is
+  refused at authoring time rather than shipped as a literal. `details` is
+  deliberately absent.
+
+  Error-owned headers survive the swap — `retry-after` on a `429`,
+  `WWW-Authenticate` on a refused token — because the error builds its own
+  response and only the body is replaced. Rejection metrics fire before the
+  response is built, so an operator loses no visibility. An unrenderable
+  template falls back to the platform envelope rather than 500ing, templates
+  are capped at 4 KiB, and there is no JSONLogic: there is no engine at guard
+  time, and evaluating expressions over attacker-influenced input on the
+  cheapest-must-be path would be new attack surface for no gain.
+
 - **Channel `request.cookies_to_metadata`** ([#270]) — an opt-in allowlist
   copying named request cookies to `metadata.cookies.*`.
 
@@ -264,6 +293,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced a config the server refused. Corrected, and the remaining valid keys
   listed. ([#271])
 
+[#269]: https://github.com/GoPlasmatic/Orion/issues/269
 [#270]: https://github.com/GoPlasmatic/Orion/issues/270
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#272]: https://github.com/GoPlasmatic/Orion/issues/272
