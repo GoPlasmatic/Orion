@@ -150,6 +150,10 @@ const READABLE_KEYS: &[&str] = &[
     "scopes",
     "audience",
     "resource",
+    // A tenant identifier, not a credential — masking it would make admin
+    // reads and package diffs useless for the one field that says which Zoom
+    // account a connector talks to.
+    "account_id",
     "refresh_margin_secs",
     // limits & timeouts
     "max_connections",
@@ -892,6 +896,21 @@ mod tests {
         assert_eq!(auth["audience"], "https://api.example.com");
         assert_eq!(auth["refresh_margin_secs"], 60);
 
+        // #273: the Zoom account id is a tenant identifier, not a credential.
+        // Masking it would leave admin reads and package diffs unable to say
+        // which account a connector talks to.
+        let zoom = r#"{"type":"http","url":"https://api.zoom.us/v2","auth":{
+            "type":"oauth2","grant":"account_credentials",
+            "token_url":"https://zoom.us/oauth/token",
+            "client_id":"zc","client_secret":"zs","account_id":"zoom-acct-1"}}"#;
+        let val: serde_json::Value =
+            serde_json::from_str(&mask_connector_secrets(zoom)).expect("test");
+        assert_eq!(val["auth"]["client_secret"], MASK);
+        assert_eq!(
+            val["auth"]["account_id"], "zoom-acct-1",
+            "account_id is an identifier, and must stay readable"
+        );
+
         let with_refs = r#"{"type":"http","url":"https://x","auth":{
             "type":"oauth2","grant":"client_credentials","token_url":"https://idp/t",
             "client_id":"env://CID","client_secret":"env://CSECRET"}}"#;
@@ -1529,6 +1548,10 @@ mod tests {
         for sample in [
             r#"{"type":"http","url":"https://x"}"#,
             r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"refresh_token","token_url":"https://idp/t","client_id":"c","client_secret":"s","refresh_token":"rt","scopes":["a"],"audience":"aud","resource":"res"}}"#,
+            // `account_id` needs its own sample row: it is `Option` +
+            // `skip_serializing_if`, so it never appears in the row above and
+            // this guard would NOT have caught a masked-by-accident field.
+            r#"{"type":"http","url":"https://x","auth":{"type":"oauth2","grant":"account_credentials","token_url":"https://idp/t","client_id":"c","client_secret":"s","account_id":"acct-1"}}"#,
             r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
             r#"{"type":"db","connection_string":"postgres://h/db"}"#,
             r#"{"type":"cache","backend":"memory"}"#,

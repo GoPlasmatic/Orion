@@ -282,6 +282,10 @@ impl OAuthTokenManager {
                 self.acquire_client_credentials(deps, connector, cfg, allow_private_urls, &mut st)
                     .await
             }
+            OAuth2Grant::AccountCredentials => {
+                self.acquire_account_credentials(deps, connector, cfg, allow_private_urls, &mut st)
+                    .await
+            }
             OAuth2Grant::RefreshToken => {
                 self.refresh_flow(
                     deps,
@@ -343,6 +347,49 @@ impl OAuthTokenManager {
         }
         if let Some(r) = &cfg.resource {
             params.push(("resource", r.clone()));
+        }
+        for (k, v) in &cfg.extra_params {
+            params.push((k.as_str(), v.clone()));
+        }
+        let response = request_token(deps, connector, cfg, allow_private_urls, params).await?;
+        Ok(cache_token(st, &response).access_token)
+    }
+
+    /// Zoom Server-to-Server OAuth: `grant_type=account_credentials` plus the
+    /// account id, with Basic client auth (Zoom's expectation, and Orion's
+    /// default).
+    ///
+    /// Everything below `acquire_*` is grant-agnostic, so this inherits with
+    /// no new code: lazy acquisition, the per-connector `ArcSwap` fast path,
+    /// early refresh, single-flight, the retryable/non-retryable failure split
+    /// and its negative cache, 401-from-API self-healing, the token-request
+    /// metric, and the admin connector probe.
+    ///
+    /// It deliberately does **not** inherit rotation persistence or the
+    /// cluster job lease — those live only in `refresh_flow`. Zoom re-acquires
+    /// from static credentials, so there is no `connector_oauth_state` row and
+    /// no lease to take: correct by construction, not by omission.
+    async fn acquire_account_credentials(
+        &self,
+        deps: &OAuthRuntimeDeps,
+        connector: &str,
+        cfg: &OAuth2Config,
+        allow_private_urls: bool,
+        st: &mut EntryState,
+    ) -> Result<String, OAuthError> {
+        let mut params: Vec<(&str, String)> =
+            vec![("grant_type", "account_credentials".to_string())];
+        // Validation requires it for this grant, so an absent value here means
+        // a hand-edited row: fail as a non-retryable config error rather than
+        // sending Zoom a request it will reject on every attempt.
+        let Some(account_id) = &cfg.account_id else {
+            return Err(OAuthError::Config(
+                "oauth2 account_credentials requires 'account_id'".to_string(),
+            ));
+        };
+        params.push(("account_id", account_id.clone()));
+        if !cfg.scopes.is_empty() {
+            params.push(("scope", cfg.scopes.join(" ")));
         }
         for (k, v) in &cfg.extra_params {
             params.push((k.as_str(), v.clone()));
@@ -812,6 +859,7 @@ mod tests {
             scopes: vec!["api.read".to_string(), "api.write".to_string()],
             audience: Some("https://api.example.com".to_string()),
             resource: None,
+            account_id: None,
             extra_params: HashMap::new(),
             refresh_margin_secs: 1,
         }
@@ -823,6 +871,18 @@ mod tests {
             refresh_token: Some(seed.to_string()),
             scopes: Vec::new(),
             audience: None,
+            ..cc_config(token_url)
+        }
+    }
+
+    /// Zoom Server-to-Server: the account id replaces the audience, and there
+    /// is no seed to carry.
+    fn ac_config(token_url: &str) -> OAuth2Config {
+        OAuth2Config {
+            grant: "account_credentials".to_string(),
+            account_id: Some("zoom-acct-1".to_string()),
+            audience: None,
+            scopes: Vec::new(),
             ..cc_config(token_url)
         }
     }
@@ -863,6 +923,93 @@ mod tests {
             get("client_id"),
             None,
             "basic auth puts nothing in the body"
+        );
+    }
+
+    // ---- account_credentials (Zoom Server-to-Server) ----
+
+    /// #273: the grant's whole request shape —
+    /// `grant_type=account_credentials`, the account id, and Basic client
+    /// auth, which is what Zoom expects and Orion's default.
+    #[tokio::test]
+    async fn account_credentials_sends_the_zoom_request_shape() {
+        let idp = IdpState::ok(json!({
+            "access_token": "zoom-tok", "token_type": "Bearer", "expires_in": 3600
+        }));
+        let url = fake_idp(Arc::clone(&idp)).await;
+        let manager = manager_with(Arc::new(StubConnectorRepo::with(vec![])));
+        let cfg = ac_config(&url);
+
+        let token = manager
+            .access_token("zoom", &cfg, true)
+            .await
+            .expect("token");
+        assert_eq!(token, "zoom-tok");
+
+        assert!(
+            *idp.last_had_basic.lock().expect("test"),
+            "Zoom authenticates the client with HTTP Basic"
+        );
+        let form = idp.last_form.lock().expect("test").clone();
+        let get = |k: &str| {
+            form.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("grant_type").as_deref(), Some("account_credentials"));
+        assert_eq!(get("account_id").as_deref(), Some("zoom-acct-1"));
+        assert_eq!(
+            get("client_id"),
+            None,
+            "basic auth puts nothing in the body"
+        );
+    }
+
+    /// The grant inherits the cache for free — it goes through the same
+    /// `cache_token` path as `client_credentials`, with no rotation state.
+    #[tokio::test]
+    async fn an_account_credentials_token_is_cached_like_any_other() {
+        let idp = IdpState::ok(json!({
+            "access_token": "zoom-tok", "expires_in": 3600
+        }));
+        let url = fake_idp(Arc::clone(&idp)).await;
+        let repo = Arc::new(StubConnectorRepo::with(vec![]));
+        let manager = manager_with(Arc::clone(&repo) as Arc<StubConnectorRepo>);
+        let cfg = ac_config(&url);
+
+        for _ in 0..5 {
+            assert_eq!(
+                manager
+                    .access_token("zoom", &cfg, true)
+                    .await
+                    .expect("token"),
+                "zoom-tok"
+            );
+        }
+        assert_eq!(idp.hits(), 1, "one acquisition serves the cache window");
+        assert!(
+            repo.get_oauth_state("zoom").await.expect("repo").is_none(),
+            "re-acquired from static credentials, so there is no rotation state \
+             to persist and no cluster lease to take"
+        );
+    }
+
+    /// ⚠️ The upgrade hazard, pinned. `fingerprint` hashes the whole
+    /// serialized `OAuth2Config`, and a persisted state row is adopted only on
+    /// a fingerprint match. If `account_id` serialized as `"account_id": null`
+    /// when unset, **every existing refresh_token connector** would change
+    /// fingerprint on upgrade, discard its persisted state and fall back to
+    /// the config seed — which, after any prior rotation, is a spent refresh
+    /// token. `skip_serializing_if` is what prevents that, and this test is
+    /// what stops someone "tidying" it away.
+    #[test]
+    fn an_unset_account_id_does_not_move_an_existing_fingerprint() {
+        let cfg = rt_config("https://idp.example/token", "rt-seed");
+        let serialized = serde_json::to_string(&cfg).expect("json");
+        assert!(
+            !serialized.contains("account_id"),
+            "an unset account_id must not serialize at all, or it changes the \
+             fingerprint of every stored connector: {serialized}"
         );
     }
 

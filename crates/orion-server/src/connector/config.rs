@@ -302,8 +302,8 @@ pub enum AuthConfig {
 /// auth type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuth2Config {
-    /// `"client_credentials"` or `"refresh_token"` — parsed by
-    /// [`OAuth2Grant::parse`], validated at authoring time.
+    /// `"client_credentials"`, `"refresh_token"` or `"account_credentials"` —
+    /// parsed by [`OAuth2Grant::parse`], validated at authoring time.
     pub grant: String,
     /// The IdP's token endpoint. Gets the same SSRF validation as the
     /// connector's own endpoint (`allow_private_urls` opts out).
@@ -329,6 +329,22 @@ pub struct OAuth2Config {
     /// `resource` token-request parameter (RFC 8707 / Azure-style IdPs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
+    /// `account_id` token-request parameter, required by the
+    /// `account_credentials` grant (Zoom Server-to-Server OAuth).
+    ///
+    /// A dedicated field rather than an `extra_params` entry for three
+    /// reasons: `extra_params` values mask unconditionally, and an account id
+    /// is a **tenant identifier, not a credential**, so masking it makes admin
+    /// reads and package diffs useless for it; a dedicated field gets the
+    /// grant-conditional required/refused matrix that `refresh_token` has, so
+    /// a typo is an authoring 400 rather than a runtime provider rejection;
+    /// and secret references cost nothing either way, since resolution is a
+    /// generic tree walk over every string.
+    ///
+    /// `skip_serializing_if` is load-bearing, not style — see the note on
+    /// [`OAuth2Grant::AccountCredentials`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     /// Escape hatch for provider quirks: extra form parameters on the token
     /// request. Reserved parameter names are refused at authoring time.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -352,15 +368,34 @@ fn default_refresh_margin_secs() -> u64 {
 pub enum OAuth2Grant {
     ClientCredentials,
     RefreshToken,
+    /// Zoom's Server-to-Server OAuth: `grant_type=account_credentials` plus an
+    /// `account_id`, with Basic client auth. The grant Zoom moved every
+    /// server-side integration to when it retired JWT apps in 2023.
+    ///
+    /// Like `client_credentials` it re-acquires from static credentials, so it
+    /// deliberately gets no rotation persistence and no cluster job lease —
+    /// there is no `connector_oauth_state` row to keep.
+    ///
+    /// ⚠️ **Upgrade hazard, for whoever adds the next grant field.**
+    /// [`fingerprint`] is a hash of the whole serialized [`OAuth2Config`], and
+    /// a persisted state row is adopted only when the fingerprint matches. A
+    /// new field that serializes as `null` when unset changes the fingerprint
+    /// of **every existing `refresh_token` connector** on upgrade, discarding
+    /// its persisted state and falling back to the config seed — which, after
+    /// any prior rotation, is a spent refresh token. Hence
+    /// `skip_serializing_if = "Option::is_none"` on `account_id`, and on
+    /// anything added beside it.
+    AccountCredentials,
 }
 
 impl OAuth2Grant {
-    pub const VALUES: &'static str = "client_credentials/refresh_token";
+    pub const VALUES: &'static str = "client_credentials/refresh_token/account_credentials";
 
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "client_credentials" => OAuth2Grant::ClientCredentials,
             "refresh_token" => OAuth2Grant::RefreshToken,
+            "account_credentials" => OAuth2Grant::AccountCredentials,
             _ => return None,
         })
     }

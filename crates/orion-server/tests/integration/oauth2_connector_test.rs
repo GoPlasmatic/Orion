@@ -31,7 +31,12 @@ async fn start_idp(idp: Arc<Idp>) -> String {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.starts_with("Basic "));
-        let ok_grant = body.contains("grant_type=client_credentials");
+        // Both static-credential grants are accepted, and each must carry the
+        // parameters that make it addressable — so a request missing the Zoom
+        // `account_id` is refused here rather than quietly succeeding.
+        let ok_grant = body.contains("grant_type=client_credentials")
+            || (body.contains("grant_type=account_credentials")
+                && body.contains("account_id=zoom-acct-1"));
         if !(ok_auth && ok_grant) {
             return (
                 StatusCode::BAD_REQUEST,
@@ -110,6 +115,86 @@ fn oauth2_connector(name: &str, api_url: &str, token_url: &str) -> serde_json::V
             }
         }
     })
+}
+
+/// #273: the same connector shape for Zoom Server-to-Server OAuth. The fake
+/// IdP refuses the request unless it carries both
+/// `grant_type=account_credentials` and the account id, so reaching the API at
+/// all proves the wire shape.
+fn zoom_connector(name: &str, api_url: &str, token_url: &str) -> serde_json::Value {
+    json!({
+        "id": name,
+        "name": name,
+        "connector_type": "http",
+        "config": {
+            "type": "http",
+            "url": api_url,
+            "method": "GET",
+            "allow_private_urls": true,
+            "auth": {
+                "type": "oauth2",
+                "grant": "account_credentials",
+                "token_url": token_url,
+                "client_id": "zoom-client",
+                "client_secret": "zoom-secret",
+                "account_id": "zoom-acct-1"
+            }
+        }
+    })
+}
+
+/// #273: end to end over the grant Zoom moved every server-side integration
+/// to. No workaround existed — `http_call` headers are static, there is no
+/// `headers_logic` in either tree, and `apply_auth`'s OAuth2 arm deliberately
+/// sends nothing, so a workflow could fetch a Zoom token but never use it.
+#[tokio::test]
+async fn an_account_credentials_connector_acquires_and_applies_its_token() {
+    let app = common::test_app().await;
+    let idp = Arc::new(Idp {
+        hits: AtomicU64::new(0),
+    });
+    let token_url = start_idp(Arc::clone(&idp)).await;
+    let api_url = start_api().await;
+
+    common::create_connector(&app, zoom_connector("zoom", &api_url, &token_url)).await;
+    common::create_and_activate_channel(
+        &app,
+        "zoom-ch",
+        common::workflow_with_tasks(
+            "FetchMeetings",
+            json!([{
+                "id": "t1", "name": "Fetch", "function": { "name": "http_call", "input": {
+                    "connector": "zoom",
+                    "method": "GET",
+                    "response_path": "data.meetings"
+                } }
+            }]),
+        ),
+    )
+    .await;
+
+    for _ in 0..3 {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/data/zoom-ch",
+                Some(json!({"data": {}})),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = common::body_json(resp).await;
+        assert_eq!(
+            body["data"]["meetings"]["orders"][0]["id"], 7,
+            "the API answered through the managed token: {body}"
+        );
+    }
+    assert_eq!(
+        idp.hits.load(Ordering::SeqCst),
+        1,
+        "the grant inherits caching for free — three calls, one acquisition"
+    );
 }
 
 /// The headline path: a workflow calls a partner API through an oauth2

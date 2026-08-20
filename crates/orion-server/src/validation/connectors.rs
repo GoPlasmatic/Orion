@@ -224,10 +224,43 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
                     .to_string(),
             ));
         }
-        OAuth2Grant::ClientCredentials if o.refresh_token.is_some() => {
+        // Both re-acquire from static credentials, so neither can ever read a
+        // seed. Widened from `ClientCredentials` alone when
+        // `account_credentials` landed — the old `_ => {}` catch-all would
+        // have accepted a seed the new grant silently ignores, against the
+        // rule stated two lines above.
+        OAuth2Grant::ClientCredentials | OAuth2Grant::AccountCredentials
+            if o.refresh_token.is_some() =>
+        {
+            return Err(OrionError::validation(format!(
+                "'refresh_token' does not apply to the {} grant",
+                o.grant
+            )));
+        }
+        _ => {}
+    }
+
+    // Grant-conditional, same rule as the seed above: `account_id` is what
+    // makes an account_credentials request addressable, and it is inert on
+    // every other grant.
+    let has_account_id = o
+        .account_id
+        .as_deref()
+        .is_some_and(|a| !a.trim().is_empty());
+    match grant {
+        OAuth2Grant::AccountCredentials if !has_account_id => {
             return Err(OrionError::validation(
-                "'refresh_token' does not apply to the client_credentials grant".to_string(),
+                "the account_credentials grant requires a non-empty 'account_id' \
+                 (Zoom Server-to-Server OAuth)"
+                    .to_string(),
             ));
+        }
+        OAuth2Grant::AccountCredentials => {}
+        _ if o.account_id.is_some() => {
+            return Err(OrionError::validation(format!(
+                "'account_id' only applies to the account_credentials grant, not {}",
+                o.grant
+            )));
         }
         _ => {}
     }
@@ -249,6 +282,7 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
         "scope",
         "audience",
         "resource",
+        "account_id",
     ];
     if let Some(reserved) = o
         .extra_params
@@ -433,6 +467,15 @@ mod tests {
         }));
         assert!(validate_connector_config(ConnectorType::Http, &refresh_ok).is_ok());
 
+        // #273: Zoom Server-to-Server, the shape the grant exists for.
+        let account_ok = base(json!({
+            "type": "oauth2", "grant": "account_credentials",
+            "token_url": "https://zoom.us/oauth/token",
+            "client_id": "env://ZOOM_CLIENT_ID", "client_secret": "env://ZOOM_CLIENT_SECRET",
+            "account_id": "env://ZOOM_ACCOUNT_ID"
+        }));
+        assert!(validate_connector_config(ConnectorType::Http, &account_ok).is_ok());
+
         for (auth, needle) in [
             // ROPC and everything else outside the value set.
             (
@@ -478,6 +521,42 @@ mod tests {
                     "token_url": "https://idp/t", "client_id": "c", "client_secret": "s",
                     "extra_params": { "grant_type": "sneaky" } }),
                 "grant_type",
+            ),
+            // #273, the account_credentials matrix. Required by its own grant,
+            // refused on every other, and not smuggleable through the quirk
+            // escape hatch.
+            (
+                json!({ "type": "oauth2", "grant": "account_credentials",
+                    "token_url": "https://zoom.us/oauth/token",
+                    "client_id": "c", "client_secret": "s" }),
+                "requires a non-empty 'account_id'",
+            ),
+            (
+                json!({ "type": "oauth2", "grant": "account_credentials", "account_id": "  ",
+                    "token_url": "https://zoom.us/oauth/token",
+                    "client_id": "c", "client_secret": "s" }),
+                "requires a non-empty 'account_id'",
+            ),
+            (
+                json!({ "type": "oauth2", "grant": "client_credentials", "account_id": "acct",
+                    "token_url": "https://idp/t", "client_id": "c", "client_secret": "s" }),
+                "only applies to the account_credentials grant",
+            ),
+            // The widened catch-all: this used to fall through `_ => {}` and
+            // be accepted, leaving a seed the grant can never read.
+            (
+                json!({ "type": "oauth2", "grant": "account_credentials",
+                    "account_id": "acct", "refresh_token": "rt",
+                    "token_url": "https://zoom.us/oauth/token",
+                    "client_id": "c", "client_secret": "s" }),
+                "does not apply",
+            ),
+            (
+                json!({ "type": "oauth2", "grant": "account_credentials", "account_id": "acct",
+                    "token_url": "https://zoom.us/oauth/token",
+                    "client_id": "c", "client_secret": "s",
+                    "extra_params": { "account_id": "other" } }),
+                "account_id",
             ),
         ] {
             let err = validate_connector_config(ConnectorType::Http, &base(auth.clone()))
