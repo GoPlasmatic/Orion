@@ -195,7 +195,7 @@ pub fn render(template: &str, ctx: &RenderContext<'_>) -> Option<String> {
 }
 
 /// Pick the template for a status: the exact key, else `"default"`.
-pub fn lookup<'a>(bodies: &'a ErrorBodies, status: u16) -> Option<&'a ChannelErrorBody> {
+pub fn lookup(bodies: &ErrorBodies, status: u16) -> Option<&ChannelErrorBody> {
     bodies
         .get(&status.to_string())
         .or_else(|| bodies.get("default"))
@@ -388,8 +388,9 @@ mod tests {
         );
         // Both a missing credential and a bad signature arrive as 401
         // UNAUTHORIZED, so both select the same entry and render identically.
-        let a = render(&lookup(&bodies, 401).unwrap().body, &ctx()).unwrap();
-        let b = render(&lookup(&bodies, 401).unwrap().body, &ctx()).unwrap();
+        let entry = lookup(&bodies, 401).expect("the 401 entry");
+        let a = render(&entry.body, &ctx()).expect("renders");
+        let b = render(&entry.body, &ctx()).expect("renders");
         assert_eq!(a, b);
     }
 }

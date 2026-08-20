@@ -398,7 +398,7 @@ mod tests {
                     .header("Access-Control-Request-Method", "GET")
                     .header("Access-Control-Request-Headers", request_headers)
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("request"),
             )
             .await
             .expect("preflight");
@@ -420,7 +420,7 @@ mod tests {
                     .uri("/x")
                     .header("Origin", origin)
                     .body(Body::empty())
-                    .unwrap(),
+                    .expect("request"),
             )
             .await
             .expect("request");
