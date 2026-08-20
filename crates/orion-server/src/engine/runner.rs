@@ -123,19 +123,33 @@ where
 /// - `changes` — the per-task diff, which is what `task_details` is *for*
 ///   ("inspect intermediate inputs/outputs for each task"). Correctly attributed
 ///   on a `Skip`, unlike reading `audit_trail.last()`.
-/// - `redact_paths: ["metadata.headers"]` — a pruning clone, so the header map
-///   is never cloned into a step in the first place. `context.metadata` is
-///   stripped from `result_json` on read (S14) but `task_trace_json` was
-///   returned verbatim, and every step inside it held a full `Message` clone
-///   carrying the same headers. Only four header names are masked at ingress,
-///   so everything else was readable through that hole. Forward-only: rows
-///   already on disk still need the read-side strip.
+/// - `redact_paths: ["metadata.headers", "metadata.cookies"]` — a pruning
+///   clone, so neither map is cloned into a step in the first place.
+///   `context.metadata` is stripped from `result_json` on read (S14) but
+///   `task_trace_json` was returned verbatim, and every step inside it held a
+///   full `Message` clone carrying the same headers. Only four header names are
+///   masked at ingress, so everything else was readable through that hole.
+///   Forward-only: rows already on disk still need the read-side strip.
+///
+///   This is a **path list, not a metadata-wide prune**, so a new metadata key
+///   is covered only by being named here — which is why `metadata.cookies`
+///   (#270) had to be added when the cookie allowlist landed, or an
+///   allowlisted value would be cloned into every step snapshot and persisted
+///   for any channel with `tracing.task_details = true`.
+///
+///   Note what this defends: the row **at rest**. The trace read already
+///   strips `context.metadata` whole-message and per-step, so a missing entry
+///   here does not surface through the API — which is exactly why it needs
+///   stating rather than testing end-to-end.
 fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::TraceOptions {
     dataflow_rs::TraceOptions {
         changes: true,
         snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
         max_snapshot_bytes,
-        redact_paths: vec!["metadata.headers".to_string()],
+        redact_paths: vec![
+            "metadata.headers".to_string(),
+            "metadata.cookies".to_string(),
+        ],
         ..Default::default()
     }
 }

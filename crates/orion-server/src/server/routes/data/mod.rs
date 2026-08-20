@@ -218,11 +218,10 @@ pub(crate) async fn dynamic_handler(
     // config-less — serving it here would apply none of its guards.
     let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
 
-    let body_mode = channel_runtime
+    let request_config = channel_runtime
         .as_ref()
-        .and_then(|rt| rt.parsed_config.request.as_ref())
-        .map(|r| r.body_mode)
-        .unwrap_or_default();
+        .and_then(|rt| rt.parsed_config.request.as_ref());
+    let body_mode = request_config.map(|r| r.body_mode).unwrap_or_default();
     let req = ProcessRequest::classify(parsed_body, body_mode);
 
     let metadata = build_request_metadata(
@@ -232,6 +231,7 @@ pub(crate) async fn dynamic_handler(
         &route_params,
         &query_params,
         &headers,
+        request_config.and_then(|r| r.cookies_to_metadata.as_deref()),
     );
     // A name that is not in the registry is not an active channel. Without
     // this check the single-segment fallback above accepted ANY name and ran
@@ -352,6 +352,7 @@ fn build_request_metadata(
     route_params: &std::collections::HashMap<String, String>,
     query_params: &std::collections::HashMap<String, String>,
     headers: &axum::http::HeaderMap,
+    cookie_allowlist: Option<&[String]>,
 ) -> Value {
     // Build metadata with all request context available for validation_logic
     let mut metadata = if req_metadata.is_object() {
@@ -359,6 +360,31 @@ fn build_request_metadata(
     } else {
         json!({})
     };
+    // #270: `metadata.cookies` is platform-reserved — stamped from the
+    // channel's allowlist, and STRIPPED when there is none. This function uses
+    // the caller's `req.metadata` as its base, and `params`/`query` are stamped
+    // only when non-empty, so a caller-supplied value for those survives. The
+    // same shape for cookies would be session forgery, given that the
+    // motivating use is matching the value against stored session records.
+    // Follow `channel` and `headers`, which are stamped unconditionally.
+    match cookie_allowlist {
+        Some(names) => {
+            let jar = headers
+                .get_all(axum::http::header::COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect::<Vec<_>>();
+            let found = crate::channel::cookies::collect(jar, names);
+            if found.is_empty() {
+                metadata.as_object_mut().map(|m| m.remove("cookies"));
+            } else {
+                metadata["cookies"] = Value::Object(found);
+            }
+        }
+        None => {
+            metadata.as_object_mut().map(|m| m.remove("cookies"));
+        }
+    }
     // F4: stamp the resolved channel name (overriding any caller-supplied
     // value) so circuit-breaker keys and connector metrics are labelled
     // `channel:connector` instead of `unknown:connector`.

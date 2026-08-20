@@ -424,6 +424,52 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
     if let Some(ref cache) = parsed.cache {
         validate_cache_key_fields(cache)?;
     }
+    if let Some(ref request) = parsed.request {
+        validate_cookies_to_metadata(request)?;
+    }
+    Ok(())
+}
+
+/// Structurally check `request.cookies_to_metadata`.
+///
+/// Worth checking even though `claims_to_metadata` has no structural
+/// validation at all: a name carrying `;`, `=` or whitespace can never match a
+/// real cookie, so a channel carrying one silently never populates. A typo
+/// here is an invisibly dead feature rather than a slightly wider claim set —
+/// and unlike `body_mode`, serde cannot catch it.
+fn validate_cookies_to_metadata(
+    request: &crate::channel::ChannelRequestConfig,
+) -> Result<(), OrionError> {
+    let Some(ref names) = request.cookies_to_metadata else {
+        return Ok(());
+    };
+    if names.is_empty() {
+        return Err(OrionError::invalid_field(
+            "channel.config.request.cookies_to_metadata",
+            "INVALID",
+            "cookies_to_metadata must not be empty; omit the field to expose nothing".to_string(),
+        ));
+    }
+    for name in names {
+        if name.trim().is_empty() {
+            return Err(OrionError::invalid_field(
+                "channel.config.request.cookies_to_metadata",
+                "INVALID",
+                "cookies_to_metadata entries must not be blank".to_string(),
+            ));
+        }
+        if name.contains(';') || name.contains('=') || name.chars().any(char::is_whitespace) {
+            return Err(OrionError::invalid_field(
+                "channel.config.request.cookies_to_metadata",
+                "INVALID",
+                format!(
+                    "cookies_to_metadata entry '{name}' cannot name a real cookie — \
+                     ';', '=' and whitespace are jar delimiters, so this entry would \
+                     never populate"
+                ),
+            ));
+        }
+    }
     Ok(())
 }
 

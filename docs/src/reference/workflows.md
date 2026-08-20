@@ -126,9 +126,12 @@ supplies one, then stamps its own keys on top:
 | `params` | only when non-empty | Path parameters extracted by the REST route pattern |
 | `query` | only when non-empty | Query-string parameters |
 | `headers` | always | Every request header, names lowercased. Values of `authorization`, `cookie`, `proxy-authorization`, and `x-api-key` are masked |
+| `cookies` | always, when the channel opts in | The cookies named by [`request.cookies_to_metadata`](./channel-config.md#reading-request-cookies). Absent block → the key is stripped, so a caller cannot supply it |
 
 Orion stamps nothing else on the HTTP path: no client IP, no request path, no
-trace ID.
+trace ID. A channel in
+[`request.body_mode = "payload"`](./channel-config.md#request-body) takes no
+caller `metadata` at all — the object is server-stamped keys only.
 
 **Kafka.** A consumed record stamps:
 

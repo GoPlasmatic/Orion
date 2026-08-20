@@ -358,6 +358,26 @@ pub struct ChannelRequestConfig {
     /// How the parsed body is classified. See [`BodyMode`].
     #[serde(default)]
     pub body_mode: BodyMode,
+
+    /// Named request cookies copied to `metadata.cookies.*` (#270).
+    ///
+    /// Absent — the default, and every channel today — exposes nothing. The
+    /// raw `Cookie` header stays masked to `"******"` either way; this
+    /// allowlist is additive and never unmasks it.
+    ///
+    /// **Scope: opaque identifiers a workflow matches against its own stored
+    /// state** — a browser-pinning `browser_uuid`, a first-party visitor id, a
+    /// bucket cookie. For a session token, JWT or CSRF token use
+    /// `auth.mode: "jwt"` with `source: {"cookie": …}` instead, where the token
+    /// is consumed at verification rather than persisted.
+    ///
+    /// The default is nothing rather than everything, unlike
+    /// `claims_to_metadata`: those claims are verified and the channel already
+    /// admitted them, whereas a cookie jar is unverified caller input, and
+    /// defaulting to all of it would silently begin persisting every visitor's
+    /// session cookies into the traces of every existing channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cookies_to_metadata: Option<Vec<String>>,
 }
 
 /// Whether a request body is inspected for the Orion envelope.

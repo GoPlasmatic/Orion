@@ -361,13 +361,23 @@ async fn task_trace_steps_do_not_carry_request_headers() {
                 }
             }]
         }),
-        json!({ "tracing": { "task_details": true } }),
+        json!({
+            "tracing": { "task_details": true },
+            // #270: an allowlisted cookie is a second metadata key holding
+            // caller-supplied text. The assertion below is end-to-end cover
+            // that it does not surface; the at-rest half — keeping it out of
+            // the persisted `task_trace_json` — is `redact_paths` in
+            // `engine/runner.rs`, which the read-side strip makes untestable
+            // from here.
+            "request": { "cookies_to_metadata": ["browser_uuid"] }
+        }),
     )
     .await;
 
     // `x-auth-token` is not in CREDENTIAL_HEADERS, so it reaches metadata
     // unmasked — which is exactly why it must not reach a trace read.
     let secret = "sk-not-a-masked-header-name";
+    let cookie_secret = "uuid-must-not-reach-a-trace";
     let mut req = json_request(
         "POST",
         &format!("/api/v1/data/{channel_name}"),
@@ -376,6 +386,10 @@ async fn task_trace_steps_do_not_carry_request_headers() {
     req.headers_mut().insert(
         "x-auth-token",
         axum::http::HeaderValue::from_static("sk-not-a-masked-header-name"),
+    );
+    req.headers_mut().insert(
+        "cookie",
+        axum::http::HeaderValue::from_static("browser_uuid=uuid-must-not-reach-a-trace"),
     );
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -416,5 +430,9 @@ async fn task_trace_steps_do_not_carry_request_headers() {
     assert!(
         !rendered.contains("x-auth-token"),
         "the header map must not appear in any step snapshot: {rendered}"
+    );
+    assert!(
+        !rendered.contains(cookie_secret),
+        "an allowlisted cookie value reached the trace read: {rendered}"
     );
 }

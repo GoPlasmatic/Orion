@@ -106,6 +106,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **Channel `request.cookies_to_metadata`** ([#270]) — an opt-in allowlist
+  copying named request cookies to `metadata.cookies.*`.
+
+  `cookie` is masked to `"******"` before request metadata is built, and that
+  masking is right — the map is persisted verbatim into `traces.result_json`
+  and `trace_dlq.metadata_json`. But the consequence was absolute: **no**
+  cookie value could reach a workflow by any route, so a flow keyed on an
+  opaque browser id — matching the cookie against records the workflow itself
+  stores — was unbuildable end to end. Orion could already emit the
+  `Set-Cookie`; it just could not read the value back.
+
+  Scoped to opaque identifiers a workflow matches against its own state. A
+  session token, JWT or CSRF token still goes through `auth.mode: "jwt"` with
+  `source: {"cookie": …}`, where the token is consumed at verification rather
+  than copied into the context. The raw header stays masked either way, and the
+  default is nothing rather than everything — a cookie jar is unverified caller
+  input, so defaulting to all of it would silently start persisting every
+  visitor's session cookies into the traces of every existing channel.
+
+  `metadata.cookies` is platform-reserved: stamped from the allowlist and
+  **stripped** otherwise, so a caller cannot supply one in an envelope. That
+  matters because `build_request_metadata` uses the caller's `metadata` as its
+  base and `params`/`query` are stamped only when non-empty — the same shape
+  for cookies would have been session forgery.
+
+  Also replaces `JwtSource::Cookie`'s inline parser with one shared RFC 6265
+  implementation, fixing two defects it carried: a quoted value (`name="abc"`,
+  legal per §4.1.1) came back with its quotes, and `name = value` with spaces
+  around the `=` did not match at all.
+
 - **Channel `request.body_mode`** ([#278]) — opt out of envelope detection when
   a request model owns the name `data`.
 
@@ -234,6 +264,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced a config the server refused. Corrected, and the remaining valid keys
   listed. ([#271])
 
+[#270]: https://github.com/GoPlasmatic/Orion/issues/270
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#272]: https://github.com/GoPlasmatic/Orion/issues/272
 [#273]: https://github.com/GoPlasmatic/Orion/issues/273

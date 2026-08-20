@@ -354,6 +354,7 @@ Behaviour:
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `body_mode` | string | no | `"auto"` | `auto` detects the Orion envelope; `payload` takes the parsed body verbatim. |
+| `cookies_to_metadata` | array of strings | no | — | Named request cookies copied to `metadata.cookies.*`. Absent exposes nothing. |
 
 Under `auto`, **an object carrying a top-level `data` or `metadata` key is the envelope** — that key becomes the payload and every sibling field is discarded. Anything else (an array, a scalar, an object without those keys) is the payload as it stands, and an empty body is `{}`.
 
@@ -377,6 +378,40 @@ Three consequences worth knowing before switching a channel:
 
 > [!WARNING]
 > Flipping a **live** channel from `auto` to `payload` changes its wire contract for any caller currently sending a legitimate `{"data": …}` envelope — that envelope becomes the payload, so the workflow starts reading `data.data.*`. It is a config change with the blast radius of a code change.
+
+### Reading request cookies
+
+The `Cookie` header is masked to `"******"` before request metadata is built, along with `authorization`, `proxy-authorization` and `x-api-key` — the metadata map is persisted verbatim into `traces.result_json` and `trace_dlq.metadata_json`, so a plaintext value there is a plaintext credential at rest.
+
+Not every cookie is a credential, though. `cookies_to_metadata` names the ones a workflow may read:
+
+```json
+{
+  "config": {
+    "request": { "cookies_to_metadata": ["browser_uuid"] }
+  }
+}
+```
+
+and then, in any task or in `validation_logic`:
+
+```json
+{ "var": "metadata.cookies.browser_uuid" }
+```
+
+A listed-but-absent cookie is simply not present — never `null`, never an error. The raw `Cookie` header stays masked: this allowlist is additive and never unmasks it. `metadata.cookies` is platform-reserved, stamped from the allowlist and stripped otherwise, so a caller cannot supply it in an envelope.
+
+**Scope it to opaque identifiers a workflow matches against its own stored state** — a browser-pinning id, a first-party visitor id, a bucket cookie. For a session token, JWT or CSRF token use [`auth.mode: "jwt"`](#authentication) with `source: {"cookie": …}` instead, where the token is consumed at verification rather than copied into the context.
+
+> [!WARNING]
+> **Allowlisted values land in `traces.result_json` and `trace_dlq.metadata_json` unmasked.** The read side is covered — `GET /admin/traces/{id}` strips all of `context.metadata` — but the row on disk is not. Note also that `tracing.mode = "off"` suppresses only *sync* persistence: on an `/async` channel the row is still written before the `202`, so turning tracing off is **not** a complete mitigation there. `trace_queue.retention_hours` is the ageing-out control.
+
+Two further limits worth knowing:
+
+- **A cookie-varying channel must not enable `cache`.** `compute_cache_key` hashes method, params, query and payload — never headers — so a cached response would replay one caller's `Set-Cookie` to the next.
+- **`rate_limit.key_logic` still cannot see cookies.** Its context is `{client_ip, channel, headers}`, and `cookie` is not among the readable headers. Per-cookie rate limiting stays out of reach.
+
+`channel_call` propagates metadata verbatim, so an allowlisted cookie reaches sub-channels — the same way verified claims do.
 
 ## Response shaping
 

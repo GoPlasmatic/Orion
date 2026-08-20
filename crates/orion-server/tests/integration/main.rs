@@ -21,6 +21,7 @@ mod channel_body_mode_test;
 mod channel_call_test;
 mod channel_config_test;
 mod channel_config_validation_test;
+mod channel_cookies_test;
 mod channel_dedup_test;
 mod channel_load_refusal_test;
 mod channel_response_cache_test;
