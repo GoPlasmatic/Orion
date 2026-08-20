@@ -44,6 +44,19 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 ```
 
+### Serving at other paths
+
+The data plane is always mounted at `/api/v1/data`. [`server.data_mounts`](./configuration.md#server) adds prefixes it *also* answers on, for deployed clients that call legacy paths and cannot be changed:
+
+```toml
+[server]
+data_mounts = ["/zoom"]
+```
+
+A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them — they are matched prefix-free, so nothing about the channel changes.
+
+This is additive: the canonical prefix stays, so `orion-cli`, the MCP data tool and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat — see the configuration reference.
+
 ### Request body
 
 By default a channel detects the envelope: **an object carrying a top-level `data` or `metadata` key is the envelope; anything else is the payload.**

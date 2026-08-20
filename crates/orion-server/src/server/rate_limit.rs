@@ -167,14 +167,35 @@ impl RouteGroup {
     }
 }
 
-fn classify_route(path: &str) -> RouteGroup {
+/// Which platform budget a request is metered against.
+///
+/// `data_mounts` participates because the data plane may answer outside
+/// `/api/v1/data`: without it, root-mounted data traffic falls through to
+/// `Operational` and is metered against the default limiter rather than
+/// `rate_limit.endpoints.data_rps` — the channel's own limit still applies,
+/// but the platform budget the operator configured does not.
+fn classify_route(path: &str, data_mounts: &[String]) -> RouteGroup {
     if path.starts_with("/api/v1/admin") {
         RouteGroup::Admin
-    } else if path.starts_with("/api/v1/data") {
+    } else if path.starts_with("/api/v1/data") || under_a_data_mount(path, data_mounts) {
         RouteGroup::Data
     } else {
         RouteGroup::Operational
     }
+}
+
+/// Whether `path` is served by one of the configured data mounts.
+///
+/// `"/"` matches everything except the platform routes, which are checked
+/// first by the caller — a static route always wins over the catch-all, so a
+/// request reaching here under a root mount really is data-plane traffic.
+fn under_a_data_mount(path: &str, data_mounts: &[String]) -> bool {
+    data_mounts.iter().any(|m| {
+        if m == "/" {
+            return true;
+        }
+        path == m || path.starts_with(&format!("{m}/"))
+    })
 }
 
 /// Platform rate limiting middleware.
@@ -196,11 +217,15 @@ pub async fn rate_limit_middleware(
     };
 
     let client_ip = extract_client_ip(&req, state.trusted_proxies());
-    let path = matched_path
-        .as_ref()
-        .map(|m: &MatchedPath| m.as_str())
-        .unwrap_or(req.uri().path());
-    let route_group = classify_route(path);
+    // Same rule as admin auth: under `server.data_mounts` the matched path is
+    // a catch-all, which classifies as `Operational` and would meter
+    // root-mounted data traffic against the default limiter instead of
+    // `rate_limit.endpoints.data_rps`.
+    let path = match matched_path.as_ref().map(|m: &MatchedPath| m.as_str()) {
+        Some(p) if !crate::server::admin_auth::is_data_catch_all(p) => p,
+        _ => req.uri().path(),
+    };
+    let route_group = classify_route(path, &state.config.server.data_mounts);
 
     let limiter = match route_group {
         RouteGroup::Admin => rate_limit_state
@@ -410,7 +435,7 @@ mod tests {
     #[test]
     fn test_classify_route_admin() {
         assert!(matches!(
-            classify_route("/api/v1/admin/workflows"),
+            classify_route("/api/v1/admin/workflows", &[]),
             RouteGroup::Admin
         ));
     }
@@ -418,16 +443,19 @@ mod tests {
     #[test]
     fn test_classify_route_data() {
         assert!(matches!(
-            classify_route("/api/v1/data/orders"),
+            classify_route("/api/v1/data/orders", &[]),
             RouteGroup::Data
         ));
     }
 
     #[test]
     fn test_classify_route_operational() {
-        assert!(matches!(classify_route("/health"), RouteGroup::Operational));
         assert!(matches!(
-            classify_route("/metrics"),
+            classify_route("/health", &[]),
+            RouteGroup::Operational
+        ));
+        assert!(matches!(
+            classify_route("/metrics", &[]),
             RouteGroup::Operational
         ));
     }

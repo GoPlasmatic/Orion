@@ -47,6 +47,29 @@ pub struct ServerConfig {
     /// what an operator wants. The admin API is authenticated and its payloads
     /// are legitimately larger, so it gets its own bound.
     pub max_admin_body_size: usize,
+
+    /// Additional path prefixes the data plane is served at, on top of the
+    /// always-present `/api/v1/data`.
+    ///
+    /// For fronting deployed clients that call paths at the server root
+    /// (`/zoom/meetings/user`, `/Legacy-App/api/public/...`) — today every such
+    /// deployment needs a reverse proxy whose only job is to prepend the
+    /// prefix. `route_pattern`s are already multi-segment and unrestricted, so
+    /// only the mount point was missing.
+    ///
+    /// **Additive, never a movable prefix.** `/api/v1/data` stays mounted, so
+    /// every existing client, doc example, test and `orion-client` path keeps
+    /// working — a moved prefix would break `orion-cli` and the MCP data tool
+    /// against that server with no discovery mechanism.
+    ///
+    /// Prefer **named** mounts. The literal `"/"` is accepted as an explicit
+    /// escape hatch, but it re-opens an upgrade hazard: a future platform
+    /// route at, say, `/version` would silently shadow a channel already
+    /// serving `route_pattern = "/version"` — a wrong answer, not an error.
+    /// A named mount claims a first-segment namespace instead, which lets
+    /// Orion hold the invariant that platform routes are single-segment at
+    /// root or under `/api`.
+    pub data_mounts: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -63,11 +86,109 @@ impl Default for ServerConfig {
             // 8 MB: room for a full workflow export round-trip (the largest
             // legitimate admin body) without inviting one.
             max_admin_body_size: 8 * 1_048_576,
+            data_mounts: Vec::new(),
         }
     }
 }
 
 impl ServerConfig {
+    /// Path prefixes a data mount may never claim.
+    ///
+    /// `/api` covers `/api/v1/admin`, `/api/v1/data`, `/api/v1/openapi.json`
+    /// **and any future `/api/v2`** — that breadth is what makes the invariant
+    /// durable, rather than a list to remember to extend.
+    const RESERVED_MOUNT_PREFIXES: &'static [&'static str] = crate::server::routes::PLATFORM_ROUTES;
+
+    /// Structural checks on `data_mounts`.
+    ///
+    /// Refused rather than sanitized, matching the `verbose_errors` posture
+    /// above: a mount is what the data plane answers on, so a malformed one is
+    /// a deployment that serves the wrong surface, not a value to guess at.
+    fn validate_data_mounts(&self) -> Result<(), OrionError> {
+        let err = |message: String| OrionError::Config { message };
+        let mut seen: Vec<&str> = Vec::with_capacity(self.data_mounts.len());
+
+        for mount in &self.data_mounts {
+            // The explicit root escape hatch. Everything below assumes a named
+            // mount, so it is handled first.
+            if mount == "/" {
+                if seen.contains(&mount.as_str()) {
+                    return Err(err("server.data_mounts contains \"/\" twice".to_string()));
+                }
+                seen.push(mount);
+                continue;
+            }
+            if !mount.starts_with('/') {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' must start with '/'"
+                )));
+            }
+            if mount.ends_with('/') {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' must not end with '/'"
+                )));
+            }
+            if mount.contains("//") {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' has an empty path segment"
+                )));
+            }
+            // A mount is static — parameters belong in a channel's
+            // `route_pattern`, which is matched underneath it.
+            if let Some(bad) = mount
+                .chars()
+                .find(|c| c.is_whitespace() || *c == '%' || *c == '{' || *c == '}')
+            {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' contains '{bad}' — a mount is a \
+                     static prefix; path parameters belong in a channel's route_pattern"
+                )));
+            }
+            // Reserved: equal to, under, or containing a platform route.
+            for reserved in Self::RESERVED_MOUNT_PREFIXES {
+                let claims = mount == reserved
+                    || mount.starts_with(&format!("{reserved}/"))
+                    || reserved.starts_with(&format!("{mount}/"));
+                if claims {
+                    return Err(err(format!(
+                        "server.data_mounts entry '{mount}' collides with the platform \
+                         route '{reserved}' — mounting the data plane there would shadow \
+                         it or be shadowed by it"
+                    )));
+                }
+            }
+            if seen.contains(&mount.as_str()) {
+                return Err(err(format!(
+                    "server.data_mounts entry '{mount}' is listed twice"
+                )));
+            }
+            // Two catch-alls under one branch is a matchit insertion conflict,
+            // which panics at router construction. Refuse it here with a
+            // readable message instead of crashing at boot.
+            if let Some(other) = seen.iter().find(|s| {
+                **s != "/"
+                    && (mount.starts_with(&format!("{s}/")) || s.starts_with(&format!("{mount}/")))
+            }) {
+                return Err(err(format!(
+                    "server.data_mounts entries '{other}' and '{mount}' nest — two \
+                     catch-alls under one branch is a router conflict; keep mounts \
+                     disjoint"
+                )));
+            }
+            seen.push(mount);
+        }
+
+        if seen.contains(&"/") {
+            tracing::warn!(
+                "server.data_mounts includes \"/\": the data plane answers every \
+                 unmatched path, so an unknown URL becomes a channel lookup rather \
+                 than a 404 — and a future platform route could shadow a channel \
+                 serving the same path. Prefer named mounts."
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self, is_prod: bool) -> Result<(), OrionError> {
         // Refused rather than downgraded to a warning, for the same reason the
         // CORS wildcard and a missing production `admin_auth` are: the data
@@ -90,6 +211,7 @@ impl ServerConfig {
             self.max_admin_body_size as u64,
             "server.max_admin_body_size",
         )?;
+        self.validate_data_mounts()?;
         if self.tls.enabled {
             require_nonempty(
                 &self.tls.cert_path,
@@ -182,6 +304,94 @@ impl Default for IngestConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_mounts(mounts: &[&str]) -> ServerConfig {
+        ServerConfig {
+            data_mounts: mounts.iter().map(|m| m.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn named_mounts_are_accepted() {
+        assert!(
+            with_mounts(&["/zoom", "/Legacy-App"])
+                .validate(false)
+                .is_ok()
+        );
+        assert!(with_mounts(&["/a/b/c"]).validate(false).is_ok());
+        // The default — and the explicit root escape hatch.
+        assert!(with_mounts(&[]).validate(false).is_ok());
+        assert!(with_mounts(&["/"]).validate(false).is_ok());
+    }
+
+    /// A mount that claims a platform route would either shadow it or be
+    /// shadowed by it; either way the deployment serves the wrong surface.
+    #[test]
+    fn a_mount_cannot_claim_a_platform_route() {
+        for mount in [
+            "/api",
+            "/api/v1",
+            "/api/v1/data",
+            "/api/v1/admin",
+            "/health",
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/docs",
+            "/docs/assets",
+        ] {
+            let err = with_mounts(&[mount])
+                .validate(false)
+                .expect_err("must be refused")
+                .to_string();
+            assert!(err.contains("platform route"), "{mount}: {err}");
+        }
+    }
+
+    #[test]
+    fn malformed_mounts_are_refused_not_sanitized() {
+        for (mount, needle) in [
+            ("zoom", "must start with"),
+            ("/zoom/", "must not end with"),
+            ("/zoom//x", "empty path segment"),
+            ("/zo om", "static prefix"),
+            ("/zoom/{id}", "static prefix"),
+            ("/zo%6fm", "static prefix"),
+        ] {
+            let err = with_mounts(&[mount])
+                .validate(false)
+                .expect_err("must be refused")
+                .to_string();
+            assert!(err.contains(needle), "{mount}: {err}");
+        }
+    }
+
+    /// Two catch-alls under one branch is a matchit insertion conflict, which
+    /// panics at router construction — refused here with a readable message
+    /// rather than crashing at boot.
+    #[test]
+    fn nested_or_duplicate_mounts_are_refused() {
+        let err = with_mounts(&["/zoom", "/zoom/deep"])
+            .validate(false)
+            .expect_err("nesting must be refused")
+            .to_string();
+        assert!(err.contains("nest"), "{err}");
+
+        let err = with_mounts(&["/zoom", "/zoom"])
+            .validate(false)
+            .expect_err("a duplicate must be refused")
+            .to_string();
+        assert!(err.contains("twice"), "{err}");
+
+        assert!(
+            with_mounts(&["/", "/"]).validate(false).is_err(),
+            "a duplicated root mount is still a duplicate"
+        );
+        // A named mount alongside "/" is legal: the root catch-all and a
+        // deeper one do not conflict in matchit.
+        assert!(with_mounts(&["/", "/zoom"]).validate(false).is_ok());
+    }
 
     /// Unset is the supported way to get sanitized production errors, so it
     /// must not be what the production check trips on.

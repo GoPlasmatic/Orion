@@ -47,6 +47,17 @@
 # shutdown_drain_secs = 30           # Grace period for in-flight requests on SIGTERM/SIGINT
 # shutdown_force_timeout_secs = 30   # Hard cap on waiting after the drain window; 0 = wait forever
 # max_admin_body_size = 8388608      # Max request body for /api/v1/admin/* in bytes (8 MB).
+# data_mounts = []              # Extra path prefixes the data plane answers on, on top of
+                                # /api/v1/data (which is always mounted). For fronting
+                                # deployed clients that call legacy paths, instead of a
+                                # reverse proxy whose only job is to prepend the prefix.
+                                # Channels keep their route_pattern as-is:
+                                #   data_mounts = ["/zoom", "/Legacy-App"]
+                                # Cannot claim a platform route (/api, /health, /healthz,
+                                # /readyz, /metrics, /docs). The literal "/" serves the
+                                # data plane at the root — accepted, but it means an
+                                # unknown URL becomes a channel lookup rather than a 404,
+                                # and a future platform route could shadow a channel.
                                      # Separate from ingest.max_payload_size, so raising the
                                      # limit for a bulk import does not also raise it for the
                                      # unauthenticated data plane.

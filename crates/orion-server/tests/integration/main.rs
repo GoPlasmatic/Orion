@@ -38,6 +38,7 @@ mod connector_encryption_test;
 mod connector_load_issues_test;
 mod connector_ops_test;
 mod connector_redis_test;
+mod data_mounts_test;
 mod data_parity_test;
 mod data_query_test;
 mod data_roundtrip_test;

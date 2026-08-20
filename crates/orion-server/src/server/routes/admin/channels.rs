@@ -380,6 +380,31 @@ async fn ensure_route_is_unclaimed(
     let Some((route, methods)) = declared_route(draft) else {
         return Ok(());
     };
+
+    // #279: under `server.data_mounts` a channel's route is also served at
+    // `{mount}{route}`, so it can collide with a PLATFORM route rather than
+    // only with another channel. R7's rule is that the gate and the table must
+    // not drift, so the check belongs here rather than only at reload.
+    //
+    // With the reserved-prefix validation on mounts, only the `"/"` escape
+    // hatch can actually produce one of these — which is precisely the hazard
+    // that makes `"/"` worth warning about, so it is worth reporting by name.
+    for mount in &state.config.server.data_mounts {
+        let served = if mount == "/" {
+            route.clone()
+        } else {
+            format!("{mount}{route}")
+        };
+        if let Some(platform) = crate::server::routes::shadowed_platform_route(&served) {
+            return Err(OrionError::validation(format!(
+                "Cannot activate channel '{}': with server.data_mounts entry '{mount}' \
+                 its route would be served at {served}, which collides with the \
+                 platform route '{platform}'. The platform route wins, so the channel \
+                 would never run. Change the route_pattern or the mount.",
+                draft.name,
+            )));
+        }
+    }
     for other in state.repos.channels.list_active().await? {
         if other.channel_id == draft.channel_id {
             continue; // a new version of this same channel replaces itself

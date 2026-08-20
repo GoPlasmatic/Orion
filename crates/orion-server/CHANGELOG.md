@@ -106,6 +106,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **`server.data_mounts`** ([#279]) — serve the data plane at additional path
+  prefixes, so deployed clients calling legacy paths no longer need a reverse
+  proxy whose only job is to prepend `/api/v1/data`.
+
+  `route_pattern`s were already multi-segment and unrestricted, so
+  `"/zoom/meetings/user"` was a legal pattern before this — only the mount
+  point was missing. **Additive, never a movable prefix**: `/api/v1/data` stays
+  mounted, so every existing client, `orion-cli` command and MCP data call
+  keeps working, and no `orion-client` change was needed.
+
+  Two security fixes ship with it, because a mount changes what `MatchedPath`
+  reports. Under a root mount it becomes the literal `/{*path}`, which does not
+  start with `/api/v1/admin` — so **admin auth would have waved
+  `/api/v1/admin/<anything-unregistered>` through to the unauthenticated data
+  plane**, letting a channel claim such a path and be served anonymously; and
+  the rate limiter would have classified root-mounted data traffic as
+  `Operational`, metering it against the default budget instead of
+  `rate_limit.endpoints.data_rps`. Both now resolve against the raw URI when
+  the matched path is a data catch-all, and the self-authenticating
+  single-trace read keeps its carve-out.
+
+  A mount cannot claim a platform route — `/api` (covering the admin plane, the
+  data plane, the OpenAPI document and any future `/api/v2`), `/health`,
+  `/healthz`, `/readyz`, `/metrics`, `/docs` — nor nest inside another mount,
+  which would be a router-construction panic. The literal `"/"` is accepted as
+  an explicit escape hatch, with a startup warning: it re-opens the hazard that
+  a future platform route could shadow a channel already serving that path.
+  Channel activation refuses a channel whose served path would fall under a
+  platform route, so that hazard is reported rather than silent.
+
 - **`mongo_write.array_filters`** ([#274]) — `$[identifier]` array-element
   updates for `update_one`/`update_many`.
 
@@ -327,6 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#276]: https://github.com/GoPlasmatic/Orion/issues/276
 [#277]: https://github.com/GoPlasmatic/Orion/issues/277
 [#278]: https://github.com/GoPlasmatic/Orion/issues/278
+[#279]: https://github.com/GoPlasmatic/Orion/issues/279
 
 ## [1.0.0] - 2026-08-14
 

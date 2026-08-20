@@ -6,7 +6,7 @@ pub mod response_helpers;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde_json::json;
 use utoipa::OpenApi;
@@ -19,7 +19,7 @@ use crate::server::state::AppState;
 /// A struct rather than three positional scalars: two of the three are bare
 /// `bool`s with the same type, so a transposition at the call site would
 /// compile and silently unregister the wrong surface.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RouteOptions {
     /// Bounds admin request bodies independently of the data plane (R16) —
     /// see [`admin::admin_routes`].
@@ -36,6 +36,28 @@ pub struct RouteOptions {
     /// endpoint to its own listener; in either case the path 404s here rather
     /// than answering 200 with an empty body.
     pub metrics_enabled: bool,
+    /// Extra prefixes the data plane is served at, beyond `/api/v1/data`
+    /// (`server.data_mounts`). Empty is the default and registers nothing.
+    pub data_mounts: Vec<String>,
+}
+
+/// The platform routes a data mount must never shadow — the single source the
+/// mount validation and the channel-activation gate both consult, so the two
+/// cannot drift.
+///
+/// The invariant these hold: **platform routes are single-segment at root, or
+/// under `/api`.** That is what lets a future platform route be added without
+/// silently stealing a path from a channel already serving it.
+pub(crate) const PLATFORM_ROUTES: &[&str] = &[
+    "/health", "/healthz", "/readyz", "/metrics", "/docs", "/api",
+];
+
+/// The platform route `served_path` would be shadowed by, if any.
+pub(crate) fn shadowed_platform_route(served_path: &str) -> Option<&'static str> {
+    PLATFORM_ROUTES
+        .iter()
+        .copied()
+        .find(|p| served_path == *p || served_path.starts_with(&format!("{p}/")))
 }
 
 /// The main listener's router.
@@ -44,6 +66,7 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         max_admin_body_size,
         docs_enabled,
         metrics_enabled,
+        data_mounts,
     } = options;
     let router = Router::new()
         .route("/health", get(health_check))
@@ -51,6 +74,30 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         .route("/readyz", get(readiness_check))
         .nest("/api/v1/admin", admin::admin_routes(max_admin_body_size))
         .nest("/api/v1/data", data::data_routes());
+
+    // Extra data-plane mounts (`server.data_mounts`). `.route`, never
+    // `.nest` or `.fallback`:
+    //
+    // - `.nest("/", …)` panics outright ("Nesting at the root is no longer
+    //   supported"), and a nested handler would see the path with the prefix
+    //   stripped — whereas `dynamic_handler` matches `route_pattern`s
+    //   PREFIX-FREE, so it needs the full path a root-mounted route gives it.
+    // - `.fallback` yields no `MatchedPath`, so the metrics middleware would
+    //   fall back to the raw URI and put every legacy URL into an unbounded
+    //   Prometheus `path` label. `.route("/{*path}")` yields the constant
+    //   label `/{*path}`.
+    //
+    // Static platform routes win over a catch-all in matchit regardless of
+    // registration order, so `/health` and friends keep their own handlers
+    // even under a `"/"` mount.
+    let router = data_mounts.iter().fold(router, |router, mount| {
+        let pattern = if mount == "/" {
+            "/{*path}".to_string()
+        } else {
+            format!("{mount}/{{*path}}")
+        };
+        router.route(&pattern, any(data::dynamic_handler))
+    });
 
     // O12: registered only when this listener actually serves metrics.
     // Unconditional registration meant `metrics.enabled = false` answered 200

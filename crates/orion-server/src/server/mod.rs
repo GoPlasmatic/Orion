@@ -83,6 +83,7 @@ pub fn build_router(state: AppState) -> Router {
         max_admin_body_size: state.config.server.max_admin_body_size,
         docs_enabled: state.config.docs_enabled(),
         metrics_enabled: state.config.metrics.on_main_listener(),
+        data_mounts: state.config.server.data_mounts.clone(),
     })
     // Innermost: bound the body before a handler ever reads it. This is the
     // data-plane bound; `admin_routes` re-applies its own, closer to the

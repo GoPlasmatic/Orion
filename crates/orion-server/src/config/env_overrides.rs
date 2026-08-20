@@ -190,6 +190,7 @@ where
     // outside production"). An explicit true is refused in production.
     ov_opt!(server.verbose_errors: bool);
     ov!(server.max_admin_body_size: usize);
+    ov_list!(server.data_mounts);
 
     // Storage
     ov!(storage.url: String);
