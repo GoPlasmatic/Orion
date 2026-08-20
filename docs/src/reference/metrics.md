@@ -27,6 +27,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_connector_request_duration_seconds` | Histogram | `connector`, `channel` | Outbound connector latency. |
 | `orion_task_duration_seconds` | Histogram | `workflow`, `task`, `function` | Per-task latency, including the engine's sync built-in functions. |
 | `orion_rate_limit_rejections_total` | Counter | `scope` | Rate-limited requests; `scope` is a channel name or route group. |
+| `orion_rate_limit_key_unavailable_total` | Counter | `channel` | Rate-limit refusals where the bucket key could not be computed — a subset of the rejections above. Any non-zero rate is a misconfiguration: the channel's `key_logic` failed to evaluate, or resolved to `null`/empty because it reads a header outside the key context. Alert on it. |
 | `orion_response_cache_hits_total` | Counter | `channel` | Response-cache hits. |
 | `orion_response_cache_misses_total` | Counter | `channel` | Response-cache misses. |
 | `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `kafka_lag`. |

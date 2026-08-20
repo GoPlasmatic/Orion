@@ -637,36 +637,57 @@ async fn check_rate_limit(
     // Compute the bucket key from `key_logic`, defaulting to the transport's
     // caller identity.
     let key = if let Some(ref compiled) = cfg.rate_limit_key_logic {
-        let context = rate_limit_context(caller_identity, channel, header);
+        let context = rate_limit_context(
+            caller_identity,
+            channel,
+            header,
+            cfg.rate_limit_key_headers.as_deref(),
+        );
+        // N5: falling back to the caller identity here would silently
+        // re-dimension the limit mid-flight. The key is part of the control,
+        // so a request whose key cannot be computed is rejected rather than
+        // counted in the wrong bucket.
+        //
+        // Its own variant, not `RateLimited`: over-limit is transient and
+        // worth retrying, while a key expression that cannot be evaluated
+        // against this message will fail against every copy of it. Both
+        // answer `429` over HTTP; only this one is terminal on Kafka, so
+        // the record is dead-lettered instead of head-of-line blocking
+        // its partition for as long as the channel keeps the expression.
+        let unavailable = |reason: &str| {
+            tracing::warn!(
+                channel = %channel,
+                reason = %reason,
+                "rate_limit.key_logic produced no usable key; rejecting request"
+            );
+            metrics::record_rate_limit_rejected(channel);
+            metrics::record_rate_limit_key_unavailable(channel);
+            OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
+        };
         match datalogic
             .session()
             .eval_into::<serde_json::Value, _>(compiled, &context)
         {
+            // A missing path resolves to `null` in datalogic 5 rather than
+            // erroring, and an absent header is exactly that. Serializing it
+            // would make the key the literal string `"null"` for *every*
+            // caller on the channel — one shared bucket, no warning, no
+            // metric, and a rate limit that reads as enforced while enforcing
+            // nothing. A key that resolved to nothing has not been computed,
+            // so it takes the same path as an evaluation error. An
+            // all-whitespace string is the same collapse by a different route
+            // (a header present but empty).
+            Ok(Value::Null) => return Err(unavailable("expression resolved to null")),
+            Ok(Value::String(s)) if s.trim().is_empty() => {
+                return Err(unavailable("expression resolved to an empty string"));
+            }
             Ok(val) => val
                 .as_str()
                 .map(str::to_string)
                 .unwrap_or_else(|| serde_json::to_string(&val).unwrap_or_default()),
-            // N5: falling back to the caller identity here would silently
-            // re-dimension the limit mid-flight. The key is part of the
-            // control, so a request whose key cannot be computed is
-            // rejected rather than counted in the wrong bucket.
-            //
-            // Its own variant, not `RateLimited`: over-limit is transient and
-            // worth retrying, while a key expression that cannot be evaluated
-            // against this message will fail against every copy of it. Both
-            // answer `429` over HTTP; only this one is terminal on Kafka, so
-            // the record is dead-lettered instead of head-of-line blocking
-            // its partition for as long as the channel keeps the expression.
             Err(e) => {
-                tracing::warn!(
-                    channel = %channel,
-                    error = %e,
-                    "rate_limit.key_logic evaluation failed; rejecting request"
-                );
-                metrics::record_rate_limit_rejected(channel);
-                return Err(OrionError::RateLimitKeyUnavailable(
-                    "Too many requests".to_string(),
-                ));
+                let err = unavailable(&format!("evaluation failed: {e}"));
+                return Err(err);
             }
         }
     } else {
@@ -713,28 +734,52 @@ async fn check_rate_limit(
     }
 }
 
+/// The headers every `rate_limit.key_logic` can read without declaring them.
+///
+/// A closed default rather than "every header": a key referencing two names
+/// must not cost an allocation per header on the request path. A channel that
+/// needs another name declares it in `rate_limit.key_headers`, which is
+/// *merged* with this list — so no stored `key_logic` changes meaning when a
+/// channel starts declaring headers.
+pub(crate) const COMMON_KEY_HEADERS: &[&str] = &[
+    "authorization",
+    "x-api-key",
+    "x-forwarded-for",
+    "x-real-ip",
+    "user-agent",
+    "content-type",
+    "origin",
+    "x-tenant-id",
+];
+
 /// Build the context object `rate_limit.key_logic` is evaluated against.
 ///
 /// `client_ip` is the transport's caller identity — the HTTP client IP, the
 /// Kafka topic, or the calling channel — and keeps its historical name so
-/// stored `key_logic` expressions keep resolving. Headers are limited to a
-/// fixed list of the ones key expressions actually use, so a request does not
-/// pay an allocation per header for a key that references two of them.
-fn rate_limit_context(caller_identity: &str, channel: &str, header: HeaderLookup<'_>) -> Value {
-    const COMMON_HEADERS: &[&str] = &[
-        "authorization",
-        "x-api-key",
-        "x-forwarded-for",
-        "x-real-ip",
-        "user-agent",
-        "content-type",
-        "origin",
-        "x-tenant-id",
-    ];
-    let mut headers = serde_json::Map::with_capacity(COMMON_HEADERS.len());
-    for &name in COMMON_HEADERS {
+/// stored `key_logic` expressions keep resolving. Headers are limited to
+/// [`COMMON_KEY_HEADERS`] plus whatever the channel declared, so a request does
+/// not pay an allocation per header for a key that references two of them.
+fn rate_limit_context(
+    caller_identity: &str,
+    channel: &str,
+    header: HeaderLookup<'_>,
+    declared: Option<&[String]>,
+) -> Value {
+    let declared = declared.unwrap_or(&[]);
+    let mut headers = serde_json::Map::with_capacity(COMMON_KEY_HEADERS.len() + declared.len());
+    for &name in COMMON_KEY_HEADERS {
         if let Some(value) = header(name) {
             headers.insert(name.to_string(), Value::String(value));
+        }
+    }
+    // Declared names are already lowercased at load. A redundant declaration
+    // of a built-in is a no-op rather than a second lookup.
+    for name in declared {
+        if COMMON_KEY_HEADERS.contains(&name.as_str()) {
+            continue;
+        }
+        if let Some(value) = header(name) {
+            headers.insert(name.clone(), Value::String(value));
         }
     }
     json!({
@@ -742,6 +787,54 @@ fn rate_limit_context(caller_identity: &str, channel: &str, header: HeaderLookup
         "channel": channel,
         "headers": headers,
     })
+}
+
+/// Collect the `headers.<name>` paths a `key_logic` expression reads, when they
+/// are statically visible.
+///
+/// Used at channel load to warn about a name no context will ever carry — the
+/// typo that used to collapse every caller into one bucket. Only literal `var`
+/// paths are recognised; a dynamically-composed path (`{"var": {"cat": […]}}`)
+/// is skipped rather than guessed, so this never produces a false positive.
+pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {
+    fn literal_path(arg: &Value) -> Option<&str> {
+        match arg {
+            // `{"var": "headers.x"}`
+            Value::String(s) => Some(s.as_str()),
+            // `{"var": ["headers.x", <default>]}` — the default does not
+            // change which header is read.
+            Value::Array(items) => items.first().and_then(|f| f.as_str()),
+            _ => None,
+        }
+    }
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                for (op, arg) in map {
+                    if op == "var"
+                        && let Some(path) = literal_path(arg)
+                        && let Some(name) = path.strip_prefix("headers.")
+                        && !name.is_empty()
+                    {
+                        let name = name.to_ascii_lowercase();
+                        if !out.contains(&name) {
+                            out.push(name);
+                        }
+                    }
+                    walk(arg, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(logic, &mut out);
+    out
 }
 
 /// Evaluate per-channel input validation logic (JSONLogic). Returns `Ok(())` when
@@ -1148,6 +1241,7 @@ async fn check_response_cache(
 
 #[cfg(test)]
 mod tests {
+    use super::key_logic_header_paths;
     use dataflow_rs::datalogic_rs;
     use std::sync::Arc;
 
@@ -1334,6 +1428,7 @@ mod tests {
         parsed_config: ChannelConfig,
         rate_limiter: Option<Arc<dyn crate::channel::RateLimitBackend>>,
         rate_limit_key_logic: Option<datalogic_rs::Logic>,
+        rate_limit_key_headers: Option<Arc<[String]>>,
         validation_logic: Option<datalogic_rs::Logic>,
         backpressure_semaphore: Option<Arc<tokio::sync::Semaphore>>,
         dedup_store: Option<Arc<dyn CacheBackend>>,
@@ -1347,6 +1442,7 @@ mod tests {
                 parsed_config: ChannelConfig::default(),
                 rate_limiter: None,
                 rate_limit_key_logic: None,
+                rate_limit_key_headers: None,
                 validation_logic: None,
                 backpressure_semaphore: None,
                 auth: None,
@@ -1381,6 +1477,7 @@ mod tests {
                 requests_per_second: 1,
                 burst: Some(1),
                 key_logic: None,
+                key_headers: None,
                 on_backend_error: policy,
             });
             self.rate_limiter = Some(backend);
@@ -1389,6 +1486,17 @@ mod tests {
 
         fn key_logic(mut self, engine: &datalogic_rs::Engine, logic: serde_json::Value) -> Self {
             self.rate_limit_key_logic = Some(engine.compile(&logic).expect("test logic compiles"));
+            self
+        }
+
+        /// Declare extra headers for `key_logic`, as the registry would after
+        /// lowercasing them.
+        fn key_headers(mut self, names: &[&str]) -> Self {
+            let lowered: Vec<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+            if let Some(ref mut rl) = self.parsed_config.rate_limit {
+                rl.key_headers = Some(lowered.clone());
+            }
+            self.rate_limit_key_headers = Some(lowered.into());
             self
         }
 
@@ -1465,6 +1573,7 @@ mod tests {
                 parsed_config: self.parsed_config,
                 rate_limiter: self.rate_limiter,
                 rate_limit_key_logic: self.rate_limit_key_logic,
+                rate_limit_key_headers: self.rate_limit_key_headers,
                 validation_logic: self.validation_logic,
                 backpressure_semaphore: self.backpressure_semaphore,
                 dedup_store: self.dedup_store,
@@ -1927,6 +2036,243 @@ mod tests {
             apply_guards(req).await,
             Err(OrionError::RateLimited(_))
         ));
+    }
+
+    /// #275: the defect. A `key_logic` reading a header the context does not
+    /// carry resolves to `null` — datalogic returns `null` for a missing path
+    /// rather than erroring — and the old code serialized that into the key,
+    /// so the bucket became the literal string `"null"` for *every* caller.
+    /// An intended per-device quota silently became one shared channel-wide
+    /// bucket, with no warning and no metric.
+    ///
+    /// A key that resolved to nothing has not been computed, so it takes the
+    /// same path as an evaluation error: refuse, per N5.
+    #[tokio::test]
+    async fn a_null_rate_limit_key_refuses_rather_than_collapsing() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .limiter(
+                // Deliberately generous: if the request is refused it is
+                // because the key is unavailable, never because a bucket ran
+                // dry.
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1000, 1000)),
+                BackendErrorPolicy::Allow,
+            )
+            // `deviceid` is neither a built-in nor declared.
+            .key_logic(&dl, json!({"var": "headers.deviceid"}))
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+
+        let device = |name: &str| (name == "deviceid").then(|| "phone-1".to_string());
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+        req.header = &device;
+
+        let verdict = apply_guards(req).await;
+        assert!(
+            matches!(verdict, Err(OrionError::RateLimitKeyUnavailable(_))),
+            "an unreachable header must refuse, not collapse every caller into one bucket"
+        );
+        // The caller learns nothing about the channel's configuration.
+        let (status, code, _) = verdict.err().expect("a refusal").response_parts();
+        assert_eq!(status, axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(code, "RATE_LIMITED");
+    }
+
+    /// The behavioural statement behind the fix, phrased so it fails loudly if
+    /// the collapse ever returns: two distinct callers on a **1 rps** limiter
+    /// are both refused *for key unavailability*. Under the old behaviour the
+    /// first was admitted into the shared `"null"` bucket and the second was
+    /// refused as over-limit — so asserting the variant, not just the refusal,
+    /// is what makes this test meaningful.
+    #[tokio::test]
+    async fn two_callers_with_a_null_key_do_not_share_a_bucket() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .limiter(
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1, 1)),
+                BackendErrorPolicy::Allow,
+            )
+            .key_logic(&dl, json!({"var": "headers.deviceid"}))
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+
+        for caller in ["phone-1", "phone-2"] {
+            let lookup = move |name: &str| (name == "deviceid").then(|| caller.to_string());
+            let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+            req.header = &lookup;
+            assert!(
+                matches!(
+                    apply_guards(req).await,
+                    Err(OrionError::RateLimitKeyUnavailable(_))
+                ),
+                "{caller} must be refused for an uncomputable key, never counted \
+                 in a shared bucket"
+            );
+        }
+    }
+
+    /// The same collapse by a different route: the header is present but its
+    /// value is empty, so every caller keys on `""`. Refused for the same
+    /// reason a `null` is.
+    #[tokio::test]
+    async fn an_empty_rate_limit_key_refuses() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .limiter(
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1000, 1000)),
+                BackendErrorPolicy::Allow,
+            )
+            .key_logic(&dl, json!({"var": "headers.x-tenant-id"}))
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+
+        let blank = |name: &str| (name == "x-tenant-id").then(|| "   ".to_string());
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+        req.header = &blank;
+        assert!(
+            matches!(
+                apply_guards(req).await,
+                Err(OrionError::RateLimitKeyUnavailable(_))
+            ),
+            "a blank key is as unusable as a missing one"
+        );
+    }
+
+    /// #275 part 2: a channel declares the header it keys on, and it becomes
+    /// visible to `key_logic` on every transport — the per-device limit that
+    /// was previously inexpressible.
+    #[tokio::test]
+    async fn a_declared_custom_header_is_visible_to_key_logic() {
+        for transport in [Transport::HttpSync, Transport::HttpAsync, Transport::Kafka] {
+            let dl = engine();
+            let runtime = Runtime::new()
+                .limiter(
+                    Arc::new(crate::channel::LocalRateLimitBackend::new(1, 1)),
+                    BackendErrorPolicy::Allow,
+                )
+                .key_headers(&["deviceid"])
+                .key_logic(&dl, json!({"var": "headers.deviceid"}))
+                .build();
+            let (data, meta) = (json!({}), json!({}));
+
+            let phone = |name: &str| (name == "deviceid").then(|| "phone".to_string());
+            let tablet = |name: &str| (name == "deviceid").then(|| "tablet".to_string());
+
+            // Each device gets its own bucket...
+            let mut req = request(transport, &runtime, &dl, &data, &meta);
+            req.header = &phone;
+            assert!(
+                apply_guards(req).await.is_ok(),
+                "{transport:?}: first device"
+            );
+
+            let mut req = request(transport, &runtime, &dl, &data, &meta);
+            req.header = &tablet;
+            assert!(
+                apply_guards(req).await.is_ok(),
+                "{transport:?}: a second device must not share the first's bucket"
+            );
+
+            // ...and the first device's is now spent.
+            let mut req = request(transport, &runtime, &dl, &data, &meta);
+            req.header = &phone;
+            assert!(
+                matches!(apply_guards(req).await, Err(OrionError::RateLimited(_))),
+                "{transport:?}: the first device's own bucket must be empty"
+            );
+        }
+    }
+
+    /// Declaring one header must not open the whole header map: an undeclared
+    /// name still resolves to `null` and still refuses. Without this, the
+    /// declaration mechanism could silently become "expose everything".
+    #[tokio::test]
+    async fn declaring_one_header_does_not_expose_the_others() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .limiter(
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1000, 1000)),
+                BackendErrorPolicy::Allow,
+            )
+            .key_headers(&["deviceid"])
+            .key_logic(&dl, json!({"var": "headers.x-partner"}))
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+
+        let both = |name: &str| match name {
+            "deviceid" => Some("phone".to_string()),
+            "x-partner" => Some("acme".to_string()),
+            _ => None,
+        };
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+        req.header = &both;
+        assert!(
+            matches!(
+                apply_guards(req).await,
+                Err(OrionError::RateLimitKeyUnavailable(_))
+            ),
+            "an undeclared header stays invisible even when another is declared"
+        );
+    }
+
+    /// Redundantly declaring a built-in changes nothing — it must not produce
+    /// a duplicate entry or a second lookup.
+    #[tokio::test]
+    async fn redeclaring_a_builtin_header_is_harmless() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .limiter(
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1, 1)),
+                BackendErrorPolicy::Allow,
+            )
+            .key_headers(&["x-tenant-id"])
+            .key_logic(&dl, json!({"var": "headers.x-tenant-id"}))
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+
+        let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+        req.header = &acme;
+        assert!(apply_guards(req).await.is_ok());
+
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
+        req.header = &acme;
+        assert!(
+            matches!(apply_guards(req).await, Err(OrionError::RateLimited(_))),
+            "the bucket must behave exactly as an undeclared built-in does"
+        );
+    }
+
+    /// The load-time warning's input: which `headers.*` names a stored
+    /// expression statically reads. A dynamically-composed path is skipped
+    /// rather than guessed, so the warning never fires on a false positive.
+    #[test]
+    fn key_logic_header_paths_reads_only_static_var_nodes() {
+        assert_eq!(
+            key_logic_header_paths(&json!({"var": "headers.deviceid"})),
+            vec!["deviceid".to_string()]
+        );
+        // Nested inside another operator, and with a default value.
+        assert_eq!(
+            key_logic_header_paths(&json!({
+                "cat": [{"var": "client_ip"}, ":", {"var": ["headers.X-Partner", "none"]}]
+            })),
+            vec!["x-partner".to_string()]
+        );
+        // Two names, deduplicated, order preserved.
+        assert_eq!(
+            key_logic_header_paths(&json!({
+                "cat": [{"var": "headers.a"}, {"var": "headers.b"}, {"var": "headers.a"}]
+            })),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        // Not a header path, or not statically knowable: no claim made.
+        assert!(key_logic_header_paths(&json!({"var": "client_ip"})).is_empty());
+        assert!(key_logic_header_paths(&json!({"var": "headers."})).is_empty());
+        assert!(
+            key_logic_header_paths(&json!({"var": {"cat": ["headers.", {"var": "x"}]}})).is_empty(),
+            "a composed path must not be guessed at"
+        );
     }
 
     // ---- Backpressure, on every transport ----

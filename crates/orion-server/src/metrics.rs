@@ -305,6 +305,26 @@ pub fn record_rate_limit_rejected(scope: &str) {
     counter!("orion_rate_limit_rejections_total", "scope" => scope.to_owned()).increment(1);
 }
 
+/// Record a rate-limit rejection caused by an *uncomputable key*, as distinct
+/// from a caller being over its limit.
+///
+/// Split from [`record_rate_limit_rejected`] — which it accompanies rather than
+/// replaces, so 429 accounting stays whole — because the two demand opposite
+/// responses. Over-limit is the control working; a key that will not compute is
+/// a misconfiguration that silently disables the control for every caller on
+/// the channel, and it is invisible in an aggregate rejection count. A non-zero
+/// rate here always means a channel needs its `key_logic` or `key_headers`
+/// looked at.
+///
+/// `channel` is a registry-confirmed name, never client-controlled input (O1).
+pub fn record_rate_limit_key_unavailable(channel: &str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_rate_limit_key_unavailable_total", "channel" => channel.to_owned())
+        .increment(1);
+}
+
 /// Record a response cache hit.
 pub fn record_cache_hit(channel: &str) {
     if !is_enabled() {

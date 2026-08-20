@@ -409,19 +409,88 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
             )
         })?;
     }
-    if let Some(ref rl) = parsed.rate_limit
-        && let Some(ref logic) = rl.key_logic
-    {
-        dl.compile(logic).map_err(|e| {
-            OrionError::invalid_field(
-                "channel.config.rate_limit.key_logic",
-                "INVALID",
-                format!("rate_limit.key_logic is not a valid JSONLogic expression: {e}"),
-            )
-        })?;
+    if let Some(ref rl) = parsed.rate_limit {
+        if let Some(ref logic) = rl.key_logic {
+            dl.compile(logic).map_err(|e| {
+                OrionError::invalid_field(
+                    "channel.config.rate_limit.key_logic",
+                    "INVALID",
+                    format!("rate_limit.key_logic is not a valid JSONLogic expression: {e}"),
+                )
+            })?;
+        }
+        validate_rate_limit(rl)?;
     }
     if let Some(ref cache) = parsed.cache {
         validate_cache_key_fields(cache)?;
+    }
+    Ok(())
+}
+
+/// Structurally check the non-expression parts of `rate_limit`.
+///
+/// Both rules exist because the alternative is a channel that loads clean and
+/// enforces something other than what it says. `requests_per_second: 0` is
+/// floored to 1 by `build_keyed_limiter`, so asking for "no admissions" quietly
+/// gets one per second; and a `key_headers` entry that cannot name a real
+/// header can never populate the key context, leaving `key_logic` to resolve to
+/// `null` and every request refused. Create/update/import, `POST
+/// /channels/validate` and `package apply` all funnel through here.
+fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<(), OrionError> {
+    if rl.requests_per_second == 0 {
+        return Err(OrionError::invalid_field(
+            "channel.config.rate_limit.requests_per_second",
+            "INVALID",
+            "requests_per_second must be at least 1; 0 is silently treated as 1 by the \
+             limiter, so it can never mean 'admit nothing'. Archive the channel or remove \
+             the rate_limit block instead."
+                .to_string(),
+        ));
+    }
+
+    let Some(ref names) = rl.key_headers else {
+        return Ok(());
+    };
+    if names.is_empty() {
+        return Err(OrionError::invalid_field(
+            "channel.config.rate_limit.key_headers",
+            "INVALID",
+            "key_headers must not be empty; omit the field to use the built-in header set"
+                .to_string(),
+        ));
+    }
+    let mut seen: Vec<String> = Vec::with_capacity(names.len());
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(OrionError::invalid_field(
+                "channel.config.rate_limit.key_headers",
+                "INVALID",
+                "key_headers entries must not be blank".to_string(),
+            ));
+        }
+        // `HeaderName` is the authority on what can appear on the wire: an
+        // entry it rejects can never match a real header, so a channel
+        // carrying one would silently never populate that key.
+        if axum::http::HeaderName::from_bytes(trimmed.as_bytes()).is_err() {
+            return Err(OrionError::invalid_field(
+                "channel.config.rate_limit.key_headers",
+                "INVALID",
+                format!("key_headers entry '{name}' is not a valid HTTP header name"),
+            ));
+        }
+        let lowered = trimmed.to_ascii_lowercase();
+        if seen.contains(&lowered) {
+            return Err(OrionError::invalid_field(
+                "channel.config.rate_limit.key_headers",
+                "INVALID",
+                format!(
+                    "key_headers entry '{name}' is a duplicate; header names are \
+                     case-insensitive"
+                ),
+            ));
+        }
+        seen.push(lowered);
     }
     Ok(())
 }

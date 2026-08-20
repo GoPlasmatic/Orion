@@ -25,7 +25,10 @@ at engine build time.
 > What an expression can read depends on where it appears. Workflow and task
 > expressions read the [data context](./workflows.md); `validation_logic` and
 > `key_logic` each see a smaller, dedicated context —
-> [Channel Configuration](./channel-config.md) documents both.
+> [Channel Configuration](./channel-config.md) documents both. `key_logic`'s
+> header set is closed by default and extended per channel with
+> [`rate_limit.key_headers`](./channel-config.md#rate-limiting); a path outside
+> it resolves to `null`, which is refused rather than used as a key.
 
 ## Available operators
 

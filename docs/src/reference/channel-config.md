@@ -204,6 +204,7 @@ Rules:
 | `requests_per_second` | integer | yes | — | Steady admission rate per bucket. |
 | `burst` | integer | no | `requests_per_second / 2 + 1` | Allowance above the steady rate. |
 | `key_logic` | JSONLogic | no | caller identity | Expression computing the bucket key. See the context below. |
+| `key_headers` | array of strings | no | — | Extra request headers `key_logic` may read, **merged with** the built-in set below. |
 | `on_backend_error` | string | no | `"allow"` | `allow` fails open, `deny` refuses with `503`, when the shared cluster Redis cannot answer. Irrelevant on a single node — the in-process limiter cannot fail. |
 
 The limit applies on every ingress, whether or not the platform limiter ([`[rate_limit]`](./configuration.md#rate-limiting)) is enabled.
@@ -227,18 +228,36 @@ The limit applies on every ingress, whether or not the platform limiter ([`[rate
 { "client_ip": "…", "channel": "…", "headers": { } }
 ```
 
-`client_ip` is the transport's caller identity (it keeps that name on all four ingresses). `headers` contains only these headers, when present: `authorization`, `x-api-key`, `x-forwarded-for`, `x-real-ip`, `user-agent`, `content-type`, `origin`, `x-tenant-id`. No other header is visible to `key_logic`. A non-string result is serialized to its JSON text and used as the key.
+`client_ip` is the transport's caller identity (it keeps that name on all four ingresses). `headers` contains these headers, when present: `authorization`, `x-api-key`, `x-forwarded-for`, `x-real-ip`, `user-agent`, `content-type`, `origin`, `x-tenant-id` — plus any name the channel lists in `key_headers`. No other header is visible to `key_logic`. A non-string result is serialized to its JSON text and used as the key.
+
+**`key_headers`** is what makes a house header keyable — a `deviceId`, an `x-client-id`, an `x-partner`:
+
+```json
+{
+  "rate_limit": {
+    "requests_per_second": 5,
+    "key_headers": ["deviceid"],
+    "key_logic": { "var": "headers.deviceid" }
+  }
+}
+```
+
+Names are matched case-insensitively (they are lowercased at load) and the list **adds to** the built-in set rather than replacing it, so declaring a header can never take `x-tenant-id` away from an expression that already reads it. Listing a built-in again is a no-op. The set stays closed by default because the request path materializes exactly the names that might be read — a channel does not pay an allocation per header for a key that references one of them.
+
+> [!WARNING]
+> A header is caller-supplied and therefore spoofable, so a key derived from one bounds an **honest** client. That is the right trade for a burst control, and the wrong one for a quota: forging a token-bucket key gets you a different bucket, not a bigger one, but forging a quota key is the whole attack. For per-user quotas, count in the workflow — `db_write`/`mongo_write` can increment and read back atomically — and keep this guard on top as the per-caller burst control.
 
 The key is part of the control, not a hint:
 
 - A `key_logic` that does not compile quarantines the channel at load.
 - A request whose key cannot be evaluated is rejected with `429`. Nothing falls back to `client_ip` — that would silently re-dimension a per-tenant limit into a per-IP one.
+- A request whose key evaluates to `null` or an empty string is rejected the same way. A missing path resolves to `null`, so a `key_logic` naming a header outside the set above would otherwise make the bucket key the literal string `"null"` for **every** caller — one shared bucket, and a limit that reads as enforced while enforcing nothing. Orion warns at channel load when an expression statically reads a header the context will not carry, so a typo surfaces at boot rather than as unexplained throttling.
 
 **Cross-ingress semantics.** A Kafka record refused by the limit is not dead-lettered: its offset stays uncommitted and the consumer's capped retry backoff becomes the throttle. The exception is a `key_logic` that cannot be evaluated against the record — that fails identically on every redelivery, so the record is dead-lettered instead of blocking its partition.
 
 **Cluster mode.** Per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across all replicas combined. Platform-level limits stay per node. See [Cluster Mode](../operate/cluster.md).
 
-Limiter state survives engine reloads: a channel whose `requests_per_second`, `burst`, and `key_logic` are unchanged keeps its limiter, and consumed burst is not refilled. Behind a proxy, set [`rate_limit.trusted_proxies`](./configuration.md#rate-limiting) in the server config — without it, every client behind the proxy keys on the proxy's address and collapses into one bucket.
+Limiter state survives engine reloads: a channel whose `requests_per_second`, `burst`, `key_logic`, and `key_headers` are unchanged keeps its limiter, and consumed burst is not refilled. Editing any of them re-dimensions the buckets, so the limiter is rebuilt. Behind a proxy, set [`rate_limit.trusted_proxies`](./configuration.md#rate-limiting) in the server config — without it, every client behind the proxy keys on the proxy's address and collapses into one bucket.
 
 ## Backpressure
 

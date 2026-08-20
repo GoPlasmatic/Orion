@@ -141,6 +141,10 @@ pub struct ChannelRuntimeConfig {
     pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
     pub rate_limit_key_logic: Option<Logic>,
+    /// Extra header names `rate_limit.key_logic` may read, lowercased once at
+    /// load so the request path never allocates to normalize them. `None` means
+    /// the built-in set only.
+    pub rate_limit_key_headers: Option<Arc<[String]>>,
     /// Pre-compiled JSONLogic expression for input validation.
     /// Evaluated against request data — truthy = pass, falsy = 400 reject.
     pub validation_logic: Option<Logic>,
@@ -553,17 +557,23 @@ impl ChannelRegistry {
         let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
             parsed_config.rate_limit.as_ref().map(|rl| {
                 // N6: reuse the previous limiter when its identity —
-                // (rps, burst, key_logic) — is unchanged, so consumed
-                // burst and per-key state carry across the reload.
+                // (rps, burst, key_logic, key_headers) — is unchanged, so
+                // consumed burst and per-key state carry across the reload.
                 // `on_backend_error` is deliberately not part of the
                 // identity: the policy is applied at the call site, not
                 // baked into the limiter.
+                //
+                // `key_headers` is part of it because it changes which values
+                // a key can be computed from: editing the list re-dimensions
+                // the buckets, so carrying the old per-key state forward would
+                // credit new keys with old consumption.
                 if let Some(prev) = prior
                     && let Some(prev_rl) = prev.parsed_config.rate_limit.as_ref()
                     && let Some(prev_limiter) = prev.rate_limiter.as_ref()
                     && prev_rl.requests_per_second == rl.requests_per_second
                     && prev_rl.burst == rl.burst
                     && prev_rl.key_logic == rl.key_logic
+                    && prev_rl.key_headers == rl.key_headers
                 {
                     return prev_limiter.clone();
                 }
@@ -603,6 +613,53 @@ impl ChannelRegistry {
                 })
             })
             .transpose()?;
+
+        // Lowercase once, here, so the request path compares against
+        // already-normalized names. HTTP header names are case-insensitive and
+        // every transport's lookup is byte-lowercase.
+        let rate_limit_key_headers: Option<Arc<[String]>> = parsed_config
+            .rate_limit
+            .as_ref()
+            .and_then(|rl| rl.key_headers.as_ref())
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|n| n.trim().to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .into()
+            });
+
+        // A `key_logic` reading a header no context will ever carry resolves to
+        // `null` on every request. The guard now refuses such a request rather
+        // than collapsing every caller into one bucket, but a 429 at traffic
+        // time is a poor way to learn about a typo — so say it once, at load,
+        // while the operator is still watching the deploy. A warning and not a
+        // refusal: the path may be composed dynamically in ways this cannot
+        // see, and quarantining a channel over a static guess would be worse
+        // than the defect.
+        if let Some(logic) = parsed_config
+            .rate_limit
+            .as_ref()
+            .and_then(|rl| rl.key_logic.as_ref())
+        {
+            let declared = rate_limit_key_headers.as_deref().unwrap_or(&[]);
+            let unreachable: Vec<String> = super::guards::key_logic_header_paths(logic)
+                .into_iter()
+                .filter(|name| {
+                    !super::guards::COMMON_KEY_HEADERS.contains(&name.as_str())
+                        && !declared.iter().any(|d| d == name)
+                })
+                .collect();
+            if !unreachable.is_empty() {
+                tracing::warn!(
+                    channel = %channel.name,
+                    headers = %unreachable.join(", "),
+                    "rate_limit.key_logic reads headers that are not in the key context; \
+                     every request will be refused 429 until they are added to \
+                     rate_limit.key_headers"
+                );
+            }
+        }
 
         // N4: dropping an uncompilable expression to `None` made
         // `validate_input` a no-op, so the channel's declared input
@@ -699,6 +756,7 @@ impl ChannelRegistry {
             parsed_config,
             rate_limiter,
             rate_limit_key_logic,
+            rate_limit_key_headers,
             validation_logic,
             backpressure_semaphore,
             dedup_store,
@@ -1392,8 +1450,104 @@ mod tests {
         );
     }
 
+    /// #275: `key_headers` is part of the limiter's identity too. Editing it
+    /// changes which values a key can be computed from, so the buckets are
+    /// keyed differently and the old per-key state must not carry over —
+    /// otherwise a new key inherits an old key's consumption.
+    ///
+    /// This is the omission that would ship silently: every other test in this
+    /// file still passes with `key_headers` missing from the reuse tuple.
+    #[tokio::test]
+    async fn test_reload_rebuilds_limiter_when_key_headers_change() {
+        let registry = ChannelRegistry::new();
+        let before = r#"{"rate_limit": {"requests_per_second": 1, "burst": 2, "key_headers": ["deviceid"]}}"#;
+        let issues = reload_into(&registry, test_channel("kh-ch", before)).await;
+        assert!(issues.is_empty(), "{issues:?}");
+
+        let limiter = registry
+            .get_by_name("kh-ch")
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter");
+        while limiter.check("k".to_string()).await.expect("test") {}
+
+        // An identical reload keeps the spent bucket...
+        let _ = reload_into(&registry, test_channel("kh-ch", before)).await;
+        let limiter = registry
+            .get_by_name("kh-ch")
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter");
+        assert!(
+            !limiter.check("k".to_string()).await.expect("test"),
+            "an unchanged key_headers list must reuse the limiter"
+        );
+
+        // ...while editing the declared list rebuilds it.
+        let after = r#"{"rate_limit": {"requests_per_second": 1, "burst": 2, "key_headers": ["x-client-id"]}}"#;
+        let _ = reload_into(&registry, test_channel("kh-ch", after)).await;
+        let limiter = registry
+            .get_by_name("kh-ch")
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter");
+        assert!(
+            limiter.check("k".to_string()).await.expect("test"),
+            "editing key_headers re-dimensions the buckets, so the limiter must be fresh"
+        );
+    }
+
+    /// #275: the declared list is lowercased once at load, so the request path
+    /// never normalizes a header name per request.
+    #[tokio::test]
+    async fn test_key_headers_are_lowercased_at_load() {
+        let registry = ChannelRegistry::new();
+        let issues = reload_into(
+            &registry,
+            test_channel(
+                "kh-case-ch",
+                r#"{"rate_limit": {"requests_per_second": 1, "key_headers": ["DeviceId", "X-Partner"]}}"#,
+            ),
+        )
+        .await;
+        assert!(issues.is_empty(), "{issues:?}");
+        let runtime = registry.get_by_name("kh-case-ch").expect("loaded");
+        assert_eq!(
+            runtime
+                .rate_limit_key_headers
+                .as_deref()
+                .expect("declared headers"),
+            ["deviceid".to_string(), "x-partner".to_string()]
+        );
+    }
+
+    /// #275: a `key_logic` naming a header outside the key context is a
+    /// warning, never a quarantine — the static walk cannot see a composed
+    /// path, so refusing on it would be worse than the defect it reports.
+    #[tokio::test]
+    async fn test_unreachable_key_logic_header_still_loads() {
+        let registry = ChannelRegistry::new();
+        let issues = reload_into(
+            &registry,
+            test_channel(
+                "kh-warn-ch",
+                r#"{"rate_limit": {"requests_per_second": 1, "key_logic": {"var": "headers.deviceid"}}}"#,
+            ),
+        )
+        .await;
+        assert!(
+            issues.is_empty(),
+            "an unreachable header must not quarantine the channel: {issues:?}"
+        );
+        assert!(registry.get_by_name("kh-warn-ch").is_some());
+    }
+
     /// The counterpart: changed limits get a fresh limiter with the new
-    /// shape — reuse only applies while (rps, burst, key_logic) hold.
+    /// shape — reuse only applies while (rps, burst, key_logic, key_headers)
+    /// hold.
     #[tokio::test]
     async fn test_reload_rebuilds_limiter_when_limits_change() {
         let registry = ChannelRegistry::new();

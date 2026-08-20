@@ -191,6 +191,41 @@ async fn uncompilable_rate_limit_key_logic_refuses_channel_load() {
     .await;
 }
 
+/// #275: a `key_logic` reading a header outside the key context is a warning
+/// at load, **not** a quarantine. The distinction matters in both directions:
+/// the operator must be told (the request-time answer is a 429 that looks like
+/// ordinary throttling), but the path may be composed in ways the static check
+/// cannot see, so refusing the channel on a static guess would be worse than
+/// the defect it warns about.
+#[tokio::test]
+async fn an_unreachable_key_logic_header_warns_but_still_loads() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    common::create_and_activate_channel_with_config(
+        &app,
+        "warn-ch",
+        common::simple_log_workflow("Warn WF"),
+        json!({"rate_limit": {"requests_per_second": 10, "key_logic": {"var": "headers.deviceid"}}}),
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
+
+    assert!(
+        state.channel_registry.get_by_name("warn-ch").is_some(),
+        "an unreachable header is a warning, not a quarantine — the channel must load"
+    );
+    assert!(
+        state
+            .channel_registry
+            .quarantine_reason("warn-ch")
+            .is_none(),
+        "the channel must not be quarantined for a statically-unreachable header"
+    );
+}
+
 /// F35: the defect this change fixes. One channel with an unparseable
 /// `config_json` used to fail *every* operation that triggers a reload —
 /// activate, archive, delete, rollout — with a 500 `CONFIG_ERROR`, because the

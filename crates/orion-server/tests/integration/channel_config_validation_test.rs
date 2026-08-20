@@ -97,7 +97,7 @@ async fn assert_channel_rejected(
 #[tokio::test]
 async fn rejection_matrix_on_create_and_update() {
     // (case name, payload under test, expected details path, expected code)
-    let cases: [(&str, Value, &str, Option<&str>); 5] = [
+    let cases: [(&str, Value, &str, Option<&str>); 10] = [
         // `rate_limit` must be an object with requests_per_second; a
         // number-shaped value fails at deserialize.
         (
@@ -138,6 +138,57 @@ async fn rejection_matrix_on_create_and_update() {
             json!({ "methods": [] }),
             "channel.methods",
             None,
+        ),
+        // #275: `requests_per_second: 0` used to be accepted and floored to 1
+        // by the limiter, so asking for "admit nothing" quietly got one per
+        // second — a limit that reads as far stricter than it is.
+        (
+            "zero-rps",
+            json!({ "config": {
+                "rate_limit": { "requests_per_second": 0 }
+            } }),
+            "channel.config.rate_limit.requests_per_second",
+            Some("INVALID"),
+        ),
+        // The remaining four are all the same failure: a `key_headers` entry
+        // that cannot name a real header never populates the key context, so
+        // `key_logic` resolves to `null` and every request is refused. The
+        // channel would load clean and reject all its traffic.
+        (
+            "empty-key-headers",
+            json!({ "config": {
+                "rate_limit": { "requests_per_second": 10, "key_headers": [] }
+            } }),
+            "channel.config.rate_limit.key_headers",
+            Some("INVALID"),
+        ),
+        (
+            "blank-key-header",
+            json!({ "config": {
+                "rate_limit": { "requests_per_second": 10, "key_headers": ["  "] }
+            } }),
+            "channel.config.rate_limit.key_headers",
+            Some("INVALID"),
+        ),
+        (
+            "non-token-key-header",
+            json!({ "config": {
+                "rate_limit": { "requests_per_second": 10, "key_headers": ["device id"] }
+            } }),
+            "channel.config.rate_limit.key_headers",
+            Some("INVALID"),
+        ),
+        // Header names are case-insensitive, so these are one name twice.
+        (
+            "duplicate-key-header",
+            json!({ "config": {
+                "rate_limit": {
+                    "requests_per_second": 10,
+                    "key_headers": ["deviceid", "DeviceId"]
+                }
+            } }),
+            "channel.config.rate_limit.key_headers",
+            Some("INVALID"),
         ),
     ];
 
@@ -184,6 +235,61 @@ async fn well_formed_config_still_accepts() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
+}
+
+/// #275: the shape the rejection matrix exists to make expressible — a
+/// declared header, keyed on. The complement to those four rejection rows:
+/// without this, over-strict validation would refuse the one config the
+/// feature was added for and no test would notice.
+#[tokio::test]
+async fn a_declared_key_header_is_accepted_and_round_trips() {
+    let app = test_app().await;
+    let config = json!({
+        "rate_limit": {
+            "requests_per_second": 5,
+            "key_headers": ["deviceid"],
+            "key_logic": { "var": "headers.deviceid" }
+        }
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "per-device",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/per-device",
+                "config": config,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let channel_id = body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The stored config must come back byte-identical: `key_headers` is not
+    // dropped by a serde round-trip, and not masked.
+    let resp = app
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/channels/{channel_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["config"]["rate_limit"]["key_headers"],
+        json!(["deviceid"]),
+        "key_headers must survive create → read"
+    );
 }
 
 #[tokio::test]

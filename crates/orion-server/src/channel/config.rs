@@ -474,6 +474,21 @@ pub struct ChannelRateLimitConfig {
     /// Example: `{ "cat": [{ "var": "client_ip" }, ":", { "var": "headers.x-tenant-id" }] }`
     #[serde(default)]
     pub key_logic: Option<Value>,
+    /// Extra request headers `key_logic` may read, beyond the built-in set
+    /// (`authorization`, `x-api-key`, `x-forwarded-for`, `x-real-ip`,
+    /// `user-agent`, `content-type`, `origin`, `x-tenant-id`).
+    ///
+    /// **Merged with the built-ins, never replacing them** — declaring
+    /// `["deviceid"]` cannot take `x-tenant-id` away from an expression that
+    /// already reads it, so no stored `key_logic` changes meaning. Names are
+    /// lowercased at load (HTTP header names are case-insensitive), and a
+    /// redundant declaration of a built-in is a no-op.
+    ///
+    /// Note a header is caller-supplied and therefore spoofable: a key derived
+    /// from one bounds an honest client, which is appropriate for a burst
+    /// control and not for a quota.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_headers: Option<Vec<String>>,
     /// Policy when the rate-limit backend (the shared cluster Redis) cannot
     /// answer. Irrelevant to the in-process limiter, which cannot fail.
     #[serde(default)]

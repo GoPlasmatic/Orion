@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `rate_limit.key_logic` that resolves to nothing no longer collapses every
+  caller into one bucket** ([#275]). `key_logic` could only read eight
+  hard-coded header names, and a reference to any other header was not an
+  error: a missing path resolves to `null` in datalogic, and the guard
+  serialized that into the key — so the bucket became the literal string
+  `"null"` for **every** caller on the channel. An intended per-device or
+  per-partner quota silently became one shared channel-wide bucket, with no
+  log, no warning and no metric. A single typo (`deviceid` vs `device-id`) was
+  enough.
+
+  A key that resolves to `null` or an empty string is now refused with
+  `429 RATE_LIMITED` (`RateLimitKeyUnavailable`), exactly as a key that fails
+  to evaluate already was — the N5 rule that a request whose key cannot be
+  computed is rejected rather than counted in the wrong bucket. This is what
+  `docs/src/reference/channel-config.md` has always said happens.
+
+  **Behaviour change on upgrade.** A channel with a typo'd header name
+  previously appeared to work and will now begin refusing requests. That
+  configuration was never enforcing the limit it declared — it was admitting
+  unbounded traffic against a control that read as active — so the refusal
+  surfaces a defect rather than creating one. To make it visible before
+  traffic arrives, Orion now **warns at channel load** when a `key_logic`
+  statically reads a header the key context will not carry, naming the channel
+  and the header. Fix such a channel by adding the name to the new
+  `rate_limit.key_headers` (below), or by correcting the path.
+
+- **`rate_limit.requests_per_second: 0` is refused at authoring time.** It was
+  accepted and floored to `1` by the limiter, so asking for "admit nothing"
+  quietly got one request per second. Stored channels are unaffected until
+  rewritten.
+
+### Added
+
+- **`rate_limit.key_headers`** ([#275]) — a per-channel list of extra request
+  headers `key_logic` may read, making per-device, per-partner and
+  per-API-client limits expressible for the first time. The list is **merged
+  with** the built-in eight rather than replacing them, so no stored
+  `key_logic` changes meaning, and names are matched case-insensitively.
+  `key_headers` joins `(requests_per_second, burst, key_logic)` in the
+  limiter-reuse identity, so editing it rebuilds the limiter instead of
+  carrying per-key state across a re-dimensioning.
+
+- **`orion_rate_limit_key_unavailable_total{channel}`** — counts rate-limit
+  refusals caused by an uncomputable key, as distinct from a caller being over
+  its limit. The two demand opposite responses: over-limit is the control
+  working, while an uncomputable key is a misconfiguration that disables the
+  control for every caller, and it was previously indistinguishable inside the
+  aggregate `orion_rate_limit_rejections_total`. A non-zero rate here always
+  means a channel's `key_logic` or `key_headers` needs attention.
+
+[#275]: https://github.com/GoPlasmatic/Orion/issues/275
+
 ## [1.0.0] - 2026-08-14
 
 **Highlights.** The promotion story: an `orion-server package` CLI
