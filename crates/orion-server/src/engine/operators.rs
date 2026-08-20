@@ -1,9 +1,10 @@
-//! Orion's custom JSONLogic operators — the encoding glue of #259(c) and the
-//! `random` generator of #260.
+//! Orion's custom JSONLogic operators — the encoding glue of #259(c), the
+//! `random` generator of #260, and the string operators of #276.
 //!
-//! Six pure encoding operators (`base64_encode`/`base64_decode`,
-//! `base64url_encode`/`base64url_decode`, `hex_encode`/`hex_decode`) plus the
-//! CSPRNG-backed `random`, registered on every engine that evaluates authored
+//! Eight pure encoding operators (`base64_encode`/`base64_decode`,
+//! `base64url_encode`/`base64url_decode`, `hex_encode`/`hex_decode`,
+//! `url_encode`/`url_decode`) plus the CSPRNG-backed `random` and `join`,
+//! registered on every engine that evaluates authored
 //! expressions, so they compose inside conditions, `map` logic, `body_logic`
 //! — anywhere JSONLogic runs. They are Orion's
 //! vocabulary, not datalogic-rs's: the implementations live here and enter
@@ -364,6 +365,139 @@ fn alphabet_chars(arg: Option<&DataValue<'_>>) -> Result<Cow<'static, [char]>, E
     Ok(chars)
 }
 
+/// Percent-encode text for a URL, RFC 3986 style.
+///
+/// There is no percent-encoder reachable from JSONLogic otherwise, and
+/// `http_call` has no `query` field — an outbound query string is assembled
+/// with `cat` into `path`/`path_logic`. Interpolating an unescaped value there
+/// silently restructures the URL: a `&` or `#` in the value ends the parameter
+/// or starts a fragment, and a `+` is decoded as a space by any form-decoding
+/// server. That is a correctness and injection hole with no other mitigation.
+struct UrlEncode;
+
+impl CustomOperator for UrlEncode {
+    fn evaluate<'a>(
+        &self,
+        args: &[&'a DataValue<'a>],
+        _ctx: &mut EvalContext<'_, 'a>,
+        arena: &'a datalogic::bumpalo::Bump,
+    ) -> datalogic::Result<&'a DataValue<'a>> {
+        // Same text model as the encoders, `null` included: silently encoding
+        // a missing variable into an empty query value is the failure class
+        // the codec operators already reject.
+        let text = encode_text("url_encode", args)?;
+        // The one RFC 3986 encoder in the tree, shared with SigV4 signing so
+        // the two can never disagree about the unreserved set.
+        Ok(arena.string(&crate::connector::sigv4::uri_encode(&text, false)))
+    }
+}
+
+/// The inverse of [`UrlEncode`]. Strict, like the other decoders: an invalid
+/// `%XX` sequence or a non-UTF-8 result is an error, never a lossy guess.
+struct UrlDecode;
+
+impl CustomOperator for UrlDecode {
+    fn evaluate<'a>(
+        &self,
+        args: &[&'a DataValue<'a>],
+        _ctx: &mut EvalContext<'_, 'a>,
+        arena: &'a datalogic::bumpalo::Bump,
+    ) -> datalogic::Result<&'a DataValue<'a>> {
+        let input = decode_text("url_decode", args)?;
+        // Shared with route-parameter decoding, which returns `None` on both
+        // failure modes. Note this does **not** treat `+` as a space: that is
+        // form-encoding, and the correct inverse of RFC 3986 leaves it alone.
+        let decoded = crate::channel::routing::percent_decode_segment(input).ok_or_else(|| {
+            Error::custom_message(
+                "url_decode: invalid input — a malformed %XX sequence, or bytes that are not \
+                 valid UTF-8"
+                    .to_string(),
+            )
+        })?;
+        Ok(arena.string(&decoded))
+    }
+}
+
+/// Join an array's elements with a separator.
+///
+/// `cat` flattens one array level, so `{"cat": [arr]}` is already
+/// `join(arr, "")` — but a non-empty separator has no correct spelling. The
+/// reduce-with-sentinel idiom cannot distinguish "first element" from "first
+/// element is empty" (`["", "b"]` yields `"b"`, not `", b"`), and an author
+/// cannot fix that without a second sentinel that is itself unrepresentable.
+struct Join;
+
+impl CustomOperator for Join {
+    fn evaluate<'a>(
+        &self,
+        args: &[&'a DataValue<'a>],
+        _ctx: &mut EvalContext<'_, 'a>,
+        arena: &'a datalogic::bumpalo::Bump,
+    ) -> datalogic::Result<&'a DataValue<'a>> {
+        let Some(first) = args.first() else {
+            return Err(Error::custom_message(
+                "join requires an array and a separator".to_string(),
+            ));
+        };
+        let Some(items) = first.as_array() else {
+            // `cat` already handles scalars; a scalar here is a mistake worth
+            // naming rather than silently stringifying.
+            return Err(Error::custom_message(format!(
+                "join: first argument must be an array, got {}",
+                type_name(first)
+            )));
+        };
+        // A missing separator is an error, not an implicit "": `join(arr, "")`
+        // is spelled explicitly, and it is exactly `cat(arr)`.
+        let Some(sep) = args.get(1).and_then(|v| v.as_str()) else {
+            return Err(Error::custom_message(
+                "join requires a string separator as its second argument".to_string(),
+            ));
+        };
+
+        let mut out = String::new();
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 {
+                out.push_str(sep);
+            }
+            out.push_str(&render_element(item));
+        }
+        Ok(arena.string(&out))
+    }
+}
+
+/// Render one array element exactly as `cat` renders it, so
+/// `join(arr, "") == cat(arr)` — one answer per question.
+///
+/// Note `null` becomes `""` here rather than an error. The null-is-an-error
+/// rule governs an operator's *own* argument, where null means a missing
+/// variable; inside an array being joined it is a value, and `cat` already
+/// renders it empty.
+fn render_element<'v>(v: &'v DataValue<'v>) -> Cow<'v, str> {
+    match v.as_str() {
+        Some(s) => Cow::Borrowed(s),
+        None if v.is_null() => Cow::Borrowed(""),
+        None => Cow::Owned(v.to_string()),
+    }
+}
+
+/// A value's JSON type name, for error messages.
+fn type_name(v: &DataValue<'_>) -> &'static str {
+    if v.is_null() {
+        "null"
+    } else if v.as_bool().is_some() {
+        "boolean"
+    } else if v.as_str().is_some() {
+        "string"
+    } else if v.as_array().is_some() {
+        "array"
+    } else if v.as_object().is_some() {
+        "object"
+    } else {
+        "number"
+    }
+}
+
 /// Every operator Orion registers, name first. One list so the two
 /// registration paths below (and the vocabulary test) cannot drift.
 fn all() -> impl Iterator<Item = (&'static str, OrionOperator)> {
@@ -380,7 +514,17 @@ fn all() -> impl Iterator<Item = (&'static str, OrionOperator)> {
                 (dec, OrionOperator::Decode(Decode { name: dec, codec })),
             ]
         })
-        .chain([("random", OrionOperator::Random(Random))])
+        .chain([
+            ("random", OrionOperator::Random(Random)),
+            ("url_encode", OrionOperator::UrlEncode(UrlEncode)),
+            ("url_decode", OrionOperator::UrlDecode(UrlDecode)),
+            // Plain `join`, not `str_join`: datalogic's compile walker tries
+            // `OpCode` first and only falls through to the custom registry, so
+            // a future `ext-string` `join` would shadow this one. The
+            // vocabulary test asserts on **values**, not compile success, so
+            // such a shadow fails CI rather than silently changing semantics.
+            ("join", OrionOperator::Join(Join)),
+        ])
 }
 
 /// The concrete operator behind one registered name.
@@ -388,6 +532,9 @@ enum OrionOperator {
     Encode(Encode),
     Decode(Decode),
     Random(Random),
+    UrlEncode(UrlEncode),
+    UrlDecode(UrlDecode),
+    Join(Join),
 }
 
 impl CustomOperator for OrionOperator {
@@ -401,6 +548,9 @@ impl CustomOperator for OrionOperator {
             OrionOperator::Encode(op) => op.evaluate(args, ctx, arena),
             OrionOperator::Decode(op) => op.evaluate(args, ctx, arena),
             OrionOperator::Random(op) => op.evaluate(args, ctx, arena),
+            OrionOperator::UrlEncode(op) => op.evaluate(args, ctx, arena),
+            OrionOperator::UrlDecode(op) => op.evaluate(args, ctx, arena),
+            OrionOperator::Join(op) => op.evaluate(args, ctx, arena),
         }
     }
 }
@@ -472,6 +622,147 @@ mod tests {
         assert_eq!(
             eval(json!({"base64_encode": ["sign?me>"]})).expect("test"),
             json!("c2lnbj9tZT4=")
+        );
+    }
+
+    #[test]
+    fn url_encode_uses_the_rfc_3986_unreserved_set() {
+        // Unreserved characters survive; everything else is uppercase %XX.
+        assert_eq!(
+            eval(json!({"url_encode": ["AZaz09-_.~"]})).expect("test"),
+            json!("AZaz09-_.~")
+        );
+        // The three that silently corrupt a query string when interpolated
+        // raw: `&` ends the parameter, `#` starts a fragment, `+` is decoded
+        // as a space by a form-decoding server.
+        assert_eq!(
+            eval(json!({"url_encode": ["a b+c&d#e"]})).expect("test"),
+            json!("a%20b%2Bc%26d%23e")
+        );
+        // Space is %20, never `+` — this is RFC 3986, not form-encoding.
+        assert_eq!(
+            eval(json!({"url_encode": [" "]})).expect("test"),
+            json!("%20")
+        );
+        // Stricter than JavaScript's encodeURIComponent, which leaves !'()*
+        // literal. Pinned because it is the comparison an author will make.
+        assert_eq!(
+            eval(json!({"url_encode": ["!'()*"]})).expect("test"),
+            json!("%21%27%28%29%2A")
+        );
+        // Multi-byte input encodes per UTF-8 byte.
+        assert_eq!(
+            eval(json!({"url_encode": ["é"]})).expect("test"),
+            json!("%C3%A9")
+        );
+    }
+
+    #[test]
+    fn url_encode_round_trips_and_decodes_strictly() {
+        for text in ["hello world", "a&b=c", "é@ü", "100%"] {
+            let encoded = eval(json!({"url_encode": [text]})).expect("test");
+            assert_eq!(
+                eval(json!({"url_decode": [encoded]})).expect("test"),
+                json!(text),
+                "round trip of {text:?}"
+            );
+        }
+        // `+` is left alone: the correct RFC 3986 inverse, not form-decoding.
+        assert_eq!(
+            eval(json!({"url_decode": ["a+b"]})).expect("test"),
+            json!("a+b")
+        );
+        // Strict: a malformed escape is an error, never a lossy guess.
+        for bad in ["%", "%2", "%ZZ", "%C3%28"] {
+            let err = eval(json!({"url_decode": [bad]})).expect_err(bad);
+            assert!(err.contains("url_decode"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn url_encode_of_null_is_an_error() {
+        // Encoding a missing variable into an empty query value is the
+        // failure class the codec operators already refuse.
+        let err = eval(json!({"url_encode": [{"var": "nope"}]})).expect_err("test");
+        assert!(err.contains("url_encode"), "{err}");
+        // And a non-string coerces to its compact JSON, like the codecs.
+        assert_eq!(
+            eval(json!({"url_encode": [42]})).expect("test"),
+            json!("42")
+        );
+    }
+
+    #[test]
+    fn join_inserts_the_separator_between_elements() {
+        assert_eq!(
+            eval(json!({"join": [["a", "b", "c"], ", "]})).expect("test"),
+            json!("a, b, c")
+        );
+        assert_eq!(eval(json!({"join": [[], "-"]})).expect("test"), json!(""));
+        assert_eq!(
+            eval(json!({"join": [["solo"], "-"]})).expect("test"),
+            json!("solo")
+        );
+    }
+
+    /// The defect that makes `join` worth having: the only idiom available
+    /// today — reduce with an `accumulator == ""` sentinel — cannot tell
+    /// "first element" from "first element is empty", so `["", "b"]` joins to
+    /// `"b"` instead of `", b"`. An author cannot fix that without a second
+    /// sentinel that is itself unrepresentable.
+    #[test]
+    fn join_preserves_a_leading_empty_element() {
+        assert_eq!(
+            eval(json!({"join": [["", "b"], ", "]})).expect("test"),
+            json!(", b")
+        );
+        assert_eq!(
+            eval(json!({"join": [["", "", "x"], "|"]})).expect("test"),
+            json!("||x")
+        );
+    }
+
+    /// One answer per question: `join(arr, "")` must be exactly `cat(arr)`,
+    /// including how each element renders. This is the guard that would fail
+    /// if the two ever disagreed about numbers, booleans or nulls.
+    #[test]
+    fn join_with_an_empty_separator_equals_cat() {
+        for arr in [
+            json!(["a", "b", "c"]),
+            json!([1, 2, 3]),
+            json!([1.5, true, false]),
+            json!(["a", null, "b"]),
+            json!([{"k": 1}, [2, 3]]),
+        ] {
+            assert_eq!(
+                eval(json!({"join": [arr.clone(), ""]})).expect("test"),
+                eval(json!({"cat": [arr.clone()]})).expect("test"),
+                "join(arr, \"\") must equal cat(arr) for {arr}"
+            );
+        }
+    }
+
+    #[test]
+    fn join_refuses_a_non_array_or_a_missing_separator() {
+        let err = eval(json!({"join": ["not-an-array", "-"]})).expect_err("test");
+        assert!(err.contains("must be an array"), "{err}");
+        assert!(
+            err.contains("string"),
+            "the message names the type it got: {err}"
+        );
+
+        let err = eval(json!({"join": [["a", "b"]]})).expect_err("test");
+        assert!(err.contains("separator"), "{err}");
+    }
+
+    /// Once `join` exists, `replace(s, from, to)` is `join(split(s, from), to)`
+    /// — which is why no `replace` operator is registered. Pinned so the
+    /// documented idiom cannot rot.
+    #[test]
+    fn replace_is_expressible_as_join_of_split() {
+        assert_eq!(
+            eval(json!({"join": [{"split": ["a-b-c", "-"]}, "+"]})).expect("test"),
+            json!("a+b+c")
         );
     }
 

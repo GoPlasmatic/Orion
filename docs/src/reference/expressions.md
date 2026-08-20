@@ -156,6 +156,61 @@ allowed. Values are drawn live in dry-run and `orion-server test` too — like
 |----------|---------|---------|
 | `random` | `{ "random": ["digits", 6] }` | Kind-selected generation: `["uuid"]` / `["uuid", "v7"]` (canonical UUID; v7 is time-sortable), `["digits", n]` (exactly-n digits, leading zeros kept — the OTP shape, n ≤ 64), `["int", min, max]` (inclusive, within ±2⁵³−1), `["string", len, alphabet?]` (len ≤ 1024; named sets `alphanumeric` (default) / `hex` / `numeric` / `url-safe`, or a custom string of 2–256 distinct characters), `["bytes", n, encoding?]` (n ≤ 1024; `hex` default / `base64` / `base64url` per the encoding table above) |
 
+### Strings (Orion operators)
+
+Registered by Orion, so — like the encoding and randomness operators above and
+unlike [`ext-string`](#strings-ext-string) — they are not gated by a cargo
+feature and are available on every expression surface.
+
+`url_encode` follows the same text model as the encoders: a string encodes as
+its UTF-8 bytes, any other value as its compact-JSON text, and `null` is an
+error rather than an empty value. `url_decode` is strict — a malformed `%XX`
+sequence or a non-UTF-8 result is an evaluation error, never a lossy guess.
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `url_encode` | `{ "url_encode": [{ "var": "data.email" }] }` | Percent-encode per RFC 3986: unreserved `A–Z a–z 0–9 - _ . ~` survive, everything else becomes uppercase `%XX` |
+| `url_decode` | `{ "url_decode": [{ "var": "data.state" }] }` | The exact inverse of `url_encode` |
+| `join` | `{ "join": [{ "var": "data.tags" }, ", "] }` | Join an array's elements with a separator |
+
+**`url_encode` is RFC 3986, not form-encoding.** A space becomes `%20`, never
+`+`, and a literal `+` becomes `%2B`. It is also *stricter* than JavaScript's
+`encodeURIComponent`, which leaves `!'()*` literal — that is the comparison
+most authors will make. `url_decode` correspondingly does **not** treat `+` as
+a space.
+
+Reach for `url_encode` whenever a value is interpolated into an outbound query
+string, which today means building `path` or `path_logic` with `cat`:
+
+```json
+{ "cat": ["/search?q=", { "url_encode": [{ "var": "data.term" }] }] }
+```
+
+Without it, a value containing `&` or `#` silently restructures or truncates
+the query — a correctness and injection hole with no other mitigation, since
+`http_call` has no `query` field.
+
+**`join` takes both arguments.** A missing separator is an error, not an
+implicit `""`, and a non-array first argument is an error too (`cat` already
+handles scalars). Elements render exactly as `cat` renders them, so
+`{"join": [arr, ""]}` is precisely `{"cat": [arr]}`.
+
+Two idioms follow from `join` and are worth knowing instead of asking for more
+operators:
+
+- **`replace(s, from, to)` is `{"join": [{"split": [s, from]}, to]}`** — literal
+  substring replacement, not a regex. (`{"cat": [{"split": [s, from]}]}` is the
+  delete-all form and worked before `join` existed.) Splitting on an empty
+  delimiter explodes into characters, so guard against that.
+- **`{"cat": [arr]}`** remains the fastest spelling of `join(arr, "")`.
+
+> [!WARNING]
+> `{"cat": [arr, "|"]}` does **not** join with `|` — `cat` flattens the array
+> and then appends the separator once, at the end. The `reduce`-with-sentinel
+> workaround is also wrong: it cannot distinguish "first element" from "first
+> element is empty", so `["", "b"]` joins to `"b"` rather than `", b"`. Use
+> `join`.
+
 ## Sharp edges
 
 Five operators take a shape or a value that is easy to get wrong. Each bullet

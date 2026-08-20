@@ -338,6 +338,29 @@ const OPERATORS: &[OperatorCase] = &[
     // bytes) are shape-asserted in the operator's own unit tests, the same
     // division of labor `now` gets.
     ("random", || json!({"random": ["int", 5, 5]}), || json!(5)),
+    // ---- strings (Orion operators) ----
+    (
+        "url_encode",
+        // The three characters that silently restructure a query string when
+        // interpolated raw, plus a space — RFC 3986, so space is %20 and `+`
+        // is escaped rather than meaning one.
+        || json!({"url_encode": ["a b+c&d"]}),
+        || json!("a%20b%2Bc%26d"),
+    ),
+    (
+        "url_decode",
+        || json!({"url_decode": ["a%20b%2Bc%26d"]}),
+        || json!("a b+c&d"),
+    ),
+    (
+        "join",
+        // Asserted on the value, not on compile success: `join` is a name a
+        // future datalogic `ext-string` could plausibly take, and a built-in
+        // always shadows a custom registration. A shadow with different
+        // semantics fails here rather than silently changing behaviour.
+        || json!({"join": [{"var": "nums"}, "-"]}),
+        || json!("3-1-2"),
+    ),
 ];
 
 /// Operator names documented in the "Available operators" section.

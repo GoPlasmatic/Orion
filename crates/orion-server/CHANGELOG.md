@@ -67,6 +67,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **JSONLogic string operators `url_encode`, `url_decode` and `join`**
+  ([#276]). Orion-registered like the encoding and randomness operators, so
+  they are not gated by a cargo feature and work on every expression surface.
+
+  `url_encode` closes a hole with no previous workaround: `http_call` has no
+  `query` field, so an outbound query string is assembled with `cat` into
+  `path`/`path_logic`, and nothing reachable from JSONLogic could
+  percent-encode. Interpolating an unescaped value silently restructures the
+  URL — a `&` ends the parameter, a `#` starts a fragment, a `+` is decoded as
+  a space by any form-decoding server. It follows RFC 3986 (space is `%20`,
+  `+` is `%2B`), reusing the same encoder as SigV4 signing so the two cannot
+  disagree, and is stricter than JavaScript's `encodeURIComponent`, which
+  leaves `!'()*` literal.
+
+  `join` replaces an idiom that is verifiably wrong. `{"cat": [arr, "|"]}`
+  appends the separator once at the end rather than between elements, and the
+  `reduce`-with-sentinel alternative cannot distinguish "first element" from
+  "first element is empty" — `["", "b"]` joins to `"b"` instead of `", b"`,
+  which an author cannot fix without a second unrepresentable sentinel.
+  `{"join": [arr, ""]}` is exactly `{"cat": [arr]}`, and
+  `{"join": [{"split": [s, from]}, to]}` is literal-substring `replace`, which
+  is why no `replace` operator was added.
+
 - **`orion_rate_limit_key_unavailable_total{channel}`** — counts rate-limit
   refusals caused by an uncomputable key, as distinct from a caller being over
   its limit. The two demand opposite responses: over-limit is the control
@@ -107,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
+[#276]: https://github.com/GoPlasmatic/Orion/issues/276
 
 ## [1.0.0] - 2026-08-14
 
