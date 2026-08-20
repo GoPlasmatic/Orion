@@ -167,6 +167,13 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             if !child_meta.is_object() {
                 child_meta = serde_json::json!({});
             }
+            // #280: the child inherits the parent's metadata wholesale, so
+            // without this it would start life carrying — and branching on —
+            // the *parent's* failed tasks as if they were its own. Its own
+            // failures are recorded by the engine as they happen.
+            if let Some(map) = child_meta.as_object_mut() {
+                map.remove(crate::engine::ERROR_CONTEXT_KEY);
+            }
             // The calling channel, read before the override below replaces
             // it: it is this call's caller identity, so a target's rate limit
             // buckets per calling channel rather than lumping every

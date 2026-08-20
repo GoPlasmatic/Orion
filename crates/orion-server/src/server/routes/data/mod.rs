@@ -436,6 +436,15 @@ fn build_request_metadata(
     // same shape for cookies would be session forgery, given that the
     // motivating use is matching the value against stored session records.
     // Follow `channel` and `headers`, which are stamped unconditionally.
+    // #280: `metadata._orion_errors` is engine-owned. The `_orion_` prefix is
+    // a naming convention, not an enforced namespace — a caller can supply
+    // `_orion_call_depth` today and nothing strips it — so this key is cleared
+    // unconditionally at ingress, the way `channel` and `headers` are
+    // force-stamped. Without it a caller could pre-seed failures a workflow
+    // then branches on.
+    if let Some(map) = metadata.as_object_mut() {
+        map.remove(crate::engine::ERROR_CONTEXT_KEY);
+    }
     match cookie_allowlist {
         Some(names) => {
             let jar = headers

@@ -204,6 +204,7 @@ The contract:
 - **Sanitized is the production posture.** Raw messages can embed upstream URLs, connector names, and driver errors, which must not reach anonymous data-plane callers. `verbose_errors = true` is refused in production and the server will not start.
 - **Nothing is lost.** The persisted trace keeps the original messages. Correlate with the `request_id` the envelope adds whenever `errors` is non-empty.
 - **The data plane only.** Admin 5xx messages always name the failure class; their detail goes to the server log regardless of this setting.
+- **Workflow-visible failure records carry no message.** [`metadata._orion_errors`](./workflows.md#branching-on-a-failure) exposes `code`, `task_id`, `workflow_id` and `status` so a workflow can branch on *why* a step failed — the same fields this contract already lets through. A message there would defeat the setting entirely: a workflow could copy it into `data`, which is returned unsanitized.
 
 The [configuration reference](./configuration.md#server) owns the setting's values and environment-dependent default.
 

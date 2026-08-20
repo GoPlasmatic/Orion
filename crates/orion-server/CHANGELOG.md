@@ -106,6 +106,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
 
+- **`metadata._orion_errors`** ([#280]) — the **code** of each failed task,
+  readable by later task logic under `continue_on_error`.
+
+  A task's failure *reason* was unreachable by any spelling: the JSONLogic
+  context is exactly `{data, metadata, temp_data}` and `Message::errors` is a
+  private sibling field, so `{"var": "errors"}` resolved to nothing. The only
+  branching signal was `metadata.progress`, which is a single slot overwritten
+  by every subsequent task and hard-codes `status_code: 500` on failure — so
+  `HTTP_ERROR`, `IO_ERROR`, `TIMEOUT_ERROR` and an open circuit were
+  indistinguishable, which is exactly the transport-vs-protocol distinction a
+  migrated error contract needs.
+
+  Records carry `{workflow_id, task_id, code, status}` — **never a message**.
+  That is the load-bearing constraint, not a detail: a task error's message can
+  embed the upstream URL and response body, and the only thing keeping that
+  from an anonymous caller is `sanitize_errors` plus the production refusal of
+  `verbose_errors`. A workflow-visible message would route around both in one
+  `map` task, since `data` is returned unsanitized.
+
+  The key is cleared at every ingress and reset on `channel_call`, because the
+  `_orion_` prefix is a naming convention rather than an enforced namespace —
+  a caller can supply `_orion_call_depth` today and nothing strips it. So a
+  caller cannot pre-seed failures, and a called channel never reports its
+  caller's.
+
+  Also fills two pre-existing documentation gaps the work surfaced:
+  `metadata.progress` was an intentional, readable branching surface that was
+  entirely undocumented (and contradicted by the workflows reference), and
+  **task-level** `continue_on_error` was absent from the task field table
+  despite being supported.
+
 - **`server.data_mounts`** ([#279]) — serve the data plane at additional path
   prefixes, so deployed clients calling legacy paths no longer need a reverse
   proxy whose only job is to prepend `/api/v1/data`.
@@ -358,6 +389,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#277]: https://github.com/GoPlasmatic/Orion/issues/277
 [#278]: https://github.com/GoPlasmatic/Orion/issues/278
 [#279]: https://github.com/GoPlasmatic/Orion/issues/279
+[#280]: https://github.com/GoPlasmatic/Orion/issues/280
 
 ## [1.0.0] - 2026-08-14
 

@@ -50,6 +50,7 @@ Each entry in `tasks` is a single step in the pipeline:
 | `name` | string | **yes** | — | Human-readable label |
 | `function` | object | **yes** | — | The function to run — see below |
 | `condition` | JSONLogic | no | — | If present and falsy, this task is skipped |
+| `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's failure |
 
 The `function` object names a [built-in function](./functions.md) and supplies
 its `input`:
@@ -160,8 +161,53 @@ Orion reserves these keys and no others:
 | `_orion.profile` | response envelope | Per-task timings when profiling is requested. Never in the context. See the [Data API](./data-api.md) |
 | `metadata._orion_call_depth` | context | `channel_call` nesting depth |
 | `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
+| `metadata._orion_errors` | context | Codes of tasks that failed in this run — see [Branching on a failure](#branching-on-a-failure) |
 
-No other key or prefix in the context is reserved.
+No other key or prefix in the context is reserved. `metadata.progress` is
+engine-owned too, but it belongs to dataflow-rs rather than Orion — see below.
+
+### Branching on a failure
+
+When a task fails and the run continues (`continue_on_error`), the engine
+appends a record to `metadata._orion_errors`, so a later task can answer
+differently depending on **why** the step failed:
+
+```json
+{ "task_id": "charge_payment", "workflow_id": "place-order",
+  "code": "TIMEOUT_ERROR", "status": 500 }
+```
+
+`code` is a closed vocabulary — `VALIDATION_ERROR`, `WORKFLOW_ERROR`,
+`TASK_ERROR`, `FUNCTION_NOT_FOUND`, `FUNCTION_ERROR`, `LOGIC_ERROR`,
+`HTTP_ERROR`, `TIMEOUT_ERROR`, `IO_ERROR`, `DESERIALIZATION_ERROR`,
+`UNKNOWN_ERROR`, plus service kinds Orion mints such as `circuit_open`.
+`status` separates a handler that returned an error (always `500`) from a task
+that returned a 5xx *outcome*.
+
+```json
+{ "id": "retry_later",
+  "condition": { "in": [ { "var": "metadata._orion_errors.0.code" },
+                         ["TIMEOUT_ERROR", "IO_ERROR"] ] } }
+```
+
+Three properties to rely on:
+
+- **No message, ever.** Records carry codes and task ids only. A task error's
+  message can contain an upstream URL and response body, which
+  [`verbose_errors`](./errors.md#message-sanitization-verbose_errors) exists to
+  keep from anonymous callers — a workflow-visible message would route around
+  that entirely, since `data` is returned unsanitized.
+- **Not caller-supplied.** The key is cleared at every ingress, so an envelope
+  cannot pre-seed failures, and it is reset on `channel_call` — a called
+  channel reports its own failures, never its caller's.
+- **Bounded.** Only the most recent records are kept, so a looping workflow
+  with a failing body cannot grow the context without limit.
+
+**`metadata.progress`** is the older, weaker signal, written by dataflow-rs
+after every task that *ran* — `{workflow_id, task_id, status_code}`, with
+`status_code` `500` on failure. It is a single slot overwritten by every
+subsequent task and carries no reason, so it distinguishes "failed" from
+"skipped by condition" and nothing more. Prefer `_orion_errors`.
 
 ## Conditions
 
@@ -272,7 +318,10 @@ groups rather than one flat list.
 
 By default the pipeline **halts** on the first task that errors, and the error
 is returned to the caller. Set `continue_on_error: true` on the workflow to
-keep running subsequent tasks and collect errors instead. The
+keep running subsequent tasks and collect errors instead, or on a single task
+to make just that step non-fatal. A run that continues records each failure's
+code at [`metadata._orion_errors`](#branching-on-a-failure), so a later task
+can branch on *why* the step failed rather than only on whether it did. The
 [`filter`](./functions.md#filter) function offers finer control: `on_reject:
 "halt"` stops the workflow, while `on_reject: "skip"` skips only the current
 task.

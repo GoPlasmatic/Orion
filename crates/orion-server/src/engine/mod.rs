@@ -16,6 +16,32 @@
 //! Everything public is re-exported here, so `crate::engine::…` paths are
 //! unchanged.
 
+/// Where the engine records the **code** of each failed task, for workflows
+/// that must branch on *why* a step failed (#280).
+///
+/// `metadata`, not `data` or `temp_data`, and that placement is the point:
+/// `metadata` is stripped from the trace-read projection and never reaches the
+/// sync response body, whereas `temp_data` would ride out through the
+/// persisted trace's `result_json` and `data` would go straight to the caller.
+///
+/// The `_orion_` prefix follows the reserved namespace (`_orion_call_depth`,
+/// `_orion_call_chain`) rather than the bare `metadata.errors` dataflow-rs
+/// would otherwise default to — that name is both a plausible caller-supplied
+/// key and outside the namespace Orion documents as its own.
+///
+/// **The prefix is a convention, not an enforced namespace.** A caller can put
+/// `_orion_call_depth` in an envelope today and nothing strips it, so this key
+/// is force-cleared at every ingress — see `build_request_metadata` and the
+/// Kafka ingress builder — and reset on `channel_call`, where the child would
+/// otherwise inherit and report the parent's failures as its own.
+///
+/// Records carry `{workflow_id, task_id, code, status}` and **never a
+/// message**: see the note in `docs/src/reference/errors.md`.
+pub const ERROR_CONTEXT_PATH: &str = "metadata._orion_errors";
+
+/// The bare key under `metadata`, for the ingress stamping sites.
+pub const ERROR_CONTEXT_KEY: &str = "_orion_errors";
+
 pub mod functions;
 pub mod handlers;
 pub mod loader;

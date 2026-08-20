@@ -317,7 +317,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // Custom operators are registered here too: a dry-run must speak the same
     // expression vocabulary as the serving engine.
     Ok(
-        orion::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+        orion::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
             .with_workflow(df_workflow)
             .with_handlers(functions)
             .build()?,

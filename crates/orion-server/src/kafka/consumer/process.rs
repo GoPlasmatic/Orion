@@ -641,6 +641,11 @@ fn commit_offset(ctx: &ConsumeLoopContext, msg: &rdkafka::message::BorrowedMessa
 /// as the metadata merged into the dispatched dataflow message, so validation
 /// sees exactly what the workflow will see. The `channel` key (F4) labels
 /// circuit-breaker state and connector metrics for this ingest path.
+/// #280: unlike the HTTP path, this builds metadata **from scratch** — record
+/// headers and payload are never merged in — so no caller-supplied key can
+/// reach it and `metadata._orion_errors` needs no explicit clearing here. If
+/// this ever starts copying record headers, it must strip
+/// [`crate::engine::ERROR_CONTEXT_KEY`] the way `build_request_metadata` does.
 fn kafka_metadata_value(
     channel: &str,
     topic: &str,

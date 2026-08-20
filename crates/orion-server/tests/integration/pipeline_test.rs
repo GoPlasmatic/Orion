@@ -472,6 +472,228 @@ async fn test_continue_on_error() {
 }
 
 // ============================================================
+// #280: branching on WHY a task failed
+// ============================================================
+
+/// The capability #280 exists for: a later task branches on the failure
+/// **code** of an earlier one.
+///
+/// Before this, the reason was unreachable by any spelling — the JSONLogic
+/// context is exactly `{data, metadata, temp_data}` and `Message::errors` is a
+/// private sibling field. `metadata.progress` carried a status but no reason,
+/// and every failure class lands on `500` there, so `IO_ERROR`, `TIMEOUT_ERROR`
+/// and a `circuit_open` service kind were indistinguishable.
+#[tokio::test]
+async fn a_later_task_can_branch_on_the_failure_code() {
+    let app = common::test_app().await;
+
+    let workflow = json!({
+        "name": "Branch On Failure Code",
+        "condition": true,
+        "continue_on_error": true,
+        "tasks": [
+            {
+                "id": "charge",
+                "name": "Failing DB read",
+                "continue_on_error": true,
+                "function": {
+                    "name": "db_read",
+                    "input": {
+                        "connector": "ghost-db",
+                        "query": "SELECT 1",
+                        "output": "data.charged"
+                    }
+                }
+            },
+            {
+                // Runs only because the engine recorded a code the condition
+                // can see.
+                "id": "classify",
+                "name": "Classify the failure",
+                "condition": { "!!": { "var": "metadata._orion_errors.0.code" } },
+                "function": {
+                    "name": "map",
+                    "input": { "mappings": [
+                        { "path": "data.failed_task",
+                          "logic": { "var": "metadata._orion_errors.0.task_id" } },
+                        { "path": "data.failure_code",
+                          "logic": { "var": "metadata._orion_errors.0.code" } },
+                        { "path": "data.failure_status",
+                          "logic": { "var": "metadata._orion_errors.0.status" } }
+                    ] }
+                }
+            }
+        ]
+    });
+
+    let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
+    common::create_and_activate_channel(&app, "branch-err", workflow).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/branch-err",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    assert_eq!(
+        body["data"]["failed_task"], "charge",
+        "the branch must see which task failed: {body}"
+    );
+    assert!(
+        body["data"]["failure_code"].is_string(),
+        "and why — a code from the closed vocabulary: {body}"
+    );
+    assert!(
+        body["data"]["failure_status"].is_number(),
+        "plus the status, which separates a handler Err from a 5xx outcome: {body}"
+    );
+}
+
+/// **The load-bearing constraint.** The record carries codes and task ids, never
+/// a message.
+///
+/// `http_call` builds a non-2xx error as `HTTP {status} from {url}: {body}` —
+/// the full upstream URL plus the upstream response body. Exactly one thing
+/// keeps that from an anonymous caller: `sanitize_errors` replaces `message`
+/// unless `verbose_errors` is on, and `verbose_errors = true` is refused at
+/// startup in production. If a message were workflow-visible, one `map` task
+/// would copy it into `data`, which goes out **unsanitized** — a total bypass
+/// with no config to disable it.
+#[tokio::test]
+async fn the_error_record_carries_no_message_and_cannot_be_round_tripped() {
+    let app = common::test_app().await;
+
+    let workflow = json!({
+        "name": "Attempt To Exfiltrate",
+        "condition": true,
+        "continue_on_error": true,
+        "tasks": [
+            {
+                "id": "fail",
+                "continue_on_error": true,
+                "name": "Failing DB read",
+                "function": {
+                    "name": "db_read",
+                    "input": {
+                        "connector": "ghost-db",
+                        "query": "SELECT 1",
+                        "output": "data.x"
+                    }
+                }
+            },
+            {
+                // Copy the whole record set into `data`, which is returned to
+                // the caller verbatim.
+                "id": "leak",
+                "name": "Copy the records out",
+                "function": {
+                    "name": "map",
+                    "input": { "mappings": [
+                        { "path": "data.copied", "logic": { "var": "metadata._orion_errors" } }
+                    ] }
+                }
+            }
+        ]
+    });
+
+    let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
+    common::create_and_activate_channel(&app, "leak-err", workflow).await;
+    app.clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/leak-err",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    let copied = body["data"]["copied"]
+        .as_array()
+        .expect("the records reached the workflow");
+    assert!(!copied.is_empty(), "{body}");
+    for record in copied {
+        let keys: Vec<&String> = record.as_object().expect("an object").keys().collect();
+        assert!(
+            !keys.iter().any(|k| *k == "message" || *k == "detail"),
+            "a record must carry no message or detail, got {keys:?}"
+        );
+        assert!(record["code"].is_string(), "{record}");
+        assert!(record["task_id"].is_string(), "{record}");
+    }
+}
+
+/// The `_orion_` prefix is a naming convention, not an enforced namespace — a
+/// caller can supply `_orion_call_depth` today and nothing strips it. So this
+/// key is force-cleared at ingress, or a caller could pre-seed failures a
+/// workflow then branches on.
+#[tokio::test]
+async fn a_caller_cannot_seed_the_error_records() {
+    let app = common::test_app().await;
+
+    let workflow = json!({
+        "name": "Echo The Records",
+        "condition": true,
+        "tasks": [{
+            "id": "echo",
+            "name": "Echo",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.seen", "logic": { "var": "metadata._orion_errors" } }
+            ] } }
+        }]
+    });
+    common::create_and_activate_channel(&app, "seed-err", workflow).await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/seed-err",
+            Some(json!({
+                "data": {},
+                "metadata": { "_orion_errors": [
+                    { "task_id": "forged", "code": "CIRCUIT_OPEN", "status": 503 }
+                ] }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["data"]["seen"].is_null(),
+        "a caller-supplied _orion_errors must be stripped at ingress: {body}"
+    );
+}
+
+// ============================================================
 // Test 6: http_call -> map pipeline with mock server
 // ============================================================
 

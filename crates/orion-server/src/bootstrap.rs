@@ -222,7 +222,7 @@ pub async fn build_engine_components(
     // We'll populate it with the real engine after building workflows.
     let engine: Arc<crate::engine::EngineHandle> =
         Arc::new(crate::engine::EngineHandle::new(Arc::new(
-            crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
                 .build()?,
         )));
 
@@ -374,7 +374,7 @@ impl EngineComponents {
         // carries it across every subsequent reload, so this is the only place
         // it needs setting.
         let built_engine =
-            crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
                 .with_workflows(workflows)
                 .with_handlers(custom_functions)
                 .build()?

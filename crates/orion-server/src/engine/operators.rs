@@ -555,20 +555,26 @@ impl CustomOperator for OrionOperator {
     }
 }
 
-/// Register Orion's operators on a dataflow-rs engine builder. Every place
-/// that builds a workflow engine — bootstrap, reload, dry-run, the workflow
-/// test endpoint — goes through this, so the operator vocabulary is identical
-/// everywhere expressions run.
-pub fn with_orion_operators(
+/// Apply Orion's engine-wide conventions to a dataflow-rs engine builder:
+/// the custom operator vocabulary, and the failed-task error context (#280).
+///
+/// Every place that builds a workflow engine — bootstrap, reload, dry-run, the
+/// workflow test endpoint — goes through this, so what an expression can read
+/// is identical everywhere expressions run.
+pub fn with_orion_engine_defaults(
     mut builder: dataflow_rs::engine::EngineBuilder,
 ) -> dataflow_rs::engine::EngineBuilder {
     for (name, op) in all() {
         builder = builder.with_datalogic_operator(name, op);
     }
-    builder
+    // Failed-task codes, for workflows that must answer differently depending
+    // on *why* a step failed. Opt-in upstream and off by default; Orion turns
+    // it on for every engine so the capability does not vary by which code
+    // path built the engine.
+    builder.with_error_context_path(crate::engine::ERROR_CONTEXT_PATH)
 }
 
-/// As [`with_orion_operators`], for the datalogic engines Orion builds
+/// As [`with_orion_engine_defaults`], for the datalogic engines Orion builds
 /// directly (channel-guard logic, the loader's compile parity check).
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {

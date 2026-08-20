@@ -633,7 +633,7 @@ pub(crate) async fn test_workflow(
     let custom_fns =
         crate::engine::build_custom_functions(crate::engine::HandlerDeps::from_state(&state));
     let test_engine =
-        crate::engine::operators::with_orion_operators(dataflow_rs::Engine::builder())
+        crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
             .with_workflow(df_workflow)
             .with_handlers(custom_fns)
             .build()
