@@ -6,14 +6,58 @@ use serde_json::Value;
 use crate::connector::{AuthConfig, HttpConnectorConfig};
 
 /// Build a URL from a base URL and optional path segment.
+///
+/// Both sides may carry a query string, and the join has to keep them apart:
+/// the previous implementation concatenated unconditionally, so a connector
+/// URL of `https://h/api?a=1` with a task path `/orders` produced
+/// `https://h/api?a=1/orders` — the path spliced into the query value. Split
+/// each side at its first `?`, join the paths, then reassemble with the base
+/// query first and the task query appended.
+///
+/// Fragments are not a supported shape — they are never sent on the wire — so
+/// this splits on `?` only and leaves a `#` wherever it lands.
 pub fn build_url(base: &str, path: Option<&str>) -> String {
-    match path {
+    let (base_path, base_query) = split_query(base);
+    let (task_path, task_query) = match path {
         Some(p) if !p.is_empty() => {
-            let base = base.trim_end_matches('/');
-            let path = p.trim_start_matches('/');
-            format!("{base}/{path}")
+            let (p, q) = split_query(p);
+            (Some(p), q)
         }
-        _ => base.to_string(),
+        _ => (None, None),
+    };
+
+    let mut url = match task_path {
+        Some(p) => format!(
+            "{}/{}",
+            base_path.trim_end_matches('/'),
+            p.trim_start_matches('/')
+        ),
+        None => base_path.to_string(),
+    };
+    // Base query first, task query appended — the precedence the docs state.
+    match (base_query, task_query) {
+        (Some(b), Some(t)) => {
+            url.push('?');
+            url.push_str(b);
+            url.push('&');
+            url.push_str(t);
+        }
+        (Some(q), None) | (None, Some(q)) => {
+            url.push('?');
+            url.push_str(q);
+        }
+        (None, None) => {}
+    }
+    url
+}
+
+/// Split a URL or path at its first `?` into (everything before, the query).
+/// An empty query (`"/x?"`) yields `None` rather than an empty parameter list.
+fn split_query(s: &str) -> (&str, Option<&str>) {
+    match s.split_once('?') {
+        Some((head, query)) if !query.is_empty() => (head, Some(query)),
+        Some((head, _)) => (head, None),
+        None => (s, None),
     }
 }
 
@@ -302,6 +346,17 @@ pub async fn execute_request(
                 req = req.header(k, v);
             }
 
+            // Connector query parameters. Applied here rather than merged into
+            // the URL so `current` — the SSRF-validated string that every
+            // error message and the `url` OTel field interpolate — never
+            // carries a credential. `RequestBuilder::query` also
+            // percent-encodes, so a secret containing `&`, `=` or a space
+            // works, where URL interpolation would break it silently.
+            if !http_config.query_params.is_empty() {
+                let params: Vec<(&String, &String)> = http_config.query_params.iter().collect();
+                req = req.query(&params);
+            }
+
             // Apply auth headers (override connector defaults)
             if let Some(auth) = auth {
                 req = apply_auth(req, auth);
@@ -541,6 +596,34 @@ mod tests {
         );
     }
 
+    /// #277: a base URL carrying a query used to splice the path into the
+    /// query value — `https://h/api?a=1` + `/orders` produced
+    /// `https://h/api?a=1/orders`. None of the four tests above used a base
+    /// with a query, which is why it survived.
+    #[test]
+    fn test_build_url_keeps_base_and_task_queries_apart() {
+        assert_eq!(
+            build_url("https://h/api?a=1", Some("/orders")),
+            "https://h/api/orders?a=1"
+        );
+        assert_eq!(
+            build_url("https://h/api?a=1", Some("/orders?b=2")),
+            "https://h/api/orders?a=1&b=2",
+            "base query first, task query appended"
+        );
+        assert_eq!(
+            build_url("https://h/api?a=1", None),
+            "https://h/api?a=1",
+            "no path leaves the base untouched"
+        );
+        assert_eq!(
+            build_url("https://h/api", Some("/orders?b=2")),
+            "https://h/api/orders?b=2"
+        );
+        // A trailing `?` carries no parameters and must not produce one.
+        assert_eq!(build_url("https://h/api?", Some("/x")), "https://h/api/x");
+    }
+
     #[test]
     fn test_apply_auth_bearer() {
         let client = reqwest::Client::new();
@@ -601,6 +684,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -655,6 +739,7 @@ mod tests {
                 "x-connector-header".to_string(),
                 "conn-val".to_string(),
             )]),
+            query_params: Default::default(),
             auth: Some(AuthConfig::Bearer {
                 token: "test-token".to_string(),
             }),
@@ -705,6 +790,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -753,6 +839,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -803,6 +890,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10,    // Very small limit
@@ -853,6 +941,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -888,6 +977,7 @@ mod tests {
             url: "http://127.0.0.1:1".to_string(),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -930,6 +1020,7 @@ mod tests {
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
@@ -1211,6 +1302,100 @@ mod tests {
                 }))
             }),
         )
+    }
+
+    /// #277: connector query parameters reach the wire, percent-encoded and
+    /// deterministically ordered.
+    #[tokio::test]
+    async fn test_connector_query_params_reach_the_wire() {
+        let app = axum::Router::new().route(
+            "/api",
+            axum::routing::get(|uri: axum::http::Uri| async move {
+                axum::Json(serde_json::json!({ "query": uri.query().unwrap_or_default() }))
+            }),
+        );
+        let addr = spawn_mock(app).await;
+        let mut config = localhost_config(addr);
+        config.query_params = [
+            ("uid".to_string(), "svc-user".to_string()),
+            // A value needing encoding: URL interpolation would break this
+            // silently, `RequestBuilder::query` handles it.
+            ("pwd".to_string(), "p@ss w&rd=x".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = execute_request(
+            &reqwest::Client::new(),
+            &config,
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/api", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(5),
+            },
+        )
+        .await
+        .expect("test");
+
+        // BTreeMap ordering: `pwd` before `uid`, every call. Signature-based
+        // gateways depend on a stable order, and HashMap could not give one.
+        assert_eq!(
+            result["query"], "pwd=p%40ss+w%26rd%3Dx&uid=svc-user",
+            "params are percent-encoded and sorted"
+        );
+    }
+
+    /// The regression that fires if someone later "simplifies" `query_params`
+    /// back into `build_url`. The whole point of applying them at the request
+    /// builder is that `current` — interpolated into every timeout/failure
+    /// message, and into the `url` OTel field — never carries the credential.
+    #[tokio::test]
+    async fn test_connector_query_params_never_appear_in_an_error() {
+        // A listener that accepts and never answers, so the request times out
+        // and the error string is built from `current`.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+
+        let mut config = localhost_config(addr);
+        config.query_params = [("pwd".to_string(), "super-secret-value".to_string())]
+            .into_iter()
+            .collect();
+
+        let err = execute_request(
+            &reqwest::Client::new(),
+            &config,
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &format!("http://{}/api", addr),
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_millis(150),
+            },
+        )
+        .await
+        .expect_err("must time out");
+
+        let text = format!("{err:?}");
+        assert!(
+            !text.contains("super-secret-value") && !text.contains("pwd"),
+            "the error must carry neither the parameter name nor its value: {text}"
+        );
     }
 
     #[tokio::test]

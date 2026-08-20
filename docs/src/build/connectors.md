@@ -44,6 +44,12 @@ loads, so the stored row holds a variable name. Three things follow:
 `${VAR:-default}` shell-style substitution also works, which is what the shipped
 `postgres-orders` example uses.
 
+If an API wants its credentials **in the query string**, do not put them in the
+connector `url` — use
+[`query_params`](../reference/connectors.md#query-parameter-precedence), which
+keeps the resolved value out of the URL, and therefore out of traces, logs and
+error messages.
+
 ## Say what it may do
 
 Every connector carries operation gates, all allowed by default. Turning one off

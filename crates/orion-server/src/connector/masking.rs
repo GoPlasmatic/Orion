@@ -191,25 +191,42 @@ fn is_readable_key(key: &str) -> bool {
 /// themselves), arrays inherit the parent key so `brokers: [...]` entries are
 /// judged as `brokers`, and every scalar is masked unless its key is
 /// allowlisted — with references surviving and readable URLs redacted.
-fn mask_connector_in_place(value: &mut Value, key: Option<&str>) {
+/// Containers whose *every* descendant masks, whatever its own key is called.
+///
+/// The allowlist is flat and keyed by leaf name, so without this a parameter
+/// whose name collides with a structural key is served readable: `username`,
+/// `method`, `from`, `host`, `port`, `url`, `type`, `region`, `bucket`,
+/// `topic`, `resource` and `audience` are all on `READABLE_KEYS`. These three
+/// containers hold operator-chosen names carrying operator-chosen values —
+/// there is no name to judge, so the container decides.
+///
+/// This closes a pre-existing hole as well as covering `query_params`: despite
+/// the module doc claiming header values "are all masked", `headers: {"from":
+/// "x"}` was served readable, with no test covering it.
+const FORCE_MASK_CONTAINERS: &[&str] = &["headers", "query_params", "extra_params"];
+
+fn mask_connector_in_place(value: &mut Value, key: Option<&str>, forced: bool) {
     match value {
         Value::Object(map) => {
             for (k, v) in map.iter_mut() {
-                mask_connector_in_place(v, Some(k.as_str()));
+                let child_forced = forced || FORCE_MASK_CONTAINERS.contains(&k.as_str());
+                mask_connector_in_place(v, Some(k.as_str()), child_forced);
             }
         }
         Value::Array(items) => {
             for item in items.iter_mut() {
-                mask_connector_in_place(item, key);
+                mask_connector_in_place(item, key, forced);
             }
         }
         Value::Null => {}
         Value::String(s) => {
             // A reference is a pointer, not the secret — see mask_in_place.
+            // Deliberately checked *above* the force test, so an `env://` value
+            // inside a forced container still round-trips export → import.
             if crate::connector::secrets::is_resolvable_reference(s) {
                 return;
             }
-            if key.is_some_and(is_readable_key) {
+            if !forced && key.is_some_and(is_readable_key) {
                 if let Some(redacted) = redact_url_secrets(s) {
                     *s = redacted;
                 }
@@ -218,7 +235,7 @@ fn mask_connector_in_place(value: &mut Value, key: Option<&str>) {
             }
         }
         other => {
-            if !key.is_some_and(is_readable_key) {
+            if forced || !key.is_some_and(is_readable_key) {
                 *other = Value::String(MASK.to_string());
             }
         }
@@ -591,7 +608,7 @@ pub fn mask_connector_secrets(config_json: &str) -> String {
         return config_json.to_string();
     };
 
-    mask_connector_in_place(&mut val, None);
+    mask_connector_in_place(&mut val, None, false);
 
     serde_json::to_string(&val).unwrap_or_else(|_| config_json.to_string())
 }
@@ -636,7 +653,7 @@ pub fn mask_connector(connector: &crate::storage::models::Connector) -> Connecto
 /// is left alone for [`find_masked_value`] to reject.
 pub fn unmask_config(incoming: &mut Value, stored: &Value) {
     let mut masked_stored = stored.clone();
-    mask_connector_in_place(&mut masked_stored, None);
+    mask_connector_in_place(&mut masked_stored, None, false);
     restore_in_place(incoming, stored, &masked_stored);
 }
 
@@ -868,6 +885,50 @@ mod tests {
         assert_eq!(val["credentials"]["id"], "******");
         assert_eq!(val["credentials"]["value"], "******");
         assert_eq!(val["database"], "******");
+    }
+
+    /// #277: every descendant of `headers`, `query_params` and `extra_params`
+    /// masks regardless of its own name.
+    ///
+    /// The allowlist is flat and keyed by leaf name, so a parameter whose name
+    /// collides with a structural key was served readable — `headers: {"from":
+    /// "x"}` is a **pre-existing** leak this closes, despite the module doc
+    /// claiming header values "are all masked". `username`, `method`, `host`,
+    /// `port`, `url`, `type`, `region`, `bucket`, `topic`, `resource` and
+    /// `audience` are all on READABLE_KEYS and would have collided the same
+    /// way.
+    #[test]
+    fn operator_named_container_values_mask_whatever_they_are_called() {
+        let config = r#"{"type":"http","url":"https://api.example.com",
+            "headers":{"from":"leaked-1","x-normal":"leaked-2"},
+            "query_params":{"username":"leaked-3","pwd":"leaked-4","uid":"env://SMS_UID"},
+            "auth":{"type":"oauth2","grant":"client_credentials",
+                "token_url":"https://idp/t","client_id":"c","client_secret":"s",
+                "extra_params":{"topic":"leaked-5"}}}"#;
+        let val: serde_json::Value =
+            serde_json::from_str(&mask_connector_secrets(config)).expect("test");
+
+        // Names that collide with structural keys must not buy readability.
+        assert_eq!(
+            val["headers"]["from"], MASK,
+            "the pre-existing headers leak"
+        );
+        assert_eq!(val["headers"]["x-normal"], MASK);
+        assert_eq!(val["query_params"]["username"], MASK);
+        assert_eq!(val["query_params"]["pwd"], MASK);
+        assert_eq!(val["auth"]["extra_params"]["topic"], MASK);
+
+        // The reference exemption sits above the force check, so `env://`
+        // still round-trips export → import.
+        assert_eq!(
+            val["query_params"]["uid"], "env://SMS_UID",
+            "a reference is a pointer, not the secret — it must survive"
+        );
+
+        // Forcing the containers must not have made the rest of the config
+        // opaque.
+        assert_eq!(val["url"], "https://api.example.com");
+        assert_eq!(val["auth"]["client_id"], "c");
     }
 
     /// #268: the oauth2 block's credential halves mask; its structure — the

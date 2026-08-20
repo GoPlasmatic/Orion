@@ -51,6 +51,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the header. Fix such a channel by adding the name to the new
   `rate_limit.key_headers` (below), or by correcting the path.
 
+- **`build_url` no longer corrupts a connector URL that carries a query**
+  ([#277]). Base and path were concatenated unconditionally, so
+  `https://h/api?a=1` plus a task path `/orders` produced
+  `https://h/api?a=1/orders` — the path spliced into the query value. The two
+  query strings are now kept apart, base first and task query appended. None
+  of the function's four tests used a base with a query, which is why it
+  survived.
+
+- **Connector `headers` values are masked whatever they are called** ([#277]).
+  The masking allowlist is flat and keyed by leaf name, so a header whose name
+  collided with a structural key was served **readable** — `headers: {"from":
+  "x"}` among them, despite the module documenting header values as "all
+  masked", and with no test covering it. `username`, `method`, `host`, `port`,
+  `url`, `type`, `region`, `bucket`, `topic`, `resource` and `audience` would
+  all have collided the same way. Every descendant of `headers`,
+  `query_params` and `extra_params` now masks by container rather than by
+  name; `env://` references still survive, so export → import is unaffected.
+
 - **`jwt_sign` honors an explicit `claims.iat`** ([#272]). It was stamped
   unconditionally, silently discarding an author-supplied value — while every
   other registered claim the function touches (`iss`, `aud`, `nbf`, `exp`) is
@@ -87,6 +105,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `key_headers` joins `(requests_per_second, burst, key_logic)` in the
   limiter-reuse identity, so editing it rebuilds the limiter instead of
   carrying per-key state across a re-dimensioning.
+
+- **`account_credentials` OAuth2 grant** ([#273]) — Zoom Server-to-Server
+  OAuth, the grant Zoom moved every server-side integration to when it retired
+  JWT apps in 2023. Exchanges `grant_type=account_credentials` plus a new
+  `auth.account_id` field with Basic client auth.
+
+  No workaround existed. A workflow can fetch a Zoom token, but cannot use it:
+  `http_call`'s `headers` are static (`resolvable: false`, and no
+  `headers_logic` exists in Orion or dataflow-rs), and `apply_auth`'s OAuth2
+  arm deliberately sends nothing — the only runtime-token injection is driven
+  by connector config.
+
+  The grant inherits caching, the refresh margin, single-flight, the
+  retryable/non-retryable failure split, 401 self-healing and the admin probe
+  with no new code, and correctly gets no rotation persistence or cluster lease
+  — it re-acquires from static credentials, so there is no state to keep.
+  `account_id` is readable on admin reads: it is a tenant identifier, not a
+  credential, and masking it would leave package diffs unable to say which
+  account a connector talks to.
+
+- **`http` connector `query_params`** ([#277]) — secret-resolvable, masked
+  query parameters for APIs that authenticate in the query string (legacy
+  SMS/telecom gateways, older payment and lookup APIs). It was the one
+  credential shape with no safe home: `auth` offers Bearer, Basic, an arbitrary
+  header and managed OAuth2, and `http_call` has no `query` field.
+
+  The only prior option was baking credentials into the connector `url`, which
+  fails two ways. Export masks a query value whose *name* looks secret (`pwd`
+  is masked, `pass` is not) and re-import then refuses the mask, so the
+  connector cannot be promoted between instances. And the resolved URL is
+  interpolated into every timeout and failure message, reaching traces, the
+  DLQ, logs, OTel spans, the trace read API — which a *caller* can reach with
+  its own `x-trace-token`, not only an admin — and the admin connector probe's
+  response body.
+
+  Values are therefore applied at the request builder and **never merged into
+  the URL**, so the SSRF-validated URL and every error message stay
+  credential-free, the parameters cannot ride a cross-host redirect, and they
+  are percent-encoded so a secret containing `&`, `=` or a space works. Stored
+  sorted, because parameter order is observable on the wire and matters to
+  signature-based gateways. A name already present in the connector URL's query
+  is refused at authoring time rather than sent twice.
 
 - **JSONLogic string operators `url_encode`, `url_decode` and `join`**
   ([#276]). Orion-registered like the encoding and randomness operators, so
@@ -151,8 +211,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#272]: https://github.com/GoPlasmatic/Orion/issues/272
+[#273]: https://github.com/GoPlasmatic/Orion/issues/273
 [#275]: https://github.com/GoPlasmatic/Orion/issues/275
 [#276]: https://github.com/GoPlasmatic/Orion/issues/276
+[#277]: https://github.com/GoPlasmatic/Orion/issues/277
 
 ## [1.0.0] - 2026-08-14
 

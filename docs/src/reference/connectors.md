@@ -147,6 +147,40 @@ When `http_call` builds a request, header layers apply in order. Later layers ov
 
 Task headers always win. A workflow may override `content-type`, `authorization`, or any header the connector sets.
 
+### Query-parameter precedence
+
+Some APIs authenticate with credentials **in the query string** — legacy SMS and telecom gateways, older payment and lookup APIs. `query_params` is their home:
+
+```json
+{
+  "type": "http",
+  "url": "https://gw.example.com/api.aspx",
+  "query_params": {
+    "uid": "env://SMS_UID",
+    "pwd": "env://SMS_PWD"
+  }
+}
+```
+
+Parameters are applied in this order, and all three layers survive:
+
+| Order | Source |
+|-------|--------|
+| 1 | The connector `url`'s own query string |
+| 2 | A query string on the task's `path` |
+| 3 | Connector `query_params` |
+
+**Do not put credentials in the connector `url` instead.** It works, and it fails two ways. Export masks a query value whose *name* looks secret (`pwd` is masked, `pass` is not — the distinction is arbitrary), and re-import then refuses the masked literal, so the connector cannot be promoted between instances. And the resolved URL is interpolated into every timeout and failure message, reaching traces, the DLQ, server logs, OTel spans, the trace read API — which a caller can reach with its own `x-trace-token`, not just an admin — and the admin connector probe's response body.
+
+`query_params` avoids all of that because the values are **never merged into the URL**. They are applied at the request builder, so the SSRF-validated URL and every error message stay credential-free; they cannot ride a cross-host redirect, the same rule headers and auth already follow; and they are percent-encoded, so a secret containing `&`, `=` or a space works where URL interpolation would silently corrupt it.
+
+Two behaviours to know:
+
+- **Order is sorted, not authored.** Parameter order is observable on the wire and matters to signature-based gateways, so the map is stored sorted rather than in an order that would vary per call.
+- **A name already present in the connector `url`'s query is refused at authoring time** — the request would otherwise carry it twice with an undefined tie-break.
+
+Values mask on admin reads like header values do, and a `env://`/`vault://` reference survives export → import intact. Use references rather than literals for anything secret: a masked literal cannot be re-imported.
+
 ## Operation gates
 
 Every connector type carries an `operations` block that limits what workflows may do through it. Every gate defaults to allowed. A disabled operation turns the call into a validation error naming the operation and the connector — regardless of what any workflow asks for.
@@ -204,6 +238,7 @@ Calls REST APIs and webhooks through [`http_call`](./functions.md#http_call).
 | `url` | string | yes | — | Base URL for every request through this connector |
 | `method` | string | no | `""` | Default HTTP method when the task sets none |
 | `headers` | object | no | `{}` | Default headers for every request — see [Header precedence](#header-precedence) |
+| `query_params` | object | no | `{}` | Query parameters appended to every request — see [Query-parameter precedence](#query-parameter-precedence). Values are secret-resolvable and masked on reads |
 | `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, `apikey`, or managed [`oauth2`](#managed-oauth2) |
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](#retries-http-only) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](#retries-http-only) |

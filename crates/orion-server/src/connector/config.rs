@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A parsed connector configuration.
 ///
@@ -248,6 +248,23 @@ pub struct HttpConnectorConfig {
     pub method: String,
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Query parameters appended to every request through this connector —
+    /// the home for APIs that authenticate with credentials **in the query
+    /// string** (legacy SMS/telecom gateways, older payment and lookup APIs).
+    ///
+    /// Values are secret-resolvable (`env://`, `vault://`, `${VAR}`) and
+    /// masked on admin reads, and they are applied via `RequestBuilder::query`
+    /// inside `execute_request` rather than merged into the URL — so the
+    /// SSRF-validated URL, every error message and the `url` OTel field stay
+    /// credential-free, and the parameters cannot ride a cross-host redirect.
+    ///
+    /// **`BTreeMap`, not `HashMap`** — a deliberate departure from `headers`.
+    /// Query-parameter order is observable on the wire and matters to
+    /// signature-based gateways; `HashMap` iteration order varies per call,
+    /// and `serde_json` is pinned without `preserve_order` so author order is
+    /// unrecoverable anyway. Sorted is the only deterministic option.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub query_params: BTreeMap<String, String>,
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub retry: RetryConfig,

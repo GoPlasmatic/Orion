@@ -33,6 +33,7 @@ pub fn validate_connector_config(
 
     validate_operation_gate_keys(connector_type, config)?;
     validate_retry_keys(connector_type, config)?;
+    validate_query_params(connector_type, config)?;
 
     // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
     // Schemes only — the private-address check runs on the pool-open paths,
@@ -307,6 +308,60 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
 /// believed-configured-but-inert mistake and is refused whole. Refused at
 /// the CRUD boundary only; stored rows keep loading, exactly like the gate
 /// check below.
+/// Structurally check `query_params`, which only `http` connectors read.
+///
+/// Connector configs deliberately have no `deny_unknown_fields`, so the block
+/// would be silently inert on any other type — the F60/F22e rule that a field
+/// an implementation cannot read is refused rather than ignored.
+fn validate_query_params(
+    connector_type: ConnectorType,
+    config: &serde_json::Value,
+) -> Result<(), OrionError> {
+    let Some(params) = config.get("query_params") else {
+        return Ok(());
+    };
+    if !matches!(connector_type, ConnectorType::Http) {
+        return Err(OrionError::validation(format!(
+            "Connector type '{connector_type}' has no query parameters — only `http` \
+             connectors read 'query_params', so this block would be silently ignored."
+        )));
+    }
+    let Some(object) = params.as_object() else {
+        return Err(OrionError::validation(
+            "Connector 'query_params' must be a JSON object of name → value".to_string(),
+        ));
+    };
+
+    // A base-URL query is applied first and these are appended, so a name in
+    // both would ride the wire twice with an undefined tie-break.
+    let base_names: Vec<String> = config
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|u| url::Url::parse(u).ok())
+        .map(|u| {
+            u.query_pairs()
+                .map(|(k, _)| k.into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for name in object.keys() {
+        if name.trim().is_empty() {
+            return Err(OrionError::validation(
+                "Connector 'query_params' names must not be empty or whitespace".to_string(),
+            ));
+        }
+        if base_names.iter().any(|b| b == name) {
+            return Err(OrionError::validation(format!(
+                "Connector 'query_params' name '{name}' is already present in the \
+                 connector url's query string — the request would carry it twice. \
+                 Remove it from one of the two."
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_retry_keys(
     connector_type: ConnectorType,
     config: &serde_json::Value,
@@ -596,6 +651,51 @@ mod tests {
             "retry": {"max_retries": 5, "retry_delay_ms": 100}
         });
         assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
+    }
+
+    /// #277: `query_params` is http-only, and its names must be able to reach
+    /// the wire unambiguously.
+    #[test]
+    fn query_params_are_judged_at_the_door() {
+        let ok = json!({
+            "url": "https://gw.example.com/api.aspx",
+            "query_params": {"uid": "env://SMS_UID", "pwd": "env://SMS_PWD"}
+        });
+        assert!(validate_connector_config(ConnectorType::Http, &ok).is_ok());
+
+        // Only http reads the block; connector configs have no
+        // deny_unknown_fields, so anywhere else it would be silently inert.
+        let wrong_type = json!({
+            "connection_string": "postgres://h/db",
+            "query_params": {"a": "b"}
+        });
+        let message = validate_connector_config(ConnectorType::Db, &wrong_type)
+            .expect_err("query_params on a db connector must be refused")
+            .client_message();
+        assert!(message.contains("query_params"), "{message}");
+
+        let blank = json!({
+            "url": "https://gw.example.com/api",
+            "query_params": {"  ": "v"}
+        });
+        assert!(validate_connector_config(ConnectorType::Http, &blank).is_err());
+
+        // Present in both the base URL and the block: the request would carry
+        // it twice, with an undefined tie-break.
+        let collision = json!({
+            "url": "https://gw.example.com/api?uid=already",
+            "query_params": {"uid": "env://SMS_UID"}
+        });
+        let message = validate_connector_config(ConnectorType::Http, &collision)
+            .expect_err("a duplicated parameter must be refused")
+            .client_message();
+        assert!(message.contains("twice"), "{message}");
+
+        let not_an_object = json!({
+            "url": "https://gw.example.com/api",
+            "query_params": ["uid=1"]
+        });
+        assert!(validate_connector_config(ConnectorType::Http, &not_an_object).is_err());
     }
 
     #[test]
