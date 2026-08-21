@@ -937,27 +937,33 @@ async fn probe_storage(
 /// Connect, EHLO, negotiate TLS and authenticate against an SMTP connector —
 /// without sending mail.
 ///
-/// Goes through the same cached transport `send_email` uses, so what this
-/// probes is what real sends get: the pool-open path (including the S6
-/// private-address check), the TLS mode, and the credentials — lettre
-/// authenticates as part of establishing the connection, so a refused
-/// password surfaces here instead of on the first OTP email.
+/// Goes through the same cached pool `send_email` uses, so what this probes is
+/// what real sends get: the pool-open path (including the S6 private-address
+/// check), the TLS mode, and the credentials — mail-send authenticates as part
+/// of establishing the connection, so a refused password surfaces here instead
+/// of on the first OTP email.
+///
+/// The probed connection is returned to the pool on success, so a probe warms
+/// the connector rather than costing it a handshake.
 async fn probe_smtp(
     state: &AppState,
     name: &str,
     smtp: &crate::connector::SmtpConnectorConfig,
 ) -> Result<(), String> {
-    let transport = state
+    let pool = state
         .caches
         .smtp_pool_cache
-        .get_transport(name, smtp)
+        .get_pool(name, smtp)
         .await
         .map_err(|e| e.to_string())?;
-    match transport.test_connection().await {
-        Ok(true) => Ok(()),
-        Ok(false) => Err("the SMTP server did not answer the probe NOOP".to_string()),
-        // The lettre error names the host/port and the server's reply — the
-        // diagnostic an operator needs; credentials never appear in it.
+    // The mail-send error names the host/port and the server's reply — the
+    // diagnostic an operator needs; credentials never appear in it.
+    let mut client = pool.checkout().await.map_err(|e| e.to_string())?;
+    match client.noop().await {
+        Ok(()) => {
+            pool.checkin(client).await;
+            Ok(())
+        }
         Err(e) => Err(e.to_string()),
     }
 }

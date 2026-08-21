@@ -14,7 +14,13 @@ use crate::errors::OrionError;
 /// `aws-lc-rs` is the provider `axum-server`'s own `tls-rustls` feature selects.
 /// An `Err` from `install_default` means something else installed one first,
 /// which is equally fine — the only unacceptable state is no provider at all.
-fn ensure_crypto_provider() {
+///
+/// Shared rather than private because the SMTP pool needs it too:
+/// `SmtpClientBuilder::new` builds its rustls connector eagerly, so an SMTP
+/// connector would panic on the same ambiguity — and would do it on any
+/// deployment that had not also enabled `server.tls`, which is what used to
+/// install the provider by accident.
+pub(crate) fn ensure_crypto_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     }
