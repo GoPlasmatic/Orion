@@ -7,7 +7,7 @@
 //! `orion-server test` run it for real instead of stubbing it.
 //!
 //! The op × algorithm capability tables below are shared with
-//! `schema::validate_input` (via [`validate_static_input`]), so execution and
+//! `schema::validate_input` (via `validate_static_input`), so execution and
 //! authoring-time validation cannot drift: an op×algorithm pair outside the
 //! table — `password_hash` with `sha256`, `hash` with `argon2id` — is
 //! unrepresentable, rejected at create/validate/lint, and refused here for

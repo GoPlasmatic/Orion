@@ -1,7 +1,7 @@
 //! MongoDB aggregation pipelines (#263).
 //!
 //! The pipeline is an extended-JSON array of stages; **the stage allowlist is
-//! data** — read-only stages in [`READ_STAGES`], the two write stages
+//! data** — read-only stages in `READ_STAGES`, the two write stages
 //! (`$out`/`$merge`) behind an explicit connector opt-in
 //! (`aggregate_write_stages: true`, default **false** — the one deliberate
 //! default-deny, because "aggregation" reads as a read and must not silently

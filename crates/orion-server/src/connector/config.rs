@@ -394,7 +394,7 @@ pub enum OAuth2Grant {
     /// there is no `connector_oauth_state` row to keep.
     ///
     /// ⚠️ **Upgrade hazard, for whoever adds the next grant field.**
-    /// [`fingerprint`] is a hash of the whole serialized [`OAuth2Config`], and
+    /// `fingerprint` is a hash of the whole serialized [`OAuth2Config`], and
     /// a persisted state row is adopted only when the fingerprint matches. A
     /// new field that serializes as `null` when unset changes the fingerprint
     /// of **every existing `refresh_token` connector** on upgrade, discarding
