@@ -483,11 +483,21 @@ clean_all_connectors() {
 # create_channel <name> <workflow_id> [channel_type]
 # v1.0: every send resolves to a channel, and an active channel names exactly
 # one active workflow. Creates and activates the channel; the caller reloads.
+#
+# A 4th argument is merged in as the channel's `config` — the way a case
+# exercises a config-dependent ingress (`request.body_mode`, say) without a
+# bespoke suite.
 create_channel() {
     local name="$1"
     local workflow_id="$2"
     local channel_type="${3:-sync}"
-    cli_quiet channels create -d "{\"name\":\"$name\",\"channel_type\":\"$channel_type\",\"protocol\":\"http\",\"workflow_id\":\"$workflow_id\",\"methods\":[\"POST\"],\"route_pattern\":\"/$name\"}"
+    local config="${4:-}"
+    local body
+    body="{\"name\":\"$name\",\"channel_type\":\"$channel_type\",\"protocol\":\"http\",\"workflow_id\":\"$workflow_id\",\"methods\":[\"POST\"],\"route_pattern\":\"/$name\"}"
+    if [[ -n "$config" && "$config" != "null" ]]; then
+        body=$(jq -c --argjson cfg "$config" '. + {config: $cfg}' <<< "$body")
+    fi
+    cli_quiet channels create -d "$body"
     cli_quiet channels activate "$CLI_OUTPUT"
 }
 
@@ -583,7 +593,16 @@ _run_case_test() {
         channel=$(jq -r ".tests[$test_idx].channel" "$case_file")
         local input
         input=$(jq -c ".tests[$test_idx].input" "$case_file")
-        cli send "$channel" -d "$input"
+        # `"raw": true` sends the payload unwrapped — the only way to address a
+        # channel with request.body_mode = "payload", which would otherwise see
+        # the envelope itself as its data.
+        local raw
+        raw=$(jq -r ".tests[$test_idx].raw // false" "$case_file")
+        if [[ "$raw" == "true" ]]; then
+            cli send "$channel" --raw -d "$input"
+        else
+            cli send "$channel" -d "$input"
+        fi
         response="$CLI_OUTPUT"
     fi
 
@@ -704,12 +723,15 @@ run_case_file() {
             create_channel "$ch_name" "$ch_wf"
         done
     else
-        local case_channels
+        local case_channels case_channel_config
         case_channels=$(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
+        # Case-level, because this branch already assumes one workflow for the
+        # whole case; a per-channel config belongs in the explicit form above.
+        case_channel_config=$(jq -c '.channel_config // empty' "$case_file")
         if [[ -n "$case_channels" && ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
             while IFS= read -r ch; do
                 [[ -z "$ch" ]] && continue
-                create_channel "$ch" "${_CASE_RULE_IDS[0]}"
+                create_channel "$ch" "${_CASE_RULE_IDS[0]}" "sync" "$case_channel_config"
             done <<< "$case_channels"
         fi
     fi

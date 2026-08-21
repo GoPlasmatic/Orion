@@ -391,6 +391,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#279]: https://github.com/GoPlasmatic/Orion/issues/279
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
+[#282]: https://github.com/GoPlasmatic/Orion/issues/282
+
+### Added
+
+- **`orion-cli send --raw`** ([#282]) — send the payload as the request body
+  verbatim, with no `{"data": …}` envelope.
+
+  `request.body_mode = "payload"` shipped without a client that could address
+  it: every CLI and MCP data path wrapped unconditionally, so a payload-mode
+  channel received `data = {"data": …}` and the documentation told you to use
+  `curl`. `--raw` closes that, and the MCP `send` tools take an equivalent
+  `raw` parameter.
+
+  `--raw` and `--metadata` are refused together rather than one being silently
+  dropped: a payload-mode channel stamps its own metadata and accepts none
+  from the caller, so there is nowhere for it to go.
+
+  This also unblocks e2e coverage of `body_mode`, which had integration tests
+  and reference docs but no end-to-end case, because the suite drives every
+  send through the CLI.
 
 ### Security
 

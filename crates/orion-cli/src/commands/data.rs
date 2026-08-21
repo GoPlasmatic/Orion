@@ -49,6 +49,12 @@ pub struct SendCmd {
     #[arg(long)]
     metadata: Option<String>,
 
+    /// Send the payload as the request body verbatim, with no {"data": ...}
+    /// envelope. Required to reach a channel configured with
+    /// request.body_mode = "payload".
+    #[arg(long, conflicts_with = "metadata")]
+    raw: bool,
+
     /// Request server-side execution profiling (sync only; requires the server's
     /// tracing.debug_profile_enabled flag). Adds an _orion.profile breakdown.
     #[arg(long)]
@@ -56,6 +62,29 @@ pub struct SendCmd {
 }
 
 impl SendCmd {
+    /// The request body carrying `payload`.
+    ///
+    /// The default wraps it in the Orion envelope, which is what an `auto`
+    /// channel detects. `--raw` sends the payload verbatim, which is what a
+    /// channel configured with `request.body_mode = "payload"` needs: that
+    /// channel takes the whole body as `data`, so the envelope would arrive
+    /// as a single key literally named `data` (#282).
+    ///
+    /// `--metadata` is refused alongside `--raw` at the clap level rather
+    /// than here — a payload-mode channel stamps metadata server-side and
+    /// accepts none from the caller, so there is nowhere for it to go, and
+    /// silently dropping it would look like it had been sent.
+    fn build_body(&self, payload: &Value) -> Result<Value> {
+        if self.raw {
+            return Ok(payload.clone());
+        }
+        let mut body = serde_json::json!({ "data": payload });
+        if let Some(meta) = &self.metadata {
+            body["metadata"] = serde_json::from_str(meta)?;
+        }
+        Ok(body)
+    }
+
     pub async fn run(
         &self,
         client: &OrionClient,
@@ -90,10 +119,7 @@ impl SendCmd {
         channel: &str,
         payload: &Value,
     ) -> Result<i32> {
-        let mut body = serde_json::json!({ "data": payload });
-        if let Some(meta) = &self.metadata {
-            body["metadata"] = serde_json::from_str(meta)?;
-        }
+        let body = self.build_body(payload)?;
 
         let path = if self.profile {
             format!("{}?profile=1", paths::data(channel))
@@ -158,10 +184,7 @@ impl SendCmd {
         channel: &str,
         payload: &Value,
     ) -> Result<i32> {
-        let mut body = serde_json::json!({ "data": payload });
-        if let Some(meta) = &self.metadata {
-            body["metadata"] = serde_json::from_str(meta)?;
-        }
+        let body = self.build_body(payload)?;
 
         let resp: Value = client.post(&paths::data_async(channel), &body).await?;
 
@@ -325,5 +348,80 @@ async fn poll_trace(
         }
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// `SendCmd` is built by clap, so parse it the way the binary does rather
+    /// than hand-constructing it — that way the `conflicts_with` wiring is
+    /// under test too, not just `build_body`.
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        send: SendCmd,
+    }
+
+    fn parse(args: &[&str]) -> SendCmd {
+        TestCli::parse_from(args).send
+    }
+
+    #[test]
+    fn the_default_wraps_the_payload_in_the_envelope() {
+        let cmd = parse(&["send", "ch", "-d", "{}"]);
+        let payload = serde_json::json!({"platform": "ios"});
+        let body = cmd.build_body(&payload).expect("test");
+        assert_eq!(body, serde_json::json!({"data": {"platform": "ios"}}));
+    }
+
+    #[test]
+    fn metadata_rides_alongside_the_envelope() {
+        let cmd = parse(&["send", "ch", "-d", "{}", "--metadata", r#"{"src":"cli"}"#]);
+        let body = cmd.build_body(&serde_json::json!({"a": 1})).expect("test");
+        assert_eq!(body["data"], serde_json::json!({"a": 1}));
+        assert_eq!(body["metadata"], serde_json::json!({"src": "cli"}));
+    }
+
+    /// The point of the flag: a payload-mode channel reads the whole body as
+    /// `data`, so the envelope would arrive as one key named `data`.
+    #[test]
+    fn raw_sends_the_payload_verbatim() {
+        let cmd = parse(&["send", "ch", "-d", "{}", "--raw"]);
+        let payload = serde_json::json!({"platform": "ios", "data": {"title": "Nested"}});
+        let body = cmd.build_body(&payload).expect("test");
+        assert_eq!(body, payload, "the body must be the payload itself");
+        assert!(
+            body.get("data").is_some_and(|d| d.get("title").is_some()),
+            "the model's own 'data' key must survive untouched: {body}"
+        );
+    }
+
+    /// Refused rather than silently dropped: a payload-mode channel stamps
+    /// metadata server-side and accepts none from the caller, so honouring
+    /// both is impossible and quietly ignoring one would look like it worked.
+    #[test]
+    fn raw_and_metadata_are_refused_together() {
+        // Matched rather than `expect_err`: neither `SendCmd` nor the wrapper
+        // derives `Debug`, which `expect_err` would require.
+        let err = match TestCli::try_parse_from([
+            "send",
+            "ch",
+            "-d",
+            "{}",
+            "--raw",
+            "--metadata",
+            "{}",
+        ]) {
+            Ok(_) => panic!("clap must refuse --raw with --metadata"),
+            Err(e) => e,
+        };
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("--raw") && rendered.contains("--metadata"),
+            "the error should name both flags: {rendered}"
+        );
     }
 }

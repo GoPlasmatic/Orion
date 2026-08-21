@@ -5,6 +5,13 @@ Modes:
 The data payload is the business data that workflows process. For workflows
 starting with a parse_json task, this is the raw JSON object.
 
+By default the payload is wrapped in the {"data": ...} envelope for you. A
+channel configured with request.body_mode = "payload" reads the whole request
+body as its data, so the envelope would arrive as a single key named "data" --
+pass --raw to send the payload verbatim instead. Such a channel stamps its own
+metadata and accepts none from the caller, so --raw and --metadata are refused
+together.
+
 Input Methods:
   -f <file>    Read payload from a JSON file
   -d '<json>'  Provide payload as an inline JSON string
@@ -17,3 +24,4 @@ Examples:
   orion-cli send my-channel -d '...' --async-mode
   orion-cli send my-channel -d '...' --async-mode --wait --timeout 30
   orion-cli send my-channel -d '...' --metadata '{"source": "cli-test"}'
+  orion-cli send my-channel -d '...' --raw   # body_mode = "payload" channel

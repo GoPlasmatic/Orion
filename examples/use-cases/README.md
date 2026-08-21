@@ -60,6 +60,12 @@ relative to the case file; use this for anything that exists as a package —
 or an inline workflow create body, for throwaway workflows only a behaviour
 test needs.
 
+An optional case-level `"channel_config": { … }` is applied as the `config` of
+every channel the case creates — how a case exercises a config-dependent
+ingress such as `request.body_mode`. It is case-level because the channels are
+all bound to the case's first workflow; a case needing channels to differ from
+each other declares them explicitly instead (see `"channels"` in helpers.sh).
+
 Each test sends `input` to `channel` and checks every `expect` entry: the
 key is a `jq` expression evaluated against the JSON response, the value is
 the expected result compared as a string (`jq -r`).
@@ -72,6 +78,7 @@ Instead of the default sync send, a test can set one of:
 |-----|---------|
 | `"dry_run_rule": <n>` | Run `workflows test` (server-side dry run) against the case's *n*-th workflow with `input` — no traffic served |
 | `"read_connector": <n>` | Assert on `connectors get` for the case's *n*-th connector (e.g. secret masking) |
+| `"raw": true` | Send `input` via `send --raw`, unwrapped — the only way to address a channel whose `request.body_mode` is `"payload"` |
 
 ### Lifecycle steps and failure paths
 

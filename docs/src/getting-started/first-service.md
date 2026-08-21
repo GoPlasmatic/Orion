@@ -124,6 +124,14 @@ data API accepts either — a bare object is the payload, an object carrying
 `data` or `metadata` is the envelope — but passing an envelope to `send` nests
 it twice, and the workflow then reads `data.data.*`.
 
+The exception is a channel configured with
+[`request.body_mode = "payload"`](../reference/channel-config.md#request-body),
+which reads the whole request body as its data. There the wrap is the problem
+rather than the convenience — the envelope arrives as a single key named
+`data` — so pass `--raw` to send the payload verbatim. A payload-mode channel
+stamps its own metadata and accepts none from the caller, which is why `--raw`
+and `--metadata` are refused together.
+
 ```bash
 orion-cli workflows create -f workflow.json
 orion-cli workflows activate hello-world
