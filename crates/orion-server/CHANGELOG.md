@@ -7,96 +7,255 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **A browser preflight carrying `Authorization` no longer fails on the default
-  config** ([#271]). `allowed_origins = ["*"]` — the shipped default — took the
-  `CorsLayer::permissive()` branch, which emits a literal
-  `Access-Control-Allow-Headers: *`. Per the Fetch Standard `Authorization` is a
-  *CORS non-wildcard request-header name*: `*` never covers it, and it must be
-  listed explicitly. So on a default install a browser calling the admin API
-  with a bearer token failed preflight, while the named-origin branch worked
-  because it listed `AUTHORIZATION` by name. The single end-to-end preflight
-  test never sent `Access-Control-Request-Headers`, which is why it went
-  unnoticed.
-
-  Orion now sends the explicit allow-headers and expose-headers lists on
-  **both** branches, never `Any`. This is a behaviour change on the default
-  config and a strictly widening one — it authorizes everything `*` did, plus
-  the header `*` silently withheld.
-
-- **A `rate_limit.key_logic` that resolves to nothing no longer collapses every
-  caller into one bucket** ([#275]). `key_logic` could only read eight
-  hard-coded header names, and a reference to any other header was not an
-  error: a missing path resolves to `null` in datalogic, and the guard
-  serialized that into the key — so the bucket became the literal string
-  `"null"` for **every** caller on the channel. An intended per-device or
-  per-partner quota silently became one shared channel-wide bucket, with no
-  log, no warning and no metric. A single typo (`deviceid` vs `device-id`) was
-  enough.
-
-  A key that resolves to `null` or an empty string is now refused with
-  `429 RATE_LIMITED` (`RateLimitKeyUnavailable`), exactly as a key that fails
-  to evaluate already was — the N5 rule that a request whose key cannot be
-  computed is rejected rather than counted in the wrong bucket. This is what
-  `docs/src/reference/channel-config.md` has always said happens.
-
-  **Behaviour change on upgrade.** A channel with a typo'd header name
-  previously appeared to work and will now begin refusing requests. That
-  configuration was never enforcing the limit it declared — it was admitting
-  unbounded traffic against a control that read as active — so the refusal
-  surfaces a defect rather than creating one. To make it visible before
-  traffic arrives, Orion now **warns at channel load** when a `key_logic`
-  statically reads a header the key context will not carry, naming the channel
-  and the header. Fix such a channel by adding the name to the new
-  `rate_limit.key_headers` (below), or by correcting the path.
-
-- **`build_url` no longer corrupts a connector URL that carries a query**
-  ([#277]). Base and path were concatenated unconditionally, so
-  `https://h/api?a=1` plus a task path `/orders` produced
-  `https://h/api?a=1/orders` — the path spliced into the query value. The two
-  query strings are now kept apart, base first and task query appended. None
-  of the function's four tests used a base with a query, which is why it
-  survived.
-
-- **Connector `headers` values are masked whatever they are called** ([#277]).
-  The masking allowlist is flat and keyed by leaf name, so a header whose name
-  collided with a structural key was served **readable** — `headers: {"from":
-  "x"}` among them, despite the module documenting header values as "all
-  masked", and with no test covering it. `username`, `method`, `host`, `port`,
-  `url`, `type`, `region`, `bucket`, `topic`, `resource` and `audience` would
-  all have collided the same way. Every descendant of `headers`,
-  `query_params` and `extra_params` now masks by container rather than by
-  name; `env://` references still survive, so export → import is unaffected.
-
-- **`jwt_sign` honors an explicit `claims.iat`** ([#272]). It was stamped
-  unconditionally, silently discarding an author-supplied value — while every
-  other registered claim the function touches (`iss`, `aud`, `nbf`, `exp`) is
-  author-controllable. `iat` is the one with no dedicated input field, so
-  nothing more specific existed to beat a claims entry and the entry should
-  simply have won.
-
-  Two consequences went with it. A revocation-pivot scheme — compare
-  `claims.iat` against a stored `last_login_at` — could not forward-date a
-  token minted in the same second as the pivot it must survive, pushing a
-  tolerance into every consumer. And because `iat` moved every run, minted
-  token bytes moved every run, so **no offline `orion-server test` case could
-  ever assert a `jwt_sign` result** — a gap in Orion's own regression story for
-  the flows JWT support was added for. A fully pinned claim set now mints
-  byte-identical tokens.
-
-  `iat` and `exp` supplied through `claims` are now also required to be numbers
-  (NumericDate, RFC 7519 §2). `exp` previously got no such check, so a string
-  date minted a token every verifier rejects later; both are refused at sign
-  time instead.
-
-- **`rate_limit.requests_per_second: 0` is refused at authoring time.** It was
-  accepted and floored to `1` by the limiter, so asking for "admit nothing"
-  quietly got one request per second. Stored channels are unaffected until
-  rewritten.
+## [1.1.0] - 2026-08-21
 
 ### Added
 
+- **`crypto`** ([#259]) — digests, HMACs and password hashing as one operation
+  envelope: `hash`, `hmac`, `hmac_verify`, `password_hash`, `password_verify`.
+
+  Self-contained — no connector, no egress — so `orion-server dry-run` and
+  `orion-server test` execute it for real rather than against a stub. The
+  op × algorithm capability table is shared between execution and
+  create/validate/lint, so a misuse like `password_hash` with `sha256` is
+  unrepresentable rather than a runtime surprise. `hmac_verify` and
+  `password_verify` compare in constant time, and a wrong secret answers
+  `false` while a *malformed* stored hash or an undecodable signature is a task
+  error — data corruption is never mistaken for a bad credential.
+
+  `password_hash` runs argon2id (default) or bcrypt on the blocking pool with
+  OWASP-default costs and bounded tuning; `password_verify` auto-detects the
+  scheme from the stored hash's PHC prefix, which is also the rehash-on-login
+  discriminator. Keys resolve through the connector secret vocabulary
+  (`env://`, `vault://`) and never appear in context, errors or traces.
+  Vector-tested against RFC 4231, RFC 2202 and the NIST digests.
+
+- **JSONLogic encoding operators** ([#259]) — `base64_encode`/`base64_decode`,
+  `base64url_encode`/`base64url_decode` and `hex_encode`/`hex_decode`,
+  registered by Orion on **every** engine it builds: bootstrap, reload,
+  dry-run, the `/test` endpoint, the guard engine and both validation-parity
+  engines, so an expression means the same thing wherever it is evaluated.
+  `base64url` is unpadded — the JWS form — and the decoders are strict about
+  the alphabet while tolerating absent padding.
+
+- **`http_call` gains `body_format` and `response_format`** ([#261]) — `json`,
+  `form` or `text` on the way out and `json` or `text` on the way back, so an
+  upstream speaking `application/x-www-form-urlencoded`, or answering with
+  XML or CSV, no longer needs a workaround.
+
+  Form encoding handles scalars, arrays as repeated keys, and skips nulls;
+  nesting is refused at create time for a static `body` and per request for a
+  `body_logic` one. `text` is string passthrough. Each format stamps its own
+  content-type unless an explicit header names one — previously a task
+  content-type was *appended alongside* the JSON stamp, putting two
+  `Content-Type` headers on the wire. The connector test probe now captures
+  text as well, so a healthy non-JSON `200` no longer fails its own probe.
+
+- **The expression vocabulary is pinned to datalogic-rs 5.2** ([#266]) —
+  `group_by`, `distinct` and `keys`/`values`/`entries` are documented and
+  asserted against the engine, along with the IANA-zone argument on
+  `format_date`/`parse_date`. The vocabulary test renders a UTC instant as
+  `Asia/Kolkata` wall-clock, so a build that loses `chrono-tz` fails the suite
+  rather than silently degrading to UTC.
+
+- **`random`** ([#260]) — CSPRNG value generation in expressions, kind-selected:
+  `uuid` (v4, or v7 for a time-sortable id), `digits` (an exactly-n-digit
+  string with leading zeros kept — the OTP shape, and the full 10ⁿ space that
+  integer bounds cannot express), `int` (inclusive, confined to ±2⁵³−1 so every
+  JSON consumer sees exact values), `string` (named alphabets, or a custom set
+  of 2–256 *distinct* characters — duplicates are refused because they would
+  bias sampling) and `bytes` (hex, base64 or base64url through the same encoder
+  as the operators above).
+
+  Safe by engine structure rather than by convention: datalogic's optimizers
+  classify custom operators as opaque and impure, so `random` is never
+  constant-folded and never CSE-memoized — the same treatment `now` gets.
+  Sampling is uniform through `rand`'s range machinery, so there is no modulo
+  bias, and there is no seed parameter at any layer.
+
+- **`smtp` connector and `send_email`** ([#262]) — a sixth connector type and
+  one send function over it.
+
+  The connector carries host and port, `tls` (`starttls`, `implicit` or `none`
+  — rustls against the platform trust store, with deliberately no
+  skip-verification knob, and `none` drawing a validation warning), `auth`
+  (`none` or `basic`, secret references accepted), a default `from` behind an
+  `allow_from_override` gate, `allow_private_urls` with the same posture as
+  every other endpoint type — checked on the pool-open path — and `timeout_ms`.
+  Transports pool in an `SmtpPoolCache` beside the SQL, Mongo and Redis caches
+  and are evicted with them on connector change.
+  `POST /connectors/{name}/test` probes connect, EHLO, TLS and auth through
+  that same pooled transport without sending mail.
+
+  `send_email` takes `to`/`cc`/`bcc` (bare or `Name <addr>` forms, with parse
+  errors located per field and index), `subject`, `text` and/or `html` (both
+  send `multipart/alternative`), `reply_to`, the gated `from`, and extra
+  headers against a protected-name denylist — `List-Unsubscribe`-class headers
+  in, `From`/`Subject`/`Content-Type`-class names refused at create **and** at
+  send. The result is `{message_id, response}` with a client-generated
+  `Message-ID` for correlation.
+
+  **Deliberately no automatic retries.** A timeout after `DATA` is
+  indistinguishable from an accepted message and SMTP has no idempotency key,
+  so a retry is a duplicate email. The circuit breaker still applies through
+  the usual connector shell.
+
+- **`mongo_write` and `mongo_aggregate`, and extended-JSON values in the
+  portable dialect** ([#263]) — the raw-native MongoDB surface reaches parity
+  with the SQL one.
+
+  `mongo_write` is the write twin of `mongo_read`: `insert_one`,
+  `insert_many`, `update_one`, `update_many`, `replace_one`, `delete_one` and
+  `delete_many`, with op-conditional field requirements and misplaced-field
+  refusals at authoring time, per-op connector gates (`upsert: true` switches
+  update and replace onto the upsert gate), the unfiltered-mutation double
+  opt-in on every filtered op — the `_one` forms included — `write.max_rows`
+  capping `insert_many`, and partial-batch classification: an ordered write
+  reports applied, failed and never-attempted separately under a `207`.
+
+  `mongo_aggregate` allowlists 29 read-only pipeline stages as data. `$out` and
+  `$merge` sit behind a new per-connector `aggregate_write_stages` opt-in that
+  defaults to **false** — the one deliberate default-deny — and stages are
+  re-validated *after* `{"var"}` folding, so message data cannot smuggle one
+  in. Results are bounded by `query.max_limit`.
+
+  The portable dialect gains two backend-neutral values, `ObjectId` and
+  `DateTime`, accepted from `{"$oid"}` and `{"$date"}` wrappers in filters,
+  in-haystacks and `data_write` values. They lower to native BSON on MongoDB
+  and to `FeatureUnsupportedByTarget` on SQL and Elasticsearch — parity or an
+  error, never a silently different comparison. `{"param"}` composes inside a
+  wrapper and a param value carrying a wrapper coerces, so `mongo_read` output
+  round-trips into the next filter.
+
+  `mongo_read` also gains projection, sort, limit and skip, bounded by the same
+  query caps; an absent limit keeps the drain-with-cap contract.
+
+- **Channel `auth.mode = "hmac"` generalizes to any webhook provider** ([#264])
+  — a new provider is configuration, never code.
+
+  The signing string is now a strictly-parsed template: literals plus `{body}`
+  (required), `{header:<name>}`, and `{header:<name>:<key>}` for packed `k=v`
+  headers — which is what makes Stripe's `t=<ts>,v1=<sig>` shape expressible in
+  the flat config, with `signature_key` extracting every `v1` and each one
+  tried. `algorithm` (`sha1`/`sha256`/`sha512`) and `encoding`
+  (`hex`/`base64`/`base64url`, absent keeping the pre-1.1 auto-detection) are
+  open value tables; `secrets` adds zero-downtime rotation with every candidate
+  verified in constant time; and `timestamp` with `tolerance_secs` gives
+  timestamped schemes a replay window checked *before* any MAC work, with
+  either field alone refused as half a guard.
+
+  Six presets — `zoom`, `slack`, `stripe`, `github`, `shopify`, `webex` — are
+  pure data rows expanding to the explicit fields, which override them. Twilio
+  is a named non-goal: its base string is a per-provider algorithm, not a
+  concatenation.
+
+  Request-time rules are pinned: one uniform `401` for every cause; a template
+  header missing from the request **refuses** rather than substituting empty,
+  so an attacker cannot shrink the signed message; an absent body still signs
+  zero bytes. This is a strict generalization — an untouched config still means
+  raw-body HMAC-SHA256 with auto-detected encoding, and every pre-existing auth
+  test passes unchanged.
+
+  Auth validation also moved earlier. The structural half of `CompiledAuth`
+  compilation — everything except secret resolution, which stays at load time
+  so bundles validate on hosts without production secrets — now runs at channel
+  create/update/validate/import for **all** modes, so `api_key` without `keys`
+  and `hmac` without a secret are `400`s naming the field instead of
+  reload-time quarantines.
+
+- **`storage` connector with `storage_presign` and `storage_head`** ([#265]) —
+  a seventh connector type, under a scoping rule: **zero data path**.
+  `storage_presign` is local SigV4 arithmetic over connector credentials and
+  `storage_head` is one bounded signed `HEAD`; object bytes never move through
+  the runtime.
+
+  SigV4 is hand-rolled over the in-tree hmac/sha2 — no `aws-sigv4`, no SDK —
+  and pinned by AWS's published vectors: the documented S3 presigned-GET
+  example and the official suite's `get-vanilla` header case both verify byte
+  for byte. Query and header signing share one canonicalization, and STS
+  session tokens sign as `X-Amz-Security-Token`.
+
+  The connector carries `provider` (tagged; `s3` today, GCS and Azure as future
+  values), endpoint, region and bucket — bucket deliberately connector-owned,
+  since the connector is the scoping unit and a second bucket is a second
+  connector — credentials through the secret vocabulary, `force_path_style` for
+  self-hosted stores, `allow_private_urls`, and `presign_get`/`presign_put`/
+  `head` gates. The probe does one signed `HEAD` of the bucket.
+
+  `storage_presign` covers GET — `response_content_type` and
+  `response_content_disposition` ride the signed query — and PUT, with a signed
+  content-type the uploader must match. `expires_in` takes seconds or
+  `<n>s|m|h|d`, capped at S3's 7-day ceiling and checked at create time for
+  literals. `storage_head` answers `{exists: false}` on a `404`, because
+  absence is the data the function exists to report, while `403` and transport
+  failures fail the task.
+
+- **Channel `auth.mode = "jwt"`, plus `jwt_sign` and `jwt_verify`** ([#267]) —
+  per-user identity reaches workflows without a header-forwarding proxy whose
+  stripping rules Orion cannot validate.
+
+  One verification core, three surfaces, RFC 8725 throughout: the mandatory
+  algorithm allowlist is checked before anything else about a token, so
+  `alg: none` and downgrades are unrepresentable; nothing from the header is
+  trusted beyond `kid` routing; and HS secrets shorter than the hash length are
+  refused per RFC 7518. The JWS set is HS/RS/PS 256–512, ES256/384 and EdDSA —
+  ES512 deliberately absent, the library having no P-521. The JWKS cache is
+  process-wide with a `Cache-Control` TTL clamped to [60s, 24h], single-flight,
+  stale-serve (stale *public* keys never weaken verification) and a kid-miss
+  refetch floored at 30s, so issuer rotation is invisible.
+
+  On a channel, verified claims land at `metadata.auth.claims.*` — filtered by
+  `claims_to_metadata`, all by default, since verified claims are not secrets
+  from the workflow that admitted them — join the `validation_logic` context,
+  ride the async queue and propagate through `channel_call`, so one request
+  means one identity. `authorization_logic` evaluates over those claims after
+  verification: falsy or an evaluation error answers `403 insufficient_scope`,
+  because authorization is not validation and the wire should say so.
+  `required: false` admits missing tokens identity-less while still rejecting
+  invalid ones. `401`s carry `WWW-Authenticate: Bearer`, and **only expiry is
+  named on the wire** — the one failure a client answers with a refresh; every
+  other reason is uniform and typed only in `orion_jwt_rejections_total` and
+  traces.
+
+  `jwt_sign` stamps `iat`, requires a deliberate expiry (`expires_in` or an
+  explicit `exp` claim), takes claims as a resolvable object, and resolves keys
+  per call — never into context, errors or traces. `jwt_verify` shares the JWKS
+  cache and returns typed, branchable task errors. OIDC flows and mTLS stay out
+  of scope.
+
+- **`oauth2` connector auth** ([#268]) — Orion acquires, caches, refreshes and
+  persists the token itself, on `http` connectors (`es` refuses it at
+  authoring).
+
+  Grants are an open value set — `client_credentials` and `refresh_token`
+  today, with jwt-bearer, token-exchange and device-code as future values on
+  grant-agnostic lifecycle machinery. Provider quirks are additive fields:
+  `client_auth` (`basic` or `body`, per RFC 6749 §2.3.1), `audience`,
+  `resource`, and `extra_params` with reserved-name refusal. ROPC is
+  deliberately absent.
+
+  The lifecycle lives on the connector registry beside the circuit breakers:
+  lazy acquisition, a per-connector cache fingerprinted against the auth block
+  so editing the connector invalidates state — the burned-token recovery story
+  — `refresh_margin_secs` early refresh, single-flight per connector, RFC 6749
+  form POSTs through the shared SSRF-pinned client, and `expires_in` defaulted
+  conservatively and floored against stampedes.
+
+  Rotation persists to a new `connector_oauth_state` table, encrypted at rest
+  exactly like `config_json`, carrying the access token and expiry alongside
+  the refresh token so cluster nodes adopt the winner's token: the refreshing
+  node takes a job lease and the losers poll the state row instead of re-racing
+  the rotation. The `connectors` table is never mutated; `env://`, `vault://`
+  and literal seeds all persist identically; and deleting a connector removes
+  its state row.
+
+  Failures split by kind: an unreachable token endpoint is retryable and trips
+  the breaker, while `invalid_grant` and `invalid_client` are non-retryable
+  with a 30-second negative cache and the error code surfaced (the description
+  only logged). A `401` from the API invalidates the cached token, so a
+  revocation self-heals. `orion_oauth_token_requests_total{connector, outcome}`
+  counts every request, and `POST /connectors/{id}/test` acquires a real token,
+  validating the whole setup.
 - **`rate_limit.key_headers`** ([#275]) — a per-channel list of extra request
   headers `key_logic` may read, making per-device, per-partner and
   per-API-client limits expressible for the first time. The list is **merged
@@ -378,39 +537,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced a config the server refused. Corrected, and the remaining valid keys
   listed. ([#271])
 
-[#269]: https://github.com/GoPlasmatic/Orion/issues/269
-[#270]: https://github.com/GoPlasmatic/Orion/issues/270
-[#271]: https://github.com/GoPlasmatic/Orion/issues/271
-[#272]: https://github.com/GoPlasmatic/Orion/issues/272
-[#273]: https://github.com/GoPlasmatic/Orion/issues/273
-[#274]: https://github.com/GoPlasmatic/Orion/issues/274
-[#275]: https://github.com/GoPlasmatic/Orion/issues/275
-[#276]: https://github.com/GoPlasmatic/Orion/issues/276
-[#277]: https://github.com/GoPlasmatic/Orion/issues/277
-[#278]: https://github.com/GoPlasmatic/Orion/issues/278
-[#279]: https://github.com/GoPlasmatic/Orion/issues/279
-[#280]: https://github.com/GoPlasmatic/Orion/issues/280
-[#281]: https://github.com/GoPlasmatic/Orion/issues/281
-[#282]: https://github.com/GoPlasmatic/Orion/issues/282
+### Changed
 
-### Added
+- **dataflow-rs 3.5.0 is the engine baseline** (from 3.3), carrying the opt-in
+  error-context path `metadata._orion_errors` is built on. The context is
+  bounded — `with_error_context_cap`, default 32 — so a looping workflow with a
+  failing body cannot grow the trace quadratically, and `message`/`detail` are
+  deliberately not recorded, because the context is serialized back to callers.
 
-- **`orion-cli send --raw`** ([#282]) — send the payload as the request body
-  verbatim, with no `{"data": …}` envelope.
+- **The SMTP stack moved from `lettre` to `mail-send`/`mail-builder`**, removing
+  the tree's one bare-0BSD dependency. `quoted_printable` arrives through
+  `lettre`'s `builder` feature, which `send_email` used heavily, so dropping the
+  feature would have meant hand-writing RFC 5322 header folding, RFC 2047
+  encoded-words, MIME boundaries and a quoted-printable encoder — reimplementing
+  the code whose licence was the objection. The replacements are Apache-2.0 OR
+  MIT throughout, so `deny.toml`'s allow-list is unchanged: the offending crate
+  is gone rather than permitted, and the net crate count is flat.
 
-  `request.body_mode = "payload"` shipped without a client that could address
-  it: every CLI and MCP data path wrapped unconditionally, so a payload-mode
-  channel received `data = {"data": …}` and the documentation told you to use
-  `curl`. `--raw` closes that, and the MCP `send` tools take an equivalent
-  `raw` parameter.
+  Address parsing, the one load-bearing capability `mail-builder` does not
+  provide, is rebuilt on `mail-parser`'s grammar with a line-break refusal in
+  front of it — the injection vector is a lenient parser that stops at the
+  break. No behaviour changes for authors: `Name <addr>` forms, multipart
+  bodies, custom headers and `Message-ID` correlation all work as before, and
+  the in-process SMTP server tests assert it against a real listener.
+- **A failed task reports why it failed in `errors[].code`** — where it used to
+  report a flat `TASK_ERROR`. This is wire-visible: a client or alert matching
+  `errors[].code == "TASK_ERROR"` on a `continue_on_error: true` channel stops
+  matching.
 
-  `--raw` and `--metadata` are refused together rather than one being silently
-  dropped: a payload-mode channel stamps its own metadata and accepts none
-  from the caller, so there is nowhere for it to go.
+  The codes are the ones [#280] made branchable, and they now reach the response
+  as well as `metadata._orion_errors`. A connection that could not be
+  established is `IO_ERROR`, a slow one `TIMEOUT_ERROR`, a request rejected
+  before any socket was opened — SSRF protection, a closed operation gate —
+  `FUNCTION_ERROR`, and a request shed by an open breaker carries the
+  connector's own service kind, `circuit_open`, lower-case and verbatim.
+  `TASK_ERROR` remains the fallback for an engine-owned error with no more
+  specific classification, so it does not disappear from the vocabulary.
 
-  This also unblocks e2e coverage of `body_mode`, which had integration tests
-  and reference docs but no end-to-end case, because the suite drives every
-  send through the CLI.
+  Match on the specific code, or on the set, rather than on `TASK_ERROR` alone.
+  Note this is only visible where the failure reaches `errors[]` at all: with
+  the default `continue_on_error: false` the request still fails with the
+  top-level error envelope and its own code, which is unchanged.
+
+### Fixed
+
+- **SQLite read-then-write transactions no longer fail under concurrent admin
+  traffic** (D30). The four SQLite-reachable transactions that `SELECT` before
+  their first write — workflow and channel activate, `update_rollout`, and
+  `packages.put` — used sqlx's default deferred `BEGIN`. The first `SELECT`
+  pins a WAL read snapshot, and when another connection commits before the
+  transaction's first write — in production, the async audit-log writer
+  draining the previous admin request's rows — the read-to-write upgrade fails
+  with `SQLITE_BUSY_SNAPSHOT` (517), which `busy_timeout` never retries; or
+  with a plain `SQLITE_BUSY` (5) while the writer still holds the lock, where
+  SQLite skips the busy handler because waiting cannot make the snapshot
+  fresher. Package apply surfaced this as an intermittent
+  `500 STORAGE_ERROR`.
+
+  Those transactions now begin `IMMEDIATE` on SQLite, taking the write lock at
+  `BEGIN` so no stale snapshot can exist and contention degrades to plain
+  `BUSY`, which `busy_timeout` absorbs. PostgreSQL and MySQL take row locks at
+  first write and keep a plain `begin()`. Two concurrent activates now
+  serialize at `BEGIN` instead of both reading the same actives list.
+- **A browser preflight carrying `Authorization` no longer fails on the default
+  config** ([#271]). `allowed_origins = ["*"]` — the shipped default — took the
+  `CorsLayer::permissive()` branch, which emits a literal
+  `Access-Control-Allow-Headers: *`. Per the Fetch Standard `Authorization` is a
+  *CORS non-wildcard request-header name*: `*` never covers it, and it must be
+  listed explicitly. So on a default install a browser calling the admin API
+  with a bearer token failed preflight, while the named-origin branch worked
+  because it listed `AUTHORIZATION` by name. The single end-to-end preflight
+  test never sent `Access-Control-Request-Headers`, which is why it went
+  unnoticed.
+
+  Orion now sends the explicit allow-headers and expose-headers lists on
+  **both** branches, never `Any`. This is a behaviour change on the default
+  config and a strictly widening one — it authorizes everything `*` did, plus
+  the header `*` silently withheld.
+
+- **A `rate_limit.key_logic` that resolves to nothing no longer collapses every
+  caller into one bucket** ([#275]). `key_logic` could only read eight
+  hard-coded header names, and a reference to any other header was not an
+  error: a missing path resolves to `null` in datalogic, and the guard
+  serialized that into the key — so the bucket became the literal string
+  `"null"` for **every** caller on the channel. An intended per-device or
+  per-partner quota silently became one shared channel-wide bucket, with no
+  log, no warning and no metric. A single typo (`deviceid` vs `device-id`) was
+  enough.
+
+  A key that resolves to `null` or an empty string is now refused with
+  `429 RATE_LIMITED` (`RateLimitKeyUnavailable`), exactly as a key that fails
+  to evaluate already was — the N5 rule that a request whose key cannot be
+  computed is rejected rather than counted in the wrong bucket. This is what
+  `docs/src/reference/channel-config.md` has always said happens.
+
+  **Behaviour change on upgrade.** A channel with a typo'd header name
+  previously appeared to work and will now begin refusing requests. That
+  configuration was never enforcing the limit it declared — it was admitting
+  unbounded traffic against a control that read as active — so the refusal
+  surfaces a defect rather than creating one. To make it visible before
+  traffic arrives, Orion now **warns at channel load** when a `key_logic`
+  statically reads a header the key context will not carry, naming the channel
+  and the header. Fix such a channel by adding the name to the new
+  `rate_limit.key_headers` (below), or by correcting the path.
+
+- **`build_url` no longer corrupts a connector URL that carries a query**
+  ([#277]). Base and path were concatenated unconditionally, so
+  `https://h/api?a=1` plus a task path `/orders` produced
+  `https://h/api?a=1/orders` — the path spliced into the query value. The two
+  query strings are now kept apart, base first and task query appended. None
+  of the function's four tests used a base with a query, which is why it
+  survived.
+
+- **Connector `headers` values are masked whatever they are called** ([#277]).
+  The masking allowlist is flat and keyed by leaf name, so a header whose name
+  collided with a structural key was served **readable** — `headers: {"from":
+  "x"}` among them, despite the module documenting header values as "all
+  masked", and with no test covering it. `username`, `method`, `host`, `port`,
+  `url`, `type`, `region`, `bucket`, `topic`, `resource` and `audience` would
+  all have collided the same way. Every descendant of `headers`,
+  `query_params` and `extra_params` now masks by container rather than by
+  name; `env://` references still survive, so export → import is unaffected.
+
+- **`jwt_sign` honors an explicit `claims.iat`** ([#272]). It was stamped
+  unconditionally, silently discarding an author-supplied value — while every
+  other registered claim the function touches (`iss`, `aud`, `nbf`, `exp`) is
+  author-controllable. `iat` is the one with no dedicated input field, so
+  nothing more specific existed to beat a claims entry and the entry should
+  simply have won.
+
+  Two consequences went with it. A revocation-pivot scheme — compare
+  `claims.iat` against a stored `last_login_at` — could not forward-date a
+  token minted in the same second as the pivot it must survive, pushing a
+  tolerance into every consumer. And because `iat` moved every run, minted
+  token bytes moved every run, so **no offline `orion-server test` case could
+  ever assert a `jwt_sign` result** — a gap in Orion's own regression story for
+  the flows JWT support was added for. A fully pinned claim set now mints
+  byte-identical tokens.
+
+  `iat` and `exp` supplied through `claims` are now also required to be numbers
+  (NumericDate, RFC 7519 §2). `exp` previously got no such check, so a string
+  date minted a token every verifier rejects later; both are refused at sign
+  time instead.
+
+- **`rate_limit.requests_per_second: 0` is refused at authoring time.** It was
+  accepted and floored to `1` by the limiter, so asking for "admit nothing"
+  quietly got one request per second. Stored channels are unaffected until
+  rewritten.
 
 ### Security
 
@@ -440,27 +713,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Redaction is name-keyed, so `?pwd=` masks and `?pass=` does not — it is a
   backstop, not the control. Keep credentials out of the URL with `auth` or
   `query_params`.
-
-### Changed
-
-- **A failed task reports why it failed in `errors[].code`** — where it used to
-  report a flat `TASK_ERROR`. This is wire-visible: a client or alert matching
-  `errors[].code == "TASK_ERROR"` on a `continue_on_error: true` channel stops
-  matching.
-
-  The codes are the ones [#280] made branchable, and they now reach the response
-  as well as `metadata._orion_errors`. A connection that could not be
-  established is `IO_ERROR`, a slow one `TIMEOUT_ERROR`, a request rejected
-  before any socket was opened — SSRF protection, a closed operation gate —
-  `FUNCTION_ERROR`, and a request shed by an open breaker carries the
-  connector's own service kind, `circuit_open`, lower-case and verbatim.
-  `TASK_ERROR` remains the fallback for an engine-owned error with no more
-  specific classification, so it does not disappear from the vocabulary.
-
-  Match on the specific code, or on the set, rather than on `TASK_ERROR` alone.
-  Note this is only visible where the failure reaches `errors[]` at all: with
-  the default `continue_on_error: false` the request still fails with the
-  top-level error envelope and its own code, which is unchanged.
 
 ## [1.0.0] - 2026-08-14
 
@@ -3149,7 +3401,32 @@ Earlier release. See the Git history for details.
 
 Initial release.
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...HEAD
+[#259]: https://github.com/GoPlasmatic/Orion/issues/259
+[#260]: https://github.com/GoPlasmatic/Orion/issues/260
+[#261]: https://github.com/GoPlasmatic/Orion/issues/261
+[#262]: https://github.com/GoPlasmatic/Orion/issues/262
+[#263]: https://github.com/GoPlasmatic/Orion/issues/263
+[#264]: https://github.com/GoPlasmatic/Orion/issues/264
+[#265]: https://github.com/GoPlasmatic/Orion/issues/265
+[#266]: https://github.com/GoPlasmatic/Orion/issues/266
+[#267]: https://github.com/GoPlasmatic/Orion/issues/267
+[#268]: https://github.com/GoPlasmatic/Orion/issues/268
+[#269]: https://github.com/GoPlasmatic/Orion/issues/269
+[#270]: https://github.com/GoPlasmatic/Orion/issues/270
+[#271]: https://github.com/GoPlasmatic/Orion/issues/271
+[#272]: https://github.com/GoPlasmatic/Orion/issues/272
+[#273]: https://github.com/GoPlasmatic/Orion/issues/273
+[#274]: https://github.com/GoPlasmatic/Orion/issues/274
+[#275]: https://github.com/GoPlasmatic/Orion/issues/275
+[#276]: https://github.com/GoPlasmatic/Orion/issues/276
+[#277]: https://github.com/GoPlasmatic/Orion/issues/277
+[#278]: https://github.com/GoPlasmatic/Orion/issues/278
+[#279]: https://github.com/GoPlasmatic/Orion/issues/279
+[#280]: https://github.com/GoPlasmatic/Orion/issues/280
+[#281]: https://github.com/GoPlasmatic/Orion/issues/281
+
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/GoPlasmatic/Orion/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/GoPlasmatic/Orion/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GoPlasmatic/Orion/compare/v0.1.1...v0.2.0

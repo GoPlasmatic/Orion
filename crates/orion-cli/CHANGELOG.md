@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-21
+
 ### Fixed
 
 - **`activate|archive --dry-run` reported a refused transition as a success.**
@@ -30,6 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pagination.total` field the admin envelope has never had.
 
 ### Added
+
+- **`send --raw`** ([#282]) — send the payload as the request body verbatim,
+  with no `{"data": …}` envelope.
+
+  The server's `request.body_mode = "payload"` shipped without a client that
+  could address it: every CLI and MCP data path wrapped unconditionally, so a
+  payload-mode channel received `data = {"data": …}` and the documentation told
+  you to reach for `curl`. `--raw` closes that, and the MCP `send` tools take an
+  equivalent `raw` parameter.
+
+  `--raw` and `--metadata` are refused together rather than one being silently
+  dropped: a payload-mode channel stamps its own metadata and accepts none from
+  the caller, so there is nowhere for it to go.
+
+  This also unblocks e2e coverage of `body_mode`, which had integration tests
+  and reference docs but no end-to-end case, because the suite drives every send
+  through the CLI.
 
 - **Every audit-log filter the endpoint accepts** — `--action`,
   `--resource-type`, `--resource-id`, `--principal`, `--start-time`,
@@ -183,7 +202,10 @@ Initial release.
      The history spans two repositories, so pre-1.0 entries link to their
      release pages rather than to a compare range. -->
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...HEAD
+[#282]: https://github.com/GoPlasmatic/Orion/issues/282
+
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/GoPlasmatic/Orion/releases/tag/v1.0.0
 [0.2.1]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.2.1
 [0.2.0]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.2.0
