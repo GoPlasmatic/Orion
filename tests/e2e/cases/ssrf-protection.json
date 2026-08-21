@@ -1,15 +1,14 @@
 {
-    "name": "HTTP Error Handling",
-    "description": "Verify http_call behavior with continue_on_error when the target refuses the connection. allow_private_urls is what makes this test its own name: without it SSRF protection rejects 127.0.0.1 before a socket is ever opened, and the case silently becomes a duplicate of ssrf-protection.json.",
+    "name": "SSRF Protection",
+    "description": "An http_call connector pointed at a private address is refused before any socket is opened, unless it opts out with allow_private_urls. This path used to be covered only by accident, by the unreachable-host case in http-error-handling.json, which asserted SSRF behaviour under a name that promised a connection failure.",
     "connectors": [
         {
-            "name": "unreachable-api",
+            "name": "private-api",
             "connector_type": "http",
             "config": {
                 "type": "http",
                 "url": "http://127.0.0.1:19999",
                 "method": "POST",
-                "allow_private_urls": true,
                 "retry": {
                     "max_retries": 0,
                     "retry_delay_ms": 100
@@ -19,7 +18,7 @@
     ],
     "workflows": [
         {
-            "name": "HTTP Call Error Test",
+            "name": "SSRF Rejection Test",
             "priority": 10,
             "condition": true,
             "continue_on_error": true,
@@ -34,11 +33,11 @@
                 },
                 {
                     "id": "call",
-                    "name": "Call Unreachable API",
+                    "name": "Call Private Address",
                     "function": {
                         "name": "http_call",
                         "input": {
-                            "connector": "unreachable-api",
+                            "connector": "private-api",
                             "method": "POST",
                             "body": { "test": true },
                             "timeout_ms": 2000
@@ -50,14 +49,15 @@
     ],
     "tests": [
         {
-            "name": "HTTP call to unreachable host collects errors",
-            "channel": "http-test",
+            "name": "call to a private address is refused by SSRF protection",
+            "channel": "ssrf-test",
             "input": { "action": "test-call" },
             "expect": {
                 ".status": "ok",
-                ".errors[0].code": "IO_ERROR",
+                ".errors[0].code": "FUNCTION_ERROR",
                 ".errors[0].task_id": "call",
-                ".errors[0].message | contains(\"SSRF\") | not": "true",
+                ".errors[0].message | contains(\"SSRF protection\")": "true",
+                ".errors[0].message | contains(\"127.0.0.1\")": "true",
                 ".data.req.action": "test-call"
             }
         }

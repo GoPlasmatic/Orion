@@ -210,7 +210,7 @@ async channel or a service built for it. `max` is capped by
 {
   "status": "ok",
   "data": { "order": { "...": "..." } },
-  "errors": [ { "code": "FUNCTION_ERROR", "task_id": "enrich", "message": "HTTP request failed..." } ]
+  "errors": [ { "code": "IO_ERROR", "task_id": "enrich", "message": "HTTP request failed..." } ]
 }
 ```
 
