@@ -72,7 +72,6 @@ Instead of the default sync send, a test can set one of:
 |-----|---------|
 | `"dry_run_rule": <n>` | Run `workflows test` (server-side dry run) against the case's *n*-th workflow with `input` — no traffic served |
 | `"read_connector": <n>` | Assert on `connectors get` for the case's *n*-th connector (e.g. secret masking) |
-| `"batch": true` | Send `input` via `send --batch` |
 
 ### Lifecycle steps and failure paths
 

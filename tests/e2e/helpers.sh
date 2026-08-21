@@ -560,8 +560,6 @@ _run_case_test() {
     has_read_connector=$(jq ".tests[$test_idx] | has(\"read_connector\")" "$case_file")
     local has_dry_run
     has_dry_run=$(jq ".tests[$test_idx] | has(\"dry_run_rule\")" "$case_file")
-    local has_batch
-    has_batch=$(jq -r ".tests[$test_idx].batch // false" "$case_file")
 
     if [[ "$has_read_connector" == "true" ]]; then
         # Read connector test
@@ -578,12 +576,6 @@ _run_case_test() {
         local input
         input=$(jq -c ".tests[$test_idx].input" "$case_file")
         cli workflows test "$rule_id" -d "$input"
-        response="$CLI_OUTPUT"
-    elif [[ "$has_batch" == "true" ]]; then
-        # Batch test
-        local input
-        input=$(jq -c ".tests[$test_idx].input" "$case_file")
-        cli send --batch -d "$input"
         response="$CLI_OUTPUT"
     else
         # Default: sync send
