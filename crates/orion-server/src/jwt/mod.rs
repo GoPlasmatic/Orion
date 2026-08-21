@@ -366,15 +366,44 @@ pub fn sign(
     jsonwebtoken::encode(&header, claims, key).map_err(|e| format!("signing failed: {e}"))
 }
 
-/// Throwaway keypairs for the test suites (generated for this repo; secure
-/// nothing). In-crate rather than under `tests/` because the channel-auth
-/// unit tests use them too.
+/// Throwaway keypairs for the test suites — they secure nothing and do not
+/// outlive the test binary that generates them.
+///
+/// Generated in-process rather than committed as `testkeys/*.pem`, which is
+/// what they were until the repo-wide `*.pem` ignore rule (there to keep TLS
+/// material out of a public repo) silently kept them out of git as well. They
+/// existed on the author's disk, so every local build passed; CI checked out
+/// a tree without them and could not compile any test target. Generating
+/// removes both halves of that trap: nothing to forget to commit, and no
+/// private key in the repository to have to reason about.
+///
+/// One generation per key type per test binary, on first use — `LazyLock`
+/// rather than a `fn`, because RSA-2048 keygen is the one expensive step here
+/// and the JWT suite reaches for the same key from several tests.
 #[cfg(test)]
 pub mod testkeys {
-    pub const RSA_PRIVATE: &str = include_str!("testkeys/rsa.pem");
-    pub const RSA_PUBLIC: &str = include_str!("testkeys/rsa.pub.pem");
-    pub const EC_PRIVATE: &str = include_str!("testkeys/ec.pem");
-    pub const EC_PUBLIC: &str = include_str!("testkeys/ec.pub.pem");
-    pub const ED_PRIVATE: &str = include_str!("testkeys/ed.pem");
-    pub const ED_PUBLIC: &str = include_str!("testkeys/ed.pub.pem");
+    use std::sync::LazyLock;
+
+    /// A PKCS#8 private key and its SPKI public key, both PEM — precisely the
+    /// two shapes `EncodingKey::from_*_pem` and `DecodingKey::from_*_pem`
+    /// accept, so these drop straight into a channel `key` field.
+    pub struct Keypair {
+        pub private: String,
+        pub public: String,
+    }
+
+    fn generate(alg: &'static rcgen::SignatureAlgorithm) -> Keypair {
+        let key = rcgen::KeyPair::generate_for(alg).expect("test keypair generation");
+        Keypair {
+            private: key.serialize_pem(),
+            public: key.public_key_pem(),
+        }
+    }
+
+    /// RSA-2048 — serves both the RS (PKCS#1 v1.5) and PS (PSS) families.
+    pub static RSA: LazyLock<Keypair> = LazyLock::new(|| generate(&rcgen::PKCS_RSA_SHA256));
+    /// NIST P-256, for ES256.
+    pub static EC: LazyLock<Keypair> = LazyLock::new(|| generate(&rcgen::PKCS_ECDSA_P256_SHA256));
+    /// Ed25519, for EdDSA.
+    pub static ED: LazyLock<Keypair> = LazyLock::new(|| generate(&rcgen::PKCS_ED25519));
 }

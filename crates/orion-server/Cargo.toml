@@ -200,8 +200,14 @@ testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "m
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.
 redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 # In-process self-signed certificate generation for the TLS tests (no
-# external `openssl` CLI dependency).
-rcgen = "0.14"
+# external `openssl` CLI dependency), and the JWT test keypairs.
+#
+# The aws_lc_rs backend rather than the default ring one, because ring has no
+# RSA key generation (rcgen returns KeyGenerationUnavailable) and the JWT
+# suite needs an RS/PS key. It costs no extra crate: aws-lc-rs is already in
+# the tree twice over, as jsonwebtoken's backend and as rustls's default
+# provider.
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Pre-main initializer: the one place `std::env::set_var` is sound in a
 # multi-threaded test binary (secret_references_test's env:// fixture).
 ctor = "1.0"

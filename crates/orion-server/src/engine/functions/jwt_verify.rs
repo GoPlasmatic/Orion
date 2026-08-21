@@ -335,10 +335,26 @@ mod tests {
         for (alg, sign_key, verify_key) in [
             ("HS256", HS_SECRET, HS_SECRET),
             ("HS512", HS_SECRET, HS_SECRET),
-            ("RS256", testkeys::RSA_PRIVATE, testkeys::RSA_PUBLIC),
-            ("PS256", testkeys::RSA_PRIVATE, testkeys::RSA_PUBLIC),
-            ("ES256", testkeys::EC_PRIVATE, testkeys::EC_PUBLIC),
-            ("EdDSA", testkeys::ED_PRIVATE, testkeys::ED_PUBLIC),
+            (
+                "RS256",
+                testkeys::RSA.private.as_str(),
+                testkeys::RSA.public.as_str(),
+            ),
+            (
+                "PS256",
+                testkeys::RSA.private.as_str(),
+                testkeys::RSA.public.as_str(),
+            ),
+            (
+                "ES256",
+                testkeys::EC.private.as_str(),
+                testkeys::EC.public.as_str(),
+            ),
+            (
+                "EdDSA",
+                testkeys::ED.private.as_str(),
+                testkeys::ED.public.as_str(),
+            ),
         ] {
             let out = round_trip(
                 json!({"algorithm": alg, "key": sign_key,
@@ -478,7 +494,7 @@ mod tests {
                    "claims": {}, "expires_in": 300, "output": "data.token"}),
             json!({"token": {"var": "data.token"},
                    "algorithms": ["RS256"],
-                   "keys": [{"algorithm": "RS256", "key": testkeys::RSA_PUBLIC}],
+                   "keys": [{"algorithm": "RS256", "key": testkeys::RSA.public.as_str()}],
                    "output": "data.claims"}),
             json!({}),
         )

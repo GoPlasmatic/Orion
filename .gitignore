@@ -30,7 +30,10 @@ debug/
 *.tgz
 *.crate
 
-# TLS material
+# TLS material. Deliberately unconditional: a test fixture that needs a key
+# generates it in-process (rcgen) rather than earning an exception here. An
+# exception is how the JWT test keys came to exist on one disk and in no
+# checkout, which passed locally and broke every test target in CI.
 *.pem
 *.key
 
