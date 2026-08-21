@@ -96,7 +96,7 @@ errors and keep going:
   "status": "ok",
   "data": { "req": { "action": "test-call" } },
   "errors": [
-    { "code": "TASK_ERROR", "task_id": "call", "message": "HTTP request failed..." }
+    { "code": "FUNCTION_ERROR", "task_id": "call", "message": "HTTP request failed..." }
   ]
 }
 ```

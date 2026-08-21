@@ -54,7 +54,7 @@
             "input": { "action": "test-call" },
             "expect": {
                 ".status": "ok",
-                ".errors[0].code": "TASK_ERROR",
+                ".errors[0].code": "FUNCTION_ERROR",
                 ".errors[0].task_id": "call",
                 ".data.req.action": "test-call"
             }
