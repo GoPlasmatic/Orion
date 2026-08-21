@@ -492,3 +492,79 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
         "a syntax error must not trip the breaker on a healthy database: {body}"
     );
 }
+
+/// What a breaker rejection looks like to a workflow that opted to keep going.
+///
+/// `test_breaker_trips_after_threshold` covers the default: the task aborts the
+/// request and the client sees `503 CIRCUIT_OPEN`. With `continue_on_error:
+/// true` there is no error envelope at all — the response is a `200` carrying
+/// the failure in `errors[]` — so the only thing that tells a workflow author
+/// *why* the task failed is the recorded code.
+///
+/// That code is the connector's own service kind, verbatim. `circuit_open` is
+/// minted by `circuit_open_dataflow_error` as a `DataflowError::Service`, and
+/// dataflow-rs 3.5.0's classifier prefers a service `kind` over the variant
+/// fallback — so shedding a dependency stays distinguishable from the
+/// `IO_ERROR` of a genuine connection failure and the `TIMEOUT_ERROR` of a slow
+/// one. Before 3.5.0 all three flattened to `TASK_ERROR` here, which is why
+/// `docs/src/operate/upgrading-to-1.0.md` still warns that the rejection is
+/// invisible outside the trace and the metric. It no longer is.
+#[tokio::test]
+async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow() {
+    let addr = start_failing_server().await;
+    let app = common::test_app_with_config(cb_config(3, 300)).await;
+
+    create_http_connector(&app, "failing-api", addr).await;
+    common::create_and_activate_channel(
+        &app,
+        "cb-continue",
+        json!({
+            "name": "CB Continue On Error Workflow",
+            "condition": true,
+            "continue_on_error": true,
+            "tasks": [{
+                "id": "call",
+                "name": "Call failing endpoint",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "failing-api",
+                        "method": "POST",
+                        "path": "/fail",
+                        "body": {"test": true},
+                        "response_path": "data.result",
+                        "timeout_ms": 5000
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
+
+    // Accumulate failures to the threshold. These are upstream 500s, not
+    // rejections — the breaker is still closed and letting them through.
+    for i in 0..3 {
+        let (status, body) = send_data_request(&app, "cb-continue").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "continue_on_error keeps request {} at 200, got body: {body}",
+            i + 1
+        );
+    }
+
+    // The breaker is open now, so this one never reaches the upstream.
+    let (status, body) = send_data_request(&app, "cb-continue").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "continue_on_error keeps a shed request at 200 too, got body: {body}"
+    );
+    assert_eq!(
+        body["errors"][0]["code"],
+        json!("circuit_open"),
+        "a shed request must name the breaker in errors[], not a generic \
+         TASK_ERROR that hides it: {body}"
+    );
+    assert_eq!(body["errors"][0]["task_id"], json!("call"), "body: {body}");
+}

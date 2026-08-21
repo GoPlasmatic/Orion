@@ -1994,11 +1994,20 @@ retryable.
 
 > **Blind spot worth knowing.** This only holds when the failing task has
 > `continue_on_error: false` (the default). With `continue_on_error: true` the
-> request returns **HTTP 200** with a sanitised `TASK_ERROR` entry, and the
-> string `CIRCUIT_OPEN` appears nowhere in the response — the breaker rejection
-> is visible only in the persisted trace and in
-> `orion_circuit_breaker_rejections_total{connector, channel}`. Alert on the metric,
-> not on the status code, if your workflows use `continue_on_error: true`.
+> request returns **HTTP 200** and there is no error envelope at all, so
+> `$.error.code` is absent and an alert watching the status code reads a shed
+> request as a success. Alert on
+> `orion_circuit_breaker_rejections_total{connector, channel}`, not on the status
+> code, if your workflows use `continue_on_error: true`.
+>
+> **This narrowed in 1.1.0.** Through 1.0 the accompanying `errors[]` entry was
+> a sanitised `TASK_ERROR` naming nothing, leaving the rejection visible only in
+> the metric and the persisted trace. Since 1.1.0 the breaker's own service kind
+> survives classification, so the entry reads `"code": "circuit_open"` —
+> lower-case, verbatim — and stays distinct from the `IO_ERROR` of a genuine
+> connection failure and the `TIMEOUT_ERROR` of a slow one. A workflow can
+> branch on it through `metadata._orion_errors.0.code`. The HTTP status is still
+> `200`, so the metric remains the right alerting signal.
 
 ### The data dialect rejects what it used to ignore
 

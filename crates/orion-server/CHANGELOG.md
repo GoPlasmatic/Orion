@@ -391,6 +391,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#279]: https://github.com/GoPlasmatic/Orion/issues/279
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 
+### Changed
+
+- **A failed task reports why it failed in `errors[].code`** — where it used to
+  report a flat `TASK_ERROR`. This is wire-visible: a client or alert matching
+  `errors[].code == "TASK_ERROR"` on a `continue_on_error: true` channel stops
+  matching.
+
+  The codes are the ones [#280] made branchable, and they now reach the response
+  as well as `metadata._orion_errors`. A connection that could not be
+  established is `IO_ERROR`, a slow one `TIMEOUT_ERROR`, a request rejected
+  before any socket was opened — SSRF protection, a closed operation gate —
+  `FUNCTION_ERROR`, and a request shed by an open breaker carries the
+  connector's own service kind, `circuit_open`, lower-case and verbatim.
+  `TASK_ERROR` remains the fallback for an engine-owned error with no more
+  specific classification, so it does not disappear from the vocabulary.
+
+  Match on the specific code, or on the set, rather than on `TASK_ERROR` alone.
+  Note this is only visible where the failure reaches `errors[]` at all: with
+  the default `continue_on_error: false` the request still fails with the
+  top-level error envelope and its own code, which is unchanged.
+
 ## [1.0.0] - 2026-08-14
 
 **Highlights.** The promotion story: an `orion-server package` CLI
