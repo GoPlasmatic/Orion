@@ -152,7 +152,13 @@ pub async fn send_es(
     req: reqwest::RequestBuilder,
     max_response_size: usize,
 ) -> Result<(reqwest::StatusCode, Value), DataflowError> {
-    let resp = req.send().await.map_err(to_exec_error)?;
+    // `without_url`: a transport failure's `Display` carries the endpoint it
+    // was given, and an ES connector URL can hold credentials in userinfo or
+    // the query (#281). The connector name is the diagnostic here.
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| to_exec_error(e.without_url()))?;
     let status = resp.status();
     let body: Value = read_es_body(resp, max_response_size).await?;
     Ok((status, body))

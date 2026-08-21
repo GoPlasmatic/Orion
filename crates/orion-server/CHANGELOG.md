@@ -390,6 +390,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#278]: https://github.com/GoPlasmatic/Orion/issues/278
 [#279]: https://github.com/GoPlasmatic/Orion/issues/279
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
+[#281]: https://github.com/GoPlasmatic/Orion/issues/281
+
+### Security
+
+- **Error messages no longer repeat a connector URL or an upstream error body
+  verbatim** ([#281]).
+
+  Every error `http_call` mints named the endpoint it failed to reach, and the
+  non-2xx arm additionally copied up to `max_response_size` — 10 MB by default
+  — of the *upstream* response body into the message. None of it passed through
+  `redact_url_secrets_or_raw`, the helper that is otherwise the single home of
+  the redact-or-verbatim policy. The strings are persisted to `traces` and
+  `trace_dlq`, logged, and attached to an OTel span; the timeout arm also
+  reached an unauthenticated caller in a `504`, which is not gated on
+  `verbose_errors`. An async caller can read its own trace back with the
+  `trace_token` from the `202`, so an admin credential was not the only key.
+
+  URLs are now redacted at every site — userinfo password and secret-named
+  query values — including the `url` span field and the `Invalid URL` message,
+  which reaches the caller in a `400`. Transport errors additionally drop
+  reqwest's own appended copy of the URL via `without_url()`; the same fix
+  applies to `storage_head` and the Elasticsearch send path, which named the
+  connector deliberately and had the URL put back underneath them.
+
+  Upstream error bodies are now a 512-byte preview marked `… (truncated)`.
+  This also bounds the row: a 10 MB error body no longer becomes a 10 MB trace.
+
+  Redaction is name-keyed, so `?pwd=` masks and `?pass=` does not — it is a
+  backstop, not the control. Keep credentials out of the URL with `auth` or
+  `query_params`.
 
 ### Changed
 

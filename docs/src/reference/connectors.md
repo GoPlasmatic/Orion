@@ -242,7 +242,7 @@ Calls REST APIs and webhooks through [`http_call`](./functions.md#http_call).
 | `auth` | object | no | — | [Authentication](#authentication): `bearer`, `basic`, `apikey`, or managed [`oauth2`](#managed-oauth2) |
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](#retries-http-only) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](#retries-http-only) |
-| `max_response_size` | integer | no | `10485760` | Maximum response body size in bytes (10 MB); a larger response fails the call |
+| `max_response_size` | integer | no | `10485760` | Maximum response body size in bytes (10 MB); a larger response fails the call. Governs a **successful** body only — a non-2xx body contributes at most 512 bytes to the error message, marked `… (truncated)` when cut |
 | `allow_private_urls` | boolean | no | `false` | Allow requests to private and internal IP addresses (SSRF protection) |
 | `operations` | object | no | all methods allowed | Method allow-list — see [Operation gates](#operation-gates) |
 

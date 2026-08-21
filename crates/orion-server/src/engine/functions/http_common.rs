@@ -3,7 +3,36 @@ use std::time::Duration;
 use dataflow_rs::engine::error::DataflowError;
 use serde_json::Value;
 
-use crate::connector::{AuthConfig, HttpConnectorConfig};
+use crate::connector::{AuthConfig, HttpConnectorConfig, redact_url_secrets_or_raw};
+
+/// How much of a non-2xx response body may reach an error message (#281).
+///
+/// The body of someone else's error is the single most useful thing for
+/// diagnosing a failing integration and the single least predictable thing to
+/// copy: a 4xx can echo back a token, an account record or a stack trace, and
+/// no connector setting opts out. A preview keeps the diagnostic and bounds
+/// the exposure — and bounds the row, since this string is persisted to
+/// `traces` and `trace_dlq`, where the previous cap let a 10 MB error body
+/// become a 10 MB row.
+const ERROR_BODY_PREVIEW: usize = 512;
+
+/// A URL as it may appear in an error message, a log line or a span field.
+///
+/// Every URL leaving this module as text goes through here. These strings are
+/// persisted to `traces` and `trace_dlq`, logged, attached to an OTel span,
+/// and — for the timeout arm — returned verbatim to an unauthenticated caller
+/// in a `504` (`errors.rs`, which does not gate it on `verbose_errors`). A
+/// credential authored into the connector URL would otherwise be readable in
+/// all of them (#281).
+///
+/// Redaction is name-keyed: `redact_url_secrets_or_raw` masks the userinfo
+/// password and every query value whose name satisfies `is_secret_key`, so
+/// `?pwd=` masks and `?pass=` does not. This closes the common shapes, not a
+/// determined one — the connector-level answer is `query_params` (#277),
+/// which keeps the credential out of the URL string entirely.
+fn safe_url(url: &str) -> String {
+    redact_url_secrets_or_raw(url)
+}
 
 /// Build a URL from a base URL and optional path segment.
 ///
@@ -286,7 +315,7 @@ pub struct RequestSpec<'a> {
 /// `MAX_REDIRECTS`) with SSRF re-validation per hop.
 #[tracing::instrument(
     skip(client, http_config, spec),
-    fields(method = ?spec.method, url = spec.url, timeout = ?spec.timeout)
+    fields(method = ?spec.method, url = %safe_url(spec.url), timeout = ?spec.timeout)
 )]
 pub async fn execute_request(
     client: &reqwest::Client,
@@ -303,8 +332,10 @@ pub async fn execute_request(
         timeout,
         auth,
     } = spec;
+    // `Validation` reaches the caller as a 400 with the message verbatim
+    // (`errors.rs`), so this one is caller-visible even before the trace.
     let original = url::Url::parse(url)
-        .map_err(|e| DataflowError::Validation(format!("Invalid URL '{url}': {e}")))?;
+        .map_err(|e| DataflowError::Validation(format!("Invalid URL '{}': {e}", safe_url(url))))?;
     let mut current = original.clone();
     let mut method = method.clone();
     // Encoded once — the bytes are identical on every retry and redirect hop.
@@ -387,10 +418,13 @@ pub async fn execute_request(
         }
 
         let response = req.send().await.map_err(|e| {
+            let url = safe_url(current.as_str());
             if e.is_timeout() {
-                DataflowError::Timeout(format!("HTTP request to {current} timed out"))
+                DataflowError::Timeout(format!("HTTP request to {url} timed out"))
             } else {
-                DataflowError::Io(format!("HTTP request to {current} failed: {e}"))
+                // `without_url` because reqwest's own `Display` appends the URL
+                // it was handed — unredacted, and a second time alongside ours.
+                DataflowError::Io(format!("HTTP request to {url} failed: {}", e.without_url()))
             }
         })?;
 
@@ -418,7 +452,10 @@ pub async fn execute_request(
     }
 
     Err(DataflowError::function_execution(
-        format!("Stopped after {MAX_REDIRECTS} redirects requesting {url}"),
+        format!(
+            "Stopped after {MAX_REDIRECTS} redirects requesting {}",
+            safe_url(url)
+        ),
         None,
     ))
 }
@@ -453,20 +490,30 @@ fn redirect_target(
     };
     let location = location.to_str().map_err(|_| {
         DataflowError::function_execution(
-            format!("Redirect from {current} has a non-ASCII Location header"),
+            format!(
+                "Redirect from {} has a non-ASCII Location header",
+                safe_url(current.as_str())
+            ),
             None,
         )
     })?;
     let next = current.join(location).map_err(|e| {
         DataflowError::function_execution(
-            format!("Redirect from {current} has invalid Location '{location}': {e}"),
+            format!(
+                "Redirect from {} has invalid Location '{}': {e}",
+                safe_url(current.as_str()),
+                // The Location is a URL the *upstream* chose; it can carry a
+                // credential of its own, so it is redacted like any other.
+                safe_url(location)
+            ),
             None,
         )
     })?;
     if !matches!(next.scheme(), "http" | "https") {
         return Err(DataflowError::function_execution(
             format!(
-                "Redirect from {current} targets unsupported scheme '{}'",
+                "Redirect from {} targets unsupported scheme '{}'",
+                safe_url(current.as_str()),
                 next.scheme()
             ),
             None,
@@ -490,6 +537,7 @@ async fn read_response(
     format: ResponseFormat,
 ) -> dataflow_rs::Result<Value> {
     let status = response.status();
+    let safe = safe_url(url.as_str());
 
     // Check Content-Length hint before reading body
     if let Some(content_length) = response.content_length()
@@ -497,42 +545,51 @@ async fn read_response(
     {
         return Err(DataflowError::function_execution(
             format!(
-                "Response from {url} declared Content-Length {content_length} exceeds limit of {max_size} bytes"
+                "Response from {safe} declared Content-Length {content_length} exceeds limit of {max_size} bytes"
             ),
             None,
         ));
     }
 
     if !status.is_success() {
-        // Read at most `max_size` bytes of the error body for the message;
-        // anything beyond that is dropped, never buffered. Read errors end
-        // the body early (the status alone still makes a useful error).
+        // Read at most `ERROR_BODY_PREVIEW` bytes of the error body for the
+        // message; anything beyond that is dropped, never buffered. Capped
+        // well under `max_size` deliberately — this body is someone else's
+        // error text headed for a persisted trace, not data the workflow
+        // asked for. Read errors end the body early (the status alone still
+        // makes a useful error).
+        let cap = max_size.min(ERROR_BODY_PREVIEW);
         let mut body_bytes = Vec::new();
+        let mut truncated = false;
         while let Some(chunk) = response.chunk().await.ok().flatten() {
-            let room = max_size.saturating_sub(body_bytes.len());
+            let room = cap.saturating_sub(body_bytes.len());
             let take = chunk.len().min(room);
             body_bytes.extend_from_slice(&chunk[..take]);
             if take < chunk.len() {
+                truncated = true;
                 break;
             }
         }
         let body_text = String::from_utf8_lossy(&body_bytes);
+        // Said explicitly, so a truncated body is never mistaken for the whole
+        // of a short one when someone is reading a trace to explain a failure.
+        let ellipsis = if truncated { "… (truncated)" } else { "" };
         return Err(DataflowError::http(
             status.as_u16(),
-            format!("HTTP {status} from {url}: {body_text}"),
+            format!("HTTP {status} from {safe}: {body_text}{ellipsis}"),
         ));
     }
 
     let mut body_bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| {
         DataflowError::function_execution(
-            format!("Failed to read response body from {url}: {e}"),
+            format!("Failed to read response body from {safe}: {e}"),
             None,
         )
     })? {
         if body_bytes.len() + chunk.len() > max_size {
             return Err(DataflowError::function_execution(
-                format!("Response body from {url} exceeds limit of {max_size} bytes"),
+                format!("Response body from {safe} exceeds limit of {max_size} bytes"),
                 None,
             ));
         }
@@ -542,7 +599,7 @@ async fn read_response(
     match format {
         ResponseFormat::Json => serde_json::from_slice(&body_bytes).map_err(|e| {
             DataflowError::function_execution(
-                format!("Failed to parse response from {url} as JSON: {e}"),
+                format!("Failed to parse response from {safe} as JSON: {e}"),
                 None,
             )
         }),
@@ -1560,5 +1617,143 @@ mod tests {
             .to_str()
             .expect("test");
         assert!(auth_header.starts_with("Basic "));
+    }
+
+    // ---- #281: URLs and upstream bodies in error text ----
+
+    fn redaction_config(url: &str) -> HttpConnectorConfig {
+        HttpConnectorConfig {
+            retry_non_idempotent: false,
+            url: url.to_string(),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            query_params: Default::default(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true,
+            operations: Default::default(),
+        }
+    }
+
+    async fn redaction_error(url: &str, timeout_ms: u64) -> String {
+        let http_config = redaction_config(url);
+        execute_request(
+            &reqwest::Client::new(),
+            &http_config,
+            RequestSpec {
+                auth: http_config.auth.as_ref(),
+                method: &reqwest::Method::GET,
+                url,
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_millis(timeout_ms),
+            },
+        )
+        .await
+        .expect_err("expected the request to fail")
+        .to_string()
+    }
+
+    /// A credential-free URL must come through byte-for-byte — the redaction
+    /// helper returns its input unchanged when there is nothing to mask, and
+    /// this pins that so the change is a no-op for the common case.
+    #[test]
+    fn safe_url_leaves_a_credential_free_url_alone() {
+        let url = "https://api.example.com/v1/orders?page=2";
+        assert_eq!(safe_url(url), url);
+    }
+
+    #[test]
+    fn safe_url_masks_userinfo_and_secret_query_values() {
+        let masked = safe_url("https://svc:hunter2@api.example.com/v1?pwd=s3cret&page=2");
+        assert!(!masked.contains("hunter2"), "userinfo survived: {masked}");
+        assert!(
+            !masked.contains("s3cret"),
+            "query secret survived: {masked}"
+        );
+        assert!(masked.contains("page=2"), "non-secret dropped: {masked}");
+    }
+
+    /// The timeout arm is the one that reaches an unauthenticated caller:
+    /// `errors.rs` maps `DataflowError::Timeout` to a 504 with the message
+    /// verbatim and does not gate it on `verbose_errors`.
+    #[tokio::test]
+    async fn a_timeout_message_masks_a_credential_in_the_url() {
+        let mock_app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                axum::Json(serde_json::json!({"slow": true}))
+            }),
+        );
+        let addr = spawn_mock(mock_app).await;
+
+        let msg = redaction_error(&format!("http://{addr}/slow?pwd=s3cret"), 100).await;
+        assert!(msg.contains("timed out"), "{msg}");
+        assert!(
+            !msg.contains("s3cret"),
+            "credential survived the timeout: {msg}"
+        );
+    }
+
+    /// The transport arm additionally has to drop reqwest's own copy of the
+    /// URL, which its `Display` appends unredacted.
+    #[tokio::test]
+    async fn a_transport_failure_masks_the_url_reqwest_would_append() {
+        let msg = redaction_error("http://127.0.0.1:1/test?pwd=s3cret", 1_000).await;
+        assert!(msg.contains("failed"), "{msg}");
+        assert!(
+            !msg.contains("s3cret"),
+            "credential survived the transport error: {msg}"
+        );
+    }
+
+    /// An upstream error body is a preview, not a copy: it is someone else's
+    /// text headed for a persisted trace.
+    #[tokio::test]
+    async fn a_non_2xx_body_is_truncated_to_a_preview() {
+        let big = "x".repeat(4096);
+        let mock_app = axum::Router::new().route(
+            "/boom",
+            axum::routing::get(move || {
+                let big = big.clone();
+                async move { (axum::http::StatusCode::INTERNAL_SERVER_ERROR, big) }
+            }),
+        );
+        let addr = spawn_mock(mock_app).await;
+
+        let msg = redaction_error(&format!("http://{addr}/boom"), 5_000).await;
+        assert!(msg.contains("… (truncated)"), "no truncation marker: {msg}");
+        let body_len = msg.matches('x').count();
+        assert_eq!(
+            body_len, ERROR_BODY_PREVIEW,
+            "expected exactly the preview cap, got {body_len}"
+        );
+    }
+
+    /// A body that fits is reported whole, with no marker to mislead whoever
+    /// reads the trace.
+    #[tokio::test]
+    async fn a_short_non_2xx_body_is_not_marked_truncated() {
+        let mock_app = axum::Router::new().route(
+            "/boom",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    r#"{"error":"missing field 'id'"}"#,
+                )
+            }),
+        );
+        let addr = spawn_mock(mock_app).await;
+
+        let msg = redaction_error(&format!("http://{addr}/boom"), 5_000).await;
+        assert!(msg.contains("missing field 'id'"), "{msg}");
+        assert!(
+            !msg.contains("truncated"),
+            "short body marked truncated: {msg}"
+        );
     }
 }

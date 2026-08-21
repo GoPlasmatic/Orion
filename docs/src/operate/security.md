@@ -152,6 +152,34 @@ credential under an unanticipated key fails closed rather than shipping in
 clear. The normative rules are
 [Connector Types › Secret masking](../reference/connectors.md#secret-masking).
 
+### What a failed call may repeat back
+
+An error from `http_call` names the endpoint it could not reach, because that
+is the diagnostic. Two things bound what that costs you.
+
+**URLs are redacted where they appear.** The userinfo password and any query
+value whose name reads as a secret (`pwd`, `api_key`, `sig`, …) are masked
+before the URL reaches an error message, a log line, an OTel span, a trace row
+or the DLQ. The match is by parameter *name*, so it closes the conventional
+spellings and not an unconventional one — `?pwd=` masks, `?pass=` does not.
+Treat it as a backstop, not the control. The control is not putting the
+credential in the URL: use `auth`, or `query_params`, whose values resolve
+from references and never enter the URL string.
+
+**Upstream error bodies are previewed, not copied.** A non-2xx response
+contributes at most the first 512 bytes of its body to the error message,
+marked `… (truncated)` when it is cut. Anything a failing API echoes back —
+a token, an account record, a stack trace — is bounded rather than persisted
+whole into `traces` and `trace_dlq`. This limit is separate from and much
+smaller than `max_response_size`, which governs the body a *successful* call
+may return to the workflow.
+
+Both matter because these strings outlive the request. They are persisted to
+the trace, and an async caller can read its own trace back with the
+`trace_token` returned by the `202` — an admin credential is not the only key
+to them. If a connector must carry a secret an error could name, keep it out
+of the URL rather than relying on redaction to catch it.
+
 ## Bound what connectors can reach
 
 Connectors are refused an endpoint that could not belong to their backend, and

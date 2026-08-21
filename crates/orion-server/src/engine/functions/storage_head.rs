@@ -82,7 +82,14 @@ impl AsyncFunctionHandler for StorageHeadHandler {
                         call.connector
                     ))
                 } else {
-                    DataflowError::Io(format!("storage_head via '{}' failed: {e}", call.connector))
+                    // `without_url`: this message names the connector rather
+                    // than the endpoint on purpose, and reqwest's `Display`
+                    // would put the URL back (#281).
+                    DataflowError::Io(format!(
+                        "storage_head via '{}' failed: {}",
+                        call.connector,
+                        e.without_url()
+                    ))
                 }
             })?;
 
