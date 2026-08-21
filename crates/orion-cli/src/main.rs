@@ -80,6 +80,16 @@ pub struct Cli {
     #[arg(long, global = true, env = "NO_COLOR", help_heading = "Output")]
     no_color: bool,
 
+    /// Audit label for this change, e.g. "ticket=OPS-4412"
+    #[arg(
+        long,
+        global = true,
+        env = "ORION_CHANGE_CONTEXT",
+        value_name = "CONTEXT",
+        help_heading = "Connection"
+    )]
+    change_context: Option<String>,
+
     /// Skip confirmation prompts
     #[arg(long, global = true)]
     yes: bool,
@@ -233,9 +243,22 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         })?
     };
 
+    // Flag first, then the env var and `~/.orion/config.toml` that
+    // `resolve_api_key` already reads for `mcp serve`. Reading the flag alone
+    // meant `orion-cli config set api_key <key>` stored a key that only the
+    // MCP server ever sent — every other command went out unauthenticated.
+    let api_key = cli
+        .api_key
+        .clone()
+        .map(|k| (k, cli.api_key_header.clone()))
+        .or_else(OrionConfig::resolve_api_key);
+
     let mut client = OrionClient::new(&server_url)?;
-    if let Some(key) = &cli.api_key {
-        client = client.with_api_key(key.clone(), cli.api_key_header.clone());
+    if let Some((key, header)) = api_key {
+        client = client.with_api_key(key, header);
+    }
+    if let Some(context) = &cli.change_context {
+        client = client.with_change_context(context.clone());
     }
     Ok(client)
 }

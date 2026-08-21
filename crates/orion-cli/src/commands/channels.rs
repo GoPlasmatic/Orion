@@ -42,12 +42,18 @@ enum ChannelsSubcommand {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
-        /// Page size
+        /// Page size (default: 50, max: 1000)
         #[arg(long)]
         limit: Option<i64>,
         /// Page offset
         #[arg(long)]
         offset: Option<i64>,
+        /// Sort by column (priority, name, status, channel_type, protocol, created_at, updated_at)
+        #[arg(long)]
+        sort_by: Option<String>,
+        /// Sort direction (asc, desc)
+        #[arg(long)]
+        sort_order: Option<String>,
     },
     /// Get a channel by ID
     Get {
@@ -112,6 +118,12 @@ enum ChannelsSubcommand {
     Versions {
         /// Channel ID
         id: String,
+        /// Page size (default: 50, max: 1000)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Page offset
+        #[arg(long)]
+        offset: Option<i64>,
     },
     /// Create a new draft version of a channel
     NewVersion {
@@ -138,6 +150,12 @@ enum ChannelsSubcommand {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
+        /// Filter by channel type (sync, async)
+        #[arg(long)]
+        channel_type: Option<String>,
+        /// Filter by protocol (http, rest, kafka)
+        #[arg(long)]
+        protocol: Option<String>,
     },
     /// Bulk import channels from a JSON array file
     #[command(
@@ -200,19 +218,20 @@ impl ChannelsCmd {
                 tag,
                 limit,
                 offset,
+                sort_by,
+                sort_order,
             } => {
-                list(
-                    client,
-                    format,
-                    quiet,
-                    status,
-                    channel_type,
-                    protocol,
-                    tag,
-                    limit,
-                    offset,
-                )
-                .await
+                let qs = utils::build_query_string(&[
+                    ("status", status.clone()),
+                    ("channel_type", channel_type.clone()),
+                    ("protocol", protocol.clone()),
+                    ("tag", tag.clone()),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                    ("sort_by", sort_by.clone()),
+                    ("sort_order", sort_order.clone()),
+                ]);
+                list(client, format, quiet, &qs).await
             }
             ChannelsSubcommand::Get { id } => get_channel(client, format, quiet, id).await,
             ChannelsSubcommand::Create { file, data, stdin } => {
@@ -233,18 +252,59 @@ impl ChannelsCmd {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, STATUS_ACTIVE, *dry_run, *defer_reload).await,
+            } => {
+                change_status(
+                    client,
+                    format,
+                    quiet,
+                    id,
+                    STATUS_ACTIVE,
+                    *dry_run,
+                    *defer_reload,
+                )
+                .await
+            }
             ChannelsSubcommand::Archive {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, STATUS_ARCHIVED, *dry_run, *defer_reload).await,
+            } => {
+                change_status(
+                    client,
+                    format,
+                    quiet,
+                    id,
+                    STATUS_ARCHIVED,
+                    *dry_run,
+                    *defer_reload,
+                )
+                .await
+            }
             ChannelsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 validate(client, format, quiet, &body).await
             }
-            ChannelsSubcommand::Export { status, tag } => export(client, status, tag).await,
-            ChannelsSubcommand::Versions { id } => versions(client, format, quiet, id).await,
+            ChannelsSubcommand::Export {
+                status,
+                tag,
+                channel_type,
+                protocol,
+            } => {
+                let qs = utils::build_query_string(&[
+                    ("status", status.clone()),
+                    ("tag", tag.clone()),
+                    ("channel_type", channel_type.clone()),
+                    ("protocol", protocol.clone()),
+                ]);
+                export(client, &qs).await
+            }
+            ChannelsSubcommand::Versions { id, limit, offset } => {
+                let qs = utils::build_query_string(&[
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                ]);
+                versions(client, format, quiet, id, &qs).await
+            }
             ChannelsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
             ChannelsSubcommand::Import {
                 file,
@@ -267,27 +327,7 @@ impl ChannelsCmd {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    status: &Option<String>,
-    channel_type: &Option<String>,
-    protocol: &Option<String>,
-    tag: &Option<String>,
-    limit: &Option<i64>,
-    offset: &Option<i64>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("status", status.clone()),
-        ("channel_type", channel_type.clone()),
-        ("protocol", protocol.clone()),
-        ("tag", tag.clone()),
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ]);
-
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::CHANNELS)).await?;
     let channels = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -324,8 +364,7 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(channels.len() as i64);
-    println!("{}", format!("{} channel(s)", total).dimmed());
+    utils::print_list_footer(&resp, channels.len(), "channel(s)");
     Ok(0)
 }
 
@@ -478,6 +517,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
 
 async fn change_status(
     client: &OrionClient,
+    format: &OutputFormat,
     quiet: bool,
     id: &str,
     status: &str,
@@ -493,25 +533,32 @@ async fn change_status(
         .patch(&format!("{}{qs}", paths::channel_status(id)), &body)
         .await?;
 
+    // A dry run answers with the `/validate` envelope, not the entity — and a
+    // transition that would be refused is reported as `valid: false` inside a
+    // 200. Channels have the most to say here: activation needs an active
+    // workflow, a route that collides with nothing, and a config that still
+    // builds, none of which a client can check for itself.
+    if dry_run {
+        return utils::print_validation_envelope(
+            &resp,
+            format,
+            quiet,
+            "DRY RUN",
+            &format!("Channel {id} can change to {status} (nothing written)"),
+            &format!("Channel {id} cannot change to {status}"),
+        );
+    }
+
     if !quiet {
         let ch = &resp["data"];
-        if dry_run {
-            println!(
-                "{} Channel {} can change to {} (nothing written)",
-                "DRY RUN".yellow().bold(),
-                ch["name"].as_str().unwrap_or(id),
-                colorize_status(status)
-            );
-        } else {
-            println!(
-                "{} Channel {} status changed to {}",
-                "OK".green().bold(),
-                ch["name"].as_str().unwrap_or(id),
-                colorize_status(status)
-            );
-            if defer_reload {
-                println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
-            }
+        println!(
+            "{} Channel {} status changed to {}",
+            "OK".green().bold(),
+            ch["name"].as_str().unwrap_or(id),
+            colorize_status(status)
+        );
+        if defer_reload {
+            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
         }
     }
     Ok(0)
@@ -522,8 +569,11 @@ async fn versions(
     format: &OutputFormat,
     quiet: bool,
     id: &str,
+    qs: &str,
 ) -> Result<i32> {
-    let resp: Value = client.get(&paths::channel_versions(id)).await?;
+    let resp: Value = client
+        .get(&format!("{}{qs}", paths::channel_versions(id)))
+        .await?;
     let vers = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -553,8 +603,7 @@ async fn versions(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(vers.len() as i64);
-    println!("{}", format!("{} version(s)", total).dimmed());
+    utils::print_list_footer(&resp, vers.len(), "version(s)");
     Ok(0)
 }
 
@@ -593,39 +642,17 @@ async fn validate(
     body: &Value,
 ) -> Result<i32> {
     let resp: Value = client.post(paths::CHANNELS_VALIDATE, body).await?;
-    let resp = resp.get("data").cloned().unwrap_or(resp);
-
-    let valid = resp["valid"].as_bool().unwrap_or(false);
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    if quiet {
-        println!("{}", if valid { "valid" } else { "invalid" });
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    if valid {
-        println!("{} Channel definition is valid", "OK".green().bold());
-    } else {
-        println!("{} Channel definition has issues", "INVALID".red().bold());
-    }
-    if let Some(errors) = resp["errors"].as_array() {
-        for err in errors {
-            println!("  - {err}");
-        }
-    }
-    Ok(if valid { 0 } else { 1 })
+    utils::print_validation_envelope(
+        &resp,
+        format,
+        quiet,
+        "OK",
+        "Channel definition is valid",
+        "Channel definition has issues",
+    )
 }
 
-async fn export(
-    client: &OrionClient,
-    status: &Option<String>,
-    tag: &Option<String>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
+async fn export(client: &OrionClient, qs: &str) -> Result<i32> {
     let resp: Value = client
         .get(&format!("{}{qs}", paths::CHANNELS_EXPORT))
         .await?;

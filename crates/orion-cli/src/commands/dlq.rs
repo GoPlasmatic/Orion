@@ -151,7 +151,7 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    println!("{}", format!("{} entrie(s)", entries.len()).dimmed());
+    utils::print_list_footer(&resp, entries.len(), "entrie(s)");
     Ok(0)
 }
 

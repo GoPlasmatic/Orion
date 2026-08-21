@@ -115,7 +115,7 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    println!("{}", format!("{} package(s)", packages.len()).dimmed());
+    utils::print_list_footer(&resp, packages.len(), "package receipt(s)");
     Ok(0)
 }
 

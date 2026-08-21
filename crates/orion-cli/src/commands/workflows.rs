@@ -26,7 +26,13 @@ pub struct WorkflowsCmd {
 enum WorkflowsSubcommand {
     /// List all workflows
     #[command(
-        after_help = "Examples:\n  orion-cli workflows list\n  orion-cli workflows list --status active\n  orion-cli workflows list --status draft --tag orders"
+        after_help = "The server pages at 50 by default; raise it with --limit (max 1000)\n\
+            or walk pages with --offset.\n\n\
+            Examples:\n  \
+            orion-cli workflows list\n  \
+            orion-cli workflows list --status active\n  \
+            orion-cli workflows list --status draft --tag orders\n  \
+            orion-cli workflows list --limit 200 --sort-by name --sort-order asc"
     )]
     List {
         /// Filter by status (draft, active, archived)
@@ -35,6 +41,18 @@ enum WorkflowsSubcommand {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
+        /// Page size (default: 50, max: 1000)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Page offset
+        #[arg(long)]
+        offset: Option<i64>,
+        /// Sort by column (priority, name, status, created_at, updated_at)
+        #[arg(long)]
+        sort_by: Option<String>,
+        /// Sort direction (asc, desc)
+        #[arg(long)]
+        sort_order: Option<String>,
     },
     /// Get a workflow by ID (use --verbose to see condition and tasks)
     Get {
@@ -126,11 +144,20 @@ enum WorkflowsSubcommand {
         /// Rollout percentage (0-100)
         #[arg(short, long)]
         percentage: i64,
+        /// Defer the engine reload (batch several changes, then 'engine reload' once)
+        #[arg(long)]
+        defer_reload: bool,
     },
     /// List version history for a workflow
     Versions {
         /// Workflow ID
         id: String,
+        /// Page size (default: 50, max: 1000)
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Page offset
+        #[arg(long)]
+        offset: Option<i64>,
     },
     /// Create a new draft version of a workflow
     NewVersion {
@@ -234,8 +261,23 @@ impl WorkflowsCmd {
         yes: bool,
     ) -> Result<i32> {
         match &self.command {
-            WorkflowsSubcommand::List { status, tag } => {
-                list(client, format, quiet, status, tag).await
+            WorkflowsSubcommand::List {
+                status,
+                tag,
+                limit,
+                offset,
+                sort_by,
+                sort_order,
+            } => {
+                let qs = utils::build_query_string(&[
+                    ("status", status.clone()),
+                    ("tag", tag.clone()),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                    ("sort_by", sort_by.clone()),
+                    ("sort_order", sort_order.clone()),
+                ]);
+                list(client, format, quiet, &qs).await
             }
             WorkflowsSubcommand::Get { id } => {
                 get_workflow(client, format, quiet, verbose, id).await
@@ -266,12 +308,34 @@ impl WorkflowsCmd {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, STATUS_ACTIVE, *dry_run, *defer_reload).await,
+            } => {
+                change_status(
+                    client,
+                    format,
+                    quiet,
+                    id,
+                    STATUS_ACTIVE,
+                    *dry_run,
+                    *defer_reload,
+                )
+                .await
+            }
             WorkflowsSubcommand::Archive {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, STATUS_ARCHIVED, *dry_run, *defer_reload).await,
+            } => {
+                change_status(
+                    client,
+                    format,
+                    quiet,
+                    id,
+                    STATUS_ARCHIVED,
+                    *dry_run,
+                    *defer_reload,
+                )
+                .await
+            }
             WorkflowsSubcommand::Dependencies { id } => {
                 dependencies(client, format, quiet, id).await
             }
@@ -279,10 +343,18 @@ impl WorkflowsCmd {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 validate(client, format, quiet, &body).await
             }
-            WorkflowsSubcommand::Rollout { id, percentage } => {
-                rollout(client, quiet, id, *percentage).await
+            WorkflowsSubcommand::Rollout {
+                id,
+                percentage,
+                defer_reload,
+            } => rollout(client, quiet, id, *percentage, *defer_reload).await,
+            WorkflowsSubcommand::Versions { id, limit, offset } => {
+                let qs = utils::build_query_string(&[
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                ]);
+                versions(client, format, quiet, id, &qs).await
             }
-            WorkflowsSubcommand::Versions { id } => versions(client, format, quiet, id).await,
             WorkflowsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
             WorkflowsSubcommand::Test {
                 id,
@@ -319,15 +391,7 @@ impl WorkflowsCmd {
     }
 }
 
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    status: &Option<String>,
-    tag: &Option<String>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
-
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::WORKFLOWS)).await?;
     let workflows = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -366,8 +430,7 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(workflows.len() as i64);
-    println!("{}", format!("{} workflow(s)", total).dimmed());
+    utils::print_list_footer(&resp, workflows.len(), "workflow(s)");
     Ok(0)
 }
 
@@ -514,6 +577,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
 
 async fn change_status(
     client: &OrionClient,
+    format: &OutputFormat,
     quiet: bool,
     id: &str,
     status: &str,
@@ -529,17 +593,23 @@ async fn change_status(
         .patch(&format!("{}{qs}", paths::workflow_status(id)), &body)
         .await?;
 
+    // A dry run answers with the `/validate` envelope, not the entity — and a
+    // transition that would be refused is reported as `valid: false` inside a
+    // 200. Render the findings and exit non-zero, so a pre-flight that fails
+    // cannot read as one that passed.
+    if dry_run {
+        return utils::print_validation_envelope(
+            &resp,
+            format,
+            quiet,
+            "DRY RUN",
+            &format!("Workflow {id} can change to {status} (nothing written)"),
+            &format!("Workflow {id} cannot change to {status}"),
+        );
+    }
+
     if !quiet {
         let wf = &resp["data"];
-        if dry_run {
-            println!(
-                "{} Workflow {} can change to {} (nothing written)",
-                "DRY RUN".yellow().bold(),
-                wf["name"].as_str().unwrap_or(id),
-                colorize_status(status)
-            );
-            return Ok(0);
-        }
         println!(
             "{} Workflow {} status changed to {}",
             "OK".green().bold(),
@@ -622,55 +692,28 @@ async fn validate(
     body: &Value,
 ) -> Result<i32> {
     let resp: Value = client.post(paths::WORKFLOWS_VALIDATE, body).await?;
-    let resp = resp.get("data").cloned().unwrap_or(resp);
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        let valid = resp["valid"].as_bool().unwrap_or(false);
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    let valid = resp["valid"].as_bool().unwrap_or(false);
-
-    if quiet {
-        println!("{}", if valid { "valid" } else { "invalid" });
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    if valid {
-        println!("{} Workflow definition is valid", "OK".green().bold());
-    } else {
-        println!("{} Workflow definition has issues", "INVALID".red().bold());
-    }
-
-    if let Some(errors) = resp["errors"].as_array()
-        && !errors.is_empty()
-    {
-        println!("\n{}", "Errors:".red().bold());
-        for err in errors {
-            let field = err["field"].as_str().unwrap_or("");
-            let msg = err["message"].as_str().unwrap_or("");
-            println!("  - {field}: {msg}");
-        }
-    }
-
-    if let Some(warnings) = resp["warnings"].as_array()
-        && !warnings.is_empty()
-    {
-        println!("\n{}", "Warnings:".yellow().bold());
-        for warn in warnings {
-            let field = warn["field"].as_str().unwrap_or("");
-            let msg = warn["message"].as_str().unwrap_or("");
-            println!("  - {field}: {msg}");
-        }
-    }
-
-    Ok(if valid { 0 } else { 1 })
+    utils::print_validation_envelope(
+        &resp,
+        format,
+        quiet,
+        "OK",
+        "Workflow definition is valid",
+        "Workflow definition has issues",
+    )
 }
 
-async fn rollout(client: &OrionClient, quiet: bool, id: &str, percentage: i64) -> Result<i32> {
+async fn rollout(
+    client: &OrionClient,
+    quiet: bool,
+    id: &str,
+    percentage: i64,
+    defer_reload: bool,
+) -> Result<i32> {
+    let qs = utils::build_query_string(&[("reload", defer_reload.then(|| "defer".to_string()))]);
     let body = serde_json::json!({ "rollout_percentage": percentage });
-    let resp: Value = client.patch(&paths::workflow_rollout(id), &body).await?;
+    let resp: Value = client
+        .patch(&format!("{}{qs}", paths::workflow_rollout(id)), &body)
+        .await?;
 
     if !quiet {
         let wf = &resp["data"];
@@ -680,6 +723,9 @@ async fn rollout(client: &OrionClient, quiet: bool, id: &str, percentage: i64) -
             wf["name"].as_str().unwrap_or(id),
             percentage
         );
+        if defer_reload {
+            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
+        }
     }
     Ok(0)
 }
@@ -689,8 +735,11 @@ async fn versions(
     format: &OutputFormat,
     quiet: bool,
     id: &str,
+    qs: &str,
 ) -> Result<i32> {
-    let resp: Value = client.get(&paths::workflow_versions(id)).await?;
+    let resp: Value = client
+        .get(&format!("{}{qs}", paths::workflow_versions(id)))
+        .await?;
     let vers = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -721,8 +770,7 @@ async fn versions(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(vers.len() as i64);
-    println!("{}", format!("{} version(s)", total).dimmed());
+    utils::print_list_footer(&resp, vers.len(), "version(s)");
     Ok(0)
 }
 
@@ -797,6 +845,45 @@ async fn export(
     Ok(0)
 }
 
+/// The key a bulk import collides on: `workflow_id`. An artifact without one
+/// cannot conflict with anything — the store generates an id — so it falls
+/// back to the name purely so the report can say which item it is.
+fn diff_key(wf: &Value) -> Option<&str> {
+    wf["workflow_id"].as_str().or_else(|| wf["name"].as_str())
+}
+
+/// The fields a re-import would actually write. Comparing anything else
+/// (`version`, `status`, `created_at`, `content_hash`) reports drift for rows
+/// that are byte-identical where it counts.
+fn importable_content(wf: &Value) -> Value {
+    serde_json::json!({
+        "name": wf.get("name").cloned().unwrap_or(Value::Null),
+        "description": wf.get("description").cloned().unwrap_or(Value::Null),
+        "priority": wf.get("priority").cloned().unwrap_or(Value::from(0)),
+        "condition": wf.get("condition").cloned().unwrap_or(Value::Bool(true)),
+        "tasks": wf.get("tasks").cloned().unwrap_or(Value::Null),
+        "tags": wf.get("tags").cloned().unwrap_or_else(|| Value::Array(vec![])),
+        "loop": wf.get("loop").cloned().unwrap_or(Value::Null),
+        "continue_on_error": wf.get("continue_on_error").cloned().unwrap_or(Value::Bool(false)),
+    })
+}
+
+/// Whether the local artifact differs from the stored workflow.
+///
+/// `content_hash` is the server's own `sha256:` over the canonical importable
+/// projection — "equal hashes mean importing one over the other is a no-op" —
+/// so when both sides carry one, that is the exact answer. A hand-authored
+/// file has no hash; those fall back to comparing the importable fields.
+fn workflow_differs(local: &Value, server: &Value) -> bool {
+    match (
+        local["content_hash"].as_str(),
+        server["content_hash"].as_str(),
+    ) {
+        (Some(l), Some(s)) => l != s,
+        _ => importable_content(local) != importable_content(server),
+    }
+}
+
 async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
     let local_workflows: Vec<Value> = serde_json::from_str(&content)?;
@@ -808,53 +895,47 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     let mut modified_count = 0;
     let mut unchanged_count = 0;
 
-    // Index server workflows by name
-    let server_by_name: std::collections::HashMap<&str, &Value> = server_workflows
+    let server_by_key: std::collections::HashMap<&str, &Value> = server_workflows
         .iter()
-        .filter_map(|r| r["name"].as_str().map(|n| (n, r)))
+        .filter_map(|r| diff_key(r).map(|k| (k, r)))
         .collect();
 
-    let local_names: std::collections::HashSet<&str> = local_workflows
-        .iter()
-        .filter_map(|r| r["name"].as_str())
-        .collect();
+    let local_keys: std::collections::HashSet<&str> =
+        local_workflows.iter().filter_map(diff_key).collect();
 
     println!("{}", "Workflow Diff".bold());
     println!();
 
     for local in &local_workflows {
-        let name = local["name"].as_str().unwrap_or("(unnamed)");
-        if let Some(server) = server_by_name.get(name) {
-            let local_cond = local.get("condition").map(|v| v.to_string());
-            let server_cond = server
-                .get("condition_json")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let local_tasks = local.get("tasks").map(|v| v.to_string());
-            let server_tasks = server
-                .get("tasks_json")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            if local_cond != server_cond || local_tasks != server_tasks {
-                println!("  {} {name}", "~".yellow().bold());
-                modified_count += 1;
-            } else {
-                println!("  {} {name}", "=".dimmed());
-                unchanged_count += 1;
+        let label = local["name"].as_str().unwrap_or("(unnamed)");
+        match diff_key(local).and_then(|k| server_by_key.get(k)) {
+            Some(server) => {
+                if workflow_differs(local, server) {
+                    println!("  {} {label}", "~".yellow().bold());
+                    modified_count += 1;
+                } else {
+                    println!("  {} {label}", "=".dimmed());
+                    unchanged_count += 1;
+                }
             }
-        } else {
-            println!("  {} {name}", "+".green().bold());
-            new_count += 1;
+            None => {
+                println!("  {} {label}", "+".green().bold());
+                new_count += 1;
+            }
         }
     }
 
     let mut deleted_count = 0;
     for server in &server_workflows {
-        let name = server["name"].as_str().unwrap_or("");
-        if !local_names.contains(name) {
-            println!("  {} {name}", "-".red().bold());
+        let Some(key) = diff_key(server) else {
+            continue;
+        };
+        if !local_keys.contains(key) {
+            println!(
+                "  {} {}",
+                "-".red().bold(),
+                server["name"].as_str().unwrap_or(key)
+            );
             deleted_count += 1;
         }
     }
@@ -868,7 +949,11 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
         unchanged_count
     );
 
-    Ok(0)
+    // A diff that finds drift is worth branching on: exit 1 when the file and
+    // the server disagree, matching `orion-server package diff`.
+    Ok(i32::from(
+        new_count > 0 || modified_count > 0 || deleted_count > 0,
+    ))
 }
 
 async fn dependencies(

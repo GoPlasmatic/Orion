@@ -228,8 +228,9 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(traces.len() as i64);
-    println!("{}", format!("{} trace(s)", total).dimmed());
+    // `total` is opt-in on this endpoint (`--include-total`); without it the
+    // footer reports the page, which is all the server sent.
+    utils::print_list_footer(&resp, traces.len(), "trace(s)");
     if let Some(next) = resp["next_cursor"].as_str() {
         println!("{}", format!("next page: --cursor {next}").dimmed());
     }

@@ -28,12 +28,18 @@ enum ConnectorsSubcommand {
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
-        /// Page size
+        /// Page size (default: 50, max: 1000)
         #[arg(long)]
         limit: Option<i64>,
         /// Page offset
         #[arg(long)]
         offset: Option<i64>,
+        /// Sort by column (name, connector_type, created_at, updated_at)
+        #[arg(long)]
+        sort_by: Option<String>,
+        /// Sort direction (asc, desc)
+        #[arg(long)]
+        sort_order: Option<String>,
     },
     /// Get a connector by ID
     Get {
@@ -154,8 +160,21 @@ impl ConnectorsCmd {
         yes: bool,
     ) -> Result<i32> {
         match &self.command {
-            ConnectorsSubcommand::List { tag, limit, offset } => {
-                list(client, format, quiet, tag, limit, offset).await
+            ConnectorsSubcommand::List {
+                tag,
+                limit,
+                offset,
+                sort_by,
+                sort_order,
+            } => {
+                let qs = utils::build_query_string(&[
+                    ("tag", tag.clone()),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                    ("sort_by", sort_by.clone()),
+                    ("sort_order", sort_order.clone()),
+                ]);
+                list(client, format, quiet, &qs).await
             }
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
             ConnectorsSubcommand::Create { file, data, stdin } => {
@@ -203,20 +222,7 @@ impl ConnectorsCmd {
     }
 }
 
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    tag: &Option<String>,
-    limit: &Option<i64>,
-    offset: &Option<i64>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("tag", tag.clone()),
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ]);
-
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::CONNECTORS)).await?;
     let connectors = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -254,8 +260,7 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(connectors.len() as i64);
-    println!("{}", format!("{} connector(s)", total).dimmed());
+    utils::print_list_footer(&resp, connectors.len(), "connector(s)");
     Ok(0)
 }
 
@@ -501,30 +506,14 @@ async fn validate(
     body: &Value,
 ) -> Result<i32> {
     let resp: Value = client.post(paths::CONNECTORS_VALIDATE, body).await?;
-    let resp = resp.get("data").cloned().unwrap_or(resp);
-    let valid = resp["valid"].as_bool().unwrap_or(false);
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    if quiet {
-        println!("{}", if valid { "valid" } else { "invalid" });
-        return Ok(if valid { 0 } else { 1 });
-    }
-
-    if valid {
-        println!("{} Connector definition is valid", "OK".green().bold());
-    } else {
-        println!("{} Connector definition has issues", "INVALID".red().bold());
-    }
-    if let Some(errors) = resp["errors"].as_array() {
-        for err in errors {
-            println!("  - {err}");
-        }
-    }
-    Ok(if valid { 0 } else { 1 })
+    utils::print_validation_envelope(
+        &resp,
+        format,
+        quiet,
+        "OK",
+        "Connector definition is valid",
+        "Connector definition has issues",
+    )
 }
 
 async fn export(client: &OrionClient, tag: &Option<String>) -> Result<i32> {

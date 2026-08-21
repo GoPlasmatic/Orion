@@ -36,6 +36,14 @@ impl OrionClient {
         }
     }
 
+    /// Stamp every request with `X-Orion-Change-Context`, so the audit rows a
+    /// multi-command operation writes carry the caller's own label.
+    pub fn with_change_context(self, context: String) -> Self {
+        Self {
+            inner: self.inner.with_change_context(context),
+        }
+    }
+
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.inner.get(path).await.map_err(render)
     }
@@ -124,8 +132,11 @@ fn error_hint(code: &str) -> &'static str {
         codes::NOT_FOUND => {
             "\n  Hint: Verify the resource ID exists with the corresponding 'list' command"
         }
+        // Resource-neutral: the same code comes back from the channel and
+        // connector endpoints, and naming one command sent readers of the
+        // other two to the wrong place.
         codes::VALIDATION_ERROR => {
-            "\n  Hint: Check the JSON structure. Use 'orion-cli workflows validate -f <file>' to validate"
+            "\n  Hint: Check the JSON structure. Use '<workflows|channels|connectors> validate -f <file>' to check a definition without writing it"
         }
         codes::CONFLICT => "\n  Hint: A resource with this ID or name may already exist",
         _ => "",

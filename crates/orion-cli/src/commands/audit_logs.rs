@@ -18,7 +18,33 @@ pub struct AuditLogsCmd {
 #[derive(Subcommand)]
 enum AuditLogsSubcommand {
     /// List audit log entries
+    #[command(
+        after_help = "Filters match exactly and combine with AND. A mistyped filter is\n\
+            rejected with 400 rather than answered with unfiltered rows.\n\n\
+            Examples:\n  \
+            orion-cli audit-logs list --action status_active --resource-type workflow\n  \
+            orion-cli audit-logs list --resource-id wf-orders --start-time 2026-07-01T00:00:00Z\n  \
+            orion-cli audit-logs list --principal ci-deploy --limit 200"
+    )]
     List {
+        /// Filter by action (create, update, delete, status_active, ...)
+        #[arg(long)]
+        action: Option<String>,
+        /// Filter by resource type (workflow, channel, connector, engine, ...)
+        #[arg(long)]
+        resource_type: Option<String>,
+        /// Filter by resource ID
+        #[arg(long)]
+        resource_id: Option<String>,
+        /// Filter by acting principal (the admin key id, or "anonymous")
+        #[arg(long)]
+        principal: Option<String>,
+        /// Inclusive lower bound on created_at (RFC 3339, e.g. 2026-07-01T00:00:00Z)
+        #[arg(long)]
+        start_time: Option<String>,
+        /// Exclusive upper bound on created_at (RFC 3339)
+        #[arg(long)]
+        end_time: Option<String>,
         /// Maximum entries to return (default: 50, max: 1000)
         #[arg(long)]
         limit: Option<i64>,
@@ -52,25 +78,33 @@ impl AuditLogsCmd {
         quiet: bool,
     ) -> Result<i32> {
         match &self.command {
-            AuditLogsSubcommand::List { limit, offset } => {
-                list(client, format, quiet, limit, offset).await
+            AuditLogsSubcommand::List {
+                action,
+                resource_type,
+                resource_id,
+                principal,
+                start_time,
+                end_time,
+                limit,
+                offset,
+            } => {
+                let qs = utils::build_query_string(&[
+                    ("action", action.clone()),
+                    ("resource_type", resource_type.clone()),
+                    ("resource_id", resource_id.clone()),
+                    ("principal", principal.clone()),
+                    ("start_time", start_time.clone()),
+                    ("end_time", end_time.clone()),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                ]);
+                list(client, format, quiet, &qs).await
             }
         }
     }
 }
 
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    limit: &Option<i64>,
-    offset: &Option<i64>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ]);
-
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::AUDIT_LOGS)).await?;
     let entries = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -106,9 +140,9 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["pagination"]["total"]
-        .as_i64()
-        .unwrap_or(entries.len() as i64);
-    println!("{}", format!("{total} audit log entry(ies)").dimmed());
+    // The admin list envelope carries `total` at the top level alongside
+    // `data`/`limit`/`offset` — there has never been a `pagination` object, so
+    // reading one meant every page reported its own length as the total.
+    utils::print_list_footer(&resp, entries.len(), "audit log entry(ies)");
     Ok(0)
 }

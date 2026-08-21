@@ -180,6 +180,88 @@ pub async fn run_import(
 /// CLI's historical call sites working.
 pub use orion_client::query_string as build_query_string;
 
+/// Render the `{"valid", "errors", "warnings"}` validation envelope and return
+/// the process exit code: 0 when valid, 1 when not.
+///
+/// Two endpoints answer in this shape and both matter: `POST /{kind}/validate`,
+/// and `PATCH /{kind}/{id}/status?dry_run=true` — the activation pre-flight.
+/// The pre-flight deliberately reports a refused transition as `valid: false`
+/// inside a **200** (so a promotion can pre-flight a whole package without
+/// stopping at the first missing entity), which means a caller that reads only
+/// the HTTP status sees a failing pre-flight as a passing one.
+pub fn print_validation_envelope(
+    resp: &Value,
+    format: &OutputFormat,
+    quiet: bool,
+    label: &str,
+    ok_msg: &str,
+    bad_msg: &str,
+) -> Result<i32> {
+    let resp = resp.get("data").unwrap_or(resp);
+    let valid = resp["valid"].as_bool().unwrap_or(false);
+    let code = if valid { 0 } else { 1 };
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, resp)?;
+        return Ok(code);
+    }
+
+    if quiet {
+        println!("{}", if valid { "valid" } else { "invalid" });
+        return Ok(code);
+    }
+
+    if valid {
+        println!("{} {ok_msg}", label.green().bold());
+    } else {
+        println!("{} {bad_msg}", "INVALID".red().bold());
+    }
+
+    if let Some(errors) = resp["errors"].as_array()
+        && !errors.is_empty()
+    {
+        println!("\n{}", "Errors:".red().bold());
+        for err in errors {
+            let field = err["field"].as_str().unwrap_or("");
+            let msg = err["message"].as_str().unwrap_or("");
+            println!("  - {field}: {msg}");
+        }
+    }
+
+    if let Some(warnings) = resp["warnings"].as_array()
+        && !warnings.is_empty()
+    {
+        println!("\n{}", "Warnings:".yellow().bold());
+        for warn in warnings {
+            let field = warn["field"].as_str().unwrap_or("");
+            let msg = warn["message"].as_str().unwrap_or("");
+            println!("  - {field}: {msg}");
+        }
+    }
+
+    Ok(code)
+}
+
+/// Print the count line under a table, from an admin list envelope. `noun` is
+/// the already-pluralised label, e.g. `"workflow(s)"`.
+///
+/// Every list endpoint pages — 50 rows by default, 1000 at most — and reports
+/// the unpaged `total` alongside the page. Printing that total alone under a
+/// short page reads as "these are all of them", so when the page does not
+/// reach the total this says which is which and names the flags that fetch
+/// the rest.
+pub fn print_list_footer(resp: &Value, shown: usize, noun: &str) {
+    let total = resp["total"].as_i64().unwrap_or(shown as i64);
+    if total > shown as i64 {
+        println!(
+            "{}",
+            format!("Showing {shown} of {total} {noun} -- page with --limit / --offset").dimmed()
+        );
+    } else {
+        println!("{}", format!("{total} {noun}").dimmed());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
