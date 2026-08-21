@@ -182,7 +182,7 @@ commit (`ci-gate.yml`) before any artifact pipeline starts.
   (~1,600 LOC across `mod.rs` and 15 `tools/*.rs`) is a *second*,
   independently written client over `orion-client` — it shares no code with
   `commands::`, so the e2e suite's CLI coverage says nothing about it. Neither
-  the 53 tool implementations nor the rmcp transport/handshake has a test.
+  the 58 tool implementations nor the rmcp transport/handshake has a test.
 - **`orion-cli`'s rendering, help/hint and argument-plumbing code has no unit
   tests.** The crate's inline tests cover two helpers (`utils.rs` and
   `commands/benchmark/stats.rs`); output formatting and error hints are

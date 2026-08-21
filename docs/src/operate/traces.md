@@ -55,6 +55,17 @@ curl -s -H "x-trace-token: <token>" \
   http://localhost:8080/api/v1/admin/traces/<trace-id>
 ```
 
+The CLI does both halves in one command — it keeps the token from the `202` and
+polls with it:
+
+```bash
+orion-cli send orders -f order.json --async-mode --wait
+
+# Or read one later, with the token the submit printed:
+orion-cli traces get <trace-id> --token <token>
+orion-cli traces wait <trace-id> --token <token> --timeout 120
+```
+
 The `202` carries both `trace_id` and `trace_token`. Reading the trace needs
 either that token or an admin credential — without one, any caller who guessed
 an id could read another caller's payload.

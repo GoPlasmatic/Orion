@@ -134,13 +134,27 @@ Global flags apply to every subcommand:
 | Flag | Description |
 |------|-------------|
 | `--server <url>` | Orion server URL. Overrides the config file and `ORION_SERVER_URL`. |
-| `--api-key <key>` | API key for admin authentication. |
+| `--api-key <key>` | API key for admin authentication. Falls back to `ORION_API_KEY`, then the `api_key` in `~/.orion/config.toml`. |
 | `--api-key-header <name>` | Header name carrying the key. Default: `Authorization` with a `Bearer` prefix. |
+| `--change-context <ctx>` | Audit label for this change, e.g. `ticket=OPS-4412`. Sent as `X-Orion-Change-Context` and recorded under `details.change_context` on every audit row the command writes. Also read from `ORION_CHANGE_CONTEXT`. |
 | `--output <format>` | Output format: `table` (default), `json`, or `yaml`. |
 | `--quiet` | Print only IDs or minimal info. |
 | `--verbose` | Show full response bodies and extra details. |
 | `--no-color` | Disable colored output. |
 | `--yes` | Skip confirmation prompts. |
+
+### Paging and sorting
+
+Every `list` pages: 50 rows by default, 1000 at most. The count under the table
+says `Showing 50 of 3120 …` when the page is short of the total, so a truncated
+listing never reads as a complete one.
+
+| Flag | Applies to | Description |
+|------|-----------|-------------|
+| `--limit <n>` | every `list`, and `workflows`/`channels versions` | Page size, clamped to 1–1000. |
+| `--offset <n>` | as above | Rows to skip. |
+| `--sort-by <col>` | `workflows`, `channels`, `connectors`, `traces` | Column to order by. The accepted columns differ per resource; see each command below. |
+| `--sort-order <dir>` | as above | `asc` or `desc`. Defaults to `desc` for the versioned lists (ordered by `priority`) and `asc` for connectors (ordered by `name`). |
 
 ### `config`
 
@@ -152,6 +166,10 @@ Manages the CLI's own settings in `~/.orion/config.toml`.
 | `show` | Show the current CLI configuration. |
 | `get <key>` | Print a single value, for scripting. |
 | `set <key> <value>` | Set a value: `server_url`, `default_output`, `api_key`, or `api_key_header`. |
+
+A stored `api_key` is used by every command and by `mcp serve`, but the flag and
+`ORION_API_KEY` both win over it. The file is plain TOML in your home
+directory — on a shared machine, prefer the environment variable.
 
 Example: `orion-cli config set-server http://localhost:8080`
 
@@ -167,22 +185,48 @@ Manages workflows. Alias: `rules`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List workflows; filter with `--status` and `--tag`. |
+| `list` | List workflows; filter with `--status` and `--tag`. Sorts by `priority`, `name`, `status`, `created_at`, `updated_at`. |
 | `get <id>` | Show a workflow; `--verbose` includes condition and tasks. |
-| `create` | Create a workflow from JSON. |
-| `update <id>` | Replace a workflow definition. |
+| `create` | Create a workflow from JSON: `-f <file>`, `-d <json>`, or `--stdin`; `--id` sets the workflow id instead of generating one. |
+| `update <id>` | Replace a workflow definition. Only drafts accept updates. |
 | `delete <id>` | Delete a workflow; prompts unless `--yes`. |
-| `activate <id>` | Activate a draft workflow. |
-| `archive <id>` | Archive an active workflow. |
-| `dependencies <id>` | Show the workflow's connectors and `channel_call` targets. |
-| `validate` | Validate a definition without creating it. |
-| `rollout <id>` | Update the rollout percentage. |
-| `versions <id>` | List version history. |
-| `new-version <id>` | Create a new draft version. |
-| `test <id>` | Dry-run the workflow with sample data. |
-| `export` | Export workflows as JSON. |
-| `import` | Bulk-import from a JSON array file; `--dry-run` previews. |
-| `diff` | Compare a local file against server state; exits non-zero on drift. |
+| `activate <id>` | Activate a draft workflow. `--dry-run` pre-flights; `--defer-reload` batches. |
+| `archive <id>` | Archive an active workflow. Same two flags. |
+| `dependencies <id>` | Show the workflow's connectors and `channel_call` targets. Alias: `deps`. |
+| `validate` | Validate a definition without creating it. Exits `1` when invalid. |
+| `rollout <id> -p <n>` | Update the rollout percentage. `--defer-reload` batches. |
+| `versions <id>` | List version history; pages with `--limit` / `--offset`. |
+| `new-version <id>` | Create a new draft version from the active one. |
+| `test <id>` | Dry-run the workflow with sample data; `--metadata <json>`, `--trace`. |
+| `export` | Export workflows as JSON; filter with `--status`, `--tag`. |
+| `import -f <file>` | Bulk-import from a JSON array file; `--dry-run` previews, `--on-conflict` sets the collision rule. |
+| `diff -f <file>` | Compare a local file against server state. Exits `1` when anything differs. |
+
+`activate` and `archive` take two flags that matter for promotion:
+
+| Flag | Description |
+|------|-------------|
+| `--dry-run` | Run every gate the real transition would run and report the findings, writing nothing. Exits `1` when the transition would be refused, so it gates a script. |
+| `--defer-reload` | Commit the row but leave the running engine serving the previous active set. Batch several changes, then `orion-cli engine reload` once. |
+
+`import` takes `--on-conflict` — what an already-stored id means:
+
+| Value | Behaviour |
+|-------|-----------|
+| `fail` | Default. The conflicting item is refused and reported. |
+| `skip` | The conflicting item is left as it is and counted as skipped. |
+| `new_version` | Upsert: the draft is replaced in place, or a new draft version is cut over an active entity. Identical content is a no-op. |
+
+`diff` answers the question `import` would act on: it matches local items to
+stored ones by `workflow_id` — the key an import collides on — and compares the
+server's `content_hash` when the file carries one (an exported artifact does),
+falling back to the importable fields for a hand-authored file. Fields that a
+re-import never writes — `version`, `status`, `created_at` — are ignored, so a
+file exported and diffed straight back reports every workflow unchanged.
+
+For promoting a whole service rather than one resource kind, use
+`orion-server package diff`, which covers channels and connectors too and
+compares the closure as a unit.
 
 Example: `orion-cli workflows test order-enrichment -f payload.json --trace`
 
@@ -192,20 +236,24 @@ Manages channels. Alias: `ch`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List channels. |
+| `list` | List channels; filter with `--status`, `--channel-type`, `--protocol`, `--tag`. Sorts by `priority`, `name`, `status`, `channel_type`, `protocol`, `created_at`, `updated_at`. |
 | `get <id>` | Show a channel. |
-| `create` | Create a channel from JSON. |
-| `update <id>` | Replace a channel definition. |
+| `create` | Create a channel from JSON: `-f <file>`, `-d <json>`, or `--stdin`. |
+| `update <id>` | Replace a channel definition. Only drafts accept updates. |
 | `delete <id>` | Delete a channel; prompts unless `--yes`. |
-| `activate <id>` | Activate a draft channel. |
-| `archive <id>` | Archive an active channel. |
-| `versions <id>` | List version history. |
-| `new-version <id>` | Create a new draft version. |
-| `validate` | Validate a definition without creating it. |
-| `export` | Export channels as JSON. |
-| `import` | Bulk-import from a JSON array file; `--dry-run` previews. |
+| `activate <id>` | Activate a draft channel. `--dry-run` pre-flights; `--defer-reload` batches. |
+| `archive <id>` | Archive an active channel. Same two flags. |
+| `versions <id>` | List version history; pages with `--limit` / `--offset`. |
+| `new-version <id>` | Create a new draft version from the active one. |
+| `validate` | Validate a definition without creating it. Exits `1` when invalid. |
+| `export` | Export channels as JSON; filter with `--status`, `--tag`, `--channel-type`, `--protocol`. |
+| `import -f <file>` | Bulk-import from a JSON array file; `--dry-run` previews, `--on-conflict` sets the collision rule. |
 
-Example: `orion-cli channels create -f channel.json`
+`--dry-run` earns its keep most on channels: activation requires an active
+workflow, a route pattern that collides with nothing already serving, and a
+stored config that still builds — none of which a client can check for itself.
+
+Example: `orion-cli channels activate orders --dry-run`
 
 ### `connectors`
 
@@ -213,19 +261,22 @@ Manages connectors and their circuit breakers. Alias: `conn`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List connectors. |
-| `get <id>` | Show a connector. |
-| `create` | Create a connector from JSON. |
+| `list` | List connectors; filter with `--tag`. Sorts by `name`, `connector_type`, `created_at`, `updated_at`. |
+| `get <id>` | Show a connector; secrets stay masked. |
+| `create` | Create a connector from JSON: `-f <file>`, `-d <json>`, or `--stdin`. |
 | `update <id>` | Replace a connector definition. |
 | `delete <id>` | Delete a connector; prompts unless `--yes`. |
 | `enable <id>` | Enable a disabled connector. |
 | `disable <id>` | Disable a connector without deleting it. |
-| `test <id>` | Probe the connector's target with the stored config. |
-| `validate` | Validate a definition without creating it. |
-| `export` | Export connectors as JSON; secrets stay masked. |
-| `import` | Bulk-import from a JSON array file; `--dry-run` previews. |
+| `test <id>` | Probe the connector's target with the stored config. An `http` connector's probe is one real request. |
+| `validate` | Validate a definition without creating it. Checks the shape only — `test` is what reaches the target. Exits `1` when invalid. |
+| `export` | Export connectors as JSON; filter with `--tag`. Secrets stay masked, so a re-import needs them supplied again. |
+| `import -f <file>` | Bulk-import from a JSON array file; `--dry-run` previews, `--on-conflict` sets the collision rule. |
 | `circuit-breakers` | List circuit breaker states: `closed`, `open`, or `half_open`. |
-| `reset-breaker` | Reset a tripped circuit breaker to closed. |
+| `reset-breaker <key>` | Reset a tripped circuit breaker to closed. The key is `connector:channel`. |
+
+Connectors are not versioned — there is no draft, no `activate`, and no
+`versions`. `update` writes in place and the engine picks it up on reload.
 
 Example: `orion-cli connectors test payment-api`
 
@@ -239,11 +290,19 @@ Sends data to a channel. Synchronous by default; `--async-mode` submits for back
 | `-f, --file <path>` | JSON payload from a file. |
 | `-d, --data <json>` | Inline JSON payload. |
 | `--stdin` | Read the payload from stdin. |
-| `--async-mode` | Submit for async processing; returns a trace ID. Alias: `--async`. |
+| `--async-mode` | Submit for async processing; returns a trace ID and trace token. Alias: `--async`. |
 | `--wait` | With `--async-mode`, poll until the trace completes. |
 | `--timeout <secs>` | Timeout for `--wait`. Default: `60`. |
-| `--metadata <json>` | Metadata object attached to the request. |
-| `--profile` | Request server-side execution profiling. Sync only. |
+| `--metadata <json>` | Metadata object attached to the request. Refused with `--raw`. |
+| `--raw` | Send the payload as the request body verbatim, with no `{"data": …}` envelope. |
+| `--profile` | Request server-side execution profiling; adds an `_orion.profile` breakdown. Sync only, and needs the server's `tracing.debug_profile_enabled`. |
+
+`--raw` is what reaches a channel configured with
+`request.body_mode = "payload"`. Such a channel takes the whole body as `data`,
+so the default envelope would arrive as a single key literally named `data`.
+`--metadata` is refused alongside it rather than silently dropped: a
+payload-mode channel stamps metadata server-side and accepts none from the
+caller.
 
 Example: `orion-cli send orders -f order.json --async-mode --wait`
 
@@ -253,11 +312,24 @@ Views execution traces.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List traces; filter with `--status`, `--channel`, and `--mode`. |
+| `list` | List traces; filter with `--status`, `--channel`, and `--mode`. Sorts by `created_at`, `updated_at`, `status`, `channel`, `mode`. |
 | `get <id>` | Show trace details, including the result or error. |
-| `wait <id>` | Poll until the trace completes. Exit codes: `0` completed, `1` failed, `2` timeout. |
+| `wait <id>` | Poll until the trace completes. `--interval <secs>` (default `1`), `--timeout <secs>` (default `60`). Exit codes: `0` completed, `1` failed, `2` timeout. |
+
+Reading a trace needs either an admin credential or the per-submission
+**trace token** that the async `202` returns alongside the id. Pass it with
+`--token <token>` on `get` and `wait`. Without one, any caller who guessed an
+id could read another caller's payload.
+
+`list` has two paging controls beyond `--limit` / `--offset`:
+
+| Flag | Description |
+|------|-------------|
+| `--cursor <c>` | Keyset cursor from a previous page's `next_cursor`; pass it back unmodified. Valid only with the default `created_at` ordering, mutually exclusive with `--offset`, and cheaper on a large table because it never skips rows. |
+| `--include-total` | Ask the server to compute `total`. Off by default: the count is a full scan of the filtered set. |
 
 Example: `orion-cli traces list --status failed --channel orders`
+
 
 ### `engine`
 
@@ -286,7 +358,28 @@ Example: `orion-cli metrics --raw`
 
 `list` shows audit log entries of admin actions. Alias: `audit`.
 
-Example: `orion-cli audit-logs list`
+Filters combine with AND and are applied in the database:
+
+| Flag | Description |
+|------|-------------|
+| `--action <a>` | Exact match on the action, e.g. `create`, `status_active`, `update_rollout`. |
+| `--resource-type <t>` | Exact match on the resource type: `workflow`, `channel`, `connector`, `engine`, `backup`, `circuit_breaker`, `trace_dlq`, `package`. |
+| `--resource-id <id>` | Exact match on the resource id. |
+| `--principal <p>` | Exact match on the acting principal — the admin key id, or `anonymous` when admin auth is off. |
+| `--start-time <ts>` | Inclusive lower bound on `created_at`, RFC 3339. |
+| `--end-time <ts>` | Exclusive upper bound on `created_at`, RFC 3339. |
+
+Because the matches are exact, a filter is only as good as the vocabulary
+behind it — the full `action` × `resource_type` table is in
+[Audit Logs](../operate/audit-logs.md). An unrecognised filter name is rejected
+with a `400` rather than answered with unfiltered rows, so a mistyped
+compliance query cannot silently widen.
+
+Pair it with `--change-context` on the writing side: label a promotion's
+commands with `--change-context ticket=OPS-4412`, then read them back as one
+operation.
+
+Example: `orion-cli audit-logs list --action status_active --resource-type workflow --start-time 2026-07-01T00:00:00Z`
 
 ### `backups`
 
@@ -305,8 +398,12 @@ Inspects package promotion receipts. Alias: `pkg`.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List package receipts. |
+| `list` | List package receipts, ordered by name and newest first within a package. |
 | `get <name>` | Show a package's current receipt and version history. |
+
+Receipts are written by `orion-server package plan/apply`, not by this command:
+`orion-cli packages` is the read side, answering which package versions this
+instance has staged or applied.
 
 Example: `orion-cli packages get payments`
 
@@ -316,10 +413,13 @@ Inspects and drains the trace dead-letter queue.
 
 | Subcommand | Description |
 |------------|-------------|
-| `list` | List dead-letter entries. |
+| `list` | List dead-letter entries; filter with `--channel` and `--exhausted <true\|false>`. |
 | `get <id>` | Show one entry, including its payload. |
 | `requeue <id>` | Reset an entry's retry counter so the next retry pass picks it up. |
-| `purge --older-than-hours <n>` | Permanently delete exhausted entries older than the cut-off. The flag is required. |
+| `purge --older-than-hours <n>` | Permanently delete exhausted entries older than the cut-off. The flag is required, and the command prompts unless `--yes`. |
+
+`--exhausted true` narrows to entries whose retries are used up — the ones
+nothing will pick up again, and the only ones `purge` deletes.
 
 Example: `orion-cli dlq purge --older-than-hours 168`
 
@@ -364,6 +464,7 @@ Example: `orion-cli mcp serve --server http://localhost:8080 --http --bind 0.0.0
 | `ORION_SERVER_URL` | `orion-cli` | Server URL when `--server` is not given. |
 | `ORION_API_KEY` | `orion-cli` | Admin API key when `--api-key` is not given. |
 | `ORION_API_KEY_HEADER` | `orion-cli` | Header name carrying the key. |
+| `ORION_CHANGE_CONTEXT` | `orion-cli` | Audit change context when `--change-context` is not given. |
 | `NO_COLOR` | `orion-cli` | Disables colored output, like `--no-color`. |
 | `ORION_ADMIN_TOKEN` | `orion-server package` | Bearer token sent to the target instance's admin API. |
 | `ORION_SECTION__KEY` | `orion-server` | Overrides any config setting, e.g. `ORION_SERVER__PORT`. See the [Configuration Reference](./configuration.md#how-settings-are-resolved). |

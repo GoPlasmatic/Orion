@@ -91,11 +91,11 @@ The tools cover the full admin API, named `<resource>_<action>`:
 | Category | What it covers |
 |----------|----------------|
 | **Workflows** | create, update, version, test, validate, activate, archive, roll out, dependencies, delete, import/export |
-| **Channels** | create, update, version, activate, archive, delete, import |
-| **Connectors** | create, update, enable/disable, test, delete, import |
+| **Channels** | create, update, version, validate, activate, archive, delete, import/export |
+| **Connectors** | create, update, validate, enable/disable, test, delete, import/export |
 | **Data** | send a request to a channel, sync or async |
 | **Traces** | list and read execution traces |
-| **Trace DLQ** | list and read dead-lettered submissions, and requeue one |
+| **Trace DLQ** | list and read dead-lettered submissions, requeue one, purge exhausted ones |
 | **Packages** | list and read promotion receipts |
 | **Engine** | status and reload |
 | **Operations** | health, metrics, audit logs, circuit breakers, backups |

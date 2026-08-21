@@ -14,6 +14,16 @@ curl -s "http://localhost:8080/api/v1/admin/audit-logs?action=status_active&reso
 curl -s "http://localhost:8080/api/v1/admin/audit-logs?resource_id=wf-orders&start_time=2026-07-01T00:00:00Z"
 ```
 
+The CLI takes the same filters as flags, and renders a table:
+
+```bash
+orion-cli audit-logs list
+
+orion-cli audit-logs list --action status_active --resource-type workflow
+
+orion-cli audit-logs list --resource-id wf-orders --start-time 2026-07-01T00:00:00Z
+```
+
 Each entry carries the principal, the action, the resource type and id, a
 `details` object, and a timestamp.
 
@@ -60,9 +70,25 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   -H 'Content-Type: application/json' --data @workflow.json
 ```
 
+The CLI sends the same header from `--change-context`, or from
+`ORION_CHANGE_CONTEXT` — export it once and every command in a deploy script is
+labelled without touching the script:
+
+```bash
+export ORION_CHANGE_CONTEXT='ticket=OPS-4412'
+orion-cli workflows activate order-processing --defer-reload
+orion-cli channels activate orders --defer-reload
+orion-cli engine reload
+
+orion-cli audit-logs list --start-time 2026-07-01T00:00:00Z --output json \
+  | jq '.data[] | select((.details | fromjson).change_context == "ticket=OPS-4412")'
+```
+
 The value is free-form and truncated at 256 bytes. Use it for a change ticket, a
 release name, or an operator's identity — whatever your audit questions are
-phrased in.
+phrased in. There is no server-side filter on it: it is stored inside `details`,
+so narrow with the indexed filters first and match the context client-side, as
+above.
 
 `orion-server package apply` sets it automatically to
 `package=<name>@<version>`, so a promotion's rows filter back into the promotion

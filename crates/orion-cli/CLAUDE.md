@@ -52,41 +52,45 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 ### Module Layout
 
-- `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`)
+- `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--api-key`, `--api-key-header`, `--change-context`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`). `build_client()` resolves the API key flag → `ORION_API_KEY` → `~/.orion/config.toml` via `OrionConfig::resolve_api_key`, the same order `mcp serve` uses, and applies `--change-context` as the `X-Orion-Change-Context` header on every request.
 - `src/client.rs` — thin presentation adapter over the shared `orion-client` crate's `OrionClient` (the transport itself — auth, 30s timeout, envelope parsing, typed `ClientError` — lives there); this wrapper translates typed errors into the CLI's terminal messages (hints, `[CODE] message`, field errors). Endpoint paths come from `orion_client::paths`, never format strings.
 - `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), includes `resolve_server_url()` for MCP
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
+- `src/utils.rs` — shared command helpers: `run_import()`, `read_json_input()`, `confirm()`, plus the two renderers every list and validation path goes through — `print_list_footer()` (reads the envelope's top-level `total`; says `Showing N of M` when the page is short of it) and `print_validation_envelope()` (the `{valid, errors, warnings}` shape, returning exit 1 when invalid)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
 - `src/mcp/` — MCP server module (OrionService with tool_router/tool_handler, serve function for stdio/HTTP)
-- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, functions, health, metrics, audit_logs, backups). `tools/mod.rs` also holds the shared `import_resource()` bulk-import helper.
+- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, functions, health, metrics, audit_logs, backups, packages, trace_dlq). `tools/mod.rs` also holds the shared `import_resource()` and `validate_resource()` helpers. The tool set mirrors the CLI's command surface: adding a flag to a command group generally means adding the matching param to its tool.
 - `src/mcp/tools/descriptions/` — Markdown files with detailed tool descriptions for MCP clients
 
 ### Command Modules
 
 | Module | Key functionality |
 |---|---|
-| `workflows.rs` (largest) | Full CRUD, status transitions (activate/archive), test dry-run, rollout, versioning, import (server-side `?dry_run`)/export with diff |
-| `channels.rs` | Channel CRUD, status transitions, versioning, bulk import |
-| `data.rs` | Send data: sync (`--profile` renders `_orion.profile`), async (wait/timeout/trace tracking; handles null trace_id when tracing is off) |
-| `connectors.rs` | Connector CRUD, enable/disable, circuit breaker management, bulk import |
-| `traces.rs` | Execution trace viewing and polling (shows `task_trace_json` when present) |
+| `workflows.rs` (largest) | Full CRUD, status transitions (activate/archive with `--dry-run`/`--defer-reload`), test dry-run, rollout (`--defer-reload`), versioning, import (server-side `?dry_run`, `--on-conflict`)/export with diff |
+| `channels.rs` | Channel CRUD, status transitions (same two flags), versioning, validate, filtered export, bulk import |
+| `data.rs` | Send data: sync (`--profile` renders `_orion.profile`), async (wait/timeout/trace tracking; handles null trace_id when tracing is off), `--raw` for `body_mode = "payload"` channels |
+| `connectors.rs` | Connector CRUD, enable/disable, test probe, circuit breaker management, bulk import |
+| `traces.rs` | Execution trace viewing and polling (shows `task_trace_json` when present); `--token` carries the per-submission capability token |
 | `engine.rs` | Engine status, hot-reload |
 | `functions.rs` | List registered workflow task functions and their input schemas |
 | `health.rs` | Health check with component status, exit code 1 if degraded |
 | `metrics.rs` | Raw Prometheus metrics retrieval |
-| `audit_logs.rs` | List audit log entries of admin actions |
+| `audit_logs.rs` | List audit log entries, with the endpoint's full filter set (`--action`, `--resource-type`, `--resource-id`, `--principal`, `--start-time`, `--end-time`) |
 | `backups.rs` | Create and list database backups (SQLite) |
 | `packages.rs` | Package promotion receipts: list, get (v1.0) |
 | `dlq.rs` | Trace dead-letter queue: list, get, requeue, purge (v1.0) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
-| `completions.rs` | Shell completion generation (bash/zsh/fish/powershell) |
+| `completions.rs` | Shell completion generation (bash/zsh/fish/powershell/elvish) |
 | `mcp.rs` | MCP server subcommand (`orion-cli mcp serve`) |
 
-Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::import_resource()` (MCP).
+Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::import_resource()` (MCP); `mcp::tools::validate_resource()` is the MCP side of `/validate`.
+
+**Every list surface pages** (50 default, 1000 max, server-clamped) and the versioned lists plus connectors and traces also sort. Both the CLI flags and the MCP tool params must carry `limit`/`offset`/`sort_by`/`sort_order` — a list that omits them silently truncates at 50 with no way to see the rest.
 
 ### Key Patterns
 
-- **Config precedence:** CLI flags > env vars (`ORION_SERVER_URL`, `NO_COLOR`) > `~/.orion/config.toml`
+- **Config precedence:** CLI flags > env vars (`ORION_SERVER_URL`, `ORION_API_KEY`, `ORION_API_KEY_HEADER`, `ORION_CHANGE_CONTEXT`, `NO_COLOR`) > `~/.orion/config.toml`
+- **Exit codes carry the answer.** `validate` and `activate/archive --dry-run` both return the `{valid, errors, warnings}` envelope inside a **200** — a refused transition is a finding, not an HTTP failure — so the command must read `valid` and exit 1. Reading only the HTTP status makes a failing pre-flight look like a passing one.
 - **Output formats:** table (default), json, yaml — controlled by `--output` flag
 - **Error handling:** `anyhow` throughout; `OrionClient` parses server error responses with codes/messages and renders the v0.2 structured `error.details[]` (field-pathed validation errors) and `request_id` when present
 - **All commands are async** — Tokio runtime, reqwest for HTTP

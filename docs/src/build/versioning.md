@@ -29,9 +29,19 @@ curl -s -X PATCH "http://localhost:8080/api/v1/admin/workflows/order-processing/
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
+```bash
+orion-cli workflows activate order-processing --dry-run
+orion-cli channels activate orders --dry-run
+```
+
 `?dry_run=true` reports whether the activation would succeed and writes nothing.
 Worth it for channels especially, whose activation requires an active workflow
 and whose stored config must still build.
+
+The findings come back as `{valid, errors, warnings}` in a **200**, not as a
+failure status — a plan wants the report, not the first error. The CLI turns
+that into an exit code: `0` when the transition would succeed, `1` when it would
+be refused, so `--dry-run` gates a script directly.
 
 ## Activate
 
@@ -52,10 +62,20 @@ curl -s -X PATCH "http://localhost:8080/api/v1/admin/workflows/b/status?reload=d
 curl -s -X POST  http://localhost:8080/api/v1/admin/engine/reload
 ```
 
+```bash
+orion-cli workflows activate order-processing --defer-reload
+orion-cli channels activate orders --defer-reload
+orion-cli engine reload
+```
+
 `?reload=defer` marks the change without rebuilding. Use it when several
 entities must go live together — a workflow and the channel that points at it,
 or a whole service. Nothing serves the new versions until the reload, so a
 half-applied set never takes traffic.
+
+`orion-cli workflows rollout <id> -p <n> --defer-reload` takes the same flag:
+a rollout change is the other per-entity mutation that would otherwise rebuild
+the engine on its own.
 
 This is exactly what `orion-server package apply` does on your behalf. See
 [Promote Between Environments](../operate/promotion.md).

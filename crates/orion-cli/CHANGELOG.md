@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`activate|archive --dry-run` reported a refused transition as a success.**
+  The pre-flight answers with the `/validate` envelope inside a **200** —
+  `valid: false` with findings, so a promotion can pre-flight a whole package
+  without stopping at the first missing entity — and the command printed
+  "can change to active" and exited `0` regardless. It now renders the errors
+  and warnings and exits `1`, which is what makes the flag usable as a gate.
+- **`workflows diff` could never report a workflow unchanged.** It compared the
+  export's `condition`/`tasks` against fields named `condition_json`/`tasks_json`
+  that no response carries, so every item came back modified — including a file
+  diffed straight back against the export it came from. It now matches on
+  `workflow_id` (the key an import collides on) and compares the server's
+  `content_hash`, falling back to the importable fields for a hand-authored
+  file. It also exits `1` on drift, like `orion-server package diff`.
+- **A stored `api_key` was only ever sent by `mcp serve`.** `orion-cli config
+  set api_key <key>` wrote a key that every other command ignored, so they went
+  out unauthenticated. All commands now resolve the flag, then `ORION_API_KEY`,
+  then `~/.orion/config.toml` — the order `mcp serve` already used.
+- **`audit-logs list` reported the page size as the total**, reading a
+  `pagination.total` field the admin envelope has never had.
+
+### Added
+
+- **Every audit-log filter the endpoint accepts** — `--action`,
+  `--resource-type`, `--resource-id`, `--principal`, `--start-time`,
+  `--end-time` — on `audit-logs list` and the `audit_logs_list` MCP tool.
+  Previously only `--limit`/`--offset` were reachable.
+- **`--change-context <ctx>`** (or `ORION_CHANGE_CONTEXT`), a global flag that
+  stamps `X-Orion-Change-Context` on every request, so the audit rows of one
+  multi-command operation group under `details.change_context`.
+- **`--limit`/`--offset`/`--sort-by`/`--sort-order` on `workflows list`**, which
+  had none of them and so silently showed only the first 50; `--sort-by` and
+  `--sort-order` on `channels list` and `connectors list`; `--limit`/`--offset`
+  on `workflows|channels versions`; `--channel-type`/`--protocol` on
+  `channels export`; `--defer-reload` on `workflows rollout`.
+- **MCP parity with the CLI:** `channels_validate`, `channels_export`,
+  `connectors_validate`, `connectors_export` and `trace_dlq_purge` tools;
+  `on_conflict` on all three import tools; `tag` and sorting on the list tools;
+  `cursor`/`include_total` on `traces_list`.
+
+### Changed
+
+- **A truncated listing says so.** The count under a table now reads
+  `Showing 50 of 3120 workflow(s) -- page with --limit / --offset` when the page
+  is short of the server's total, instead of printing the total alone under 50
+  rows.
+- **Channel and connector `validate` render field-pathed issues** the way
+  `workflows validate` always has, rather than dumping raw JSON objects, and
+  report warnings as well as errors.
+
 ## [1.0.0] - 2026-08-14
 
 Orion server v1.0 compatibility release, developed in the Orion monorepo
