@@ -13,7 +13,7 @@
 
 services:
   orion-c:
-    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.1.0}
     restart: unless-stopped
     stop_grace_period: 45s
     depends_on:

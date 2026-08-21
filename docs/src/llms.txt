@@ -69,6 +69,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Back Up & Restore](https://docs.goplasmatic.io/operate/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
 - [Audit Logs](https://docs.goplasmatic.io/operate/audit-logs.html): filtering, change context, retention, dropped-event alerting
 - [Upgrades](https://docs.goplasmatic.io/operate/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
+- [Upgrading to 1.1.0](https://docs.goplasmatic.io/operate/upgrading-to-1.1.html): the five 1.0.x → 1.1.0 behaviour changes, including the rate-limit key that now refuses instead of collapsing every caller into one bucket
 - [Upgrading to 1.0.0](https://docs.goplasmatic.io/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
 - [Troubleshooting](https://docs.goplasmatic.io/operate/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, empty context
 

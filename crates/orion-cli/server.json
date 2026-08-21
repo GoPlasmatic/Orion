@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.GoPlasmatic/orion",
-  "description": "Build and operate declarative REST/Kafka services on Orion: 53 tools over the full admin API.",
+  "description": "Build and operate declarative REST/Kafka services on Orion: 58 tools over the full admin API.",
   "repository": {
     "url": "https://github.com/GoPlasmatic/Orion",
     "source": "github"
   },
-  "version": "1.0.0",
+  "version": "1.1.0",
   "websiteUrl": "https://docs.goplasmatic.io/ai/mcp-setup.html",
   "packages": [
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/goplasmatic/orion-cli:1.0.0",
+      "identifier": "ghcr.io/goplasmatic/orion-cli:1.1.0",
       "transport": { "type": "stdio" },
       "packageArguments": [
         { "type": "positional", "value": "mcp" },

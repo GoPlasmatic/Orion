@@ -312,7 +312,7 @@ orion-cli --output json functions list
 Orion includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, enabling AI assistants like Claude Desktop and Cursor to manage your Orion instance directly.
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 53 tools, then a live tool call" width="100%">
+  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 58 tools, then a live tool call" width="100%">
   <br>
   <em>A real stdio JSON-RPC session — the same transport Claude Desktop and Cursor use.</em>
 </div>
@@ -370,15 +370,15 @@ Or add manually to Cursor MCP settings (Settings > MCP Servers):
 
 ### Available MCP Tools
 
-The MCP server exposes 53 tools covering the full Orion API:
+The MCP server exposes 58 tools covering the full Orion API:
 
 | Category | Tools |
 |----------|-------|
 | **Health** | `health_check` |
 | **Engine** | `engine_status`, `engine_reload` |
 | **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import`, `workflows_dependencies` |
-| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import` |
-| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import`, `connectors_test` |
+| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import`, `channels_export`, `channels_validate` |
+| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import`, `connectors_export`, `connectors_test`, `connectors_validate` |
 | **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
 | **Data** | `data_send_sync`, `data_send_async` |
 | **Traces** | `traces_list`, `traces_get` |
@@ -386,7 +386,7 @@ The MCP server exposes 53 tools covering the full Orion API:
 | **Audit Logs** | `audit_logs_list` |
 | **Backups** | `backups_create`, `backups_list` |
 | **Packages** | `packages_list`, `packages_get` |
-| **Trace DLQ** | `trace_dlq_list`, `trace_dlq_get`, `trace_dlq_requeue` |
+| **Trace DLQ** | `trace_dlq_list`, `trace_dlq_get`, `trace_dlq_requeue`, `trace_dlq_purge` |
 | **Metrics** | `get_metrics` |
 
 ---

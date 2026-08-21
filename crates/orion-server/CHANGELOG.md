@@ -528,15 +528,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is refused at startup rather than dropped with a warning, and `max_age_secs`
   is capped at `86400` because browsers clamp it anyway.
 
-- **The CLI and MCP channel-config help listed keys the server rejects.** Four
-  of the five names in `channels create` guidance were pre-1.0 spellings —
-  `cors` (retired in favour of `origin_allow_list`), `input_validation`
-  (`validation_logic`), `rate_limit.rps` (`requests_per_second`) and
-  `backpressure.max_concurrent` (`max_concurrent_per_node`). Since
-  `ChannelConfig` denies unknown fields, an LLM following that description
-  produced a config the server refused. Corrected, and the remaining valid keys
-  listed. ([#271])
-
 ### Changed
 
 - **dataflow-rs 3.5.0 is the engine baseline** (from 3.3), carrying the opt-in

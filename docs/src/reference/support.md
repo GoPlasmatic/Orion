@@ -89,8 +89,9 @@ removal date; supplying both spellings in one input is a duplicate-field error.
 
 ## Upgrade guarantees
 
-- Each release documents its upgrade path from the previous release (for
-  1.0.0: [Upgrading to 1.0.0](../operate/upgrading-to-1.0.md)). Upgrades are
+- Each release documents its upgrade path from the previous release
+  ([Upgrading to 1.1.0](../operate/upgrading-to-1.1.md),
+  [Upgrading to 1.0.0](../operate/upgrading-to-1.0.md)). Upgrades are
   supported **release to release**; when skipping releases, read each
   intermediate upgrade page.
 - Database migrations are embedded in the binary for all three backends and
@@ -143,7 +144,7 @@ reports prioritized. There is no commercial support offering at this time.
 
 - [Upgrades](../operate/upgrades.md) — the standing procedure, and how a
   renamed key fails on each surface.
-- [Upgrading to 1.0.0](../operate/upgrading-to-1.0.md) — the per-version guide
+- [Upgrading to 1.1.0](../operate/upgrading-to-1.1.md) — the per-version guide
   for the current release.
 - [Configuration Reference](./configuration.md) — the settings this policy
   freezes.

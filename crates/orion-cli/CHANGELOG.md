@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then `~/.orion/config.toml` — the order `mcp serve` already used.
 - **`audit-logs list` reported the page size as the total**, reading a
   `pagination.total` field the admin envelope has never had.
+- **The CLI and MCP channel-config help listed keys the server rejects**
+  ([#271]). Four of the five names in `channels create` guidance were pre-1.0
+  spellings — `cors` (retired in favour of `origin_allow_list`),
+  `input_validation` (`validation_logic`), `rate_limit.rps`
+  (`requests_per_second`) and `backpressure.max_concurrent`
+  (`max_concurrent_per_node`). Since `ChannelConfig` denies unknown fields, an
+  LLM following that description produced a config the server refused.
+  Corrected, and the remaining valid keys listed.
 
 ### Added
 
@@ -202,6 +210,7 @@ Initial release.
      The history spans two repositories, so pre-1.0 entries link to their
      release pages rather than to a compare range. -->
 
+[#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
 [Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...HEAD

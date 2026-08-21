@@ -183,29 +183,29 @@ is what proves it independently of the runner that produced the artifact.
    orion-docs → Deployments), not the Actions tab, and confirm the upgrade
    guide and the new version strings are actually being served.
 
-   **As of 2026-08-14 this Worker does not exist yet**: `docs.goplasmatic.io`
-   resolves nowhere, while the apex `goplasmatic.io` serves normally from the
-   same (Cloudflare-hosted) zone. Since `custom_domain: true` in
-   `docs/wrangler.jsonc` makes wrangler create the DNS record and edge
-   certificate on its first successful deploy, the missing record means no
-   deploy has ever succeeded. Create the `orion-docs` Worker — Workers &
-   Pages → Create application → Import a repository, named **exactly**
-   `orion-docs` to match `wrangler.jsonc`, with the build settings recorded
-   in that file's header — before the real tag, because `orion-server`'s
-   `homepage` and `documentation` metadata point at that hostname and are
-   frozen into the crates.io listing at publish time.
+   **Resolved for 1.0.0.** This Worker did not exist when the note above was
+   first written — `docs.goplasmatic.io` resolved nowhere, which given
+   `custom_domain: true` in `docs/wrangler.jsonc` meant no deploy had ever
+   succeeded. It was created before the 1.0.0 tag and the hostname now serves
+   (verified 2026-08-21). Nothing to do here at each release except the
+   confirmation in the paragraph above; re-read this only if the hostname
+   stops resolving, since `orion-server`'s `homepage` and `documentation`
+   metadata point at it and are frozen into the crates.io listing at publish
+   time.
 
-## The benchmark session (C13 — closed for 1.0.0)
+## The benchmark session (C13)
 
-**C13 is done for 1.0.0.** The record is committed at
+**Done for 1.0.0, and outstanding for 1.1.0.** The 1.0.0 record is committed at
 [`crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
-and the README's Performance section cites it. Nothing below is outstanding
-work for this release; it is the procedure to repeat at the next one.
-
-One deliberate gap to carry forward rather than re-open: **the cluster
-scenario (step 4) was not run for 1.0.0**, so there are no published scaling
-numbers at N=2/N=3. That was accepted for this release, not overlooked — treat
-it as the first thing to add next time, not as a blocker now.
+and the README's Performance section cites it — including the cluster scenario,
+which was skipped in the original session and captured separately on
+2026-08-15, so the N=2 and N=3 scaling numbers are published. There is **no
+1.1.0 record yet**: run the session below at the 1.1.0 tag (or its rc) and land
+the numbers, or make an explicit decision to keep citing the 1.0.0 figures.
+Citing 1.0.0 numbers under a 1.1.0 release is defensible — the release adds
+capability rather than reworking the request path — but it should be a decision,
+not an omission, and the README's "measured on v1.0.0" framing has to stay
+accurate either way.
 
 Numbers must come from **dedicated hardware** — a laptop running other work
 produces numbers worse than none.
@@ -219,7 +219,7 @@ produces numbers worse than none.
    BENCH_RELEASE=1 BENCH_DURATION=30s ./crates/orion-server/tests/benchmark/bench.sh
    ```
 
-4. **Cluster scenario** *(skipped for 1.0.0 — see above)*: bring up the HA compose stack
+4. **Cluster scenario**: bring up the HA compose stack
    (`docker compose -f docker-compose.ha.yml up -d --wait`, N=2), then:
 
    ```bash
@@ -232,16 +232,17 @@ produces numbers worse than none.
    three-server nginx upstream). Scenario G compares against scenario B for
    per-node cluster overhead; compute scaling efficiency at N=2 and N=3.
 5. **Record:** commit the run outputs under
-   `crates/orion-server/tests/benchmark/results/v1.0.0/` — one `.txt` per scenario plus a
-   `SUMMARY.md` recording the hardware (CPU model, cores, RAM, OS) and the
-   scaling-efficiency numbers, following the tracked `results/v0.2.0/`
-   layout. `.gitignore` ignores scratch runs under `results/` and
-   re-includes each release directory explicitly; the `v1.0.0` line is
-   already there (future releases add their own line).
+   `crates/orion-server/tests/benchmark/results/v<version>/` — one `.txt` per
+   scenario plus a `SUMMARY.md` recording the hardware (CPU model, cores, RAM,
+   OS) and the scaling-efficiency numbers, following the tracked
+   `results/v1.0.0/` layout. `.gitignore` ignores scratch runs under
+   `results/` and re-includes each release directory explicitly, so **add the
+   new release's line before committing** — the `v0.2.0`, `v1.0.0` and
+   `v1.1.0` lines are already there.
 6. **Publish:** regenerate `docs/media/benchmark-light.svg` /
    `docs/media/benchmark-dark.svg` from the new numbers (same style, both color
    schemes), and replace the README's Performance section numbers — table,
-   alt text, and the "measured on v0.2.0" framing — with the 1.0.0 numbers
+   alt text, and the "measured on v1.0.0" framing — with the new ones,
    including cluster scaling efficiency.
 7. **Close the checkpoint**: the commit that lands the numbers names C13 in
    its message (`git log --grep=C13` is the index).

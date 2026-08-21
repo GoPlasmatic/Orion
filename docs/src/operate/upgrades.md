@@ -73,6 +73,9 @@ supported-version window, the MSRV, and the platform matrix.
 
 ## Per-version guides
 
+- [Upgrading to 1.1.0](./upgrading-to-1.1.md) — from 1.0.x. A minor release:
+  five behaviour changes, no renames, no rewrites. One of them can start
+  refusing traffic on a channel that appeared to work.
 - [Upgrading to 1.0.0](./upgrading-to-1.0.md) — from 0.3.0. Every break, grouped
   by type, with the preflight scanner that finds the database-backed ones.
 

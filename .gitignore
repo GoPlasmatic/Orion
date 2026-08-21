@@ -59,6 +59,7 @@ debug/
 /crates/orion-server/tests/benchmark/results/*
 !/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
+!/crates/orion-server/tests/benchmark/results/v1.1.0/
 
 # Launch/marketing collateral (local only — drafts, checklists, submission notes)
 /marketing/
