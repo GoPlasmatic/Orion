@@ -13,10 +13,16 @@ pub struct WorkflowsListParams {
     pub status: Option<String>,
     #[schemars(description = "Filter by tag")]
     pub tag: Option<String>,
-    #[schemars(description = "Maximum number of workflows to return")]
+    #[schemars(description = "Maximum number of workflows to return (default 50, max 1000)")]
     pub limit: Option<i64>,
     #[schemars(description = "Number of workflows to skip for pagination")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Sort by column: priority (default), name, status, created_at, updated_at"
+    )]
+    pub sort_by: Option<String>,
+    #[schemars(description = "Sort direction: asc or desc")]
+    pub sort_order: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -105,6 +111,10 @@ pub struct WorkflowsImportParams {
     pub workflows_json: String,
     #[schemars(description = "If true, preview what would be imported without actually importing")]
     pub dry_run: Option<bool>,
+    #[schemars(
+        description = "What an already-stored conflict means: fail (default, the item is refused), skip, or new_version (update the draft in place, or cut a new draft version over an active workflow)"
+    )]
+    pub on_conflict: Option<String>,
 }
 
 pub async fn list(client: &OrionClient, params: WorkflowsListParams) -> Result<String, String> {
@@ -113,6 +123,8 @@ pub async fn list(client: &OrionClient, params: WorkflowsListParams) -> Result<S
         ("tag", params.tag),
         ("limit", params.limit.map(|l| l.to_string())),
         ("offset", params.offset.map(|o| o.to_string())),
+        ("sort_by", params.sort_by),
+        ("sort_order", params.sort_order),
     ]);
     let resp: Value = client
         .get(&format!("{}{qs}", paths::WORKFLOWS))
@@ -220,6 +232,7 @@ pub async fn import(client: &OrionClient, params: WorkflowsImportParams) -> Resu
         "workflow",
         &params.workflows_json,
         params.dry_run.unwrap_or(false),
+        params.on_conflict,
     )
     .await
 }
@@ -228,13 +241,13 @@ pub async fn validate(
     client: &OrionClient,
     params: WorkflowsValidateParams,
 ) -> Result<String, String> {
-    let body: Value = serde_json::from_str(&params.workflow_json)
-        .map_err(|e| format!("Invalid workflow JSON: {e}"))?;
-    let resp: Value = client
-        .post(paths::WORKFLOWS_VALIDATE, &body)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+    super::validate_resource(
+        client,
+        paths::WORKFLOWS_VALIDATE,
+        "workflow",
+        &params.workflow_json,
+    )
+    .await
 }
 
 pub async fn rollout(

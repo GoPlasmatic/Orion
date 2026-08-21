@@ -8,10 +8,30 @@ use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConnectorsListParams {
-    #[schemars(description = "Maximum number of connectors to return")]
+    #[schemars(description = "Filter by tag")]
+    pub tag: Option<String>,
+    #[schemars(description = "Maximum number of connectors to return (default 50, max 1000)")]
     pub limit: Option<i64>,
     #[schemars(description = "Number of connectors to skip for pagination")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Sort by column: name (default), connector_type, created_at, updated_at"
+    )]
+    pub sort_by: Option<String>,
+    #[schemars(description = "Sort direction: asc (default) or desc")]
+    pub sort_order: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConnectorsExportParams {
+    #[schemars(description = "Filter by tag")]
+    pub tag: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConnectorsValidateParams {
+    #[schemars(description = include_str!("descriptions/param_connector_json.md"))]
+    pub connector_json: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -56,12 +76,19 @@ pub struct ConnectorsImportParams {
         description = "If true, validate on the server without writing any changes (returns imported/unchanged/skipped/failed counts)"
     )]
     pub dry_run: Option<bool>,
+    #[schemars(
+        description = "What an already-stored conflict means: fail (default, the item is refused), skip, or new_version (update in place)"
+    )]
+    pub on_conflict: Option<String>,
 }
 
 pub async fn list(client: &OrionClient, params: ConnectorsListParams) -> Result<String, String> {
     let qs = utils::build_query_string(&[
+        ("tag", params.tag),
         ("limit", params.limit.map(|l| l.to_string())),
         ("offset", params.offset.map(|o| o.to_string())),
+        ("sort_by", params.sort_by),
+        ("sort_order", params.sort_order),
     ]);
     let resp: Value = client
         .get(&format!("{}{qs}", paths::CONNECTORS))
@@ -149,6 +176,32 @@ pub async fn import(
         "connector",
         &params.connectors_json,
         params.dry_run.unwrap_or(false),
+        params.on_conflict,
+    )
+    .await
+}
+
+pub async fn export(
+    client: &OrionClient,
+    params: ConnectorsExportParams,
+) -> Result<String, String> {
+    let qs = utils::build_query_string(&[("tag", params.tag)]);
+    let resp: Value = client
+        .get(&format!("{}{qs}", paths::CONNECTORS_EXPORT))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}
+
+pub async fn validate(
+    client: &OrionClient,
+    params: ConnectorsValidateParams,
+) -> Result<String, String> {
+    super::validate_resource(
+        client,
+        paths::CONNECTORS_VALIDATE,
+        "connector",
+        &params.connector_json,
     )
     .await
 }

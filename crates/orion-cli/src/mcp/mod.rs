@@ -288,13 +288,33 @@ impl OrionService {
     }
 
     #[tool(
-        description = "Bulk import channels from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors)."
+        description = "Bulk import channels from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors), and on_conflict to say what an already-stored channel means."
     )]
     async fn channels_import(
         &self,
         Parameters(params): Parameters<tools::channels::ChannelsImportParams>,
     ) -> Result<String, String> {
         tools::channels::import(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Export channels from the server as a JSON array. Optionally filter by status, tag, channel type, or protocol. Useful for backup or GitOps workflows."
+    )]
+    async fn channels_export(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsExportParams>,
+    ) -> Result<String, String> {
+        tools::channels::export(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Validate a channel definition without creating it. Returns {valid, errors, warnings} with field-pathed issues — use before channels_create to catch problems early."
+    )]
+    async fn channels_validate(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsValidateParams>,
+    ) -> Result<String, String> {
+        tools::channels::validate(&self.client, params).await
     }
 
     // ── Connectors ─────────────────────────────────────────────────────
@@ -374,13 +394,33 @@ impl OrionService {
     }
 
     #[tool(
-        description = "Bulk import connectors from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors)."
+        description = "Bulk import connectors from a JSON array. Use dry_run=true to validate on the server without writing (returns imported/unchanged/skipped/failed counts and per-item errors), and on_conflict to say what an already-stored connector means."
     )]
     async fn connectors_import(
         &self,
         Parameters(params): Parameters<tools::connectors::ConnectorsImportParams>,
     ) -> Result<String, String> {
         tools::connectors::import(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Export connectors from the server as a JSON array, optionally filtered by tag. Secrets stay masked in the export, so a re-import needs them supplied again."
+    )]
+    async fn connectors_export(
+        &self,
+        Parameters(params): Parameters<tools::connectors::ConnectorsExportParams>,
+    ) -> Result<String, String> {
+        tools::connectors::export(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Validate a connector definition without creating it. Returns {valid, errors, warnings} — this checks the definition's shape only; use connectors_test to probe a stored connector's target."
+    )]
+    async fn connectors_validate(
+        &self,
+        Parameters(params): Parameters<tools::connectors::ConnectorsValidateParams>,
+    ) -> Result<String, String> {
+        tools::connectors::validate(&self.client, params).await
     }
 
     // ── Circuit Breakers ──────────────────────────────────────────────
@@ -502,6 +542,16 @@ impl OrionService {
         tools::trace_dlq::requeue(&self.client, params).await
     }
 
+    #[tool(
+        description = "Permanently delete exhausted trace DLQ entries older than a cut-off in hours. Irreversible: entries with retries still left are never touched, but everything it does delete is gone with its payload."
+    )]
+    async fn trace_dlq_purge(
+        &self,
+        Parameters(params): Parameters<tools::trace_dlq::DlqPurgeParams>,
+    ) -> Result<String, String> {
+        tools::trace_dlq::purge(&self.client, params).await
+    }
+
     // ── Functions ──────────────────────────────────────────────────────
 
     #[doc = include_str!("tools/descriptions/functions_list.md")]
@@ -513,7 +563,7 @@ impl OrionService {
     // ── Traces ──────────────────────────────────────────────────────────
 
     #[tool(
-        description = "List execution traces. Traces record data processing results including status, duration, input/output, and errors. Supports filtering by status, channel, mode and pagination."
+        description = "List execution traces. Traces record data processing results including status, duration, input/output, and errors. Filter by status, channel or mode; page with limit/offset, or walk large tables with the keyset cursor returned as next_cursor."
     )]
     async fn traces_list(
         &self,

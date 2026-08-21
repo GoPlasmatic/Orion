@@ -24,6 +24,14 @@ pub struct DlqEntryParams {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DlqPurgeParams {
+    #[schemars(
+        description = "Age cut-off in hours (e.g. 168 = one week). Only entries whose retries are already exhausted and that are older than this are deleted."
+    )]
+    pub older_than_hours: i64,
+}
+
 pub async fn list(client: &OrionClient, params: DlqListParams) -> Result<String, String> {
     let qs = utils::build_query_string(&[
         ("channel", params.channel),
@@ -49,6 +57,15 @@ pub async fn get(client: &OrionClient, params: DlqEntryParams) -> Result<String,
 pub async fn requeue(client: &OrionClient, params: DlqEntryParams) -> Result<String, String> {
     let resp: Value = client
         .post_empty(&paths::trace_dlq_requeue(&params.id))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}
+
+pub async fn purge(client: &OrionClient, params: DlqPurgeParams) -> Result<String, String> {
+    let body = serde_json::json!({ "older_than_hours": params.older_than_hours });
+    let resp: Value = client
+        .post(paths::TRACE_DLQ_PURGE, &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

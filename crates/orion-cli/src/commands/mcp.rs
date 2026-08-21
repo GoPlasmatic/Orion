@@ -18,8 +18,10 @@ enum McpCommands {
         long_about = "Start the Model Context Protocol (MCP) server for AI tool integration.\n\n\
             Stdio transport (default): for Claude Desktop, Cursor, and other local AI clients.\n\
             HTTP transport (--http): for remote AI clients over the network.\n\n\
-            The MCP server exposes 46 tools for managing workflows, channels, connectors, \
-            data, traces, engine, metrics, audit logs, and backups.",
+            The MCP server exposes tools for managing workflows, channels, connectors, \
+            data, traces, engine, metrics, audit logs, backups, packages, and the trace \
+            DLQ. Ask the client for its tool list -- the count is whatever this build \
+            registers, not a number repeated here.",
         after_help = "Examples:\n  \
             orion-cli mcp serve --server http://localhost:8080\n  \
             orion-cli mcp serve --http --bind 0.0.0.0:9090\n\n\

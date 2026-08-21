@@ -18,10 +18,20 @@ pub struct TracesListParams {
     pub limit: Option<i64>,
     #[schemars(description = "Number of traces to skip for pagination")]
     pub offset: Option<i64>,
-    #[schemars(description = "Field to sort by (e.g. created_at, duration_ms)")]
+    #[schemars(
+        description = "Field to sort by: created_at (default), updated_at, status, channel, mode"
+    )]
     pub sort_by: Option<String>,
     #[schemars(description = "Sort order: asc or desc")]
     pub sort_order: Option<String>,
+    #[schemars(
+        description = "Keyset cursor from a previous page's next_cursor — pass it back unmodified. Valid only with the default created_at ordering, and mutually exclusive with offset."
+    )]
+    pub cursor: Option<String>,
+    #[schemars(
+        description = "Ask the server to compute `total` for this page. Off by default because it scans the whole filtered set."
+    )]
+    pub include_total: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -43,6 +53,11 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
         ("offset", params.offset.map(|o| o.to_string())),
         ("sort_by", params.sort_by),
         ("sort_order", params.sort_order),
+        ("cursor", params.cursor),
+        (
+            "include_total",
+            params.include_total.and_then(|v| v.then(|| "true".into())),
+        ),
     ]);
     let resp: Value = client
         .get(&format!("{}{qs}", paths::TRACES))

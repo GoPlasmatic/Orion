@@ -35,5 +35,5 @@ note "-> tools/call  data_send_sync(channel=orders, {order_id, total: 25000})"
 printf '%s\n' "$OUT" | sed -n '3p' | jq -r '.result.content[0].text' | jq '.data.order' | sed 's/^/    /'
 sleep 0.8
 
-note "46 tools, one server. Drop the config into your AI client and just ask."
+note "$N tools, one server. Drop the config into your AI client and just ask."
 sleep 0.6

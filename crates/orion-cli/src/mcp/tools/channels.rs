@@ -16,10 +16,36 @@ pub struct ChannelsListParams {
     pub channel_type: Option<String>,
     #[schemars(description = "Filter by protocol: http, rest, or kafka")]
     pub protocol: Option<String>,
-    #[schemars(description = "Maximum number of channels to return")]
+    #[schemars(description = "Filter by tag")]
+    pub tag: Option<String>,
+    #[schemars(description = "Maximum number of channels to return (default 50, max 1000)")]
     pub limit: Option<i64>,
     #[schemars(description = "Number of channels to skip for pagination")]
     pub offset: Option<i64>,
+    #[schemars(
+        description = "Sort by column: priority (default), name, status, channel_type, protocol, created_at, updated_at"
+    )]
+    pub sort_by: Option<String>,
+    #[schemars(description = "Sort direction: asc or desc")]
+    pub sort_order: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChannelsExportParams {
+    #[schemars(description = "Filter by channel status: draft, active, or archived")]
+    pub status: Option<String>,
+    #[schemars(description = "Filter by tag")]
+    pub tag: Option<String>,
+    #[schemars(description = "Filter by channel type: sync or async")]
+    pub channel_type: Option<String>,
+    #[schemars(description = "Filter by protocol: http, rest, or kafka")]
+    pub protocol: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChannelsValidateParams {
+    #[schemars(description = include_str!("descriptions/param_channel_json.md"))]
+    pub channel_json: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -70,6 +96,10 @@ pub struct ChannelsImportParams {
         description = "If true, validate on the server without writing any changes (returns imported/unchanged/skipped/failed counts)"
     )]
     pub dry_run: Option<bool>,
+    #[schemars(
+        description = "What an already-stored conflict means: fail (default, the item is refused), skip, or new_version (update the draft in place, or cut a new draft version over an active channel)"
+    )]
+    pub on_conflict: Option<String>,
 }
 
 pub async fn list(client: &OrionClient, params: ChannelsListParams) -> Result<String, String> {
@@ -77,8 +107,11 @@ pub async fn list(client: &OrionClient, params: ChannelsListParams) -> Result<St
         ("status", params.status),
         ("channel_type", params.channel_type),
         ("protocol", params.protocol),
+        ("tag", params.tag),
         ("limit", params.limit.map(|l| l.to_string())),
         ("offset", params.offset.map(|o| o.to_string())),
+        ("sort_by", params.sort_by),
+        ("sort_order", params.sort_order),
     ]);
     let resp: Value = client
         .get(&format!("{}{qs}", paths::CHANNELS))
@@ -172,6 +205,34 @@ pub async fn import(client: &OrionClient, params: ChannelsImportParams) -> Resul
         "channel",
         &params.channels_json,
         params.dry_run.unwrap_or(false),
+        params.on_conflict,
+    )
+    .await
+}
+
+pub async fn export(client: &OrionClient, params: ChannelsExportParams) -> Result<String, String> {
+    let qs = utils::build_query_string(&[
+        ("status", params.status),
+        ("tag", params.tag),
+        ("channel_type", params.channel_type),
+        ("protocol", params.protocol),
+    ]);
+    let resp: Value = client
+        .get(&format!("{}{qs}", paths::CHANNELS_EXPORT))
+        .await
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}
+
+pub async fn validate(
+    client: &OrionClient,
+    params: ChannelsValidateParams,
+) -> Result<String, String> {
+    super::validate_resource(
+        client,
+        paths::CHANNELS_VALIDATE,
+        "channel",
+        &params.channel_json,
     )
     .await
 }
