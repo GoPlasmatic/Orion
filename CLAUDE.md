@@ -9,7 +9,7 @@ Orion is a declarative services runtime written in Rust. It exposes business log
 This repo is a cargo workspace (monorepo) with four crates: `crates/orion-server` (the runtime — everything below describes it), `crates/orion-cli` (the CLI + MCP server, which has its own `CLAUDE.md`), and two shared library crates. `crates/orion-api` is the wire contract: response DTOs, domain enums, the error envelope + `codes` registry, and the bulk-import report — the server serializes these types, clients deserialize them; the server re-exports them under their pre-1.0 paths (e.g. `crate::errors::FieldError`, `storage::models::EntityStatus`). Its deserialization is tolerant by design (every field defaults, unknown fields ignored) so version skew between server and CLI keeps working; its `utoipa` feature (enabled only by the server) adds the `ToSchema` derives for the OpenAPI document. `crates/orion-client` is the one HTTP transport over that contract — `OrionClient` (auth, envelope unwrap, typed `ClientError`) plus the `paths` module every endpoint path is built from; both `orion-cli` and the server's `package_cli` drive it, and it is the only crate that owns reqwest for API calls. Neither library crate has a release cycle of its own — no tag names them; `crates-publish.yml` publishes them automatically as riders (skip-if-present, dependency order) right before `orion-server`, because crates.io refuses a crate whose dependency it doesn't host. The one rule this imposes: **bump a rider crate's version with any change to it**, or the rider skips and the published binary resolves the older crates.io content. Note that `orion-server` is the *only* binary crate on crates.io: the `orion-cli` name there belongs to an unrelated 2021 crate, so the CLI ships via the dist installers, the Homebrew tap, GHCR and `cargo install --git` instead (see `RELEASING.md`). `default-members` points bare cargo commands at the server; use `--workspace` or `-p orion-cli` to reach the CLI. Only the UI lives in a separate repo (Orion-ui).
 
 - **Rust Edition:** 2024. **MSRV: 1.88** (`rust-version` in Cargo.toml) — driven by let-chains (`if let Some(x) = a && let Some(y) = b`, stabilized in 1.88) and dependency requirements (`mongodb`, `serde_with`, `time`, `tonic`).
-- **Core dependencies:** `dataflow-rs` 3.4 (workflow engine), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 1.0 (portable SQL builder) with `sea-query-sqlx` 0.8 as its sqlx binder (the crate that replaced `sea-query-binder`). sea-query 1.0 moved the comparison operators (`.eq`, `.lte`, `.is_in`, `.like`, …) off `Expr` and onto the `ExprTrait` trait, so a module building predicates needs `use sea_query::ExprTrait;` — and because that trait is blanket-implemented for everything convertible into an `Expr`, it also makes a bare `.max(…)` on an integer ambiguous with `Ord::max` (spell it `Ord::max(a, b)`).
+- **Core dependencies:** `dataflow-rs` 3.5 (workflow engine), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 1.0 (portable SQL builder) with `sea-query-sqlx` 0.8 as its sqlx binder (the crate that replaced `sea-query-binder`). sea-query 1.0 moved the comparison operators (`.eq`, `.lte`, `.is_in`, `.like`, …) off `Expr` and onto the `ExprTrait` trait, so a module building predicates needs `use sea_query::ExprTrait;` — and because that trait is blanket-implemented for everything convertible into an `Expr`, it also makes a bare `.max(…)` on an integer ambiguous with `Ord::max` (spell it `Ord::max(a, b)`).
 - **`datalogic-rs` 5 (JSONLogic) and `datavalue` are reached through `dataflow-rs`**, not pinned directly. dataflow-rs's public API is written in terms of both — `TaskContext::datalogic()` returns `&Arc<datalogic_rs::Engine>`, the whole context/path surface is `datavalue::OwnedDataValue` — so a second pin would let their major versions skew from the ones dataflow-rs links. Add `use dataflow_rs::datalogic_rs;` (or `::datavalue`) to a module that needs them; a bare `datalogic_rs::` path will not resolve, and note that a file-level `use` does **not** reach an inner `#[cfg(test)] mod tests`. Orion cannot enable a datalogic feature directly, but dataflow-rs 3.2 added `all-operators`, which passes through to the `datetime`, `ext-string`, `ext-array`, `ext-math`, `ext-control`, `error-handling` and (since 3.4/5.2) `ext-object` gates — and the server enables it, so those operators *are* available. Orion additionally registers its own custom operators (`src/engine/operators.rs`: base64/base64url/hex encode+decode, `random`, `url_encode`, `url_decode`, `join`) on every engine it builds, via dataflow-rs 3.4's `with_datalogic_operator` builder passthrough. `docs/src/reference/expressions.md#available-operators` is the resulting vocabulary, asserted against the engine by `jsonlogic_operators_test.rs`.
 - **Binaries:** `orion-server` (`crates/orion-server/src/main.rs`) and `orion-cli` (`crates/orion-cli/src/main.rs`)
 
@@ -30,6 +30,18 @@ cargo fmt --all                    # Format code
 
 just e2e                           # End-to-end suite (tests/e2e): CLI against a real orion-server
 ```
+
+**`just check` is the pre-PR gate** — it runs exactly what the CI PR jobs run, in one command:
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace`, `cargo test --doc`, and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib`.
+Note the `--workspace` flags: bare `cargo test`/`cargo clippy` only cover the server
+(`default-members`), so they silently skip `orion-cli` — CI does not. Other recipes:
+`just openapi` (regenerate the committed spec), `just test-containers` (the Docker-gated
+suites), `just workflow-tests`, `just docs` / `just docs-preview` (mdbook site), `just fmt`.
+
+**After changing routes or request/response schemas, regenerate the committed spec** —
+`cargo run -- dump-openapi > docs/openapi.json` (or `just openapi`). `openapi_test.rs`
+fails while it is stale.
 
 Docker: `docker build -t orion .` for the server; `docker build -f crates/orion-cli/Dockerfile -t orion-cli .` for the CLI (both multi-stage from the workspace-root context).
 
@@ -72,6 +84,7 @@ src/
 ├── engine/              # Dataflow engine build/reload, observer, custom function handlers
 │   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read/write/aggregate, publish_kafka, send_email, storage_presign/head, crypto, jwt_sign/verify
 ├── errors.rs            # OrionError enum → HTTP response mapping
+├── jwt/                 # Shared JWT core (verify, sign, JWKS cache) behind three surfaces: `jwt` channel auth, jwt_verify, jwt_sign
 ├── kafka/               # Kafka producer & consumer
 ├── metrics.rs           # Prometheus metrics collection
 ├── query/               # Portable data dialect: IR, lowering, schema; backends sql/mongo/es
@@ -120,7 +133,7 @@ CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → 
 HTTP Request → Axum Router → Data Route Handler
   → Route Resolution (REST pattern match → channel name lookup → fallback)
   → Channel Registry (ingress guards, in order per channel/guards.rs::apply_guards: rate limit, auth, origin, validation, dedup, response cache, backpressure)
-  → Engine (RwLock<Arc<Engine>>)
+  → Engine (Arc<EngineHandle>, an ArcSwap — see Engine hot-reload above)
     → Channel Router (match by channel name)
     → Workflow Matcher (JSONLogic condition evaluation + rollout bucket)
     → Task Pipeline (ordered function execution)
@@ -146,6 +159,12 @@ HTTP Request → Axum Router → Data Route Handler
 
 SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url` scheme. All three migration sets are embedded via `sqlx::migrate!()` and the correct set is chosen at startup based on the detected backend (`DbBackend` enum in `storage/mod.rs`). `DbPool` is an enum wrapping the concrete pool types (`SqlitePool`/`PgPool`/`MySqlPool`) with dispatch helpers for query execution. Tables: `workflows` (composite PK `(workflow_id, version)`), `channels` (composite PK `(channel_id, version)`), `connectors`, `packages` (promotion receipts), `traces`, `trace_dlq`, `audit_logs`; workflows, channels and connectors carry a `tags_json` column. Views: `current_workflows`, `current_channels` (latest version per ID). Triggers enforce single-draft-per-ID and active-immutability constraints. Migrations per backend in `migrations/{sqlite,postgres,mysql}/`.
 
+**Migration rules** (details in `CONTRIBUTING.md#database-migrations`):
+
+- Shipped migration files are **checksum-frozen** — sqlx records a checksum per applied migration, so never edit an existing `NNN_*.sql`. Add a new numbered file to **each** of the three directories.
+- **The three sequences are independent.** Each backend numbers its own directory, so the same number means different things per backend (`004` is `cluster_coordination` on SQLite, `bigint_columns` on PostgreSQL, `active_immutability` on MySQL). **Name migrations rather than number them** in commits, docs and runbooks. `tests/schema_parity.rs` catches a change applied to two backends out of three.
+- Write migrations **expand/contract** style: a rolling deploy briefly runs old and new binaries against one database, so a release may only *add* schema alongside code tolerating both shapes; drop the old shape a release later.
+
 ## Testing
 
 - **Integration tests** in `crates/orion-server/tests/integration/`: one binary — each file is a module declared in `tests/integration/main.rs`. Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
@@ -157,6 +176,32 @@ SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url
 - **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), `tests/metrics_exposition.rs` (isolated for its process-global metrics recorder), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
 - **Benchmarks:** `crates/orion-server/tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
 - **End-to-end:** `tests/e2e/run.sh` at the repo root — shell suites driving a real server with the CLI binary (`just e2e` locally; the `cli-e2e` CI job). Its data-driven cases split by role: scenario cases in `examples/use-cases/` (deploying the example packages, workflows referenced by file), runtime-behaviour cases in `tests/e2e/cases/`. The full suite-by-suite map of the test estate is `TESTING.md`.
+
+## Docs and code are kept in sync by tests
+
+A family of drift guards in the integration binary makes the code authoritative and fails
+the build when a document disagrees with it. They run in the default `cargo test` — so
+these edits are not optional follow-ups, they are part of the change:
+
+| Change | Also update |
+|---|---|
+| A config field or its `Default` | `docs/src/reference/configuration.md` + `config.toml.example` (`config_docs_drift_test`) |
+| A metric name or label key | `docs/src/reference/metrics.md` (`metrics_docs_drift_test`) |
+| A task function or its input schema | `docs/src/reference/functions.md` (`functions_docs_drift_test`) |
+| A route, method or query parameter | the book's `curl` examples + `docs/openapi.json` (`docs_routes_drift_test`, `openapi_test`) |
+| An audit `action` / `resource_type` | `docs/src/operate/audit-logs.md` (`audit_actions_drift_test`) |
+| A `FieldError` code | `orion_api::error::field_codes::ALL` (the closed registry) **and** `docs/src/reference/errors.md` — `field_codes_drift_test` also fails on a registered code nothing emits |
+| A JSONLogic operator | `docs/src/reference/expressions.md` (`jsonlogic_operators_test`) |
+| A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` (`ci_filter_drift_test`) — a module missing from those lines runs *nowhere*, silently |
+
+## Reading the code: item-ID comments
+
+Around 900 comments across `src/` open with a short code — `N10`, `R13`, `F35`, `W8`,
+`S15`, and the `(R26)` referenced above. These are items from the pre-1.0 audits; resolve
+one with `git log --grep=N10` (needs full history — `git fetch --unshallow` on a shallow
+clone). They are a historical record, safe to ignore when reading or writing code, and
+**new comments do not need one**. Two rules: every comment must stand on its own without
+its ID, and when a comment's claim stops being true, correct the comment.
 
 ## Configuration
 
