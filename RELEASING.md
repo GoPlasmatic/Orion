@@ -71,11 +71,17 @@ pipelines, all gated on a successful CI run for the tagged commit (T10):
   fails itself. `latest` is only applied to non-prerelease versions
   (`latest=auto`), so an rc never becomes `latest`. The Helm chart publishes
   after the manifest exists.
-- **`crates-publish.yml`**: runs `cargo publish --locked` to crates.io for
-  the rider crates and `orion-server` (not `orion-cli` — see above). It
-  skips prerelease tags (anything containing `alpha`/`beta`/`rc`/`pre`), so
-  the rc rehearsal does not publish a crate — the real tag is its first
-  execution.
+- **`crates-publish.yml`**: runs `.github/scripts/publish-crates.sh` —
+  `cargo publish --locked` to crates.io for the rider crates and
+  `orion-server` (not `orion-cli` — see above), skipping any version that is
+  already live so the job is safe to re-run. Presence is read from the sparse
+  index (`index.crates.io`), never the crates.io JSON API: the API rate-limits
+  and a 429 read as "not published yet" is what failed the v1.1.0 run. An
+  index that cannot be read stops the release rather than guessing, and
+  cargo's own *"already exists on crates.io index"* is treated as a
+  successful skip. The workflow skips prerelease tags (anything containing
+  `alpha`/`beta`/`rc`/`pre`), so the rc rehearsal does not publish a crate —
+  the real tag is its first execution.
 
 **Required repository secrets** — a missing one fails its pipeline only
 *after* the tag exists, so check both before tagging:

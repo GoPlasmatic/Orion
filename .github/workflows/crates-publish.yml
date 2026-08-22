@@ -81,10 +81,11 @@ jobs:
       # cycle of their own — no tag ever names them. They ride along here:
       # crates.io refuses a crate whose dependency isn't on crates.io, so the
       # server tag that first carries a not-yet-published version publishes it
-      # in passing. Each is skipped when its version already exists, which
-      # makes the step idempotent across repeated tags. `cargo publish` blocks
-      # until the index has the crate, so each subsequent publish can resolve
-      # it immediately. Listed in dependency order: orion-client depends on
+      # in passing. Each is skipped when its version already exists (see
+      # publish-crates.sh for how "already exists" is established), which makes
+      # the step idempotent across repeated tags. `cargo publish` blocks until
+      # the index has the crate, so each subsequent publish can resolve it
+      # immediately. Listed in dependency order: orion-client depends on
       # orion-api. Both are dependencies of orion-server, so they are still
       # required even though the CLI no longer publishes.
       #
@@ -94,36 +95,18 @@ jobs:
       # content while the repo builds against the newer local content.
       - name: Publish rider crates (only unpublished versions)
         if: ${{ steps.pkg.outputs.packages != '' }}
-        run: |
-          for crate in orion-api orion-client; do
-            version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
-            if curl -fsS -A "orion-release (github.com/GoPlasmatic/Orion)" \
-                "https://crates.io/api/v1/crates/${crate}/${version}" > /dev/null; then
-              echo "${crate} ${version} already on crates.io — skipping"
-            else
-              cargo publish --locked -p "${crate}"
-            fi
-          done
+        run: .github/scripts/publish-crates.sh orion-api orion-client
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
-      # Skip-if-present, for the same reason the rider step has it: a re-run of
-      # this job, or a tag re-pushed after a downstream pipeline failed, must
-      # not fail trying to re-publish a version that is already live and
-      # unyankable-in-place. The loop keeps its shape (rather than collapsing
-      # to a single `cargo publish -p orion-server`) so that restoring a second
-      # publishable package later is a one-line change to the `case` above.
+      # Same script, same skip-if-present reasoning as the rider step: a re-run
+      # of this job, or a tag re-pushed after a downstream pipeline failed,
+      # must not fail trying to re-publish a version that is already live and
+      # unyankable-in-place. It takes a list (rather than a bare
+      # `orion-server`) so that restoring a second publishable package later is
+      # a one-line change to the `case` above.
       - name: Publish
         if: ${{ steps.pkg.outputs.packages != '' }}
-        run: |
-          for crate in ${{ steps.pkg.outputs.packages }}; do
-            version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
-            if curl -fsS -A "orion-release (github.com/GoPlasmatic/Orion)" \
-                "https://crates.io/api/v1/crates/${crate}/${version}" > /dev/null; then
-              echo "${crate} ${version} already on crates.io — skipping"
-            else
-              cargo publish --locked -p "${crate}"
-            fi
-          done
+        run: .github/scripts/publish-crates.sh ${{ steps.pkg.outputs.packages }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
