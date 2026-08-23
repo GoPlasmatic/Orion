@@ -89,6 +89,13 @@ enum Command {
     Lint {
         /// Path to a workflow JSON file (matches the CreateWorkflowRequest shape).
         workflow: String,
+        /// Exit non-zero on advisory findings too, not just errors.
+        ///
+        /// Named for `cargo clippy -- -D warnings` rather than `--strict`,
+        /// which would read as a no-op on a command whose whole job is strict
+        /// validation.
+        #[arg(long)]
+        deny_warnings: bool,
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
@@ -106,6 +113,13 @@ enum Command {
         /// Path to a JSON file used as the message payload.
         #[arg(short, long)]
         input: String,
+        /// Path to a JSON file used as the message metadata — `headers`,
+        /// `params`, `query`, `cookies`, `auth.claims`, `channel`, as the HTTP
+        /// ingress would have built them. Header keys are lowercased and
+        /// credential headers masked, so an offline run sees what production
+        /// would.
+        #[arg(short, long)]
+        metadata: Option<String>,
         /// Path to a JSON file of canned connector responses:
         /// `{"http_call": {"crm": {...}}, "db_read": {"*": [...]}}`.
         /// The inner key is the task's `connector` (or `channel` for
@@ -278,13 +292,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             return cli::handle_validate_config(&config, format);
         }
         Some(Command::Migrate { dry_run }) => return cli::handle_migrate(&config, dry_run).await,
-        Some(Command::Lint { workflow }) => return cli::run_lint(&workflow),
+        Some(Command::Lint {
+            workflow,
+            deny_warnings,
+        }) => return cli::run_lint(&workflow, deny_warnings),
         Some(Command::DryRun {
             workflow,
             input,
             stubs,
+            metadata,
         }) => {
-            return cli::run_dry_run(&workflow, &input, stubs.as_deref()).await;
+            return cli::run_dry_run(&workflow, &input, stubs.as_deref(), metadata.as_deref())
+                .await;
         }
         Some(Command::Test { path }) => return cli::run_test(&path).await,
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,

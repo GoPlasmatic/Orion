@@ -19,16 +19,6 @@ use crate::server::state::AppState;
 
 use sync::process_sync_for_channel;
 
-/// Request headers whose values are credentials, masked before the header
-/// map enters workflow metadata (S10). `http::HeaderName` is always
-/// lowercase, so plain slice lookup suffices.
-const CREDENTIAL_HEADERS: [&str; 4] = [
-    "authorization",
-    "cookie",
-    "proxy-authorization",
-    "x-api-key",
-];
-
 pub fn data_routes() -> Router<AppState> {
     // A single catch-all, with no static segments to shadow it. The trace
     // reads used to sit here as `/traces` and `/traces/{id}`; static routes
@@ -482,7 +472,7 @@ fn build_request_metadata(
         .iter()
         .filter_map(|(name, value)| {
             let name = name.as_str();
-            if CREDENTIAL_HEADERS.contains(&name) {
+            if crate::engine::utils::is_credential_header(name) {
                 return Some((name.to_string(), json!(crate::connector::MASK)));
             }
             value.to_str().ok().map(|v| (name.to_string(), json!(v)))

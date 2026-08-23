@@ -306,6 +306,24 @@ fn find(name: &str) -> Option<&'static FunctionSchema> {
     REGISTRY.iter().find(|s| s.name == name)
 }
 
+/// Whether `field` is one this function folds `{"var": ..}` nodes in before
+/// use — i.e. whether the value the handler acts on differs from the value the
+/// author wrote.
+///
+/// The offline call recorder reads this to resolve a task's payload the same
+/// way the real handler will, so a recorded call shows what *would be sent*
+/// rather than what was typed. Driving it off the registry rather than a
+/// per-function list is what makes a new connector function's calls recordable
+/// as soon as it fills in the field table it already has to fill in.
+pub fn is_resolvable_field(function_name: &str, field: &str) -> bool {
+    find(function_name).is_some_and(|schema| {
+        schema
+            .input_fields
+            .iter()
+            .any(|f| f.resolvable && (f.name == field || f.alias == Some(field)))
+    })
+}
+
 /// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
 /// place of a literal of its declared kind. Nodes nested deeper are not checked
 /// here: the declared kind still describes the field's own shape, and the

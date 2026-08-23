@@ -191,7 +191,7 @@ these edits are not optional follow-ups, they are part of the change:
 | A route, method or query parameter | the book's `curl` examples + `docs/openapi.json` (`docs_routes_drift_test`, `openapi_test`) |
 | An audit `action` / `resource_type` | `docs/src/operate/audit-logs.md` (`audit_actions_drift_test`) |
 | A `FieldError` code | `orion_api::error::field_codes::ALL` (the closed registry) **and** `docs/src/reference/errors.md` — `field_codes_drift_test` also fails on a registered code nothing emits |
-| A JSONLogic operator | `docs/src/reference/expressions.md` (`jsonlogic_operators_test`) |
+| A JSONLogic operator | `engine::operators::OPERATOR_NAMES` **and** `docs/src/reference/expressions.md` (`jsonlogic_operators_test` checks both; a name missing from the const is one the unresolvable-logic check waves through) |
 | A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` (`ci_filter_drift_test`) — a module missing from those lines runs *nowhere*, silently |
 
 ## Reading the code: item-ID comments
@@ -215,8 +215,8 @@ orion-server -c config.toml               # Start with config
 orion-server validate-config              # Validate config (--format summary for a short view)
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
-orion-server lint workflow.json           # Strict-validate a workflow JSON file
-orion-server dry-run -w wf.json -i in.json --stubs s.json  # Execute a workflow offline with canned connector replies
+orion-server lint workflow.json           # Strict-validate a workflow JSON file (--deny-warnings to fail on advisories)
+orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # Execute a workflow offline with canned connector replies
 orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks

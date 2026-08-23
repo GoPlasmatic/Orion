@@ -360,6 +360,121 @@ pub fn validate_workflow_id(id: &str) -> Result<(), OrionError> {
     validate_id(id, "workflow.workflow_id")
 }
 
+// ============================================================
+// Advisory: JSONLogic in a field that folds only `{"var": ..}`
+// ============================================================
+
+use serde_json::Value;
+
+/// Warn about JSONLogic nodes in connector-payload fields that nothing will
+/// evaluate.
+///
+/// A `resolvable` field folds `{"var": ..}` nodes and **nothing else** — the
+/// house rule for every connector handler. Any other operator node is a literal
+/// from the handler's point of view: `mongo_write` stores `{"if": […]}` in the
+/// document as a BSON object, a `filter` carrying one matches no rows, and a
+/// stubbed test of either stays green. There is no error at write time and,
+/// until the call log, nothing a test could assert on.
+///
+/// **A warning, never an error, and deliberately so.** The operator vocabulary
+/// includes `length`, `type`, `in`, `keys`, `sort`, `map` and `join`, which are
+/// ordinary field names in ordinary documents; and Orion is a rules engine, so
+/// a document that legitimately *contains* a stored JSONLogic rule is a real
+/// use case rather than a hypothetical. The array-argument test below removes
+/// most of the noise (`{"length": 120}` is data, `{"cat": […]}` is not), but
+/// not all of it — and a hard error would additionally refuse updates to
+/// workflows that have been serving for months. `warn_on_unwritten_reads` is
+/// the same shape for the same kind of reason.
+///
+/// Returns `(field path, message)` pairs — the tuple shape
+/// [`crate::engine::functions::schema::StaticValidator`] already uses, because
+/// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
+pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
+    let Some(tasks) = tasks.as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, task) in tasks.iter().enumerate() {
+        let Some(function) = task.get("function") else {
+            continue;
+        };
+        let (Some(name), Some(input)) = (
+            function.get("name").and_then(Value::as_str),
+            function.get("input").and_then(Value::as_object),
+        ) else {
+            continue;
+        };
+        for (field, value) in input {
+            if !crate::engine::functions::schema::is_resolvable_field(name, field) {
+                continue;
+            }
+            let base = format!("tasks[{i}].function.input.{field}");
+            collect_unresolvable(value, &base, name, &mut out);
+        }
+    }
+    out
+}
+
+/// Walk one authored value, reporting every operator node inside it.
+fn collect_unresolvable(
+    value: &Value,
+    path: &str,
+    function: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1 {
+                let (key, arg) = map.iter().next().expect("len checked");
+                // The one node that *is* folded. Its argument is a path, not an
+                // expression, so there is nothing below it to walk.
+                if key == "var" {
+                    return;
+                }
+                // `val` is the trap this check most wants to catch: a
+                // documented operator, spelled one letter away from the one
+                // that works, that folds to nothing here.
+                if key == "val" {
+                    out.push((
+                        path.to_string(),
+                        format!(
+                            "'{function}' folds {{\"var\": ..}} nodes only, so {{\"val\": ..}} is \
+                             stored verbatim — write {{\"var\": ..}} here"
+                        ),
+                    ));
+                    return;
+                }
+                // Every multi-argument operator takes an array. Requiring one
+                // is what keeps `{"length": 120}` — a plain data field — out of
+                // the report.
+                if arg.is_array()
+                    && crate::engine::operators::OPERATOR_NAMES.contains(&key.as_str())
+                {
+                    out.push((
+                        path.to_string(),
+                        format!(
+                            "'{function}' folds {{\"var\": ..}} nodes only, so the '{key}' \
+                             expression here is never evaluated — it is written through as a \
+                             literal object. Compute it in a 'map' task first and reference the \
+                             result with {{\"var\": ..}}."
+                        ),
+                    ));
+                    return;
+                }
+            }
+            for (key, child) in map {
+                collect_unresolvable(child, &format!("{path}.{key}"), function, out);
+            }
+        }
+        Value::Array(items) => {
+            for (i, child) in items.iter().enumerate() {
+                collect_unresolvable(child, &format!("{path}[{i}]"), function, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +572,97 @@ mod tests {
             continue_on_error: None,
         };
         assert!(validate_update_workflow(&req, 10_000).is_err());
+    }
+
+    /// Build a one-task workflow's `tasks` array around a `mongo_write` input.
+    fn mongo_write_tasks(input: serde_json::Value) -> serde_json::Value {
+        serde_json::json!([{
+            "id": "w", "name": "Write",
+            "function": {"name": "mongo_write", "input": input}
+        }])
+    }
+
+    /// The bug the check exists for: an expression in a resolvable field is
+    /// stored as a literal BSON object, with no error at write time.
+    #[test]
+    fn an_expression_in_a_resolvable_field_is_reported() {
+        let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
+            "connector": "db", "database": "app", "collection": "sessions",
+            "op": "update_one",
+            "filter": {"_id": {"var": "data.id"}},
+            "update": {"$set": {"expiresAt": {"cat": ["2026-", {"var": "data.month"}]}}}
+        })));
+        assert_eq!(warnings.len(), 1, "one finding: {warnings:?}");
+        assert_eq!(
+            warnings[0].0, "tasks[0].function.input.update.$set.expiresAt",
+            "the path must point at the node, not the field"
+        );
+        assert!(warnings[0].1.contains("'cat'"), "{}", warnings[0].1);
+    }
+
+    /// `val` is a documented operator one letter from the one that works, and
+    /// folds to nothing here — so it gets its own message naming the fix.
+    #[test]
+    fn a_val_node_is_reported_with_the_var_spelling() {
+        let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
+            "connector": "db", "database": "app", "collection": "s",
+            "op": "insert_one",
+            "document": {"id": {"val": "data.id"}}
+        })));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].1.contains("{\"var\": ..}"),
+            "the message must name the spelling that works: {}",
+            warnings[0].1
+        );
+    }
+
+    /// Nested inside an extended-JSON wrapper, which is where this bug is most
+    /// often written: `{"$date": {"now": []}}` looks like it computes a time.
+    #[test]
+    fn an_expression_nested_under_extended_json_is_reported() {
+        let warnings = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
+            "connector": "db", "database": "app", "collection": "s",
+            "op": "insert_one",
+            "document": {"createdAt": {"$date": {"now": []}}}
+        })));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].0.ends_with("document.createdAt.$date"),
+            "path: {}",
+            warnings[0].0
+        );
+    }
+
+    /// The false positives that make this a warning rather than an error must
+    /// at least not be *reported*. Operator names overlap real field names, and
+    /// BSON operators are not JSONLogic at all.
+    #[test]
+    fn data_that_merely_looks_like_an_operator_is_not_reported() {
+        let clean = unresolvable_logic_warnings(&mongo_write_tasks(serde_json::json!({
+            "connector": "db", "database": "app", "collection": "s",
+            "op": "update_one",
+            // `$set`/`$and`/`$lt` are BSON, `{"var": ..}` is folded, and
+            // `{"length": 120}` is a plain field whose argument is not an array.
+            "filter": {"$and": [{"_id": {"var": "data.id"}}, {"n": {"$lt": 5}}]},
+            "update": {"$set": {"video": {"length": 120}, "type": "clip"}}
+        })));
+        assert!(clean.is_empty(), "no findings expected, got {clean:?}");
+    }
+
+    /// A non-resolvable field is not scanned: the handler never folds it, so
+    /// whatever it holds is a literal by design.
+    #[test]
+    fn a_non_resolvable_field_is_not_scanned() {
+        let clean = unresolvable_logic_warnings(&serde_json::json!([{
+            "id": "q", "name": "Query",
+            "function": {"name": "db_read", "input": {
+                "connector": "orders",
+                // `sql` is literal text, not a resolvable field.
+                "sql": "SELECT 1 WHERE cat = 'if'"
+            }}
+        }]));
+        assert!(clean.is_empty(), "got {clean:?}");
     }
 
     #[test]

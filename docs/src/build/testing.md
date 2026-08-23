@@ -21,6 +21,20 @@ orion-server lint workflow.json
 function names, and each connector function's `input` schema. It exits non-zero
 on any finding, which is all a pull-request gate needs.
 
+It also prints **advisory warnings** on stderr without failing — today, one:
+JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the
+expression is stored or sent verbatim. `--deny-warnings` turns those into a
+failure for a gate that wants them to block:
+
+```bash
+orion-server lint workflow.json --deny-warnings
+```
+
+It stays advisory by default because operator names (`length`, `type`, `keys`,
+`in`) are ordinary field names, and a document that legitimately holds a stored
+rule is a real payload. `POST /api/v1/admin/workflows/validate` reports the same
+findings in its `warnings` array.
+
 Every `orion-server` subcommand run without `-c` prints
 `Note: no config file specified…` on **stderr**. It is not a finding; redirect
 it or pass a config file.
@@ -32,7 +46,9 @@ orion-server dry-run -w workflow.json -i payload.json
 ```
 
 `-i` takes the **bare payload** — not the `{"data": …}` envelope the HTTP API
-uses. The command prints one JSON document on stdout, so `jq` can read it:
+uses. `--metadata` takes a second file holding the request metadata the HTTP
+ingress would have built — see [Supply request metadata](#supply-request-metadata).
+The command prints one JSON document on stdout, so `jq` can read it:
 
 | Field | Holds |
 |---|---|
@@ -111,11 +127,131 @@ workflows and fixtures beside them:
 | `input` | The bare payload |
 | `stubs` | Inline connector stubs, same shape as the stub file |
 | `stubs_file` | A stub file path instead, also relative to the case file |
-| `expect` | Dotted output paths mapped to expected values; a leading `data.` is optional |
+| `metadata` | The request metadata, as the HTTP ingress would have built it |
+| `expect` | **Rooted** dotted paths mapped to expected values |
 | `expect_errors` | Expected task-error codes. **Defaults to empty** |
+| `expect_calls` | Expected connector calls per function, in order |
+| `expect_tasks` | The ids of the tasks that ran, in order. Unchecked when omitted |
 
 `expect_errors` defaulting to empty is the load-bearing default: a workflow that
-starts failing its tasks cannot pass silently.
+starts failing its tasks cannot pass silently. `expect_tasks` cannot work that
+way — every workflow runs tasks — so omitting it means unchecked.
+
+## Every `expect` path names its root
+
+```json
+"expect": {
+  "data.order.flagged": true,
+  "metadata.progress.status_code": 200,
+  "temp_data.user_id": "u-1",
+  "calls.mongo_write[0].input.collection": "sessions",
+  "audit_trail[1].task_id": "persist"
+}
+```
+
+| Root | Reads |
+|---|---|
+| `data.` | The data document |
+| `metadata.` | The metadata document — request context, and whatever the workflow wrote there |
+| `temp_data.` | The scratch document tasks pass values through |
+| `calls.` | The connector calls the run made, grouped by function (below) |
+| `audit_trail.` | One entry per executed task: `task_id`, `status`, `changes` |
+
+Array positions work either way: `calls.mongo_write[0]` and
+`calls.mongo_write.0` are the same path. An expected `null` matches an absent
+path as well as an explicit one, because JSONLogic resolves a missing `var` to
+null and that is already what the workflow sees.
+
+> [!IMPORTANT]
+> **The root is required** (changed in 1.2.0). A leading `data.` used to be
+> optional, so `metadata.foo` silently read the data document's own `metadata`
+> key, came back absent, and — since an expected `null` matches absent — could
+> *pass*. Every other path in Orion already spells its root; this is the case
+> file catching up. To migrate a suite:
+>
+> ```bash
+> jq '.expect |= with_entries(
+>       if (.key | test("^(data|metadata|temp_data|calls|audit_trail)([.\\[]|$)"))
+>       then . else .key |= "data." + . end)' \
+>   -S case.json
+> ```
+>
+> A path that names no root fails the case before the workflow runs, and the
+> error suggests the `data.` form.
+
+## Assert on what a workflow writes
+
+A stub answers a connector call, so nothing downstream sees what the task
+*tried* to send. The run records it instead: every connector-backed call, with
+its payload resolved the way the real handler resolves it.
+
+```json
+"expect_calls": {
+  "mongo_write": [
+    { "collection": "sessions",
+      "update": { "$set": { "generation": 2, "revokedAt": null } } }
+  ],
+  "publish_kafka": []
+}
+```
+
+- Entries match **positionally**, in execution order, as a **deep subset** —
+  name the fields you care about and ignore the rest.
+- The number of entries must equal the number of recorded calls for that
+  function, so an unexpected extra write fails. `"publish_kafka": []` asserts
+  nothing was published.
+- Only the functions named are constrained.
+- **Presence is strict here**, unlike `expect`: `"revokedAt": null` asserts the
+  field was *written as null*, not that it is absent. A recorded payload is a
+  literal document, so whether a field was written is the assertion.
+
+`crypto`, `jwt_sign` and `jwt_verify` are not recorded — they execute for real
+offline rather than through a stub, and their inputs can carry key material.
+
+> [!TIP]
+> This is what catches JSONLogic in a write payload. A connector field folds
+> `{"var": …}` nodes and **nothing else**, so `{"if": […]}` in a `document` is
+> stored as a literal BSON object. The recorded call shows the object, so
+> `expect_calls` fails where a stubbed run used to pass. `orion-server lint`
+> warns about the same thing statically.
+
+## Supply request metadata
+
+A workflow that branches on `metadata.headers`, reads `metadata.auth.claims`, or
+uses `metadata.params` needs that context to be testable at all:
+
+```json
+{
+  "name": "login: mobile device with a registered handset",
+  "workflow": "auth-login.json",
+  "metadata": {
+    "headers": { "deviceid": "device-abc" },
+    "auth":    { "claims": { "sub": "asha@example.com" } },
+    "params":  { "id": "42" },
+    "query":   { "page": "2" }
+  },
+  "input":  { "emailId": "asha@example.com" },
+  "expect": { "data.mode": "device" }
+}
+```
+
+The block is normalized the way the ingress builds one, so an offline pass means
+a production pass:
+
+- **Header keys are lowercased** — HTTP header names arrive lowercase, so
+  `"DeviceId"` would match offline and miss in production.
+- **Credential headers are masked** — `authorization`, `cookie`,
+  `proxy-authorization` and `x-api-key` read back as `******`, exactly as they
+  do in a served request.
+- **`_orion_errors` is cleared**; it is engine-owned.
+
+Any key is accepted, since the HTTP envelope merges caller-supplied metadata.
+The reserved ones are shape-checked: `headers`/`params`/`query`/`cookies` must
+be objects of strings, `channel`/`http_method` strings, and `auth` may carry
+only `claims` — the request path builds `auth` as `{"claims": …}` and nothing
+else reaches a workflow.
+
+`dry-run --metadata <file>` takes the same object.
 
 ```bash
 orion-server test ./workflow-tests
@@ -153,7 +289,7 @@ actually run with.
 ```yaml
 - name: Validate workflows
   run: |
-    for f in workflows/*.json; do orion-server lint "$f"; done
+    for f in workflows/*.json; do orion-server lint "$f" --deny-warnings; done
     orion-server test ./workflow-tests
 ```
 

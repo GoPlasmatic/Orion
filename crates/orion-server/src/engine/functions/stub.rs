@@ -52,6 +52,167 @@ const ANY_TARGET: &str = "*";
 /// Parsed stub file: `function -> target -> response`.
 pub type StubTable = HashMap<String, HashMap<String, Value>>;
 
+/// The three functions that execute for real offline rather than through a
+/// stub, and are therefore not recorded in the [`CallLog`].
+///
+/// They are deterministic and make no egress, so stubbing them would only hide
+/// behaviour — and their inputs can carry inline key material and passwords,
+/// which a recorded payload has no business holding. The boundary this draws is
+/// also the honest description of the log: it records the calls that *would
+/// have left the process*.
+pub const UNSTUBBED_FUNCTIONS: [&str; 3] = ["crypto", "jwt_sign", "jwt_verify"];
+
+/// Whether an offline run records calls to this function.
+pub fn is_recorded_function(function: &str) -> bool {
+    crate::engine::CUSTOM_HANDLER_FUNCTIONS.contains(&function)
+        && !UNSTUBBED_FUNCTIONS.contains(&function)
+}
+
+/// One connector call a stubbed run would have made.
+///
+/// `input` is the task's authored input with every field the real handler folds
+/// `{"var": ..}` nodes in (per the schema registry's `resolvable` flag) already
+/// resolved — so it is what *would be sent*, not what was typed. That is the
+/// whole point: a `mongo_write` whose `document` carries an unresolvable
+/// JSONLogic node shows the node here, where an assertion can see it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RecordedCall {
+    /// Position in the run, across all functions.
+    pub seq: usize,
+    /// The task that made the call. Correlated from the execution trace after
+    /// the run — `TaskContext` does not carry it — so it is `None` when the
+    /// correlation cannot be made confidently.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    pub function: &'static str,
+    /// The key that matched in the stub table: the task's `connector`, or its
+    /// `channel` for `channel_call`.
+    ///
+    /// Spelled `stub_target` rather than `target` because `target` is already a
+    /// `data_write` input field naming the entity written to — a recorded
+    /// `data_write` would otherwise carry `target` twice, at two depths, with
+    /// two meanings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stub_target: Option<String>,
+    pub input: Value,
+}
+
+/// The calls a stubbed run made, in order.
+///
+/// Shared by every stub handler through an `Arc`. A `std::sync::Mutex` rather
+/// than a `tokio` one: nothing awaits while the lock is held, and the handlers
+/// need it from a `&self` async method.
+#[derive(Debug, Default)]
+pub struct CallLog(std::sync::Mutex<Vec<RecordedCall>>);
+
+impl CallLog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn record(&self, function: &'static str, stub_target: Option<String>, input: Value) {
+        let mut calls = self.0.lock().expect("call log mutex poisoned");
+        let seq = calls.len();
+        calls.push(RecordedCall {
+            seq,
+            task_id: None,
+            function,
+            stub_target,
+            input,
+        });
+    }
+
+    /// Every recorded call, in execution order.
+    pub fn calls(&self) -> Vec<RecordedCall> {
+        self.0.lock().expect("call log mutex poisoned").clone()
+    }
+
+    /// Attach task ids by walking the executed steps of `trace` in step order
+    /// and pairing each recorded-function task with the next recorded call.
+    ///
+    /// `task_functions` maps a task id to the function it names, which only the
+    /// caller (holding the workflow JSON) can build.
+    ///
+    /// Best-effort by construction: if the run died partway and the two
+    /// sequences no longer line up, the surplus calls keep `task_id: None`
+    /// rather than being given a wrong one. A missing label is a gap; a wrong
+    /// one is a lie.
+    pub fn correlate(
+        &self,
+        trace: &dataflow_rs::ExecutionTrace,
+        task_functions: &HashMap<String, String>,
+    ) {
+        let mut calls = self.0.lock().expect("call log mutex poisoned");
+        let mut next = 0usize;
+        for step in &trace.steps {
+            if !matches!(step.result, dataflow_rs::StepResult::Executed) {
+                continue;
+            }
+            let Some(task_id) = step.task_id.as_deref() else {
+                continue;
+            };
+            let Some(function) = task_functions.get(task_id) else {
+                continue;
+            };
+            if !is_recorded_function(function) {
+                continue;
+            }
+            let Some(call) = calls.get_mut(next) else {
+                break;
+            };
+            // A desync means the pairing is no longer trustworthy for anything
+            // after it either, so stop rather than mislabel the rest.
+            if call.function != function {
+                break;
+            }
+            call.task_id = Some(task_id.to_string());
+            next += 1;
+        }
+    }
+
+    /// The log grouped by function name, in execution order within each group —
+    /// the shape a case's `calls.<function>[i]` path and its `expect_calls`
+    /// block both read.
+    pub fn grouped(&self) -> serde_json::Map<String, Value> {
+        let mut grouped: serde_json::Map<String, Value> = serde_json::Map::new();
+        for call in self.0.lock().expect("call log mutex poisoned").iter() {
+            let entry = grouped
+                .entry(call.function.to_string())
+                .or_insert_with(|| Value::Array(Vec::new()));
+            if let Some(list) = entry.as_array_mut()
+                && let Ok(value) = serde_json::to_value(call)
+            {
+                list.push(value);
+            }
+        }
+        grouped
+    }
+}
+
+/// A task's authored input with its resolvable fields folded against the
+/// message, per the schema registry.
+///
+/// Non-resolvable fields (`connector`, `database`, `op`, an output path) are
+/// left exactly as authored, because that is what the real handler reads.
+fn resolved_input(function: &str, input: &Value, ctx: &TaskContext<'_>) -> Value {
+    let Some(obj) = input.as_object() else {
+        return input.clone();
+    };
+    Value::Object(
+        obj.iter()
+            .map(|(key, value)| {
+                let value = if crate::engine::functions::schema::is_resolvable_field(function, key)
+                {
+                    super::connector_helpers::resolve_value(value, ctx)
+                } else {
+                    value.clone()
+                };
+                (key.clone(), value)
+            })
+            .collect(),
+    )
+}
+
 /// Parse a stub file, rejecting shapes that would silently stub nothing.
 ///
 /// A stub file is written by hand under time pressure, and the two easy
@@ -146,6 +307,7 @@ pub struct StubHandler {
     /// The function this instance is registered under, for error messages.
     pub function: &'static str,
     pub stubs: Arc<StubTable>,
+    pub log: Arc<CallLog>,
 }
 
 impl StubHandler {
@@ -185,6 +347,14 @@ impl AsyncFunctionHandler for StubHandler {
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
         let target = input.get("connector").and_then(Value::as_str);
+        // Recorded before the stub is resolved, so a call that fails for want
+        // of a stub still appears in the log — that is the run you most want to
+        // see the payload of.
+        self.log.record(
+            self.function,
+            target.map(str::to_string),
+            resolved_input(self.function, input, ctx),
+        );
         let response = resolve(&self.stubs, self.function, target)?.clone();
         if let Some(path) = self.output_path(input) {
             apply_output(ctx, &path, response);
@@ -197,6 +367,7 @@ impl AsyncFunctionHandler for StubHandler {
 /// destination field is `response_path` (with `output` as an accepted alias).
 pub struct HttpCallStub {
     pub stubs: Arc<StubTable>,
+    pub log: Arc<CallLog>,
 }
 
 #[async_trait]
@@ -208,6 +379,18 @@ impl AsyncFunctionHandler for HttpCallStub {
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // Upstream's own resolvers, so the record carries the real templated
+        // path and body rather than an Orion-side approximation of them.
+        self.log.record(
+            "http_call",
+            Some(input.connector.clone()),
+            serde_json::json!({
+                "connector": input.connector,
+                "method": input.method.as_str(),
+                "path": input.resolve_path(ctx)?,
+                "body": input.resolve_body(ctx)?,
+            }),
+        );
         let response = resolve(&self.stubs, "http_call", Some(&input.connector))?.clone();
         if let Some(ref path) = input.response_path {
             apply_output(ctx, path, response);
@@ -220,6 +403,7 @@ impl AsyncFunctionHandler for HttpCallStub {
 /// job is to let the task succeed without a broker.
 pub struct PublishKafkaStub {
     pub stubs: Arc<StubTable>,
+    pub log: Arc<CallLog>,
 }
 
 #[async_trait]
@@ -228,9 +412,19 @@ impl AsyncFunctionHandler for PublishKafkaStub {
 
     async fn execute(
         &self,
-        _ctx: &mut TaskContext<'_>,
+        ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        self.log.record(
+            "publish_kafka",
+            Some(input.connector.clone()),
+            serde_json::json!({
+                "connector": input.connector,
+                "topic": input.topic,
+                "key": input.resolve_key(ctx)?,
+                "value": input.resolve_value(ctx)?,
+            }),
+        );
         resolve(&self.stubs, "publish_kafka", Some(&input.connector))?;
         Ok(TaskOutcome::Success)
     }
@@ -250,11 +444,29 @@ impl AsyncFunctionHandler for PublishKafkaStub {
 /// does, rather than accepting it and stubbing past the mistake.
 pub struct ChannelCallStub {
     pub stubs: Arc<StubTable>,
+    pub log: Arc<CallLog>,
 }
 
 #[async_trait]
 impl AsyncFunctionHandler for ChannelCallStub {
     type Input = super::channel_call::ChannelCallInput;
+
+    /// The same two templates the real handler compiles
+    /// (`ChannelCallHandler::compile_input`). Without this the stub holds
+    /// uncompiled `Template`s, and reading one to record the call is an
+    /// "eval before compile" error rather than the payload.
+    fn compile_input(
+        input: &mut Self::Input,
+        c: &dataflow_rs::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        if let Some(t) = input.channel_logic.as_mut() {
+            t.compile(c, "channel_call.channel_logic")?;
+        }
+        if let Some(t) = input.data_logic.as_mut() {
+            t.compile(c, "channel_call.data_logic")?;
+        }
+        Ok(())
+    }
 
     async fn execute(
         &self,
@@ -264,6 +476,17 @@ impl AsyncFunctionHandler for ChannelCallStub {
         // `channel_logic` computes the target per message and is not resolvable
         // without running it, so a dynamic call falls back to the `"*"` entry.
         let target = (!input.channel.is_empty()).then_some(input.channel.as_str());
+        self.log.record(
+            "channel_call",
+            target.map(str::to_string),
+            serde_json::json!({
+                "channel": target,
+                "data": match input.data_logic {
+                    Some(ref logic) => Some(logic.eval_into::<Value>(ctx)?),
+                    None => input.data.clone(),
+                },
+            }),
+        );
         let response = resolve(&self.stubs, "channel_call", target)?.clone();
         if let Some(ref path) = input.output {
             apply_output(ctx, path, response);
@@ -282,6 +505,17 @@ impl AsyncFunctionHandler for ChannelCallStub {
 pub fn build_stub_functions(
     stubs: StubTable,
 ) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
+    build_stub_functions_with_log(stubs, Arc::new(CallLog::new()))
+}
+
+/// [`build_stub_functions`] writing every call it answers into `log`.
+///
+/// The two exist separately so a caller that does not read the log — anything
+/// but the `test` runner and `dry-run` — does not have to construct one.
+pub fn build_stub_functions_with_log(
+    stubs: StubTable,
+    log: Arc<CallLog>,
+) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
     let stubs = Arc::new(stubs);
     let mut out: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
@@ -289,12 +523,15 @@ pub fn build_stub_functions(
         let handler: dataflow_rs::BoxedFunctionHandler = match function {
             "http_call" => Box::new(HttpCallStub {
                 stubs: stubs.clone(),
+                log: log.clone(),
             }),
             "publish_kafka" => Box::new(PublishKafkaStub {
                 stubs: stubs.clone(),
+                log: log.clone(),
             }),
             "channel_call" => Box::new(ChannelCallStub {
                 stubs: stubs.clone(),
+                log: log.clone(),
             }),
             // Deterministic and offline — dry-run executes it for real, so a
             // stub would only hide behavior. (An env:// key still resolves
@@ -309,6 +546,7 @@ pub fn build_stub_functions(
             _ => Box::new(StubHandler {
                 function,
                 stubs: stubs.clone(),
+                log: log.clone(),
             }),
         };
         out.insert(function.to_string(), handler);
@@ -367,6 +605,7 @@ mod tests {
         let stub = |function| StubHandler {
             function,
             stubs: Arc::new(StubTable::new()),
+            log: Arc::new(CallLog::new()),
         };
 
         let read = stub("db_read");
@@ -403,6 +642,114 @@ mod tests {
 
         // The one generic-stubbed function whose real handler writes nothing.
         assert_eq!(stub("cache_write").output_path(&json!({})), None);
+    }
+
+    /// The recorded payload must be what *would be sent*, not what was typed —
+    /// otherwise the log asserts the workflow file back at you.
+    #[tokio::test]
+    async fn a_recorded_call_carries_the_resolved_payload() {
+        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+            "id": "w", "name": "w", "condition": true,
+            "tasks": [{
+                "id": "persist", "name": "Persist",
+                "function": {"name": "mongo_write", "input": {
+                    "connector": "sessions-db", "database": "app",
+                    "collection": "sessions", "op": "update_one",
+                    "filter": {"_id": {"var": "data.sid"}},
+                    // Not folded — only `{"var": ..}` is. Recording it verbatim
+                    // is exactly what makes the bug assertable.
+                    "update": {"$set": {"generation": {"if": [true, 2, 1]}}}
+                }}
+            }]
+        }))
+        .expect("workflow parses");
+
+        let mut stubs = StubTable::new();
+        stubs.insert(
+            "mongo_write".to_string(),
+            [("sessions-db".to_string(), json!({"modified": 1}))]
+                .into_iter()
+                .collect(),
+        );
+
+        let log = Arc::new(CallLog::new());
+        let engine = dataflow_rs::Engine::new(
+            vec![workflow],
+            build_stub_functions_with_log(stubs, log.clone()),
+        )
+        .expect("engine builds");
+        // Seed `data` directly: a case's `input` is the *payload*, and a real
+        // workflow copies it into `data` with a first `parse_json`/`map` task.
+        // This test is about the recorder, not that copy.
+        let mut message = dataflow_rs::Message::builder()
+            .payload_json(&json!({"sid": "sess-1"}))
+            .data_json(&json!({"sid": "sess-1"}))
+            .build();
+        engine.process_message(&mut message).await.expect("runs");
+
+        let calls = log.calls();
+        assert_eq!(calls.len(), 1, "one write, one record");
+        assert_eq!(calls[0].function, "mongo_write");
+        assert_eq!(calls[0].stub_target.as_deref(), Some("sessions-db"));
+        assert_eq!(
+            calls[0].input["filter"]["_id"], "sess-1",
+            "a resolvable field is folded against the message"
+        );
+        assert_eq!(
+            calls[0].input["collection"], "sessions",
+            "a literal field is left as authored"
+        );
+        assert_eq!(
+            calls[0].input["update"]["$set"]["generation"],
+            json!({"if": [true, 2, 1]}),
+            "an unresolvable JSONLogic node is recorded verbatim — which is how \
+             a case sees that Mongo would have stored the object, not the number"
+        );
+    }
+
+    /// A call that fails for want of a stub is the run you most want the
+    /// payload of, so recording happens before the lookup.
+    #[tokio::test]
+    async fn an_unstubbed_call_is_still_recorded() {
+        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+            "id": "w", "name": "w", "condition": true,
+            "tasks": [{
+                "id": "read", "name": "Read",
+                "function": {"name": "db_read", "input": {
+                    "connector": "orders", "sql": "SELECT 1"}}
+            }]
+        }))
+        .expect("workflow parses");
+
+        let log = Arc::new(CallLog::new());
+        let engine = dataflow_rs::Engine::new(
+            vec![workflow],
+            build_stub_functions_with_log(StubTable::new(), log.clone()),
+        )
+        .expect("engine builds");
+        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let _ = engine.process_message(&mut message).await;
+
+        let calls = log.calls();
+        assert_eq!(calls.len(), 1, "the call is recorded even with no stub");
+        assert_eq!(calls[0].input["sql"], "SELECT 1");
+    }
+
+    /// Their inputs can carry inline key material, and they run for real rather
+    /// than through a stub — so they are outside what the log describes.
+    #[test]
+    fn the_unstubbed_functions_are_not_recorded() {
+        for function in UNSTUBBED_FUNCTIONS {
+            assert!(
+                !is_recorded_function(function),
+                "{function} must stay out of the call log"
+            );
+        }
+        assert!(is_recorded_function("mongo_write"));
+        assert!(
+            !is_recorded_function("map"),
+            "a dataflow-rs built-in is not a connector call"
+        );
     }
 
     /// A stub whose `Input` type does not match the real handler's fails the

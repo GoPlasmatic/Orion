@@ -112,6 +112,151 @@ pub fn rollout_bucket_for_identity(identity: Option<&str>) -> u8 {
     }
 }
 
+/// Request headers whose value is a credential, and whose value therefore
+/// enters message metadata masked rather than verbatim (S10).
+///
+/// The metadata map is persisted into `traces.result_json` on the async path
+/// and `trace_dlq.metadata_json` on the failure path, so a plaintext value
+/// here is a plaintext credential at rest. The key survives so logic can still
+/// test presence; the value is never recoverable downstream.
+///
+/// Shared by the HTTP ingress (`server::routes::data::build_request_metadata`)
+/// and the offline metadata builder below, so the two cannot disagree about
+/// which headers are credentials — a disagreement that would let an offline
+/// case pass while reading a value production masks.
+pub const CREDENTIAL_HEADERS: [&str; 4] = [
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+];
+
+/// Whether this header name's value is masked on its way into metadata.
+pub fn is_credential_header(name: &str) -> bool {
+    CREDENTIAL_HEADERS.contains(&name)
+}
+
+/// The reserved metadata keys whose shape the offline builder checks, and the
+/// shape each one must have.
+///
+/// Only these are constrained. Everything else is passed through: the HTTP
+/// envelope merges arbitrary caller-supplied `metadata`, so a closed key set
+/// would make an offline case unable to test a workflow that reads a custom
+/// key — the same gap this whole surface exists to close.
+const STRING_MAP_KEYS: [&str; 4] = ["headers", "params", "query", "cookies"];
+
+/// Build the message metadata for an offline run (`orion-server test` cases and
+/// `dry-run --metadata`) from a case-supplied object.
+///
+/// The point of the normalization is that an offline pass must mean the same
+/// thing as a production pass. Three things the HTTP ingress does are therefore
+/// done here too:
+///
+/// * **Header keys are lowercased.** `axum` yields lowercase header names, so a
+///   case writing `"DeviceId"` would match offline and miss in production.
+/// * **Credential headers are masked**, per [`CREDENTIAL_HEADERS`] — a workflow
+///   reading a raw bearer token out of `metadata.headers` is already broken in
+///   production and must fail offline too.
+/// * **`_orion_errors` is cleared**, because it is engine-owned and the ingress
+///   clears it unconditionally.
+///
+/// Returns a human-readable error for a shape the ingress could never produce:
+/// a non-object root, a `headers`/`params`/`query`/`cookies` that is not an
+/// object of strings, a non-string `channel`/`http_method`, or an `auth`
+/// carrying anything but `claims` (the ingress replaces `auth` wholesale with
+/// `{"claims": …}`, so nothing else is reachable at runtime).
+pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
+    let mut metadata = match metadata {
+        Value::Null => return Ok(serde_json::json!({})),
+        Value::Object(_) => metadata,
+        other => {
+            return Err(format!(
+                "'metadata' must be a JSON object, got {}",
+                json_kind(&other)
+            ));
+        }
+    };
+
+    for key in STRING_MAP_KEYS {
+        let Some(value) = metadata.get(key) else {
+            continue;
+        };
+        let Some(map) = value.as_object() else {
+            return Err(format!(
+                "'metadata.{key}' must be an object of strings, got {}",
+                json_kind(value)
+            ));
+        };
+        if let Some((name, bad)) = map.iter().find(|(_, v)| !v.is_string()) {
+            return Err(format!(
+                "'metadata.{key}.{name}' must be a string, got {}",
+                json_kind(bad)
+            ));
+        }
+    }
+
+    for key in ["channel", "http_method"] {
+        if let Some(value) = metadata.get(key)
+            && !value.is_string()
+        {
+            return Err(format!(
+                "'metadata.{key}' must be a string, got {}",
+                json_kind(value)
+            ));
+        }
+    }
+
+    if let Some(auth) = metadata.get("auth") {
+        let Some(map) = auth.as_object() else {
+            return Err(format!(
+                "'metadata.auth' must be an object, got {}",
+                json_kind(auth)
+            ));
+        };
+        // The ingress builds `auth` with `guards::merge_auth_claims`, which
+        // *replaces* the key with `{"claims": …}`. A case setting anything else
+        // would be asserting on state no request can produce.
+        if let Some(unknown) = map.keys().find(|k| k.as_str() != "claims") {
+            return Err(format!(
+                "'metadata.auth.{unknown}' is not settable — the request path builds \
+                 'auth' as {{\"claims\": …}} and nothing else reaches a workflow"
+            ));
+        }
+    }
+
+    crate::engine::clear_error_context(&mut metadata);
+
+    if let Some(headers) = metadata.get("headers").and_then(Value::as_object) {
+        let normalized: serde_json::Map<String, Value> = headers
+            .iter()
+            .map(|(name, value)| {
+                let name = name.to_ascii_lowercase();
+                let value = if is_credential_header(&name) {
+                    Value::String(crate::connector::MASK.to_string())
+                } else {
+                    value.clone()
+                };
+                (name, value)
+            })
+            .collect();
+        metadata["headers"] = Value::Object(normalized);
+    }
+
+    Ok(metadata)
+}
+
+/// JSON type name for a validation message.
+fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +369,89 @@ mod tests {
             !serialized.contains("_rollout_bucket") && !serialized.contains("routing_bucket"),
             "the bucket must not reach the persisted message: {serialized}"
         );
+    }
+}
+
+#[cfg(test)]
+mod offline_metadata_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The three normalizations exist so an offline pass means what a
+    /// production pass means. Asserted together because they are one contract.
+    #[test]
+    fn case_metadata_is_normalized_the_way_the_ingress_builds_it() {
+        let out = prepare_offline_metadata(json!({
+            "headers": { "DeviceId": "device-abc", "Authorization": "Bearer secret" },
+            "auth": { "claims": { "sub": "asha@example.com" } },
+            "custom": { "anything": true },
+        }))
+        .expect("a well-formed metadata object is accepted");
+
+        assert_eq!(
+            out["headers"]["deviceid"], "device-abc",
+            "header keys lowercase, because axum yields lowercase names"
+        );
+        assert!(
+            out["headers"].get("DeviceId").is_none(),
+            "the original casing must not survive alongside it"
+        );
+        assert_eq!(
+            out["headers"]["authorization"],
+            crate::connector::MASK,
+            "a credential header is masked here exactly as at ingress"
+        );
+        assert_eq!(out["auth"]["claims"]["sub"], "asha@example.com");
+        assert_eq!(
+            out["custom"]["anything"], true,
+            "keys outside the reserved set pass through: the envelope merges \
+             arbitrary caller metadata, so a closed set would be wrong"
+        );
+    }
+
+    /// Engine-owned, and cleared unconditionally at ingress — so a case cannot
+    /// pre-seed failures a workflow then branches on.
+    #[test]
+    fn the_engine_owned_error_context_is_cleared() {
+        let out = prepare_offline_metadata(json!({"_orion_errors": [{"code": "FAKE"}]}))
+            .expect("accepted");
+        assert!(out.get("_orion_errors").is_none());
+    }
+
+    /// The shapes the ingress could never produce, each named so the fix is
+    /// one edit.
+    #[test]
+    fn shapes_the_ingress_cannot_produce_are_refused() {
+        let err = prepare_offline_metadata(json!({"headers": ["a", "b"]}))
+            .expect_err("headers must be an object");
+        assert!(err.contains("metadata.headers"), "{err}");
+
+        let err = prepare_offline_metadata(json!({"query": {"page": 2}}))
+            .expect_err("query values must be strings");
+        assert!(err.contains("metadata.query.page"), "{err}");
+
+        let err =
+            prepare_offline_metadata(json!({"channel": 7})).expect_err("channel must be a string");
+        assert!(err.contains("metadata.channel"), "{err}");
+
+        // `merge_auth_claims` replaces `auth` wholesale with `{"claims": …}`,
+        // so anything else is state no request can produce.
+        let err = prepare_offline_metadata(json!({"auth": {"token": "t"}}))
+            .expect_err("only auth.claims is reachable");
+        assert!(err.contains("metadata.auth.token"), "{err}");
+
+        let err = prepare_offline_metadata(json!("nope")).expect_err("root must be an object");
+        assert!(err.contains("must be a JSON object"), "{err}");
+    }
+
+    /// The ingress and the offline builder must agree on which headers are
+    /// credentials. They read one list; this is the guard that keeps it one.
+    #[test]
+    fn the_credential_header_set_is_the_ingress_set() {
+        for name in CREDENTIAL_HEADERS {
+            assert!(is_credential_header(name), "{name} must be masked");
+        }
+        assert!(!is_credential_header("deviceid"));
+        assert!(!is_credential_header("content-type"));
     }
 }

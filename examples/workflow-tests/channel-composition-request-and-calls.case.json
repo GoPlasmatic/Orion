@@ -1,0 +1,22 @@
+{
+  "name": "composition sends the customer id to the lookup channel",
+  "workflow": "../packages/channel-composition/workflow.json",
+  "input": { "order_id": "ORD-5511", "customer_id": 42, "total": 800 },
+  "stubs": {
+    "channel_call": {
+      "customer-lookup": { "lookup": { "customer_id": 42, "tier": "vip", "discount_pct": 15 } }
+    }
+  },
+  "expect_tasks": ["parse", "build_lookup", "lookup", "price"],
+  "expect_calls": {
+    "channel_call": [
+      { "channel": "customer-lookup", "data": { "customer_id": 42 } }
+    ]
+  },
+  "expect": {
+    "temp_data.lookup_request.customer_id": 42,
+    "metadata.progress.task_id": "price",
+    "calls.channel_call[0].task_id": "lookup",
+    "audit_trail[0].task_id": "parse"
+  }
+}

@@ -921,6 +921,17 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     validate_workflow_condition(&req.condition, &dl, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
 
+    // Advisory: JSONLogic in a connector-payload field that folds `{"var": ..}`
+    // and nothing else, so the expression is stored or sent verbatim. A warning
+    // for the reasons `unresolvable_logic_warnings` documents — the operator
+    // names overlap real field names, and a stored rule document is a legitimate
+    // payload.
+    warnings.extend(
+        crate::validation::unresolvable_logic_warnings(&req.tasks)
+            .into_iter()
+            .map(|(field, message)| ValidationIssue { field, message }),
+    );
+
     ValidationEnvelope::new(errors, warnings)
 }
 

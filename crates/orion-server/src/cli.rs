@@ -215,7 +215,12 @@ pub(crate) async fn handle_migrate(
 /// endpoint performs (`validate_create_workflow` plus A1 function-input
 /// schema validation), printing field-pathed errors and exiting non-zero
 /// on failure so this can be wired into pre-commit / CI hooks.
-pub(crate) fn run_lint(workflow_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// `deny_warnings` promotes the advisory findings to failures, for a PR gate
+/// that wants them to block.
+pub(crate) fn run_lint(
+    workflow_path: &str,
+    deny_warnings: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
     let raw = std::fs::read_to_string(workflow_path)
@@ -230,6 +235,21 @@ pub(crate) fn run_lint(workflow_path: &str) -> Result<(), Box<dyn std::error::Er
     let loop_cap = orion::config::EngineConfig::default().max_loop_iterations;
     if let Err(err) = orion::validation::validate_create_workflow(&req, loop_cap) {
         return Err(format_lint_error(workflow_path, err).into());
+    }
+
+    // Advisory findings the create path does not refuse. On stderr so stdout
+    // stays the one-line verdict a script greps.
+    let warnings = orion::validation::unresolvable_logic_warnings(&req.tasks);
+    for (path, message) in &warnings {
+        eprintln!("warning: {path}: {message}");
+    }
+
+    if deny_warnings && !warnings.is_empty() {
+        return Err(format!(
+            "'{workflow_path}' has {} warning(s) and --deny-warnings is set",
+            warnings.len()
+        )
+        .into());
     }
 
     println!("'{workflow_path}' is valid.");
@@ -272,7 +292,7 @@ fn format_lint_error(workflow_path: &str, err: orion::errors::OrionError) -> Str
 pub(crate) fn build_dry_run_engine(
     workflow_path: &str,
     stubs_path: Option<&str>,
-) -> Result<dataflow_rs::Engine, Box<dyn std::error::Error>> {
+) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     let stubs = match stubs_path {
         Some(path) => {
             let raw = std::fs::read_to_string(path)
@@ -284,12 +304,25 @@ pub(crate) fn build_dry_run_engine(
     build_dry_run_engine_with_stubs(workflow_path, stubs)
 }
 
+/// Everything an offline run needs beyond the engine itself.
+pub(crate) struct OfflineRun {
+    pub engine: dataflow_rs::Engine,
+    /// The connector calls the run makes, filled in as it runs.
+    pub log: std::sync::Arc<orion::engine::functions::stub::CallLog>,
+    /// Task id → the function that task names, read off the workflow file.
+    ///
+    /// `TaskContext` does not carry a task id, so a stub cannot record which
+    /// task called it. This map plus the execution trace is what recovers it
+    /// afterwards (`CallLog::correlate`).
+    pub task_functions: std::collections::HashMap<String, String>,
+}
+
 /// [`build_dry_run_engine`] over an already-parsed stub table, for the `test`
 /// runner — whose stubs may be inline in the case file rather than on disk.
 pub(crate) fn build_dry_run_engine_with_stubs(
     workflow_path: &str,
     stubs: orion::engine::functions::stub::StubTable,
-) -> Result<dataflow_rs::Engine, Box<dyn std::error::Error>> {
+) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
 
     let raw = std::fs::read_to_string(workflow_path)
@@ -313,15 +346,39 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // Stub handlers are registered for every connector-backed function, even
     // with no stub file: an unstubbed call then reports which stub to add,
     // rather than the `FunctionNotFound` an empty map used to give.
-    let functions = orion::engine::functions::stub::build_stub_functions(stubs);
+    let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
+    let functions =
+        orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
     // Custom operators are registered here too: a dry-run must speak the same
     // expression vocabulary as the serving engine.
-    Ok(
+    let engine =
         orion::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
             .with_workflow(df_workflow)
             .with_handlers(functions)
-            .build()?,
-    )
+            .build()?;
+    Ok(OfflineRun {
+        engine,
+        log,
+        task_functions: task_function_names(&req.tasks),
+    })
+}
+
+/// Map each task's `id` to the function it names, for call-to-task correlation.
+///
+/// Tasks without an `id` or without a `function.name` are skipped rather than
+/// guessed at: an unnameable task simply leaves its calls unlabelled.
+fn task_function_names(tasks: &serde_json::Value) -> std::collections::HashMap<String, String> {
+    let Some(tasks) = tasks.as_array() else {
+        return std::collections::HashMap::new();
+    };
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let id = task.get("id")?.as_str()?;
+            let function = task.get("function")?.get("name")?.as_str()?;
+            Some((id.to_string(), function.to_string()))
+        })
+        .collect()
 }
 
 /// Dry-run a workflow against an input JSON file.
@@ -335,28 +392,56 @@ pub(crate) async fn run_dry_run(
     workflow_path: &str,
     input_path: &str,
     stubs_path: Option<&str>,
+    metadata_path: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_raw = std::fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
     let input: serde_json::Value = serde_json::from_str(&input_raw)
         .map_err(|e| format!("'{input_path}' is not valid JSON: {e}"))?;
 
-    let engine = build_dry_run_engine(workflow_path, stubs_path)?;
-    let mut message = dataflow_rs::Message::from_value(&input);
+    let metadata = match metadata_path {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read metadata '{path}': {e}"))?;
+            serde_json::from_str(&raw)
+                .map_err(|e| format!("'{path}' is not valid JSON: {e}"))
+                .and_then(|v| {
+                    orion::engine::utils::prepare_offline_metadata(v)
+                        .map_err(|e| format!("'{path}': {e}"))
+                })?
+        }
+        None => serde_json::json!({}),
+    };
+
+    let run = build_dry_run_engine(workflow_path, stubs_path)?;
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&input)
+        .metadata_json(&metadata)
+        .build();
 
     // Own the trace so a hard failure still prints the steps that ran. A dry
     // run that dies on task three and reports nothing is the least useful
     // possible answer to "what does this workflow do?".
     let mut trace = dataflow_rs::ExecutionTrace::new();
-    let run_error = engine
+    let run_error = run
+        .engine
         .process_message_tracing(&mut message, &mut trace)
         .await
         .err();
+    run.log.correlate(&trace, &run.task_functions);
 
+    // `output` is the data document, and stays that name: CI `jq` filters read
+    // it. The three context documents and the call log are published under the
+    // same names a case's `expect` roots use, so a path read off a dry run can
+    // be pasted into a case unchanged.
     let mut output = serde_json::json!({
         "matched": !trace.steps.is_empty(),
         "trace": trace,
         "output": message.data(),
+        "metadata": message.metadata(),
+        "temp_data": message.temp_data(),
+        "audit_trail": message.audit_trail(),
+        "calls": run.log.calls(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     });
     if let Some(ref e) = run_error {
@@ -472,16 +557,32 @@ struct TestCase {
     workflow: String,
     /// The message payload.
     input: serde_json::Value,
+    /// The message metadata, as the HTTP ingress would have built it:
+    /// `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`,
+    /// `http_method`, plus any caller-supplied keys.
+    ///
+    /// Normalized by [`orion::engine::utils::prepare_offline_metadata`] so an
+    /// offline pass means the same thing as a production pass — header keys
+    /// lowercased, credential headers masked.
+    #[serde(default)]
+    metadata: serde_json::Value,
     /// Inline connector stubs, in the same shape as `dry-run --stubs`.
     #[serde(default)]
     stubs: Option<serde_json::Value>,
     /// Path to a stub file, as an alternative to inline `stubs`.
     #[serde(default)]
     stubs_file: Option<String>,
-    /// Dotted output paths to their expected values. `data.order.flagged`
-    /// reads the `order.flagged` field of the workflow's data document; the
-    /// leading `data.` is optional, matching `body_path` and the mapping paths
-    /// authors already write.
+    /// Dotted paths to their expected values, each **rooted** at one of
+    /// [`EXPECT_ROOTS`]: `data.order.flagged`, `metadata.headers.deviceid`,
+    /// `temp_data.user_id`, `calls.mongo_write[0].input.document.id`,
+    /// `audit_trail[1].status`.
+    ///
+    /// The root is required. Every other path in Orion — a `{"var": ..}` node,
+    /// a `map` mapping's `path`, a connector filter — resolves over the same
+    /// `{data, metadata, temp_data}` context, and every mapping path in every
+    /// shipped workflow spells its root. A bare path was accepted here alone,
+    /// and silently meant `data.`, so `metadata.foo` read the data document's
+    /// own `metadata` key and reported absent.
     #[serde(default)]
     expect: std::collections::BTreeMap<String, serde_json::Value>,
     /// Expected task-error codes, in order. An empty vec (the default) asserts
@@ -489,7 +590,40 @@ struct TestCase {
     /// does not mention it.
     #[serde(default)]
     expect_errors: Vec<String>,
+    /// Expected connector calls per function, in execution order.
+    ///
+    /// Each entry is matched as a **deep subset** of the recorded call's
+    /// resolved `input`, so a case names the fields it cares about and ignores
+    /// the rest — but the number of entries must equal the number of recorded
+    /// calls for that function, so an unexpected extra write fails. Only the
+    /// functions named here are constrained; `"publish_kafka": []` asserts that
+    /// nothing was published.
+    ///
+    /// Unlike `expect`, presence is **strict**: a key in the expected object
+    /// must be present in the record, so `"revokedAt": null` asserts *written
+    /// as null* rather than *absent*. `expect` reads a data document, where
+    /// JSONLogic makes a missing path and a null indistinguishable; a recorded
+    /// payload is a literal document, where whether the field was written is
+    /// the assertion.
+    #[serde(default)]
+    expect_calls: std::collections::BTreeMap<String, Vec<serde_json::Value>>,
+    /// The ids of the tasks that ran, in order, matched exactly.
+    ///
+    /// `None` (the default) means unchecked. Unlike `expect_errors`, this
+    /// cannot default to empty-and-checked: every workflow runs tasks, so that
+    /// default would fail every case ever written.
+    #[serde(default)]
+    expect_tasks: Option<Vec<String>>,
 }
+
+/// The documents a case's `expect` path may be rooted at.
+///
+/// `data`/`metadata`/`temp_data` are the message's own three, named as the
+/// engine names them. `calls` and `audit_trail` are what the run left behind:
+/// the recorded connector calls, and `Message::audit_trail` — spelled in full
+/// because unqualified "audit" in Orion is the admin audit log, a different
+/// thing entirely.
+const EXPECT_ROOTS: [&str; 5] = ["data", "metadata", "temp_data", "calls", "audit_trail"];
 
 /// What one case did.
 struct CaseResult {
@@ -625,30 +759,63 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
         Err(e) => return fail(&name, e),
     };
 
-    let engine = match build_dry_run_engine_with_stubs(&workflow_path, stubs) {
-        Ok(engine) => engine,
+    // Rooting is checked before the workflow runs: a path naming no root can
+    // never match anything, and saying so after a full run — as an `<absent>`
+    // diff — buries the one fact the author needs.
+    let unrooted: Vec<String> = case
+        .expect
+        .keys()
+        .filter(|path| !is_rooted(path))
+        .map(|path| unrooted_message(path))
+        .collect();
+    if !unrooted.is_empty() {
+        return CaseResult {
+            name,
+            failures: unrooted,
+        };
+    }
+
+    let metadata = match orion::engine::utils::prepare_offline_metadata(case.metadata.clone()) {
+        Ok(metadata) => metadata,
+        Err(e) => return fail(&name, e),
+    };
+
+    let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs) {
+        Ok(run) => run,
         Err(e) => return fail(&name, e.to_string()),
     };
 
-    let mut message = dataflow_rs::Message::from_value(&case.input);
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&case.input)
+        .metadata_json(&metadata)
+        .build();
     let mut trace = dataflow_rs::ExecutionTrace::new();
-    let run_error = engine
+    let run_error = run
+        .engine
         .process_message_tracing(&mut message, &mut trace)
         .await
         .err();
+    run.log.correlate(&trace, &run.task_functions);
 
     let mut failures = Vec::new();
     if let Some(e) = run_error {
         failures.push(format!("workflow failed: {e}"));
     }
 
-    let output: serde_json::Value = message.data().into();
+    let roots = serde_json::json!({
+        "data": message.data(),
+        "metadata": message.metadata(),
+        "temp_data": message.temp_data(),
+        "calls": serde_json::Value::Object(run.log.grouped()),
+        "audit_trail": message.audit_trail(),
+    });
     for (path, expected) in &case.expect {
-        let actual = lookup_output(&output, path);
+        let actual = lookup_path(&roots, path);
         // An expected `null` matches an absent path as well as an explicit
         // null. JSONLogic resolves a missing `var` to null, so that is already
         // what the workflow sees; making a case distinguish the two would be a
-        // distinction the runtime does not draw.
+        // distinction the runtime does not draw. (`expect_calls` is strict
+        // instead — see its doc comment for why the two differ.)
         let matched = match actual {
             None => expected.is_null(),
             Some(ref actual) => actual == expected,
@@ -660,6 +827,15 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
                 "{path}: expected {expected}, got {}",
                 actual.map_or("<absent>".to_string(), |v| v.to_string())
             ));
+        }
+    }
+
+    failures.extend(check_expected_calls(&case.expect_calls, &run.log));
+
+    if let Some(ref expected) = case.expect_tasks {
+        let actual = executed_task_ids(&trace);
+        if &actual != expected {
+            failures.push(format!("tasks: expected {expected:?}, ran {actual:?}"));
         }
     }
 
@@ -678,14 +854,156 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
     CaseResult { name, failures }
 }
 
-/// Read a dotted path out of the workflow's data document.
+/// The ids of the tasks that executed, in step order.
 ///
-/// A leading `data.` is optional: `message.data()` *is* the data document, so
-/// `data.order.flagged` and `order.flagged` name the same field. Accepting both
-/// matches the mapping paths authors already write.
-fn lookup_output(output: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
-    let path = path.strip_prefix("data.").unwrap_or(path);
-    path.split('.')
-        .try_fold(output, |acc, segment| acc.get(segment))
+/// Read from the execution trace rather than the audit trail: a
+/// `TaskOutcome::Skip` returns before the audit entry is pushed, so the trail
+/// cannot tell "skipped by condition" from "not in the workflow" — and which
+/// branch ran is the whole question `expect_tasks` exists to answer.
+fn executed_task_ids(trace: &dataflow_rs::ExecutionTrace) -> Vec<String> {
+    trace
+        .steps
+        .iter()
+        .filter(|step| matches!(step.result, dataflow_rs::StepResult::Executed))
+        .filter_map(|step| step.task_id.clone())
+        .collect()
+}
+
+/// Whether an `expect` path names one of [`EXPECT_ROOTS`].
+fn is_rooted(path: &str) -> bool {
+    let head = path
+        .split('.')
+        .next()
+        .unwrap_or(path)
+        .split('[')
+        .next()
+        .unwrap_or(path);
+    EXPECT_ROOTS.contains(&head)
+}
+
+/// The failure text for an `expect` path with no root, suggesting the fix.
+///
+/// `data.` is suggested because it is what an unrooted path used to mean, and
+/// so is what almost every one of them intends.
+fn unrooted_message(path: &str) -> String {
+    format!(
+        "expect path '{path}' has no root — did you mean 'data.{path}'? \
+         roots: {}",
+        EXPECT_ROOTS.join(", ")
+    )
+}
+
+/// One segment of an `expect` path.
+enum Segment<'a> {
+    Key(&'a str),
+    Index(usize),
+}
+
+/// Split a dotted path into segments, accepting both `calls.http_call[0].input`
+/// and `calls.http_call.0.input` for an array position.
+fn path_segments(path: &str) -> Vec<Segment<'_>> {
+    let mut out = Vec::new();
+    for part in path.split('.') {
+        let (head, mut rest) = match part.find('[') {
+            Some(i) => (&part[..i], &part[i..]),
+            None => (part, ""),
+        };
+        if let Ok(index) = head.parse::<usize>() {
+            out.push(Segment::Index(index));
+        } else if !head.is_empty() {
+            out.push(Segment::Key(head));
+        }
+        // Trailing `[n]` groups, however many.
+        while let Some(close) = rest.find(']') {
+            if let Ok(index) = rest[1..close].parse::<usize>() {
+                out.push(Segment::Index(index));
+            }
+            rest = &rest[close + 1..];
+        }
+    }
+    out
+}
+
+/// Read a rooted, optionally array-indexed path out of the run's documents.
+fn lookup_path(roots: &serde_json::Value, path: &str) -> Option<serde_json::Value> {
+    path_segments(path)
+        .into_iter()
+        .try_fold(roots, |acc, segment| match segment {
+            Segment::Key(key) => acc.get(key),
+            Segment::Index(i) => acc.get(i),
+        })
         .cloned()
+}
+
+/// Check a case's `expect_calls` against what the run recorded.
+fn check_expected_calls(
+    expected: &std::collections::BTreeMap<String, Vec<serde_json::Value>>,
+    log: &orion::engine::functions::stub::CallLog,
+) -> Vec<String> {
+    if expected.is_empty() {
+        return Vec::new();
+    }
+    let recorded = log.calls();
+    let mut failures = Vec::new();
+    for (function, expected_calls) in expected {
+        let actual: Vec<&orion::engine::functions::stub::RecordedCall> = recorded
+            .iter()
+            .filter(|call| call.function == function.as_str())
+            .collect();
+        if actual.len() != expected_calls.len() {
+            failures.push(format!(
+                "calls.{function}: expected {} call(s), recorded {}",
+                expected_calls.len(),
+                actual.len()
+            ));
+            continue;
+        }
+        for (i, want) in expected_calls.iter().enumerate() {
+            subset_mismatch(
+                want,
+                &actual[i].input,
+                &format!("calls.{function}[{i}].input"),
+            )
+            .into_iter()
+            .for_each(|failure| failures.push(failure));
+        }
+    }
+    failures
+}
+
+/// Every way `actual` fails to contain `expected`, as diff lines rooted at
+/// `path`.
+///
+/// Objects match as subsets — a key `expected` does not mention is not
+/// checked — but a key it *does* mention must be **present**, which is what
+/// makes `"revokedAt": null` assert that the field was written. Arrays match
+/// element for element, including length: "these two documents were inserted"
+/// is an assertion a subset rule could not express.
+fn subset_mismatch(
+    expected: &serde_json::Value,
+    actual: &serde_json::Value,
+    path: &str,
+) -> Vec<String> {
+    match (expected, actual) {
+        (serde_json::Value::Object(want), serde_json::Value::Object(got)) => want
+            .iter()
+            .flat_map(|(key, want_value)| match got.get(key) {
+                Some(got_value) => subset_mismatch(want_value, got_value, &format!("{path}.{key}")),
+                None => vec![format!("{path}.{key}: expected {want_value}, not written")],
+            })
+            .collect(),
+        (serde_json::Value::Array(want), serde_json::Value::Array(got))
+            if want.len() == got.len() =>
+        {
+            want.iter()
+                .zip(got)
+                .enumerate()
+                .flat_map(|(i, (want_value, got_value))| {
+                    subset_mismatch(want_value, got_value, &format!("{path}[{i}]"))
+                })
+                .collect()
+        }
+        _ if expected == actual => Vec::new(),
+        _ => vec![format!("{path}: expected {expected}, got {actual}")],
+    }
 }
