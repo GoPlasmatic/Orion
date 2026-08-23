@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-23
+
+Version bump only — `orion-cli` and `orion-server` release in lockstep. Nothing
+in this release touches the CLI; the changes are in the server's offline test
+runner (see the server changelog for #283).
+
 ## [1.1.0] - 2026-08-21
 
 ### Fixed

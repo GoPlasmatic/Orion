@@ -40,6 +40,92 @@ use dataflow_rs::datalogic_rs::operator::EvalContext;
 use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
 use hmac::{KeyInit, Mac};
 
+/// Every JSONLogic operator this build evaluates — datalogic-rs's core and
+/// extension sets (reached through dataflow-rs's `all-operators` feature) plus
+/// Orion's own registrations above.
+///
+/// Authoring-time checks read this to tell an operator apart from a data key.
+/// `jsonlogic_operators_test` pins it against the live engine and against
+/// `docs/src/reference/expressions.md`, so it is a checked list rather than a
+/// typed one.
+pub const OPERATOR_NAMES: &[&str] = &[
+    "var",
+    "val",
+    "==",
+    "!=",
+    "===",
+    "!==",
+    ">",
+    ">=",
+    "<",
+    "<=",
+    "and",
+    "or",
+    "!",
+    "!!",
+    "if",
+    "?:",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "max",
+    "min",
+    "cat",
+    "substr",
+    "in",
+    "merge",
+    "map",
+    "filter",
+    "reduce",
+    "all",
+    "some",
+    "none",
+    "missing",
+    "missing_some",
+    "now",
+    "datetime",
+    "timestamp",
+    "parse_date",
+    "format_date",
+    "date_diff",
+    "length",
+    "upper",
+    "lower",
+    "trim",
+    "split",
+    "starts_with",
+    "ends_with",
+    "sort",
+    "slice",
+    "abs",
+    "ceil",
+    "floor",
+    "group_by",
+    "distinct",
+    "keys",
+    "values",
+    "entries",
+    "??",
+    "type",
+    "exists",
+    "switch",
+    "match",
+    "try",
+    "throw",
+    "base64_encode",
+    "base64_decode",
+    "base64url_encode",
+    "base64url_decode",
+    "hex_encode",
+    "hex_decode",
+    "random",
+    "url_encode",
+    "url_decode",
+    "join",
+];
+
 /// Standard-alphabet decoder that accepts padded and unpadded input.
 /// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]
 /// (padded); this leniency is decode-only.

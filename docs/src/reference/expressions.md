@@ -253,6 +253,47 @@ than an error.
   land on different instants. Compute it once into a field and read that field
   if you need a single consistent stamp.
 
+## Connector payloads fold `{"var": …}` and nothing else
+
+Everything above is about places JSONLogic is **evaluated**: a workflow or task
+`condition`, a `map` mapping's `logic`, a channel's `body_logic`. A connector
+task's payload fields are not one of those places.
+
+A field a handler marks *resolvable* — `mongo_write`'s `document`, `documents`,
+`update`, `filter` and `array_filters`; `mongo_read`'s `filter`, `projection`
+and `sort`; `cache_write`'s `value`; `jwt_sign`'s `claims`; `send_email`'s
+`subject` and `html`; the `params` of the SQL and dialect functions — folds
+`{"var": "some.path"}` nodes against the message, at any depth, and treats
+**every other node as a literal**.
+
+```json
+{ "op": "insert_one",
+  "document": {
+    "userId":    { "var": "data.user_id" },
+    "expiresAt": { "cat": ["2026-", { "var": "data.month" }] }
+  } }
+```
+
+`userId` gets the value. `expiresAt` gets the *object* `{"cat": [...]}`, stored
+in MongoDB verbatim — and in a `filter`, a node like that matches nothing.
+There is no error at write time. Note that `{"val": …}` is folded no more than
+`cat` is, despite being a documented operator: only `var` is.
+
+Compute the value in a `map` task first and reference the result:
+
+```json
+{ "path": "temp_data.expires_at",
+  "logic": { "cat": ["2026-", { "var": "data.month" }] } }
+```
+
+```json
+{ "expiresAt": { "var": "temp_data.expires_at" } }
+```
+
+`orion-server lint` warns when it finds one of these, and
+`orion-server test` can assert on the resolved payload with `expect_calls` —
+see [Test Workflows Offline](../build/testing.md#assert-on-what-a-workflow-writes).
+
 ## Feature boundary
 
 The extension categories — `datetime`, `ext-string`, `ext-array`, `ext-math`,

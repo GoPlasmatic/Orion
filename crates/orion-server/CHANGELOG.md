@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-23
+
+### Added
+
+- **`metadata` in a `*.case.json`** ([#283]) — a case can supply the request
+  metadata the HTTP ingress would have built (`headers`, `params`, `query`,
+  `cookies`, `auth.claims`, `channel`, `http_method`, plus any caller keys), so
+  a workflow that branches on `metadata.headers` is testable offline instead of
+  only against a running server. `dry-run --metadata <file>` takes the same
+  object.
+
+  Normalized the way the ingress builds one, so an offline pass means a
+  production pass: header keys lowercased, credential headers
+  (`authorization`, `cookie`, `proxy-authorization`, `x-api-key`) masked, and
+  the engine-owned `_orion_errors` cleared. The credential list is now shared
+  with the ingress rather than duplicated.
+
+- **A recorded connector-call log** ([#283]) — a stub answers a call and
+  nothing sees what the task tried to send, so a stubbed `mongo_write` was
+  unobservable. Every connector-backed call is now recorded with its payload
+  resolved the way the real handler resolves it, driven off the schema
+  registry's `resolvable` flags, so a new function is covered as soon as it
+  fills in its field table. `crypto`, `jwt_sign` and `jwt_verify` are excluded:
+  they run for real offline and their inputs can carry key material.
+
+  Two ways to assert on it. `expect_calls` matches per function, positionally,
+  as a deep subset, with the call count checked — so an unexpected extra write
+  fails and `"publish_kafka": []` asserts nothing was published. Presence is
+  strict there, unlike `expect`: `"revokedAt": null` asserts *written as null*.
+  `calls.<function>[i]…` paths in `expect` reach anything `expect_calls`
+  cannot say.
+
+  This is what makes the verbatim-JSONLogic bug visible: a connector field
+  folds `{"var": …}` and nothing else, so `{"if": […]}` in a `document` is
+  stored as a literal BSON object. The recorded call shows the object.
+
+- **`expect_tasks`** ([#283]) — the ids of the tasks that ran, in order,
+  matched exactly. Sourced from the execution trace rather than the audit
+  trail, which cannot distinguish a condition-skipped task from an absent one.
+  Unchecked when omitted.
+
+- **`metadata.`, `temp_data.` and `audit_trail.` roots in `expect`** ([#283]),
+  alongside `data.` and the new `calls.`, with array indexing
+  (`calls.mongo_write[0]` or `calls.mongo_write.0`).
+
+- **`lint --deny-warnings`** ([#283]) — `lint` now prints advisory findings on
+  stderr and this flag makes them fail the command. One finding today:
+  JSONLogic in a connector field that folds `{"var": …}` and nothing else, so
+  the expression is written through as a literal. `POST /workflows/validate`
+  reports the same findings in its `warnings` array.
+
+  Advisory rather than an error on purpose. The operator vocabulary includes
+  `length`, `type`, `in`, `keys`, `sort` and `map`, which are ordinary field
+  names; a document that legitimately holds a stored rule is a real payload;
+  and a hard error would refuse updates to workflows that have been serving for
+  months.
+
+- **`dry-run` prints `metadata`, `temp_data`, `audit_trail` and `calls`**
+  ([#283]) beside `output`, under the same names a case's `expect` roots use,
+  so a path read off a dry run pastes into a case unchanged. `output` keeps its
+  name — CI `jq` filters read it.
+
+### Changed
+
+- **BREAKING: an `expect` path must name its root** ([#283]). A leading `data.`
+  used to be optional, which made the case file the only surface in Orion that
+  accepted an unrooted path — every mapping `path` in every shipped workflow
+  already spells one. The cost of the exception was silence: `metadata.foo` was
+  read as `data.metadata.foo`, came back absent, and because an expected `null`
+  matches an absent path, `"metadata.foo": null` *passed*. A typo'd root
+  (`"dat.order.id"`) failed the same way.
+
+  A path naming no root now fails the case before the workflow runs, with the
+  fix in the message. To migrate a suite, prepend `data.` to every unrooted
+  key:
+
+  ```bash
+  jq '.expect |= with_entries(
+        if (.key | test("^(data|metadata|temp_data|calls|audit_trail)([.\\[]|$)"))
+        then . else .key |= "data." + . end)' case.json
+  ```
+
+[#283]: https://github.com/GoPlasmatic/Orion/issues/283
+
 ## [1.1.0] - 2026-08-21
 
 ### Added

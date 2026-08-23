@@ -430,6 +430,35 @@ fn eval(logic: &Value) -> Value {
     try_eval(logic).unwrap_or_else(|e| panic!("evaluating {logic} failed: {e}"))
 }
 
+/// [`OPERATORS`] and `engine::operators::OPERATOR_NAMES` name the same set.
+///
+/// The table above is the one that *proves* each operator works, by evaluating
+/// it. The const is the one `src/` can read — the unresolvable-JSONLogic check
+/// uses it to tell an operator apart from a data key, and a name missing from
+/// it is a node that check waves through. Neither can be derived from the
+/// other, so this asserts they agree.
+#[test]
+fn the_operator_const_matches_the_evaluated_vocabulary() {
+    let evaluated: BTreeSet<&str> = OPERATORS.iter().map(|(name, _, _)| *name).collect();
+    let declared: BTreeSet<&str> = orion::engine::operators::OPERATOR_NAMES
+        .iter()
+        .copied()
+        .collect();
+
+    let missing: Vec<&&str> = evaluated.difference(&declared).collect();
+    assert!(
+        missing.is_empty(),
+        "OPERATOR_NAMES is missing {missing:?} — authoring-time checks would \
+         treat those as plain data keys"
+    );
+    let extra: Vec<&&str> = declared.difference(&evaluated).collect();
+    assert!(
+        extra.is_empty(),
+        "OPERATOR_NAMES declares {extra:?}, which no case above evaluates — \
+         add a row proving it works, or drop the name"
+    );
+}
+
 /// Every documented operator is compiled into this build and produces its
 /// documented result.
 #[test]

@@ -36,8 +36,11 @@ case rather than a workflow or a fixture, so all three can live side by side.
 | `workflow` | Path to the workflow, relative to the case file. |
 | `input` | The message payload. |
 | `stubs` | Canned connector responses, inline. `stubs_file` points at one instead. |
-| `expect` | Dotted output path → expected value. A leading `data.` is optional, and an expected `null` also matches an absent path. |
+| `metadata` | Request metadata, as the HTTP ingress builds it: `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`. Header keys are lowercased and credential headers masked. |
+| `expect` | Rooted dotted path → expected value. The root — `data.`, `metadata.`, `temp_data.`, `calls.` or `audit_trail.` — is **required**. An expected `null` also matches an absent path. |
 | `expect_errors` | Expected task-error codes, in order. Defaults to empty, and is checked either way — so a workflow that starts failing cannot pass quietly. |
+| `expect_calls` | Expected connector calls per function, in order, each a deep subset of the call's resolved payload. The count must match. Presence is strict here: `null` means *written as null*. |
+| `expect_tasks` | The ids of the tasks that ran, in order, matched exactly. Unchecked when omitted. |
 
 The runner exits non-zero on any failure, so it gates CI alongside
 `orion-server lint`.

@@ -44,8 +44,14 @@ Example: `orion-server -c config.toml migrate --dry-run`
 Statically validates a workflow JSON file with the same checks the admin `POST /workflows` endpoint runs. Exits non-zero with field-pathed errors, so it can gate CI. Needs no config, database, or server.
 
 ```bash
-orion-server lint <workflow.json>
+orion-server lint <workflow.json> [--deny-warnings]
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
+
+Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
 
 Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 
@@ -54,7 +60,7 @@ Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace. Connector-backed tasks are answered from `--stubs`; without a matching stub the task fails and names the stub it needs.
 
 ```bash
-orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>]
+orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>]
 ```
 
 | Flag | Description |
@@ -62,12 +68,15 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>]
 | `-w, --workflow` | Path to a workflow JSON file. |
 | `-i, --input` | Path to a JSON file used as the message payload. |
 | `-s, --stubs` | Path to a JSON file of canned connector responses. The inner key is the task's `connector` (or `channel` for `channel_call`); `"*"` matches any. |
+| `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
+
+The printed document carries `output` (the data document), `metadata`, `temp_data`, `audit_trail`, `calls` (every connector call with its resolved payload), `trace`, `matched` and `errors`.
 
 Example: `orion-server dry-run -w wf.json -i input.json --stubs stubs.json`
 
 ### `test`
 
-Runs a directory of offline workflow test cases. Each `*.case.json` file names a workflow, an input, optional connector stubs, and expected output values. Prints a per-case diff and exits non-zero on any failure.
+Runs a directory of offline workflow test cases. Each `*.case.json` file names a workflow, an input, optional request metadata and connector stubs, and what it expects — output values (`expect`), task-error codes (`expect_errors`), connector calls (`expect_calls`) and executed task ids (`expect_tasks`). Prints a per-case diff and exits non-zero on any failure. See [Test Workflows Offline](../build/testing.md) for the case format.
 
 ```bash
 orion-server test <path>
