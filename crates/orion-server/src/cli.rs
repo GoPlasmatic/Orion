@@ -232,7 +232,8 @@ pub(crate) fn run_lint(
         return run_lint_set(workflow_path, deny_warnings, boundary);
     }
 
-    let doc = read_expanded_workflow(workflow_path, definitions)?;
+    let catalog = Catalog::load_opt(definitions)?;
+    let doc = read_expanded_workflow(workflow_path, catalog.as_ref())?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
 
@@ -247,9 +248,25 @@ pub(crate) fn run_lint(
 
     // Advisory findings the create path does not refuse. On stderr so stdout
     // stays the one-line verdict a script greps.
-    let warnings = orion::validation::unresolvable_logic_warnings(&req.tasks);
-    for (path, message) in &warnings {
-        eprintln!("warning: {path}: {message}");
+    //
+    // Through `Finding`, in the same shape `check_workflows` gives the same
+    // advisory in set mode: the `check` id is what lets a pipeline grandfather
+    // one rule instead of reaching for `--deny-warnings` and silencing every
+    // rule. Printing it as a bare string here would leave the most-used entry
+    // point — one file — as the one that cannot be selected against.
+    let warnings: Vec<orion::definitions::Finding> =
+        orion::validation::unresolvable_logic_warnings(&req.tasks)
+            .into_iter()
+            .map(|(path, message)| {
+                orion::definitions::Finding::warning(
+                    "logic.unresolvable",
+                    format!("workflow '{}' {path}", req.name),
+                    message,
+                )
+            })
+            .collect();
+    for finding in &warnings {
+        eprintln!("{finding}");
     }
 
     if deny_warnings && !warnings.is_empty() {
@@ -274,13 +291,13 @@ pub(crate) fn run_lint(
 /// expanded form or the offline gates stop covering what actually runs.
 pub(crate) fn read_expanded_workflow(
     path: &str,
-    definitions: Option<&str>,
+    definitions: Option<&Catalog>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("Failed to read '{path}': {e}"))?;
     let mut doc: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
 
-    let Some(dir) = definitions else {
+    let Some(catalog) = definitions else {
         // Without a catalog an unexpanded `use` reaches validation as a task
         // with no `name` and no `function`, and is refused for *that* — an
         // error that describes the symptom and hides the cause. Say the cause.
@@ -293,25 +310,62 @@ pub(crate) fn read_expanded_workflow(
         }
         return Ok(doc);
     };
-    let (shared, mut findings) =
-        orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
-    shared.expand(&mut doc, path, &mut findings);
+    let mut findings = Vec::new();
+    catalog.shared.expand(&mut doc, path, &mut findings);
 
-    let errors: Vec<&orion::definitions::Finding> =
-        findings.iter().filter(|f| f.is_error()).collect();
+    let errors = findings.iter().filter(|f| f.is_error()).count();
     for finding in &findings {
         eprintln!("{finding}");
     }
-    if !errors.is_empty() {
+    if errors > 0 {
         // An unresolved reference cannot be run past — the document that
         // reaches the engine would be missing whatever the reference stood for.
         return Err(format!(
-            "{} unresolved reference(s) expanding '{path}' against '{dir}'",
-            errors.len()
+            "{errors} unresolved reference(s) expanding '{path}' against '{}'",
+            catalog.dir
         )
         .into());
     }
     Ok(doc)
+}
+
+/// A `--definitions` catalog, loaded once.
+///
+/// Loading walks the whole tree and parses every JSON file under it. The
+/// `test` runner expands a workflow per case, so taking a directory path here
+/// meant re-reading and re-parsing all of them — and re-printing the load's
+/// findings — once per case, which on a set of any size is most of what the
+/// run does. The catalog is immutable once built, so one load serves every
+/// case.
+pub(crate) struct Catalog {
+    /// The directory it came from, for the message when a reference does not
+    /// resolve against it.
+    dir: String,
+    shared: orion::definitions::SharedDefinitions,
+}
+
+impl Catalog {
+    /// Load the catalog under `dir`, reporting what it found once.
+    pub(crate) fn load(dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let (shared, findings) =
+            orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+        let errors = findings.iter().filter(|f| f.is_error()).count();
+        for finding in &findings {
+            eprintln!("{finding}");
+        }
+        if errors > 0 {
+            return Err(format!("{errors} error(s) in the definitions under '{dir}'").into());
+        }
+        Ok(Self {
+            dir: dir.to_string(),
+            shared,
+        })
+    }
+
+    /// [`Self::load`] for an optional `--definitions` argument.
+    pub(crate) fn load_opt(dir: Option<&str>) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        dir.map(Self::load).transpose()
+    }
 }
 
 /// `lint <dir>`: load a definition set and run the cross-reference pass.
@@ -360,7 +414,11 @@ fn run_lint_set(
     findings.extend(orion::definitions::check(&set, &boundary, false));
 
     let errors = findings.iter().filter(|f| f.is_error()).count();
-    let warnings = findings.len() - errors;
+    // Counted by severity rather than as "everything that is not an error":
+    // the report also carries inventory notes, and gating on those made
+    // `--deny-warnings` fail on any set that references an environment
+    // variable.
+    let warnings = findings.iter().filter(|f| f.is_warning()).count();
     for finding in &findings {
         eprintln!("{finding}");
     }
@@ -433,7 +491,7 @@ fn format_lint_error(workflow_path: &str, err: orion::errors::OrionError) -> Str
 pub(crate) fn build_dry_run_engine(
     workflow_path: &str,
     stubs_path: Option<&str>,
-    definitions: Option<&str>,
+    definitions: Option<&Catalog>,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     let stubs = match stubs_path {
         Some(path) => {
@@ -464,7 +522,7 @@ pub(crate) struct OfflineRun {
 pub(crate) fn build_dry_run_engine_with_stubs(
     workflow_path: &str,
     stubs: orion::engine::functions::stub::StubTable,
-    definitions: Option<&str>,
+    definitions: Option<&Catalog>,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
 
@@ -555,7 +613,8 @@ pub(crate) async fn run_dry_run(
         None => serde_json::json!({}),
     };
 
-    let run = build_dry_run_engine(workflow_path, stubs_path, definitions)?;
+    let catalog = Catalog::load_opt(definitions)?;
+    let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref())?;
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
         .metadata_json(&metadata)
@@ -572,17 +631,13 @@ pub(crate) async fn run_dry_run(
         .err();
     run.log.correlate(&trace, &run.task_functions);
 
-    // `output` is the data document, and stays that name: CI `jq` filters read
-    // it. The three context documents and the call log are published under the
-    // same names a case's `expect` roots use, so a path read off a dry run can
-    // be pasted into a case unchanged.
+    // `output` is the data document under its historical name: CI `jq` filters
+    // read it. The run's documents go in beside it under the names a case's
+    // `expect` roots use, from the same builder the runner reads, so a path
+    // lifted off a dry run addresses the same thing in a case.
     let mut output = serde_json::json!({
         "matched": !trace.steps.is_empty(),
         "trace": trace,
-        // `output` is the data document under its historical name: CI `jq`
-        // filters read it. The run's documents go in beside it under the names
-        // a case's `expect` roots use, from the same builder the runner reads,
-        // so a path lifted off a dry run addresses the same thing in a case.
         "output": message.data(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     });
@@ -782,9 +837,14 @@ pub(crate) async fn run_test(
         .into());
     }
 
+    // Loaded once for the whole suite rather than per case: the catalog is
+    // the same for all of them, and walking the tree per case was most of a
+    // run's work on any set of size.
+    let catalog = Catalog::load_opt(definitions)?;
+
     let mut results = Vec::new();
     for case_path in &cases {
-        results.push(run_case(case_path, definitions).await);
+        results.push(run_case(case_path, catalog.as_ref()).await);
     }
 
     let failed: Vec<&CaseResult> = results.iter().filter(|r| !r.failures.is_empty()).collect();
@@ -851,7 +911,7 @@ fn collect_case_files(path: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std
 
 /// Run one case file. Every failure is collected rather than returned early, so
 /// one run reports everything wrong with a case instead of its first problem.
-async fn run_case(case_path: &std::path::Path, definitions: Option<&str>) -> CaseResult {
+async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) -> CaseResult {
     let display = case_path.display().to_string();
     // `file_stem` on `orders.case.json` gives `orders.case`; strip the whole
     // convention suffix so the default name reads as the case, not the file.
@@ -1083,13 +1143,11 @@ fn check_expected_calls(
             continue;
         }
         for (i, want) in expected_calls.iter().enumerate() {
-            subset_mismatch(
+            failures.extend(subset_mismatch(
                 want,
                 &actual[i].input,
                 &format!("calls.{function}[{i}].input"),
-            )
-            .into_iter()
-            .for_each(|failure| failures.push(failure));
+            ));
         }
     }
     failures

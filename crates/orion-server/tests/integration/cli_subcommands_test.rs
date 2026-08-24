@@ -6,7 +6,7 @@
 
 use std::process::Command;
 
-use crate::common::orion_bin;
+use crate::common::{ScratchDir, orion_bin};
 
 fn write_temp(content: &str, suffix: &str) -> String {
     let mut path = std::env::temp_dir();
@@ -427,12 +427,8 @@ const CONNECTOR_WORKFLOW: &str = r#"{
 }"#;
 
 /// A directory holding one workflow plus whatever case files a test writes.
-fn temp_suite() -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("orion-suite-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("wf.json"), CONNECTOR_WORKFLOW).unwrap();
-    dir
+fn temp_suite() -> ScratchDir {
+    suite_with(CONNECTOR_WORKFLOW)
 }
 
 /// Without a stub file, a connector-backed task names the stub that would
@@ -518,7 +514,8 @@ fn a_stub_file_naming_an_unknown_function_is_refused() {
 /// A passing suite exits zero and reports each case.
 #[test]
 fn test_runner_reports_and_exits_zero_on_a_passing_suite() {
-    let dir = temp_suite();
+    let scratch = temp_suite();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("enrich.case.json"),
         r#"{
@@ -540,7 +537,6 @@ fn test_runner_reports_and_exits_zero_on_a_passing_suite() {
     assert!(out.status.success(), "suite failed: {stdout}");
     assert!(stdout.contains("enriches the order"), "{stdout}");
     assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A failing case prints the diff and exits non-zero, so a suite gates CI.
@@ -549,7 +545,8 @@ fn test_runner_reports_and_exits_zero_on_a_passing_suite() {
 /// bare pass/fail makes an author go and reconstruct by hand.
 #[test]
 fn test_runner_prints_a_diff_and_exits_nonzero_on_failure() {
-    let dir = temp_suite();
+    let scratch = temp_suite();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wrong.case.json"),
         r#"{
@@ -573,7 +570,6 @@ fn test_runner_prints_a_diff_and_exits_nonzero_on_failure() {
         stdout.contains("expected \"Grace\", got \"Ada\""),
         "expected a value diff, got: {stdout}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Only `*.case.json` is collected from a directory.
@@ -583,7 +579,8 @@ fn test_runner_prints_a_diff_and_exits_nonzero_on_failure() {
 /// as a broken case.
 #[test]
 fn the_runner_ignores_non_case_json_in_the_suite_directory() {
-    let dir = temp_suite();
+    let scratch = temp_suite();
+    let dir = scratch.path();
     // Fixtures that must not be mistaken for cases.
     std::fs::write(dir.join("input.json"), r#"{"id":"ORD-1"}"#).unwrap();
     std::fs::write(dir.join("stubs.json"), r#"{"http_call":{"crm":{}}}"#).unwrap();
@@ -609,14 +606,14 @@ fn the_runner_ignores_non_case_json_in_the_suite_directory() {
         stdout.contains("1 passed, 0 failed"),
         "wf.json / input.json / stubs.json must not be collected as cases: {stdout}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A directory with no cases is an error, not a silent pass — a suite that
 /// matched nothing must never look like a green run.
 #[test]
 fn an_empty_suite_is_an_error() {
-    let dir = temp_suite();
+    let scratch = temp_suite();
+    let dir = scratch.path();
     let out = Command::new(orion_bin())
         .args(["test", dir.to_str().unwrap()])
         .output()
@@ -626,14 +623,14 @@ fn an_empty_suite_is_an_error() {
         String::from_utf8_lossy(&out.stderr).contains("no test cases found"),
         "the error must say the suite matched nothing"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `expect_errors` defaults to empty and is checked even when a case omits it,
 /// so a workflow that starts failing its tasks cannot pass silently.
 #[test]
 fn unexpected_task_errors_fail_a_case() {
-    let dir = temp_suite();
+    let scratch = temp_suite();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("unstubbed.case.json"),
         r#"{
@@ -654,7 +651,6 @@ fn unexpected_task_errors_fail_a_case() {
         "a case whose workflow errored must not pass: {}",
         String::from_utf8_lossy(&out.stdout)
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// T7: the one subcommand with no test through the binary. Its *content* is
@@ -794,11 +790,11 @@ const VERBATIM_LOGIC_WORKFLOW: &str = r#"{
     ]
 }"#;
 
-fn suite_with(workflow: &str) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("orion-suite-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("wf.json"), workflow).unwrap();
+/// [`temp_suite`] over an explicit workflow. Cleanup is the `ScratchDir`
+/// drop, so a failing assertion does not leave the directory behind.
+fn suite_with(workflow: &str) -> ScratchDir {
+    let dir = ScratchDir::new("suite");
+    std::fs::write(dir.path().join("wf.json"), workflow).unwrap();
     dir
 }
 
@@ -817,7 +813,8 @@ fn run_suite(dir: &std::path::Path) -> (bool, String) {
 /// pass mean a production pass — lowercased keys, masked credentials.
 #[test]
 fn a_case_can_set_metadata_and_reach_a_header_gated_branch() {
-    let dir = suite_with(HEADER_BRANCH_WORKFLOW);
+    let scratch = suite_with(HEADER_BRANCH_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("device.case.json"),
         r#"{
@@ -840,16 +837,16 @@ fn a_case_can_set_metadata_and_reach_a_header_gated_branch() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(ok, "the device branch must be reachable offline: {out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A metadata shape the HTTP ingress could never produce fails the case, naming
 /// the field — not silently, and not as a mystery `<absent>` diff later.
 #[test]
 fn malformed_case_metadata_fails_naming_the_field() {
-    let dir = suite_with(HEADER_BRANCH_WORKFLOW);
+    let scratch = suite_with(HEADER_BRANCH_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("bad.case.json"),
         r#"{
@@ -861,16 +858,16 @@ fn malformed_case_metadata_fails_naming_the_field() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(!ok, "a malformed metadata block must fail the case: {out}");
     assert!(out.contains("metadata.headers"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `expect` reaches the other four documents, not just `data`.
 #[test]
 fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
-    let dir = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("roots.case.json"),
         r#"{
@@ -891,9 +888,8 @@ fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(ok, "every root must resolve: {out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The regression #283 is about. The workflow writes `{"if": [...]}` verbatim
@@ -901,7 +897,8 @@ fn expect_reaches_metadata_temp_data_calls_and_the_audit_trail() {
 /// the intended number now fails where a stubbed run used to stay green.
 #[test]
 fn expect_calls_catches_jsonlogic_written_verbatim() {
-    let dir = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("rotate.case.json"),
         r#"{
@@ -918,13 +915,12 @@ fn expect_calls_catches_jsonlogic_written_verbatim() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(!ok, "the verbatim-logic write must be caught: {out}");
     assert!(
         out.contains("generation"),
         "the diff must name the field that was not what it looks like: {out}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Presence is strict in `expect_calls`, unlike `expect`: `null` asserts
@@ -933,7 +929,8 @@ fn expect_calls_catches_jsonlogic_written_verbatim() {
 /// case in the issue.
 #[test]
 fn expect_calls_treats_a_null_expectation_as_written_not_absent() {
-    let dir = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("absent.case.json"),
         r#"{
@@ -947,17 +944,17 @@ fn expect_calls_treats_a_null_expectation_as_written_not_absent() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(!ok, "an unwritten field must not pass as null: {out}");
     assert!(out.contains("not written"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The count is part of the assertion, so an unexpected extra call fails — and
 /// an empty list asserts a function was never called at all.
 #[test]
 fn expect_calls_checks_the_call_count() {
-    let dir = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("count.case.json"),
         r#"{
@@ -969,7 +966,7 @@ fn expect_calls_checks_the_call_count() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(
         !ok,
         "one recorded write against zero expected must fail: {out}"
@@ -978,14 +975,14 @@ fn expect_calls_checks_the_call_count() {
         out.contains("expected 0 call(s), recorded 1"),
         "the diff must give both counts: {out}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Branch coverage in one line — and it fails when a condition sends the run
 /// down a different path.
 #[test]
 fn expect_tasks_asserts_which_tasks_ran() {
-    let dir = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let scratch = suite_with(VERBATIM_LOGIC_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("ran.case.json"),
         r#"{
@@ -1007,29 +1004,28 @@ fn expect_tasks_asserts_which_tasks_ran() {
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(!ok, "the wrong expectation must fail: {out}");
     assert!(out.contains("1 passed, 1 failed"), "{out}");
     assert!(out.contains("tasks: expected"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The root is required. A bare path used to mean `data.` and is now refused
 /// before the workflow runs, with the fix in the message.
 #[test]
 fn an_unrooted_expect_path_is_refused_with_the_fix() {
-    let dir = suite_with(HEADER_BRANCH_WORKFLOW);
+    let scratch = suite_with(HEADER_BRANCH_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("bare.case.json"),
         r#"{"workflow": "wf.json", "input": {}, "expect": {"mode": "password"}}"#,
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(!ok, "an unrooted path must fail: {out}");
     assert!(out.contains("did you mean 'data.mode'"), "{out}");
     assert!(out.contains("temp_data"), "the roots must be listed: {out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The silent miss the roots exist to remove: `metadata.absent` used to resolve
@@ -1037,20 +1033,20 @@ fn an_unrooted_expect_path_is_refused_with_the_fix() {
 /// matches absent — *pass*. A typo'd root is the same class and now fails too.
 #[test]
 fn a_typo_in_the_root_no_longer_passes_silently() {
-    let dir = suite_with(HEADER_BRANCH_WORKFLOW);
+    let scratch = suite_with(HEADER_BRANCH_WORKFLOW);
+    let dir = scratch.path();
     std::fs::write(
         dir.join("typo.case.json"),
         r#"{"workflow": "wf.json", "input": {}, "expect": {"dat.mode": null}}"#,
     )
     .unwrap();
 
-    let (ok, out) = run_suite(&dir);
+    let (ok, out) = run_suite(dir);
     assert!(
         !ok,
         "a typo'd root expecting null must not pass silently: {out}"
     );
     assert!(out.contains("has no root"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `dry-run` publishes the same roots the case format uses, so a path read off
@@ -1142,10 +1138,8 @@ fn lint_warns_on_unresolvable_logic_and_denies_it_on_request() {
 // ============================================================
 
 /// A directory holding whatever files a test writes.
-fn temp_defs() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("orion-defs-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_defs() -> ScratchDir {
+    ScratchDir::new("defs")
 }
 
 fn lint_dir(dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
@@ -1164,7 +1158,8 @@ fn lint_dir(dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
 /// of its dangling references live in files `lint <file>` never opens.
 #[test]
 fn set_mode_catches_references_a_single_file_lint_cannot_see() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("probe.json"),
         r#"{"workflow_id":"probe","name":"probe","tasks":[
@@ -1186,18 +1181,18 @@ fn set_mode_catches_references_a_single_file_lint_cannot_see() {
         "per-file lint must keep its behaviour"
     );
 
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "set mode must fail: {report}");
     assert!(report.contains("closure.connector"), "{report}");
     assert!(report.contains("closure.channel_call"), "{report}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A reference the set deliberately does not contain is declarable, the way a
 /// package declares `requires`.
 #[test]
 fn a_boundary_admits_a_reference_the_set_does_not_contain() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
@@ -1206,19 +1201,19 @@ fn a_boundary_admits_a_reference_the_set_does_not_contain() {
     )
     .unwrap();
 
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "empty boundary is the default: {report}");
 
-    let (ok, report) = lint_dir(&dir, &["--requires-channel", "deployed-elsewhere"]);
+    let (ok, report) = lint_dir(dir, &["--requires-channel", "deployed-elsewhere"]);
     assert!(ok, "a declared boundary must satisfy closure: {report}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Entities are found by shape, and a fixture beside them is reported as
 /// skipped rather than silently dropped or misread as a broken entity.
 #[test]
 fn non_entities_are_reported_not_silently_ignored() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::create_dir_all(dir.join("nested")).unwrap();
     std::fs::write(
         dir.join("nested/wf.json"),
@@ -1229,7 +1224,7 @@ fn non_entities_are_reported_not_silently_ignored() {
     std::fs::write(dir.join("request.json"), r#"{"data":{"amount":5}}"#).unwrap();
     std::fs::write(dir.join("broken.json"), r#"{oops"#).unwrap();
 
-    let (_, report) = lint_dir(&dir, &[]);
+    let (_, report) = lint_dir(dir, &[]);
     assert!(
         report.contains("request.json is not a channel, workflow or connector"),
         "a skipped file must be named: {report}"
@@ -1242,26 +1237,26 @@ fn non_entities_are_reported_not_silently_ignored() {
         report.contains("1 workflow(s)"),
         "the nested entity must be found — a one-level walk would miss it: {report}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A directory that yields nothing is an error, never a green run — the same
 /// rule `orion-server test` applies to a suite that matched no cases.
 #[test]
 fn a_directory_with_no_definitions_is_an_error() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(dir.join("notes.md"), "nothing here").unwrap();
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "an empty set must not look like a pass: {report}");
     assert!(report.contains("no definitions found"), "{report}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Two channels claiming one route are served by whichever loads second,
 /// which is not a property anyone chose.
 #[test]
 fn a_route_claimed_twice_is_an_error() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
@@ -1277,21 +1272,21 @@ fn a_route_claimed_twice_is_an_error() {
         )
         .unwrap();
     }
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "{report}");
     assert!(report.contains("duplicate.route_pattern"), "{report}");
     assert!(
         report.contains("GET /users"),
         "the diff must name the route: {report}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A connector of the wrong type parses, imports, activates, and fails at the
 /// first request. Set mode is where it can be caught offline.
 #[test]
 fn a_connector_of_the_wrong_type_is_an_error() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("conn.json"),
         r#"{"name":"pg","connector_type":"db",
@@ -1305,21 +1300,21 @@ fn a_connector_of_the_wrong_type_is_an_error() {
               "connector":"pg","method":"GET","path":"/x","output":"data.r"}}}]}"#,
     )
     .unwrap();
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "{report}");
     assert!(report.contains("type.connector"), "{report}");
     assert!(
         report.contains("needs a http connector"),
         "the message must name both types: {report}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Warnings do not fail set mode, and `--deny-warnings` promotes them — the
 /// same flag and the same meaning it already has for a single file.
 #[test]
 fn set_mode_warnings_gate_only_under_deny_warnings() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
@@ -1335,16 +1330,15 @@ fn set_mode_warnings_gate_only_under_deny_warnings() {
     )
     .unwrap();
 
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(ok, "a warning must not fail set mode: {report}");
     assert!(report.contains("logic.unresolvable"), "{report}");
 
-    let (ok, _) = lint_dir(&dir, &["--deny-warnings"]);
+    let (ok, _) = lint_dir(dir, &["--deny-warnings"]);
     assert!(
         !ok,
         "--deny-warnings must gate the same way it does per-file"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The repository's own packages are a real definition set and must lint
@@ -1366,8 +1360,9 @@ fn the_shipped_examples_lint_clean_as_a_set() {
 // ============================================================
 
 /// A definitions directory holding a value catalog and one fragment.
-fn temp_defs_with_shared() -> std::path::PathBuf {
-    let dir = temp_defs();
+fn temp_defs_with_shared() -> ScratchDir {
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::create_dir_all(dir.join("fragments")).unwrap();
     std::fs::write(
         dir.join("common.json"),
@@ -1385,14 +1380,15 @@ fn temp_defs_with_shared() -> std::path::PathBuf {
                   { "path": "data.denied", "logic": { "$param": "message" } } ] } } } ] } } }"#,
     )
     .unwrap();
-    dir
+    scratch
 }
 
 /// The whole point: one catalog entry, spliced, so an error string cannot
 /// drift into three spellings across the set.
 #[test]
 fn a_shared_reference_expands_and_runs() {
-    let dir = temp_defs_with_shared();
+    let scratch = temp_defs_with_shared();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"name":"w","condition":true,"tasks":[
@@ -1429,7 +1425,6 @@ fn a_shared_reference_expands_and_runs() {
     assert_eq!(parsed["trace"]["steps"][0]["task_id"], "g.write");
 
     let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Without a catalog, an unexpanded reference reaches validation as a task
@@ -1437,7 +1432,8 @@ fn a_shared_reference_expands_and_runs() {
 /// command names the cause instead.
 #[test]
 fn a_reference_without_a_catalog_names_the_cause() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"name":"w","tasks":[{"id":"g","use":"deny"}]}"#,
@@ -1453,14 +1449,14 @@ fn a_reference_without_a_catalog_names_the_cause() {
         stderr.contains("fragment 'deny'") && stderr.contains("--definitions"),
         "the error must name the reference and the missing flag: {stderr}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A typo'd reference fails at lint, which is the whole reason the set lint
 /// (#286) is this feature's prerequisite.
 #[test]
 fn an_unresolvable_reference_fails_the_set_lint() {
-    let dir = temp_defs_with_shared();
+    let scratch = temp_defs_with_shared();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
@@ -1469,11 +1465,10 @@ fn an_unresolvable_reference_fails_the_set_lint() {
                "output":"temp_data.u"}}}]}"#,
     )
     .unwrap();
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "{report}");
     assert!(report.contains("closure.shared_value"), "{report}");
     assert!(report.contains("constants.dbb"), "{report}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// In set mode the catalog is found without a flag, and the splice satisfies
@@ -1481,7 +1476,8 @@ fn an_unresolvable_reference_fails_the_set_lint() {
 /// failure to splice would surface as a REQUIRED error.
 #[test]
 fn set_mode_resolves_the_catalog_without_a_flag() {
-    let dir = temp_defs_with_shared();
+    let scratch = temp_defs_with_shared();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("conn.json"),
         r#"{"name":"mongo","connector_type":"db",
@@ -1496,7 +1492,7 @@ fn set_mode_resolves_the_catalog_without_a_flag() {
                "output":"temp_data.u"}}}]}"#,
     )
     .unwrap();
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(
         ok,
         "the spliced connector must satisfy the schema: {report}"
@@ -1505,14 +1501,14 @@ fn set_mode_resolves_the_catalog_without_a_flag() {
         report.contains("2 shared value(s), 1 fragment(s)"),
         "the summary must report the catalog: {report}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A sibling key overrides the shared value, which is what lets one field be
 /// changed at a call site without copying the rest.
 #[test]
 fn a_call_site_can_override_one_field_of_a_shared_value() {
-    let dir = temp_defs_with_shared();
+    let scratch = temp_defs_with_shared();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"name":"w","condition":true,"tasks":[
@@ -1541,7 +1537,6 @@ fn a_call_site_can_override_one_field_of_a_shared_value() {
         "the rest is spliced"
     );
     let _ = std::fs::remove_file(&input);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ============================================================
@@ -1615,7 +1610,8 @@ fn tasks_inside_a_group_are_validated_with_nested_paths() {
 /// from a guard clause passes a set lint that exists to catch exactly that.
 #[test]
 fn closure_checking_reaches_inside_a_group() {
-    let dir = temp_defs();
+    let scratch = temp_defs();
+    let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
         r#"{"workflow_id":"w","name":"w","tasks":[
@@ -1625,11 +1621,10 @@ fn closure_checking_reaches_inside_a_group() {
                   "filter":{},"output":"temp_data.z"}}}]}]}"#,
     )
     .unwrap();
-    let (ok, report) = lint_dir(&dir, &[]);
+    let (ok, report) = lint_dir(dir, &[]);
     assert!(!ok, "{report}");
     assert!(report.contains("closure.connector"), "{report}");
     assert!(report.contains("nowhere"), "{report}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Groups and tasks share one id namespace — the engine refuses a collision at
@@ -1660,4 +1655,152 @@ fn a_flat_workflow_is_unaffected_by_the_step_walk() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packages");
     let (ok, report) = lint_dir(&dir, &[]);
     assert!(ok, "the shipped packages must still lint clean: {report}");
+}
+
+/// `env://` is the documented way to author a connector secret, so the
+/// inventory line the set lint prints for one must not gate a pipeline.
+/// Counting it as a warning left `--deny-warnings` failing on every real set,
+/// which is the same as not shipping the flag.
+#[test]
+fn an_env_reference_is_reported_without_failing_deny_warnings() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"crm","connector_type":"http","config":{
+             "url":"https://example.com",
+             "headers":{"Authorization":"env://CRM_TOKEN"}}}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "a clean set must lint clean: {report}");
+    assert!(
+        report.contains("CRM_TOKEN"),
+        "the environment inventory is the point of the line: {report}"
+    );
+    assert!(
+        report.contains("0 warning(s)"),
+        "an inventory note is not a warning: {report}"
+    );
+
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(
+        ok,
+        "--deny-warnings must not gate on an env:// inventory note: {report}"
+    );
+}
+
+/// The inventory covers every scheme this build can resolve, not just
+/// `env://` — a set authored against Vault would otherwise report clean and
+/// then be missing a secret at deploy. And it uses the masking policy's strict
+/// predicate, so a `postgres://user:password@host` connection string is a
+/// connection string, not a secret reference.
+#[test]
+fn the_secret_inventory_covers_every_resolvable_scheme() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"db","connector_type":"db","config":{
+             "connection_string":"postgres://user:password@host/db",
+             "options":{"ca":"vault://secret/db#ca"}}}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("vault://secret/db#ca"),
+        "a vault reference belongs in the inventory: {report}"
+    );
+    assert!(
+        !report.contains("postgres://user:password@host"),
+        "a connection string is not a secret reference: {report}"
+    );
+}
+
+/// Writes a definition set of one workflow plus the given channel documents.
+fn defs_with_channels(channels: &[&str]) -> ScratchDir {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+    )
+    .unwrap();
+    for (i, ch) in channels.iter().enumerate() {
+        std::fs::write(dir.join(format!("ch{i}.json")), ch).unwrap();
+    }
+    scratch
+}
+
+/// The lint projects a route the way the route table does, so the gate and the
+/// thing being gated agree. Each of these disagreed while the lint compared
+/// pattern strings and folded methods into an "ANY" sentinel of its own.
+#[test]
+fn route_collisions_are_judged_the_way_the_route_table_judges_them() {
+    // Parameter *names* do not distinguish routes: `/o/{id}` and
+    // `/o/{orderId}` are one entry in the table, so they collide.
+    let scratch = defs_with_channels(&[
+        r#"{"channel_id":"c0","name":"a","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/o/{id}","methods":["GET"],"workflow_id":"w"}"#,
+        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/o/{orderId}","methods":["GET"],"workflow_id":"w"}"#,
+    ]);
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(
+        !ok && report.contains("duplicate.route_pattern"),
+        "differing param names are the same route: {report}"
+    );
+
+    // No `methods` means every method, so it overlaps one that names GET.
+    let scratch = defs_with_channels(&[
+        r#"{"channel_id":"c0","name":"a","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","workflow_id":"w"}"#,
+        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["GET"],"workflow_id":"w"}"#,
+    ]);
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(
+        !ok && report.contains("duplicate.route_pattern"),
+        "an unrestricted channel claims every method: {report}"
+    );
+
+    // Different priorities are a deliberate override, which activation allows.
+    let scratch = defs_with_channels(&[
+        r#"{"channel_id":"c0","name":"a","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["GET"],"workflow_id":"w","priority":0}"#,
+        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["GET"],"workflow_id":"w","priority":10}"#,
+    ]);
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(
+        ok,
+        "a higher-priority override activates fine and must lint clean: {report}"
+    );
+
+    // Disjoint methods on one pattern never match the same request.
+    let scratch = defs_with_channels(&[
+        r#"{"channel_id":"c0","name":"a","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["GET"],"workflow_id":"w"}"#,
+        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["POST"],"workflow_id":"w"}"#,
+    ]);
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(ok, "disjoint methods do not collide: {report}");
+}
+
+/// A Kafka channel registers no HTTP route, so a stray `route_pattern` on one
+/// is not a claim on anything and must not collide.
+#[test]
+fn a_non_rest_channel_claims_no_route() {
+    let scratch = defs_with_channels(&[
+        r#"{"channel_id":"c0","name":"a","channel_type":"async","protocol":"kafka",
+            "topic":"t0","route_pattern":"/users","workflow_id":"w"}"#,
+        r#"{"channel_id":"c1","name":"b","channel_type":"sync","protocol":"rest",
+            "route_pattern":"/users","methods":["GET"],"workflow_id":"w"}"#,
+    ]);
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(ok, "a kafka channel serves no route: {report}");
 }

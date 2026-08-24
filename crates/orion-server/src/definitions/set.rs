@@ -196,11 +196,23 @@ impl DefinitionSet {
     }
 }
 
-fn walk(
+/// The one traversal of a definition directory: which files are part of a set,
+/// and what each one parsed to.
+///
+/// Both loaders drive this — the full set load below, and
+/// [`super::SharedDefinitions::from_directory`], which wants only the shared
+/// documents. They had a walk each, and the copies had already drifted on what
+/// happens to a file that will not parse. What counts as part of a set is a
+/// single decision, so it is made once here; the callers differ only in what
+/// they keep.
+///
+/// `visit` receives every `.json` file found, with its parsed document or the
+/// reason it could not be read. Hidden entries, `target/` and `node_modules/`
+/// are skipped without comment — they are noise, not omissions worth
+/// reporting.
+pub(super) fn walk_json_files(
     dir: &Path,
-    set: &mut DefinitionSet,
-    report: &mut LoadReport,
-    shared_docs: &mut Vec<(String, Value)>,
+    visit: &mut impl FnMut(std::path::PathBuf, Result<Value, String>),
 ) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
@@ -208,29 +220,36 @@ fn walk(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        // Dotfiles and build output are noise, not skips worth reporting.
         if name.starts_with('.') || name == "target" || name == "node_modules" {
             continue;
         }
         if path.is_dir() {
-            walk(&path, set, report, shared_docs)?;
+            walk_json_files(&path, visit)?;
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
-            Err(e) => {
-                report.unparseable.push((path, e.to_string()));
-                continue;
-            }
-        };
-        let doc: Value = match serde_json::from_str(&raw) {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()));
+        visit(path, parsed);
+    }
+    Ok(())
+}
+
+fn walk(
+    dir: &Path,
+    set: &mut DefinitionSet,
+    report: &mut LoadReport,
+    shared_docs: &mut Vec<(String, Value)>,
+) -> Result<(), String> {
+    walk_json_files(dir, &mut |path, parsed| {
+        let doc = match parsed {
             Ok(doc) => doc,
             Err(e) => {
-                report.unparseable.push((path, e.to_string()));
-                continue;
+                report.unparseable.push((path, e));
+                return;
             }
         };
         match Entity::classify(&doc) {
@@ -244,8 +263,7 @@ fn walk(
             }
             None => report.skipped.push(path),
         }
-    }
-    Ok(())
+    })
 }
 
 #[cfg(test)]

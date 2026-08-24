@@ -213,7 +213,7 @@ pub fn encode_body(body: &Value, format: BodyFormat) -> dataflow_rs::Result<Enco
             other => {
                 return Err(DataflowError::Validation(format!(
                     "body_format 'text' requires the body to be a string, got {}",
-                    json_type_name(other)
+                    crate::engine::utils::json_kind(other)
                 )));
             }
         },
@@ -233,7 +233,7 @@ fn encode_form(body: &Value) -> dataflow_rs::Result<String> {
     let Some(obj) = body.as_object() else {
         return Err(DataflowError::Validation(format!(
             "body_format 'form' requires the body to be an object of key/value pairs, got {}",
-            json_type_name(body)
+            crate::engine::utils::json_kind(body)
         )));
     };
     let mut ser = url::form_urlencoded::Serializer::new(String::new());
@@ -272,19 +272,8 @@ fn form_value_error(key: &str, value: &Value) -> DataflowError {
     DataflowError::Validation(format!(
         "body_format 'form' cannot encode '{key}' ({}): entries must be scalars \
          or arrays of scalars — form encoding has no canonical nesting",
-        json_type_name(value)
+        crate::engine::utils::json_kind(value)
     ))
-}
-
-pub(super) fn json_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "a boolean",
-        Value::Number(_) => "a number",
-        Value::String(_) => "a string",
-        Value::Array(_) => "an array",
-        Value::Object(_) => "an object",
-    }
 }
 
 /// The per-call half of one HTTP request — what varies task to task, as

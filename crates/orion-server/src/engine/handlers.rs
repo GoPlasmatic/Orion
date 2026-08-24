@@ -72,36 +72,21 @@ pub fn known_functions() -> impl Iterator<Item = &'static str> {
 /// to 1–3 edits — which covers the realistic typo shapes (a transposed pair,
 /// a doubled letter, a missing suffix) and nothing else.
 pub fn suggest_known_function(name: &str) -> Option<&'static str> {
+    let needle: Vec<char> = name.chars().collect();
     known_functions()
-        .map(|candidate| (edit_distance(name, candidate), candidate))
+        .map(|candidate| {
+            let candidate_chars: Vec<char> = candidate.chars().collect();
+            (
+                crate::text::edit_distance_chars(&needle, &candidate_chars),
+                candidate,
+            )
+        })
         .filter(|(distance, candidate)| {
             let window = (name.len().min(candidate.len()) / 3).clamp(1, 3);
             *distance <= window
         })
         .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
         .map(|(_, candidate)| candidate)
-}
-
-/// Levenshtein distance, two-row form — the same shape as
-/// `config::unknown_env::edit_distance`. The candidate set is ~27 short
-/// names, so this is a few hundred cells per misspelled task name.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    if a.is_empty() {
-        return b.len();
-    }
-    let mut previous: Vec<usize> = (0..=b.len()).collect();
-    let mut current = vec![0usize; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        current[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let substitution = previous[j] + usize::from(ca != cb);
-            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-    previous[b.len()]
 }
 
 /// Function names that require a connector reference.

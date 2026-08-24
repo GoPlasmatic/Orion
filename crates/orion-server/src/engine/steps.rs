@@ -84,12 +84,33 @@ fn descend<'a>(tasks: &'a Value, path: &str, depth: usize, out: &mut Steps<'a>) 
 }
 
 /// Just the leaf tasks, for the walks that do not need paths.
+///
+/// Its own recursion rather than [`walk_steps`] with the paths dropped: the
+/// connector-rename guard calls this once per active workflow, and building a
+/// `tasks[1].tasks[0]` string per task only to discard it made that scan
+/// allocate proportionally to the whole estate. Same traversal, same depth
+/// cap — only the addresses are not computed.
 pub fn leaf_tasks(tasks: &Value) -> Vec<&Value> {
-    walk_steps(tasks)
-        .tasks
-        .into_iter()
-        .map(|(_, t)| t)
-        .collect()
+    let mut out = Vec::new();
+    push_leaves(tasks, 1, &mut out);
+    out
+}
+
+fn push_leaves<'a>(tasks: &'a Value, depth: usize, out: &mut Vec<&'a Value>) {
+    let Some(arr) = tasks.as_array() else {
+        return;
+    };
+    for step in arr {
+        if !is_group(step) {
+            out.push(step);
+            continue;
+        }
+        if depth < MAX_STEP_DEPTH
+            && let Some(inner) = step.get("tasks")
+        {
+            push_leaves(inner, depth + 1, out);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +209,34 @@ mod tests {
         let steps = walk_steps(&tasks);
         assert_eq!(steps.tasks.len(), 1);
         assert!(steps.groups.is_empty());
+    }
+
+    /// [`leaf_tasks`] skips the path formatting, which makes it a second
+    /// traversal — so it is pinned to the first one here. The premise of this
+    /// module is that every walk sees the same tasks; two that disagree would
+    /// be the drift it exists to prevent.
+    #[test]
+    fn leaf_tasks_sees_exactly_what_walk_steps_sees() {
+        let mut deep = json!([task("leaf")]);
+        for i in 0..MAX_STEP_DEPTH + 2 {
+            deep = json!([{"id": format!("g{i}"), "tasks": deep}]);
+        }
+        let cases = [
+            json!([task("a"), task("b")]),
+            json!([task("first"), {"id": "guard", "tasks": [task("x"), task("y")]}, task("last")]),
+            json!([{"id": "outer", "tasks": [{"id": "inner", "tasks": [task("deep")]}]}]),
+            json!([{"id": "broken", "name": "broken"}]),
+            json!([{"id": "empty", "tasks": []}]),
+            json!({"not": "an array"}),
+            deep,
+        ];
+        for tasks in cases {
+            let expected: Vec<&Value> = walk_steps(&tasks)
+                .tasks
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect();
+            assert_eq!(leaf_tasks(&tasks), expected, "disagreement on {tasks}");
+        }
     }
 }

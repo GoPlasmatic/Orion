@@ -92,7 +92,7 @@ impl SharedDefinitions {
         let mut shared = SharedDefinitions::default();
         let mut findings = Vec::new();
         let mut docs: Vec<(String, Value)> = Vec::new();
-        collect(dir, &mut docs)?;
+        collect(dir, &mut docs, &mut findings)?;
         // Sorted so a name defined twice is reported against the same file on
         // every machine.
         docs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -229,10 +229,17 @@ impl SharedDefinitions {
         for task in tasks {
             let Some(name) = task.get("use").and_then(Value::as_str) else {
                 // A task group holds steps of its own, and a fragment is as
-                // usable inside a guard clause as outside one.
-                if let Some(inner) = task.get("tasks").and_then(Value::as_array) {
+                // usable inside a guard clause as outside one. The group test
+                // is the engine's own, so a step this expander declines to
+                // descend into is exactly one the flattener calls a task —
+                // a malformed group is left alone here and reported as the
+                // broken step it is by validation, rather than being quietly
+                // reshaped on the way through.
+                if crate::engine::is_group(task) {
                     let mut group = task.clone();
-                    group["tasks"] = Value::Array(self.expand_tasks(inner, origin, findings));
+                    if let Some(inner) = task.get("tasks").and_then(Value::as_array) {
+                        group["tasks"] = Value::Array(self.expand_tasks(inner, origin, findings));
+                    }
                     out.push(group);
                     continue;
                 }
@@ -388,35 +395,37 @@ pub fn first_reference(doc: &Value) -> Option<String> {
     }
 }
 
-/// Recursive walk for shared documents only.
-fn collect(dir: &std::path::Path, out: &mut Vec<(String, Value)>) -> Result<(), String> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with('.') || name == "target" || name == "node_modules" {
-            continue;
+/// Keep the shared documents from the set walk, and report what would not
+/// parse.
+///
+/// A file that cannot be read is *not* silently skipped, even though this
+/// pass wants only the shared half: the file it could not parse may have been
+/// the catalog, and dropping it in silence turned a syntax error in
+/// `constants.json` into "'constants.db' is not defined in the set" — the
+/// symptom, reported against the file that was written correctly. A warning
+/// rather than an error because most files under the directory are entities
+/// this pass has no need of, and a single-file `dry-run` should not be
+/// blocked by a broken workflow it was never going to read.
+fn collect(
+    dir: &std::path::Path,
+    out: &mut Vec<(String, Value)>,
+    findings: &mut Vec<Finding>,
+) -> Result<(), String> {
+    super::set::walk_json_files(dir, &mut |path, parsed| match parsed {
+        Ok(doc) => {
+            if SharedDefinitions::is_shared_document(&doc) {
+                out.push((path.display().to_string(), doc));
+            }
         }
-        if path.is_dir() {
-            collect(&path, out)?;
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        if SharedDefinitions::is_shared_document(&doc) {
-            out.push((path.display().to_string(), doc));
-        }
-    }
-    Ok(())
+        Err(e) => findings.push(Finding::warning(
+            "shared.unparseable",
+            path.display().to_string(),
+            format!(
+                "could not be read as JSON ({e}), so any shared value or fragment \
+                 it declares is missing from this catalog"
+            ),
+        )),
+    })
 }
 
 /// Merge `target` into the object the `$from` sat in.

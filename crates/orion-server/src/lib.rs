@@ -49,4 +49,5 @@ pub(crate) mod query;
 pub mod queue;
 pub mod server;
 pub mod storage;
+pub(crate) mod text;
 pub mod validation;

@@ -362,76 +362,47 @@ pub struct CatalogueEntry {
 /// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
 /// with no Orion-declared input schema.
 ///
-/// `category` is `data` — the fourth wire value, matching the grouping
-/// `reference/functions.md` already gives these in its summary table.
+/// `(name, description, aliases)` — the three things that vary. Every entry is
+/// `category: "data"` (the fourth wire value, matching the grouping
+/// `reference/functions.md` already gives these in its summary table),
+/// `source: Engine`, and no input schema, so [`catalogue`] supplies those
+/// rather than each row restating them.
 /// Descriptions are the code's, and `functions_docs_drift_test` checks the
 /// page against them rather than the reverse.
-const ENGINE_BUILTINS: &[CatalogueEntry] = &[
-    CatalogueEntry {
-        name: "parse_json",
-        description: "Parse the raw payload into the data context.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "parse_xml",
-        description: "Parse an XML payload into the data context.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "map",
-        description: "Transform and reshape data with JSONLogic mappings.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "filter",
-        description: "Gate the pipeline on a JSONLogic condition.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "validation",
-        description: "Collect validation errors from JSONLogic rules.",
-        category: "data",
-        source: Source::Engine,
+const ENGINE_BUILTINS: &[(&str, &str, &[&str])] = &[
+    (
+        "parse_json",
+        "Parse the raw payload into the data context.",
+        &[],
+    ),
+    (
+        "parse_xml",
+        "Parse an XML payload into the data context.",
+        &[],
+    ),
+    (
+        "map",
+        "Transform and reshape data with JSONLogic mappings.",
+        &[],
+    ),
+    ("filter", "Gate the pipeline on a JSONLogic condition.", &[]),
+    (
+        "validation",
+        "Collect validation errors from JSONLogic rules.",
         // Upstream accepts both spellings; they are one function.
-        aliases: &["validate"],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "log",
-        description: "Emit a structured log line.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "publish_json",
-        description: "Serialize a context field to a JSON string.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
-    CatalogueEntry {
-        name: "publish_xml",
-        description: "Serialize a context field to an XML string.",
-        category: "data",
-        source: Source::Engine,
-        aliases: &[],
-        input_fields: None,
-    },
+        &["validate"],
+    ),
+    ("log", "Emit a structured log line.", &[]),
+    (
+        "publish_json",
+        "Serialize a context field to a JSON string.",
+        &[],
+    ),
+    (
+        "publish_xml",
+        "Serialize a context field to an XML string.",
+        &[],
+    ),
 ];
 
 /// Every function a workflow may name, sorted by name.
@@ -450,7 +421,18 @@ pub fn catalogue() -> Vec<CatalogueEntry> {
             aliases: &[],
             input_fields: Some(schema.input_fields),
         })
-        .chain(ENGINE_BUILTINS.iter().cloned())
+        .chain(
+            ENGINE_BUILTINS
+                .iter()
+                .map(|&(name, description, aliases)| CatalogueEntry {
+                    name,
+                    description,
+                    category: "data",
+                    source: Source::Engine,
+                    aliases,
+                    input_fields: None,
+                }),
+        )
         .collect();
     out.sort_by_key(|e| e.name);
     out

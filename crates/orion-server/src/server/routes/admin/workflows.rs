@@ -914,9 +914,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // compiles here exactly as it will on the serving engine.
     let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
 
-    if let Some(tasks) = req.tasks.as_array() {
-        validate_tasks(tasks, &dl, state, &mut errors, &mut warnings).await;
-    }
+    validate_tasks(&req.tasks, &dl, state, &mut errors, &mut warnings).await;
 
     validate_workflow_condition(&req.condition, &dl, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
@@ -950,8 +948,16 @@ fn validate_task_array_shape(req: &CreateWorkflowRequest, errors: &mut Vec<Valid
 /// Validate all tasks. Walks the task list once, delegating per-task checks
 /// to [`errors_for_task`] and tracking cross-task state — duplicate IDs, and
 /// the running set of context paths earlier tasks have written — here.
+///
+/// Flattened, like every other walk over authored tasks: since 3.6 an element
+/// carrying `tasks` is a group, so iterating the top level would report the
+/// group itself as a task missing its `name` and `function` — refusing on
+/// `/validate` a workflow that create accepts and the engine runs — and would
+/// leave the tasks inside it unchecked, and their writes unrecorded for the
+/// unwritten-read pass. Groups get their own shape checks from
+/// `validate_workflow_tasks_schema`, which has already run above.
 async fn validate_tasks(
-    tasks: &[Value],
+    tasks: &Value,
     dl: &datalogic_rs::Engine,
     state: &AppState,
     errors: &mut Vec<ValidationIssue>,
@@ -960,12 +966,12 @@ async fn validate_tasks(
     let mut seen_ids: HashSet<&str> = HashSet::new();
     let mut written: Vec<String> = Vec::new();
 
-    for (i, task) in tasks.iter().enumerate() {
-        let (task_errors, task_warnings) = errors_for_task(i, task, dl, state).await;
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        let (task_errors, task_warnings) = errors_for_task(&path, task, dl, state).await;
         errors.extend(task_errors);
         warnings.extend(task_warnings);
 
-        warn_on_unwritten_reads(i, task, &mut written, warnings);
+        warn_on_unwritten_reads(&path, task, &mut written, warnings);
 
         // Cross-task check: duplicate task IDs.
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1004,7 +1010,7 @@ const MAX_UNWRITTEN_READ_WARNINGS: usize = 10;
 /// (reading into the object), and writing `data.order.total` covers a read of
 /// `data.order` (reading the object it lives in).
 fn warn_on_unwritten_reads(
-    i: usize,
+    path_prefix: &str,
     task: &Value,
     written: &mut Vec<String>,
     warnings: &mut Vec<ValidationIssue>,
@@ -1031,7 +1037,7 @@ fn warn_on_unwritten_reads(
     if let Some(condition) = task.get("condition") {
         for path in data_reads(condition) {
             if !is_written(&path, written) {
-                report(&path, format!("tasks[{i}].condition"));
+                report(&path, format!("{path_prefix}.condition"));
             }
         }
     }
@@ -1052,7 +1058,7 @@ fn warn_on_unwritten_reads(
                     if !is_written(&path, written) {
                         report(
                             &path,
-                            format!("tasks[{i}].function.input.mappings[{m}].logic"),
+                            format!("{path_prefix}.function.input.mappings[{m}].logic"),
                         );
                     }
                 }
@@ -1067,7 +1073,7 @@ fn warn_on_unwritten_reads(
     if let Some(input) = task.get("function").and_then(|f| f.get("input")) {
         for path in data_reads(input) {
             if !is_written(&path, written) {
-                report(&path, format!("tasks[{i}].function.input"));
+                report(&path, format!("{path_prefix}.function.input"));
             }
         }
     }
@@ -1168,7 +1174,7 @@ fn collect_data_reads(value: &Value, out: &mut Vec<String>) {
 /// All per-task validations (required fields, condition, function name,
 /// schema, connector reference). Returns `(errors, warnings)`.
 async fn errors_for_task(
-    i: usize,
+    path_prefix: &str,
     task: &Value,
     dl: &datalogic_rs::Engine,
     state: &AppState,
@@ -1179,8 +1185,8 @@ async fn errors_for_task(
     let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
     if task_id.is_empty() {
         errors.push(ValidationIssue {
-            field: format!("tasks[{i}].id"),
-            message: format!("Task at index {i} is missing 'id'"),
+            field: format!("{path_prefix}.id"),
+            message: format!("Task at {path_prefix} is missing 'id'"),
         });
     }
 
@@ -1191,8 +1197,8 @@ async fn errors_for_task(
         .is_empty()
     {
         errors.push(ValidationIssue {
-            field: format!("tasks[{i}].name"),
-            message: format!("Task at index {i} is missing 'name'"),
+            field: format!("{path_prefix}.name"),
+            message: format!("Task at {path_prefix} is missing 'name'"),
         });
     }
 
@@ -1204,8 +1210,8 @@ async fn errors_for_task(
 
     if fn_name.is_empty() {
         errors.push(ValidationIssue {
-            field: format!("tasks[{i}].function.name"),
-            message: format!("Task at index {i} is missing 'function.name'"),
+            field: format!("{path_prefix}.function.name"),
+            message: format!("Task at {path_prefix} is missing 'function.name'"),
         });
     }
 
@@ -1213,7 +1219,7 @@ async fn errors_for_task(
         && let Err(e) = dl.compile(condition)
     {
         errors.push(ValidationIssue {
-            field: format!("tasks[{i}].condition"),
+            field: format!("{path_prefix}.condition"),
             message: format!("Invalid JSONLogic in task condition: {e}"),
         });
     }
@@ -1233,7 +1239,7 @@ async fn errors_for_task(
         && state.connector_registry.get(connector_name).await.is_none()
     {
         warnings.push(ValidationIssue {
-            field: format!("tasks[{i}].function.input.connector"),
+            field: format!("{path_prefix}.function.input.connector"),
             message: format!("Connector '{connector_name}' not found in registry"),
         });
     }

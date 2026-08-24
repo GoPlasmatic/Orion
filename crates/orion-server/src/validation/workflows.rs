@@ -284,15 +284,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
                 "A task group's 'tasks' must be an array of steps",
             )),
         }
-        if let Some(terminal) = group.get("terminal")
-            && !terminal.is_boolean()
-        {
-            errors.push(FieldError::new(
-                format!("{path}.terminal"),
-                "TYPE_MISMATCH",
-                "'terminal' must be a boolean",
-            ));
-        }
+        check_terminal(group, path, &mut errors);
     }
 
     for (path, task) in &steps.tasks {
@@ -315,15 +307,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             ));
         }
 
-        if let Some(terminal) = task.get("terminal")
-            && !terminal.is_boolean()
-        {
-            errors.push(FieldError::new(
-                format!("{path}.terminal"),
-                "TYPE_MISMATCH",
-                "'terminal' must be a boolean",
-            ));
-        }
+        check_terminal(task, path, &mut errors);
 
         let function = task.get("function");
         let fn_name = function
@@ -416,8 +400,14 @@ fn check_step_id<'a>(
     seen: &mut std::collections::HashSet<&'a str>,
     errors: &mut Vec<FieldError>,
 ) {
-    match step.get("id").and_then(|v| v.as_str()).map(str::trim) {
-        None | Some("") => errors.push(FieldError::new(
+    // `trim`med for the emptiness test only — the untrimmed value is what the
+    // engine keys on, so that is what uniqueness is checked over.
+    let raw = step
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if raw.trim().is_empty() {
+        errors.push(FieldError::new(
             format!("{path}.id"),
             "REQUIRED",
             "Step 'id' is required and must be a non-empty string — it names \
@@ -425,24 +415,34 @@ fn check_step_id<'a>(
              `metadata.progress`, which workflow conditions can read. Without \
              one this workflow would be accepted and then fail to load, \
              taking its channel out of service",
-        )),
-        Some(id) => {
-            // `trim`ped for the emptiness test, but the untrimmed value is
-            // what the engine keys on.
-            let raw = step.get("id").and_then(|v| v.as_str()).unwrap_or(id);
-            if !seen.insert(raw) {
-                errors.push(FieldError::new(
-                    format!("{path}.id"),
-                    "DUPLICATE_TASK_ID",
-                    format!(
-                        "Duplicate step id '{raw}' — ids must be unique within a \
-                         workflow, across tasks and task groups alike. The engine \
-                         refuses to build one that repeats them, so this fails the \
-                         entire engine reload rather than just this workflow"
-                    ),
-                ));
-            }
-        }
+        ));
+        return;
+    }
+    if !seen.insert(raw) {
+        errors.push(FieldError::new(
+            format!("{path}.id"),
+            "DUPLICATE_TASK_ID",
+            format!(
+                "Duplicate step id '{raw}' — ids must be unique within a \
+                 workflow, across tasks and task groups alike. The engine \
+                 refuses to build one that repeats them, so this fails the \
+                 entire engine reload rather than just this workflow"
+            ),
+        ));
+    }
+}
+
+/// A step's `terminal` flag, shared by tasks and groups: optional, but a
+/// boolean when present. Any step may set it to end the workflow.
+fn check_terminal(step: &serde_json::Value, path: &str, errors: &mut Vec<FieldError>) {
+    if let Some(terminal) = step.get("terminal")
+        && !terminal.is_boolean()
+    {
+        errors.push(FieldError::new(
+            format!("{path}.terminal"),
+            "TYPE_MISMATCH",
+            "'terminal' must be a boolean",
+        ));
     }
 }
 

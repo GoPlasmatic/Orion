@@ -155,7 +155,7 @@ fn require_numeric_date(value: &Value, claim: &'static str) -> Result<(), Datafl
     Err(validation(&format!(
         "claims.{claim} must be a number of seconds since the Unix epoch \
          (NumericDate, RFC 7519 §2), got {}",
-        super::http_common::json_type_name(value)
+        crate::engine::utils::json_kind(value)
     )))
 }
 

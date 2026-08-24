@@ -76,7 +76,8 @@ const SELF_CONTAINED: [(&str, BuildRealHandler); 3] = [
 ];
 
 /// The names of the functions an offline run executes for real.
-pub fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
+#[cfg(test)]
+fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
     SELF_CONTAINED.iter().map(|(name, _)| *name)
 }
 
@@ -565,23 +566,18 @@ impl AsyncFunctionHandler for ChannelCallStub {
     }
 }
 
-/// Register a stub for every connector-backed function.
+/// Register a stub for every connector-backed function, writing every call it
+/// answers into `log`.
 ///
 /// Every name in `CUSTOM_HANDLER_FUNCTIONS` gets one, whether or not the stub
 /// file mentions it: a workflow calling an unstubbed function should be told
 /// which stub to add, and that only happens if a handler is there to say so.
 /// Registering none would reproduce the `FunctionNotFound` the old dry run gave.
 /// `every_stubbable_function_gets_a_handler` pins the coverage.
-pub fn build_stub_functions(
-    stubs: StubTable,
-) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
-    build_stub_functions_with_log(stubs, Arc::new(CallLog::new()))
-}
-
-/// [`build_stub_functions`] writing every call it answers into `log`.
 ///
-/// The two exist separately so a caller that does not read the log — anything
-/// but the `test` runner and `dry-run` — does not have to construct one.
+/// A log is always passed rather than being optional: both offline callers
+/// (`dry-run` and the `test` runner) read one, and the log-less wrapper that
+/// used to sit here had no caller outside this module's own tests.
 pub fn build_stub_functions_with_log(
     stubs: StubTable,
     log: Arc<CallLog>,
@@ -670,7 +666,7 @@ mod tests {
 
     #[test]
     fn every_stubbable_function_gets_a_handler() {
-        let fns = build_stub_functions(StubTable::new());
+        let fns = build_stub_functions_with_log(StubTable::new(), Arc::new(CallLog::new()));
         for name in crate::engine::CUSTOM_HANDLER_FUNCTIONS {
             assert!(fns.contains_key(*name), "no stub handler for {name}");
         }
@@ -891,8 +887,11 @@ mod tests {
         }))
         .expect("workflow parses");
 
-        let engine = dataflow_rs::Engine::new(vec![workflow], build_stub_functions(stubs))
-            .expect("engine builds");
+        let engine = dataflow_rs::Engine::new(
+            vec![workflow],
+            build_stub_functions_with_log(stubs, Arc::new(CallLog::new())),
+        )
+        .expect("engine builds");
         let mut message = dataflow_rs::Message::from_value(&json!({}));
         engine
             .process_message(&mut message)

@@ -83,8 +83,41 @@ fn canonical_segments(segments: &[RouteSegment]) -> String {
 /// F39 below — could land in only one of them, and activation would then be
 /// gated on a different notion of the route than the one being served.
 pub(crate) fn declared_route(ch: &Channel) -> Option<(String, Vec<String>)> {
-    let (segments, methods) = declared_segments(ch)?;
-    Some((canonical_segments(&segments), methods))
+    declared_route_parts(
+        &ch.protocol,
+        ch.route_pattern.as_deref(),
+        &ch.methods().unwrap_or_default(),
+    )
+}
+
+/// [`declared_route`] over the fields themselves rather than a stored row.
+///
+/// For the callers that hold a channel *definition* and not a `Channel` — the
+/// definition-set lint, which gates promotion on the same question activation
+/// asks. It had projected routes itself, comparing pattern strings and folding
+/// methods into an "ANY" sentinel, and so disagreed with the runtime in both
+/// directions: `/o/{id}` and `/o/{orderId}` are one route to the table and were
+/// two to the lint, while `methods: []` means *every* method here and matched
+/// nothing there. R7 again — one projection, or the gate is gating on a
+/// different notion of the route than the one being served.
+pub(crate) fn declared_route_parts(
+    protocol: &str,
+    route_pattern: Option<&str>,
+    methods: &[String],
+) -> Option<(String, Vec<String>)> {
+    if !serves_a_route(protocol) {
+        return None;
+    }
+    let pattern = route_pattern?;
+    Some((
+        canonical_segments(&parse_route_pattern(pattern)),
+        methods.to_vec(),
+    ))
+}
+
+/// Whether a channel of this protocol registers an HTTP route at all.
+fn serves_a_route(protocol: &str) -> bool {
+    protocol == ChannelProtocol::Rest.as_str() || protocol == ChannelProtocol::Http.as_str()
 }
 
 /// The same projection in the form [`RouteTable::build`] needs: parsed
@@ -101,9 +134,7 @@ fn declared_segments(ch: &Channel) -> Option<(Vec<RouteSegment>, Vec<String>)> {
     // declared route 404'd forever. `dynamic_handler` strips a trailing
     // `/async` before matching, so an async channel's pattern works at
     // `/{pattern}/async` with no further change.
-    if ch.protocol != ChannelProtocol::Rest.as_str()
-        && ch.protocol != ChannelProtocol::Http.as_str()
-    {
+    if !serves_a_route(&ch.protocol) {
         return None;
     }
     let pattern = ch.route_pattern.as_deref()?;

@@ -183,39 +183,22 @@ fn could_be_a_misspelled_override(name: &str, top_level: &[&str]) -> bool {
     name.contains(SECTION_SEPARATOR)
         || top_level
             .iter()
-            .any(|key| edit_distance(name, key) <= SUGGESTION_MAX_DISTANCE)
+            .any(|key| crate::text::edit_distance(name, key) <= SUGGESTION_MAX_DISTANCE)
 }
 
 /// The closest override name to `candidate`, when one is close enough that a
 /// typo is the likely explanation.
 fn nearest_key(candidate: &str, known: &BTreeSet<String>) -> Option<String> {
+    let needle: Vec<char> = candidate.chars().collect();
     known
         .iter()
-        .map(|key| (edit_distance(candidate, key), key))
+        .map(|key| {
+            let key_chars: Vec<char> = key.chars().collect();
+            (crate::text::edit_distance_chars(&needle, &key_chars), key)
+        })
         .filter(|(distance, _)| *distance <= SUGGESTION_MAX_DISTANCE)
         .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
         .map(|(_, key)| key.clone())
-}
-
-/// Levenshtein distance, two-row form. Env-var names are short and the set is
-/// ~110 entries, so this runs once at startup over a few thousand cells.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    if a.is_empty() {
-        return b.len();
-    }
-    let mut previous: Vec<usize> = (0..=b.len()).collect();
-    let mut current = vec![0usize; b.len() + 1];
-    for (i, ca) in a.iter().enumerate() {
-        current[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let substitution = previous[j] + usize::from(ca != cb);
-            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-    previous[b.len()]
 }
 
 #[cfg(test)]
@@ -483,16 +466,5 @@ mod tests {
         ] {
             assert!(message.contains(expected), "missing {expected}: {message}");
         }
-    }
-
-    #[test]
-    fn edit_distance_counts_single_character_edits() {
-        assert_eq!(edit_distance("", ""), 0);
-        assert_eq!(edit_distance("", "abc"), 3);
-        assert_eq!(edit_distance("abc", ""), 3);
-        assert_eq!(edit_distance("abc", "abc"), 0);
-        assert_eq!(edit_distance("abc", "abd"), 1);
-        assert_eq!(edit_distance("abc", "abcd"), 1);
-        assert_eq!(edit_distance("abc", "ac"), 1);
     }
 }

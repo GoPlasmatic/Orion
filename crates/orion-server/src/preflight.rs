@@ -261,11 +261,12 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
 /// omit it by opting into `identity` explicitly. It is a *migration* question,
 /// which is what this module is for.
 fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Finding> {
-    let Some(arr) = tasks.as_array() else {
-        return Vec::new();
-    };
     let mut findings = Vec::new();
-    for (i, task) in arr.iter().enumerate() {
+    // Flattened, like every other walk over authored tasks: a dialect task
+    // inside a guard clause is one the engine will run, and an upgrade scan
+    // that skipped it would report the estate clean and let the request fail
+    // in production — the failure this whole module exists to pre-empt.
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
         let Some(function) = task.get("function") else {
             continue;
         };
@@ -282,8 +283,7 @@ fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Finding> {
         let task_id = task
             .get("id")
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("tasks[{i}]"));
+            .map_or(path, str::to_string);
         findings.push(Finding {
             check: "14",
             entity: format!("workflow '{workflow}' task '{task_id}' ({fname})"),

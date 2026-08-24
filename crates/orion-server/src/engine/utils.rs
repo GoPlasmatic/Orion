@@ -246,7 +246,15 @@ pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
 }
 
 /// JSON type name for a validation message.
-fn json_kind(value: &Value) -> &'static str {
+/// A JSON value's type, named with its article, for "expected X, got Y"
+/// messages.
+///
+/// The article-bearing spelling, shared with the HTTP request builder.
+/// `functions::connector_helpers::json_type_name` is the same six arms without
+/// the articles, which reads better where it is interpolated into a sentence
+/// that already supplies one; the two are kept apart on purpose rather than
+/// having one call site's grammar dictate the other's.
+pub fn json_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "a boolean",

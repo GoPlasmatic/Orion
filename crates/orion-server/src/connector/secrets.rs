@@ -393,7 +393,7 @@ fn substitute(value: &mut Value, resolved: &std::collections::HashMap<String, St
 /// **Recognized prefixes:** only schemes that exactly match a registered
 /// resolver are resolved. `https://` is not in the registry and so flows
 /// through untouched.
-fn parse_reference(s: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_reference(s: &str) -> Option<(&str, &str)> {
     let (scheme, rest) = s.split_once("://")?;
     if scheme.is_empty()
         || !scheme

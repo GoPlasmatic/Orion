@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
+use crate::connector::ConnectorType;
+
 use super::finding::Finding;
 use super::set::{Boundary, DefinitionSet, Entity};
 use crate::storage::repositories::channels::CreateChannelRequest;
@@ -44,12 +46,6 @@ pub fn check(set: &DefinitionSet, boundary: &Boundary, require_explicit_ids: boo
     findings
 }
 
-/// What the connector pass learned, for the closure checks.
-struct Connectors {
-    /// name → declared `connector_type`.
-    by_name: BTreeMap<String, String>,
-}
-
 /// What the workflow pass learned.
 struct Workflows {
     ids: Vec<String>,
@@ -57,12 +53,11 @@ struct Workflows {
     tasks: Vec<(String, Value)>,
 }
 
-/// What the channel pass learned.
-struct Channels {
-    names: Vec<String>,
-}
-
-fn check_connectors(set: &DefinitionSet, findings: &mut Vec<Finding>) -> Connectors {
+/// name → declared `connector_type`, for the closure checks.
+fn check_connectors(
+    set: &DefinitionSet,
+    findings: &mut Vec<Finding>,
+) -> BTreeMap<String, &'static str> {
     let mut by_name = BTreeMap::new();
     let mut seen: Vec<String> = Vec::new();
     for def in set.iter(Entity::Connector) {
@@ -92,15 +87,9 @@ fn check_connectors(set: &DefinitionSet, findings: &mut Vec<Finding>) -> Connect
             ));
         }
         seen.push(req.name.clone());
-        by_name.insert(
-            req.name.clone(),
-            serde_json::to_value(req.connector_type)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default(),
-        );
+        by_name.insert(req.name.clone(), req.connector_type.as_str());
     }
-    Connectors { by_name }
+    by_name
 }
 
 fn check_workflows(
@@ -173,11 +162,13 @@ fn check_channels(
     workflow_ids: &[String],
     require_explicit_ids: bool,
     findings: &mut Vec<Finding>,
-) -> Channels {
+) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut channel_ids: Vec<String> = Vec::new();
-    // (method, pattern) → the channel that claimed it first.
-    let mut routes: BTreeMap<(String, String), String> = BTreeMap::new();
+    // (canonical route, methods, priority, the channel that claimed it first)
+    // — a list rather than a map because "same route" is now an overlap test,
+    // not a key lookup.
+    let mut routes: Vec<(String, Vec<String>, i64, String)> = Vec::new();
 
     for def in set.iter(Entity::Channel) {
         let req: CreateChannelRequest = match serde_json::from_value(def.doc.clone()) {
@@ -228,19 +219,41 @@ fn check_channels(
 
         // A route claimed twice is served by whichever channel the registry
         // happens to load second, which is not a property an author chose.
-        if let Some(pattern) = route_pattern(&def.doc) {
-            for method in methods(&def.doc) {
-                let key = (method.clone(), pattern.clone());
-                match routes.get(&key) {
-                    Some(first) => findings.push(Finding::error(
-                        "duplicate.route_pattern",
-                        format!("channel '{}'", req.name),
-                        format!("{method} {pattern} is already served by channel '{first}'"),
-                    )),
-                    None => {
-                        routes.insert(key, req.name.clone());
-                    }
-                }
+        //
+        // Projected and compared exactly as activation does
+        // (`ensure_route_is_unclaimed`): the canonical shape, so `/o/{id}` and
+        // `/o/{orderId}` are the one route they will be at runtime; method
+        // *overlap*, so an unrestricted channel collides with every method
+        // rather than with nothing; and only at equal priority, because a
+        // deliberate higher-priority override is how a route is meant to be
+        // taken over and must not fail the gate.
+        if let Some((route, route_methods)) = crate::channel::routing::declared_route_parts(
+            req.protocol.as_str(),
+            req.route_pattern.as_deref(),
+            req.methods.as_deref().unwrap_or_default(),
+        ) {
+            let clash = routes
+                .iter()
+                .find(|(other_route, other_methods, priority, _)| {
+                    *other_route == route
+                        && *priority == req.priority
+                        && crate::channel::routing::methods_overlap(other_methods, &route_methods)
+                });
+            match clash {
+                Some((_, _, _, first)) => findings.push(Finding::error(
+                    "duplicate.route_pattern",
+                    format!("channel '{}'", req.name),
+                    format!(
+                        "{} {route} at priority {} is already served by channel '{first}'",
+                        if route_methods.is_empty() {
+                            "every method on".to_string()
+                        } else {
+                            route_methods.join("/")
+                        },
+                        req.priority,
+                    ),
+                )),
+                None => routes.push((route, route_methods, req.priority, req.name.clone())),
             }
         }
 
@@ -261,44 +274,41 @@ fn check_channels(
             )),
         }
     }
-    Channels { names }
+    names
 }
 
 /// Task references that must resolve in the set or be declared on the
 /// boundary.
 fn check_closure(
     workflows: &Workflows,
-    connectors: &Connectors,
-    channels: &Channels,
+    connectors: &BTreeMap<String, &'static str>,
+    channels: &[String],
     boundary: &Boundary,
     findings: &mut Vec<Finding>,
 ) {
     for (workflow, tasks) in &workflows.tasks {
+        let entity = format!("workflow '{workflow}'");
         for r in crate::engine::connector_refs(tasks) {
-            let entity = format!("workflow '{workflow}'");
-            match connectors.by_name.get(r.connector) {
+            match connectors.get(r.connector) {
                 Some(declared) => {
                     // The type gate the artifact lint never applied: a
                     // `http_call` pointed at a `db` connector parses, imports,
                     // activates, and fails at the first request.
-                    if let Some(allowed) = crate::engine::required_connector_types(r.function) {
-                        let allowed: Vec<String> = allowed
-                            .iter()
-                            .filter_map(|t| serde_json::to_value(t).ok())
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect();
-                        if !declared.is_empty() && !allowed.iter().any(|a| a == declared) {
-                            findings.push(Finding::error(
-                                "type.connector",
-                                &entity,
-                                format!(
-                                    "'{}' needs a {} connector, but '{}' is type '{declared}'",
-                                    r.function,
-                                    allowed.join(" or "),
-                                    r.connector
-                                ),
-                            ));
-                        }
+                    if let Some(allowed) = crate::engine::required_connector_types(r.function)
+                        && !allowed.iter().any(|t| t.as_str() == *declared)
+                    {
+                        let allowed: Vec<&str> =
+                            allowed.iter().map(ConnectorType::as_str).collect();
+                        findings.push(Finding::error(
+                            "type.connector",
+                            &entity,
+                            format!(
+                                "'{}' needs a {} connector, but '{}' is type '{declared}'",
+                                r.function,
+                                allowed.join(" or "),
+                                r.connector
+                            ),
+                        ));
                     }
                 }
                 None if boundary.allows_connector(r.connector) => {}
@@ -315,7 +325,7 @@ fn check_closure(
 
         let (targets, dynamic) = crate::engine::channel_call_targets(tasks);
         for target in targets {
-            if !channels.names.iter().any(|n| n == target) && !boundary.allows_channel(target) {
+            if !channels.iter().any(|n| n == target) && !boundary.allows_channel(target) {
                 findings.push(Finding::error(
                     "closure.channel_call",
                     format!("workflow '{workflow}'"),
@@ -337,24 +347,27 @@ fn check_closure(
     }
 }
 
-/// Every `env://` reference in the set, reported once, so an operator can see
-/// what the set needs in its environment before deploying it.
+/// Every secret reference in the set, reported once, so an operator can see
+/// what the set needs deployed alongside it — `env://` variables and the
+/// other schemes this build resolves alike.
 ///
-/// A warning, not an error: this process is not the one that will serve the
-/// set, so its environment says nothing about whether the variable will be
-/// present where it matters.
+/// A note, not an error: this process is not the one that will serve the set,
+/// so its environment says nothing about whether the variable will be present
+/// where it matters. Not a warning either — there is nothing here to fix.
+/// `env://` is the documented way to author a secret, so counting these as
+/// warnings made `--deny-warnings` fail on every set that uses one.
 fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
     let mut refs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for def in &set.definitions {
         collect_env(&def.doc, def, &mut refs);
     }
-    for (var, mut where_used) in refs {
+    for (needs, mut where_used) in refs {
         where_used.sort();
         where_used.dedup();
-        findings.push(Finding::warning(
+        findings.push(Finding::note(
             "env.reference",
             where_used.join(", "),
-            format!("requires environment variable '{var}'"),
+            format!("requires {needs}"),
         ));
     }
 }
@@ -366,8 +379,25 @@ fn collect_env(
 ) {
     match value {
         Value::String(s) => {
-            if let Some(var) = s.strip_prefix("env://") {
-                out.entry(var.to_string()).or_default().push(format!(
+            // The masking policy's predicate, not a `strip_prefix("env://")`:
+            // it is the one place that decides which schemes this build can
+            // resolve, so a `vault://` reference is inventoried too rather
+            // than leaving a set that uses one with a clean report and a
+            // missing secret at deploy. Strict by design — it does not mistake
+            // `postgres://user:pw@host` for a reference.
+            //
+            // Deliberately not `secrets::collect_references`, which filters by
+            // the *live* resolver registry: whether `vault://` resolves
+            // depends on this process's `VAULT_ADDR`, and a lint whose report
+            // changes with the laptop it runs on is not a gate.
+            if crate::connector::secrets::is_resolvable_reference(s)
+                && let Some((scheme, reference)) = crate::connector::secrets::parse_reference(s)
+            {
+                let needs = match scheme {
+                    "env" => format!("environment variable '{reference}'"),
+                    _ => format!("secret '{s}'"),
+                };
+                out.entry(needs).or_default().push(format!(
                     "{} '{}'",
                     def.entity.as_str(),
                     def.origin
@@ -377,26 +407,5 @@ fn collect_env(
         Value::Array(items) => items.iter().for_each(|v| collect_env(v, def, out)),
         Value::Object(map) => map.values().for_each(|v| collect_env(v, def, out)),
         _ => {}
-    }
-}
-
-fn route_pattern(doc: &Value) -> Option<String> {
-    doc.get("route_pattern")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-}
-
-/// The methods a channel serves, defaulting to a single unnamed slot so a
-/// channel with a pattern but no explicit methods still collides with another
-/// on the same pattern.
-fn methods(doc: &Value) -> Vec<String> {
-    match doc.get("methods").and_then(Value::as_array) {
-        Some(list) if !list.is_empty() => list
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|m| m.to_uppercase())
-            .collect(),
-        _ => vec!["ANY".to_string()],
     }
 }

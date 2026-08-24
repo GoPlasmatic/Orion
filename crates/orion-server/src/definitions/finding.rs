@@ -13,6 +13,16 @@ pub enum Severity {
     /// Worth saying; the set may still be correct. Exits zero unless the
     /// caller denies warnings.
     Warning,
+    /// Neither a defect nor a suspicion — an inventory line the report is
+    /// expected to carry. Printed, never counted, and `--deny-warnings` does
+    /// not gate on it.
+    ///
+    /// The level exists because `check` reports two different things. "This
+    /// set requires `$VAR` in its environment" is a fact about a correct set,
+    /// not a doubt about it; counting it as a warning made `--deny-warnings`
+    /// fail on every set that authors a secret the documented way, which
+    /// left the flag with no usable setting.
+    Note,
 }
 
 impl Severity {
@@ -20,6 +30,7 @@ impl Severity {
         match self {
             Severity::Error => "error",
             Severity::Warning => "warning",
+            Severity::Note => "note",
         }
     }
 }
@@ -78,6 +89,21 @@ impl Finding {
         }
     }
 
+    /// An inventory line: printed, never counted. See [`Severity::Note`].
+    pub fn note(
+        check: &'static str,
+        entity: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            severity: Severity::Note,
+            check,
+            entity: entity.into(),
+            message: message.into(),
+            remedy: None,
+        }
+    }
+
     pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
         self
@@ -85,6 +111,11 @@ impl Finding {
 
     pub fn is_error(&self) -> bool {
         self.severity == Severity::Error
+    }
+
+    /// Whether `--deny-warnings` should gate on this finding.
+    pub fn is_warning(&self) -> bool {
+        self.severity == Severity::Warning
     }
 }
 

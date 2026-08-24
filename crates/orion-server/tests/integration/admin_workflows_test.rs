@@ -2094,3 +2094,113 @@ async fn a_loop_executes_one_sweep_per_iteration() {
         body["data"]["trace"]
     );
 }
+
+// ============================================================
+// Validate workflow - task groups (dataflow-rs 3.6)
+// ============================================================
+
+/// `/validate` must agree with create about what a task is. Before the walk
+/// here was flattened, the group itself was read as a task and reported as
+/// missing `name` and `function.name` — so a workflow that `POST /workflows`
+/// accepts and the engine runs came back `valid: false` from the linting
+/// endpoint, which is the one direction R20 says must never happen.
+#[tokio::test]
+async fn test_validate_accepts_a_workflow_whose_tasks_are_grouped() {
+    let app = common::test_app().await;
+
+    let workflow = json!({
+        "name": "Grouped",
+        "condition": true,
+        "tasks": [
+            {
+                "id": "seed",
+                "name": "Seed",
+                "function": {"name": "map", "input": {"mappings": [
+                    {"path": "data.amount", "logic": 500}
+                ]}}
+            },
+            {
+                "id": "guard",
+                "condition": {">": [{"var": "data.amount"}, 100]},
+                "tasks": [{
+                    "id": "inner",
+                    "name": "Inner",
+                    "function": {"name": "log", "input": {"message": "big"}}
+                }]
+            }
+        ]
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(workflow.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["valid"], true,
+        "grouped workflow rejected by /validate: {:?}",
+        body["data"]["errors"]
+    );
+
+    // The agreement that matters: create accepts exactly what validate blessed.
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "wf-grouped",
+                "name": "Grouped",
+                "condition": true,
+                "tasks": workflow["tasks"].clone()
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::CREATED);
+}
+
+/// The other half: a broken task *inside* a group is still checked, and its
+/// error names the path that addresses it rather than a top-level index.
+#[tokio::test]
+async fn test_validate_reports_a_broken_task_inside_a_group() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(json!({
+                "name": "Grouped",
+                "condition": true,
+                "tasks": [{
+                    "id": "guard",
+                    "condition": true,
+                    "tasks": [{"id": "inner", "name": "Inner"}]
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], false);
+
+    let fields: Vec<&str> = body["data"]["errors"]
+        .as_array()
+        .expect("errors array")
+        .iter()
+        .filter_map(|e| e["field"].as_str())
+        .collect();
+    assert!(
+        fields.contains(&"tasks[0].tasks[0].function.name"),
+        "expected the nested task's own path, got {fields:?}"
+    );
+}
