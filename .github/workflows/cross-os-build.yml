@@ -88,7 +88,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Build
         run: cargo build --locked --workspace
@@ -111,7 +111,7 @@ jobs:
           toolchain: "stable"
           targets: x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       # musl-tools ships only a C compiler, and rdkafka's cmake configure also
       # demands a musl g++ — librdkafka's project() declares CXX even though
