@@ -95,6 +95,19 @@ Groups nest, up to 8 deep, and share one id namespace with tasks — a group id 
 > [!NOTE]
 > Task groups need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using one **fails to load** on an older engine, loudly; a bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.
 
+## Say a thing once
+
+A shared document — any JSON in the definition set carrying `constants`, `errors` or `fragments` — declares values and task sequences every workflow can reference, so a connector target or an error string lives in one place instead of being copied per workflow:
+
+```json
+{ "input": { "$from": "constants.db", "collection": "users" } }
+{ "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
+```
+
+`$from` splices the named value's fields into the object around it (siblings win); `use` expands a parameterised task sequence with its ids namespaced by the call site. Both resolve **before** validation, so `lint`, `dry-run` and `test` all check the expanded form. Full rules in the [CLI reference](../reference/cli.md#shared-definitions).
+
+`orion-server lint ./definitions` resolves the catalog automatically and reports an unresolved reference as an error; the single-file commands take `--definitions <dir>`.
+
 ## Reach outside the process
 
 Connector-backed tasks call databases, HTTP APIs, caches, and Kafka. They name a connector rather than a URL, and write their result to an `output` path:

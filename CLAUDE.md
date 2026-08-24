@@ -81,7 +81,9 @@ src/
 ├── cluster/             # Multi-node coordination: epoch watcher, job leases
 ├── config/              # Configuration loading & validation
 ├── connector/           # Connector types, registry, circuit breakers, pool caching, secret resolution
+├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver
 ├── engine/              # Dataflow engine build/reload, observer, custom function handlers
+│   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
 │   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read/write/aggregate, publish_kafka, send_email, storage_presign/head, crypto, jwt_sign/verify
 ├── errors.rs            # OrionError enum → HTTP response mapping
 ├── jwt/                 # Shared JWT core (verify, sign, JWKS cache) behind three surfaces: `jwt` channel auth, jwt_verify, jwt_sign
@@ -192,6 +194,9 @@ these edits are not optional follow-ups, they are part of the change:
 | An audit `action` / `resource_type` | `docs/src/operate/audit-logs.md` (`audit_actions_drift_test`) |
 | A `FieldError` code | `orion_api::error::field_codes::ALL` (the closed registry) **and** `docs/src/reference/errors.md` — `field_codes_drift_test` also fails on a registered code nothing emits |
 | A JSONLogic operator | `engine::operators::OPERATOR_NAMES` **and** `docs/src/reference/expressions.md` (`jsonlogic_operators_test` checks both; a name missing from the const is one the unresolvable-logic check waves through) |
+| A workflow-shape rule (task, task group, `terminal`) | `validation/workflows.rs::validate_workflow_tasks_schema` **and** its engine-parse catch-all — and any new walk over `tasks` must use `engine::walk_steps`, never `tasks.as_array()`, or it skips task groups silently |
+| A cross-reference check over a definition set | `definitions/check.rs` — one pass, shared by `lint <dir>` and `package lint`; give it a stable `check` id so a pipeline can grandfather it |
+| A rider crate's *manifest*, not just its source | bump that crate's `[package] version` **and** the requirement in every dependent manifest — CI's "Rider crates changed" gate fails the build otherwise, and editing a dependency requirement counts as changing the crate |
 | A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` (`ci_filter_drift_test`) — a module missing from those lines runs *nowhere*, silently |
 
 ## Reading the code: item-ID comments
@@ -215,9 +220,10 @@ orion-server -c config.toml               # Start with config
 orion-server validate-config              # Validate config (--format summary for a short view)
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
-orion-server lint workflow.json           # Strict-validate a workflow JSON file (--deny-warnings to fail on advisories)
+orion-server lint workflow.json           # Strict-validate one workflow (--deny-warnings to fail on advisories)
+orion-server lint ./definitions           # Validate a whole definition set and the references between its files
 orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # Execute a workflow offline with canned connector replies
-orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests
+orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests (--definitions <dir> to resolve $from/use)
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec

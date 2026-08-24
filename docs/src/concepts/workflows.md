@@ -44,6 +44,13 @@ Every function's exact `input` is in the [Function Reference](../reference/funct
 and connector-backed inputs are schema-validated when you save the workflow —
 a typo is a `400` with a field path, not a surprise at 3am.
 
+An element of `tasks` carrying its own `tasks` key is a **task group**: one
+condition guarding a contiguous run of tasks, evaluated once on entry. Any step
+— task or group — may set `terminal: true` to end the workflow once it has run,
+which is how a workflow answers early without every later task restating the
+negation of the branch above it. See
+[Author Workflows](../build/workflows.md#group-tasks-and-stop-early).
+
 ## The data context
 
 Tasks do not pass values to each other. They share one JSON document, the **data

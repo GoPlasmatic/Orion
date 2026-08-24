@@ -30,6 +30,10 @@ schema:
 orion-server lint examples/packages/high-value-order/workflow.json
 ```
 
+One file, one workflow. Point it at a **directory** instead and it validates the
+whole definition set plus the references between its files — the checks a
+per-file run cannot make. That is the form to use in CI.
+
 ```
 'examples/packages/high-value-order/workflow.json' is valid.
 ```

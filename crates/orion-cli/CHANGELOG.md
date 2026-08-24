@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-23
+## [1.2.0] - 2026-08-24
 
-Version bump only — `orion-cli` and `orion-server` release in lockstep. Nothing
-in this release touches the CLI; the changes are in the server's offline test
-runner (see the server changelog for #283).
+No CLI behaviour changes — `orion-cli` and `orion-server` release in lockstep,
+and this cycle's work is all server-side (see the server changelog: the offline
+test runner, definition-set lint, shared definitions, and dataflow-rs 3.6).
+
+Its manifest does move: the rider crates `orion-api` and `orion-client` go to
+1.0.1, so the requirements here follow them.
 
 ## [1.1.0] - 2026-08-21
 

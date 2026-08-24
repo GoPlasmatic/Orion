@@ -61,10 +61,8 @@ jobs:
             https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Lint every workflow
-        run: |
-          find services -name 'workflow.json' -print0 \
-            | xargs -0 -n1 orion-server lint
+      - name: Lint the definition set
+        run: orion-server lint services --deny-warnings
 
       - name: Run the offline regression suite
         run: orion-server test services
@@ -76,9 +74,18 @@ jobs:
           done
 ```
 
-Three checks, three failure modes caught before review: a workflow the API would
-reject, logic that changed behaviour, and an artifact whose closure or hash is
-wrong.
+Three checks, three failure modes caught before review: a definition the API
+would reject *or that does not agree with the definitions beside it*, logic that
+changed behaviour, and an artifact whose closure or hash is wrong.
+
+Point `lint` at the **directory**, not at each file in turn. A per-file loop
+validates each workflow in isolation and by construction cannot see that they
+are consistent with the channels and connectors next to them — a
+`channel_call` to a channel that exists nowhere, a task naming a connector of
+the wrong type, two channels claiming one route. Set mode resolves those, and
+resolves any shared `$from` or `use` references at the same time. Add
+`--requires-channel` / `--requires-connector` for names the set deliberately
+expects the target to already have.
 
 > [!TIP]
 > `orion-server test` walks a directory for `*.case.json` files, so pointing it

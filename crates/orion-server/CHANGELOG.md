@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-24
+
 ### Added
+
+- **`UNKNOWN_FUNCTION` names the nearest valid function** ([#289], [#288]) —
+  a typo now gets a suggestion instead of a bare refusal:
+
+  ```
+  Unknown function 'mongo_writes' — did you mean 'mongo_write'? — this workflow
+  would be accepted and then fail at its first request
+  ```
+
+  Candidates come from `known_functions()`, the set the validation gate itself
+  consults, so a suggestion is always a name the engine can run — including the
+  `RequiresHandler` subtlety that keeps `enrich` out of it. The edit-distance
+  window scales with the shorter name (a third of it, clamped 1–3) rather than
+  being fixed, so `http_request` gets no guess instead of a wrong one. Message
+  text only; the `field`, the `code` and the error shape are unchanged.
+
+  Item 2 of #288 — `/admin/functions` serving only the 18 schema-validated
+  names and omitting the 9 engine builtins — is unaddressed and that issue
+  stays open for it.
 
 - **dataflow-rs 3.6: task groups and `terminal`.** A `tasks` element carrying
   its own `tasks` key is a **task group** — one condition guarding a contiguous
@@ -92,27 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `requires`. `--deny-warnings` behaves exactly as it does for a single file.
   `lint <file>` is byte-for-byte unchanged.
 
-### Changed
-
-- **`package lint` and `lint <dir>` now share one implementation** ([#286]).
-  The cross-reference pass lived in `package_cli::run_lint` because a promotion
-  artifact was its only consumer. It is now `definitions::check` over a
-  `DefinitionSet`, with the artifact and the directory as two loaders and
-  `requires` generalised into a `Boundary`. A second validator beside the first
-  is how the two containers come to disagree about what a valid set is.
-
-  `package lint` gains the checks the artifact form never had — connector type,
-  duplicate `route_pattern`, the unresolvable-JSONLogic advisory, and `env://`
-  collection — and its findings now carry a stable `check` id and a severity,
-  so a warning no longer has to be a failure or invisible.
-
-[#285]: https://github.com/GoPlasmatic/Orion/issues/285
-[#286]: https://github.com/GoPlasmatic/Orion/issues/286
-
-## [1.2.0] - 2026-08-23
-
-### Added
-
 - **`metadata` in a `*.case.json`** ([#283]) — a case can supply the request
   metadata the HTTP ingress would have built (`headers`, `params`, `query`,
   `cookies`, `auth.claims`, `channel`, `http_method`, plus any caller keys), so
@@ -174,6 +174,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`package lint` and `lint <dir>` now share one implementation** ([#286]).
+  The cross-reference pass lived in `package_cli::run_lint` because a promotion
+  artifact was its only consumer. It is now `definitions::check` over a
+  `DefinitionSet`, with the artifact and the directory as two loaders and
+  `requires` generalised into a `Boundary`. A second validator beside the first
+  is how the two containers come to disagree about what a valid set is.
+
+  `package lint` gains the checks the artifact form never had — connector type,
+  duplicate `route_pattern`, the unresolvable-JSONLogic advisory, and `env://`
+  collection — and its findings now carry a stable `check` id and a severity,
+  so a warning no longer has to be a failure or invisible.
+
+[#285]: https://github.com/GoPlasmatic/Orion/issues/285
+[#288]: https://github.com/GoPlasmatic/Orion/issues/288
+[#289]: https://github.com/GoPlasmatic/Orion/pull/289
+[#286]: https://github.com/GoPlasmatic/Orion/issues/286
+
 - **BREAKING: an `expect` path must name its root** ([#283]). A leading `data.`
   used to be optional, which made the case file the only surface in Orion that
   accepted an unrooted path — every mapping `path` in every shipped workflow
@@ -193,6 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
 [#283]: https://github.com/GoPlasmatic/Orion/issues/283
+
 
 ## [1.1.0] - 2026-08-21
 

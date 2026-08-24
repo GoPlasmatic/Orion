@@ -29,13 +29,18 @@ Three principles shape the setup:
 | Touched server ⇄ CLI interaction, `orion-api`, or `orion-client` | `just e2e` |
 | Touched migrations or storage | `just test-containers` (needs Docker) |
 | Touched workflow functions / engine | `cargo test --test integration` + `just workflow-tests` |
+| Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
+| Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | bump its version + every dependent's requirement, then `cargo package --locked --workspace` (needs a clean tree) |
+| Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
 
 Inline `#[cfg(test)]` modules across all four crates: `orion-server`
-(config parsing, error mapping, validation/SSRF, query lowering, …),
+(config parsing, error mapping, validation/SSRF, query lowering, the
+definition-set loader and its cross-reference pass, the shared-definition
+`$from`/fragment resolver, the step flattener, …),
 `orion-cli` (string helpers and benchmark statistics only — see Known gaps),
 `orion-api` (wire-contract serde: envelope shapes, skew-tolerant defaults,
 enum round-trips), and `orion-client` (path builders, error classification).
@@ -57,6 +62,11 @@ and versioning, data-plane routing, resilience (rate limits, dedup, caching,
 circuit breakers, backpressure, drain), traces/DLQ, security (auth, masking,
 SSRF, redaction), TLS (in-process `rcgen` certs), the server's own CLI
 subcommands, and OpenAPI are covered.
+
+`cli_subcommands_test.rs` is the one module that drives the **compiled binary**
+rather than the router, because the surfaces it covers — `lint` in both file and
+set mode, `dry-run`, the `*.case.json` runner — are exit codes and stdout, not
+HTTP responses.
 
 ```bash
 cargo test --test integration                     # the whole binary
