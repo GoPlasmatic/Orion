@@ -68,6 +68,33 @@ Most workflows want `"condition": true` at the top and conditions on individual 
 
 Two tasks with mutually exclusive conditions is how you write an if/else. Write the branches so exactly one fires — overlapping conditions both run, and the later one wins on any path they share.
 
+## Group tasks, and stop early
+
+A `tasks` element carrying its own `tasks` key is a **task group**: one condition guarding a contiguous run of tasks, instead of the same condition repeated on each.
+
+```json
+{ "id": "not_found",
+  "condition": { "==": [{ "var": "data.user" }, null] },
+  "terminal": true,
+  "tasks": [
+    { "id": "body",   "name": "404 body",   "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.out", "logic": { "error": "User Not Found" } } ] } } },
+    { "id": "status", "name": "404 status", "function": { "name": "map", "input": { "mappings": [
+        { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.out" } } ] } } }
+  ] }
+```
+
+The condition is evaluated **once, on entry**. A false result skips the whole span without evaluating the members' own conditions, so a task inside the block cannot switch off its own siblings by changing what the condition reads.
+
+`terminal: true` ends the workflow after the step runs — on a group, after the whole span. Together they are the guard clause: *if this, answer and stop*. Without it every later task has to restate the negation of every earlier exit, and those conditions grow with each branch you add.
+
+`terminal` is about **position, not outcome**. A false `condition` does not halt, and neither does a skipped task; a task that *failed* under `continue_on_error: true` does, because the author said nothing after this runs. It also works on a plain task, not just a group.
+
+Groups nest, up to 8 deep, and share one id namespace with tasks — a group id colliding with a task id is refused at create.
+
+> [!NOTE]
+> Task groups need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using one **fails to load** on an older engine, loudly; a bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.
+
 ## Reach outside the process
 
 Connector-backed tasks call databases, HTTP APIs, caches, and Kafka. They name a connector rather than a URL, and write their result to an `output` path:

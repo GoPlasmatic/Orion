@@ -62,7 +62,8 @@ pub mod field_codes {
     pub const UNKNOWN_FIELD: &str = "UNKNOWN_FIELD";
     /// The same key appeared twice in one object.
     pub const DUPLICATE_FIELD: &str = "DUPLICATE_FIELD";
-    /// Two tasks in one workflow declare the same `id`.
+    /// Two steps in one workflow declare the same `id`. Tasks and task
+    /// groups share one id namespace, so a group may collide with a task.
     pub const DUPLICATE_TASK_ID: &str = "DUPLICATE_TASK_ID";
     /// A task names a function the engine does not register — the workflow
     /// would be accepted and then fail at its first request.

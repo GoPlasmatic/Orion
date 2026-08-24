@@ -62,6 +62,7 @@ pub mod profile;
 pub mod refs;
 pub mod reload;
 pub mod runner;
+pub mod steps;
 pub mod utils;
 
 pub use handlers::{
@@ -77,3 +78,4 @@ pub use reload::{
     spawn_kafka_restart_supervisor,
 };
 pub use runner::{EngineCallResult, EngineHandle, TraceCapture, run_for_channel};
+pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};

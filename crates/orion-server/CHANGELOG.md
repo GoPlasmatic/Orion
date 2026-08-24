@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **dataflow-rs 3.6: task groups and `terminal`.** A `tasks` element carrying
+  its own `tasks` key is a **task group** — one condition guarding a contiguous
+  run of tasks — and any step may set `terminal: true` to end the workflow after
+  it runs. Together they are the guard clause (*if this, answer and stop*),
+  which removes the hand-written negation every later task otherwise has to
+  restate. The condition is evaluated once on entry, groups nest 8 deep, and
+  group ids share the task id namespace.
+
+  **Orion needed real work to accept them, not just the version bump.** The
+  engine flattens the step tree at parse, so the executor was fine — but every
+  Orion check that asks "what does this workflow reference" reads the *authored*
+  JSON, and each of those iterated the array looking for `function`. Before this,
+  a grouped workflow was **rejected outright** by `validate_workflow_tasks_schema`
+  (the group looked like a task missing its `name` and `function`), and had the
+  validator been lenient the group's members would instead have gone unchecked:
+  a connector referenced only from inside a guard clause would have passed
+  closure checking, and its tasks would have shipped unvalidated.
+
+  So there is now one flattener, `engine::walk_steps` (`engine/steps.rs`), and
+  every walk uses it: the connector and `channel_call` closure walks, the task
+  schema validator (with nested paths — `tasks[1].tasks[0].function.name`), the
+  unresolvable-JSONLogic advisory, the offline call-log correlation, and
+  fragment expansion. The shape catch-all now parses through the engine's own
+  step parser rather than `Vec<Task>`, which does not flatten and would reject
+  every grouped workflow the engine accepts.
+
+  Groups are validated in their own right: id required and unique across tasks
+  *and* groups, non-empty `tasks`, boolean `terminal`, and a depth cap mirroring
+  the engine's so an author gets a field error rather than a failed reload.
+
+  Additive on the wire — every existing workflow parses and behaves identically.
+
 - **Shared definition sources: fragments and a value catalog** ([#285]). A
   definition set can say a thing once. A shared document — any JSON carrying
   `constants`, `errors` or `fragments` and no entity field, split across as

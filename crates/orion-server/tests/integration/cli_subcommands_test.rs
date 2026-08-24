@@ -1543,3 +1543,121 @@ fn a_call_site_can_override_one_field_of_a_shared_value() {
     let _ = std::fs::remove_file(&input);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ============================================================
+// dataflow-rs 3.6: task groups and `terminal`
+// ============================================================
+
+/// The guard clause the upgrade exists for: a terminal group ends the
+/// workflow, so nothing after it needs a hand-written negation.
+#[test]
+fn a_terminal_task_group_ends_the_workflow() {
+    let wf = write_temp(
+        r#"{"name":"guard","condition":true,"tasks":[
+            {"id":"seed","name":"Seed","function":{"name":"map","input":{"mappings":[
+               {"path":"data.user","logic":null}]}}},
+            {"id":"not_found","condition":{"==":[{"var":"data.user"},null]},
+             "terminal":true,"tasks":[
+               {"id":"body","name":"404","function":{"name":"map","input":{"mappings":[
+                  {"path":"data.status","logic":404}]}}}]},
+            {"id":"never","name":"Never","function":{"name":"map","input":{"mappings":[
+               {"path":"data.reached","logic":true}]}}}]}"#,
+        "group-terminal",
+    );
+    let input = write_temp("{}", "group-terminal-in");
+    let out = Command::new(orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input])
+        .output()
+        .expect("run dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
+    assert_eq!(parsed["data"]["status"], 404, "the group's task ran");
+    assert!(
+        parsed["data"].get("reached").is_none(),
+        "a terminal group must end the workflow: {}",
+        parsed["data"]
+    );
+    for p in [&wf, &input] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// A task inside a group is a task. Every check that walks the array has to
+/// see it, or a guarded half of a workflow ships unvalidated.
+#[test]
+fn tasks_inside_a_group_are_validated_with_nested_paths() {
+    let wf = write_temp(
+        r#"{"name":"w","tasks":[
+            {"id":"g","condition":true,"tasks":[
+               {"id":"bad","name":"bad","function":{"name":"mongo_writes","input":{}}}]}]}"#,
+        "group-validate",
+    );
+    let out = Command::new(orion_bin())
+        .args(["lint", &wf])
+        .output()
+        .expect("run lint");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("tasks[0].tasks[0].function.name"),
+        "the path must address the nested task: {stderr}"
+    );
+    assert!(
+        stderr.contains("did you mean 'mongo_write'?"),
+        "and the suggestion must still fire inside a group: {stderr}"
+    );
+    let _ = std::fs::remove_file(&wf);
+}
+
+/// Closure checking reaches inside groups, or a connector referenced only
+/// from a guard clause passes a set lint that exists to catch exactly that.
+#[test]
+fn closure_checking_reaches_inside_a_group() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"g","condition":true,"tasks":[
+               {"id":"r","name":"r","function":{"name":"mongo_read","input":{
+                  "connector":"nowhere","database":"d","collection":"c",
+                  "filter":{},"output":"temp_data.z"}}}]}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "{report}");
+    assert!(report.contains("closure.connector"), "{report}");
+    assert!(report.contains("nowhere"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Groups and tasks share one id namespace — the engine refuses a collision at
+/// build, which for Orion is a failed reload rather than one bad workflow.
+#[test]
+fn a_group_id_colliding_with_a_task_id_is_refused() {
+    let wf = write_temp(
+        r#"{"name":"w","tasks":[
+            {"id":"dup","name":"t","function":{"name":"map","input":{"mappings":[]}}},
+            {"id":"dup","condition":true,"tasks":[
+               {"id":"inner","name":"i","function":{"name":"map","input":{"mappings":[]}}}]}]}"#,
+        "group-dup-id",
+    );
+    let out = Command::new(orion_bin())
+        .args(["lint", &wf])
+        .output()
+        .expect("run lint");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("DUPLICATE_TASK_ID"), "{stderr}");
+    let _ = std::fs::remove_file(&wf);
+}
+
+/// Every workflow written before 3.6 is a flat array, and none of them may
+/// change behaviour.
+#[test]
+fn a_flat_workflow_is_unaffected_by_the_step_walk() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packages");
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(ok, "the shipped packages must still lint clean: {report}");
+}

@@ -228,6 +228,14 @@ impl SharedDefinitions {
         let mut out = Vec::with_capacity(tasks.len());
         for task in tasks {
             let Some(name) = task.get("use").and_then(Value::as_str) else {
+                // A task group holds steps of its own, and a fragment is as
+                // usable inside a guard clause as outside one.
+                if let Some(inner) = task.get("tasks").and_then(Value::as_array) {
+                    let mut group = task.clone();
+                    group["tasks"] = Value::Array(self.expand_tasks(inner, origin, findings));
+                    out.push(group);
+                    continue;
+                }
                 out.push(task.clone());
                 continue;
             };

@@ -510,11 +510,10 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 /// Tasks without an `id` or without a `function.name` are skipped rather than
 /// guessed at: an unnameable task simply leaves its calls unlabelled.
 fn task_function_names(tasks: &serde_json::Value) -> std::collections::HashMap<String, String> {
-    let Some(tasks) = tasks.as_array() else {
-        return std::collections::HashMap::new();
-    };
-    tasks
-        .iter()
+    // Flattened: a connector call inside a task group is still a call, and the
+    // correlation walks the trace, which sees the engine's flattened steps.
+    orion::engine::leaf_tasks(tasks)
+        .into_iter()
         .filter_map(|task| {
             let id = task.get("id")?.as_str()?;
             let function = task.get("function")?.get("name")?.as_str()?;

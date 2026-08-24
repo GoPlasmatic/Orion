@@ -22,11 +22,10 @@ pub struct ConnectorRef<'a> {
 
 /// Every connector a workflow's tasks reference, in task order.
 pub fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
-    let Some(tasks) = tasks.as_array() else {
-        return Vec::new();
-    };
-    tasks
-        .iter()
+    // Flattened: since 3.6 a `tasks` element may be a group, and a connector
+    // referenced only from inside one would otherwise pass closure checking.
+    super::steps::leaf_tasks(tasks)
+        .into_iter()
         .filter_map(|task| {
             let function = task.get("function")?;
             let name = function.get("name")?.as_str()?;
@@ -47,12 +46,9 @@ pub fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
 /// whether any call resolves its target dynamically (`channel_logic`), in
 /// which case the static list is incomplete by construction.
 pub fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
-    let Some(tasks) = tasks.as_array() else {
-        return (Vec::new(), false);
-    };
     let mut targets = Vec::new();
     let mut dynamic = false;
-    for task in tasks {
+    for task in super::steps::leaf_tasks(tasks) {
         let Some(input) = task
             .get("function")
             .filter(|f| f.get("name").and_then(|n| n.as_str()) == Some("channel_call"))

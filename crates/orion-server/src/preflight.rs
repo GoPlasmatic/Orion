@@ -452,7 +452,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|f| f.problem.contains("Duplicate task id")),
+                .any(|f| f.problem.contains("Duplicate step id")),
             "{found:?}"
         );
     }

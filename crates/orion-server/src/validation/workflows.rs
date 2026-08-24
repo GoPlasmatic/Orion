@@ -241,51 +241,87 @@ pub fn validate_workflow_loop_schema(
 /// empty one is unhelpful in a log, but it loads, and refusing it would be
 /// Orion inventing a rule the engine does not have.
 pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
-    let Some(arr) = tasks.as_array() else {
+    if tasks.as_array().is_none() {
         return Vec::new();
-    };
+    }
     let mut errors = Vec::new();
+    // Flattened: since dataflow-rs 3.6 an element carrying `tasks` is a group,
+    // and its members are tasks the engine will run. Validating only the top
+    // level would accept a workflow whose guarded half was never checked, and
+    // report the group itself as a task missing its `name` and `function`.
+    let steps = crate::engine::walk_steps(tasks);
+
+    // Ids are one namespace across tasks and groups — both name a step, and
+    // both surface in traces — so uniqueness is checked over the union.
     let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (i, task) in arr.iter().enumerate() {
+
+    for path in &steps.too_deep {
+        errors.push(FieldError::new(
+            format!("{path}.tasks"),
+            "INVALID",
+            format!(
+                "Task groups nest more than {} deep — the engine refuses to build \
+                 this workflow, which fails the whole reload rather than just this \
+                 workflow",
+                crate::engine::MAX_STEP_DEPTH
+            ),
+        ));
+    }
+
+    for (path, group) in &steps.groups {
+        check_step_id(group, path, &mut seen_ids, &mut errors);
+        match group.get("tasks").and_then(|t| t.as_array()) {
+            Some(inner) if !inner.is_empty() => {}
+            Some(_) => errors.push(FieldError::new(
+                format!("{path}.tasks"),
+                "INVALID",
+                "A task group must contain at least one task — an empty group is a \
+                 condition guarding nothing",
+            )),
+            None => errors.push(FieldError::new(
+                format!("{path}.tasks"),
+                "TYPE_MISMATCH",
+                "A task group's 'tasks' must be an array of steps",
+            )),
+        }
+        if let Some(terminal) = group.get("terminal")
+            && !terminal.is_boolean()
+        {
+            errors.push(FieldError::new(
+                format!("{path}.terminal"),
+                "TYPE_MISMATCH",
+                "'terminal' must be a boolean",
+            ));
+        }
+    }
+
+    for (path, task) in &steps.tasks {
         // Identity first, and independently of whether the function resolves:
         // a task can be broken in both ways at once, and an author fixing one
         // error at a time is the thing structured field errors exist to avoid.
-        match task.get("id").and_then(|v| v.as_str()).map(str::trim) {
-            None | Some("") => errors.push(FieldError::new(
-                format!("tasks[{i}].id"),
-                "REQUIRED",
-                "Task 'id' is required and must be a non-empty string — it names \
-                 the task in audit trails, execution traces, per-task metrics and \
-                 `metadata.progress`, which workflow conditions can read. Without \
-                 one this workflow would be accepted and then fail to load, \
-                 taking its channel out of service",
-            )),
-            Some(id) => {
-                if !seen_ids.insert(id) {
-                    errors.push(FieldError::new(
-                        format!("tasks[{i}].id"),
-                        "DUPLICATE_TASK_ID",
-                        format!(
-                            "Duplicate task id '{id}' — ids must be unique within a \
-                             workflow. The engine refuses to build one that repeats \
-                             them, so this fails the entire engine reload rather \
-                             than just this workflow"
-                        ),
-                    ));
-                }
-            }
-        }
+        check_step_id(task, path, &mut seen_ids, &mut errors);
+
         // Presence only, matching the parse: `Task::name` is a required
         // `String`, but an empty one deserializes and loads fine, so refusing
         // it here would reject a workflow the engine would happily run.
         if task.get("name").and_then(|v| v.as_str()).is_none() {
             errors.push(FieldError::new(
-                format!("tasks[{i}].name"),
+                format!("{path}.name"),
                 "REQUIRED",
                 "Task 'name' is required and must be a string — it is what makes \
                  an audit trail or a trace readable to a human. It may be empty, \
                  but it must be present: without the key this workflow would be \
                  accepted and then fail to load, taking its channel out of service",
+            ));
+        }
+
+        if let Some(terminal) = task.get("terminal")
+            && !terminal.is_boolean()
+        {
+            errors.push(FieldError::new(
+                format!("{path}.terminal"),
+                "TYPE_MISMATCH",
+                "'terminal' must be a boolean",
             ));
         }
 
@@ -300,7 +336,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             // workflow the engine cannot deserialize. Skipping it here made
             // that a 201 followed by a 500 from the dry-run endpoint.
             errors.push(FieldError::new(
-                format!("tasks[{i}].function.name"),
+                format!("{path}.function.name"),
                 "REQUIRED",
                 "Task 'function' with a non-empty 'name' is required — the engine's \
                  task shape has no default for it, so without one this workflow \
@@ -313,7 +349,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
                 .map(|closest| format!(" — did you mean '{closest}'?"))
                 .unwrap_or_default();
             errors.push(FieldError::new(
-                format!("tasks[{i}].function.name"),
+                format!("{path}.function.name"),
                 "UNKNOWN_FUNCTION",
                 format!(
                     "Unknown function '{fn_name}'{suggestion} — this workflow would be \
@@ -326,11 +362,11 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             .and_then(|f| f.get("input"))
             .cloned()
             .unwrap_or(serde_json::Value::Object(Default::default()));
-        let task_path = format!("tasks[{i}]");
         errors.extend(crate::engine::functions::schema::validate_input(
-            fn_name, &input, &task_path,
+            fn_name, &input, path,
         ));
     }
+
     // Catch-all for the class the checks above mirror by hand: a dataflow-rs
     // upgrade can grow a task-shape requirement the mirror has not learned
     // yet, and the doc above promises "Orion accepts it" and "the engine can
@@ -339,8 +375,14 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
     // here as a 400 instead of a 201 followed by a failure to build. Only
     // when no field-pathed error was collected: those are the better
     // messages, and this one exists for the gaps they miss.
+    // Through the engine's own step parser, not `Vec<Task>`: since 3.6 the
+    // flattening lives in a `deserialize_with` on `Workflow::tasks`, so a bare
+    // `Vec<Task>` would reject every grouped workflow the engine accepts.
     if errors.is_empty()
-        && let Err(e) = <Vec<dataflow_rs::Task> as serde::Deserialize>::deserialize(tasks)
+        && let Err(e) = serde_json::from_value::<dataflow_rs::Workflow>(serde_json::json!({
+            "id": "__shape_check__", "name": "__shape_check__",
+            "condition": true, "tasks": tasks,
+        }))
     {
         errors.push(FieldError::new(
             "tasks",
@@ -361,6 +403,47 @@ fn validation_with_details(message: &str, details: Vec<FieldError>) -> OrionErro
 
 pub fn validate_workflow_id(id: &str) -> Result<(), OrionError> {
     validate_id(id, "workflow.workflow_id")
+}
+
+/// A step's `id`: required, non-empty, and unique across tasks *and* groups.
+///
+/// One namespace because dataflow-rs uses one — both name a step and both
+/// surface in traces, so a group id colliding with a task id is refused at
+/// build, which for Orion is a failed reload rather than one bad workflow.
+fn check_step_id<'a>(
+    step: &'a serde_json::Value,
+    path: &str,
+    seen: &mut std::collections::HashSet<&'a str>,
+    errors: &mut Vec<FieldError>,
+) {
+    match step.get("id").and_then(|v| v.as_str()).map(str::trim) {
+        None | Some("") => errors.push(FieldError::new(
+            format!("{path}.id"),
+            "REQUIRED",
+            "Step 'id' is required and must be a non-empty string — it names \
+             the step in audit trails, execution traces, per-task metrics and \
+             `metadata.progress`, which workflow conditions can read. Without \
+             one this workflow would be accepted and then fail to load, \
+             taking its channel out of service",
+        )),
+        Some(id) => {
+            // `trim`ped for the emptiness test, but the untrimmed value is
+            // what the engine keys on.
+            let raw = step.get("id").and_then(|v| v.as_str()).unwrap_or(id);
+            if !seen.insert(raw) {
+                errors.push(FieldError::new(
+                    format!("{path}.id"),
+                    "DUPLICATE_TASK_ID",
+                    format!(
+                        "Duplicate step id '{raw}' — ids must be unique within a \
+                         workflow, across tasks and task groups alike. The engine \
+                         refuses to build one that repeats them, so this fails the \
+                         entire engine reload rather than just this workflow"
+                    ),
+                ));
+            }
+        }
+    }
 }
 
 // ============================================================
@@ -393,11 +476,9 @@ use serde_json::Value;
 /// [`crate::engine::functions::schema::StaticValidator`] already uses, because
 /// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
 pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
-    let Some(tasks) = tasks.as_array() else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (i, task) in tasks.iter().enumerate() {
+    // Flattened, so a write inside a guard clause is checked like any other.
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
         let Some(function) = task.get("function") else {
             continue;
         };
@@ -411,7 +492,7 @@ pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
             if !crate::engine::functions::schema::is_resolvable_field(name, field) {
                 continue;
             }
-            let base = format!("tasks[{i}].function.input.{field}");
+            let base = format!("{path}.function.input.{field}");
             collect_unresolvable(value, &base, name, &mut out);
         }
     }

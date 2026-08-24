@@ -6,7 +6,7 @@ name = "orion-api"
 # crates.io yet (crates.io refuses a crate whose dependency it doesn't host).
 # The one rule that follows: BUMP THIS VERSION with any change to this crate,
 # or the rider skips and the published binary resolves the older content.
-version = "1.0.0"
+version = "1.0.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Wire contract for the Orion declarative services runtime — the response DTOs, domain enums, error envelope, and import report shared by orion-server and orion-cli"

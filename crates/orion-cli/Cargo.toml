@@ -30,7 +30,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 # The shared wire contract: the error envelope, status vocabulary and import
 # report this CLI reads are the same types the server serializes.
-orion-api = { version = "1.0.0", path = "../orion-api" }
+orion-api = { version = "1.0.1", path = "../orion-api" }
 # The shared transport — the same client the server's `package` subcommand
 # drives. This crate owns reqwest; the CLI has no direct HTTP dependency.
 orion-client = { version = "1.0.0", path = "../orion-client" }
