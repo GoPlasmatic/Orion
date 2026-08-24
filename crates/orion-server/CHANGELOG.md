@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`orion-server lint <dir>` — validate a definition set** ([#286]). Every
+  channel, workflow and connector under a directory, plus the references
+  *between* them: a `channel_call` target that exists nowhere, a task naming a
+  connector that is absent or of the wrong type, a channel whose `workflow_id`
+  resolves to nothing, duplicate ids, names and routes. A set could be green on
+  every per-file gate and still be missing a channel at runtime, because the
+  file that would disprove it is one `lint <file>` never opens.
+
+  Entities are discovered by **shape**, recursively — `tasks` is a workflow,
+  `connector_type` a connector, `channel_type`/`protocol` a channel. Anything
+  else is reported as skipped rather than silently ignored, and a directory
+  yielding no definitions is an error: a set lint that quietly stops reading is
+  worse than no set lint.
+
+  References must resolve in-set by default. `--requires-channel` and
+  `--requires-connector` widen that for a set that depends on something
+  deployed elsewhere — the directory equivalent of a package artifact's
+  `requires`. `--deny-warnings` behaves exactly as it does for a single file.
+  `lint <file>` is byte-for-byte unchanged.
+
+### Changed
+
+- **`package lint` and `lint <dir>` now share one implementation** ([#286]).
+  The cross-reference pass lived in `package_cli::run_lint` because a promotion
+  artifact was its only consumer. It is now `definitions::check` over a
+  `DefinitionSet`, with the artifact and the directory as two loaders and
+  `requires` generalised into a `Boundary`. A second validator beside the first
+  is how the two containers come to disagree about what a valid set is.
+
+  `package lint` gains the checks the artifact form never had — connector type,
+  duplicate `route_pattern`, the unresolvable-JSONLogic advisory, and `env://`
+  collection — and its findings now carry a stable `check` id and a severity,
+  so a warning no longer has to be a failure or invisible.
+
+[#286]: https://github.com/GoPlasmatic/Orion/issues/286
+
 ## [1.2.0] - 2026-08-23
 
 ### Added

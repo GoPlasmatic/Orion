@@ -1136,3 +1136,227 @@ fn lint_warns_on_unresolvable_logic_and_denies_it_on_request() {
 
     let _ = std::fs::remove_file(&wf);
 }
+
+// ============================================================
+// #286: lint a definition set, not one file at a time
+// ============================================================
+
+/// A directory holding whatever files a test writes.
+fn temp_defs() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("orion-defs-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn lint_dir(dir: &std::path::Path, extra: &[&str]) -> (bool, String) {
+    let mut args = vec!["lint", dir.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let out = Command::new(orion_bin())
+        .args(&args)
+        .output()
+        .expect("run lint");
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), combined)
+}
+
+/// #286's own reproduction: a workflow that lints clean per-file because both
+/// of its dangling references live in files `lint <file>` never opens.
+#[test]
+fn set_mode_catches_references_a_single_file_lint_cannot_see() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("probe.json"),
+        r#"{"workflow_id":"probe","name":"probe","tasks":[
+            {"id":"c","name":"c","function":{"name":"mongo_read","input":{
+              "connector":"does-not-exist","database":"x","collection":"y",
+              "filter":{},"output":"temp_data.z"}}},
+            {"id":"d","name":"d","function":{"name":"channel_call","input":{
+              "channel":"no-such-channel","data_logic":{},"output":"temp_data.q"}}}]}"#,
+    )
+    .unwrap();
+
+    // Per-file: unchanged, still clean — that is the bug being demonstrated.
+    let out = Command::new(orion_bin())
+        .args(["lint", dir.join("probe.json").to_str().unwrap()])
+        .output()
+        .expect("run lint");
+    assert!(
+        out.status.success(),
+        "per-file lint must keep its behaviour"
+    );
+
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "set mode must fail: {report}");
+    assert!(report.contains("closure.connector"), "{report}");
+    assert!(report.contains("closure.channel_call"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A reference the set deliberately does not contain is declarable, the way a
+/// package declares `requires`.
+#[test]
+fn a_boundary_admits_a_reference_the_set_does_not_contain() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"d","name":"d","function":{"name":"channel_call","input":{
+              "channel":"deployed-elsewhere","data_logic":{},"output":"temp_data.q"}}}]}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "empty boundary is the default: {report}");
+
+    let (ok, report) = lint_dir(&dir, &["--requires-channel", "deployed-elsewhere"]);
+    assert!(ok, "a declared boundary must satisfy closure: {report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Entities are found by shape, and a fixture beside them is reported as
+/// skipped rather than silently dropped or misread as a broken entity.
+#[test]
+fn non_entities_are_reported_not_silently_ignored() {
+    let dir = temp_defs();
+    std::fs::create_dir_all(dir.join("nested")).unwrap();
+    std::fs::write(
+        dir.join("nested/wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+    )
+    .unwrap();
+    // The shape `examples/packages/*/request.json` has.
+    std::fs::write(dir.join("request.json"), r#"{"data":{"amount":5}}"#).unwrap();
+    std::fs::write(dir.join("broken.json"), r#"{oops"#).unwrap();
+
+    let (_, report) = lint_dir(&dir, &[]);
+    assert!(
+        report.contains("request.json is not a channel, workflow or connector"),
+        "a skipped file must be named: {report}"
+    );
+    assert!(
+        report.contains("broken.json is not readable JSON"),
+        "a file that does not parse is a likely mistake, not a quiet skip: {report}"
+    );
+    assert!(
+        report.contains("1 workflow(s)"),
+        "the nested entity must be found — a one-level walk would miss it: {report}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A directory that yields nothing is an error, never a green run — the same
+/// rule `orion-server test` applies to a suite that matched no cases.
+#[test]
+fn a_directory_with_no_definitions_is_an_error() {
+    let dir = temp_defs();
+    std::fs::write(dir.join("notes.md"), "nothing here").unwrap();
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "an empty set must not look like a pass: {report}");
+    assert!(report.contains("no definitions found"), "{report}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two channels claiming one route are served by whichever loads second,
+/// which is not a property anyone chose.
+#[test]
+fn a_route_claimed_twice_is_an_error() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+    )
+    .unwrap();
+    for (i, name) in ["a", "b"].iter().enumerate() {
+        std::fs::write(
+            dir.join(format!("ch{i}.json")),
+            format!(
+                r#"{{"channel_id":"c{i}","name":"{name}","channel_type":"sync","protocol":"rest",
+                    "route_pattern":"/users","methods":["GET"],"workflow_id":"w"}}"#
+            ),
+        )
+        .unwrap();
+    }
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "{report}");
+    assert!(report.contains("duplicate.route_pattern"), "{report}");
+    assert!(
+        report.contains("GET /users"),
+        "the diff must name the route: {report}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A connector of the wrong type parses, imports, activates, and fails at the
+/// first request. Set mode is where it can be caught offline.
+#[test]
+fn a_connector_of_the_wrong_type_is_an_error() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"pg","connector_type":"db",
+            "config":{"connection_string":"postgres://h/d"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"http_call","input":{
+              "connector":"pg","method":"GET","path":"/x","output":"data.r"}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(!ok, "{report}");
+    assert!(report.contains("type.connector"), "{report}");
+    assert!(
+        report.contains("needs a http connector"),
+        "the message must name both types: {report}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Warnings do not fail set mode, and `--deny-warnings` promotes them — the
+/// same flag and the same meaning it already has for a single file.
+#[test]
+fn set_mode_warnings_gate_only_under_deny_warnings() {
+    let dir = temp_defs();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"mongo_write","input":{
+              "connector":"m","database":"d","collection":"c","op":"insert_one",
+              "output":"data.r",
+              "document":{"at":{"cat":["a","b"]}}}}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"m","connector_type":"db","config":{"connection_string":"mongodb://h/d"}}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(ok, "a warning must not fail set mode: {report}");
+    assert!(report.contains("logic.unresolvable"), "{report}");
+
+    let (ok, _) = lint_dir(&dir, &["--deny-warnings"]);
+    assert!(
+        !ok,
+        "--deny-warnings must gate the same way it does per-file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The repository's own packages are a real definition set and must lint
+/// clean — the closure checks resolve `channel_call` and connector references
+/// across nine packages.
+#[test]
+fn the_shipped_examples_lint_clean_as_a_set() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/packages");
+    let (ok, report) = lint_dir(&dir, &[]);
+    assert!(
+        ok,
+        "the shipped packages must lint clean as a set: {report}"
+    );
+    assert!(report.contains("0 error(s)"), "{report}");
+}

@@ -10,12 +10,15 @@ The first three need nothing but the binary and your JSON files.
 ## Lint a workflow file
 
 ```bash
-orion-server lint workflow.json
+orion-server lint workflow.json      # one file
+orion-server lint ./definitions      # the whole set, and the references between files
 ```
 
 ```
 'workflow.json' is valid.
 ```
+
+Pointing it at a **directory** validates every channel, workflow and connector under it *and* resolves the references between them — a `channel_call` target that exists nowhere, a task naming a connector of the wrong type, two channels claiming one route. Those cannot be caught one file at a time, because the file that would disprove them is one the command never opens. See the [CLI reference](../reference/cli.md#lint) for the flags.
 
 `lint` applies the same validators the admin API applies on create: task shapes,
 function names, and each connector function's `input` schema. It exits non-zero

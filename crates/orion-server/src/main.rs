@@ -87,8 +87,21 @@ enum Command {
     /// schema registry. Exits non-zero with field-pathed errors on
     /// failure — wire into CI to catch broken workflows before deploy.
     Lint {
-        /// Path to a workflow JSON file (matches the CreateWorkflowRequest shape).
+        /// Path to a workflow JSON file, or a directory of definitions.
+        ///
+        /// A directory is linted as a **set**: every channel, workflow and
+        /// connector under it, plus the references between them — the checks
+        /// a per-file lint cannot make.
         workflow: String,
+        /// Channel name that may be referenced without being in the set.
+        /// Repeatable. Directory mode only; a package declares this in
+        /// `requires`.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        /// Repeatable.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
         /// Exit non-zero on advisory findings too, not just errors.
         ///
         /// Named for `cargo clippy -- -D warnings` rather than `--strict`,
@@ -295,7 +308,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Lint {
             workflow,
             deny_warnings,
-        }) => return cli::run_lint(&workflow, deny_warnings),
+            requires_channels,
+            requires_connectors,
+        }) => {
+            let boundary = orion::definitions::Boundary {
+                channels: requires_channels,
+                connectors: requires_connectors,
+            };
+            return cli::run_lint(&workflow, deny_warnings, boundary);
+        }
         Some(Command::DryRun {
             workflow,
             input,
