@@ -75,7 +75,7 @@ const SELF_CONTAINED: [(&str, BuildRealHandler); 3] = [
     }),
 ];
 
-/// The names in [`SELF_CONTAINED`].
+/// The names of the functions an offline run executes for real.
 pub fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
     SELF_CONTAINED.iter().map(|(name, _)| *name)
 }
@@ -83,7 +83,7 @@ pub fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
 /// Whether an offline run answers this function from a stub — and therefore
 /// records it.
 ///
-/// Derived from [`SELF_CONTAINED`] rather than a parallel list. The two used to
+/// Derived from the `SELF_CONTAINED` table rather than a parallel list. The two used to
 /// be separate, and a function added to one but not the other broke quietly:
 /// `correlate` would look for a recorded call that the real handler never made,
 /// hit the function-mismatch guard, and stop attaching task ids to every call
@@ -590,32 +590,40 @@ pub fn build_stub_functions_with_log(
     let mut out: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
     for &function in crate::engine::CUSTOM_HANDLER_FUNCTIONS {
-        let handler: dataflow_rs::BoxedFunctionHandler = match function {
-            "http_call" => Box::new(HttpCallStub {
-                stubs: stubs.clone(),
-                log: log.clone(),
-            }),
-            "publish_kafka" => Box::new(PublishKafkaStub {
-                stubs: stubs.clone(),
-                log: log.clone(),
-            }),
-            "channel_call" => Box::new(ChannelCallStub {
-                stubs: stubs.clone(),
-                log: log.clone(),
-            }),
-            // Deterministic and offline — dry-run executes these for real, so
-            // a stub would only hide behavior. (An env:// key still resolves
-            // from the local environment, and jwt_verify with a JWKS does
-            // fetch keys; a missing variable or an unreachable JWKS is an
-            // honest failure, not a gap in stubbing.)
-            name if let Some((_, build)) = SELF_CONTAINED.iter().find(|(n, _)| *n == name) => {
-                build()
-            }
-            _ => Box::new(StubHandler {
-                function,
-                stubs: stubs.clone(),
-                log: log.clone(),
-            }),
+        // Deterministic and offline — dry-run executes these for real, so a
+        // stub would only hide behavior. (An env:// key still resolves from
+        // the local environment, and jwt_verify with a JWKS does fetch keys;
+        // a missing variable or an unreachable JWKS is an honest failure, not
+        // a gap in stubbing.) Looked up before the match rather than as a
+        // guard on it: an `if let` guard is unstable on the 1.88 MSRV, and the
+        // two are separate questions anyway — is this function stubbed at all,
+        // and if so does it need a typed stub.
+        let self_contained = SELF_CONTAINED
+            .iter()
+            .find(|(name, _)| *name == function)
+            .map(|(_, build)| build());
+
+        let handler: dataflow_rs::BoxedFunctionHandler = match self_contained {
+            Some(handler) => handler,
+            None => match function {
+                "http_call" => Box::new(HttpCallStub {
+                    stubs: stubs.clone(),
+                    log: log.clone(),
+                }),
+                "publish_kafka" => Box::new(PublishKafkaStub {
+                    stubs: stubs.clone(),
+                    log: log.clone(),
+                }),
+                "channel_call" => Box::new(ChannelCallStub {
+                    stubs: stubs.clone(),
+                    log: log.clone(),
+                }),
+                _ => Box::new(StubHandler {
+                    function,
+                    stubs: stubs.clone(),
+                    log: log.clone(),
+                }),
+            },
         };
         out.insert(function.to_string(), handler);
     }
