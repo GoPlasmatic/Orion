@@ -221,6 +221,7 @@ pub(crate) fn run_lint(
     workflow_path: &str,
     deny_warnings: bool,
     boundary: orion::definitions::Boundary,
+    definitions: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
@@ -231,9 +232,8 @@ pub(crate) fn run_lint(
         return run_lint_set(workflow_path, deny_warnings, boundary);
     }
 
-    let raw = std::fs::read_to_string(workflow_path)
-        .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
-    let req: CreateWorkflowRequest = serde_json::from_str(&raw)
+    let doc = read_expanded_workflow(workflow_path, definitions)?;
+    let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
 
     // No config here: `lint` reads a file, not a server. The default ceiling
@@ -262,6 +262,56 @@ pub(crate) fn run_lint(
 
     println!("'{workflow_path}' is valid.");
     Ok(())
+}
+
+/// Read a workflow file and expand its shared references, if a catalog is
+/// named.
+///
+/// The one place `lint <file>`, `dry-run` and `test` all pass through, so a
+/// `$from` means the same thing to each of them. Expansion is on the raw JSON,
+/// before `CreateWorkflowRequest` parses, because everything downstream —
+/// validation, the synthetic row, the dataflow conversion — must see the
+/// expanded form or the offline gates stop covering what actually runs.
+pub(crate) fn read_expanded_workflow(
+    path: &str,
+    definitions: Option<&str>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("Failed to read '{path}': {e}"))?;
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
+
+    let Some(dir) = definitions else {
+        // Without a catalog an unexpanded `use` reaches validation as a task
+        // with no `name` and no `function`, and is refused for *that* — an
+        // error that describes the symptom and hides the cause. Say the cause.
+        if let Some(reference) = orion::definitions::first_reference(&doc) {
+            return Err(format!(
+                "'{path}' contains {reference}, but no --definitions directory was \
+                 given to resolve it against"
+            )
+            .into());
+        }
+        return Ok(doc);
+    };
+    let (shared, mut findings) =
+        orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+    shared.expand(&mut doc, path, &mut findings);
+
+    let errors: Vec<&orion::definitions::Finding> =
+        findings.iter().filter(|f| f.is_error()).collect();
+    for finding in &findings {
+        eprintln!("{finding}");
+    }
+    if !errors.is_empty() {
+        // An unresolved reference cannot be run past — the document that
+        // reaches the engine would be missing whatever the reference stood for.
+        return Err(format!(
+            "{} unresolved reference(s) expanding '{path}' against '{dir}'",
+            errors.len()
+        )
+        .into());
+    }
+    Ok(doc)
 }
 
 /// `lint <dir>`: load a definition set and run the cross-reference pass.
@@ -303,7 +353,11 @@ fn run_lint_set(
     // A package must carry explicit ids because channels reference them across
     // the artifact; a directory has no such contract, and refusing an id-less
     // draft would make the gate unusable exactly when it is most wanted.
-    let findings = orion::definitions::check(&set, &boundary, false);
+    // The loader's findings — an unresolvable `$from`, a missing fragment, a
+    // name defined twice — are the same class as the check pass's and share
+    // its exit rules, which is the whole reason #286 came first.
+    let mut findings = report.findings;
+    findings.extend(orion::definitions::check(&set, &boundary, false));
 
     let errors = findings.iter().filter(|f| f.is_error()).count();
     let warnings = findings.len() - errors;
@@ -312,8 +366,22 @@ fn run_lint_set(
     }
 
     use orion::definitions::Entity;
+    let shared = if report.shared.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", {} shared value(s), {} fragment(s)",
+            report
+                .shared
+                .namespaces
+                .values()
+                .map(|n| n.len())
+                .sum::<usize>(),
+            report.shared.fragments.len(),
+        )
+    };
     println!(
-        "{dir}: {} connector(s), {} workflow(s), {} channel(s) — {errors} error(s), \
+        "{dir}: {} connector(s), {} workflow(s), {} channel(s){shared} — {errors} error(s), \
          {warnings} warning(s)",
         set.count(Entity::Connector),
         set.count(Entity::Workflow),
@@ -365,6 +433,7 @@ fn format_lint_error(workflow_path: &str, err: orion::errors::OrionError) -> Str
 pub(crate) fn build_dry_run_engine(
     workflow_path: &str,
     stubs_path: Option<&str>,
+    definitions: Option<&str>,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     let stubs = match stubs_path {
         Some(path) => {
@@ -374,7 +443,7 @@ pub(crate) fn build_dry_run_engine(
         }
         None => orion::engine::functions::stub::StubTable::new(),
     };
-    build_dry_run_engine_with_stubs(workflow_path, stubs)
+    build_dry_run_engine_with_stubs(workflow_path, stubs, definitions)
 }
 
 /// Everything an offline run needs beyond the engine itself.
@@ -395,12 +464,12 @@ pub(crate) struct OfflineRun {
 pub(crate) fn build_dry_run_engine_with_stubs(
     workflow_path: &str,
     stubs: orion::engine::functions::stub::StubTable,
+    definitions: Option<&str>,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
 
-    let raw = std::fs::read_to_string(workflow_path)
-        .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
-    let req: CreateWorkflowRequest = serde_json::from_str(&raw)
+    let doc = read_expanded_workflow(workflow_path, definitions)?;
+    let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
     orion::validation::validate_create_workflow(
         &req,
@@ -466,6 +535,7 @@ pub(crate) async fn run_dry_run(
     input_path: &str,
     stubs_path: Option<&str>,
     metadata_path: Option<&str>,
+    definitions: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_raw = std::fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
@@ -486,7 +556,7 @@ pub(crate) async fn run_dry_run(
         None => serde_json::json!({}),
     };
 
-    let run = build_dry_run_engine(workflow_path, stubs_path)?;
+    let run = build_dry_run_engine(workflow_path, stubs_path, definitions)?;
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
         .metadata_json(&metadata)
@@ -700,7 +770,10 @@ struct CaseResult {
 }
 
 /// `test` subcommand: run every case under `path` and report.
-pub(crate) async fn run_test(path: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) async fn run_test(
+    path: &str,
+    definitions: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let cases = collect_case_files(path)?;
     if cases.is_empty() {
         return Err(format!(
@@ -712,7 +785,7 @@ pub(crate) async fn run_test(path: &str) -> Result<(), Box<dyn std::error::Error
 
     let mut results = Vec::new();
     for case_path in &cases {
-        results.push(run_case(case_path).await);
+        results.push(run_case(case_path, definitions).await);
     }
 
     let failed: Vec<&CaseResult> = results.iter().filter(|r| !r.failures.is_empty()).collect();
@@ -779,7 +852,7 @@ fn collect_case_files(path: &str) -> Result<Vec<std::path::PathBuf>, Box<dyn std
 
 /// Run one case file. Every failure is collected rather than returned early, so
 /// one run reports everything wrong with a case instead of its first problem.
-async fn run_case(case_path: &std::path::Path) -> CaseResult {
+async fn run_case(case_path: &std::path::Path, definitions: Option<&str>) -> CaseResult {
     let display = case_path.display().to_string();
     // `file_stem` on `orders.case.json` gives `orders.case`; strip the whole
     // convention suffix so the default name reads as the case, not the file.
@@ -848,7 +921,7 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
         Err(e) => return fail(&name, e),
     };
 
-    let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs) {
+    let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs, definitions) {
         Ok(run) => run,
         Err(e) => return fail(&name, e.to_string()),
     };

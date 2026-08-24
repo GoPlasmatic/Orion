@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Shared definition sources: fragments and a value catalog** ([#285]). A
+  definition set can say a thing once. A shared document — any JSON carrying
+  `constants`, `errors` or `fragments` and no entity field, split across as
+  many files as you like — declares named values and named task sequences that
+  workflows reference.
+
+  `{"$from": "constants.db", "collection": "users"}` **splices** the named
+  value's fields into the object it sits in, and **siblings win**, so a call
+  site overrides one field without copying the rest. A `$from` alone in its
+  object naming a scalar replaces the node. One operator over **open
+  namespaces** rather than the proposed `$const` and `$error` pair: those are
+  the same operation, and a future `timeouts` catalog now costs no code.
+
+  `{"id": "_session", "use": "require-session", "with": {…}}` expands a
+  parameterised task sequence in place, with ids namespaced by the call-site id
+  (`_session.check`) so a fragment cannot collide with the including workflow
+  or with a second instance of itself. A parameter with no `default` is
+  required. A fragment cannot include another fragment — refused with a message
+  rather than looping on a cycle.
+
+  Expansion runs on the raw JSON **before** `CreateWorkflowRequest` parses, so
+  `lint`, `dry-run` and `test` all check and run the expanded form. `lint <dir>`
+  finds the catalog with no flag; the single-file commands take
+  `--definitions <dir>`, and a reference without one now names the reference
+  and the missing flag rather than surfacing as "task 0 has no name".
+
+  Deliberately authoring-and-deploy only: the admin API receives one body with
+  no set to resolve against, so it still takes expanded JSON, and the engine,
+  traces and the UI never meet a reference. `package export` needs no inlining
+  step for the same reason — it exports what a server stored.
+
 - **`orion-server lint <dir>` — validate a definition set** ([#286]). Every
   channel, workflow and connector under a directory, plus the references
   *between* them: a `channel_call` target that exists nowhere, a task naming a
@@ -43,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection — and its findings now carry a stable `check` id and a severity,
   so a warning no longer has to be a failure or invisible.
 
+[#285]: https://github.com/GoPlasmatic/Orion/issues/285
 [#286]: https://github.com/GoPlasmatic/Orion/issues/286
 
 ## [1.2.0] - 2026-08-23

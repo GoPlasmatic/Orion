@@ -40,7 +40,9 @@
 mod check;
 mod finding;
 mod set;
+mod shared;
 
 pub use check::check;
 pub use finding::{Finding, Severity};
 pub use set::{Boundary, DefinitionSet, Entity, LoadReport};
+pub use shared::{Fragment, SharedDefinitions, first_reference};
