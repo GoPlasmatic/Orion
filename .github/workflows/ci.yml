@@ -67,7 +67,7 @@ jobs:
           toolchain: "stable"
           components: clippy
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -100,7 +100,7 @@ jobs:
         with:
           toolchain: "1.88"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -125,7 +125,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -196,7 +196,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -231,7 +231,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -261,10 +261,10 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2 (tool from `with`)
         with:
           tool: cargo-deny
 
@@ -293,7 +293,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -376,7 +376,7 @@ jobs:
           persist-credentials: false
 
       - name: Install mdbook
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2
         with:
           tool: mdbook@0.5.4
 
@@ -460,7 +460,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Build image (no push)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -500,7 +500,7 @@ jobs:
           toolchain: "stable"
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -515,7 +515,7 @@ jobs:
           sudo swapon /swapfile
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2 (tool from `with`)
         with:
           tool: cargo-llvm-cov
 
@@ -577,13 +577,13 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1 # v2 (tool from `with`)
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2 (tool from `with`)
         with:
           tool: cargo-mutants
 
@@ -618,7 +618,7 @@ jobs:
         with:
           toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@258712b0b7b1ddf8bddc9fc3b0faca682b2736c3 # v2
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
