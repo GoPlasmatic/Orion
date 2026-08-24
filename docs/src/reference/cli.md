@@ -44,12 +44,31 @@ Example: `orion-server -c config.toml migrate --dry-run`
 Statically validates a workflow JSON file with the same checks the admin `POST /workflows` endpoint runs. Exits non-zero with field-pathed errors, so it can gate CI. Needs no config, database, or server.
 
 ```bash
-orion-server lint <workflow.json> [--deny-warnings]
+orion-server lint <workflow.json | dir> [--deny-warnings]
+                  [--requires-channel NAME]... [--requires-connector NAME]...
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
+| `--requires-channel` | Channel name that may be referenced without being in the set. Repeatable, directory mode only. |
+| `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable, directory mode only. |
+
+**A directory is linted as a set.** Every channel, workflow and connector under it is validated, *and* the references between them are resolved — a `channel_call` target, a task's connector and its type, a channel's `workflow_id`, duplicate ids, names and routes. Those are the errors a per-file lint cannot see, because the file that would disprove them is one it never opens.
+
+Entities are found by shape, recursively: an object with `tasks` is a workflow, `connector_type` a connector, `channel_type` or `protocol` a channel. Anything else is reported as skipped rather than silently ignored, and a directory yielding no definitions is an error.
+
+By default every reference must resolve inside the set. Use `--requires-channel` / `--requires-connector` for a set that genuinely depends on something deployed elsewhere — the directory equivalent of a package artifact's `requires`.
+
+```
+$ orion-server lint ./definitions
+note: definitions/request.json is not a channel, workflow or connector — skipped
+error: [closure.connector] workflow 'auth-login': connector 'sias-mongo' is neither in the set nor declared on the boundary
+warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call targets dynamically — closure checking cannot cover those calls
+./definitions: 0 connector(s), 62 workflow(s), 62 channel(s) — 1 error(s), 1 warning(s)
+```
+
+Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest.
 
 Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
 

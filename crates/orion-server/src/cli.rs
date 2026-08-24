@@ -220,8 +220,16 @@ pub(crate) async fn handle_migrate(
 pub(crate) fn run_lint(
     workflow_path: &str,
     deny_warnings: bool,
+    boundary: orion::definitions::Boundary,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::CreateWorkflowRequest;
+
+    // A directory is a definition set, and the checks that matter there are
+    // the ones *between* files — which a per-file lint cannot see by
+    // construction (#286).
+    if std::path::Path::new(workflow_path).is_dir() {
+        return run_lint_set(workflow_path, deny_warnings, boundary);
+    }
 
     let raw = std::fs::read_to_string(workflow_path)
         .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
@@ -253,6 +261,71 @@ pub(crate) fn run_lint(
     }
 
     println!("'{workflow_path}' is valid.");
+    Ok(())
+}
+
+/// `lint <dir>`: load a definition set and run the cross-reference pass.
+///
+/// The per-entity validators run here too. A set lint that checked only the
+/// references would be a *weaker* gate than the per-file one it is meant to
+/// supersede, and an author who pointed `lint` at a directory would silently
+/// lose the schema checking they had.
+fn run_lint_set(
+    dir: &str,
+    deny_warnings: bool,
+    boundary: orion::definitions::Boundary,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (set, report) =
+        orion::definitions::DefinitionSet::from_directory(std::path::Path::new(dir))?;
+
+    // Say what was not read. A set lint that silently ignores a file reports
+    // green over a set it did not finish reading, which is the failure this
+    // command exists to remove rather than relocate.
+    for (path, error) in &report.unparseable {
+        eprintln!("warning: {} is not readable JSON: {error}", path.display());
+    }
+    for path in &report.skipped {
+        eprintln!(
+            "note: {} is not a channel, workflow or connector — skipped",
+            path.display()
+        );
+    }
+
+    if set.is_empty() {
+        return Err(format!(
+            "no definitions found under '{dir}'. A definition is a JSON object with \
+             'tasks' (workflow), 'channel_type' (channel) or 'connector_type' (connector)."
+        )
+        .into());
+    }
+
+    // `false`: a directory being authored may hold a workflow with no id yet.
+    // A package must carry explicit ids because channels reference them across
+    // the artifact; a directory has no such contract, and refusing an id-less
+    // draft would make the gate unusable exactly when it is most wanted.
+    let findings = orion::definitions::check(&set, &boundary, false);
+
+    let errors = findings.iter().filter(|f| f.is_error()).count();
+    let warnings = findings.len() - errors;
+    for finding in &findings {
+        eprintln!("{finding}");
+    }
+
+    use orion::definitions::Entity;
+    println!(
+        "{dir}: {} connector(s), {} workflow(s), {} channel(s) — {errors} error(s), \
+         {warnings} warning(s)",
+        set.count(Entity::Connector),
+        set.count(Entity::Workflow),
+        set.count(Entity::Channel),
+    );
+
+    if errors > 0 {
+        return Err(format!("{errors} error(s) in '{dir}'").into());
+    }
+    if deny_warnings && warnings > 0 {
+        return Err(format!("{warnings} warning(s) in '{dir}' and --deny-warnings is set").into());
+    }
     Ok(())
 }
 

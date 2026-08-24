@@ -352,137 +352,20 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
         Err(e) => errors.push(e.to_string()),
     }
 
-    // Per-entity create-path validation — the same functions the POST
-    // endpoints run, so lint-clean means the server will accept the shapes.
-    let mut connector_names = Vec::new();
-    for (i, entry) in artifact.connectors.iter().enumerate() {
-        match serde_json::from_value::<CreateConnectorRequest>(entry.clone()) {
-            Ok(req) => {
-                if let Err(e) = orion::validation::validate_create_connector(&req) {
-                    errors.push(format!("connectors[{i}] '{}': {e}", req.name));
-                }
-                connector_names.push(req.name);
-            }
-            Err(e) => errors.push(format!("connectors[{i}]: not an import item: {e}")),
-        }
-    }
-    let mut workflow_ids = Vec::new();
-    let mut workflow_tasks: Vec<(String, Value)> = Vec::new();
-    for (i, entry) in artifact.workflows.iter().enumerate() {
-        match serde_json::from_value::<CreateWorkflowRequest>(entry.clone()) {
-            Ok(req) => {
-                if let Err(e) = orion::validation::validate_create_workflow(
-                    &req,
-                    orion::config::EngineConfig::default().max_loop_iterations,
-                ) {
-                    errors.push(format!("workflows[{i}] '{}': {e}", req.name));
-                }
-                if let Some(id) = &req.workflow_id {
-                    if workflow_ids.contains(id) {
-                        errors.push(format!("workflows[{i}]: duplicate workflow_id '{id}'"));
-                    }
-                    workflow_ids.push(id.clone());
-                    workflow_tasks.push((id.clone(), req.tasks.clone()));
-                } else {
-                    errors.push(format!(
-                        "workflows[{i}] '{}': a package workflow must carry an explicit \
-                         workflow_id — a generated id cannot be referenced by channels \
-                         or re-applied idempotently",
-                        req.name
-                    ));
-                }
-            }
-            Err(e) => errors.push(format!("workflows[{i}]: not an import item: {e}")),
-        }
-    }
-    let mut channel_ids = Vec::new();
-    let mut channel_names = Vec::new();
-    for (i, entry) in artifact.channels.iter().enumerate() {
-        match serde_json::from_value::<CreateChannelRequest>(entry.clone()) {
-            Ok(req) => {
-                if let Err(e) = orion::validation::validate_create_channel(&req) {
-                    errors.push(format!("channels[{i}] '{}': {e}", req.name));
-                }
-                match &req.channel_id {
-                    Some(id) => {
-                        if channel_ids.contains(id) {
-                            errors.push(format!("channels[{i}]: duplicate channel_id '{id}'"));
-                        }
-                        channel_ids.push(id.clone());
-                    }
-                    None => errors.push(format!(
-                        "channels[{i}] '{}': a package channel must carry an explicit \
-                         channel_id",
-                        req.name
-                    )),
-                }
-                if channel_names.contains(&req.name) {
-                    errors.push(format!(
-                        "channels[{i}]: duplicate channel name '{}' — channel names are \
-                         unique (K7)",
-                        req.name
-                    ));
-                }
-                channel_names.push(req.name.clone());
-                // Closure: the workflow a channel names must be contained.
-                match &req.workflow_id {
-                    Some(wf) if !wf.is_empty() => {
-                        if !workflow_ids.contains(wf) {
-                            errors.push(format!(
-                                "channels[{i}] '{}': workflow '{wf}' is not in the package",
-                                req.name
-                            ));
-                        }
-                    }
-                    _ => errors.push(format!(
-                        "channels[{i}] '{}': no workflow_id — the channel can never \
-                         activate",
-                        req.name
-                    )),
-                }
-            }
-            Err(e) => errors.push(format!("channels[{i}]: not an import item: {e}")),
-        }
-    }
+    // Everything below the package envelope is a definition set, checked by
+    // the shared pass. `requires` is this container's boundary: names the
+    // target instance is expected to already have.
+    let (set, boundary) = artifact_as_set(&artifact);
+    let findings = orion::definitions::check(&set, &boundary, true);
 
-    // Closure: every task reference resolves inside the package or is a
-    // declared boundary in `requires` — via the same walk the server's gates
-    // and the K9 endpoint use, so a new connector-bearing function cannot
-    // leave lint checking stale rules.
-    for (workflow_id, tasks) in &workflow_tasks {
-        for r in orion::engine::connector_refs(tasks) {
-            if !connector_names.iter().any(|n| n == r.connector)
-                && !artifact
-                    .requires
-                    .connectors
-                    .iter()
-                    .any(|n| n == r.connector)
-            {
-                errors.push(format!(
-                    "workflow '{workflow_id}': connector '{}' is neither in the \
-                     package nor declared in requires.connectors",
-                    r.connector
-                ));
-            }
-        }
-        let (targets, dynamic) = orion::engine::channel_call_targets(tasks);
-        for target in targets {
-            if !channel_names.iter().any(|n| n == target)
-                && !artifact.requires.channels.iter().any(|n| n == target)
-            {
-                errors.push(format!(
-                    "workflow '{workflow_id}': channel_call target '{target}' is neither \
-                     in the package nor declared in requires.channels"
-                ));
-            }
-        }
-        if dynamic {
-            eprintln!(
-                "warning: workflow '{workflow_id}' resolves channel_call targets \
-                 dynamically — closure checking cannot cover those calls"
-            );
-        }
+    for finding in findings.iter().filter(|f| !f.is_error()) {
+        eprintln!("{finding}");
     }
+    errors.extend(findings.iter().filter(|f| f.is_error()).map(|f| {
+        // The package surface reports one flat line per problem; the
+        // structured form is what `lint <dir>` renders.
+        format!("{}: {}", f.entity, f.message)
+    }));
 
     if errors.is_empty() {
         println!(
@@ -500,6 +383,35 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
         }
         Err(format!("{} lint error(s) in '{file}'", errors.len()).into())
     }
+}
+
+/// Project an artifact into the shared [`DefinitionSet`] shape, keeping the
+/// `channels[2]`-style origins the package surface has always reported.
+fn artifact_as_set(
+    artifact: &PackageArtifact,
+) -> (
+    orion::definitions::DefinitionSet,
+    orion::definitions::Boundary,
+) {
+    use orion::definitions::Entity;
+    let mut entries = Vec::new();
+    for (i, doc) in artifact.connectors.iter().enumerate() {
+        entries.push((Entity::Connector, format!("connectors[{i}]"), doc.clone()));
+    }
+    for (i, doc) in artifact.workflows.iter().enumerate() {
+        entries.push((Entity::Workflow, format!("workflows[{i}]"), doc.clone()));
+    }
+    for (i, doc) in artifact.channels.iter().enumerate() {
+        entries.push((Entity::Channel, format!("channels[{i}]"), doc.clone()));
+    }
+    let boundary = orion::definitions::Boundary {
+        channels: artifact.requires.channels.clone(),
+        connectors: artifact.requires.connectors.clone(),
+    };
+    (
+        orion::definitions::DefinitionSet::from_entries(entries),
+        boundary,
+    )
 }
 
 // ============================================================
