@@ -6234,27 +6234,42 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One task-function input schema from `GET /api/v1/admin/functions`.",
+              "description": "One entry of the function catalogue from `GET /api/v1/admin/functions`.",
               "required": [
                 "name",
                 "description",
                 "category",
-                "input_fields"
+                "source"
               ],
               "properties": {
+                "aliases": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Other accepted spellings — `validation` carries `validate`. Omitted\nwhen there are none."
+                },
                 "category": {
                   "type": "string",
-                  "description": "`connector`, `control`, `transform`, …"
+                  "description": "`connector`, `control`, `data`, or `utility`."
                 },
                 "description": {
                   "type": "string"
                 },
                 "input_fields": {
-                  "type": "array",
-                  "items": {}
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {},
+                  "description": "**Absent** for an engine built-in, which declares no input schema and\nis therefore not input-validated at create time."
                 },
                 "name": {
                   "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "description": "`orion` for a handler Orion implements and input-schema validates,\n`engine` for a dataflow-rs built-in the engine executes itself."
                 }
               }
             }
@@ -6647,27 +6662,42 @@
       },
       "FunctionSchemaItem": {
         "type": "object",
-        "description": "One task-function input schema from `GET /api/v1/admin/functions`.",
+        "description": "One entry of the function catalogue from `GET /api/v1/admin/functions`.",
         "required": [
           "name",
           "description",
           "category",
-          "input_fields"
+          "source"
         ],
         "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other accepted spellings — `validation` carries `validate`. Omitted\nwhen there are none."
+          },
           "category": {
             "type": "string",
-            "description": "`connector`, `control`, `transform`, …"
+            "description": "`connector`, `control`, `data`, or `utility`."
           },
           "description": {
             "type": "string"
           },
           "input_fields": {
-            "type": "array",
-            "items": {}
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {},
+            "description": "**Absent** for an engine built-in, which declares no input schema and\nis therefore not input-validated at create time."
           },
           "name": {
             "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "description": "`orion` for a handler Orion implements and input-schema validates,\n`engine` for a dataflow-rs built-in the engine executes itself."
           }
         }
       },

@@ -11,6 +11,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`GET /admin/functions` serves every valid function name** ([#288]) — it
+  served the schema registry, which is 18 of the 27 names a workflow may use.
+  The nine it omitted (`map`, `filter`, `log`, `parse_json`, `parse_xml`,
+  `validation`/`validate`, `publish_json`, `publish_xml`) are the most-used
+  functions there are: 425 of 631 tasks in the deployment that reported it,
+  `map` alone 310. Anything completing from this endpoint offered the connector
+  functions and none of the ones people type.
+
+  Engine built-ins now appear with `source: "engine"` and **no** `input_fields`
+  — omitted rather than nulled, because absence is the honest encoding and what
+  a consumer branches on. Orion handlers carry `source: "orion"` and their
+  schema as before. `validation` carries `validate` in `aliases` rather than
+  appearing twice, so a completion tool is not told there are two functions.
+  `category` gains a fourth value, `data`, matching the grouping the reference
+  page already gives these.
+
+  The schema registry itself is untouched, and so are `validate_input` and the
+  create-time field errors — the catalogue is a second view over it plus the
+  built-ins, not a widening of it. Two lists rather than one overloaded one.
+
+  This also closes a hole rather than only filling a gap:
+  `functions_docs_drift_test` asserted the summary table against the *registry*,
+  so the eight dataflow-rs rows in `reference/functions.md` were checked by
+  nothing and could drift freely. The table is now held to all 27.
+
+  Additive — rows and one field. A consumer that assumed every row carries
+  `input_fields` must tolerate its absence, which the `source` discriminator
+  exists to explain.
+
 - **`UNKNOWN_FUNCTION` names the nearest valid function** ([#289], [#288]) —
   a typo now gets a suggestion instead of a bare refusal:
 
@@ -26,9 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being fixed, so `http_request` gets no guess instead of a wrong one. Message
   text only; the `field`, the `code` and the error shape are unchanged.
 
-  Item 2 of #288 — `/admin/functions` serving only the 18 schema-validated
-  names and omitting the 9 engine builtins — is unaddressed and that issue
-  stays open for it.
+  Item 2 of #288 — the catalogue endpoint — is the entry above.
 
 - **dataflow-rs 3.6: task groups and `terminal`.** A `tasks` element carrying
   its own `tasks` key is a **task group** — one condition guarding a contiguous

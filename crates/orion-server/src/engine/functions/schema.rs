@@ -302,6 +302,160 @@ pub fn registry() -> &'static [FunctionSchema] {
     REGISTRY
 }
 
+// ============================================================
+// The catalogue: every name a workflow may use
+// ============================================================
+
+/// Who provides a function's behaviour.
+///
+/// The discriminator that tells a consumer *why* an entry has no
+/// `input_fields`: dataflow-rs contributes the function and executes it
+/// itself, so Orion has no schema to declare for it and does not
+/// input-validate it at create time.
+///
+/// It correlates exactly with schema presence today. It is kept separate
+/// because it need not: nothing stops Orion declaring a schema for `map`
+/// later, and a consumer branching on "is this validated" should read
+/// `input_fields`, while one branching on "whose function is this" should
+/// read `source`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    /// A dataflow-rs built-in, executed by the engine.
+    Engine,
+    /// An Orion handler, with a declared input schema.
+    Orion,
+}
+
+/// One entry of `GET /api/v1/admin/functions`.
+///
+/// The endpoint used to serve the `REGISTRY` directly, which meant it listed only
+/// the functions Orion input-schema validates — 18 of the 27 valid names,
+/// omitting `map`, `filter`, `parse_json` and the rest. Those are the ones
+/// people actually type: in the deployment that reported it (#288) the nine
+/// omitted names were 425 of 631 tasks, `map` alone 310. A completion source
+/// offering the connector functions and none of those is not an incomplete
+/// catalogue, it is the wrong one.
+///
+/// So the catalogue is the union, and the schema registry stays what it was.
+/// Two lists rather than one overloaded list: `validate_input` and
+/// `is_resolvable_field` ask "what does this function declare", which is still
+/// the `REGISTRY`, and only the endpoint and the docs guard ask "what may a
+/// workflow name".
+#[derive(Debug, Clone, Serialize)]
+pub struct CatalogueEntry {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub category: &'static str,
+    pub source: Source,
+    /// Other accepted spellings of this name. Serving an alias as its own
+    /// entry would tell a completion tool there are two functions.
+    #[serde(skip_serializing_if = "<[&str]>::is_empty")]
+    pub aliases: &'static [&'static str],
+    /// **Absent**, not null, when the function declares no input schema —
+    /// which is the honest JSON encoding of "there is nothing here", and what
+    /// a consumer branches on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_fields: Option<&'static [FieldSchema]>,
+}
+
+/// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
+/// with no Orion-declared input schema.
+///
+/// `category` is `data` — the fourth wire value, matching the grouping
+/// `reference/functions.md` already gives these in its summary table.
+/// Descriptions are the code's, and `functions_docs_drift_test` checks the
+/// page against them rather than the reverse.
+const ENGINE_BUILTINS: &[CatalogueEntry] = &[
+    CatalogueEntry {
+        name: "parse_json",
+        description: "Parse the raw payload into the data context.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "parse_xml",
+        description: "Parse an XML payload into the data context.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "map",
+        description: "Transform and reshape data with JSONLogic mappings.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "filter",
+        description: "Gate the pipeline on a JSONLogic condition.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "validation",
+        description: "Collect validation errors from JSONLogic rules.",
+        category: "data",
+        source: Source::Engine,
+        // Upstream accepts both spellings; they are one function.
+        aliases: &["validate"],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "log",
+        description: "Emit a structured log line.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "publish_json",
+        description: "Serialize a context field to a JSON string.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+    CatalogueEntry {
+        name: "publish_xml",
+        description: "Serialize a context field to an XML string.",
+        category: "data",
+        source: Source::Engine,
+        aliases: &[],
+        input_fields: None,
+    },
+];
+
+/// Every function a workflow may name, sorted by name.
+///
+/// Sorted because a catalogue is browsed: the registry's own order groups by
+/// implementation concern, which is not what a reader or a completion list
+/// wants.
+pub fn catalogue() -> Vec<CatalogueEntry> {
+    let mut out: Vec<CatalogueEntry> = REGISTRY
+        .iter()
+        .map(|schema| CatalogueEntry {
+            name: schema.name,
+            description: schema.description,
+            category: schema.category,
+            source: Source::Orion,
+            aliases: &[],
+            input_fields: Some(schema.input_fields),
+        })
+        .chain(ENGINE_BUILTINS.iter().cloned())
+        .collect();
+    out.sort_by_key(|e| e.name);
+    out
+}
+
 fn find(name: &str) -> Option<&'static FunctionSchema> {
     REGISTRY.iter().find(|s| s.name == name)
 }

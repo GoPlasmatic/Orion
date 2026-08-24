@@ -28,7 +28,7 @@
 
 use std::collections::BTreeSet;
 
-use orion::engine::functions::schema::registry;
+use orion::engine::functions::schema::{catalogue, registry};
 
 const FUNCTIONS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -152,9 +152,20 @@ fn word_before(doc: &str, phrase: &str) -> String {
 }
 
 /// Functions the registry carries — the ones Orion implements and input-schema
-/// validates, and exactly what `GET /admin/functions` serves.
+/// validates.
 fn registry_names() -> BTreeSet<String> {
     registry().iter().map(|s| s.name.to_string()).collect()
+}
+
+/// Every function a workflow may name — what `GET /admin/functions` serves.
+///
+/// Aliases are excluded: the summary table gives `validation` one row and
+/// names `validate` in its heading, which is the right way round for a reader.
+fn catalogue_names() -> BTreeSet<String> {
+    catalogue()
+        .into_iter()
+        .map(|e| e.name.to_string())
+        .collect()
 }
 
 /// Table rows that are not dataflow-rs contributions, so should correspond one
@@ -182,6 +193,91 @@ fn the_summary_table_parses() {
         categories,
         BTreeSet::from(["Composition", "Connector", "Data", "Utility"]),
         "unexpected Category values in the summary table"
+    );
+}
+
+/// The summary table and the catalogue name the same functions.
+///
+/// This is the check the registry-based one could not make. `registry_names()`
+/// covers 18 of the 27, so the eight dataflow-rs rows in the table were
+/// asserted by nothing: `every_registry_function_is_documented` never looked at
+/// them, and `no_documented_function_is_unknown` deliberately skipped every
+/// `Data` row. A renamed or removed built-in would have sat in the page
+/// indefinitely. Now the endpoint serves all 27, the page can be held to all 27.
+#[test]
+fn the_summary_table_matches_the_catalogue() {
+    let rows = documented_functions(&doc());
+    let documented: BTreeSet<String> = rows.iter().map(|r| r.name.clone()).collect();
+    let catalogued = catalogue_names();
+
+    let undocumented: Vec<&String> = catalogued.difference(&documented).collect();
+    assert!(
+        undocumented.is_empty(),
+        "served by GET /admin/functions but absent from the summary table in \
+         docs/src/reference/functions.md: {undocumented:?}"
+    );
+    let invented: Vec<&String> = documented.difference(&catalogued).collect();
+    assert!(
+        invented.is_empty(),
+        "in the summary table but not served by GET /admin/functions — renamed \
+         or removed?: {invented:?}"
+    );
+}
+
+/// An engine built-in is served without an input schema, and an Orion handler
+/// with one. A consumer branches on exactly that.
+#[test]
+fn the_catalogue_marks_which_entries_carry_a_schema() {
+    use orion::engine::functions::schema::Source;
+    for entry in catalogue() {
+        match entry.source {
+            Source::Orion => assert!(
+                entry.input_fields.is_some(),
+                "'{}' is an Orion handler and must serve its input schema",
+                entry.name
+            ),
+            Source::Engine => assert!(
+                entry.input_fields.is_none(),
+                "'{}' is an engine built-in — Orion declares no schema for it, \
+                 so serving one would claim a create-time check that does not run",
+                entry.name
+            ),
+        }
+    }
+    // The alias is expressed on its function, not as a second entry.
+    let names: BTreeSet<String> = catalogue()
+        .into_iter()
+        .map(|e| e.name.to_string())
+        .collect();
+    assert!(
+        !names.contains("validate"),
+        "an alias must not be its own entry"
+    );
+    assert!(
+        catalogue()
+            .iter()
+            .any(|e| e.name == "validation" && e.aliases.contains(&"validate")),
+        "'validation' must carry 'validate' as an alias"
+    );
+}
+
+/// The catalogue is the accepted vocabulary, so it must agree with the gate
+/// that accepts it — every served name loads, and every loadable name is
+/// served (modulo the alias, which is served on its function).
+#[test]
+fn the_catalogue_matches_what_a_workflow_may_actually_name() {
+    let mut served: BTreeSet<String> = BTreeSet::new();
+    for entry in catalogue() {
+        served.insert(entry.name.to_string());
+        served.extend(entry.aliases.iter().map(|a| a.to_string()));
+    }
+    let accepted: BTreeSet<String> = orion::engine::known_functions()
+        .map(|n| n.to_string())
+        .collect();
+    assert_eq!(
+        served, accepted,
+        "the catalogue and known_functions() disagree — one of them is lying to \
+         an author about what they may write"
     );
 }
 

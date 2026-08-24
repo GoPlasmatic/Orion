@@ -59,8 +59,14 @@ compose channels, or compute locally.
 > [!NOTE]
 > The **Category** column above groups the table for reading. It is not the wire
 > value: `GET /api/v1/admin/functions` serves a `category` of `connector`,
-> `control`, or `utility` for every function, so tooling should branch on those
-> rather than on the labels here.
+> `control`, `data`, or `utility` for every function, so tooling should branch
+> on those rather than on the labels here.
+>
+> That endpoint serves **all** of the functions above. The eight the engine
+> contributes carry `source: "engine"` and **no** `input_fields`, because Orion
+> declares no schema for them and so does not input-validate them at create
+> time; the rest carry `source: "orion"` and their schema. `validation` carries
+> `validate` in `aliases` rather than appearing twice.
 
 > [!NOTE]
 > Wherever an input field is described as **JSONLogic**, you pass a JSONLogic

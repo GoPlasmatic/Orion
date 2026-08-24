@@ -136,6 +136,73 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
     assert!(paths.contains(&"tasks[0].function.input.collection"));
 }
 
+/// The endpoint is a catalogue of every name a workflow may use, not just the
+/// ones Orion input-validates. It served 18 of 27 until #288 — omitting `map`,
+/// `filter`, `parse_json` and the rest, which are the most-used functions
+/// there are, so anything completing from it offered the connector functions
+/// and none of the ones people type.
+#[tokio::test]
+async fn list_functions_serves_every_valid_name() {
+    let app = test_app().await;
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let data = body["data"].as_array().expect("data must be an array");
+    let names: Vec<&str> = data.iter().filter_map(|f| f["name"].as_str()).collect();
+
+    for engine_builtin in [
+        "map",
+        "filter",
+        "log",
+        "parse_json",
+        "parse_xml",
+        "validation",
+        "publish_json",
+        "publish_xml",
+    ] {
+        assert!(
+            names.contains(&engine_builtin),
+            "'{engine_builtin}' is valid in a workflow and must be catalogued"
+        );
+    }
+
+    // An engine built-in declares no schema, and says so by omission rather
+    // than by a null — a consumer branches on presence.
+    let map = data.iter().find(|f| f["name"] == "map").expect("map");
+    assert_eq!(map["source"], "engine");
+    assert!(
+        map.get("input_fields").is_none(),
+        "an engine built-in must omit input_fields, not null it: {map}"
+    );
+    assert_eq!(map["category"], "data");
+
+    // The alias rides on its function rather than becoming a second entry.
+    assert!(
+        !names.contains(&"validate"),
+        "an alias must not be catalogued as its own function"
+    );
+    let validation = data
+        .iter()
+        .find(|f| f["name"] == "validation")
+        .expect("validation");
+    assert_eq!(validation["aliases"][0], "validate");
+
+    // An Orion handler is unchanged: source `orion`, schema present.
+    let cache_read = data
+        .iter()
+        .find(|f| f["name"] == "cache_read")
+        .expect("cache_read");
+    assert_eq!(cache_read["source"], "orion");
+    assert!(cache_read["input_fields"].is_array());
+    assert!(
+        cache_read.get("aliases").is_none(),
+        "an empty alias list must be omitted"
+    );
+}
+
 #[tokio::test]
 async fn list_functions_returns_registry_with_schemas() {
     let app = test_app().await;

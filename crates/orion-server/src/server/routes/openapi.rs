@@ -865,15 +865,25 @@ pub(crate) struct TraceDetail {
     task_trace_json: Option<Value>,
 }
 
-/// One task-function input schema from `GET /api/v1/admin/functions`.
+/// One entry of the function catalogue from `GET /api/v1/admin/functions`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct FunctionSchemaItem {
     name: String,
     description: String,
-    /// `connector`, `control`, `transform`, …
+    /// `connector`, `control`, `data`, or `utility`.
     category: String,
-    input_fields: Vec<Value>,
+    /// `orion` for a handler Orion implements and input-schema validates,
+    /// `engine` for a dataflow-rs built-in the engine executes itself.
+    source: String,
+    /// Other accepted spellings — `validation` carries `validate`. Omitted
+    /// when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    aliases: Vec<String>,
+    /// **Absent** for an engine built-in, which declares no input schema and
+    /// is therefore not input-validated at create time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_fields: Option<Vec<Value>>,
 }
 
 /// A liveness / readiness / health probe body.
