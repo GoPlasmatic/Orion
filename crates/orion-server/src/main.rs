@@ -109,6 +109,12 @@ enum Command {
         /// validation.
         #[arg(long)]
         deny_warnings: bool,
+        /// Directory holding the set's shared definitions — the `constants`,
+        /// `errors` and `fragments` documents a `$from` or a `use` resolves
+        /// against. Expansion happens before validation, so what is checked
+        /// is the expanded form. Implicit when linting a directory.
+        #[arg(long, value_name = "DIR")]
+        definitions: Option<String>,
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
@@ -139,6 +145,12 @@ enum Command {
         /// `channel_call`); `"*"` matches any.
         #[arg(short, long)]
         stubs: Option<String>,
+        /// Directory holding the set's shared definitions — the `constants`,
+        /// `errors` and `fragments` documents a `$from` or a `use` resolves
+        /// against. Expansion happens before validation, so what is checked
+        /// and run is the expanded form.
+        #[arg(long, value_name = "DIR")]
+        definitions: Option<String>,
     },
     /// Run a directory of workflow test cases (A6).
     ///
@@ -155,6 +167,12 @@ enum Command {
     Test {
         /// Directory of case files, or a single case file.
         path: String,
+        /// Directory holding the set's shared definitions — the `constants`,
+        /// `errors` and `fragments` documents a `$from` or a `use` resolves
+        /// against. Expansion happens before validation, so what is checked
+        /// and run is the expanded form.
+        #[arg(long, value_name = "DIR")]
+        definitions: Option<String>,
     },
     /// Probe configured backends for reachability (A6).
     ///
@@ -310,23 +328,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             deny_warnings,
             requires_channels,
             requires_connectors,
+            definitions,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
             };
-            return cli::run_lint(&workflow, deny_warnings, boundary);
+            return cli::run_lint(&workflow, deny_warnings, boundary, definitions.as_deref());
         }
         Some(Command::DryRun {
             workflow,
             input,
             stubs,
             metadata,
+            definitions,
         }) => {
-            return cli::run_dry_run(&workflow, &input, stubs.as_deref(), metadata.as_deref())
-                .await;
+            return cli::run_dry_run(
+                &workflow,
+                &input,
+                stubs.as_deref(),
+                metadata.as_deref(),
+                definitions.as_deref(),
+            )
+            .await;
         }
-        Some(Command::Test { path }) => return cli::run_test(&path).await,
+        Some(Command::Test { path, definitions }) => {
+            return cli::run_test(&path, definitions.as_deref()).await;
+        }
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         Some(Command::Preflight) => return cli::run_preflight(&config).await,

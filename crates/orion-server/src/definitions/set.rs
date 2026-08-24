@@ -101,6 +101,12 @@ pub struct DefinitionSet {
 /// "look at everything at once".
 #[derive(Debug, Default)]
 pub struct LoadReport {
+    /// Problems found while merging or expanding the shared definitions —
+    /// a duplicate name, an unresolvable `$from`, a missing fragment.
+    /// Reported alongside the check pass's own findings.
+    pub findings: Vec<super::finding::Finding>,
+    /// The catalog the set declared, after merging every shared document.
+    pub shared: super::SharedDefinitions,
     pub skipped: Vec<PathBuf>,
     /// Files that are JSON but classified as no entity kind, versus files that
     /// did not parse at all — the second is far more likely to be a mistake.
@@ -149,19 +155,53 @@ impl DefinitionSet {
     /// Hidden entries and `target/` are skipped without comment; everything
     /// else that is not an entity is reported in the [`LoadReport`].
     pub fn from_directory(dir: &Path) -> Result<(Self, LoadReport), String> {
+        Self::from_directory_with(dir, &super::SharedDefinitions::default())
+    }
+
+    /// [`Self::from_directory`] starting from shared definitions the caller
+    /// already has — how a single-file command (`dry-run`, `test`,
+    /// `lint <file>`) borrows a directory's catalog without linting it.
+    pub fn from_directory_with(
+        dir: &Path,
+        seed: &super::SharedDefinitions,
+    ) -> Result<(Self, LoadReport), String> {
         let mut set = DefinitionSet::default();
         let mut report = LoadReport::default();
-        walk(dir, &mut set, &mut report)?;
+        let mut shared_docs: Vec<(String, Value)> = Vec::new();
+        walk(dir, &mut set, &mut report, &mut shared_docs)?;
+
         // Stable order regardless of directory iteration, so two runs on two
         // machines produce the same report and a diff of the output is signal.
         set.definitions.sort_by(|a, b| a.origin.cmp(&b.origin));
         report.skipped.sort();
         report.unparseable.sort();
+        shared_docs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // Shared definitions are collected across the whole tree before any
+        // entity is expanded: a workflow may reference a fragment declared in
+        // a file the walk reaches later, and load order is not something an
+        // author should have to reason about.
+        let mut shared = seed.clone();
+        for (origin, doc) in &shared_docs {
+            shared.merge(doc, origin, &mut report.findings);
+        }
+        if !shared.is_empty() {
+            for def in &mut set.definitions {
+                let origin = def.origin.clone();
+                shared.expand(&mut def.doc, &origin, &mut report.findings);
+            }
+        }
+        report.shared = shared;
         Ok((set, report))
     }
 }
 
-fn walk(dir: &Path, set: &mut DefinitionSet, report: &mut LoadReport) -> Result<(), String> {
+fn walk(
+    dir: &Path,
+    set: &mut DefinitionSet,
+    report: &mut LoadReport,
+    shared_docs: &mut Vec<(String, Value)>,
+) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
     for entry in entries.filter_map(Result::ok) {
@@ -173,7 +213,7 @@ fn walk(dir: &Path, set: &mut DefinitionSet, report: &mut LoadReport) -> Result<
             continue;
         }
         if path.is_dir() {
-            walk(&path, set, report)?;
+            walk(&path, set, report, shared_docs)?;
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -199,6 +239,9 @@ fn walk(dir: &Path, set: &mut DefinitionSet, report: &mut LoadReport) -> Result<
                 origin: path.display().to_string(),
                 doc,
             }),
+            None if super::SharedDefinitions::is_shared_document(&doc) => {
+                shared_docs.push((path.display().to_string(), doc));
+            }
             None => report.skipped.push(path),
         }
     }

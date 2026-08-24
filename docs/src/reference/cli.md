@@ -53,6 +53,7 @@ orion-server lint <workflow.json | dir> [--deny-warnings]
 | `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
 | `--requires-channel` | Channel name that may be referenced without being in the set. Repeatable, directory mode only. |
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable, directory mode only. |
+| `--definitions` | Directory holding the set's shared `constants`, `errors` and `fragments`. Implicit when linting a directory. |
 
 **A directory is linted as a set.** Every channel, workflow and connector under it is validated, *and* the references between them are resolved — a `channel_call` target, a task's connector and its type, a channel's `workflow_id`, duplicate ids, names and routes. Those are the errors a per-file lint cannot see, because the file that would disprove them is one it never opens.
 
@@ -87,6 +88,7 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [
 | `-w, --workflow` | Path to a workflow JSON file. |
 | `-i, --input` | Path to a JSON file used as the message payload. |
 | `-s, --stubs` | Path to a JSON file of canned connector responses. The inner key is the task's `connector` (or `channel` for `channel_call`); `"*"` matches any. |
+| `--definitions` | Directory holding the set's shared definitions, resolved before validation. |
 | `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
 
 The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls` — the same five documents, in the same shape, that a case's `expect` roots address — plus `output` (an alias of `data`, kept for existing `jq` filters), `trace`, `matched` and `errors`.
@@ -104,6 +106,7 @@ orion-server test <path>
 | Argument | Description |
 |----------|-------------|
 | `path` | A directory of `*.case.json` files, or a single case file. Paths inside a case resolve relative to the case file. |
+| `--definitions` | Directory holding the set's shared definitions, resolved before each case's workflow is validated and run. |
 
 Example: `orion-server test examples/workflow-tests`
 
@@ -503,3 +506,43 @@ Example: `orion-cli mcp serve --server http://localhost:8080 --http --bind 0.0.0
 - [Admin API](./admin-api.md) — the HTTP endpoints `orion-cli` drives.
 - [Promote Between Environments](../operate/promotion.md) — the promotion model behind `orion-server package`.
 - [OpenAPI](./openapi.md) — the spec `dump-openapi` prints.
+
+## Shared definitions
+
+A definition set can say a thing once. Two mechanisms, one resolution pass, both expanded **before** validation — so `lint`, `dry-run` and `test` all check and run the expanded form, and the server, the admin API, traces and the UI never see a reference.
+
+```json
+{ "constants": { "db": { "connector": "sias-mongo", "database": "app" } },
+  "errors":    { "USER_NOT_FOUND": { "status": 400, "body": "User Not Found !" } } }
+```
+
+**`$from` splices a named value** into the object it sits in:
+
+```json
+{ "input": { "$from": "constants.db", "collection": "users" } }
+```
+
+resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users"}`. It is a **merge, not a substitution**, and **siblings win** — so a call site overrides one field without copying the rest. A `$from` alone in its object, naming a scalar or array, replaces the whole node.
+
+**Fragments are named task sequences**, parameterised:
+
+```json
+{ "fragments": { "require-session": {
+    "params": { "deny_message": { "default": "Session expired." } },
+    "tasks": [ { "id": "check", "name": "Check",
+      "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.msg", "logic": { "$param": "deny_message" } } ] } } } ] } } }
+```
+
+```json
+{ "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
+```
+
+Expanded task ids are namespaced by the call-site id (`_session.check`), so a fragment cannot collide with the including workflow or with a second instance of itself. A parameter with no `default` is required at every call site. A fragment cannot include another fragment.
+
+A shared document is one carrying `constants`, `errors` or `fragments` and no entity field — found by shape, like entities, and split across as many files as you like. A name defined twice is an error rather than a silent last-write-wins.
+
+Every unresolved reference is a lint error, which is why set mode resolves the catalog with no flag; the single-file commands take `--definitions <dir>`.
+
+> [!NOTE]
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from` or `use` — send the expanded form. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already expanded.
