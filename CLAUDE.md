@@ -96,6 +96,7 @@ src/
 ├── storage/             # Database abstraction, content hashing, config encryption
 │   ├── models/          # Row types, DTOs, enums
 │   └── repositories/    # workflows, channels, connectors, packages, traces, trace_dlq, audit_logs, cluster
+├── text.rs              # String similarity (edit distance) shared by the "did you mean" suggestions
 └── validation/          # Input validation, SSRF protection
 ```
 

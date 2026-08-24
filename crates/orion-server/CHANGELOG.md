@@ -78,10 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   So there is now one flattener, `engine::walk_steps` (`engine/steps.rs`), and
   every walk uses it: the connector and `channel_call` closure walks, the task
   schema validator (with nested paths — `tasks[1].tasks[0].function.name`), the
-  unresolvable-JSONLogic advisory, the offline call-log correlation, and
-  fragment expansion. The shape catch-all now parses through the engine's own
-  step parser rather than `Vec<Task>`, which does not flatten and would reject
-  every grouped workflow the engine accepts.
+  unresolvable-JSONLogic advisory, the offline call-log correlation, fragment
+  expansion, `POST /workflows/validate` (which otherwise reported a group as a
+  task missing its `name` — `valid: false` for a workflow `POST /workflows`
+  accepts and the engine runs) and `preflight`'s dialect-schema scan (which
+  otherwise could not see a schema-less `data_query` inside a guard clause —
+  the one 1.0 break it exists to catch in advance). The shape catch-all now
+  parses through the engine's own step parser rather than `Vec<Task>`, which
+  does not flatten and would reject every grouped workflow the engine accepts.
 
   Groups are validated in their own right: id required and unique across tasks
   *and* groups, non-empty `tasks`, boolean `terminal`, and a depth cap mirroring
@@ -124,7 +128,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel, workflow and connector under a directory, plus the references
   *between* them: a `channel_call` target that exists nowhere, a task naming a
   connector that is absent or of the wrong type, a channel whose `workflow_id`
-  resolves to nothing, duplicate ids, names and routes. A set could be green on
+  resolves to nothing, duplicate ids, names and routes. Route collisions are
+  judged exactly as the runtime route table judges them — `/o/{id}` and
+  `/o/{orderId}` are one route, `methods: []` means every method, a Kafka
+  channel's stray `route_pattern` serves nothing, and a deliberate
+  higher-`priority` override is not a collision. A set could be green on
   every per-file gate and still be missing a channel at runtime, because the
   file that would disprove it is one `lint <file>` never opens.
 
@@ -139,6 +147,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deployed elsewhere — the directory equivalent of a package artifact's
   `requires`. `--deny-warnings` behaves exactly as it does for a single file.
   `lint <file>` is byte-for-byte unchanged.
+
+  Findings carry a third, exit-neutral severity beside `error` and `warning`:
+  a `note` is an inventory line the report is expected to hold — today the
+  environment variables a set references via `env://` (`[env.reference]`) —
+  a fact about a correct set, never counted by the exit code or by
+  `--deny-warnings`. Counting it as a warning would have made the flag fail
+  on every set that authors a secret the documented way.
 
 - **`metadata` in a `*.case.json`** ([#283]) — a case can supply the request
   metadata the HTTP ingress would have built (`headers`, `params`, `query`,
@@ -213,11 +228,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   collection — and its findings now carry a stable `check` id and a severity,
   so a warning no longer has to be a failure or invisible.
 
-[#285]: https://github.com/GoPlasmatic/Orion/issues/285
-[#288]: https://github.com/GoPlasmatic/Orion/issues/288
-[#289]: https://github.com/GoPlasmatic/Orion/pull/289
-[#286]: https://github.com/GoPlasmatic/Orion/issues/286
-
 - **BREAKING: an `expect` path must name its root** ([#283]). A leading `data.`
   used to be optional, which made the case file the only surface in Orion that
   accepted an unrooted path — every mapping `path` in every shipped workflow
@@ -237,6 +247,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
 
 [#283]: https://github.com/GoPlasmatic/Orion/issues/283
+[#285]: https://github.com/GoPlasmatic/Orion/issues/285
+[#286]: https://github.com/GoPlasmatic/Orion/issues/286
+[#288]: https://github.com/GoPlasmatic/Orion/issues/288
+[#289]: https://github.com/GoPlasmatic/Orion/pull/289
 
 
 ## [1.1.0] - 2026-08-21

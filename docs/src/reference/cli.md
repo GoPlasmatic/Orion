@@ -69,7 +69,7 @@ warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call 
 ./definitions: 0 connector(s), 62 workflow(s), 62 channel(s) — 1 error(s), 1 warning(s)
 ```
 
-Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest.
+Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `note:` findings are exit-neutral inventory, not defects — `[env.reference]` lists each environment variable the set references via `env://` and the files that reference it; neither the exit code nor `--deny-warnings` counts them.
 
 Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
 

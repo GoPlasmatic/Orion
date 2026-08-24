@@ -22,7 +22,7 @@ Pointing it at a **directory** validates every channel, workflow and connector u
 
 `lint` applies the same validators the admin API applies on create: task shapes,
 function names, and each connector function's `input` schema. It exits non-zero
-on any finding, which is all a pull-request gate needs.
+on any error, which is all a pull-request gate needs.
 
 It also prints **advisory warnings** on stderr without failing — today, one:
 JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the
