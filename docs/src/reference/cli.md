@@ -70,7 +70,7 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [
 | `-s, --stubs` | Path to a JSON file of canned connector responses. The inner key is the task's `connector` (or `channel` for `channel_call`); `"*"` matches any. |
 | `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
 
-The printed document carries `output` (the data document), `metadata`, `temp_data`, `audit_trail`, `calls` (every connector call with its resolved payload), `trace`, `matched` and `errors`.
+The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls` — the same five documents, in the same shape, that a case's `expect` roots address — plus `output` (an alias of `data`, kept for existing `jq` filters), `trace`, `matched` and `errors`.
 
 Example: `orion-server dry-run -w wf.json -i input.json --stubs stubs.json`
 

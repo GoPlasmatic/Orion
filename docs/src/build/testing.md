@@ -54,8 +54,19 @@ The command prints one JSON document on stdout, so `jq` can read it:
 |---|---|
 | `matched` | Whether any task ran |
 | `trace` | The per-task execution path, including which tasks were skipped |
-| `output` | The final data context |
+| `output` | The final data document, under its historical name |
+| `data` | The same document, under the name a case's `expect` roots use |
+| `metadata` | The final metadata document |
+| `temp_data` | The final scratch document |
+| `audit_trail` | One entry per executed task, with its writes |
+| `calls` | Connector calls grouped by function, each with its resolved payload |
 | `errors` | Task errors, if any |
+
+The five documents after `trace` are the same set, in the same shape, that a
+case's `expect` roots address — so a path read off a dry run works in a case
+unchanged. `output` is kept as an alias of `data` because CI `jq` filters read
+it. `calls` is grouped by function rather than flat; each record carries a
+`seq` if you need the order across functions.
 
 ```bash
 orion-server dry-run -w workflow.json -i payload.json | jq '.output.order'

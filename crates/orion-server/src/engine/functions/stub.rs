@@ -52,20 +52,45 @@ const ANY_TARGET: &str = "*";
 /// Parsed stub file: `function -> target -> response`.
 pub type StubTable = HashMap<String, HashMap<String, Value>>;
 
-/// The three functions that execute for real offline rather than through a
-/// stub, and are therefore not recorded in the [`CallLog`].
+/// Constructor for a handler an offline run uses as-is.
+type BuildRealHandler = fn() -> dataflow_rs::BoxedFunctionHandler;
+
+/// The functions that execute for real offline rather than through a stub, and
+/// are therefore absent from the [`CallLog`].
 ///
 /// They are deterministic and make no egress, so stubbing them would only hide
 /// behaviour — and their inputs can carry inline key material and passwords,
 /// which a recorded payload has no business holding. The boundary this draws is
 /// also the honest description of the log: it records the calls that *would
 /// have left the process*.
-pub const UNSTUBBED_FUNCTIONS: [&str; 3] = ["crypto", "jwt_sign", "jwt_verify"];
+///
+/// One table, holding the name *and* the constructor, because a name and a
+/// registration that can drift is the whole failure this replaced. Adding a
+/// self-contained function is one row.
+const SELF_CONTAINED: [(&str, BuildRealHandler); 3] = [
+    ("crypto", || Box::new(super::crypto::CryptoHandler)),
+    ("jwt_sign", || Box::new(super::jwt_sign::JwtSignHandler)),
+    ("jwt_verify", || {
+        Box::new(super::jwt_verify::JwtVerifyHandler)
+    }),
+];
 
-/// Whether an offline run records calls to this function.
+/// The names in [`SELF_CONTAINED`].
+pub fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
+    SELF_CONTAINED.iter().map(|(name, _)| *name)
+}
+
+/// Whether an offline run answers this function from a stub — and therefore
+/// records it.
+///
+/// Derived from [`SELF_CONTAINED`] rather than a parallel list. The two used to
+/// be separate, and a function added to one but not the other broke quietly:
+/// `correlate` would look for a recorded call that the real handler never made,
+/// hit the function-mismatch guard, and stop attaching task ids to every call
+/// after it.
 pub fn is_recorded_function(function: &str) -> bool {
     crate::engine::CUSTOM_HANDLER_FUNCTIONS.contains(&function)
-        && !UNSTUBBED_FUNCTIONS.contains(&function)
+        && !SELF_CONTAINED.iter().any(|(name, _)| *name == function)
 }
 
 /// One connector call a stubbed run would have made.
@@ -187,6 +212,51 @@ impl CallLog {
         }
         grouped
     }
+}
+
+/// The documents an offline run publishes, by the name that addresses each one.
+///
+/// This is the vocabulary a `*.case.json` `expect` path is rooted at and the
+/// key set `dry-run` prints, and it is deliberately **one** list feeding
+/// **one** builder ([`run_documents`]). When the names lived in a const and the
+/// two output sites built their own object literals, a root could exist for the
+/// path validator and not for the lookup — and the result of that is a path
+/// that validates, resolves to nothing, and (because an expected `null` matches
+/// an absent path) *passes*. That is the exact failure the rooting rule was
+/// added to remove, so it must not be reachable one level up.
+///
+/// Adding a root is one edit here plus one arm in [`run_documents`];
+/// `every_root_is_published` fails if only one of the two happens.
+pub const RUN_DOCUMENTS: [&str; 5] = ["data", "metadata", "temp_data", "calls", "audit_trail"];
+
+/// Whether a dotted path names one of [`RUN_DOCUMENTS`].
+///
+/// Reads the first segment, stopping at a `.` or a `[` so `calls[0]` and
+/// `calls.mongo_write` are both rooted at `calls`.
+pub fn is_rooted(path: &str) -> bool {
+    let head = path.split(['.', '[']).next().unwrap_or(path);
+    RUN_DOCUMENTS.contains(&head)
+}
+
+/// Everything an offline run leaves behind, keyed by [`RUN_DOCUMENTS`].
+///
+/// `calls` is grouped by function — the shape `calls.<function>[i]` addresses —
+/// on both surfaces. Chronological order across functions is not lost by the
+/// grouping: every record carries its `seq`.
+pub fn run_documents(
+    message: &dataflow_rs::Message,
+    log: &CallLog,
+) -> serde_json::Map<String, Value> {
+    let mut docs = serde_json::Map::new();
+    docs.insert("data".to_string(), message.data().into());
+    docs.insert("metadata".to_string(), message.metadata().into());
+    docs.insert("temp_data".to_string(), message.temp_data().into());
+    docs.insert("calls".to_string(), Value::Object(log.grouped()));
+    docs.insert(
+        "audit_trail".to_string(),
+        serde_json::to_value(message.audit_trail()).unwrap_or(Value::Null),
+    );
+    docs
 }
 
 /// A task's authored input with its resolvable fields folded against the
@@ -533,16 +603,14 @@ pub fn build_stub_functions_with_log(
                 stubs: stubs.clone(),
                 log: log.clone(),
             }),
-            // Deterministic and offline — dry-run executes it for real, so a
-            // stub would only hide behavior. (An env:// key still resolves
-            // from the local environment; a missing variable is an honest
-            // failure, not a gap in stubbing.)
-            "crypto" => Box::new(super::crypto::CryptoHandler),
-            // Same reasoning: deterministic given their inputs (jwt_verify
-            // with a JWKS does fetch keys — an offline dry-run without them
-            // fails honestly rather than fabricating a verification).
-            "jwt_sign" => Box::new(super::jwt_sign::JwtSignHandler),
-            "jwt_verify" => Box::new(super::jwt_verify::JwtVerifyHandler),
+            // Deterministic and offline — dry-run executes these for real, so
+            // a stub would only hide behavior. (An env:// key still resolves
+            // from the local environment, and jwt_verify with a JWKS does
+            // fetch keys; a missing variable or an unreachable JWKS is an
+            // honest failure, not a gap in stubbing.)
+            name if let Some((_, build)) = SELF_CONTAINED.iter().find(|(n, _)| *n == name) => {
+                build()
+            }
             _ => Box::new(StubHandler {
                 function,
                 stubs: stubs.clone(),
@@ -644,6 +712,39 @@ mod tests {
         assert_eq!(stub("cache_write").output_path(&json!({})), None);
     }
 
+    /// The path validator and the lookup must agree about what a root is.
+    ///
+    /// A root the validator accepts but the builder does not publish resolves
+    /// to nothing, and an expected `null` matches nothing — so the assertion
+    /// passes. That is the silent pass the rooting rule exists to remove.
+    #[test]
+    fn every_root_is_published() {
+        let message = dataflow_rs::Message::from_value(&json!({}));
+        let docs = run_documents(&message, &CallLog::new());
+
+        for root in RUN_DOCUMENTS {
+            assert!(
+                docs.contains_key(root),
+                "'{root}' is accepted by is_rooted but never published — a case \
+                 path under it would resolve to <absent> and pass on null"
+            );
+            assert!(is_rooted(root), "'{root}' must validate as a root");
+        }
+        assert_eq!(
+            docs.len(),
+            RUN_DOCUMENTS.len(),
+            "run_documents publishes {:?}, RUN_DOCUMENTS declares {:?}",
+            docs.keys().collect::<Vec<_>>(),
+            RUN_DOCUMENTS
+        );
+        assert!(!is_rooted("order.flagged"), "a bare path is not rooted");
+        assert!(!is_rooted("dat.order"), "a typo'd root is not rooted");
+        assert!(
+            is_rooted("calls[0].input"),
+            "a bracket ends the root segment"
+        );
+    }
+
     /// The recorded payload must be what *would be sent*, not what was typed —
     /// otherwise the log asserts the workflow file back at you.
     #[tokio::test]
@@ -739,7 +840,7 @@ mod tests {
     /// than through a stub — so they are outside what the log describes.
     #[test]
     fn the_unstubbed_functions_are_not_recorded() {
-        for function in UNSTUBBED_FUNCTIONS {
+        for function in unstubbed_functions() {
             assert!(
                 !is_recorded_function(function),
                 "{function} must stay out of the call log"
