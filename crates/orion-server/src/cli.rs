@@ -437,13 +437,16 @@ pub(crate) async fn run_dry_run(
     let mut output = serde_json::json!({
         "matched": !trace.steps.is_empty(),
         "trace": trace,
+        // `output` is the data document under its historical name: CI `jq`
+        // filters read it. The run's documents go in beside it under the names
+        // a case's `expect` roots use, from the same builder the runner reads,
+        // so a path lifted off a dry run addresses the same thing in a case.
         "output": message.data(),
-        "metadata": message.metadata(),
-        "temp_data": message.temp_data(),
-        "audit_trail": message.audit_trail(),
-        "calls": run.log.calls(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     });
+    for (name, document) in orion::engine::functions::stub::run_documents(&message, &run.log) {
+        output[name] = document;
+    }
     if let Some(ref e) = run_error {
         output["error"] = serde_json::json!(e.to_string());
     }
@@ -573,7 +576,8 @@ struct TestCase {
     #[serde(default)]
     stubs_file: Option<String>,
     /// Dotted paths to their expected values, each **rooted** at one of
-    /// [`EXPECT_ROOTS`]: `data.order.flagged`, `metadata.headers.deviceid`,
+    /// [`RUN_DOCUMENTS`](orion::engine::functions::stub::RUN_DOCUMENTS):
+    /// `data.order.flagged`, `metadata.headers.deviceid`,
     /// `temp_data.user_id`, `calls.mongo_write[0].input.document.id`,
     /// `audit_trail[1].status`.
     ///
@@ -615,15 +619,6 @@ struct TestCase {
     #[serde(default)]
     expect_tasks: Option<Vec<String>>,
 }
-
-/// The documents a case's `expect` path may be rooted at.
-///
-/// `data`/`metadata`/`temp_data` are the message's own three, named as the
-/// engine names them. `calls` and `audit_trail` are what the run left behind:
-/// the recorded connector calls, and `Message::audit_trail` — spelled in full
-/// because unqualified "audit" in Orion is the admin audit log, a different
-/// thing entirely.
-const EXPECT_ROOTS: [&str; 5] = ["data", "metadata", "temp_data", "calls", "audit_trail"];
 
 /// What one case did.
 struct CaseResult {
@@ -765,7 +760,7 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
     let unrooted: Vec<String> = case
         .expect
         .keys()
-        .filter(|path| !is_rooted(path))
+        .filter(|path| !orion::engine::functions::stub::is_rooted(path))
         .map(|path| unrooted_message(path))
         .collect();
     if !unrooted.is_empty() {
@@ -802,13 +797,9 @@ async fn run_case(case_path: &std::path::Path) -> CaseResult {
         failures.push(format!("workflow failed: {e}"));
     }
 
-    let roots = serde_json::json!({
-        "data": message.data(),
-        "metadata": message.metadata(),
-        "temp_data": message.temp_data(),
-        "calls": serde_json::Value::Object(run.log.grouped()),
-        "audit_trail": message.audit_trail(),
-    });
+    let roots = serde_json::Value::Object(orion::engine::functions::stub::run_documents(
+        &message, &run.log,
+    ));
     for (path, expected) in &case.expect {
         let actual = lookup_path(&roots, path);
         // An expected `null` matches an absent path as well as an explicit
@@ -869,18 +860,6 @@ fn executed_task_ids(trace: &dataflow_rs::ExecutionTrace) -> Vec<String> {
         .collect()
 }
 
-/// Whether an `expect` path names one of [`EXPECT_ROOTS`].
-fn is_rooted(path: &str) -> bool {
-    let head = path
-        .split('.')
-        .next()
-        .unwrap_or(path)
-        .split('[')
-        .next()
-        .unwrap_or(path);
-    EXPECT_ROOTS.contains(&head)
-}
-
 /// The failure text for an `expect` path with no root, suggesting the fix.
 ///
 /// `data.` is suggested because it is what an unrooted path used to mean, and
@@ -889,7 +868,7 @@ fn unrooted_message(path: &str) -> String {
     format!(
         "expect path '{path}' has no root — did you mean 'data.{path}'? \
          roots: {}",
-        EXPECT_ROOTS.join(", ")
+        orion::engine::functions::stub::RUN_DOCUMENTS.join(", ")
     )
 }
 

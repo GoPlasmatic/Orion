@@ -1085,10 +1085,14 @@ fn dry_run_prints_the_call_log_and_the_context_documents() {
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("dry-run prints JSON");
     assert_eq!(parsed["metadata"]["channel"], "rotate");
     assert_eq!(parsed["temp_data"]["sid"], "sess-1");
-    assert_eq!(parsed["calls"][0]["function"], "mongo_write");
-    assert_eq!(parsed["calls"][0]["task_id"], "persist");
+    // Grouped by function, the same shape a case's `calls.<fn>[i]` addresses —
+    // one shape on both surfaces, so a path lifted from here works in a case.
+    // Global ordering is not lost to the grouping: each record carries `seq`.
+    assert_eq!(parsed["calls"]["mongo_write"][0]["function"], "mongo_write");
+    assert_eq!(parsed["calls"]["mongo_write"][0]["task_id"], "persist");
+    assert_eq!(parsed["calls"]["mongo_write"][0]["seq"], 0);
     assert_eq!(
-        parsed["calls"][0]["input"]["update"]["$set"]["generation"],
+        parsed["calls"]["mongo_write"][0]["input"]["update"]["$set"]["generation"],
         serde_json::json!({"if": [true, 2, 1]}),
         "the log shows the node Mongo would have stored"
     );

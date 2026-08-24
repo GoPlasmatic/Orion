@@ -64,10 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a hard error would refuse updates to workflows that have been serving for
   months.
 
-- **`dry-run` prints `metadata`, `temp_data`, `audit_trail` and `calls`**
-  ([#283]) beside `output`, under the same names a case's `expect` roots use,
-  so a path read off a dry run pastes into a case unchanged. `output` keeps its
-  name — CI `jq` filters read it.
+- **`dry-run` prints the run's documents** ([#283]) — `data`, `metadata`,
+  `temp_data`, `audit_trail` and `calls` — from the same builder the case
+  runner reads, so they are the same set in the same shape a case's `expect`
+  roots address and a path pastes across unchanged. `output` stays as an alias
+  of `data`; CI `jq` filters read it.
 
 ### Changed
 
