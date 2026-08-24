@@ -67,6 +67,7 @@ pub mod utils;
 pub use handlers::{
     CONNECTOR_FUNCTIONS, HandlerDeps, build_custom_functions, is_known_function, known_functions,
     register_kafka_publisher, required_connector_types, requires_mongo_database,
+    suggest_known_function,
 };
 pub use loader::{CUSTOM_HANDLER_FUNCTIONS, build_engine_workflows, filter_channels};
 pub use observer::MetricsObserver;

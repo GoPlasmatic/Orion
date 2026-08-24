@@ -157,7 +157,7 @@ a drift test fails the build if `src/` emits one or if this table and the
 | `UNKNOWN_FIELD` | A key the strict parser does not accept — a typo, or a pre-1.0 spelling 1.0 refuses. |
 | `DUPLICATE_FIELD` | The same key appeared twice in one object. |
 | `DUPLICATE_TASK_ID` | Two tasks in one workflow declare the same `id`. |
-| `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. |
+| `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
 
 ### How `path` is rooted
 
