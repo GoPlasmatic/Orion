@@ -61,6 +61,49 @@ pub fn known_functions() -> impl Iterator<Item = &'static str> {
         )
 }
 
+/// The known function nearest to `name`, when one is close enough that a
+/// typo is the likely explanation — the suggestion the `UNKNOWN_FUNCTION`
+/// validation error appends.
+///
+/// Function names are short (4–15 characters), so the fixed distance-3 window
+/// `config/unknown_env.rs` gives env-var overrides would surface suggestions
+/// for inputs that are clearly unrelated ("x" is 3 edits from "map"). The
+/// window here scales with the shorter name — a third of its length, clamped
+/// to 1–3 edits — which covers the realistic typo shapes (a transposed pair,
+/// a doubled letter, a missing suffix) and nothing else.
+pub fn suggest_known_function(name: &str) -> Option<&'static str> {
+    known_functions()
+        .map(|candidate| (edit_distance(name, candidate), candidate))
+        .filter(|(distance, candidate)| {
+            let window = (name.len().min(candidate.len()) / 3).clamp(1, 3);
+            *distance <= window
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+        .map(|(_, candidate)| candidate)
+}
+
+/// Levenshtein distance, two-row form — the same shape as
+/// `config::unknown_env::edit_distance`. The candidate set is ~27 short
+/// names, so this is a few hundred cells per misspelled task name.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = previous[j] + usize::from(ca != cb);
+            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
+}
+
 /// Function names that require a connector reference.
 pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "http_call",
@@ -445,6 +488,47 @@ mod tests {
             );
         }
         assert!(!is_known_function("__not_a_function__"));
+    }
+
+    /// The typos the `UNKNOWN_FUNCTION` message exists for: the suggestions
+    /// must be the real, registered names they misspell.
+    #[test]
+    fn suggestion_recovers_common_typos() {
+        for (typo, expected) in [
+            ("mongo_writes", "mongo_write"),
+            ("jwt_verifiy", "jwt_verify"),
+            ("cache_readd", "cache_read"),
+        ] {
+            assert_eq!(
+                suggest_known_function(typo),
+                Some(expected),
+                "'{typo}' should point at '{expected}'"
+            );
+        }
+    }
+
+    /// The window scales with name length, so garbage that is far from every
+    /// registered name gets no suggestion rather than a wrong one —
+    /// `http_request` is a plausible typo but seven edits from `http_call`.
+    #[test]
+    fn suggestion_is_silent_when_nothing_is_close() {
+        assert_eq!(suggest_known_function("http_request"), None);
+        assert_eq!(suggest_known_function("no_such_function_xyz"), None);
+        assert_eq!(suggest_known_function("totally_unrelated"), None);
+        assert_eq!(suggest_known_function("x"), None);
+    }
+
+    /// Suggestions only ever name something the engine can actually run.
+    #[test]
+    fn suggestion_never_names_an_unknown_function() {
+        for typo in ["mongo_writes", "jwt_verifiy", "cache_readd"] {
+            if let Some(candidate) = suggest_known_function(typo) {
+                assert!(
+                    is_known_function(candidate),
+                    "'{candidate}' is suggested for '{typo}' but is not itself registered"
+                );
+            }
+        }
     }
 
     /// F52: the type table and the "needs a connector" list are two views of
