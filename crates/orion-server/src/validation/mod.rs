@@ -1,5 +1,5 @@
 mod channels;
-mod common;
+pub(crate) mod common;
 mod connectors;
 pub mod endpoints;
 pub mod ssrf;

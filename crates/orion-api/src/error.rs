@@ -68,6 +68,12 @@ pub mod field_codes {
     /// A task names a function the engine does not register — the workflow
     /// would be accepted and then fail at its first request.
     pub const UNKNOWN_FUNCTION: &str = "UNKNOWN_FUNCTION";
+    /// The document still carries an authoring convenience that is resolved
+    /// when a definition set is compiled — a `$from` shared value, a `use`
+    /// task fragment. The admin API takes one document and has no set to
+    /// resolve it against, so the compiled form is what it accepts:
+    /// `orion-server compile <dir>` produces it.
+    pub const UNCOMPILED_SOURCE: &str = "UNCOMPILED_SOURCE";
 
     /// Every code above, for exhaustiveness checks.
     pub const ALL: &[&str] = &[
@@ -80,6 +86,7 @@ pub mod field_codes {
         DUPLICATE_FIELD,
         DUPLICATE_TASK_ID,
         UNKNOWN_FUNCTION,
+        UNCOMPILED_SOURCE,
     ];
 }
 

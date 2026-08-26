@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`orion-server compile <dir>` — a definition set in, files the admin API
+  accepts out.** The authoring conveniences a set may use, `$from` for a shared
+  value and `use` for a task fragment, resolve when a *set* is loaded, and the
+  admin API loads no set: it takes one document with nothing to resolve names
+  against. Nothing in the product performed that step for a deploy tool —
+  `package export` reads a live instance, which only ever stored compiled
+  documents — so the only path from `definitions/` to a running instance was a
+  tool that reimplemented the expander.
+
+  `compile` runs every gate `lint <dir>` runs and then emits: a promotion
+  artifact by default, hashed exactly as `package export` hashes one so
+  `package plan|apply|diff` consume it unchanged; `--format dir` mirrors the
+  input tree, one compiled file per entity; `--format bulk` writes the three
+  bulk-import arrays. `--requires-channel` / `--requires-connector` fill the
+  artifact's `requires`, and `--no-activate` emits drafts.
+
+- **An authoring layer the next simplification plugs into**
+  (`definitions/compile.rs`). `$from` and `use` are now two `Pass`es in an
+  ordered pipeline rather than a hard-coded pair of rewrites. A pass declares
+  its **residue** — where its own syntax still appears in a document — and that
+  one method is read three times: the pipeline test asserts residue is empty
+  after compiling (which is what "canonical" means and what the runtime relies
+  on), `compile` reports which passes fired, and the admin API turns leftover
+  residue into an error that names it. Adding a pass gets all three.
+
+### Fixed
+
+- **The admin API refused `$from` / `use` with the symptom, not the cause**
+  (#295). An uncompiled reference reached the function-input validator as
+  literal JSON and was refused for the fields the reference would have
+  supplied — `tasks[1].function.input` *requires 'connector'* — so an author
+  went looking for a typo that was not there. A `use` step arrived as a task
+  missing its `name` and `function`; a connector config as `missing field
+  connection_string`; a channel config as `unknown field '$from'`, which reads
+  as a misspelling. All four now return `UNCOMPILED_SOURCE` with the
+  reference, its authored coordinate, and the command that resolves it.
+
+  This also closes a hole rather than only rewording one: a `$from` deep enough
+  in a task payload — inside a `map` mapping's `logic`, say — satisfied every
+  schema and was **stored with 201**, and the workflow then wrote the literal
+  `{"$from": …}` object into its response at runtime. It is refused now. The
+  detection comes from the compiler's own passes, so what `compile` consumes
+  and what the API refuses cannot drift apart.
+
 ## [1.2.0] - 2026-08-26
 
 ### Changed

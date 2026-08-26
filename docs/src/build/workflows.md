@@ -109,6 +109,15 @@ A shared document — any JSON in the definition set carrying `constants`, `erro
 
 `orion-server lint ./definitions` resolves the catalog automatically and reports an unresolved reference as an error; the single-file commands take `--definitions <dir>`.
 
+To **deploy** a set that uses either, compile it first — the admin API takes one document and has no set to resolve names against, so it refuses a reference rather than guessing:
+
+```bash
+orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
+orion-server package apply -s https://prod.orion.internal -f dist/package.json
+```
+
+See [`compile`](../reference/cli.md#compile) for the other output formats.
+
 ## Reach outside the process
 
 Connector-backed tasks call databases, HTTP APIs, caches, and Kafka. They name a connector rather than a URL, and write their result to an `output` path:

@@ -200,17 +200,23 @@ impl SharedDefinitions {
         }
     }
 
-    /// Expand every reference in one authored document, in place.
+    /// Compile one authored document against this catalog, in place.
     ///
-    /// Fragments first, then values: a fragment's tasks may themselves carry
-    /// `$from`, and expanding them afterwards means a fragment is written the
-    /// same way a workflow is.
+    /// The two rewrites below are the first two passes of the authoring
+    /// pipeline, and this runs it: the ordering rule — fragments before
+    /// values, so a fragment's own `$from` is spliced after it is inlined and
+    /// a fragment is written exactly the way a workflow is — lives in
+    /// [`super::compile::passes`] with everything else the pipeline
+    /// guarantees.
     pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
-        if let Some(tasks) = doc.get_mut("tasks").and_then(Value::as_array_mut) {
-            let expanded = self.expand_tasks(tasks, origin, findings);
-            *tasks = expanded;
-        }
-        self.splice(doc, origin, findings);
+        super::compile::compile(
+            doc,
+            &super::compile::Cx {
+                shared: self,
+                origin,
+            },
+            findings,
+        );
     }
 
     /// Replace every `{"use": ..}` entry with the named fragment's tasks.
@@ -219,7 +225,7 @@ impl SharedDefinitions {
     /// detection and a depth cap, and nothing has asked for it. Refused with a
     /// message rather than silently ignored, so the restriction is visible at
     /// the point it bites.
-    fn expand_tasks(
+    pub(super) fn expand_tasks(
         &self,
         tasks: &[Value],
         origin: &str,
@@ -326,7 +332,7 @@ impl SharedDefinitions {
     }
 
     /// Walk a value, splicing every `$from` against the namespaces.
-    fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
+    pub(super) fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
         match value {
             Value::Array(items) => {
                 for item in items {
@@ -379,20 +385,15 @@ impl SharedDefinitions {
 /// the cause rather than letting validation report the symptom — an
 /// unexpanded `use` task looks to the validator like a task missing its
 /// `name` and `function`, which sends the reader to the wrong place.
+///
+/// Reads the pipeline's own residue rather than walking again, so "what the
+/// single-file commands refuse" and "what `compile` would have consumed" stay
+/// one statement, and a pass added later is named here without being taught
+/// about.
 pub fn first_reference(doc: &Value) -> Option<String> {
-    match doc {
-        Value::Array(items) => items.iter().find_map(first_reference),
-        Value::Object(map) => {
-            if let Some(name) = map.get("use").and_then(Value::as_str) {
-                return Some(format!("a reference to fragment '{name}'"));
-            }
-            if let Some(path) = map.get("$from").and_then(Value::as_str) {
-                return Some(format!("a reference to '{path}'"));
-            }
-            map.values().find_map(first_reference)
-        }
-        _ => None,
-    }
+    super::compile::residue(doc, "")
+        .first()
+        .map(super::compile::Residue::describe)
 }
 
 /// Keep the shared documents from the set walk, and report what would not

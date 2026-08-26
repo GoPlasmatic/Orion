@@ -83,6 +83,7 @@ src/
 ├── config/              # Configuration loading & validation
 ├── connector/           # Connector types, registry, circuit breakers, pool caching, secret resolution
 ├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver
+│   └── compile.rs       # The authoring layer: an ordered pipeline of `Pass`es (source form → canonical form). A new simplification is a new pass; its `residue()` is what `compile` reports, what the pipeline test asserts empty, and what the admin API refuses by name
 ├── engine/              # Dataflow engine build/reload, observer, custom function handlers
 │   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
 │   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read/write/aggregate, publish_kafka, send_email, storage_presign/head, crypto, jwt_sign/verify
@@ -226,6 +227,7 @@ orion-server lint workflow.json           # Strict-validate one workflow (--deny
 orion-server lint ./definitions           # Validate a whole definition set and the references between its files
 orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # Execute a workflow offline with canned connector replies
 orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests (--definitions <dir> to resolve $from/use)
+orion-server compile ./definitions --name p --version 1.0.0 -o dist/package.json  # Compile a definition set ($from/use resolved) into a package artifact (--format dir|bulk for POST-per-file / bulk-import shapes)
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec

@@ -379,6 +379,26 @@ fn run_lint_set(
     deny_warnings: bool,
     boundary: orion::definitions::Boundary,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // `false`: a directory being authored may hold a workflow with no id yet.
+    // A package must carry explicit ids because channels reference them across
+    // the artifact; a directory has no such contract, and refusing an id-less
+    // draft would make the gate unusable exactly when it is most wanted.
+    load_and_gate(dir, boundary, false, deny_warnings)?;
+    Ok(())
+}
+
+/// Load a definition set, compile it, and run every gate `lint <dir>` runs.
+///
+/// Shared with `compile <dir>`, which is `lint` plus an emitter: a compile
+/// that wrote out a set its own linter would reject is how an artifact comes
+/// to fail at `package apply` having passed CI. The two differ in one
+/// argument — `require_ids` — and in nothing else, on purpose.
+fn load_and_gate(
+    dir: &str,
+    boundary: orion::definitions::Boundary,
+    require_ids: bool,
+    deny_warnings: bool,
+) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
     let (set, report) =
         orion::definitions::DefinitionSet::from_directory(std::path::Path::new(dir))?;
 
@@ -403,15 +423,11 @@ fn run_lint_set(
         .into());
     }
 
-    // `false`: a directory being authored may hold a workflow with no id yet.
-    // A package must carry explicit ids because channels reference them across
-    // the artifact; a directory has no such contract, and refusing an id-less
-    // draft would make the gate unusable exactly when it is most wanted.
     // The loader's findings — an unresolvable `$from`, a missing fragment, a
     // name defined twice — are the same class as the check pass's and share
     // its exit rules, which is the whole reason #286 came first.
     let mut findings = report.findings;
-    findings.extend(orion::definitions::check(&set, &boundary, false));
+    findings.extend(orion::definitions::check(&set, &boundary, require_ids));
 
     let errors = findings.iter().filter(|f| f.is_error()).count();
     // Counted by severity rather than as "everything that is not an error":
@@ -421,6 +437,10 @@ fn run_lint_set(
     let warnings = findings.iter().filter(|f| f.is_warning()).count();
     for finding in &findings {
         eprintln!("{finding}");
+    }
+
+    for (pass, count) in &report.compiled {
+        println!("compiled: {pass} rewrote {count} document(s)");
     }
 
     use orion::definitions::Entity;
@@ -451,6 +471,239 @@ fn run_lint_set(
     }
     if deny_warnings && warnings > 0 {
         return Err(format!("{warnings} warning(s) in '{dir}' and --deny-warnings is set").into());
+    }
+    Ok(set)
+}
+
+/// What `compile` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum CompileFormat {
+    /// One promotion artifact, the shape `package plan|apply|diff` consume.
+    Artifact,
+    /// The input tree mirrored, compiled, one file per entity.
+    Dir,
+    /// `connectors.json`, `workflows.json`, `channels.json` — arrays in the
+    /// bulk-import body shape.
+    Bulk,
+}
+
+/// `compile <dir>`: gate a definition set, then write it out in a form the
+/// admin API accepts.
+///
+/// The authoring conveniences a set may use — `$from`, `use` — resolve when
+/// the set is *loaded*, and the admin API loads no set. Until this command
+/// existed the only path from `definitions/` to a running instance was a
+/// deploy tool that reimplemented the expander, and #295 is what that costs
+/// when the reimplementation is missing a case: the reference arrives as
+/// literal JSON and is refused for the fields it would have supplied.
+///
+/// Gate first, emit second, and the gate is `lint <dir>`'s own
+/// ([`load_and_gate`]) rather than a second one written beside it — a compile
+/// that emitted a set its own linter rejects is how an artifact comes to fail
+/// at `package apply` having passed CI.
+pub(crate) struct CompileRequest<'a> {
+    pub(crate) dir: &'a str,
+    pub(crate) output: Option<&'a str>,
+    pub(crate) format: CompileFormat,
+    /// Package name and version. Required for the artifact form, meaningless
+    /// for the other two, which emit no package envelope.
+    pub(crate) name: Option<&'a str>,
+    pub(crate) version: Option<&'a str>,
+    /// Names the set may reference without containing — the linter's boundary,
+    /// and the artifact's `requires`.
+    pub(crate) boundary: orion::definitions::Boundary,
+    pub(crate) deny_warnings: bool,
+    pub(crate) no_activate: bool,
+}
+
+pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    // Only the artifact form. Its entries are addressed by id across the file —
+    // `apply` activates a channel by `channel_id`, and reads activation intent
+    // off it — so an id-less entity in an artifact is one `apply` would stage
+    // and never activate.
+    //
+    // The other two forms are request bodies, and the API assigns an id from
+    // the name exactly as it does for a hand-written POST. Demanding one there
+    // would refuse a set that deploys correctly today: leaving `channel_id` out
+    // and letting the server derive it is an ordinary way to author a set, and
+    // it is what the sets that motivated this command do.
+    let requires_ids = req.format == CompileFormat::Artifact;
+    let (name, version) = match req.format {
+        CompileFormat::Artifact => match (req.name, req.version) {
+            (Some(n), Some(v)) => (n, v),
+            _ => return Err("--name and --version are required for --format artifact".into()),
+        },
+        _ => ("", ""),
+    };
+
+    let requires = orion::definitions::Boundary {
+        channels: req.boundary.channels.clone(),
+        connectors: req.boundary.connectors.clone(),
+    };
+    let set = load_and_gate(req.dir, req.boundary, requires_ids, req.deny_warnings)?;
+
+    match req.format {
+        CompileFormat::Artifact => emit_artifact(
+            &set,
+            req.dir,
+            name,
+            version,
+            requires,
+            req.no_activate,
+            req.output,
+        ),
+        CompileFormat::Dir => emit_dir(&set, req.dir, require_output(req.output, "--format dir")?),
+        CompileFormat::Bulk => emit_bulk(&set, require_output(req.output, "--format bulk")?),
+    }
+}
+
+/// Both directory formats write several files, so there is nowhere for a
+/// stdout default to put them.
+fn require_output<'a>(
+    output: Option<&'a str>,
+    what: &str,
+) -> Result<&'a str, Box<dyn std::error::Error>> {
+    output.ok_or_else(|| format!("-o <DIR> is required for {what}").into())
+}
+
+/// Emit the compiled set as a promotion artifact.
+///
+/// Built through `package_cli`'s own shapes and hashed with its own
+/// `artifact_content_hash`, so an artifact this command writes and one
+/// `package export` writes are the same kind of document — including the
+/// hash, which `plan`, `apply` and `diff` all verify before doing anything.
+fn emit_artifact(
+    set: &orion::definitions::DefinitionSet,
+    dir: &str,
+    name: &str,
+    version: &str,
+    requires: orion::definitions::Boundary,
+    no_activate: bool,
+    output: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use orion::definitions::Entity;
+
+    let collect = |kind: Entity| -> Vec<serde_json::Value> {
+        set.iter(kind).map(|d| d.doc.clone()).collect()
+    };
+    let mut workflows = collect(Entity::Workflow);
+    let mut channels = collect(Entity::Channel);
+
+    // Carry activation intent. `package export` reads it from the stored
+    // `status`; a directory has no status, so the default is that a compiled
+    // definition is meant to run — a package whose entities never activate
+    // applies cleanly and serves nothing. An author who wants otherwise says
+    // so per entity with `"activate": false`, or for the whole set with
+    // --no-activate.
+    if !no_activate {
+        for entity in workflows.iter_mut().chain(channels.iter_mut()) {
+            if let Some(obj) = entity.as_object_mut() {
+                obj.entry("activate")
+                    .or_insert_with(|| serde_json::Value::Bool(true));
+            }
+        }
+    }
+
+    let mut artifact = crate::package_cli::PackageArtifact {
+        package: crate::package_cli::PackageMeta {
+            name: name.to_string(),
+            version: version.to_string(),
+            orion: env!("CARGO_PKG_VERSION").to_string(),
+            content_hash: String::new(),
+            exported_from: dir.to_string(),
+            exported_at: chrono::Utc::now().to_rfc3339(),
+        },
+        requires: crate::package_cli::Requires {
+            channels: requires.channels,
+            connectors: requires.connectors,
+        },
+        connectors: collect(Entity::Connector),
+        workflows,
+        channels,
+    };
+    artifact.package.content_hash = crate::package_cli::artifact_content_hash(&artifact)?;
+
+    let rendered = serde_json::to_string_pretty(&artifact)?;
+    match output {
+        Some(path) => {
+            if let Some(parent) = std::path::Path::new(path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("create '{}': {e}", parent.display()))?;
+            }
+            std::fs::write(path, rendered).map_err(|e| format!("write '{path}': {e}"))?;
+            println!(
+                "wrote {}@{} ({} connectors, {} workflows, {} channels) to {path}",
+                artifact.package.name,
+                artifact.package.version,
+                artifact.connectors.len(),
+                artifact.workflows.len(),
+                artifact.channels.len(),
+            );
+        }
+        None => println!("{rendered}"),
+    }
+    Ok(())
+}
+
+/// Mirror the input tree into `out`, compiled.
+///
+/// One file in, one file out, at the same relative path — so a diff of the two
+/// trees is exactly what the compiler did, and nothing else. Shared documents
+/// are consumed rather than copied: they are the compiler's input, and an
+/// admin API sent one would refuse it as no entity at all.
+fn emit_dir(
+    set: &orion::definitions::DefinitionSet,
+    dir: &str,
+    out: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = std::path::Path::new(dir);
+    let out_root = std::path::Path::new(out);
+    for def in &set.definitions {
+        let origin = std::path::Path::new(&def.origin);
+        let relative = origin.strip_prefix(root).unwrap_or(origin);
+        let target = out_root.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create '{}': {e}", parent.display()))?;
+        }
+        std::fs::write(&target, serde_json::to_string_pretty(&def.doc)?)
+            .map_err(|e| format!("write '{}': {e}", target.display()))?;
+    }
+    println!(
+        "wrote {} compiled definition(s) to {out}",
+        set.definitions.len()
+    );
+    Ok(())
+}
+
+/// Emit three bulk-import bodies.
+///
+/// Named in the order they must be sent — connectors, then the workflows that
+/// reference them, then the channels that reference those — because that is
+/// the only ordering in which each import's references already exist.
+fn emit_bulk(
+    set: &orion::definitions::DefinitionSet,
+    out: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use orion::definitions::Entity;
+    std::fs::create_dir_all(out).map_err(|e| format!("create '{out}': {e}"))?;
+    for (kind, file) in [
+        (Entity::Connector, "connectors.json"),
+        (Entity::Workflow, "workflows.json"),
+        (Entity::Channel, "channels.json"),
+    ] {
+        let entries: Vec<&serde_json::Value> = set.iter(kind).map(|d| &d.doc).collect();
+        let path = std::path::Path::new(out).join(file);
+        std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
+            .map_err(|e| format!("write '{}': {e}", path.display()))?;
+        println!(
+            "wrote {} {}(s) to {}",
+            entries.len(),
+            kind.as_str(),
+            path.display()
+        );
     }
     Ok(())
 }

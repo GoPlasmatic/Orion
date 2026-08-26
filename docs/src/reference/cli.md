@@ -76,6 +76,52 @@ Advisory findings print on stderr and do not fail the command unless `--deny-war
 
 Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 
+### `compile`
+
+Compiles a definition set into files the admin API accepts, resolving the authoring conveniences a set may use — `$from` for a shared value, `use` for a task fragment. Needs no config, database, or server.
+
+```bash
+orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
+                           [--name NAME] [--version VERSION]
+                           [--requires-channel NAME]... [--requires-connector NAME]...
+                           [--deny-warnings] [--no-activate]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-o, --output` | A file for `--format artifact` (default: stdout); a directory for `dir` and `bulk`, where it is required. |
+| `--format` | `artifact` (default), `dir`, or `bulk` — see below. |
+| `--name` | Package name. Required for `--format artifact`. |
+| `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. |
+| `--requires-channel` | Channel name that may be referenced without being in the set; recorded in the artifact's `requires`. Repeatable. |
+| `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable. |
+| `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
+| `--no-activate` | Do not mark workflows and channels for activation, so the artifact applies as drafts. |
+
+**Why it exists.** References resolve when a *set* is loaded, and the admin API loads no set: it takes one document, with nothing to resolve names against. Without this step the only path from `definitions/` to a running instance was a deploy tool that reimplemented the expander — and a partial reimplementation shows up as `UNCOMPILED_SOURCE` on the POST, 62 workflows deep.
+
+**It runs `lint <dir>` first**, and emits nothing if that fails. A compile that wrote out a set its own linter rejects is how an artifact reaches `package apply` having passed CI.
+
+| `--format` | Output | Consumed by |
+|---|---|---|
+| `artifact` | One promotion artifact, hashed exactly as `package export` hashes one | `orion-server package plan\|apply\|diff` |
+| `dir` | The input tree mirrored, one file per entity, shared documents consumed | a POST per file — `orion-cli workflows import -f …` |
+| `bulk` | `connectors.json`, `workflows.json`, `channels.json` | the bulk import endpoints, in that order |
+
+`artifact` marks workflows and channels `activate: true`, because a directory carries no stored status and a package whose entities never activate applies cleanly and serves nothing. Set `"activate": false` on an entity, or pass `--no-activate`, to override. `dir` and `bulk` emit no activation intent — that is a package concept, and their files are request bodies.
+
+Entities must carry explicit ids for `artifact` only: `apply` activates a channel by `channel_id` and reads activation intent off it, so an id-less entity in an artifact is one `apply` would stage and never activate. `dir` and `bulk` emit request bodies, where the server derives an id from the name exactly as it does for a hand-written POST — leaving `channel_id` out of a definition is an ordinary way to author a set, and committing a server-generated UUID would tie the set to one instance.
+
+```
+$ orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
+compiled: shared.fragments rewrote 23 document(s)
+compiled: shared.values rewrote 51 document(s)
+./definitions: 4 connector(s), 62 workflow(s), 62 channel(s), 9 shared value(s), 3 fragment(s) — 0 error(s), 0 warning(s)
+wrote payments@1.4.0 (4 connectors, 62 workflows, 62 channels) to dist/package.json
+```
+
+Example: `orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json && orion-server package apply -s https://prod.orion.internal -f dist/package.json`
+
 ### `dry-run`
 
 Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace. Connector-backed tasks are answered from `--stubs`; without a matching stub the task fails and names the stub it needs.
@@ -535,4 +581,6 @@ A shared document is one carrying `constants`, `errors` or `fragments` and no en
 Every unresolved reference is a lint error, which is why set mode resolves the catalog with no flag; the single-file commands take `--definitions <dir>`.
 
 > [!NOTE]
-> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from` or `use` — send the expanded form. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already expanded.
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from` or `use`; it refuses them with [`UNCOMPILED_SOURCE`](./errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](#compile) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
+
+Both mechanisms are passes in one pipeline, and the pipeline is the place a future authoring convenience is added — a new pass is compiled by `compile`, reported in its per-pass summary, and named by the admin API's refusal without any of those three learning about it.

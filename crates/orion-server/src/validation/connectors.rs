@@ -12,6 +12,20 @@ pub fn validate_connector_config(
     config: &serde_json::Value,
 ) -> Result<(), OrionError> {
     let type_str = connector_type.as_str();
+    // Before the parse, which would otherwise report a `$from` as the fields
+    // the shared value would have supplied — `missing field
+    // connection_string` on a config whose connection string lives in the
+    // catalog. The single funnel for both create and update.
+    let source = super::common::uncompiled_source_errors(config, "connector.config");
+    if !source.is_empty() {
+        return Err(OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "Connector has not been compiled: it still contains shared-definition \
+                      references"
+                .to_string(),
+            details: source,
+        });
+    }
     // Inject the type field so we can deserialize as the tagged enum
     let mut config_with_type = config.clone();
     if let Some(obj) = config_with_type.as_object_mut() {

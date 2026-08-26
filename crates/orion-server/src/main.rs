@@ -116,6 +116,48 @@ enum Command {
         #[arg(long, value_name = "DIR")]
         definitions: Option<String>,
     },
+    /// Compile a definition set into files the admin API accepts.
+    ///
+    /// The authoring conveniences a set may use — `$from` for a shared value,
+    /// `use` for a task fragment — resolve when the set is loaded, and the
+    /// admin API loads no set. This is the step between the two: it runs
+    /// every gate `lint <dir>` runs, then writes the compiled entities out.
+    ///
+    /// Default output is a promotion artifact, so `package plan|apply|diff`
+    /// consume it directly.
+    Compile {
+        /// Directory of definitions to compile.
+        dir: String,
+        /// Where to write. A file for --format artifact (default: stdout),
+        /// a directory for --format dir and --format bulk (required).
+        #[arg(short, long)]
+        output: Option<String>,
+        /// What to write.
+        #[arg(long, value_enum, default_value = "artifact")]
+        format: cli::CompileFormat,
+        /// Package name, e.g. payments. Required for --format artifact.
+        #[arg(long)]
+        name: Option<String>,
+        /// Package version, e.g. 1.4.0. Required for --format artifact.
+        /// Applied versions are immutable — any content change needs a bump.
+        #[arg(long)]
+        version: Option<String>,
+        /// Channel name that may be referenced without being in the set —
+        /// recorded in the artifact's `requires`. Repeatable.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        /// Repeatable.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
+        /// Exit non-zero on advisory findings too, not just errors.
+        #[arg(long)]
+        deny_warnings: bool,
+        /// Do not mark workflows and channels for activation. The artifact
+        /// applies as drafts, for a promotion that activates separately.
+        #[arg(long)]
+        no_activate: bool,
+    },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
     /// Boots an in-process engine with just the supplied workflow, then prints
@@ -335,6 +377,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 connectors: requires_connectors,
             };
             return cli::run_lint(&workflow, deny_warnings, boundary, definitions.as_deref());
+        }
+        Some(Command::Compile {
+            dir,
+            output,
+            format,
+            name,
+            version,
+            requires_channels,
+            requires_connectors,
+            deny_warnings,
+            no_activate,
+        }) => {
+            let boundary = orion::definitions::Boundary {
+                channels: requires_channels,
+                connectors: requires_connectors,
+            };
+            return cli::run_compile(cli::CompileRequest {
+                dir: &dir,
+                output: output.as_deref(),
+                format,
+                name: name.as_deref(),
+                version: version.as_deref(),
+                boundary,
+                deny_warnings,
+                no_activate,
+            });
         }
         Some(Command::DryRun {
             workflow,

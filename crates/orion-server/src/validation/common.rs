@@ -111,6 +111,50 @@ pub(crate) fn validate_description(desc: &str, path: &'static str) -> Result<(),
     Ok(())
 }
 
+/// Refuse a document that still carries authoring source form (#295).
+///
+/// `$from` and `use` are resolved when a definition set is *compiled*
+/// (`definitions::compile`), and the admin API compiles nothing: it takes one
+/// document, with no set to resolve names against. That much is deliberate and
+/// documented — the runtime, traces and the UI never meet a reference, which
+/// is why `content_hash`, package immutability and engine reload need to know
+/// nothing about the authoring layer.
+///
+/// What was not deliberate is how the refusal read. An unexpanded reference
+/// reached the function-input validator as literal JSON and was refused for
+/// the fields the reference would have supplied — `tasks[1].function.input`
+/// *requires 'connector'* — so an author went looking for a typo that was not
+/// there. Worse, a `$from` deep enough in a task payload satisfied every
+/// schema and was **stored**, and the workflow then wrote the literal
+/// `{"$from": ...}` object into its response at runtime.
+///
+/// The residue comes from the compiler's own passes rather than a walk written
+/// here, so "what `orion-server compile` consumes" and "what this refuses"
+/// cannot drift apart, and an authoring feature added later is named here
+/// without this function being taught about it.
+pub(crate) fn uncompiled_source_errors(
+    value: &serde_json::Value,
+    root: &str,
+) -> Vec<crate::errors::FieldError> {
+    crate::definitions::compile::residue(value, root)
+        .into_iter()
+        .map(|r| {
+            crate::errors::FieldError::new(
+                r.path.clone(),
+                "UNCOMPILED_SOURCE",
+                format!(
+                    "{} is {}, resolved when a definition set is compiled. This endpoint \
+                     takes one document and has no set to resolve '{}' against — send the \
+                     compiled form, which `orion-server compile <dir>` writes.",
+                    r.syntax(),
+                    r.noun,
+                    r.target,
+                ),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

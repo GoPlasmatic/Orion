@@ -23,6 +23,15 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
         topic: req.topic.as_deref(),
         consumer_group: req.consumer_group.as_deref(),
     })?;
+    // `transport_config` is a free-form blob with no strict parse of its own,
+    // so an uncompiled `$from` in it would be stored verbatim and read as a
+    // transport setting at reload. `config` gets the same check inside
+    // `validate_channel_config_blob`, which the update path shares.
+    let transport =
+        super::common::uncompiled_source_errors(&req.transport_config, "channel.transport_config");
+    if !transport.is_empty() {
+        return Err(uncompiled_channel(transport));
+    }
     // B2: strict-validate the per-channel `config` blob at create time, so
     // authors learn at the CRUD boundary with field-pathed errors, not at
     // first request. The registry applies the same strict parse at reload —
@@ -358,12 +367,32 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
 /// catch shape errors and compiles every embedded JSONLogic expression
 /// (`validation_logic`, `rate_limit.key_logic`) so typos surface here
 /// rather than at engine reload (where they downgrade to warnings).
+/// The channel spelling of the shared refusal — see
+/// [`super::common::uncompiled_source_errors`].
+fn uncompiled_channel(details: Vec<crate::errors::FieldError>) -> OrionError {
+    OrionError::Validation {
+        code: "VALIDATION_ERROR",
+        message: "Channel has not been compiled: it still contains shared-definition \
+                  references"
+            .to_string(),
+        details,
+    }
+}
+
 fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionError> {
     // Empty object is the documented default for "no config" — skip parsing.
     if let Some(obj) = config.as_object()
         && obj.is_empty()
     {
         return Ok(());
+    }
+    // Before the strict parse. A `$from` here does reach the author by name,
+    // but as `unknown field '$from'` — a message that reads as a typo and
+    // sends them looking for the right spelling of a key that is not a key at
+    // all. Say what it is instead.
+    let source = super::common::uncompiled_source_errors(config, "channel.config");
+    if !source.is_empty() {
+        return Err(uncompiled_channel(source));
     }
     // H3: channel reads mask `auth` credentials, so a config still carrying
     // the sentinel is a copied-from-a-GET mistake (on create) or a mask the

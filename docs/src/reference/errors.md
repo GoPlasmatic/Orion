@@ -159,6 +159,7 @@ a drift test fails the build if `src/` emits one or if this table and the
 | `DUPLICATE_FIELD` | The same key appeared twice in one object. |
 | `DUPLICATE_TASK_ID` | Two steps in one workflow declare the same `id`. Tasks and task groups share one id namespace. |
 | `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
+| `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli.md#shared-definitions). |
 
 ### How `path` is rooted
 
