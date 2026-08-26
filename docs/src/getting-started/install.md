@@ -57,7 +57,7 @@ cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server o
 
 ## Install the CLI
 
-`orion-cli` drives the same admin API from the terminal, and carries the MCP server that AI assistants connect to. It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
+`orion-cli` drives the same admin API from the terminal, and is what an AI assistant uses through the [Orion agent skill](../ai/skills.md). It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
 
 The CLI is versioned in lockstep with the server and ships in the same release, so
 the two always agree on the wire format. Every method below is the server's, with

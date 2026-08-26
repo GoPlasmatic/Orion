@@ -8,11 +8,11 @@ name = "orion-cli"
 version = "1.2.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
+description = "Command-line interface for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal"
 license.workspace = true
 repository.workspace = true
 homepage = "https://docs.goplasmatic.io/"
-keywords = ["mcp", "cli", "workflow", "microservices", "devops"]
+keywords = ["cli", "workflow", "microservices", "devops", "automation"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
@@ -30,18 +30,14 @@ serde_json = "1"
 serde_yaml = "0.9"
 # The shared wire contract: the error envelope, status vocabulary and import
 # report this CLI reads are the same types the server serializes.
-orion-api = { version = "1.0.1", path = "../orion-api" }
+orion-api = { version = "1.0.2", path = "../orion-api" }
 # The shared transport — the same client the server's `package` subcommand
 # drives. This crate owns reqwest; the CLI has no direct HTTP dependency.
-orion-client = { version = "1.0.1", path = "../orion-client" }
+orion-client = { version = "1.0.2", path = "../orion-client" }
 # Same spec as orion-server so the shared lockfile carries one `toml` tree.
 # (reqwest reaches this binary only through orion-client now.)
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 anyhow = "1"
-rmcp = { version = "3.1", features = ["server", "transport-io", "transport-streamable-http-server"] }
-schemars = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-axum = "0.8"
+# Cancellation for the benchmark runner's Ctrl-C handling.
 tokio-util = "0.7"

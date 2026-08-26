@@ -2,7 +2,7 @@
 //! client is expected to read back.
 //!
 //! This crate is the single definition of what travels between `orion-server`
-//! and its clients (`orion-cli`, the MCP tools, generated SDKs). The server
+//! and its clients (`orion-cli`, generated SDKs). The server
 //! serializes these types; clients deserialize them. Before this crate
 //! existed the CLI re-derived all of it as string literals — including three
 //! error codes the server never emits — which is exactly the drift a shared

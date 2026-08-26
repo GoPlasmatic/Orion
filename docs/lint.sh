@@ -81,8 +81,8 @@ for f in README.md examples/README.md docs/src/llms.txt; do
 done
 
 ## 4. No hand-maintained magic numbers (casts are recorded sessions — exempt).
-if git grep -I -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >/dev/null 2>&1; then
-  git grep -I -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts' >&2
+if git grep -I -nE '46 tools|6,000' -- docs/src README.md ':!docs/src/casts' >/dev/null 2>&1; then
+  git grep -I -nE '46 tools|6,000' -- docs/src README.md ':!docs/src/casts' >&2
   err 'hand-maintained magic number (46 tools / 6,000+)'
 fi
 

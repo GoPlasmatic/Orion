@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working on the 
 
 ## Project Overview
 
-Orion CLI is a Rust CLI and MCP server for the Orion services runtime — the `crates/orion-server` crate in this same workspace (the repo root `CLAUDE.md` covers the workspace layout; bare cargo commands there default to the server, so use `-p orion-cli` from the root or run cargo inside this crate directory). It manages workflows, channels, connectors, data processing, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
+Orion CLI is a Rust CLI for the Orion services runtime — the `crates/orion-server` crate in this same workspace (the repo root `CLAUDE.md` covers the workspace layout; bare cargo commands there default to the server, so use `-p orion-cli` from the root or run cargo inside this crate directory). It manages workflows, channels, connectors, data processing, engine health, and traces via HTTP against an Orion server.
+
+AI assistants drive this CLI through the **agent skill** at `skills/orion/` (repo root), not through a tool server. `orion-cli mcp serve` and the whole `src/mcp/` tree were removed in 1.2.0: the HTTP transport exposed the full admin API on a port with no authentication of its own, and all 58 tools were hand-written mirrors of `commands::`. Do not reintroduce one — extend the skill instead, and keep anything discoverable at runtime (`functions list`, `--help`) out of it.
 
 ## Build & Development Commands
 
@@ -36,14 +38,6 @@ ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 # E2E_KEEP_SERVER=1    Don't stop server after tests
 ```
 
-### MCP Server
-
-```bash
-orion-cli mcp serve                           # stdio transport (Claude Desktop / Cursor)
-orion-cli mcp serve --http                    # HTTP transport (remote clients), default bind 0.0.0.0:8081
-orion-cli mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
-```
-
 E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); suite 13 is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behaviour cases in `tests/e2e/cases/` — and suite 14 smoke-covers the read-only command groups the lifecycle suites never reach. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
 
 ## Architecture
@@ -52,15 +46,12 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 ### Module Layout
 
-- `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--api-key`, `--api-key-header`, `--change-context`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`). `build_client()` resolves the API key flag → `ORION_API_KEY` → `~/.orion/config.toml` via `OrionConfig::resolve_api_key`, the same order `mcp serve` uses, and applies `--change-context` as the `X-Orion-Change-Context` header on every request.
+- `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--api-key`, `--api-key-header`, `--change-context`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`). `build_client()` resolves the API key flag → `ORION_API_KEY` → `~/.orion/config.toml` via `OrionConfig::resolve_api_key`, and applies `--change-context` as the `X-Orion-Change-Context` header on every request.
 - `src/client.rs` — thin presentation adapter over the shared `orion-client` crate's `OrionClient` (the transport itself — auth, 30s timeout, envelope parsing, typed `ClientError` — lives there); this wrapper translates typed errors into the CLI's terminal messages (hints, `[CODE] message`, field errors). Endpoint paths come from `orion_client::paths`, never format strings.
-- `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), includes `resolve_server_url()` for MCP
+- `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), plus `resolve_api_key()` for the flag → env → file chain
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
 - `src/utils.rs` — shared command helpers: `run_import()`, `read_json_input()`, `confirm()`, plus the two renderers every list and validation path goes through — `print_list_footer()` (reads the envelope's top-level `total`; says `Showing N of M` when the page is short of it) and `print_validation_envelope()` (the `{valid, errors, warnings}` shape, returning exit 1 when invalid)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
-- `src/mcp/` — MCP server module (OrionService with tool_router/tool_handler, serve function for stdio/HTTP)
-- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, functions, health, metrics, audit_logs, backups, packages, trace_dlq). `tools/mod.rs` also holds the shared `import_resource()` and `validate_resource()` helpers. The tool set mirrors the CLI's command surface: adding a flag to a command group generally means adding the matching param to its tool.
-- `src/mcp/tools/descriptions/` — Markdown files with detailed tool descriptions for MCP clients
 
 ### Command Modules
 
@@ -81,15 +72,14 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 | `dlq.rs` | Trace dead-letter queue: list, get, requeue, purge (v1.0) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell/elvish) |
-| `mcp.rs` | MCP server subcommand (`orion-cli mcp serve`) |
 
-Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::import_resource()` (MCP); `mcp::tools::validate_resource()` is the MCP side of `/validate`.
+Shared bulk-import logic lives in `utils::run_import()`.
 
-**Every list surface pages** (50 default, 1000 max, server-clamped) and the versioned lists plus connectors and traces also sort. Both the CLI flags and the MCP tool params must carry `limit`/`offset`/`sort_by`/`sort_order` — a list that omits them silently truncates at 50 with no way to see the rest.
+**Every list surface pages** (50 default, 1000 max, server-clamped) and the versioned lists plus connectors and traces also sort. Every list command must carry `--limit`/`--offset`/`--sort-by`/`--sort-order` — one that omits them silently truncates at 50 with no way to see the rest.
 
 ### Key Patterns
 
-- **Config precedence:** CLI flags > env vars (`ORION_SERVER_URL`, `ORION_API_KEY`, `ORION_API_KEY_HEADER`, `ORION_CHANGE_CONTEXT`, `NO_COLOR`) > `~/.orion/config.toml`
+- **Config precedence:** CLI flags > env vars (`ORION_SERVER_URL`, `ORION_API_KEY`, `ORION_API_KEY_HEADER`, `ORION_CHANGE_CONTEXT`, `NO_COLOR`) > `~/.orion/config.toml`. The env vars are declared on the clap args themselves, so `cli.server` already carries `ORION_SERVER_URL` — there is no second resolver for it.
 - **Exit codes carry the answer.** `validate` and `activate/archive --dry-run` both return the `{valid, errors, warnings}` envelope inside a **200** — a refused transition is a finding, not an HTTP failure — so the command must read `valid` and exit 1. Reading only the HTTP status makes a failing pre-flight look like a passing one.
 - **Output formats:** table (default), json, yaml — controlled by `--output` flag
 - **Error handling:** `anyhow` throughout; `OrionClient` parses server error responses with codes/messages and renders the v0.2 structured `error.details[]` (field-pathed validation errors) and `request_id` when present
@@ -97,7 +87,7 @@ Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::i
 
 ### Dependencies
 
-Core: `clap` (derive) for CLI, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output, and the two workspace library crates: `orion-api` for the shared wire contract — the error envelope (`ErrorEnvelope`, `codes`), status vocabulary (`STATUS_ACTIVE`…), and the typed `ImportResult` are the same definitions the server serializes — and `orion-client` for the HTTP transport (`OrionClient`, `paths`, `query_string`; it owns reqwest — the CLI has no direct HTTP dependency). MCP: `rmcp` (server, transport-io, transport-streamable-http-server), `schemars`, `tracing`/`tracing-subscriber`, `axum`.
+Core: `clap` (derive) for CLI, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output, `tokio-util` for the benchmark runner's cancellation, and the two workspace library crates: `orion-api` for the shared wire contract — the error envelope (`ErrorEnvelope`, `codes`), status vocabulary (`STATUS_ACTIVE`…), and the typed `ImportResult` are the same definitions the server serializes — and `orion-client` for the HTTP transport (`OrionClient`, `paths`, `query_string`; it owns reqwest — the CLI has no direct HTTP dependency).
 
 ### CI/CD
 
@@ -105,5 +95,5 @@ Workflows live at the repo root (`.github/workflows/`), shared with the server:
 
 - **CI** (`ci.yml`): fmt/clippy/test run `--workspace`; the `cli-e2e` job builds both binaries and runs the e2e suite; `deny` covers the unified lockfile
 - **Release** (`release.yml`): an `orion-cli-vX.Y.Z` tag drives cargo-dist v0.31.0 cross-platform builds (macOS ARM, Linux x86_64/ARM, Windows) with shell/powershell/homebrew installers
-- **Docker + MCP registry** (`docker-release-cli.yml`): same tag builds the ghcr.io/goplasmatic/orion-cli image and republishes `server.json` to the MCP registry
+- **Docker** (`docker-release-cli.yml`): same tag builds the ghcr.io/goplasmatic/orion-cli image
 - **Homebrew tap:** GoPlasmatic/homebrew-tap

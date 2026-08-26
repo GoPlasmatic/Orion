@@ -1,13 +1,14 @@
 # Prompt Pack (any LLM)
 
-The [MCP server](../ai/mcp-setup.md) is the richest way to give an AI
-assistant control of Orion: tools covering the full admin API, live schema
-discovery, no prompt engineering. But it needs an MCP-capable client.
+The [agent skill](./skills.md) is the richest way to give an AI assistant
+control of Orion: the full authoring reference, loaded on demand, driving the
+`orion-cli` binary. But it needs an agent that reads skills *and* can run a
+shell.
 
 This page is the zero-install alternative: **paste the block below into any
 LLM** (as a system prompt, a project instruction, or just the first message)
 and it has enough context to write valid workflows and deploy them through
-Orion's plain REST API.
+Orion's plain REST API — no CLI, no tooling, just HTTP.
 
 > [!NOTE]
 > **Provenance.** The block is hand-maintained and matches **Orion 1.0.0**. It
@@ -89,7 +90,14 @@ persistence); workflows never handle the token.
 3. Activate: PATCH /api/v1/admin/workflows/{id}/status  {"status":"active"}
    (same for channels). The engine hot-reloads; no restart.
 4. Active versions are IMMUTABLE. To change one, create a new version and
-   activate it; rollback = re-activating a previous version.
+   activate it:
+   POST /api/v1/admin/workflows/{id}/versions   cut a fresh draft
+   PUT  /api/v1/admin/workflows/{id}            put the new content in it
+   then activate as above.
+5. Rollback is rolling FORWARD to the old content. Nothing reactivates an
+   archived version in place — status addresses a workflow id, not a version.
+   Cut a new version, PUT the known-good content into it, activate. Because
+   active versions are immutable, that content is exactly what last served.
 
 ## Core API calls
 
@@ -131,8 +139,8 @@ rules above are explained for humans in
 
 ## Related
 
-- [MCP Server Setup](./mcp-setup.md) — the richer alternative, when your client
-  supports it.
+- [Agent Skill Setup](./skills.md) — the richer alternative, when your agent
+  reads skills and can run `orion-cli`.
 - [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active rules in
   the block above, explained for humans.
 - [Task Functions](../reference/functions.md) — the authority the block tells

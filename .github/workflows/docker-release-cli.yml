@@ -1,7 +1,7 @@
-# The orion-cli image + MCP registry publish, ported from the pre-monorepo
-# GoPlasmatic/Orion-cli repo. Mirrors docker-release.yml's shape (ci-gate,
-# digest-merge multi-arch build) for the CLI package; signing/SBOM stays a
-# server-image concern for now.
+# The orion-cli image, ported from the pre-monorepo GoPlasmatic/Orion-cli
+# repo. Mirrors docker-release.yml's shape (ci-gate, digest-merge multi-arch
+# build) for the CLI package; signing/SBOM stays a server-image concern for
+# now.
 name: Docker Release (CLI)
 
 permissions:
@@ -30,7 +30,7 @@ on:
         type: boolean
         default: false
       tag_override:
-        description: "Version tag override (e.g. 0.2.1) — also the MCP registry re-publish path"
+        description: "Version tag override (e.g. 0.2.1)"
         type: string
         required: false
 
@@ -122,8 +122,8 @@ jobs:
   build:
     name: Build (${{ matrix.platform }})
     needs: [prepare, ci-gate]
-    # Skips the whole downstream chain (merge, publish-mcp) when a bare tag
-    # turns out to be a server-only release: both need this job.
+    # Skips the whole downstream chain (merge) when a bare tag turns out to be
+    # a server-only release: it needs this job.
     if: ${{ needs.prepare.outputs.should_release == '1' }}
     strategy:
       fail-fast: false
@@ -243,58 +243,3 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
-
-  # Publish/update the server listing in the official MCP registry.
-  # OIDC from this repo grants the io.github.GoPlasmatic/* namespace
-  # (case-sensitive); the pushed image must carry the
-  # io.modelcontextprotocol.server.name label (see crates/orion-cli/Dockerfile).
-  # Docs: https://modelcontextprotocol.io/registry/github-actions
-  publish-mcp:
-    name: Publish to MCP Registry
-    needs: [prepare, merge]
-    # Runs on version tags, or on manual dispatch with tag_override (re-publish path).
-    # Skip prereleases (tags containing alpha, beta, rc, pre): the registry has no
-    # prerelease notion — whatever publishes becomes the current listing. The image
-    # itself still builds and pushes above; only the listing is held back. The guard
-    # reads ref_name, not tag_override, on purpose: dispatch with tag_override is a
-    # deliberate act and stays able to re-publish an rc.
-    if: >-
-      ${{ !inputs.dry_run
-          && (github.ref_type == 'tag' || inputs.tag_override != '')
-          && !contains(github.ref_name, 'alpha')
-          && !contains(github.ref_name, 'beta')
-          && !contains(github.ref_name, 'rc')
-          && !contains(github.ref_name, 'pre') }}
-    runs-on: ubuntu-22.04
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install mcp-publisher
-        run: |
-          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          ARCH="$(uname -m)"
-          case "$ARCH" in
-            x86_64) ARCH=amd64 ;;
-            aarch64) ARCH=arm64 ;;
-          esac
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
-            | tar xz mcp-publisher
-
-      - name: Sync server.json to release version
-        working-directory: crates/orion-cli
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          jq --arg v "$VERSION" \
-            '.version = $v | .packages[0].identifier = "ghcr.io/goplasmatic/orion-cli:" + $v' \
-            server.json > server.json.tmp && mv server.json.tmp server.json
-
-      - name: Publish
-        working-directory: crates/orion-cli
-        run: |
-          ../../mcp-publisher login github-oidc
-          ../../mcp-publisher publish

@@ -40,10 +40,8 @@ RUN cargo build --release --locked -p orion-cli
 # Runtime stage
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
 
-# MCP registry ownership verification (must match server.json "name")
-LABEL io.modelcontextprotocol.server.name="io.github.GoPlasmatic/orion"
 LABEL org.opencontainers.image.title="Orion CLI" \
-      org.opencontainers.image.description="CLI and MCP server for the Orion declarative services runtime" \
+      org.opencontainers.image.description="Command-line interface for the Orion declarative services runtime" \
       org.opencontainers.image.source="https://github.com/GoPlasmatic/Orion" \
       org.opencontainers.image.vendor="Plasmatic" \
       org.opencontainers.image.licenses="Apache-2.0"
@@ -58,8 +56,5 @@ RUN mkdir -p /home/orion/.orion && chown -R orion:orion /home/orion /app
 COPY --from=builder --chown=orion:orion /app/target/release/orion-cli /usr/local/bin/orion-cli
 
 USER orion
-
-# Default MCP HTTP server port
-EXPOSE 8081
 
 ENTRYPOINT ["orion-cli"]

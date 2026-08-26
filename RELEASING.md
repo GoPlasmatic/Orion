@@ -39,9 +39,9 @@ name would be the only prerequisite to adding it back.
 
 The package-prefixed tags are the out-of-band path for shipping one package
 alone: `orion-server-vX.Y.Z` and `orion-cli-vX.Y.Z` each release exactly
-their own package (release.yml's dist plan and docker-release-cli.yml with
-its MCP-registry publish route on the prefix; crates-publish does too, and an
-`orion-cli-v*` tag simply gives it nothing to publish).
+their own package (release.yml's dist plan and docker-release-cli.yml both
+match on the prefix; crates-publish does too, and an `orion-cli-v*` tag
+simply gives it nothing to publish).
 
 Because lockstep means a bare tag names a version one package may not have
 reached, the CLI's pipelines degrade rather than fail on a mismatch:

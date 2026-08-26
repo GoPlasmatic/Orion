@@ -1021,7 +1021,7 @@ is.
 
 `GET /api/v1/admin/functions` returns the live input schema for the connector,
 composition, and utility functions (the data functions are provided by
-dataflow-rs and are not cataloged there). The [Orion CLI MCP server](../ai/mcp-setup.md) surfaces
+dataflow-rs and are not cataloged there). The [Orion agent skill](../ai/skills.md) points an assistant at
 the same schemas to AI assistants so generated workflows use correct field names.
 
 ## Related

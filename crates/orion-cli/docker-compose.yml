@@ -1,15 +1,22 @@
+# An Orion server with the CLI alongside it, for driving the admin API from a
+# container instead of a local install.
+#
+#   docker compose up -d orion
+#   docker compose run --rm orion-cli health
+#   docker compose run --rm orion-cli workflows list
+#
+# `orion-cli` sits behind a profile so `docker compose up` starts the server
+# only — the CLI is a one-shot command, not a long-running service.
 services:
-  orion-cli-mcp:
+  orion-cli:
     image: ghcr.io/goplasmatic/orion-cli:latest
-    command: ["mcp", "serve", "--http", "--bind", "0.0.0.0:8081"]
-    ports:
-      - "8081:8081"
+    profiles: ["cli"]
     environment:
       ORION_SERVER_URL: "http://orion:8080"
+      # ORION_API_KEY: "your-secret-key"   # if admin auth is enabled
     depends_on:
       orion:
         condition: service_healthy
-    restart: unless-stopped
 
   orion:
     image: ghcr.io/goplasmatic/orion:latest

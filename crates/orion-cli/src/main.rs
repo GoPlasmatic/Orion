@@ -2,7 +2,6 @@ mod client;
 mod commands;
 mod config;
 mod help;
-mod mcp;
 mod output;
 pub mod utils;
 
@@ -225,7 +224,6 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             cmd.run();
             Ok(0)
         }
-        Commands::Mcp(cmd) => cmd.run(&cli).await,
     }
 }
 
@@ -243,10 +241,9 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         })?
     };
 
-    // Flag first, then the env var and `~/.orion/config.toml` that
-    // `resolve_api_key` already reads for `mcp serve`. Reading the flag alone
-    // meant `orion-cli config set api_key <key>` stored a key that only the
-    // MCP server ever sent — every other command went out unauthenticated.
+    // Flag first, then the env var, then `~/.orion/config.toml`. Reading the
+    // flag alone would mean `orion-cli config set api_key <key>` stored a key
+    // no command ever sent, and every request went out unauthenticated.
     let api_key = cli
         .api_key
         .clone()

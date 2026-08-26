@@ -1,6 +1,6 @@
 # CLI Reference
 
-Orion ships two binaries: `orion-server`, the runtime with diagnostic and promotion subcommands, and `orion-cli`, the admin client and MCP server. Both accept `--version`, which prints the version, git hash, and build timestamp.
+Orion ships two binaries: `orion-server`, the runtime with diagnostic and promotion subcommands, and `orion-cli`, the admin client. Both accept `--version`, which prints the version, git hash, and build timestamp.
 
 ## orion-server
 
@@ -198,7 +198,7 @@ Manages the CLI's own settings in `~/.orion/config.toml`.
 | `get <key>` | Print a single value, for scripting. |
 | `set <key> <value>` | Set a value: `server_url`, `default_output`, `api_key`, or `api_key_header`. |
 
-A stored `api_key` is used by every command and by `mcp serve`, but the flag and
+A stored `api_key` is used by every command, but the flag and
 `ORION_API_KEY` both win over it. The file is plain TOML in your home
 directory — on a shared machine, prefer the environment variable.
 
@@ -476,17 +476,6 @@ Example: `orion-cli benchmark -n 500 -c 25`
 Generates shell completions for `bash`, `zsh`, `fish`, `powershell`, or `elvish`. Alias: `comp`.
 
 Example: `orion-cli completions zsh > ~/.zfunc/_orion-cli`
-
-### `mcp`
-
-`mcp serve` starts the MCP server for AI clients, exposing the Orion API as MCP tools. The default transport is stdio, for local clients such as Claude Desktop and Cursor. `--http` serves the Streamable HTTP transport at `/mcp` for remote clients.
-
-| Flag | Description |
-|------|-------------|
-| `--http` | Use HTTP transport instead of stdio. |
-| `--bind <addr>` | Bind address for HTTP mode. Default: `0.0.0.0:8081`. |
-
-Example: `orion-cli mcp serve --server http://localhost:8080 --http --bind 0.0.0.0:9090`
 
 ## Environment variables
 

@@ -92,7 +92,7 @@ Migrations for all backends are embedded in the binary and the correct set is se
 | `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for very large bulk imports or workflow exports. Applies to `/api/v1/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
 | `server.data_mounts` | `[]` | `ORION_SERVER__DATA_MOUNTS` | Serve the data plane at extra path prefixes, for deployed clients that call legacy paths. Comma-separated in the env var. |
 
-**`data_mounts` is additive.** `/api/v1/data` stays mounted, so every existing client, `orion-cli` command and MCP data call keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is simply also served under each mount:
+**`data_mounts` is additive.** `/api/v1/data` stays mounted, so every existing client and `orion-cli` command keeps working — this is not a movable prefix. A channel's `route_pattern` is unchanged; it is simply also served under each mount:
 
 ```toml
 [server]

@@ -76,7 +76,8 @@ teaser-word-count = 30
 
 # Phase 2a — spine, Build with AI, upgrades home
 "/tutorials/cli-setup.html" = "../getting-started/install.html"
-"/tutorials/mcp-setup.html" = "../ai/mcp-setup.html"
+"/tutorials/mcp-setup.html" = "../ai/skills.html"
+"/ai/mcp-setup.html" = "skills.html"
 "/tutorials/claude-code.html" = "../ai/claude-code.html"
 "/getting-started/prompt-pack.html" = "../ai/prompt-pack.html"
 "/getting-started/upgrading.html" = "../operate/upgrading-to-1.0.html"

@@ -40,7 +40,7 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 ## Project Structure
 
 The repo is a cargo workspace of four crates: `crates/orion-server` (the
-runtime), `crates/orion-cli` (the CLI + MCP server — see its own
+runtime), `crates/orion-cli` (the CLI — see its own
 `CLAUDE.md`), and two shared library crates — `crates/orion-api` (the wire
 contract) and `crates/orion-client` (the HTTP transport). The end-to-end
 suite that drives the server with the CLI lives at the repo root
@@ -80,7 +80,6 @@ crates/orion-server/
  migrations/           # SQLite / Postgres / MySQL migrations (embedded at compile time)
 crates/orion-cli/
  src/commands/         # clap subcommands (one file per command group)
- src/mcp/              # Built-in MCP server + tools
 crates/orion-api/      # Shared wire contract (DTOs, enums, error envelope)
 crates/orion-client/   # Shared HTTP transport (OrionClient, endpoint paths)
 tests/e2e/             # Shell end-to-end suites: orion-cli against orion-server (`just e2e`)

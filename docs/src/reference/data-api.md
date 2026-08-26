@@ -55,7 +55,7 @@ data_mounts = ["/zoom"]
 
 A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them — they are matched prefix-free, so nothing about the channel changes.
 
-This is additive: the canonical prefix stays, so `orion-cli`, the MCP data tool and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat — see the configuration reference.
+This is additive: the canonical prefix stays, so `orion-cli` and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat — see the configuration reference.
 
 ### Request body
 

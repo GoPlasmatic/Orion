@@ -196,23 +196,18 @@ commit (`ci-gate.yml`) before any artifact pipeline starts.
 
 ## Known gaps (accepted, with reasons)
 
-- **The MCP server is untested at every layer.** `crates/orion-cli/src/mcp/`
-  (~1,600 LOC across `mod.rs` and 15 `tools/*.rs`) is a *second*,
-  independently written client over `orion-client` — it shares no code with
-  `commands::`, so the e2e suite's CLI coverage says nothing about it. Neither
-  the 58 tool implementations nor the rmcp transport/handshake has a test.
 - **`orion-cli`'s rendering, help/hint and argument-plumbing code has no unit
   tests.** The crate's inline tests cover two helpers (`utils.rs` and
   `commands/benchmark/stats.rs`); output formatting and error hints are
   exercised only indirectly, through the e2e suite's assertions on command
   output.
-- **The e2e suite invokes 15 of the CLI's 17 command groups.** The seven the
+- **The e2e suite invokes 15 of the CLI's 16 command groups.** The seven the
   lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
   `send`, `traces`, `engine`, `health`) plus eight covered at smoke depth by
   `suites/14_read_only_commands.sh` (`functions`, `metrics`, `audit-logs`,
   `backups`, `packages`, `dlq`, `completions`, `config`) — enough to catch a
-  broken output shape or envelope, not enough to call them tested. `mcp` and
-  `benchmark` are never invoked.
+  broken output shape or envelope, not enough to call them tested. `benchmark`
+  is never invoked.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was
   judged not worth the CI cost.

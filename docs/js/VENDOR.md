@@ -20,9 +20,8 @@ byte-comparing against the published tarballs; keep this table current instead
 of relying on that.
 
 When updating: replace both files together (they ship as a pair), write the
-version into this table, and re-check that the three cast embeds still mount —
-`docs/src/getting-started/first-service.md` has two,
-`docs/src/ai/mcp-setup.md` has one.
+version into this table, and re-check that the two cast embeds in
+`docs/src/getting-started/first-service.md` still mount.
 
 ## Webfonts
 

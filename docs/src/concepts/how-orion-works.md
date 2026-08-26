@@ -79,7 +79,7 @@ The same binary serves both planes. Only the configuration and the backends chan
 
 | Operational Dimension | Development Environment | Production Environment |
 |---|---|---|
-| **Control Plane** | Admin API invoked via CLI, Web Console, or MCP | Admin API managed via automated GitOps / CI-CD pipelines |
+| **Control Plane** | Admin API invoked via CLI or Web Console | Admin API managed via automated GitOps / CI-CD pipelines |
 | **Data Plane** | Local HTTP testing traffic | Load-balanced HTTP REST and Kafka event traffic |
 | **Datastore** | Embedded SQLite (zero external dependencies) | High-availability PostgreSQL or MySQL cluster |
 | **Clustering** | Single process (no coordination required) | Multi-replica cluster coordinated via shared database and Redis |

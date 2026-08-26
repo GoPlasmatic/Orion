@@ -54,7 +54,7 @@ can operate":
   connections with circuit breakers, referenced by name.
 - Storage and [lifecycle](../concepts/lifecycle.md) — draft, active, archived,
   immutable versions, and an atomic engine swap on activation.
-- The [admin API](../reference/admin-api.md), the CLI, and the MCP server that
+- The [admin API](../reference/admin-api.md), the CLI, and the agent skill that
   lets an assistant drive all of it.
 - [Traces](../operate/traces.md), [metrics](../operate/monitoring.md),
   [packages and promotion](../operate/promotion.md),

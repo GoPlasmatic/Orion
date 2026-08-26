@@ -59,7 +59,7 @@ pub struct ServerConfig {
     ///
     /// **Additive, never a movable prefix.** `/api/v1/data` stays mounted, so
     /// every existing client, doc example, test and `orion-client` path keeps
-    /// working — a moved prefix would break `orion-cli` and the MCP data tool
+    /// working — a moved prefix would break `orion-cli`
     /// against that server with no discovery mechanism.
     ///
     /// Prefer **named** mounts. The literal `"/"` is accepted as an explicit

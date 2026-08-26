@@ -1,5 +1,5 @@
 # Virtual workspace manifest — the packages live under crates/:
-# orion-server (the runtime) and orion-cli (the CLI + MCP server, merged from
+# orion-server (the runtime) and orion-cli (the CLI, merged from
 # the former GoPlasmatic/Orion-cli repo). `default-members` keeps bare cargo
 # commands (`cargo run`, `cargo test`, `cargo build`) pointed at the server,
 # matching the pre-workspace muscle memory; CI covers the CLI explicitly with

@@ -39,7 +39,6 @@ body:
       options:
         - orion-server (the runtime)
         - orion-cli (the CLI)
-        - MCP server (orion-cli mcp serve)
         - Helm chart / deployment
         - Documentation
     validations:

@@ -75,15 +75,6 @@ stop_server() {
 cleanup() { stop_server; rm -rf "$BINDIR"; }
 trap cleanup EXIT
 
-seed_orders() {
-  # The MCP demo focuses on tool calls, so the 'orders' service must already exist.
-  orion-cli --yes workflows create -f "$EXAMPLES/workflow.json"  >/dev/null
-  orion-cli --yes workflows activate high-value-order            >/dev/null
-  orion-cli --yes channels create  -f "$EXAMPLES/channel.json"   >/dev/null
-  orion-cli --yes channels activate orders                       >/dev/null
-  orion-cli --yes engine reload                                  >/dev/null
-}
-
 record_one() {   # <name> <seed-fn|""> <gif-destination>
   local name="$1" seed="$2" gif="$3"
   start_server
@@ -109,6 +100,5 @@ mkdir -p "$CAST_DIR" "$MEDIA_DIR"
 
 record_one quickstart    ""           "$MEDIA_DIR/quickstart.gif"
 record_one cli-lifecycle ""           "$MEDIA_DIR/cli-lifecycle.gif"
-record_one mcp           seed_orders  "$MEDIA_DIR/mcp.gif"
 
 echo "All recordings regenerated."

@@ -25,7 +25,7 @@ Orion carries the same infrastructure across five kinds of service:
 
 - [**AI Agent Tools**](./ai/claude-code.md)
 
-  An agent calls your channels as tools over HTTP. Through the MCP server in `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
+  An agent calls your channels as tools over HTTP. With the [Orion agent skill](./ai/skills.md) and `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
 
 - [**Business Rules & Decision APIs**](./build/workflows.md)
 

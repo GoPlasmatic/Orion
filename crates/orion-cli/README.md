@@ -3,9 +3,9 @@
 
   # Orion
 
-  **The command-line interface and MCP server for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, and data pipelines from your terminal or AI assistant.**
+  **The command-line interface for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, and data pipelines from your terminal.**
 
-  Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Use as a CLI or as an MCP server for Claude Desktop, Cursor, and other AI tools.
+  Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Pair it with the [Orion agent skill](../../skills/orion/) to let an AI assistant drive the same commands.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org)
@@ -93,7 +93,6 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `dlq` | Inspect and requeue the trace dead-letter queue |
 | `config` | Configure server URL and defaults |
 | `completions` | Generate shell completions (bash, zsh, fish, powershell) |
-| `mcp` | Start MCP server for AI tool integration |
 
 ### Global Flags
 
@@ -307,87 +306,30 @@ orion-cli --output json functions list
 
 ---
 
-## MCP Server
+## AI Assistants
 
-Orion includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, enabling AI assistants like Claude Desktop and Cursor to manage your Orion instance directly.
-
-<div align="center">
-  <img src="https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 58 tools, then a live tool call" width="100%">
-  <br>
-  <em>A real stdio JSON-RPC session — the same transport Claude Desktop and Cursor use.</em>
-</div>
-
-### Stdio Transport (Claude Desktop / Cursor)
+Install the [Orion agent skill](../../skills/orion/) and an AI coding agent can
+drive every command below — authoring workflow JSON, dry-running it, and walking
+the draft → test → activate path on its own.
 
 ```bash
-orion-cli mcp serve --server http://localhost:8080
+mkdir -p .claude/skills && cp -r skills/orion .claude/skills/
 ```
 
-### HTTP Transport (Remote Clients)
+The skill is knowledge, not a service: the agent acts through this CLI under
+your shell, so it inherits exactly your access, every admin write lands in the
+audit log under your principal, and nothing new listens on a port.
 
-```bash
-orion-cli mcp serve --http --server http://localhost:8080
-orion-cli mcp serve --http --bind 0.0.0.0:9090 --server http://localhost:8080
-```
+[Agent Skill Setup](https://docs.goplasmatic.io/ai/skills.html) covers the
+machine-wide install, what the skill knows, and how to give an agent its own
+scoped credentials. For an assistant with no shell, the
+[prompt pack](https://docs.goplasmatic.io/ai/prompt-pack.html) drives the plain
+REST API instead.
 
-### Claude Desktop Configuration
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "orion": {
-      "command": "orion-cli",
-      "args": ["mcp", "serve"],
-      "env": {
-        "ORION_SERVER_URL": "http://localhost:8080"
-      }
-    }
-  }
-}
-```
-
-### Cursor Configuration
-
-One-click install:
-
-[![Install MCP Server in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=orion&config=eyJjb21tYW5kIjoib3Jpb24tY2xpIiwiYXJncyI6WyJtY3AiLCJzZXJ2ZSJdLCJlbnYiOnsiT1JJT05fU0VSVkVSX1VSTCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MCJ9fQ==)
-
-Or add manually to Cursor MCP settings (Settings > MCP Servers):
-
-```json
-{
-  "orion": {
-    "command": "orion-cli",
-    "args": ["mcp", "serve"],
-    "env": {
-      "ORION_SERVER_URL": "http://localhost:8080"
-    }
-  }
-}
-```
-
-### Available MCP Tools
-
-The MCP server exposes 58 tools covering the full Orion API:
-
-| Category | Tools |
-|----------|-------|
-| **Health** | `health_check` |
-| **Engine** | `engine_status`, `engine_reload` |
-| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import`, `workflows_dependencies` |
-| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import`, `channels_export`, `channels_validate` |
-| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import`, `connectors_export`, `connectors_test`, `connectors_validate` |
-| **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
-| **Data** | `data_send_sync`, `data_send_async` |
-| **Traces** | `traces_list`, `traces_get` |
-| **Functions** | `functions_list` |
-| **Audit Logs** | `audit_logs_list` |
-| **Backups** | `backups_create`, `backups_list` |
-| **Packages** | `packages_list`, `packages_get` |
-| **Trace DLQ** | `trace_dlq_list`, `trace_dlq_get`, `trace_dlq_requeue`, `trace_dlq_purge` |
-| **Metrics** | `get_metrics` |
+> **Removed in 1.2.0:** `orion-cli mcp serve`. Its HTTP transport put the full
+> admin API on a port with no authentication of its own, and every one of its
+> tools mirrored a command this CLI already had. The agent skill covers the same
+> ground with a smaller attack surface.
 
 ---
 
@@ -450,8 +392,8 @@ orion-cli completions fish > ~/.config/fish/completions/orion-cli.fish
 ## Install
 
 ```bash
-# Docker (MCP server mode)
-docker run -p 8081:8081 ghcr.io/goplasmatic/orion-cli:latest mcp serve --http
+# Docker
+docker run --rm ghcr.io/goplasmatic/orion-cli:latest --server http://host.docker.internal:8080 health
 
 # macOS (Homebrew)
 brew install GoPlasmatic/tap/orion-cli

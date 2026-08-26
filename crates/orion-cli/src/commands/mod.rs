@@ -10,7 +10,6 @@ pub mod dlq;
 pub mod engine;
 pub mod functions;
 pub mod health;
-pub mod mcp;
 pub mod metrics;
 pub mod packages;
 pub mod traces;
@@ -76,7 +75,4 @@ pub enum Commands {
 
     /// Inspect and drain the trace dead-letter queue
     Dlq(dlq::DlqCmd),
-
-    /// Start the MCP server for AI assistants (Claude Desktop, Cursor)
-    Mcp(mcp::McpCmd),
 }

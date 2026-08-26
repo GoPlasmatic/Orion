@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-24
+## [1.2.0] - 2026-08-26
+
+### Changed
+
+- **Docs: the "Build with AI" path is the agent skill, not an MCP server.**
+  `orion-cli`'s built-in MCP server was removed (see the CLI changelog — its
+  HTTP transport served the admin API with no authentication of its own), so
+  `ai/mcp-setup.md` is replaced by `ai/skills.md`, `ai/claude-code.md` is a
+  CLI-driven session, and the skill itself ships in `skills/orion/`.
+
+### Fixed
+
+- **Two AI-facing pages described a rollback that does not exist.**
+  `ai/claude-code.md` and the prompt pack both said rollback was "re-activating
+  a previous version". Nothing reactivates an archived version in place —
+  status addresses a workflow id, not a version, and activating always promotes
+  the current draft. Both now carry the real procedure (cut a new version, put
+  the known-good content in it, activate), which is what
+  `build/versioning.md#roll-back` has always specified.
+
 
 ### Added
 

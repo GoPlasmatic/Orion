@@ -7,14 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0] - 2026-08-24
+## [1.2.0] - 2026-08-26
 
-No CLI behaviour changes — `orion-cli` and `orion-server` release in lockstep,
-and this cycle's work is all server-side (see the server changelog: the offline
-test runner, definition-set lint, shared definitions, and dataflow-rs 3.6).
+`orion-cli` and `orion-server` release in lockstep. This cycle's server-side
+work — the offline test runner, definition-set lint, shared definitions, and
+dataflow-rs 3.6/3.7 — is in the server changelog; the CLI's own change is the
+removal below.
 
-Its manifest does move: the rider crates `orion-api` and `orion-client` go to
-1.0.1, so the requirements here follow them.
+Its manifest also moves: the rider crates `orion-api` and `orion-client` go to
+1.0.2, so the requirements here follow them.
+
+### Removed
+
+- **The built-in MCP server is gone** — `orion-cli mcp serve`, the whole
+  `src/mcp/` tree (58 tools, ~2,000 LOC), `server.json`, the MCP-registry
+  publish job, and the `rmcp`/`schemars`/`axum`/`tracing`/`tracing-subscriber`
+  dependencies it alone pulled in.
+
+  Two reasons, and the first is the one that forced it. **The HTTP transport
+  had no authentication of its own.** `mcp serve --http` bound `0.0.0.0:8081`
+  and served the full admin API — create, activate, delete, read every trace —
+  to anything that could reach the port, carrying the operator's own
+  `ORION_API_KEY` upstream. The documentation warned about it; a warning is not
+  a control, and the shipped `docker-compose.yml` published the port.
+
+  Second, it earned nothing it cost. Every one of the 58 tools was a
+  hand-written mirror of a command `commands::` already had, over the same
+  `orion-client` transport, with no test at any layer — so each new flag had to
+  be added twice, and the drift was caught by discipline rather than CI.
+
+  **What replaces it:** the agent skill at `skills/orion/`, plus this CLI. An
+  assistant reads the skill and runs `orion-cli`, so it inherits the operator's
+  access instead of holding its own, every admin write lands in the audit log
+  under the operator's principal, and nothing listens on a port. See
+  [Agent Skill Setup](https://docs.goplasmatic.io/ai/skills.html).
+
+  If you drive Orion from Claude Desktop, Cursor's chat, or another client that
+  cannot run a shell, this is a breaking change with no in-product replacement:
+  use the [prompt pack](https://docs.goplasmatic.io/ai/prompt-pack.html) against
+  the REST API, or pin `orion-cli` 1.2.0.
+
+### Fixed
+
+- **`config set api_key` documented a resolver that no longer existed.**
+  `OrionConfig::resolve_server_url()` was a second server-URL resolver used only
+  by `mcp serve`; `--server` already carries `env = "ORION_SERVER_URL"`, so clap
+  had applied the variable before `build_client` ever read the flag. Removed
+  with the module that called it.
 
 ## [1.1.0] - 2026-08-21
 

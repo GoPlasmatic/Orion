@@ -37,22 +37,11 @@ impl OrionConfig {
             .with_context(|| format!("Failed to parse config from {}", path.display()))
     }
 
-    /// Resolve server URL: env var > config file
-    pub fn resolve_server_url() -> Result<String> {
-        if let Ok(url) = std::env::var("ORION_SERVER_URL")
-            && !url.is_empty()
-        {
-            return Ok(url);
-        }
-        let config = Self::load()?;
-        config.server_url.ok_or_else(|| {
-            anyhow::anyhow!(
-                "No server URL configured. Set ORION_SERVER_URL environment variable or configure server_url in ~/.orion/config.toml"
-            )
-        })
-    }
-
     /// Resolve API key: env var > config file. Returns (key, optional header).
+    ///
+    /// The server URL needs no twin of this: `--server` carries
+    /// `env = "ORION_SERVER_URL"`, so clap has already applied the env var by
+    /// the time `build_client` reads the flag.
     pub fn resolve_api_key() -> Option<(String, Option<String>)> {
         if let Ok(key) = std::env::var("ORION_API_KEY")
             && !key.is_empty()

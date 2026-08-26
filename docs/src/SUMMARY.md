@@ -35,7 +35,7 @@
 # Build with AI
 
 - [Build a Service with Claude Code](./ai/claude-code.md)
-- [MCP Server Setup](./ai/mcp-setup.md)
+- [Agent Skill Setup](./ai/skills.md)
 - [Prompt Pack (any LLM)](./ai/prompt-pack.md)
 
 # Build

@@ -1,6 +1,6 @@
 # Orion
 
-> Orion is a high-performance declarative runtime for microservices, AI agent tools, business rules, event processing, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST endpoints or Kafka topics) via an administrative REST API, which orion-cli also serves as MCP tools. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
+> Orion is a high-performance declarative runtime for microservices, AI agent tools, business rules, event processing, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST endpoints or Kafka topics) via an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
 
 Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested via dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka) referenced from tasks by name. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
 
@@ -36,8 +36,8 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 ## Build with AI
 
-- [Build a Service with Claude Code](https://docs.goplasmatic.io/ai/claude-code.html): driving Orion from Claude Code with the MCP server
-- [MCP Server Setup](https://docs.goplasmatic.io/ai/mcp-setup.html): MCP tools covering the full admin API, via orion-cli; stdio and HTTP transports
+- [Build a Service with Claude Code](https://docs.goplasmatic.io/ai/claude-code.html): driving Orion from Claude Code with the agent skill and orion-cli
+- [Agent Skill Setup](https://docs.goplasmatic.io/ai/skills.html): installing the Orion agent skill so an assistant can author, test and deploy through orion-cli
 - [Prompt Pack (any LLM)](https://docs.goplasmatic.io/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
 
 ## Build

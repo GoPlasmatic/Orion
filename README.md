@@ -158,7 +158,7 @@ That is it. The business logic is a JSON document, deploying it was an API call,
 Orion carries the same infrastructure across five kinds of service:
 
 - **[Microservices](https://docs.goplasmatic.io/guides/worked-examples.html):** one channel and one workflow make a service, and Orion answers the request in-process — nothing you built sits in the path.
-- **[AI Agent Tools](https://docs.goplasmatic.io/ai/claude-code.html):** an agent calls your channels as tools over HTTP. Through the MCP server in `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
+- **[AI Agent Tools](https://docs.goplasmatic.io/ai/claude-code.html):** an agent calls your channels as tools over HTTP. With the [Orion agent skill](skills/orion/) and `orion-cli`, an assistant drafts, dry-runs, activates, and rolls back those workflows itself, inside Orion's lifecycle rules.
 - **[Business Rules & Decision APIs](https://docs.goplasmatic.io/build/workflows.html):** pricing tiers, eligibility checks, routing decisions. Write the rules as JSONLogic conditions over the request, branch between them, and return the result as the response body.
 - **[Kafka Event Consumers](https://docs.goplasmatic.io/guides/kafka-channels.html):** a topic is the ingress: consume records, transform and enrich them as they arrive, publish results onward, and send poison messages to a dead-letter topic instead of letting one stall the partition.
 - **[Webhook & Data Ingestion](https://docs.goplasmatic.io/build/connectors.html):** normalize payloads from Stripe, GitHub or Shopify, then read and write across PostgreSQL, MySQL, SQLite, MongoDB and Elasticsearch through one portable dialect. Credentials stay on the connector, so the workflow JSON is safe to commit.
@@ -252,21 +252,15 @@ Orion is API-first, and everything it does is also point-and-click. [Orion UI](h
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you are done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
+**Install the [Orion agent skill](skills/orion/)** to give your AI assistant full Orion context. No manual prompt engineering needed. The skill carries the workflow and channel schemas, the JSONLogic vocabulary, the connector types, and the safe deployment path — loaded on demand, then driven through the `orion-cli` binary you already have. One copy and you are done:
 
-```json
-{
-  "mcpServers": {
-    "orion": {
-      "command": "orion-cli",
-      "args": ["mcp", "serve"],
-      "env": { "ORION_SERVER_URL": "http://localhost:8080" }
-    }
-  }
-}
+```bash
+mkdir -p .claude/skills && cp -r skills/orion .claude/skills/
 ```
 
-No MCP client? Paste the [**prompt pack**](https://docs.goplasmatic.io/ai/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It is a self-contained context block with Orion's schemas, conventions, and API calls.
+The agent acts through your own shell, so it inherits exactly your access, every admin write lands in the audit log under your principal, and nothing new listens on a port. [Agent Skill Setup](https://docs.goplasmatic.io/ai/skills.html) covers the machine-wide install and how to scope an agent's credentials.
+
+No shell in your assistant? Paste the [**prompt pack**](https://docs.goplasmatic.io/ai/prompt-pack.html) into any LLM and it can write and deploy workflows through the plain REST API. It is a self-contained context block with Orion's schemas, conventions, and API calls.
 
 ```
 You: "Classify orders into VIP (>=500, 15% discount), Premium (100-500, 5%), and Standard tiers"
@@ -281,7 +275,7 @@ AI:  → generates valid workflow JSON
 
 ```mermaid
 graph TD
-    A["1. Generate<br>(AI Workflow JSON via MCP)"] --> B["2. Validate<br>(Verify JSON Syntax & Schema)"]
+    A["1. Generate<br>(AI Workflow JSON)"] --> B["2. Validate<br>(Verify JSON Syntax & Schema)"]
     B --> C["3. Create Draft<br>(Saved in DB, Offline)"]
     C --> D["4. Dry-Run Test<br>(Verify with Sample Data)"]
     D --> E["5. Activate<br>(Engine hot-reloads)"]
@@ -557,7 +551,7 @@ The full book lives at **[docs.goplasmatic.io](https://docs.goplasmatic.io/)** �
 Orion ships with two companion projects:
 
 - **[Orion UI](https://github.com/GoPlasmatic/Orion-ui):** the admin dashboard. Manage workflows, channels, and connectors, visualize workflow pipelines, inspect audit trails, and monitor engine health from the browser.
-- **[Orion CLI](crates/orion-cli):** the command-line interface and MCP server, developed in this repo. Manage everything from your terminal or AI assistant.
+- **[Orion CLI](crates/orion-cli):** the command-line interface, developed in this repo. Manage everything from your terminal, or let an AI assistant drive it with the [agent skill](skills/orion/).
 
 Under consideration: workflow marketplace (community templates), cron-based scheduling, WASM task functions, and language SDKs. Have an idea or want to push one of these forward? [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or start a [discussion](https://github.com/GoPlasmatic/Orion/discussions).
 
