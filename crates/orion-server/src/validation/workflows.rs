@@ -1,7 +1,7 @@
 use crate::errors::{FieldError, OrionError};
 use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkflowRequest};
 
-use super::common::{validate_description, validate_id, validate_name};
+use super::common::{uncompiled_source_errors, validate_description, validate_id, validate_name};
 
 pub fn validate_create_workflow(
     req: &CreateWorkflowRequest,
@@ -13,6 +13,17 @@ pub fn validate_create_workflow(
     validate_name(&req.name, "workflow.name")?;
     if let Some(ref desc) = req.description {
         validate_description(desc, "workflow.description")?;
+    }
+    // Before the schema walk, not after: an uncompiled `$from` reaches that
+    // walk as literal JSON and is refused for the fields it would have
+    // supplied, which is an error describing the symptom and hiding the cause.
+    let source = source_form_errors(
+        Some(&req.tasks),
+        Some(&req.condition),
+        req.loop_config.as_ref(),
+    );
+    if !source.is_empty() {
+        return Err(uncompiled(source));
     }
     let task_errors = validate_workflow_tasks_schema(&req.tasks);
     if !task_errors.is_empty() {
@@ -42,6 +53,14 @@ pub fn validate_update_workflow(
     }
     if let Some(ref desc) = req.description {
         validate_description(desc, "workflow.description")?;
+    }
+    let source = source_form_errors(
+        req.tasks.as_ref(),
+        req.condition.as_ref(),
+        req.loop_config.as_ref(),
+    );
+    if !source.is_empty() {
+        return Err(uncompiled(source));
     }
     if let Some(ref tasks) = req.tasks {
         let task_errors = validate_workflow_tasks_schema(tasks);
@@ -413,6 +432,38 @@ fn engine_issue_to_field_error(issue: dataflow_rs::WorkflowIssue) -> FieldError 
         issue.path.unwrap_or_else(|| "tasks".to_string()),
         code,
         issue.message,
+    )
+}
+
+/// Every JSON-bearing field of a workflow request, checked for authoring
+/// source form.
+///
+/// All three are walked because the compiler splices `$from` at any depth in
+/// any of them — a shared timeout in `loop`, a shared predicate in
+/// `condition` — and a check that covered only `tasks` would let the other two
+/// through to be stored uncompiled.
+fn source_form_errors(
+    tasks: Option<&serde_json::Value>,
+    condition: Option<&serde_json::Value>,
+    loop_config: Option<&serde_json::Value>,
+) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    if let Some(tasks) = tasks {
+        errors.extend(uncompiled_source_errors(tasks, "tasks"));
+    }
+    if let Some(condition) = condition {
+        errors.extend(uncompiled_source_errors(condition, "condition"));
+    }
+    if let Some(loop_config) = loop_config {
+        errors.extend(uncompiled_source_errors(loop_config, "loop"));
+    }
+    errors
+}
+
+fn uncompiled(details: Vec<FieldError>) -> OrionError {
+    validation_with_details(
+        "Workflow has not been compiled: it still contains shared-definition references",
+        details,
     )
 }
 

@@ -7,6 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fragment's ids were not namespaced inside a task group** (#294). Fragment
+  ids are prefixed with the call-site id so that, as the CLI reference puts it,
+  "a fragment cannot collide with the including workflow, or with a second
+  instance of itself". That held only while every step in the fragment was a
+  plain task: when a fragment contained a **task group**, only the group's own
+  `id` was rewritten and the ids of the tasks inside it were emitted verbatim,
+  into the host workflow's namespace. Using such a fragment twice produced
+  duplicate step ids; using it once collided with any host task sharing a name
+  with one of its nested tasks. Both were refused with `DUPLICATE_TASK_ID` —
+  whose message notes it "fails the entire engine reload rather than just this
+  workflow" — and the author had no way to see it coming, because the colliding
+  name is private to the fragment. This is reachable as soon as a fragment uses
+  a guard clause, which is the shape 1.2.0 otherwise encourages.
+
+  Every id a fragment contributes is now prefixed, at every depth, flat
+  (`{call-site}.{id}`) rather than one segment per enclosing group: a step id is
+  a metric label, a trace step id and a `metadata.progress` key, and groups nest
+  up to eight deep. Flat prefixing also keeps "a fragment is authored exactly
+  like a workflow" true — a fragment reusing one id across two of its own groups
+  still surfaces as a duplicate, as it would if inlined by hand.
+
+- **The no-nested-fragments rule did not hold inside a task group.** The same
+  walk read only a fragment's top-level steps, so a `use` nested in a group was
+  neither refused nor expanded: it survived into the host workflow as a step the
+  engine cannot parse. It is now refused wherever it sits, with the
+  `shared.fragment_nested` finding naming the fragment, instead of surfacing as
+  an uncompiled reference against a set that can in fact resolve it.
+
+  **Migration.** Workflows recompiled after this change get different task ids
+  for a fragment containing a group, which changes their `content_hash`. Applied
+  package versions are content-immutable, so re-applying at the same version
+  returns `409` — bump the package version. Any `expect_tasks` assertion naming a
+  nested fragment id needs updating, and an author who worked around this by
+  hand-prefixing a fragment's nested ids can drop the prefix.
+
+### Added
+
+- **`orion-server compile <dir>` — a definition set in, files the admin API
+  accepts out.** The authoring conveniences a set may use, `$from` for a shared
+  value and `use` for a task fragment, resolve when a *set* is loaded, and the
+  admin API loads no set: it takes one document with nothing to resolve names
+  against. Nothing in the product performed that step for a deploy tool —
+  `package export` reads a live instance, which only ever stored compiled
+  documents — so the only path from `definitions/` to a running instance was a
+  tool that reimplemented the expander.
+
+  `compile` runs every gate `lint <dir>` runs and then emits: a promotion
+  artifact by default, hashed exactly as `package export` hashes one so
+  `package plan|apply|diff` consume it unchanged; `--format dir` mirrors the
+  input tree, one compiled file per entity; `--format bulk` writes the three
+  bulk-import arrays. `--requires-channel` / `--requires-connector` fill the
+  artifact's `requires`, and `--no-activate` emits drafts.
+
+- **An authoring layer the next simplification plugs into**
+  (`definitions/compile.rs`). `$from` and `use` are now two `Pass`es in an
+  ordered pipeline rather than a hard-coded pair of rewrites. A pass declares
+  its **residue** — where its own syntax still appears in a document — and that
+  one method is read three times: the pipeline test asserts residue is empty
+  after compiling (which is what "canonical" means and what the runtime relies
+  on), `compile` reports which passes fired, and the admin API turns leftover
+  residue into an error that names it. Adding a pass gets all three.
+
+### Fixed
+
+- **The admin API refused `$from` / `use` with the symptom, not the cause**
+  (#295). An uncompiled reference reached the function-input validator as
+  literal JSON and was refused for the fields the reference would have
+  supplied — `tasks[1].function.input` *requires 'connector'* — so an author
+  went looking for a typo that was not there. A `use` step arrived as a task
+  missing its `name` and `function`; a connector config as `missing field
+  connection_string`; a channel config as `unknown field '$from'`, which reads
+  as a misspelling. All four now return `UNCOMPILED_SOURCE` with the
+  reference, its authored coordinate, and the command that resolves it.
+
+  This also closes a hole rather than only rewording one: a `$from` deep enough
+  in a task payload — inside a `map` mapping's `logic`, say — satisfied every
+  schema and was **stored with 201**, and the workflow then wrote the literal
+  `{"$from": …}` object into its response at runtime. It is refused now. The
+  detection comes from the compiler's own passes, so what `compile` consumes
+  and what the API refuses cannot drift apart.
+
 ## [1.2.0] - 2026-08-26
 
 ### Changed

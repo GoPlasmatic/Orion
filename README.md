@@ -505,6 +505,7 @@ orion-server validate-config --format summary       # Parse + validate the confi
 orion-server lint workflow.json                     # Strict-validate a workflow JSON file
 orion-server dry-run -w wf.json -i input.json       # Execute a workflow offline (--stubs answers connector calls)
 orion-server test examples/workflow-tests           # Run offline *.case.json workflow regression tests
+orion-server compile ./definitions -o pkg.json      # Compile a definition set ($from/use resolved) into a package artifact
 orion-server preflight                              # Scan stored channels/workflows before upgrading
 orion-server package apply -s <url> -f pkg.json     # Promote a package (export/lint/plan/apply/diff)
 ```

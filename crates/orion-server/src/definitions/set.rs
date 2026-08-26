@@ -107,6 +107,10 @@ pub struct LoadReport {
     pub findings: Vec<super::finding::Finding>,
     /// The catalog the set declared, after merging every shared document.
     pub shared: super::SharedDefinitions,
+    /// Authoring pass id → how many documents it rewrote. What `lint` and
+    /// `compile` report so an author can see what the compiler did to their
+    /// set rather than having to diff the output to find out.
+    pub compiled: std::collections::BTreeMap<&'static str, usize>,
     pub skipped: Vec<PathBuf>,
     /// Files that are JSON but classified as no entity kind, versus files that
     /// did not parse at all — the second is far more likely to be a mistake.
@@ -188,7 +192,13 @@ impl DefinitionSet {
         if !shared.is_empty() {
             for def in &mut set.definitions {
                 let origin = def.origin.clone();
-                shared.expand(&mut def.doc, &origin, &mut report.findings);
+                let cx = super::compile::Cx {
+                    shared: &shared,
+                    origin: &origin,
+                };
+                for pass in super::compile::compile(&mut def.doc, &cx, &mut report.findings) {
+                    *report.compiled.entry(pass).or_default() += 1;
+                }
             }
         }
         report.shared = shared;

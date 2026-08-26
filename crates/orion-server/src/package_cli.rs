@@ -37,41 +37,43 @@ type CliError = Box<dyn std::error::Error>;
 // ============================================================
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PackageArtifact {
-    package: PackageMeta,
+pub(crate) struct PackageArtifact {
+    pub(crate) package: PackageMeta,
     #[serde(default)]
-    requires: Requires,
+    pub(crate) requires: Requires,
     #[serde(default)]
-    connectors: Vec<Value>,
+    pub(crate) connectors: Vec<Value>,
     #[serde(default)]
-    workflows: Vec<Value>,
+    pub(crate) workflows: Vec<Value>,
     #[serde(default)]
-    channels: Vec<Value>,
+    pub(crate) channels: Vec<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct PackageMeta {
-    name: String,
-    version: String,
+pub(crate) struct PackageMeta {
+    pub(crate) name: String,
+    pub(crate) version: String,
     /// The Orion version that exported this artifact — informational.
     #[serde(default)]
-    orion: String,
-    content_hash: String,
+    pub(crate) orion: String,
+    pub(crate) content_hash: String,
+    /// Where the artifact came from: a server URL for `export`, a directory
+    /// for `compile`. Informational.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    exported_from: String,
+    pub(crate) exported_from: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    exported_at: String,
+    pub(crate) exported_at: String,
 }
 
 /// Declared external dependencies: names this package uses but
 /// deliberately does not contain, so closures stay small. `plan` verifies
 /// they exist and are active in the target.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct Requires {
+pub(crate) struct Requires {
     #[serde(default)]
-    channels: Vec<String>,
+    pub(crate) channels: Vec<String>,
     #[serde(default)]
-    connectors: Vec<String>,
+    pub(crate) connectors: Vec<String>,
 }
 
 /// Project every entry of one entity array through its import shape. Fails on
@@ -95,7 +97,7 @@ fn project_entries<T: serde::de::DeserializeOwned>(
 /// The package-level hash: each entity array projected entry-by-entry
 /// through the shared importable-content canonicalization, then hashed as
 /// one document.
-fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError> {
+pub(crate) fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError> {
     Ok(content::content_hash(&json!({
         "connectors": project_entries::<CreateConnectorRequest>(
             &artifact.connectors, "connector", content::connector_request_content)?,

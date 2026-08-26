@@ -25,6 +25,10 @@ runner holding no production credentials.
 
 ## The five verbs
 
+> [!NOTE]
+> `export` is one way to obtain an artifact; [`orion-server compile`](../reference/cli.md#compile) is the other, building the same shape from a directory of definitions with no instance to export from. It resolves the set's shared `constants`, `errors` and `fragments` on the way, which is why it exists — the admin API has no set to resolve them against. `lint`, `plan`, `apply` and `diff` cannot tell the two apart.
+
+
 ```bash
 orion-server package export -s https://dev.orion.internal \
   --tag pkg:payments --name payments --version 1.4.0 -o payments-1.4.0.json

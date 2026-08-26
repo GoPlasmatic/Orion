@@ -38,11 +38,13 @@
 //! default would be a gate that passes the bug it was built for.
 
 mod check;
+pub mod compile;
 mod finding;
 mod set;
 mod shared;
 
 pub use check::check;
+pub use compile::{Cx, Pass, Residue};
 pub use finding::{Finding, Severity};
 pub use set::{Boundary, DefinitionSet, Entity, LoadReport};
 pub use shared::{Fragment, SharedDefinitions, first_reference};

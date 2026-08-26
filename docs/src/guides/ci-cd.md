@@ -10,6 +10,13 @@ versioned JSON file; you commit it, CI gates it, and CI applies it. Nothing is
 rebuilt between environments — the same bytes that passed staging go to
 production.
 
+**Two ways to produce one.** `package export` captures a dev instance you
+authored against. [`compile`](../reference/cli.md#compile) builds the same
+artifact straight from a definition directory, with no instance in the loop —
+which is what you want when the definitions are the source of truth and the
+shared `constants`, `errors` and `fragments` a set declares have to be resolved
+before anything is sent. Everything downstream is identical either way.
+
 ## Repository layout
 
 ```
@@ -29,6 +36,15 @@ Author against a dev instance, then export the artifact and commit it:
 export ORION_ADMIN_TOKEN=…
 orion-server package export -s https://dev.orion.internal \
   --tag pkg:payments --name payments --version 1.4.0 \
+  -o artifacts/payments-1.4.0.json
+```
+
+Or build it from the definitions themselves, which needs no instance and no
+token:
+
+```bash
+orion-server compile services/payments \
+  --name payments --version 1.4.0 \
   -o artifacts/payments-1.4.0.json
 ```
 

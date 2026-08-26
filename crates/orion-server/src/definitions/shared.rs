@@ -200,17 +200,23 @@ impl SharedDefinitions {
         }
     }
 
-    /// Expand every reference in one authored document, in place.
+    /// Compile one authored document against this catalog, in place.
     ///
-    /// Fragments first, then values: a fragment's tasks may themselves carry
-    /// `$from`, and expanding them afterwards means a fragment is written the
-    /// same way a workflow is.
+    /// The two rewrites below are the first two passes of the authoring
+    /// pipeline, and this runs it: the ordering rule — fragments before
+    /// values, so a fragment's own `$from` is spliced after it is inlined and
+    /// a fragment is written exactly the way a workflow is — lives in
+    /// [`super::compile::passes`] with everything else the pipeline
+    /// guarantees.
     pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
-        if let Some(tasks) = doc.get_mut("tasks").and_then(Value::as_array_mut) {
-            let expanded = self.expand_tasks(tasks, origin, findings);
-            *tasks = expanded;
-        }
-        self.splice(doc, origin, findings);
+        super::compile::compile(
+            doc,
+            &super::compile::Cx {
+                shared: self,
+                origin,
+            },
+            findings,
+        );
     }
 
     /// Replace every `{"use": ..}` entry with the named fragment's tasks.
@@ -218,8 +224,9 @@ impl SharedDefinitions {
     /// Not recursive: a fragment that includes a fragment needs cycle
     /// detection and a depth cap, and nothing has asked for it. Refused with a
     /// message rather than silently ignored, so the restriction is visible at
-    /// the point it bites.
-    fn expand_tasks(
+    /// the point it bites — at every depth of the fragment, not just its top
+    /// level, which is where [`namespace_fragment_step`] enforces it.
+    pub(super) fn expand_tasks(
         &self,
         tasks: &[Value],
         origin: &str,
@@ -259,23 +266,11 @@ impl SharedDefinitions {
             let args = self.fragment_args(fragment, task, name, instance, origin, findings);
 
             for inner in &fragment.tasks {
-                if inner.get("use").is_some() {
-                    findings.push(Finding::error(
-                        "shared.fragment_nested",
-                        format!("fragment '{name}'"),
-                        "a fragment cannot include another fragment",
-                    ));
-                    continue;
-                }
                 let mut expanded = inner.clone();
                 substitute_params(&mut expanded, &args);
-                // Namespace the ids so a fragment cannot collide with the
-                // including workflow, or with a second instance of itself.
-                if let Some(id) = expanded.get("id").and_then(Value::as_str) {
-                    let namespaced = format!("{instance}.{id}");
-                    expanded["id"] = Value::String(namespaced);
+                if namespace_fragment_step(&mut expanded, instance, name, findings) {
+                    out.push(expanded);
                 }
-                out.push(expanded);
             }
         }
         out
@@ -326,7 +321,7 @@ impl SharedDefinitions {
     }
 
     /// Walk a value, splicing every `$from` against the namespaces.
-    fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
+    pub(super) fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
         match value {
             Value::Array(items) => {
                 for item in items {
@@ -379,20 +374,15 @@ impl SharedDefinitions {
 /// the cause rather than letting validation report the symptom — an
 /// unexpanded `use` task looks to the validator like a task missing its
 /// `name` and `function`, which sends the reader to the wrong place.
+///
+/// Reads the pipeline's own residue rather than walking again, so "what the
+/// single-file commands refuse" and "what `compile` would have consumed" stay
+/// one statement, and a pass added later is named here without being taught
+/// about.
 pub fn first_reference(doc: &Value) -> Option<String> {
-    match doc {
-        Value::Array(items) => items.iter().find_map(first_reference),
-        Value::Object(map) => {
-            if let Some(name) = map.get("use").and_then(Value::as_str) {
-                return Some(format!("a reference to fragment '{name}'"));
-            }
-            if let Some(path) = map.get("$from").and_then(Value::as_str) {
-                return Some(format!("a reference to '{path}'"));
-            }
-            map.values().find_map(first_reference)
-        }
-        _ => None,
-    }
+    super::compile::residue(doc, "")
+        .first()
+        .map(super::compile::Residue::describe)
 }
 
 /// Keep the shared documents from the set walk, and report what would not
@@ -455,6 +445,61 @@ fn apply_splice(map: &mut Map<String, Value>, target: &Value) -> Option<Value> {
     }
 }
 
+/// Prefix every id one fragment step contributes with the call-site id — at
+/// **every** depth — and refuse a nested `use` wherever it sits. Returns
+/// `false` when the step must be dropped.
+///
+/// Both halves used to stop at the fragment's top level, which is what made
+/// the namespacing contract — "a fragment cannot collide with the including
+/// workflow, or with a second instance of itself" — false for any fragment
+/// holding a task group (#294). Only the group's own `id` was rewritten, so
+/// the tasks inside it landed in the host workflow's namespace: using such a
+/// fragment twice produced duplicate ids, and using it once collided with any
+/// host task sharing a name with one of its nested tasks. The author could not
+/// see either coming, because the colliding name is private to the fragment.
+///
+/// The group test is the engine's own, so a step this walk descends into is
+/// exactly one the flattener calls a group. That is already the rule the
+/// non-`use` branch of [`SharedDefinitions::expand_tasks`] follows, and the
+/// discrepancy between the two branches *was* the bug.
+///
+/// Ids are prefixed flat — `{call-site}.{id}` regardless of depth — rather
+/// than accumulating one segment per enclosing group. One rule, and ids stay
+/// short: a step id is a metric label, a trace step id and a
+/// `metadata.progress` key, and groups nest up to
+/// [`MAX_STEP_DEPTH`](crate::engine::MAX_STEP_DEPTH). Flat prefixing also
+/// keeps "a fragment is authored exactly like a workflow" true — a fragment
+/// that reuses one id across two of its own groups still surfaces as a
+/// duplicate, as it would if you inlined it by hand, where per-group
+/// prefixing would silently mask it.
+fn namespace_fragment_step(
+    step: &mut Value,
+    instance: &str,
+    fragment: &str,
+    findings: &mut Vec<Finding>,
+) -> bool {
+    // Checked after `substitute_params` rather than before it, which is
+    // equivalent: both test for the key, so a `{"use": {"$param": ..}}` is
+    // refused either way.
+    if step.get("use").is_some() {
+        findings.push(Finding::error(
+            "shared.fragment_nested",
+            format!("fragment '{fragment}'"),
+            "a fragment cannot include another fragment",
+        ));
+        return false;
+    }
+    if let Some(id) = step.get("id").and_then(Value::as_str) {
+        step["id"] = Value::String(format!("{instance}.{id}"));
+    }
+    if crate::engine::is_group(step)
+        && let Some(members) = step.get_mut("tasks").and_then(Value::as_array_mut)
+    {
+        members.retain_mut(|member| namespace_fragment_step(member, instance, fragment, findings));
+    }
+    true
+}
+
 /// Replace `{"$param": "name"}` nodes with the call site's argument.
 fn substitute_params(value: &mut Value, args: &BTreeMap<String, Value>) {
     match value {
@@ -486,6 +531,11 @@ mod tests {
                 "constants": { "db": { "connector": "sias-mongo", "database": "app" },
                                "timeout": 30000 },
                 "errors": { "USER_NOT_FOUND": { "status": 400, "body": "User Not Found !" } },
+                // The fragment holds a **task group**, deliberately: while this
+                // fixture was flat, every test below passed over a fragment
+                // whose nested ids were never namespaced, which is how #294
+                // survived a full suite. A guard clause is also the shape 1.2.0
+                // encourages, so it is the realistic fragment to test with.
                 "fragments": { "require-session": {
                     "params": { "deny_message": { "default": "Session expired." },
                                 "realm": {} },
@@ -494,6 +544,10 @@ mod tests {
                           "function": { "name": "map", "input": { "mappings": [
                             { "path": "data.msg", "logic": { "$param": "deny_message" } },
                             { "path": "data.realm", "logic": { "$param": "realm" } } ] } } },
+                        { "id": "refused", "condition": true, "tasks": [
+                            { "id": "deny", "name": "Deny",
+                              "function": { "name": "map", "input": { "mappings": [
+                                { "path": "data.denied", "logic": { "$param": "realm" } } ] } } } ] },
                         { "id": "halt", "name": "Halt",
                           "function": { "name": "map", "input": { "mappings": [] } } }
                     ] } }
@@ -574,11 +628,23 @@ mod tests {
         assert!(f.is_empty(), "{f:?}");
 
         let tasks = doc["tasks"].as_array().expect("array");
-        assert_eq!(tasks.len(), 3, "two fragment tasks plus the workflow's own");
-        assert_eq!(tasks[0]["id"], "_session.check", "ids are namespaced");
-        assert_eq!(tasks[1]["id"], "_session.halt");
         assert_eq!(
-            tasks[2]["id"], "own",
+            tasks.len(),
+            4,
+            "three fragment steps plus the workflow's own"
+        );
+        assert_eq!(tasks[0]["id"], "_session.check", "ids are namespaced");
+        assert_eq!(
+            tasks[1]["id"], "_session.refused",
+            "including a group's own id"
+        );
+        assert_eq!(
+            tasks[1]["tasks"][0]["id"], "_session.deny",
+            "and the ids inside that group, which is what #294 was"
+        );
+        assert_eq!(tasks[2]["id"], "_session.halt");
+        assert_eq!(
+            tasks[3]["id"], "own",
             "the workflow's own task is untouched"
         );
         assert_eq!(
@@ -586,6 +652,10 @@ mod tests {
             "the call site's argument wins over the default"
         );
         assert_eq!(tasks[0]["function"]["input"]["mappings"][1]["logic"], "app");
+        assert_eq!(
+            tasks[1]["tasks"][0]["function"]["input"]["mappings"][0]["logic"], "app",
+            "parameters reach a nested task too"
+        );
     }
 
     /// Two instances of one fragment must not collide, which is the whole
@@ -600,8 +670,54 @@ mod tests {
         s.expand(&mut doc, "wf.json", &mut f);
         let tasks = doc["tasks"].as_array().expect("array");
         let ids: Vec<&str> = tasks.iter().filter_map(|t| t["id"].as_str()).collect();
-        assert_eq!(ids, ["a.check", "a.halt", "b.check", "b.halt"]);
+        assert_eq!(
+            ids,
+            [
+                "a.check",
+                "a.refused",
+                "a.halt",
+                "b.check",
+                "b.refused",
+                "b.halt"
+            ]
+        );
+        // The nested ids are the ones that used to collide: both instances
+        // emitted a bare `deny`, and the workflow was refused at validation
+        // with a DUPLICATE_TASK_ID the author had no way to predict, because
+        // the name is private to the fragment (#294).
+        assert_eq!(tasks[1]["tasks"][0]["id"], "a.deny");
+        assert_eq!(tasks[4]["tasks"][0]["id"], "b.deny");
         assert!(f.is_empty(), "{f:?}");
+    }
+
+    /// The other half of #294: a fragment's *own* task list is not the only
+    /// place a `use` can hide. Nested inside a group it escaped the
+    /// no-nested-fragments refusal entirely and survived expansion, reaching
+    /// the host workflow as a step the engine cannot parse.
+    #[test]
+    fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
+        let mut s = SharedDefinitions::default();
+        let mut f = Vec::new();
+        s.merge(
+            &json!({ "fragments": {
+                "outer": { "tasks": [
+                    { "id": "span", "condition": true, "tasks": [
+                        { "id": "i", "use": "inner" }] }] },
+                "inner": { "tasks": [{ "id": "t", "name": "t",
+                    "function": { "name": "map", "input": { "mappings": [] } } }] } } }),
+            "common.json",
+            &mut f,
+        );
+        let mut doc = json!({ "tasks": [{ "id": "o", "use": "outer" }] });
+        s.expand(&mut doc, "wf.json", &mut f);
+        assert!(
+            f.iter().any(|x| x.check == "shared.fragment_nested"),
+            "the restriction must be reported where it bites, not left to \
+             surface as an uncompiled reference the set can actually resolve: {f:?}"
+        );
+        // Dropped, not carried through: a step that survived here would leave
+        // source form in a compiled document.
+        assert_eq!(doc["tasks"][0]["tasks"].as_array().map(Vec::len), Some(0));
     }
 
     /// A parameter with a default may be omitted; one without cannot.

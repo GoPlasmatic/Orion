@@ -5,7 +5,7 @@ name = "orion-cli"
 # what puts the server and the CLI in one release, with one set of installers
 # and one tap push. The package-prefixed `orion-cli-vX.Y.Z` tag still works for
 # an out-of-band CLI patch between server releases.
-version = "1.2.0"
+version = "1.2.1"
 edition.workspace = true
 rust-version.workspace = true
 description = "Command-line interface for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal"
@@ -30,10 +30,10 @@ serde_json = "1"
 serde_yaml = "0.9"
 # The shared wire contract: the error envelope, status vocabulary and import
 # report this CLI reads are the same types the server serializes.
-orion-api = { version = "1.0.2", path = "../orion-api" }
+orion-api = { version = "1.0.3", path = "../orion-api" }
 # The shared transport — the same client the server's `package` subcommand
 # drives. This crate owns reqwest; the CLI has no direct HTTP dependency.
-orion-client = { version = "1.0.2", path = "../orion-client" }
+orion-client = { version = "1.0.3", path = "../orion-client" }
 # Same spec as orion-server so the shared lockfile carries one `toml` tree.
 # (reqwest reaches this binary only through orion-client now.)
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
