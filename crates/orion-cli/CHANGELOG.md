@@ -261,7 +261,8 @@ Initial release.
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/GoPlasmatic/Orion/releases/tag/v1.0.0
 [0.2.1]: https://github.com/GoPlasmatic/Orion-cli/releases/tag/v0.2.1
