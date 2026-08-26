@@ -79,11 +79,17 @@ several changes before rebuilding once.
 
 A channel whose stored config no longer parses — an unknown key, an unset
 `env://` reference in its `auth` block — is **quarantined** at load: it is
-refused at every ingress rather than served with a guard silently missing.
+refused at every ingress rather than served with a guard silently missing. So
+is one whose *workflow* cannot be built: a task naming a function the engine
+will not dispatch, an input its function cannot parse, or a rollout whose
+percentages do not cover the traffic. A channel with nothing runnable behind it
+is refused rather than answering with a pipeline that fails every request.
 
 Quarantine is a load-time failure state, not an authentication outcome, and it
 clears only when a later reload builds the channel successfully. Run
-`orion-server preflight` before an upgrade to find affected channels in advance.
+`orion-server preflight` before an upgrade to find affected channels in
+advance, and see [Troubleshooting](../operate/troubleshooting.md) for the full
+list of triggers and how to clear one.
 
 ## Next steps
 

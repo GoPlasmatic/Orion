@@ -51,6 +51,7 @@ Each entry in `tasks` is a single step in the pipeline:
 | `function` | object | **yes** | — | The function to run — see below |
 | `condition` | JSONLogic | no | — | If present and falsy, this task is skipped |
 | `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's failure |
+| `terminal` | bool | no | `false` | End the workflow after this step runs. About **position, not outcome** — see [Terminal steps](#terminal-steps) |
 
 The `function` object names a [built-in function](./functions.md) and supplies
 its `input`:
@@ -71,6 +72,66 @@ its `input`:
   }
 }
 ```
+
+### Task groups
+
+An element of `tasks` carrying its own `tasks` key is a **task group** rather
+than a task: one condition guarding a contiguous run of steps, instead of the
+same condition repeated on each.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `id` | string | **yes** | — | Unique within the workflow. Groups share **one id namespace with tasks** — a group id colliding with a task id is refused at create |
+| `tasks` | array | **yes** | — | The steps in the span. Must be non-empty: a condition guarding nothing is refused |
+| `condition` | JSONLogic | no | `true` | Evaluated **once, on entry**. A falsy result skips the whole span without evaluating the members' own conditions |
+| `terminal` | bool | no | `false` | End the workflow after the whole span runs |
+| `name` | string | no | — | Human-readable label. Optional here, unlike on a task, where it is required |
+| `description` | string | no | — | What the span covers |
+
+A group has no `function` — that is exactly what distinguishes the two shapes,
+and the rule the parser applies is **presence of a `tasks` key**, nothing else.
+An element carrying neither `function` nor `tasks` is reported as a broken
+task, not an empty group.
+
+Groups nest, up to 8 levels deep. Deeper than that is refused at create: it is
+a generated-JSON accident rather than an authored control-flow shape, and the
+engine will not build it.
+
+```json
+{ "id": "not_found",
+  "condition": { "==": [{ "var": "data.user" }, null] },
+  "terminal": true,
+  "tasks": [
+    { "id": "body",   "name": "404 body",   "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.out", "logic": { "error": "User Not Found" } } ] } } },
+    { "id": "status", "name": "404 status", "function": { "name": "map", "input": { "mappings": [
+        { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.out" } } ] } } }
+  ] }
+```
+
+Everything downstream of the definition sees the **flattened** list — a trace,
+an audit trail and `metadata.progress` report the member tasks, not the group.
+The group is a property of the definition, not a step that runs.
+
+### Terminal steps
+
+`terminal: true` ends the workflow after the step runs — on a group, after the
+whole span. With a condition, that is the guard clause: *if this, answer and
+stop*. Without it, every later task has to restate the negation of every
+earlier exit, and those conditions grow with each branch added.
+
+It is about **position, not outcome**:
+
+- A falsy `condition` does not halt — the step did not run.
+- A skipped task does not halt.
+- A task that *failed* under `continue_on_error: true` **does** halt, because
+  the author said nothing runs after this one.
+
+> [!NOTE]
+> Task groups and `terminal` need dataflow-rs 3.6, which Orion 1.2.0 ships. A
+> definition using a group **fails to load** on an older engine, loudly; a bare
+> `terminal: true` is silently ignored there and every later task runs. Gate on
+> the server version if you deploy definitions to instances you do not control.
 
 ## The data context
 

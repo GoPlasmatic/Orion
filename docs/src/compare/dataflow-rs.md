@@ -12,7 +12,7 @@
 
 **Where they overlap:** the execution model is the same one — Orion does not reimplement it
 
-**Last reviewed:** 2026-08, against dataflow-rs 3.3
+**Last reviewed:** 2026-08, against dataflow-rs 3.7
 
 </div>
 

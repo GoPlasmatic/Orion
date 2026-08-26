@@ -165,7 +165,10 @@ a drift test fails the build if `src/` emits one or if this table and the
 got before it was rejected:
 
 - **Validation ran** — the path is resource-rooted and may be indexed:
-  `channel.protocol`, `tasks[2].function.input.connector`.
+  `channel.protocol`, `tasks[2].function.input.connector`. Inside a
+  [task group](./workflows.md#task-groups) the index nests, naming the
+  coordinate as authored rather than the position the task ends up at once the
+  engine flattens the tree: `tasks[1].tasks[0].id`.
 - **The body did not deserialize** — validation never ran, and the layer that
   reports the failure knows the field name but not which resource was being
   parsed. The path is `body.<field>`, or bare `body` when the field cannot be

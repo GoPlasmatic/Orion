@@ -139,7 +139,7 @@ orion-server package <export|lint|plan|apply|diff> [flags]
 | Subcommand | Description |
 |------------|-------------|
 | `export` | Compute the dependency closure from a running instance and write the artifact. |
-| `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash. Exits non-zero on findings. |
+| `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
 | `plan` | Pre-flight an artifact against a target with zero writes. |
 | `apply` | Stage all entities, activate in dependency order, reload once, record the receipt. Idempotent. |
 | `diff` | Report drift between an artifact and a running instance. Exits non-zero when anything differs. |

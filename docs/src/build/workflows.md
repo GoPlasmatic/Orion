@@ -90,7 +90,7 @@ The condition is evaluated **once, on entry**. A false result skips the whole sp
 
 `terminal` is about **position, not outcome**. A false `condition` does not halt, and neither does a skipped task; a task that *failed* under `continue_on_error: true` does, because the author said nothing after this runs. It also works on a plain task, not just a group.
 
-Groups nest, up to 8 deep, and share one id namespace with tasks — a group id colliding with a task id is refused at create.
+Groups nest, up to 8 deep, and share one id namespace with tasks — a group id colliding with a task id is refused at create. The field-by-field contract for both shapes is in the [Workflow Reference](../reference/workflows.md#task-groups).
 
 > [!NOTE]
 > Task groups need dataflow-rs 3.6, which Orion 1.2.0 ships. A definition using one **fails to load** on an older engine, loudly; a bare `terminal: true` is silently ignored there and every later task runs. Gate on the server version if you deploy definitions to instances you do not control.

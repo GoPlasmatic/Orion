@@ -67,6 +67,7 @@
 - [Back Up & Restore](./operate/backup-restore.md)
 - [Audit Logs](./operate/audit-logs.md)
 - [Upgrades](./operate/upgrades.md)
+  - [Upgrading to 1.2.0](./operate/upgrading-to-1.2.md)
   - [Upgrading to 1.1.0](./operate/upgrading-to-1.1.md)
   - [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
 - [Troubleshooting](./operate/troubleshooting.md)

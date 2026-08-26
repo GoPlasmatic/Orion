@@ -22,7 +22,7 @@ route table rather than served with a guard missing. A channel whose
 all — indistinguishable from a channel that deliberately checks nothing.
 
 Quarantine is a **load-time** failure, not an authentication or authorisation
-outcome. The usual triggers:
+outcome. The usual triggers, from the channel's own configuration:
 
 - An unknown key in the stored `config`, including a retired spelling such as
   `cors` or `backpressure.max_concurrent`.
@@ -31,7 +31,26 @@ outcome. The usual triggers:
   variable in an `auth` block.
 - In cluster mode, a dedup or response-cache backend that cannot be built, or
   one explicitly set to process memory.
-- A channel with no `workflow_id`.
+
+…and from the workflow behind it, since a channel whose workflow cannot be
+built has nothing to serve:
+
+- A channel with no `workflow_id`, or one naming a workflow that is not active
+  — archived out from under it, or never activated.
+- A task naming a function the engine will not dispatch. A typo is the common
+  case; the subtler one is a name that is real but has no handler behind it,
+  such as `enrich`, which Orion does not implement.
+- A task whose `input` does not parse into its function's expected shape, or a
+  JSONLogic field on one that does not compile.
+- [Rollout](../reference/workflows.md#rollout) percentages across the active
+  versions of one workflow that do not sum to 100. Under, and part of the
+  traffic matches no version at all; over, and the later versions are
+  unreachable. Either way the whole channel is quarantined rather than serving
+  a rollout that silently misroutes.
+
+The workflow-side reasons are all-or-nothing per channel: one unusable version
+of a partial rollout quarantines the channel rather than leaving its share of
+the traffic blackholed.
 
 **What to do.**
 

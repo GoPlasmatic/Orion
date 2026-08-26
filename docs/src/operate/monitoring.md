@@ -59,6 +59,30 @@ label naming the replica. Histograms export explicit buckets, so
 `histogram_quantile()` aggregates correctly across replicas. Names, types, and
 labels are in the [Metrics Reference](../reference/metrics.md).
 
+### Where a slow request actually goes
+
+Three histograms nest, and subtracting them attributes latency without turning
+on per-request tracing:
+
+```promql
+# Engine overhead: condition evaluation, group gating, loop bookkeeping,
+# audit writes — everything the engine does that is not a task body.
+  sum(rate(orion_workflow_duration_seconds_sum[5m])) by (workflow)
+- sum(rate(orion_task_duration_seconds_sum[5m]))     by (workflow)
+```
+
+`orion_task_duration_seconds` covers **every** dispatched task, including the
+engine's own data functions (`map`, `filter`, `parse_json`, …) that no
+connector metric can see. `orion_connector_request_duration_seconds` is the
+narrower view of the same work, keyed by connector rather than by task — so
+subtracting *it* from the task total separates time spent talking to a backend
+from time spent shaping data.
+
+A workflow skipped by its condition or [rollout](../reference/workflows.md#rollout)
+gate records nothing, so the count of `orion_workflow_duration_seconds` is
+workflow *runs*, not match attempts. A looping workflow records once for the
+whole loop rather than once per sweep.
+
 ## What to alert on
 
 Five signals are easy to miss because nothing fails loudly when they fire.

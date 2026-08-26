@@ -222,6 +222,29 @@ its payload resolved the way the real handler resolves it.
 `crypto`, `jwt_sign` and `jwt_verify` are not recorded — they execute for real
 offline rather than through a stub, and their inputs can carry key material.
 
+`expect_calls` matches against the call's `input`. The `expect` block reaches
+the whole record, which carries a little more:
+
+| Path | Holds |
+|---|---|
+| `calls.<fn>[i].input` | The resolved payload — what `expect_calls` compares against |
+| `calls.<fn>[i].task_id` | The task that made the call |
+| `calls.<fn>[i].seq` | Position across **all** functions, so two functions' calls can be ordered against each other |
+| `calls.<fn>[i].stub_target` | The key that matched in the stub table: the task's `connector`, or its `channel` for `channel_call` |
+
+`task_id` is what to assert when two tasks call the same function and only one
+of them should have fired:
+
+```json
+"expect": { "calls.http_call[0].task_id": "notify_customer" }
+```
+
+> [!NOTE]
+> Before 1.2.0 `task_id` was recovered after the run by pairing trace steps
+> with recorded calls, so a run that failed partway left later calls unlabelled
+> and the field absent. It is now read as the call is made and is always
+> present.
+
 > [!TIP]
 > This is what catches JSONLogic in a write payload. A connector field folds
 > `{"var": …}` nodes and **nothing else**, so `{"if": […]}` in a `document` is

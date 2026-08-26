@@ -30,6 +30,7 @@ Three principles shape the setup:
 | Touched migrations or storage | `just test-containers` (needs Docker) |
 | Touched workflow functions / engine | `cargo test --test integration` + `just workflow-tests` |
 | Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
+| Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | bump its version + every dependent's requirement, then `cargo package --locked --workspace` (needs a clean tree) |
 | Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |
@@ -82,6 +83,13 @@ cargo test --test integration rest_routing_test   # one module
 - `config_docs_drift_test` / `metrics_docs_drift_test` / `docs_link_test` —
   the book's config reference, metrics list, and internal links track the
   code.
+- `function_schema_test` — the two function lists Orion cannot derive, pinned
+  against a **live engine**. Workflow creation is validated before an engine
+  exists, so `CUSTOM_HANDLER_FUNCTIONS` and the `/admin/functions` catalogue
+  have to be declared; these assert set equality with the running engine's
+  `can_dispatch` / `dispatchable_functions` in both directions. A name create
+  accepts that nothing dispatches fails every request at runtime; a name the
+  engine dispatches that create refuses is unusable for no visible reason.
 
 *Needs nothing. CI: `test` job.*
 
