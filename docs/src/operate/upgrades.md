@@ -1,3 +1,4 @@
+<!-- description: How to move an existing Orion deployment from one version to another: the per-version guides, the expand and contract migration rule, and the preflight scan. -->
 # Upgrades
 
 You do not need this page to run Orion. Read it when you are moving an existing

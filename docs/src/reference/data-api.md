@@ -1,3 +1,4 @@
+<!-- description: The Orion data API: how a request path resolves to a channel, sync and async processing, trace retrieval, and the result envelopes callers receive. -->
 # Data API
 
 The data API handles runtime request processing: routing messages to channels, executing workflows, and returning results.

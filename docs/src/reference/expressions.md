@@ -1,3 +1,4 @@
+<!-- description: The complete JSONLogic operator vocabulary Orion compiles — core, dates, strings, arrays, encoding and randomness — plus the operators that fail silently. -->
 # Expression Language (JSONLogic)
 
 [JSONLogic](https://jsonlogic.com) is Orion's expression language. Expressions

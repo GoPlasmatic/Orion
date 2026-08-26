@@ -1,3 +1,4 @@
+<!-- description: Every Orion admin mutation writes an audit row: who, what, which entity, and when. How to filter them, and how to label a promotion with a change context. -->
 # Audit Logs
 
 Every admin mutation writes an audit row: who did it, what they did, to which

@@ -1,3 +1,4 @@
+<!-- description: Every Prometheus series Orion exports, one row per metric: request counters, latency histograms with explicit buckets, and engine, queue and connector gauges. -->
 # Metrics Reference
 
 Every Prometheus series Orion exports, one row per metric. All names carry the `orion_` prefix. In cluster mode, every series also carries an `instance` label naming the replica. Histograms export explicit buckets, so `histogram_quantile()` aggregates correctly across replicas.

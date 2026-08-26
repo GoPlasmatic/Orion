@@ -1,3 +1,4 @@
+<!-- description: Run Orion as a multi-node cluster: what replicas share, epoch-based engine reload, job leases, and the shared Redis that backs rate limits and dedup stores. -->
 # Cluster Mode & High Availability
 
 **Cluster mode** makes N identical Orion replicas behave as one logical system:

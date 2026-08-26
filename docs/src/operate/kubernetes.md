@@ -1,3 +1,4 @@
+<!-- description: Deploy Orion on Kubernetes with the official Helm chart — cluster topology, shared PostgreSQL and Redis, health probes and rolling upgrades in one command. -->
 # Kubernetes (Helm)
 
 Orion ships an official Helm chart that deploys the

@@ -1,3 +1,4 @@
+<!-- description: Install Orion on macOS, Linux, Windows or Docker — server and CLI. A single binary with an embedded database, running and health-checked in about a minute. -->
 # Install & Run
 
 Orion is a single binary with an embedded database. Installing it and getting a running server takes about a minute.

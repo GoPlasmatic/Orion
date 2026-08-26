@@ -1,3 +1,4 @@
+<!-- description: How Orion works: the three primitives, one request's journey through the engine, sync versus async ingress, deployment topology, and the extension surface. -->
 # How Orion Works
 
 Orion is a service runtime that executes service definitions you send it over an API. You describe a service as JSON; Orion stores it, validates it, and serves it. There is no build step, no artifact to deploy, and no process to restart.

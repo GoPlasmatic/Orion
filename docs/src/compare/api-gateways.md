@@ -1,3 +1,4 @@
+<!-- description: Orion vs Kong, Envoy, APISIX and KrakenD: the gateway polices traffic, Orion terminates it. Which guards to keep on each side, and how they run together. -->
 # Orion vs API Gateways
 
 > **In one line.** A gateway polices traffic on its way to a service that

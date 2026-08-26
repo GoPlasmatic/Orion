@@ -1,3 +1,4 @@
+<!-- description: Orion's three response shapes — admin success, data result, and the shared error envelope — with the complete error code and field-error registries. -->
 # Errors & Response Envelopes
 
 Every Orion response is one of three JSON shapes: the admin success envelope, the data-plane result envelope, or the shared error envelope. This page is the owner of the error envelope, the data-plane result shapes, and the complete `error.code` registry.

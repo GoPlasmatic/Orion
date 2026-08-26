@@ -1,3 +1,4 @@
+<!-- description: Upgrading Orion 0.3.0 to 1.0.0: every break and behaviour change, the retired configuration keys, and the preflight scan that finds them in a stored estate. -->
 # Upgrading to 1.0.0
 
 This page is for operators upgrading an existing Orion deployment from

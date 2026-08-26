@@ -1,3 +1,4 @@
+<!-- description: A self-contained context block to paste into any LLM: Orion's workflow and channel schemas, lifecycle rules and REST calls, for assistants with no shell. -->
 # Prompt Pack (any LLM)
 
 The [agent skill](./skills.md) is the richest way to give an AI assistant

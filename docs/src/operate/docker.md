@@ -1,3 +1,4 @@
+<!-- description: Run Orion as a container: one image with all three database backends, Kafka, OTLP and TLS compiled in, plus compose files for single-node and HA topologies. -->
 # Deploy with Docker
 
 Orion ships as a container image with everything compiled in — all three

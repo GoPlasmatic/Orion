@@ -1,3 +1,4 @@
+<!-- description: Where Orion fits against durable execution engines, API gateways, automation platforms and rule engines — and the five cases where it is the wrong tool. -->
 # Is Orion Right for You?
 
 Orion is a declarative services runtime. A service is one JSON document holding

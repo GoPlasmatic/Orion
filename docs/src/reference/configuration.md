@@ -1,3 +1,4 @@
+<!-- description: Every Orion setting with its real default and environment variable — server, storage, engine, Kafka, tracing, TLS, rate limits, cluster and admin auth. -->
 # Config Reference
 
 Every setting Orion has, with its real default and its environment variable. All settings have sensible defaults — `orion-server` with no config file at all starts and works. What follows is what you change when you want something other than a single-node development instance.

@@ -1,3 +1,4 @@
+<!-- description: Upgrading Orion 1.0.x to 1.1.0 — only what changes behaviour, with the new JWT auth, SMTP and storage connectors and managed OAuth2 covered elsewhere. -->
 # Upgrading to 1.1.0
 
 This page is for operators upgrading an existing Orion deployment from

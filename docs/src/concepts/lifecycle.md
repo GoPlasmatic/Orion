@@ -1,3 +1,4 @@
+<!-- description: Draft, active, archived — the one-way lifecycle every Orion channel and workflow follows, enforced by the database rather than by convention. -->
 # The Entity Lifecycle
 
 Every channel and workflow moves through three states, in one direction. The

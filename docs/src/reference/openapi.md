@@ -1,3 +1,4 @@
+<!-- description: Orion generates an OpenAPI 3.1 document covering every HTTP endpoint, request body and response schema — the exact contract behind the API pages. -->
 # OpenAPI Specification
 
 Orion generates an OpenAPI 3.1 document covering every HTTP endpoint, request

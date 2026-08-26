@@ -1,3 +1,4 @@
+<!-- description: Build your first Orion service in four API calls: a workflow that transforms an order, a channel that exposes it over REST, then activate it and call it. -->
 # Your First Service
 
 A service in Orion is two JSON documents: a **workflow** that says what to do, and a **channel** that says where to reach it. This tutorial creates both against the server you just started, activates them, and calls the result.

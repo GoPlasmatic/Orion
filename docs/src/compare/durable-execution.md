@@ -1,3 +1,4 @@
+<!-- description: Orion vs Temporal, Restate, Step Functions and Airflow: resume-from-failure versus answer-and-forget, why weight is not the distinction, and when to run both. -->
 # Orion vs Durable Execution Engines
 
 > **In one line.** A durable execution engine remembers where a run got to, so

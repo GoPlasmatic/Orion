@@ -1,3 +1,4 @@
+<!-- description: Create Orion connectors for HTTP APIs, SQL, MongoDB, Redis, Kafka, SMTP and object storage, with secrets by reference and per-operation gates. -->
 # Connect Databases & APIs
 
 A connector is how a workflow reaches anything outside the process. You create

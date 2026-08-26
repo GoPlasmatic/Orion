@@ -1,3 +1,4 @@
+<!-- description: Every key in an Orion channel's config object: auth, rate limiting, backpressure, deduplication, response caching, validation, response shaping and timeouts. -->
 # Channel Configuration
 
 A channel's `config` object (stored as `config_json`) declares every per-channel guard: authentication, rate limiting, backpressure, deduplication, caching, validation, response shaping, timeouts, origin checks, and tracing. Routing fields (`protocol`, `route_pattern`, `methods`) are siblings of `config` on the channel object; [Routing & protocol](#routing--protocol) covers them first.

@@ -1,3 +1,4 @@
+<!-- description: One-line definitions for every term the Orion documentation uses with a fixed meaning — channel, workflow, connector, package, quarantine, rollout and more. -->
 # Glossary
 
 One-line definitions for every term the Orion documentation uses with a fixed

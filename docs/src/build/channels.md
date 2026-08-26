@@ -1,3 +1,4 @@
+<!-- description: Configure an Orion channel: pick the REST, HTTP or Kafka route, then enable only the guards it needs — auth, rate limits, dedup, caching, validation. -->
 # Configure Channels
 
 A channel is the endpoint plus the contract it enforces on the way in. This page

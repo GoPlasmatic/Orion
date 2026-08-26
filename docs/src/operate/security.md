@@ -1,3 +1,4 @@
+<!-- description: Orion's defaults serve a laptop — admin auth off, TLS off, CORS open. What to change before anything you do not control can reach the admin or data plane. -->
 # Secure an Instance
 
 Orion's defaults serve a laptop: admin auth off, TLS off, CORS wide open, and a

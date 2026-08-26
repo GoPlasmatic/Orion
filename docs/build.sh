@@ -71,18 +71,36 @@ mdbook build docs
 # llms-full.txt: the whole book as one markdown file, in SUMMARY order, served
 # from the site root for LLM/agent consumption. (llms.txt is the curated index
 # and is a static file in docs/src that mdbook build copies as-is.)
+#
+# Each page's `<!-- description: … -->` line — the one docs/seo.mjs turns into
+# the page's meta description — is lifted into the front-matter block rather
+# than passed through in the body. Same fact either way, but as a
+# `description:` field a retrieval model can use it to pick a section, whereas
+# an HTML comment mid-document is just noise it has to skip.
 {
   echo "# Orion — complete documentation"
   echo "# Generated from the mdBook sources at https://github.com/GoPlasmatic/Orion/tree/main/docs/src"
   grep -oE '\(\./[A-Za-z0-9_./-]+\.md\)' docs/src/SUMMARY.md | tr -d '()' | while read -r p; do
-    printf '\n\n---\nsource: %s\n---\n\n' "$p"
-    cat "docs/src/${p#./}"
+    f="docs/src/${p#./}"
+    desc=$(sed -n '1s/^<!-- description: \(.*\) -->$/\1/p' "$f")
+    printf '\n\n---\nsource: %s\n' "$p"
+    [ -n "$desc" ] && printf 'description: %s\n' "$desc"
+    printf -- '---\n\n'
+    sed '1{/^<!-- description: .* -->$/d;}' "$f"
   done
 } >docs/book/llms-full.txt
 
+# Per-page descriptions, canonicals, Open Graph/Twitter cards, JSON-LD and
+# sitemap.xml. mdBook gives every page the book-level description and no
+# canonical at all, so this pass is what makes the site legible to search and
+# answer engines. Node rather than python3: `npx wrangler deploy` is the deploy
+# command, so Node is guaranteed on Cloudflare's build image.
+node docs/seo.mjs
+
 # _redirects carries the "/" → /index.html proxy that wrangler.jsonc's
 # html_handling:"none" requires; _headers carries the security and font-caching
-# headers. Both have to sit at the root of the deployed asset directory, which
-# is why they are copied in from docs/cloudflare/ rather than kept in docs/src
-# (mdBook would publish them as book content).
-cp docs/cloudflare/_redirects docs/cloudflare/_headers docs/book/
+# headers; robots.txt points crawlers at the sitemap and names the answer-engine
+# agents explicitly. All three have to sit at the root of the deployed asset
+# directory, which is why they are copied in from docs/cloudflare/ rather than
+# kept in docs/src (mdBook would publish them as book content).
+cp docs/cloudflare/_redirects docs/cloudflare/_headers docs/cloudflare/robots.txt docs/book/

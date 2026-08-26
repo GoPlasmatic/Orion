@@ -1,3 +1,4 @@
+<!-- description: A trace is Orion's record of one request: which workflow matched, which tasks ran, what each produced. Traces are also how async channels deliver results. -->
 # Traces & Async Processing
 
 A **trace** is Orion's record of one request: which workflow matched, which

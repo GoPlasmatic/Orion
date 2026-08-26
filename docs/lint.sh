@@ -287,6 +287,57 @@ case $? in
   ;;
 esac
 
+## 15. Every SUMMARY chapter carries a `<!-- description: ... -->` on its first
+##     line, and every description is distinct and the right length.
+##
+##     docs/seo.mjs reads these into each page's <meta name="description">,
+##     og:description and JSON-LD. Without one a page falls back to the
+##     book-wide description from book.toml — which is what all 90 pages used
+##     to share, and is the condition this check exists to stop returning.
+##
+##     The bounds are Google's rendering, not a style rule: below ~110 chars a
+##     description under-uses the snippet; above ~160 it is truncated mid-word.
+##     Uniqueness matters for the same reason the shared fallback did not work
+##     — two pages with one description give a ranker nothing to tell them
+##     apart, and give an answer engine one summary for two subjects.
+##
+##     Nothing else can generate these: llms.txt's entries are index
+##     annotations written to sit beside a title, not standalone sentences, so
+##     reusing them here would make one line serve two jobs badly.
+desc_report=$(python3 - <<'DESCPY'
+import pathlib, re, collections
+
+summary = pathlib.Path('docs/src/SUMMARY.md').read_text()
+chapters = [m[1] for m in re.findall(r'\[([^\]]+)\]\(\./([A-Za-z0-9_./-]+\.md)\)', summary)]
+
+problems, seen = [], collections.defaultdict(list)
+for rel in chapters:
+    p = pathlib.Path('docs/src') / rel
+    if not p.exists():
+        continue
+    first = p.read_text().split('\n', 1)[0]
+    m = re.match(r'^<!--\s*description:\s*(.*?)\s*-->$', first)
+    if not m:
+        problems.append(f"docs/src/{rel}: no '<!-- description: ... -->' on line 1")
+        continue
+    d = m.group(1)
+    n = len(d)
+    if not (110 <= n <= 160):
+        problems.append(f"docs/src/{rel}: description is {n} chars, want 110-160")
+    seen[d].append(rel)
+
+for d, files in seen.items():
+    if len(files) > 1:
+        problems.append(f"duplicate description shared by {', '.join(files)}")
+
+print('\n'.join(problems))
+DESCPY
+)
+if [ -n "$desc_report" ]; then
+  printf '%s\n' "$desc_report" >&2
+  err 'page description missing, mis-sized or duplicated (docs/seo.mjs reads these)'
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
 else

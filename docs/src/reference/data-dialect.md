@@ -1,3 +1,4 @@
+<!-- description: Express a query or mutation once and run it unchanged against PostgreSQL, MySQL, SQLite, MongoDB or Elasticsearch — Orion's portable, injection-safe dialect. -->
 # Portable Data Dialect
 
 The **portable data dialect** lets a workflow express a database query or

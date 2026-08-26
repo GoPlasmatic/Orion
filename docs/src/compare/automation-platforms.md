@@ -1,3 +1,4 @@
+<!-- description: Orion vs n8n, Zapier, Make and Node-RED: app catalogue and drag-and-drop speed versus production request traffic, versioning and per-request guarantees. -->
 # Orion vs Automation Platforms
 
 > **In one line.** Automation platforms optimise for building an integration

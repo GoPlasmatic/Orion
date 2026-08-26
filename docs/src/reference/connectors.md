@@ -1,3 +1,4 @@
+<!-- description: Every Orion connector type and its config — http, kafka, db, cache, es, smtp and storage — with secret references, auth schemes and per-operation gates. -->
 # Connector Types
 
 A **connector** is a named connection to an external system — an API, a database, a cache, a Kafka cluster, or a search cluster. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.

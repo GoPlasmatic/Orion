@@ -1,3 +1,4 @@
+<!-- description: A channel is an Orion service endpoint: where traffic arrives, which workflow runs, and the contract — auth, rate limits, validation — a caller must satisfy. -->
 # Channels
 
 A **channel** is a service endpoint. It says where traffic arrives, which

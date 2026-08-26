@@ -1,3 +1,4 @@
+<!-- description: Run an Orion workflow for every record on a Kafka topic: how records arrive, what happens when one fails, and what processed-once does and does not mean. -->
 # Consume from Kafka
 
 A Kafka channel runs a workflow for every record on a topic. The workflow is the

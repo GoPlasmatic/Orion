@@ -1,3 +1,4 @@
+<!-- description: What supported means for Orion 1.x: which versions receive fixes, what an upgrade guarantees, and which toolchains, databases and platforms are tested. -->
 # Support & Compatibility
 
 This page states what "supported" means for Orion 1.x: which versions receive

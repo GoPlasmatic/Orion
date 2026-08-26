@@ -1,3 +1,4 @@
+<!-- description: Everything in Orion is off or permissive by default because the defaults serve a laptop. Work through this before an instance takes traffic you did not send. -->
 # Production Checklist
 
 Everything below is off or permissive by default, because the defaults serve a

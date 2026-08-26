@@ -1,3 +1,4 @@
+<!-- description: Move an Orion service between instances as one versioned package — export the closure, lint and plan with zero writes, then apply and record a receipt. -->
 # Promote Between Environments
 
 Promotion moves one service from one instance to another — dev to QA to

@@ -1,3 +1,4 @@
+<!-- description: Active Orion workflows are immutable. How to cut a new version, roll it out to a share of traffic, and roll back to content guaranteed to be what last served. -->
 # Version & Roll Out Changes
 
 Active workflows and channels are immutable. Changing one means creating a new

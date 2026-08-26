@@ -1,3 +1,4 @@
+<!-- description: Structured logs, Prometheus metrics, OpenTelemetry spans and three health endpoints from one Orion binary — and what is actually worth alerting on. -->
 # Monitoring & Alerts
 
 Orion emits structured logs, Prometheus metrics, OpenTelemetry spans, and three

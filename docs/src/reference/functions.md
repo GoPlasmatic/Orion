@@ -1,3 +1,4 @@
+<!-- description: Every built-in Orion task function with its input schema: parse, map, filter, validation, HTTP and channel calls, SQL, MongoDB, cache, Kafka, email and JWT. -->
 # Function Reference
 
 A workflow is an ordered list of **tasks**, and every task invokes one built-in

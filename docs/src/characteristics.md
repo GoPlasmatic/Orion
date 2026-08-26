@@ -1,3 +1,4 @@
+<!-- description: The capability map: eight architectural characteristics, what the Orion runtime already provides under each, and the gaps it deliberately leaves open. -->
 # Architectural Characteristics
 
 Everything here is infrastructure the runtime already carries — not code you

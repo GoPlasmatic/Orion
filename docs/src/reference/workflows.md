@@ -1,3 +1,4 @@
+<!-- description: The Orion workflow object in full: fields, tasks, task groups, terminal steps, the shared data context, request metadata, loops, error handling and rollout. -->
 # Workflow Schema
 
 A **workflow** is a versioned, JSON-defined pipeline of tasks. A

@@ -1,3 +1,4 @@
+<!-- description: A three-stage Orion promotion pipeline: prove the logic offline, plan it against the target with zero writes, then apply. The first two need no server. -->
 # CI/CD with Packages
 
 A promotion pipeline for Orion has three jobs: prove the logic offline, check it

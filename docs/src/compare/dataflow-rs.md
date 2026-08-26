@@ -1,3 +1,4 @@
+<!-- description: Library or runtime: embedding dataflow-rs in your own Rust program versus running Orion, which wraps the same engine in storage, lifecycle, an API and traces. -->
 # Orion vs Embedding dataflow-rs
 
 > **In one line.** [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) is

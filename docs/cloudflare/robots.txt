@@ -1,0 +1,67 @@
+# Orion documentation — https://docs.goplasmatic.io
+#
+# Copied into docs/book/ by docs/build.sh, alongside _headers and _redirects.
+# It lives outside docs/src/ so mdBook does not treat it as book content.
+#
+# Everything here is public documentation for an Apache-2.0 project, and the
+# whole point of publishing it is to be found — by people and by the models
+# people now ask instead of searching. So this file is an allow-list in spirit:
+# the named agents below are listed to be explicit that they are welcome, not
+# to restrict them. A crawler not named here still matches `User-agent: *`.
+#
+# The named entries matter because two of them default to "no" when absent:
+# Google-Extended governs whether Gemini and Vertex may ground answers in this
+# site (it does not affect Search ranking at all), and Applebot-Extended does
+# the same for Apple Intelligence. Staying silent on those two is a decision to
+# be invisible in them, so state the opposite deliberately.
+
+User-agent: *
+Allow: /
+
+# Answer engines and model crawlers, allowed explicitly.
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Perplexity-User
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+User-agent: CCBot
+Allow: /
+
+User-agent: cohere-ai
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+User-agent: meta-externalagent
+Allow: /
+
+Sitemap: https://docs.goplasmatic.io/sitemap.xml

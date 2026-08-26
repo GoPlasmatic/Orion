@@ -1,3 +1,4 @@
+<!-- description: Connect Orion to PostgreSQL and build a service that writes an order and reads back the customer's history, using the portable, injection-safe data dialect. -->
 # Your First Connector
 
 [Your first service](./first-service.md) transformed data in process. Real

@@ -1,3 +1,4 @@
+<!-- description: Orion problems indexed by symptom: what you see, why it happens, what to do — from quarantined channels to empty data contexts and tripped circuit breakers. -->
 # Troubleshooting
 
 Indexed by what you see. Each entry is **what it looks like → why it happens →

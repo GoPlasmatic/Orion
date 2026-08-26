@@ -1,3 +1,4 @@
+<!-- description: Upgrading Orion 1.1.x to 1.2.0 — only what changes behaviour: task groups and terminal steps, shared definition sources, and the MCP server's removal. -->
 # Upgrading to 1.2.0
 
 This page is for operators and authors upgrading an existing Orion deployment
@@ -10,9 +11,10 @@ file — are in the
 **1.2.0 is a minor release and behaves like one.** No config key was renamed
 or removed, no API path moved, no metric was renamed, and the release ships
 **no database migrations** — the schema is byte-identical to 1.1.0's, so a
-rollback needs no schema work. Six changes can reach you. **One is breaking for
-offline test suites, and two can turn a green CI gate red** — those are the
-rows to read first.
+rollback needs no schema work. Seven changes can reach you. **Two are breaking
+— the CLI's MCP server is gone, and offline test suites need every `expect`
+path rooted — and two more can turn a green CI gate red.** Those are the rows
+to read first.
 
 The version-independent procedure — back up, preflight, validate config,
 migrate, roll — is on [Upgrades](./upgrades.md).
@@ -29,6 +31,7 @@ migrate, roll — is on [Upgrades](./upgrades.md).
 | 4 | [Check for a stored task naming `enrich`](#4-a-workflow-the-engine-cannot-dispatch-quarantines-its-channel) | Your estate predates 1.0, or you import definitions from an instance that does |
 | 5 | [Tolerate a missing `input_fields`](#5-adminfunctions-lists-every-function-not-just-the-schema-registry) | You consume `GET /api/v1/admin/functions` in tooling |
 | 6 | [Nothing — a limit was loosened](#6-task-groups-may-nest-the-full-8-levels) | You author deeply nested task groups |
+| 7 | [Replace `orion-cli mcp serve`](#7-breaking-the-clis-mcp-server-is-removed) | You connect an AI client to Orion through the CLI's MCP server |
 
 `orion-server preflight` **does not cover this release.** Its rules are the
 0.3 → 1.0 breaks; a clean run says nothing about the rows above. Each section
@@ -198,6 +201,59 @@ that was accepted is now refused.
 
 ---
 
+## 7. BREAKING: the CLI's MCP server is removed
+
+**What changed.** `orion-cli mcp serve` is gone, along with the 58 MCP tools it
+exposed. The subcommand no longer exists, the `ghcr.io/goplasmatic/orion-cli`
+image no longer opens port 8081, and the entry in the MCP registry is no longer
+published.
+
+Two reasons. The first is a security one and is why this landed in a minor
+release rather than waiting: **the HTTP transport had no authentication of its
+own.** `mcp serve --http` bound `0.0.0.0:8081` and served the full admin API —
+create, activate, delete, and read every trace — to anything that could reach
+the port, using the operator's own `ORION_API_KEY` upstream. Anyone who ran it
+outside loopback, or used the published `docker-compose.yml`, exposed their
+whole control plane. The second is that every tool was a hand-written mirror of
+an `orion-cli` command over the same transport, so the surface cost two edits
+per change and earned nothing.
+
+**Detection.** You are affected if anything you run references the subcommand:
+
+```bash
+grep -rn '"mcp".*"serve"\|mcp serve' \
+  ~/.claude.json .mcp.json .cursor/ docker-compose*.yml 2>/dev/null
+```
+
+A stdio client shows it as a server that fails to start; an HTTP client as a
+connection refused on 8081.
+
+**What to do.** Install the [agent skill](../ai/skills.md) and let the assistant
+drive `orion-cli` directly:
+
+```bash
+mkdir -p .claude/skills
+cp -r /path/to/Orion/skills/orion .claude/skills/
+```
+
+The skill is knowledge rather than a service, so the assistant runs the CLI
+under your shell: it inherits your access instead of holding its own, every
+admin write lands in the audit log under your principal, and nothing listens on
+a port. [Agent Skill Setup](../ai/skills.md) covers the install and how to give
+an agent scoped credentials.
+
+If your client cannot run a shell — Claude Desktop, Cursor's chat panel — there
+is no in-product replacement. Use the [Prompt Pack](../ai/prompt-pack.md)
+against the REST API, or stay on 1.1.0 until you can move the workflow to a
+client with a terminal.
+
+**While you are here.** If you ran `mcp serve --http` on anything reachable
+beyond loopback, treat the admin key it carried as exposed and rotate it —
+`admin_auth.api_keys` in the [configuration](../reference/configuration.md), and
+[Audit Logs](./audit-logs.md) for what was done with it.
+
+---
+
 ## Related
 
 - [Upgrades](./upgrades.md) — the version-independent procedure.
@@ -207,3 +263,5 @@ that was accepted is now refused.
   changes.
 - [Workflow Reference](../reference/workflows.md) — the workflow and task
   contract, including task groups and `terminal`.
+- [Agent Skill Setup](../ai/skills.md) — what replaces the MCP server row 7
+  removes.

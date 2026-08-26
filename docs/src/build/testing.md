@@ -1,3 +1,4 @@
+<!-- description: Run Orion workflows with no server, database or network: lint a definition set, dry-run with stubbed connectors, and keep case-file regression tests in CI. -->
 # Test Workflows Offline
 
 `orion-server` runs workflows without a server, a database, or a network, so a

@@ -1,3 +1,4 @@
+<!-- description: The reasoning behind Orion's rules — read a note when a rule looks arbitrary and you want the argument, or when you are weighing whether its trade-off fits. -->
 # Design Notes
 
 You do not need this page to run Orion. Every rule below is stated in one sentence on the page that owns it; this page holds the reasoning. Read a note when a rule looks arbitrary and you want the argument — or when you are deciding whether the rule's trade-off fits your case.

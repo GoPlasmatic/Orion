@@ -1,3 +1,4 @@
+<!-- description: A workflow is an ordered pipeline of tasks in JSON, versioned like source code and executed directly by the engine — no build step and no binary. -->
 # Workflows
 
 A **workflow** is an ordered pipeline of tasks — the business logic a channel

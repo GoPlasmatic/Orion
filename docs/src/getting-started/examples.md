@@ -1,3 +1,4 @@
+<!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, Kafka events, IoT alerts — each with a step-by-step walkthrough. -->
 # Run the Examples
 
 The repository ships eight ready-to-deploy services. Each is a **package** — the

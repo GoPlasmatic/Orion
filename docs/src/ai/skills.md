@@ -1,3 +1,4 @@
+<!-- description: Install the Orion agent skill so an AI assistant can author, test and deploy services through orion-cli — inheriting your access, with nothing new on a port. -->
 # Agent Skill Setup
 
 An **agent skill** is a folder of instructions an AI coding agent loads on

@@ -1,3 +1,4 @@
+<!-- description: Every Orion admin endpoint: workflows, channels, connectors, packages, engine, audit logs and backups, with their request and response envelopes. -->
 # Admin API
 
 All admin endpoints are under `/api/v1/admin/`. When

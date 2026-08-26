@@ -1,3 +1,4 @@
+<!-- description: Orion's whole estate lives in one database. SQLite backups via VACUUM INTO, the offline restore procedure, and what PostgreSQL and MySQL rely on instead. -->
 # Back Up & Restore
 
 Orion's whole estate — every channel, workflow, connector, trace, and audit row

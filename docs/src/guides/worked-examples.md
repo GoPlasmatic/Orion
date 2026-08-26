@@ -1,3 +1,4 @@
+<!-- description: Four Orion services, each described in a sentence and deployed as JSON — with every block pulled from the example packages CI actually deploys and tests. -->
 # Worked Examples: Prompt to Service
 
 Four services, each described in a sentence, generated as JSON, and deployed. The

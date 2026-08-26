@@ -1,3 +1,4 @@
+<!-- description: Orion vs Drools, OPA and GoRules: inference over accumulating facts versus ordered JSONLogic conditions over one payload — and which suits a decision API. -->
 # Orion vs Rule Engines
 
 > **In one line.** A rule engine works out the firing order itself and re-fires

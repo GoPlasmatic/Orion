@@ -1,3 +1,4 @@
+<!-- description: Orion is a declarative services runtime. A service is one JSON document — logic, connectors, endpoint — live a second after you post it. No rebuild, no restart. -->
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>

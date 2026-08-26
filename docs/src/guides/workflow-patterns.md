@@ -1,3 +1,4 @@
+<!-- description: Workflow shapes that cover most Orion pipelines. Each states the problem it solves, the pattern that solves it, and the mistake the pattern prevents. -->
 # Common Workflow Patterns
 
 Seven shapes that cover most workflows. Each states the problem, the pattern, and

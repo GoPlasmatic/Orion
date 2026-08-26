@@ -33,6 +33,28 @@ ORION_PORT=8090 ./record.sh        # use a different port (the quickstart GIF sh
 if they are missing. Both GIFs land in `docs/media/` — the single
 media folder every README references.
 
+## The Open Graph card
+
+`../src/images/og-card.png` is the 1200x630 image every page's `og:image` and
+`twitter:image` points at — what renders when a docs link is pasted into Slack,
+X or LinkedIn. It is generated too, by
+[`make-og-card.mjs`](make-og-card.mjs), for the same reason as everything
+above: it carries the brand's real type and palette, embedded from the repo's
+own vendored woff2 files, so it is re-rendered when those change rather than
+redrawn from memory.
+
+It has no per-page content, so it is **not** part of the build — run it when
+the brand or the positioning line changes, and commit the PNG.
+
+```bash
+cd ui && npm install     # first time only; shares Playwright with the UI script
+cd .. && node make-og-card.mjs
+```
+
+The palette is copied from `docs/css/plasmatic.css`'s dark theme: a static
+image cannot read a CSS variable, so those values are duplicated in the script
+and the comment there points back at their owner.
+
 ## UI recordings (console GIF + screenshots)
 
 The README hero GIF and the console screenshots are also generated, not

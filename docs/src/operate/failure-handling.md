@@ -1,3 +1,4 @@
+<!-- description: Bound the failure modes a workflow inherits: per-call timeouts, retries for what is safe to retry, and circuit breakers that stop calling a failing backend. -->
 # Timeouts, Retries & Circuit Breakers
 
 Every workflow that calls something outside the process inherits that thing's
