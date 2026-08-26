@@ -82,7 +82,7 @@ src/
 ├── cluster/             # Multi-node coordination: epoch watcher, job leases
 ├── config/              # Configuration loading & validation
 ├── connector/           # Connector types, registry, circuit breakers, pool caching, secret resolution
-├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver
+├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver, whose expansion descends into task groups via `engine::is_group` — a flat loop there namespaces only a fragment's top-level ids and leaks the rest into the host workflow
 │   └── compile.rs       # The authoring layer: an ordered pipeline of `Pass`es (source form → canonical form). A new simplification is a new pass; its `residue()` is what `compile` reports, what the pipeline test asserts empty, and what the admin API refuses by name
 ├── engine/              # Dataflow engine build/reload, observer, custom function handlers
 │   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
@@ -199,6 +199,7 @@ these edits are not optional follow-ups, they are part of the change:
 | A JSONLogic operator | `docs/src/reference/expressions.md` only — the vocabulary itself comes from `Engine::operator_names()` via `engine::operators::operator_names()`, so registering the operator is all the code needs. `jsonlogic_operators_test` asserts the docs and its evaluated table against the live engine in both directions |
 | A workflow-shape rule (task, task group, `terminal`) | `validation/workflows.rs::validate_workflow_tasks_schema` — its catch-all is now `Workflow::validate_authored`, so a rule the engine already enforces needs no mirror here, only a better message if you want one. Any new walk over `tasks` must use `engine::walk_steps`, never `tasks.as_array()`, or it skips task groups silently |
 | A cross-reference check over a definition set | `definitions/check.rs` — one pass, shared by `lint <dir>` and `package lint`; give it a stable `check` id so a pipeline can grandfather it |
+| An authoring convenience (new source-form syntax) | `definitions/compile.rs` — implement `Pass`, register it in `passes()`, give it a stable id. `residue()` must mirror the rewrite **exactly**: detect more than you expand and the admin API refuses documents `compile` accepts; detect less and source form reaches the runtime. Document it under [Shared definitions](docs/src/reference/cli.md) — the same section `compile`'s per-pass report and `UNCOMPILED_SOURCE` both name |
 | A rider crate's *manifest*, not just its source | bump that crate's `[package] version` **and** the requirement in every dependent manifest — CI's "Rider crates changed" gate fails the build otherwise, and editing a dependency requirement counts as changing the crate |
 | A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` (`ci_filter_drift_test`) — a module missing from those lines runs *nowhere*, silently |
 

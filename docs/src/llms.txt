@@ -42,7 +42,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 
 ## Build
 
-- [Author Workflows](https://docs.goplasmatic.io/build/workflows.html): parse-then-process, mapping, conditions, task groups and terminal steps, connector tasks, error handling
+- [Author Workflows](https://docs.goplasmatic.io/build/workflows.html): parse-then-process, mapping, conditions, task groups and terminal steps, shared values and fragments, connector tasks, error handling
 - [Configure Channels](https://docs.goplasmatic.io/build/channels.html): routes, async, auth, rate limits, validation, dedup, cache, backpressure, timeouts
 - [Connect Databases & APIs](https://docs.goplasmatic.io/build/connectors.html): creating connectors, env:// secrets, operation gates, data_query vs db_read
 - [Test Workflows Offline](https://docs.goplasmatic.io/build/testing.html): lint one file or a whole definition set, dry-run, connector stubs, *.case.json suites with request metadata and recorded-call assertions, validate-config, preflight
@@ -88,7 +88,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Configuration Reference](https://docs.goplasmatic.io/reference/configuration.html): every setting, default, and ORION_* environment variable
 - [Metrics Reference](https://docs.goplasmatic.io/reference/metrics.html): every exported series, its type and labels
 - [Errors & Response Envelopes](https://docs.goplasmatic.io/reference/errors.html): the admin and data envelopes, every error code, verbose_errors
-- [CLI Reference](https://docs.goplasmatic.io/reference/cli.html): every orion-server and orion-cli subcommand, plus the shared-definition catalog ($from, fragments)
+- [CLI Reference](https://docs.goplasmatic.io/reference/cli.html): every orion-server and orion-cli subcommand, plus the shared-definition catalog ($from, fragments) and the compile step that resolves it
 - [Design Notes](https://docs.goplasmatic.io/reference/design-notes.html): the reasoning behind dedup, cache keys, hot reload, the guard pipeline
 - [Support & Compatibility](https://docs.goplasmatic.io/reference/support.html): versioning policy, what 1.0 freezes, MSRV, platform matrix
 - [Glossary](https://docs.goplasmatic.io/reference/glossary.html): one-line definitions of the load-bearing vocabulary

@@ -78,8 +78,9 @@ connectors; data-plane routing and pipelines; the portable
 response caching, circuit breakers, backpressure, drain/shutdown); async
 traces and the DLQ; security (auth, secret masking, SSRF, trace redaction);
 TLS (certificates are generated in-process with `rcgen`, so these always
-run); CLI subcommands; OpenAPI; and end-to-end scenario walks. For the full
-module-by-module list:
+run); CLI subcommands; the authoring layer (compiling a definition set, and
+the admin API's refusal of uncompiled source form); OpenAPI; and end-to-end
+scenario walks. For the full module-by-module list:
 
 ```bash
 cargo test --test integration -- --list

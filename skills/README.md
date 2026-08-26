@@ -53,11 +53,11 @@ exposed to the network.
 orion/
 ├── SKILL.md                    # loaded first: concepts, the safe path, the command map
 └── references/
-    ├── workflows.md            # workflow JSON, task groups, data context, loops
+    ├── workflows.md            # workflow JSON, task groups, fragments, data context, loops
     ├── functions.md            # the 27 task functions
     ├── expressions.md          # JSONLogic vocabulary and its silent-failure edges
     ├── channels.md             # channel config blocks and connectors
-    └── cli.md                  # full command map, offline testing, troubleshooting
+    └── cli.md                  # full command map, offline testing, compile, troubleshooting
 ```
 
 `SKILL.md` is what enters the agent's context up front; the `references/` files

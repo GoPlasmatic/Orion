@@ -33,6 +33,10 @@ migrate, roll — is on [Upgrades](./upgrades.md).
 | 6 | [Nothing — a limit was loosened](#6-task-groups-may-nest-the-full-8-levels) | You author deeply nested task groups |
 | 7 | [Replace `orion-cli mcp serve`](#7-breaking-the-clis-mcp-server-is-removed) | You connect an AI client to Orion through the CLI's MCP server |
 
+One further behaviour change landed *after* 1.2.0:
+[fragment ids inside a task group are namespaced](#after-120-fragment-ids-inside-a-task-group).
+Read it if you author task fragments and are going to 1.2.1 or later.
+
 `orion-server preflight` **does not cover this release.** Its rules are the
 0.3 → 1.0 breaks; a clean run says nothing about the rows above. Each section
 below carries its own detection command.
@@ -251,6 +255,64 @@ client with a terminal.
 beyond loopback, treat the admin key it carried as exposed and rotate it —
 `admin_auth.api_keys` in the [configuration](../reference/configuration.md), and
 [Audit Logs](./audit-logs.md) for what was done with it.
+
+---
+
+## After 1.2.0: fragment ids inside a task group
+
+*Applies from 1.2.1. Skip it unless a definition set of yours declares
+`fragments`.*
+
+A fragment's task ids are prefixed with the call-site id, so that a fragment
+cannot collide with the workflow including it or with a second instance of
+itself. Through 1.2.0 that held only while every step in the fragment was a
+plain task: when a fragment contained a **task group**, only the group's own
+`id` was rewritten and the ids of the tasks inside it were emitted verbatim
+into the host workflow's namespace. Using such a fragment twice produced
+duplicate step ids; using it once collided with any host task sharing a name
+with one of its nested tasks — and either was refused with
+`DUPLICATE_TASK_ID`, which fails the whole engine reload rather than one
+workflow. Nothing showed the author it was coming, because the colliding name
+is private to the fragment.
+
+Every id a fragment contributes is now prefixed, at every depth, flat
+(`{call-site}.{id}`) rather than one segment per enclosing group — so a
+fragment's `refused`/`deny` inside a group become `_session.refused` and
+`_session.deny`. In the same walk, a `use` nested inside a task group is now
+refused (`shared.fragment_nested`) instead of surviving unexpanded into a
+workflow the engine cannot parse.
+
+**What to do.** Detect it first — a set is affected only if a fragment it
+declares contains a task group:
+
+```bash
+# 1. Does the set declare fragments at all?
+grep -rl '"fragments"' ./definitions
+
+# 2. Recompile with the new binary, then ask the instance what moved
+orion-server compile ./definitions --name <pkg> --version <next> -o dist/pkg.json
+orion-server package diff -s https://prod.orion.internal -f dist/pkg.json
+```
+
+`diff` exits `1` on drift and names the entities that differ from what the
+instance stores — a workflow whose fragment ids moved is one of them, alongside
+any other edit made since the last apply. An exit of `0` means the recompile
+changed nothing and none of this reaches you.
+
+Otherwise:
+
+- **Bump the package version.** Recompiled workflows carry different task ids
+  and therefore a different `content_hash`, and an applied package version is
+  content-immutable — re-applying at the same version returns `409`.
+- **Update `expect_tasks` assertions** in `*.case.json` files that name a
+  nested fragment id; they need the call-site prefix now.
+- **Drop any hand-written prefix.** An author who worked around the collision
+  by pre-prefixing a fragment's nested ids gets it applied twice, and can
+  remove theirs.
+
+Trace step ids, `metadata.progress` keys and the per-task metric label follow
+the task ids, so a dashboard or alert pinned to a nested fragment id needs the
+prefixed name.
 
 ---
 

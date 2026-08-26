@@ -98,6 +98,32 @@ engine a group **fails to load** loudly, but a bare `terminal: true` is
 silently ignored and every later task runs — gate on the server version when
 deploying to instances you do not control.
 
+### Fragments — a reused task sequence
+
+A **fragment** is a named, parameterised task sequence declared in the
+definition set's shared documents and spliced in by a step that carries `use`
+instead of `function`:
+
+```json
+{ "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
+```
+
+It is authored exactly like a workflow's `tasks`, task groups and `terminal`
+included, and `{"$param": "deny_message"}` reads a parameter. A parameter with
+no `default` is required at every call site.
+
+Every id the fragment contributes is prefixed with the call-site id, **at every
+depth** — a group's own id and its members' alike (`_session.check`,
+`_session.deny`) — and the prefix is flat, one segment, not one per enclosing
+group. That is what lets one workflow use a fragment twice. A fragment cannot
+use another fragment at any depth; nesting one inside a task group is refused,
+not quietly expanded.
+
+Expansion happens when a *set* is loaded, before validation, so `lint`,
+`dry-run` and `test` see the expanded tasks. The admin API loads no set and
+refuses `use` (and `$from`) with `UNCOMPILED_SOURCE` — `orion-server compile`
+is the step that produces what it accepts. See `references/cli.md`.
+
 ## The data context
 
 Tasks share one JSON document. Its top level holds exactly three readable

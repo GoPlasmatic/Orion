@@ -31,6 +31,7 @@ Three principles shape the setup:
 | Touched workflow functions / engine | `cargo test --test integration` + `just workflow-tests` |
 | Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
+| Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | bump its version + every dependent's requirement, then `cargo package --locked --workspace` (needs a clean tree) |
 | Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |

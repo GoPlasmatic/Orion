@@ -81,6 +81,20 @@ Four rules that fall out of this:
 4. **`--defer-reload` batches.** Commit several changes with it, then
    `orion-cli engine reload` once so they go live together.
 
+If the definitions use the set's authoring conveniences — `$from` for a shared
+value, `use` for a task fragment — **compile before you deploy**. The admin API
+takes one document with no set to resolve names against, so it refuses a
+reference with `UNCOMPILED_SOURCE`:
+
+```bash
+orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
+orion-server package apply -s https://prod.orion.internal -f dist/package.json
+```
+
+`--format dir` or `--format bulk` instead if you are importing per file rather
+than promoting a package. `compile` runs `lint <dir>` first and writes nothing
+if it fails.
+
 ## Roll out gradually
 
 ```bash
@@ -168,6 +182,10 @@ A channel — an endpoint bound to that workflow:
   arrives as a key literally named `data`.
 - **Connector secrets are masked on read**, so an exported connector needs its
   credentials supplied again on import.
+- **`$from` and `use` are authoring syntax, not wire format.** A POST carrying
+  either is refused with `UNCOMPILED_SOURCE`, however deep in the document it
+  sits. Run `orion-server compile <dir>` and send its output; do not hand-inline
+  the reference.
 
 ## Get the authoritative schema at runtime
 
@@ -192,11 +210,11 @@ Read these as needed; they are not loaded until you open them.
 
 | File | Covers |
 |---|---|
-| `references/workflows.md` | Workflow JSON in full: tasks, task groups, `terminal`, loops, the data context, metadata, error branching, rollout, matching |
+| `references/workflows.md` | Workflow JSON in full: tasks, task groups, `terminal`, fragments, loops, the data context, metadata, error branching, rollout, matching |
 | `references/functions.md` | All 27 task functions, grouped, with the inputs for the common ones |
 | `references/expressions.md` | The complete JSONLogic operator vocabulary and its silent-failure edges |
 | `references/channels.md` | Channel JSON, the config blocks (auth, rate limit, dedup, cache, validation, response shaping), and connector types |
-| `references/cli.md` | Full `orion-cli` and `orion-server` command map, offline testing, packages, and troubleshooting |
+| `references/cli.md` | Full `orion-cli` and `orion-server` command map, offline testing, shared definitions and `compile`, packages, and troubleshooting |
 
 For anything beyond these, the docs site is <https://docs.goplasmatic.io> and
 it serves `llms.txt` and `llms-full.txt` for machine consumption.

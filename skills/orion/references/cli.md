@@ -103,11 +103,71 @@ A case:
 | `expect_calls` | Expected connector calls per function, in order — asserts what a task *tried to send*, with payloads resolved as the real handler resolves them |
 | `expect_tasks` | Ids of the tasks that ran, in order. Unchecked when omitted |
 
-Add `--definitions <dir>` to either when the set uses shared `$from` fragments.
+Add `--definitions <dir>` to `dry-run` and `test` when the set uses shared
+definitions — a `$from` value or a `use` fragment. Linting a *directory* finds
+the catalog on its own; only the single-file commands need the flag.
 
 Other offline `orion-server` commands: `validate-config`, `migrate
 [--dry-run]`, `test-connectivity`, `preflight` (scans the stored estate for
 upgrade breaks), `dump-openapi`.
+
+## Shared definitions, and compiling a set
+
+A definition set can say a thing once. Any JSON file in the set carrying
+`constants`, `errors` or `fragments` (and no entity field) is a **shared
+document** — found by shape, split across as many files as you like, and a name
+defined twice is an error rather than last-write-wins.
+
+```json
+{ "input": { "$from": "constants.db", "collection": "users" } }
+{ "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
+```
+
+- **`$from` splices** the named value into the object it sits in. It is a merge,
+  not a substitution, and **siblings win** — a call site overrides one field
+  without copying the rest. A `$from` alone in its object, naming a scalar or
+  array, replaces the whole node.
+- **`use` expands a fragment**, a named and parameterised task sequence.
+  `with` supplies its `$param` values; a parameter with no `default` is required
+  at every call site.
+
+Two rules about fragment ids, both worth knowing before you author one:
+
+- **Every** id the fragment contributes is prefixed with the call-site id, at
+  every depth — a task group's own id and its members' alike (`_session.check`,
+  `_session.deny`). The prefix is flat, one segment, not one per enclosing
+  group. That is what lets a fragment be used twice in one workflow.
+- A fragment **cannot use another fragment**, at any depth. Nesting one inside a
+  task group is refused with `shared.fragment_nested`, not quietly expanded.
+
+Both resolve **before** validation, so `lint`, `dry-run` and `test` all check
+and run the expanded form.
+
+**Deploying a set that uses either needs a compile step.** The admin API takes
+one document and has no set to resolve names against, so it refuses a reference
+with `UNCOMPILED_SOURCE` rather than guessing — naming the reference, its
+authored coordinate, and the command that resolves it:
+
+```bash
+orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
+orion-server package apply -s https://prod.orion.internal -f dist/package.json
+```
+
+`compile` runs every gate `lint <dir>` runs first and emits nothing if that
+fails. Three output shapes:
+
+| `--format` | Output | Consumed by |
+|---|---|---|
+| `artifact` (default) | One promotion artifact, hashed exactly as `package export` hashes one | `orion-server package plan\|apply\|diff` |
+| `dir` | The input tree mirrored, one file per entity, shared documents consumed | a POST per file — `orion-cli workflows import -f …` |
+| `bulk` | `connectors.json`, `workflows.json`, `channels.json` | the bulk import endpoints, in that order |
+
+`--name` and `--version` are required for `artifact` and meaningless for the
+other two. `artifact` marks workflows and channels `activate: true` (a directory
+carries no stored status); `--no-activate` applies them as drafts. `dir` and
+`bulk` emit request bodies, so an entity there may omit its id exactly as a
+hand-written POST may — `artifact` needs explicit ids, because `apply` activates
+by id.
 
 ## Managing resources
 
@@ -189,6 +249,11 @@ and every connector those workflows reference — between instances as one JSON
 artifact. Every subcommand except `lint` calls an instance's admin API,
 authenticating with `ORION_ADMIN_TOKEN`.
 
+An artifact comes from one of two places: `export` reads a live instance, and
+[`compile`](#shared-definitions-and-compiling-a-set) builds the same shape from
+a directory of definitions with no instance to export from. `lint`, `plan`,
+`apply` and `diff` cannot tell the two apart.
+
 ```bash
 orion-server package export -s https://dev.orion.internal \
   --tag payments --name payments --version 1.4.0 -o payments-1.4.0.json
@@ -215,6 +280,17 @@ operator was written through as a literal. Check the name against
 **A value stored in Mongo/SQL looks like `{"cat": [...]}`.** Connector payload
 fields fold `{"var": …}` and nothing else. Compute it in a `map` task first and
 reference `temp_data.*`. `orion-server lint` warns about this.
+
+**A create or import is refused with `UNCOMPILED_SOURCE`.** The document still
+carries a `$from` or a `use` — authoring syntax a definition *set* resolves and
+a single POST cannot. Send what `orion-server compile <dir>` writes, rather than
+hand-inlining the reference. The error names the reference and where it sits.
+
+**Task ids changed after upgrading, and a package re-apply returns 409.** A
+fragment containing a task group used to leak its nested ids unprefixed; they
+are namespaced now, so recompiled workflows have different ids and a different
+`content_hash`. Applied versions are content-immutable — bump the package
+version. `expect_tasks` assertions naming a nested fragment id need the prefix.
 
 **Activation refused.** Run it with `--dry-run` to see the findings. A channel
 needs its workflow active first, a route that collides with nothing serving,

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+`orion-cli` and `orion-server` release in lockstep, so this version moves with
+the server's. The cycle's change is server-side — `orion-server compile <dir>`,
+which turns a definition set into files the admin API accepts, and the
+fragment-namespacing fix behind it — and is described in the server changelog.
+The CLI itself is unchanged; deploying a compiled set still goes through
+`orion-cli workflows import` (`--format dir` / `--format bulk`) or
+`orion-server package apply` (`--format artifact`).
+
+Its manifest moves: the rider crates `orion-api` and `orion-client` go to
+1.0.3, so the requirements here follow them.
+
 ## [1.2.0] - 2026-08-26
 
 `orion-cli` and `orion-server` release in lockstep. This cycle's server-side

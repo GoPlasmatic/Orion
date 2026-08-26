@@ -66,9 +66,17 @@ instance is checked for each one before anything is written.
 - **Source form** — a directory of entity JSON files, one per channel, workflow
   and connector. This is what you author, review and keep in git; the
   [shipped examples](../getting-started/examples.md) are packages in this form.
-- **Artifact form** — one JSON document produced by export, carrying the
-  entities plus a name, a version, the Orion version it came from, and a content
-  hash. This is what travels between instances.
+- **Artifact form** — one JSON document carrying the entities plus a name, a
+  version, the Orion version it came from, and a content hash. This is what
+  travels between instances.
+
+Two commands produce an artifact, and the downstream verbs cannot tell them
+apart: `package export` reads a live instance, and
+[`compile`](../reference/cli.md#compile) builds one from a directory with no
+instance to export from. `compile` is also the step that resolves the
+authoring conveniences source form may use — `$from` for a shared value, `use`
+for a task fragment. Artifact form never carries either: the hash, the receipt
+and the running engine only ever see resolved documents.
 
 The hash is computed over importable content only — versions, statuses and
 timestamps are the target's business, not the artifact's — so the same logic

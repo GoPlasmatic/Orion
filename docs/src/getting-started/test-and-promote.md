@@ -177,6 +177,12 @@ orion-server package export -s http://localhost:8080 \
 Export selects **channels**; each selected channel pulls in its workflow, and
 each workflow pulls in its connectors. That set is the package's **closure**.
 
+> If your definitions live in a directory rather than on an instance,
+> [`orion-server compile`](../reference/cli.md#compile) builds the same
+> artifact straight from the files — no instance to export from — and resolves
+> any shared values and fragments on the way. Everything below is identical
+> either way.
+
 ```
 wrote high-value-order@1.0.0 (0 connectors, 1 workflows, 1 channels) to high-value-order-1.0.0.json
 ```

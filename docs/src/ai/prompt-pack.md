@@ -123,6 +123,11 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
   cannot express.
 - Connector configs support ${VAR} / ${VAR:-default} environment references.
   Never embed real credentials in JSON.
+- Post plain, self-contained JSON. The authoring shorthands a definition
+  directory may use — "$from" for a shared value, "use" for a task fragment —
+  are resolved by `orion-server compile` before a deploy; the API takes one
+  document with no set to resolve names against and refuses either with
+  UNCOMPILED_SOURCE, at any depth.
 ````
 
 A worked end-to-end session using exactly these calls is
