@@ -430,32 +430,40 @@ fn eval(logic: &Value) -> Value {
     try_eval(logic).unwrap_or_else(|e| panic!("evaluating {logic} failed: {e}"))
 }
 
-/// [`OPERATORS`] and `engine::operators::OPERATOR_NAMES` name the same set.
+/// [`OPERATORS`] and the vocabulary `engine::operators::operator_names()`
+/// reports name the same set.
 ///
 /// The table above is the one that *proves* each operator works, by evaluating
-/// it. The const is the one `src/` can read — the unresolvable-JSONLogic check
+/// it. The accessor is the one `src/` reads — the unresolvable-JSONLogic check
 /// uses it to tell an operator apart from a data key, and a name missing from
-/// it is a node that check waves through. Neither can be derived from the
-/// other, so this asserts they agree.
+/// it is a node that check waves through.
+///
+/// Both sides now derive from a running engine rather than from a typed list
+/// (dataflow-rs 3.7's `Engine::operator_names`, over datalogic 5.3's own
+/// opcode table), so this no longer guards a mirror against drift. What it
+/// still guards is coverage in the other direction: an operator the build
+/// dispatches with no row above is one nothing has ever evaluated, and a row
+/// naming something the build does not dispatch is a documented operator that
+/// silently is not one.
 #[test]
-fn the_operator_const_matches_the_evaluated_vocabulary() {
+fn the_operator_vocabulary_matches_the_evaluated_set() {
     let evaluated: BTreeSet<&str> = OPERATORS.iter().map(|(name, _, _)| *name).collect();
-    let declared: BTreeSet<&str> = orion::engine::operators::OPERATOR_NAMES
+    let declared: BTreeSet<&str> = orion::engine::operators::operator_names()
         .iter()
-        .copied()
+        .map(String::as_str)
         .collect();
 
     let missing: Vec<&&str> = evaluated.difference(&declared).collect();
     assert!(
         missing.is_empty(),
-        "OPERATOR_NAMES is missing {missing:?} — authoring-time checks would \
-         treat those as plain data keys"
+        "the engine does not dispatch {missing:?} — a row above claims an \
+         operator this build does not have, so the claim is false"
     );
     let extra: Vec<&&str> = declared.difference(&evaluated).collect();
     assert!(
         extra.is_empty(),
-        "OPERATOR_NAMES declares {extra:?}, which no case above evaluates — \
-         add a row proving it works, or drop the name"
+        "the engine dispatches {extra:?}, which no case above evaluates — \
+         add a row proving it works, and document it in expressions.md"
     );
 }
 

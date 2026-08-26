@@ -22,13 +22,32 @@
 //! each walk learning about groups on its own — is how they come to disagree
 //! about what a workflow contains, and the disagreement would be silent in the
 //! direction that matters: fewer things checked, still reported green.
+//!
+//! # Since dataflow-rs 3.7 this is an adapter, not an implementation
+//!
+//! The traversal, the group test and the depth cap now come from
+//! [`walk_authored_steps`], which the engine ships precisely so a host stops
+//! mirroring them. What is left here is the *shape* Orion's callers want —
+//! leaves and groups pre-split into vectors — over the engine's lazy iterator.
+//!
+//! Mirroring cost Orion one real bug, and it is the reason this module no
+//! longer holds a depth constant of its own. Orion counted depth from 1 while
+//! the parser counts enclosing groups from 0, so the mirror refused the eighth
+//! nesting level that dataflow-rs accepts: a legal workflow was rejected at
+//! create with an "engine refuses to build this" message that was not true.
+//! Reading [`MAX_GROUP_DEPTH`] means the limit tracks the parser by
+//! construction.
 
+use dataflow_rs::{MAX_GROUP_DEPTH, StepKind, walk_authored_steps};
 use serde_json::Value;
 
-/// dataflow-rs refuses a step tree nested deeper than this. Mirrored so an
-/// author gets a field-pathed error from Orion rather than an engine failure
-/// at load, which for Orion means a quarantined channel.
-pub const MAX_STEP_DEPTH: usize = 8;
+pub use dataflow_rs::is_group;
+
+/// dataflow-rs refuses a step tree nested deeper than this.
+///
+/// Re-exported rather than redefined so the number an author is told about is
+/// the number the parser enforces.
+pub const MAX_STEP_DEPTH: usize = MAX_GROUP_DEPTH;
 
 /// What a `tasks` array holds, flattened.
 #[derive(Debug, Default)]
@@ -40,77 +59,41 @@ pub struct Steps<'a> {
     /// Every group, likewise. Groups are validated in their own right: they
     /// carry an id that shares the task namespace, and a condition.
     pub groups: Vec<(String, &'a Value)>,
-    /// Set when the tree nests deeper than [`MAX_STEP_DEPTH`]; the walk stops
-    /// descending at that point rather than recursing without bound.
+    /// Groups nested at or past [`MAX_STEP_DEPTH`]. The walk reports them and
+    /// stops descending, so a pathological document is bounded and the author
+    /// still gets a node to point at.
+    ///
+    /// A group listed here is *not* also in [`Self::groups`]: it is the one
+    /// finding that matters about it, and the whole workflow is refused over
+    /// it either way.
     pub too_deep: Vec<String>,
-}
-
-/// Whether a step element is a group rather than a task.
-///
-/// dataflow-rs's rule exactly: an element carrying a `tasks` key is a group.
-/// Not "has no `function`" — a malformed task with neither should be reported
-/// as a broken task, which is what the author meant it to be, rather than as
-/// an empty group.
-pub fn is_group(step: &Value) -> bool {
-    step.get("tasks").is_some()
 }
 
 /// Flatten a `tasks` array into its leaf tasks and its groups.
 pub fn walk_steps(tasks: &Value) -> Steps<'_> {
     let mut out = Steps::default();
-    descend(tasks, "tasks", 1, &mut out);
-    out
-}
-
-fn descend<'a>(tasks: &'a Value, path: &str, depth: usize, out: &mut Steps<'a>) {
-    let Some(arr) = tasks.as_array() else {
-        return;
-    };
-    for (i, step) in arr.iter().enumerate() {
-        let step_path = format!("{path}[{i}]");
-        if !is_group(step) {
-            out.tasks.push((step_path, step));
-            continue;
-        }
-        out.groups.push((step_path.clone(), step));
-        if depth >= MAX_STEP_DEPTH {
-            out.too_deep.push(step_path);
-            continue;
-        }
-        if let Some(inner) = step.get("tasks") {
-            descend(inner, &format!("{step_path}.tasks"), depth + 1, out);
+    for step in walk_authored_steps(tasks) {
+        match step.kind {
+            StepKind::Leaf => out.tasks.push((step.path, step.node)),
+            StepKind::Group => out.groups.push((step.path, step.node)),
+            StepKind::TooDeep => out.too_deep.push(step.path),
         }
     }
+    out
 }
 
 /// Just the leaf tasks, for the walks that do not need paths.
 ///
-/// Its own recursion rather than [`walk_steps`] with the paths dropped: the
-/// connector-rename guard calls this once per active workflow, and building a
-/// `tasks[1].tasks[0]` string per task only to discard it made that scan
-/// allocate proportionally to the whole estate. Same traversal, same depth
-/// cap — only the addresses are not computed.
+/// The engine's walker formats a path for every node, so this no longer saves
+/// the allocation it once did — it saves the caller a `filter`/`map` and keeps
+/// "which tasks are in this workflow" a single spelling. The traversal is the
+/// same one [`walk_steps`] uses, which is the property that matters: the
+/// premise of this module is that every walk sees the same tasks.
 pub fn leaf_tasks(tasks: &Value) -> Vec<&Value> {
-    let mut out = Vec::new();
-    push_leaves(tasks, 1, &mut out);
-    out
-}
-
-fn push_leaves<'a>(tasks: &'a Value, depth: usize, out: &mut Vec<&'a Value>) {
-    let Some(arr) = tasks.as_array() else {
-        return;
-    };
-    for step in arr {
-        if !is_group(step) {
-            out.push(step);
-            continue;
-        }
-        if depth < MAX_STEP_DEPTH
-            && let Some(inner) = step.get("tasks")
-        {
-            push_leaves(inner, depth + 1, out);
-        }
-    }
+    walk_authored_steps(tasks)
+        .filter(|step| step.kind == StepKind::Leaf)
+        .map(|step| step.node)
+        .collect()
 }
 
 #[cfg(test)]
@@ -200,6 +183,29 @@ mod tests {
         );
     }
 
+    /// The bug the mirror had: the engine accepts [`MAX_STEP_DEPTH`] nesting
+    /// levels, and Orion must accept exactly those too. Counting depth from
+    /// the wrong base made this workflow a 400 describing an engine refusal
+    /// that would never have happened.
+    #[test]
+    fn the_deepest_nesting_the_parser_accepts_is_not_reported() {
+        let mut inner = json!([task("leaf")]);
+        for i in 0..MAX_STEP_DEPTH {
+            inner = json!([{"id": format!("g{i}"), "tasks": inner}]);
+        }
+        assert!(
+            walk_steps(&inner).too_deep.is_empty(),
+            "{MAX_STEP_DEPTH} levels of nesting is what the parser accepts"
+        );
+        assert!(
+            serde_json::from_value::<dataflow_rs::Workflow>(json!({
+                "id": "w", "name": "w", "condition": true, "tasks": inner,
+            }))
+            .is_ok(),
+            "and the parser agrees, which is the whole claim"
+        );
+    }
+
     /// A malformed task with neither `function` nor `tasks` is a broken task,
     /// not an empty group — reporting it as a group would send the author to
     /// the wrong place.
@@ -211,10 +217,9 @@ mod tests {
         assert!(steps.groups.is_empty());
     }
 
-    /// [`leaf_tasks`] skips the path formatting, which makes it a second
-    /// traversal — so it is pinned to the first one here. The premise of this
-    /// module is that every walk sees the same tasks; two that disagree would
-    /// be the drift it exists to prevent.
+    /// [`leaf_tasks`] and [`walk_steps`] must not drift apart. Upstream pins
+    /// its walker against the engine's own flattening; this pins Orion's two
+    /// spellings of it against each other.
     #[test]
     fn leaf_tasks_sees_exactly_what_walk_steps_sees() {
         let mut deep = json!([task("leaf")]);

@@ -56,12 +56,18 @@ pub async fn reload_engine_with_opts(
         let channels = state.repos.channels.list_active().await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         let active_workflows = state.repos.workflows.list_active().await?;
+        // The running engine is the screen: `with_new_workflows` carries the
+        // handler registry across, so the handlers that will run these
+        // workflows are exactly the ones already registered here. A workflow
+        // they cannot dispatch is quarantined per channel rather than failing
+        // the reload — which would take down every channel on every node over
+        // one bad stored row.
+        let current_engine = state.engine.load();
         let (workflows, engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows);
+            crate::engine::build_engine_workflows(&channels, &active_workflows, &*current_engine);
 
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
-        let current_engine = state.engine.load();
         let new_engine = Arc::new(
             current_engine
                 .with_new_workflows(workflows)

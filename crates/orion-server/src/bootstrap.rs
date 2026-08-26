@@ -327,8 +327,18 @@ impl EngineComponents {
             );
         }
         let active_workflows = repos.workflows.list_active().await?;
+
+        // The handlers go on the builder *before* the workflows are converted,
+        // because converting screens each one against them: a workflow naming
+        // a function nothing will dispatch, or carrying an input its handler
+        // cannot parse, is quarantined per channel instead of aborting the
+        // whole build. `with_handlers` is the only thing this borrow is for —
+        // the workflows are added below, on the same builder.
+        let builder =
+            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
+                .with_handlers(custom_functions);
         let (workflows, engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows);
+            crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
         channel_registry
             .reload(
                 &channels,
@@ -373,12 +383,10 @@ impl EngineComponents {
         // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
         // carries it across every subsequent reload, so this is the only place
         // it needs setting.
-        let built_engine =
-            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
-                .with_workflows(workflows)
-                .with_handlers(custom_functions)
-                .build()?
-                .with_observer(Arc::new(crate::engine::MetricsObserver));
+        let built_engine = builder
+            .with_workflows(workflows)
+            .build()?
+            .with_observer(Arc::new(crate::engine::MetricsObserver));
         serving.engine.store(Arc::new(built_engine));
 
         Ok((serving, channels, active_workflows.len()))

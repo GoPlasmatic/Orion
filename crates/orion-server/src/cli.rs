@@ -507,14 +507,10 @@ pub(crate) fn build_dry_run_engine(
 /// Everything an offline run needs beyond the engine itself.
 pub(crate) struct OfflineRun {
     pub engine: dataflow_rs::Engine,
-    /// The connector calls the run makes, filled in as it runs.
+    /// The connector calls the run makes, filled in as it runs — each one
+    /// already labelled with the task that made it, since dataflow-rs 3.7
+    /// carries the task id into the handler.
     pub log: std::sync::Arc<orion::engine::functions::stub::CallLog>,
-    /// Task id → the function that task names, read off the workflow file.
-    ///
-    /// `TaskContext` does not carry a task id, so a stub cannot record which
-    /// task called it. This map plus the execution trace is what recovers it
-    /// afterwards (`CallLog::correlate`).
-    pub task_functions: std::collections::HashMap<String, String>,
 }
 
 /// [`build_dry_run_engine`] over an already-parsed stub table, for the `test`
@@ -556,28 +552,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
             .with_workflow(df_workflow)
             .with_handlers(functions)
             .build()?;
-    Ok(OfflineRun {
-        engine,
-        log,
-        task_functions: task_function_names(&req.tasks),
-    })
-}
-
-/// Map each task's `id` to the function it names, for call-to-task correlation.
-///
-/// Tasks without an `id` or without a `function.name` are skipped rather than
-/// guessed at: an unnameable task simply leaves its calls unlabelled.
-fn task_function_names(tasks: &serde_json::Value) -> std::collections::HashMap<String, String> {
-    // Flattened: a connector call inside a task group is still a call, and the
-    // correlation walks the trace, which sees the engine's flattened steps.
-    orion::engine::leaf_tasks(tasks)
-        .into_iter()
-        .filter_map(|task| {
-            let id = task.get("id")?.as_str()?;
-            let function = task.get("function")?.get("name")?.as_str()?;
-            Some((id.to_string(), function.to_string()))
-        })
-        .collect()
+    Ok(OfflineRun { engine, log })
 }
 
 /// Dry-run a workflow against an input JSON file.
@@ -629,7 +604,6 @@ pub(crate) async fn run_dry_run(
         .process_message_tracing(&mut message, &mut trace)
         .await
         .err();
-    run.log.correlate(&trace, &run.task_functions);
 
     // `output` is the data document under its historical name: CI `jq` filters
     // read it. The run's documents go in beside it under the names a case's
@@ -995,7 +969,6 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         .process_message_tracing(&mut message, &mut trace)
         .await
         .err();
-    run.log.correlate(&trace, &run.task_functions);
 
     let mut failures = Vec::new();
     if let Some(e) = run_error {

@@ -2,7 +2,6 @@
 //! engine is built from — including the per-channel quarantine that keeps one
 //! bad row from taking the instance down.
 
-use dataflow_rs::datalogic_rs;
 use std::collections::HashMap;
 
 use crate::storage::models::{Channel, Workflow};
@@ -77,13 +76,21 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 
 /// Every function name registered by [`build_custom_functions`].
 ///
-/// A task naming anything else lands in `FunctionConfig::Custom` and makes
-/// `precompile_custom_inputs` fail with `FunctionNotFound` — which aborts the
-/// *whole* engine build. Checking membership here downgrades that to a
-/// per-channel quarantine (proposal F41).
-/// `registered_handler_names_match_the_constant` pins the two together.
+/// Orion's *declaration* of what it registers, for the two questions that must
+/// be answered before an engine exists: whether workflow creation may accept a
+/// name ([`is_known_function`]), and which handlers an offline run must supply
+/// a stub for. Neither has an engine to ask.
+///
+/// It is no longer the load-time screen — `screen_workflow` puts that
+/// question to the real handler registry — so a name missing from here is
+/// caught at create rather than reaching the engine. It is also no longer
+/// checked only against itself: `registered_handler_names_match_the_constant`
+/// pins it to [`build_custom_functions`], and
+/// `the_create_time_gate_agrees_with_the_running_engine` pins it to a live
+/// engine's `can_dispatch` in both directions.
 ///
 /// [`build_custom_functions`]: super::handlers::build_custom_functions
+/// [`is_known_function`]: super::handlers::is_known_function
 pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
     "cache_read",
     "cache_write",
@@ -105,81 +112,78 @@ pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
     "storage_presign",
 ];
 
-/// Run the same `serde` deserialization that `dataflow_rs`'s
-/// `precompile_custom_inputs` will run at engine construction.
+/// Something that can answer "will the handlers that run this workflow
+/// actually dispatch every task in it, and do their inputs parse?".
 ///
-/// `AsyncFunctionHandler::parse_input_box` delegates to
-/// `serde_json::from_value::<Self::Input>`, which is purely type-driven — no
-/// handler state is consulted — so checking the type here is equivalent to
-/// checking it there. The engine's own handler map is not reachable once the
-/// engine exists (`Engine::new` consumes it and the field is private), which is
-/// why this is a table rather than a lookup.
+/// Two implementations, because the two callers hold different things. At boot
+/// the handler map is still on an [`EngineBuilder`] that has not been built
+/// yet; on reload the handlers live on the running [`Engine`], which
+/// `with_new_workflows` carries across. Both expose the same
+/// `check_workflow`, so this trait exists only to name that shared shape.
 ///
-/// Only `channel_call` has a typed `Input`; every other Orion handler takes
-/// `serde_json::Value` and accepts any JSON. (`http_call` and `publish_kafka`
-/// are dataflow-rs *builtins* — their typed configs are already parsed during
-/// `workflow_to_dataflow`, so they never reach `Custom`.)
-///
-/// For `channel_call` this also **compiles** its two JSONLogic fields, which
-/// `AsyncFunctionHandler::compile_input` will compile again inside
-/// `Engine::new`. That duplication is deliberate: since those fields became
-/// `Template`s a malformed expression fails the *build* rather than one
-/// message, and an engine-build failure is a whole-instance failure. Compiling
-/// here first keeps it a per-channel `ChannelLoadIssue` (F33/F41).
-fn custom_input_parse_check(name: &str, input: &serde_json::Value) -> Result<(), String> {
-    match name {
-        "channel_call" => {
-            let parsed: super::functions::channel_call::ChannelCallInput =
-                serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
-            // `TemplateCompiler::new` is crate-private, so this cannot call
-            // `Template::compile` — it compiles the same raw JSON against an
-            // engine configured the way `LogicCompiler` configures its own
-            // (templating on, Orion's operators registered), which is the
-            // property that matters.
-            let engine = crate::engine::operators::add_to_datalogic(
-                datalogic_rs::Engine::builder().with_templating(true),
-            )
-            .build();
-            for (label, template) in [
-                ("channel_logic", parsed.channel_logic.as_ref()),
-                ("data_logic", parsed.data_logic.as_ref()),
-            ] {
-                if let Some(t) = template {
-                    engine
-                        .compile(t.as_json())
-                        .map_err(|e| format!("{label} does not compile: {e}"))?;
-                }
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+/// [`Engine`]: dataflow_rs::Engine
+/// [`EngineBuilder`]: dataflow_rs::engine::EngineBuilder
+pub trait HandlerScreen {
+    /// Every reason this workflow would not run, without building anything.
+    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue>;
+}
+
+impl HandlerScreen for dataflow_rs::Engine {
+    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue> {
+        dataflow_rs::Engine::check_workflow(self, workflow)
     }
 }
 
-/// Validate every custom task before the engine is built.
-///
-/// Without this, an unregistered function name or a typed-input mismatch is
-/// invisible until engine construction — which is a whole-instance failure, not
-/// a per-channel one: at boot the process aborts, and on reload every channel on
-/// every node goes down because one stored row is unusable. That defeats the
-/// F33/F35 quarantine, whose premise is that one broken row must never stop the
-/// instance. Checking here turns it back into a `ChannelLoadIssue` (F41).
-fn check_custom_inputs(wf: &dataflow_rs::Workflow) -> Result<(), String> {
-    use dataflow_rs::engine::functions::config::FunctionConfig;
-    for task in &wf.tasks {
-        let FunctionConfig::Custom { name, input, .. } = &task.function else {
-            continue;
-        };
-        if !CUSTOM_HANDLER_FUNCTIONS.contains(&name.as_str()) {
-            return Err(format!(
-                "task '{}' calls unregistered function '{name}'",
-                task.id
-            ));
-        }
-        custom_input_parse_check(name, input)
-            .map_err(|e| format!("task '{}' has invalid input for '{name}': {e}", task.id))?;
+impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
+    fn check_workflow(&self, workflow: &dataflow_rs::Workflow) -> Vec<dataflow_rs::WorkflowIssue> {
+        dataflow_rs::engine::EngineBuilder::check_workflow(self, workflow)
     }
-    Ok(())
+}
+
+/// Screen one converted workflow against the handlers that will run it.
+///
+/// Without this, a task naming an unregistered function or carrying an input
+/// its handler cannot parse is invisible until engine construction — which is
+/// a whole-instance failure, not a per-channel one: at boot the process
+/// aborts, and on reload every channel on every node goes down because one
+/// stored row is unusable. That defeats the F33/F35 quarantine, whose premise
+/// is that one broken row must never stop the instance. Checking here turns it
+/// back into a `ChannelLoadIssue` (F41).
+///
+/// This used to be a hand-written mirror: a `CUSTOM_HANDLER_FUNCTIONS`
+/// membership test, a `match` naming the one handler with a typed `Input`, and
+/// a locally-built datalogic engine standing in for the crate-private
+/// `TemplateCompiler`. dataflow-rs 3.7's `check_workflow` does all three
+/// against the real registry and the real compiler, so the mirror is gone and
+/// with it three ways for it to drift:
+///
+/// - A new handler no longer has to be added to a list to be screened.
+/// - A handler that grows a typed `Input` is screened for it immediately,
+///   rather than silently going unchecked until someone remembers the `match`.
+/// - `http_call`, `publish_kafka` and `enrich` are covered too. They
+///   deserialize into typed built-in variants, so they never reached the
+///   `Custom` arm the mirror inspected — an `enrich` task in a stored row
+///   built cleanly and then failed every request with `FunctionNotFound`.
+///
+/// Issues are joined into one message: the caller reports per workflow, and a
+/// workflow that cannot run is quarantined whole regardless of how many of its
+/// tasks are the reason.
+fn screen_workflow(
+    workflow: &dataflow_rs::Workflow,
+    screen: &dyn HandlerScreen,
+) -> Result<(), String> {
+    let issues = screen.check_workflow(workflow);
+    if issues.is_empty() {
+        return Ok(());
+    }
+    Err(issues
+        .iter()
+        .map(|issue| match &issue.task_id {
+            Some(task_id) => format!("task '{task_id}': {}", issue.message),
+            None => issue.message.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; "))
 }
 
 /// Convert active channels and their workflows to dataflow-rs workflows for the engine.
@@ -198,6 +202,7 @@ fn check_custom_inputs(wf: &dataflow_rs::Workflow) -> Result<(), String> {
 pub fn build_engine_workflows(
     channels: &[Channel],
     workflows: &[Workflow],
+    screen: &dyn HandlerScreen,
 ) -> (
     Vec<dataflow_rs::Workflow>,
     Vec<crate::channel::ChannelLoadIssue>,
@@ -234,7 +239,7 @@ pub fn build_engine_workflows(
         if wf_versions.len() == 1 && wf_versions[0].rollout_percentage == 100 {
             // Single version at 100% — convert normally
             match workflow_to_dataflow(wf_versions[0], &channel.name) {
-                Ok(w) => match check_custom_inputs(&w) {
+                Ok(w) => match screen_workflow(&w, screen) {
                     Ok(()) => result.push(w),
                     Err(e) => {
                         issues.push(crate::channel::ChannelLoadIssue {
@@ -251,61 +256,69 @@ pub fn build_engine_workflows(
                 }
             }
         } else {
-            // Multiple versions or partial rollout — wrap with bucket ranges
+            // Multiple versions or partial rollout — wrap with bucket ranges.
             let mut sorted: Vec<&&Workflow> = wf_versions.iter().collect();
             sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
 
-            let mut bucket_offset = 0i64;
-            let mut converted = Vec::new();
-            let mut failed = false;
-            for wf in &sorted {
-                let bucket_min = bucket_offset;
-                let bucket_max = bucket_offset + wf.rollout_percentage;
-                match workflow_to_dataflow_with_rollout(wf, &channel.name, bucket_min, bucket_max)
-                    .map_err(|e| e.to_string())
-                    .and_then(|w| check_custom_inputs(&w).map(|()| w))
-                {
-                    Ok(w) => converted.push(w),
-                    Err(e) => {
-                        issues.push(crate::channel::ChannelLoadIssue {
-                            channel: channel.name.clone(),
-                            reason: format!(
-                                "workflow '{}' v{} failed to convert: {e}",
-                                wf.workflow_id, wf.version
-                            ),
-                        });
-                        failed = true;
-                        break;
+            // Newest first, because input order is traffic order: the version
+            // being rolled out takes the low buckets and the one it replaces
+            // keeps the rest.
+            //
+            // A percentage outside `0..=100` cannot come through the API — the
+            // repository bounds it on write — but a hand-edited row can carry
+            // one, and it must not wrap into something plausible. Saturating
+            // at `u8::MAX` guarantees the sum overshoots and the channel is
+            // quarantined with the over-100 message.
+            let percentages: Vec<u8> = sorted
+                .iter()
+                .map(|wf| u8::try_from(wf.rollout_percentage).unwrap_or(u8::MAX))
+                .collect();
+
+            // F30: buckets are 0–99, and percentages that do not sum to 100
+            // misroute silently — under 100, the remainder of the traffic
+            // matches no workflow version at all; over 100, later versions'
+            // ranges start past bucket 99 and are unreachable. Both used to be
+            // an accumulator and an `!= 100` check here. `Rollout::partition`
+            // is the engine's own arithmetic for exactly this, error direction
+            // included, so the invariant is now stated once — in the crate
+            // that routes on it.
+            match dataflow_rs::Rollout::partition(&percentages) {
+                Ok(ranges) => {
+                    let mut converted = Vec::new();
+                    let mut failed = false;
+                    for (wf, rollout) in sorted.iter().zip(ranges) {
+                        match workflow_to_dataflow_with_rollout(wf, &channel.name, rollout)
+                            .map_err(|e| e.to_string())
+                            .and_then(|w| screen_workflow(&w, screen).map(|()| w))
+                        {
+                            Ok(w) => converted.push(w),
+                            Err(e) => {
+                                issues.push(crate::channel::ChannelLoadIssue {
+                                    channel: channel.name.clone(),
+                                    reason: format!(
+                                        "workflow '{}' v{} failed to convert: {e}",
+                                        wf.workflow_id, wf.version
+                                    ),
+                                });
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    // All-or-nothing per channel: a partially-converted
+                    // rollout would silently blackhole the failed version's
+                    // bucket range.
+                    if !failed {
+                        result.append(&mut converted);
                     }
                 }
-                bucket_offset = bucket_max;
-            }
-            // F30: buckets are 0–99; percentages that don't sum to 100
-            // silently misroute — under 100, the remainder of the traffic
-            // matches no workflow version at all; over 100, later versions'
-            // ranges start past bucket 99 and are unreachable.
-            if !failed && bucket_offset != 100 {
-                issues.push(crate::channel::ChannelLoadIssue {
+                Err(e) => issues.push(crate::channel::ChannelLoadIssue {
                     channel: channel.name.clone(),
                     reason: format!(
-                        "rollout percentages for workflow '{wf_id}' sum to {bucket_offset}, \
-                         not 100 — {}",
-                        if bucket_offset < 100 {
-                            format!(
-                                "{}% of traffic would match no workflow version",
-                                100 - bucket_offset
-                            )
-                        } else {
-                            "later versions would be unreachable".to_string()
-                        }
+                        "rollout percentages for workflow '{wf_id}' do not partition the \
+                         bucket space: {e}"
                     ),
-                });
-                failed = true;
-            }
-            // All-or-nothing per channel: a partially-converted rollout would
-            // silently blackhole the failed version's bucket range.
-            if !failed {
-                result.append(&mut converted);
+                }),
             }
         }
     }
@@ -316,6 +329,16 @@ pub fn build_engine_workflows(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The screen these tests convert against.
+    ///
+    /// A bare builder registers no custom handlers, which is all the fixtures
+    /// below need — they are about rollout arithmetic and quarantine, and
+    /// their tasks are `log`, a self-contained built-in every engine
+    /// dispatches.
+    fn screen() -> dataflow_rs::engine::EngineBuilder {
+        dataflow_rs::Engine::builder()
+    }
 
     #[test]
     fn test_glob_match_exact() {
@@ -423,7 +446,7 @@ mod tests {
 
         // 50 + 30 = 80 — buckets 80–99 would match no version.
         let wfs = vec![make_workflow("wf", 1, 30), make_workflow("wf", 2, 50)];
-        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs);
+        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs, &screen());
         assert!(converted.is_empty(), "under-100 rollout must not half-load");
         assert_eq!(issues.len(), 1);
         assert!(
@@ -434,7 +457,7 @@ mod tests {
 
         // 60 + 60 = 120 — later versions unreachable.
         let wfs = vec![make_workflow("wf", 1, 60), make_workflow("wf", 2, 60)];
-        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs);
+        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs, &screen());
         assert!(converted.is_empty());
         assert_eq!(issues.len(), 1);
         assert!(
@@ -445,7 +468,7 @@ mod tests {
 
         // 50 + 50 = 100 — loads both versions cleanly.
         let wfs = vec![make_workflow("wf", 1, 50), make_workflow("wf", 2, 50)];
-        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs, &screen());
         assert_eq!(converted.len(), 2);
         assert!(issues.is_empty(), "{issues:?}");
     }
@@ -476,7 +499,7 @@ mod tests {
             make_workflow("wf", 2, 50),
             make_workflow("wf", 3, 20),
         ];
-        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs, &screen());
         assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(converted.len(), 3);
 
@@ -520,7 +543,7 @@ mod tests {
         let mut unknown = make_channel("unknown-wf");
         unknown.workflow_id = Some("ghost".to_string());
 
-        let (converted, issues) = build_engine_workflows(&[no_wf, unknown], &[]);
+        let (converted, issues) = build_engine_workflows(&[no_wf, unknown], &[], &screen());
         assert!(converted.is_empty());
         assert_eq!(issues.len(), 2);
         assert!(
@@ -548,7 +571,7 @@ mod tests {
         bad_v1.tasks_json = "not json".to_string();
         let wfs = vec![bad_v1, make_workflow("wf", 2, 50)];
 
-        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs, &screen());
         assert!(
             converted.is_empty(),
             "the successfully-converted v2 must be discarded with v1"
@@ -646,7 +669,7 @@ mod tests {
             ),
         ];
 
-        let (converted, issues) = build_engine_workflows(&[good, bad], &wfs);
+        let (converted, issues) = build_engine_workflows(&[good, bad], &wfs, &screen());
 
         assert_eq!(
             converted.len(),
@@ -657,44 +680,10 @@ mod tests {
         assert_eq!(issues.len(), 1, "issues = {issues:?}");
         assert_eq!(issues[0].channel, "bad");
         assert!(
-            issues[0]
-                .reason
-                .contains("unregistered function 'totally_not_a_function'"),
-            "reason should name the offending function: {}",
+            issues[0].reason.contains("'totally_not_a_function'")
+                && issues[0].reason.contains("task 't1'"),
+            "reason should name the offending task and function: {}",
             issues[0].reason
         );
-    }
-
-    #[test]
-    fn channel_call_with_only_channel_logic_builds() {
-        // F23: the schema (and the docs) declare `channel` optional when
-        // `channel_logic` is given, but the struct required it — so this exact
-        // workflow passed admin validation and then failed the engine build.
-        let mut channel = make_channel("dyn");
-        channel.workflow_id = Some("wf-dyn".to_string());
-        let wfs = vec![workflow_with_raw_tasks(
-            "wf-dyn",
-            r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",
-               "input":{"channel_logic":{"var":"target"}}}}]"#,
-        )];
-
-        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
-        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
-        assert_eq!(converted.len(), 1);
-    }
-
-    #[test]
-    fn channel_call_input_rejects_a_wrongly_typed_field() {
-        // `channel` is defaulted (F23) but still typed: a non-string must not
-        // slip through to the engine build.
-        assert!(
-            custom_input_parse_check("channel_call", &serde_json::json!({ "channel": 7 })).is_err()
-        );
-        assert!(
-            custom_input_parse_check("channel_call", &serde_json::json!({ "channel": "a" }))
-                .is_ok()
-        );
-        // A `Value`-input handler accepts anything.
-        assert!(custom_input_parse_check("db_read", &serde_json::json!({ "x": 1 })).is_ok());
     }
 }

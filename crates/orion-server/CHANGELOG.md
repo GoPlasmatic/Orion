@@ -246,6 +246,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
         then . else .key |= "data." + . end)' case.json
   ```
 
+- **dataflow-rs 3.6 → 3.7, and Orion stops mirroring the engine.** 3.7 is "the
+  host surface" release: it publishes the facts a service that stores,
+  validates and operates workflow definitions previously had to re-derive. Six
+  Orion mirrors are gone, each replaced by the engine's own answer.
+
+  - **The authored step walk.** `engine/steps.rs` held its own traversal, its
+    own group test and its own depth constant; it is now an adapter over
+    `walk_authored_steps` / `is_group` / `MAX_GROUP_DEPTH`. The public shape
+    (`walk_steps`, `leaf_tasks`, `Steps`) is unchanged, so no caller moved.
+  - **The task-shape catch-all.** `validate_workflow_tasks_schema` ended in a
+    round-trip `from_value::<Workflow>` that reported the parser's first
+    failure against a bare `tasks` path. It now runs
+    `Workflow::validate_authored`, which reports *every* remaining problem, each
+    at the coordinate the author typed (`tasks[1].tasks[0].id`), and which runs
+    `Workflow::validate()` as well as the parse.
+  - **The handler-registry screen.** `check_custom_inputs` tested membership of
+    a hand-kept name list, `match`ed the one handler with a typed `Input`, and
+    compiled `channel_call`'s templates against a locally-built datalogic
+    engine standing in for the crate-private `TemplateCompiler` — an
+    approximation its own comment flagged. `Engine::check_workflow` does all
+    three against the real registry and the real compiler.
+  - **Rollout arithmetic.** The bucket-offset accumulator and its `!= 100`
+    check are `Rollout::partition`, error direction included.
+  - **The JSONLogic operator vocabulary.** `OPERATOR_NAMES` was 75
+    hand-maintained names; `operators::operator_names()` asks a built engine,
+    which since datalogic-rs 5.3 derives its core half from datalogic's own
+    opcode table. The two agreed exactly at the swap. They would not have
+    stayed agreed: the enumeration follows the features actually compiled in,
+    including a family enabled by some other crate in the graph, which a typed
+    list would have called typos.
+  - **The retry loop.** `RetryPolicy` and `retry_with_policy` moved upstream
+    verbatim — same fields, same capped exponential backoff, same whole-loop
+    deadline that skips a backoff it cannot afford. Orion re-exports them. The
+    classification (`DataflowError::retryable`) and the mechanism reading it
+    now live together.
+
+  Two lists Orion must still keep — `CUSTOM_HANDLER_FUNCTIONS` and the
+  `/admin/functions` catalogue — cannot be derived, because both are consulted
+  before an engine exists. They are now *pinned* instead: new tests walk a live
+  `AppState`'s engine and assert set equality with `can_dispatch` and
+  `dispatchable_functions` in both directions. That is the drift net #288 did
+  not have.
+
+- **`orion_workflow_duration_seconds{workflow}`** — per-workflow-run latency,
+  from 3.7's `workflow_finished` observer callback. Subtracting the
+  `orion_task_duration_seconds` sum for the same workflow gives the engine's
+  own overhead: condition evaluation, group gating, loop bookkeeping, audit
+  writes, arena management. That figure existed only as `workflow_overhead_ms`
+  in the opt-in per-request profile — a residual got by subtraction, so it
+  absorbed everything else unmeasured. This is a direct measurement on the
+  always-on path. A workflow its condition or rollout gate rejected is not
+  recorded; a looping workflow records once for the whole loop.
+
+- **An offline run labels each recorded connector call with the task that made
+  it.** `TaskContext::task_id` (3.7) is read as the call is recorded. It used
+  to be attached afterwards by walking the execution trace and pairing
+  recorded-function steps with recorded calls — best-effort by construction,
+  since a run that died partway desynced the two sequences and the pairing
+  bailed out rather than mislabel. `CallLog::correlate` and the task-to-function
+  map the caller had to build for it are gone.
+
+### Fixed
+
+- **A workflow nesting task groups exactly 8 deep was refused at create**,
+  with a message claiming the engine would refuse to build it. It would not:
+  Orion counted nesting depth from 1 while the parser counts enclosing groups
+  from 0, so the mirrored limit was one level tighter than the real one. The
+  documented "groups nest, up to 8 deep" was correct and the code was not.
+  Reading `MAX_GROUP_DEPTH` makes the two the same statement.
+
+- **A workflow with `"tasks": []` was accepted at create and then broke the
+  whole engine build on activation.** An empty task list parses fine and fails
+  `Workflow::validate()`, which `Engine::build` runs fail-loud — so, like a
+  duplicate task id, one such row took down every channel on every node rather
+  than quarantining itself. `Workflow::validate_authored` runs `validate()`
+  too, so it is now a 400 at create.
+
+- **An `enrich`, `http_call` or `publish_kafka` task in a stored row is
+  screened at load.** These deserialize into typed built-in variants, so they
+  never reached the `Custom` arm the old screen inspected: a stored workflow
+  naming one with no handler behind it built cleanly and then failed every
+  request with `FunctionNotFound`. `check_workflow` reports it as
+  `MissingHandler` and the channel is quarantined instead.
+
 [#283]: https://github.com/GoPlasmatic/Orion/issues/283
 [#285]: https://github.com/GoPlasmatic/Orion/issues/285
 [#286]: https://github.com/GoPlasmatic/Orion/issues/286

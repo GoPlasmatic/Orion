@@ -30,6 +30,17 @@ use crate::connector::{ConnectorRegistry, ConnectorType};
 /// `FunctionNotFound`. Keying on the kind makes that unexpressible — a
 /// `RequiresHandler` name is accepted only if Orion has the handler.
 ///
+/// # Why not `Engine::can_dispatch`
+///
+/// dataflow-rs 3.7 answers exactly this question against a real handler
+/// registry. This cannot call it: workflow creation is validated before any
+/// engine exists for that request, and building one needs the connector
+/// registry, the HTTP client and every pool. So `CUSTOM_HANDLER_FUNCTIONS`
+/// stays Orion's *declaration* of what it registers — but it is no longer
+/// only checked against itself. `the_create_time_gate_agrees_with_the_running_engine`
+/// walks a live `AppState`'s engine and asserts the two answer identically in
+/// both directions, which is the drift net a declaration needs.
+///
 /// [`BuiltinKind`]: dataflow_rs::BuiltinKind
 /// [`BuiltinKind::SelfContained`]: dataflow_rs::BuiltinKind::SelfContained
 /// [`BuiltinKind::RequiresHandler`]: dataflow_rs::BuiltinKind::RequiresHandler

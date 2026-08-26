@@ -1217,7 +1217,7 @@ fn non_entities_are_reported_not_silently_ignored() {
     std::fs::create_dir_all(dir.join("nested")).unwrap();
     std::fs::write(
         dir.join("nested/wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+        r#"{"workflow_id":"w","name":"w","tasks":[{"id":"t1","name":"t1","function":{"name":"map","input":{"mappings":[]}}}]}"#,
     )
     .unwrap();
     // The shape `examples/packages/*/request.json` has.
@@ -1259,7 +1259,7 @@ fn a_route_claimed_twice_is_an_error() {
     let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+        r#"{"workflow_id":"w","name":"w","tasks":[{"id":"t1","name":"t1","function":{"name":"map","input":{"mappings":[]}}}]}"#,
     )
     .unwrap();
     for (i, name) in ["a", "b"].iter().enumerate() {
@@ -1726,7 +1726,7 @@ fn defs_with_channels(channels: &[&str]) -> ScratchDir {
     let dir = scratch.path();
     std::fs::write(
         dir.join("wf.json"),
-        r#"{"workflow_id":"w","name":"w","tasks":[]}"#,
+        r#"{"workflow_id":"w","name":"w","tasks":[{"id":"t1","name":"t1","function":{"name":"map","input":{"mappings":[]}}}]}"#,
     )
     .unwrap();
     for (i, ch) in channels.iter().enumerate() {

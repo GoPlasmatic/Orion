@@ -33,6 +33,8 @@
 //! function, channel HMAC auth, and SigV4 signing all spell identically.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::sync::OnceLock;
 
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -44,87 +46,47 @@ use hmac::{KeyInit, Mac};
 /// extension sets (reached through dataflow-rs's `all-operators` feature) plus
 /// Orion's own registrations above.
 ///
-/// Authoring-time checks read this to tell an operator apart from a data key.
-/// `jsonlogic_operators_test` pins it against the live engine and against
-/// `docs/src/reference/expressions.md`, so it is a checked list rather than a
-/// typed one.
-pub const OPERATOR_NAMES: &[&str] = &[
-    "var",
-    "val",
-    "==",
-    "!=",
-    "===",
-    "!==",
-    ">",
-    ">=",
-    "<",
-    "<=",
-    "and",
-    "or",
-    "!",
-    "!!",
-    "if",
-    "?:",
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "max",
-    "min",
-    "cat",
-    "substr",
-    "in",
-    "merge",
-    "map",
-    "filter",
-    "reduce",
-    "all",
-    "some",
-    "none",
-    "missing",
-    "missing_some",
-    "now",
-    "datetime",
-    "timestamp",
-    "parse_date",
-    "format_date",
-    "date_diff",
-    "length",
-    "upper",
-    "lower",
-    "trim",
-    "split",
-    "starts_with",
-    "ends_with",
-    "sort",
-    "slice",
-    "abs",
-    "ceil",
-    "floor",
-    "group_by",
-    "distinct",
-    "keys",
-    "values",
-    "entries",
-    "??",
-    "type",
-    "exists",
-    "switch",
-    "match",
-    "try",
-    "throw",
-    "base64_encode",
-    "base64_decode",
-    "base64url_encode",
-    "base64url_decode",
-    "hex_encode",
-    "hex_decode",
-    "random",
-    "url_encode",
-    "url_decode",
-    "join",
-];
+/// Authoring-time checks read this to tell an operator apart from a data key:
+/// the engine runs datalogic in templating mode, where an unknown operator is
+/// not an error but an object that echoes back as literal data, so membership
+/// here is the only thing separating a live call from inert JSON.
+///
+/// This used to be a hand-maintained list of 75 names. dataflow-rs 3.7 asks a
+/// built engine instead, and 5.3 backs that with datalogic's own opcode table
+/// — so the vocabulary is derived from what this build actually dispatches
+/// rather than from what someone remembered to type. The distinction is not
+/// academic: enabling an extension family turns names on, and any crate in the
+/// dependency graph enabling a family Orion exposes no feature for would make
+/// operators live that a typed list would have called typos.
+///
+/// Built once and cached. The engine is constructed only for this question —
+/// no workflows, no handlers — and `with_orion_engine_defaults` is what puts
+/// Orion's own registrations in it, so the answer covers all three sources.
+pub fn operator_names() -> &'static BTreeSet<String> {
+    static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        match with_orion_engine_defaults(dataflow_rs::Engine::builder()).build() {
+            Ok(engine) => engine.operator_names().map(String::from).collect(),
+            // Unreachable in practice — this builder has nothing to fail on —
+            // but a lint is the wrong place to panic. An empty vocabulary
+            // makes `is_operator` answer `false` throughout, which downgrades
+            // the advisory to silence rather than rejecting valid workflows.
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "could not enumerate the JSONLogic operator vocabulary; \
+                     authoring-time operator advisories are disabled"
+                );
+                BTreeSet::new()
+            }
+        }
+    })
+}
+
+/// Whether `name` is an operator this build evaluates, rather than a data key.
+pub fn is_operator(name: &str) -> bool {
+    operator_names().contains(name)
+}
 
 /// Standard-alphabet decoder that accepts padded and unpadded input.
 /// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]

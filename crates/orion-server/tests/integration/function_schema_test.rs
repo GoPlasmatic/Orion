@@ -141,6 +141,131 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
 /// `filter`, `parse_json` and the rest, which are the most-used functions
 /// there are, so anything completing from it offered the connector functions
 /// and none of the ones people type.
+/// The catalogue lists exactly what the serving engine will dispatch.
+///
+/// #288 was this drift: the endpoint served the schema registry, so it listed
+/// the 18 functions Orion input-validates and omitted `map`, `filter`,
+/// `parse_json` and the rest — the most-used names, missing from every
+/// completion source built on it. The fix added an `ENGINE_BUILTINS` table,
+/// which is a second list that can drift the same way.
+///
+/// dataflow-rs 3.7 makes the question answerable rather than mirrored:
+/// `dispatchable_functions()` reports what the *live engine* will actually run
+/// — self-contained built-ins, plus every name with a registered handler, with
+/// alternative spellings grouped as aliases. Asserting set equality against
+/// the running engine catches both directions: a new engine built-in Orion
+/// never catalogued, and a catalogued name nothing can dispatch.
+///
+/// Spellings are compared as one set — canonical names and aliases together —
+/// deliberately. Upstream's canonical spelling of the validation function is
+/// `validate` with `validation` as its alias; Orion's catalogue presents them
+/// the other way round, because that is the spelling its docs and stored
+/// workflows use. Which one is canonical is a presentation choice; that both
+/// are offered, and that nothing else is, is the contract.
+#[tokio::test]
+async fn the_catalogue_matches_what_the_engine_can_dispatch() {
+    use std::collections::BTreeSet;
+
+    let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    let dispatchable: BTreeSet<String> = state
+        .engine
+        .load()
+        .dispatchable_functions()
+        .flat_map(|f| {
+            std::iter::once(f.name.to_string())
+                .chain(f.aliases.iter().map(|a| a.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let data = body["data"].as_array().expect("data must be an array");
+
+    let catalogued: BTreeSet<String> = data
+        .iter()
+        .flat_map(|f| {
+            let name = f["name"]
+                .as_str()
+                .expect("every entry has a name")
+                .to_string();
+            let aliases = f["aliases"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            std::iter::once(name).chain(aliases)
+        })
+        .collect();
+
+    assert_eq!(
+        catalogued.difference(&dispatchable).collect::<Vec<_>>(),
+        Vec::<&String>::new(),
+        "the catalogue offers names the engine cannot dispatch — a workflow \
+         using one would be accepted and then fail at its first request"
+    );
+    assert_eq!(
+        dispatchable.difference(&catalogued).collect::<Vec<_>>(),
+        Vec::<&String>::new(),
+        "the engine dispatches names the catalogue does not offer — this is \
+         exactly the #288 gap, where the most-used functions were missing from \
+         every completion source built on this endpoint"
+    );
+}
+
+/// The create-time gate agrees with the runtime.
+///
+/// `is_known_function` decides whether a workflow may *name* a function, and
+/// it has to answer without an engine — validation runs before one exists, and
+/// `CUSTOM_HANDLER_FUNCTIONS` is Orion's declaration of what it registers.
+/// dataflow-rs 3.7's `can_dispatch` answers the same question against a real
+/// registry, so the two can finally be checked against each other instead of
+/// only against themselves.
+///
+/// Both directions matter and each has bitten before. A name create accepts
+/// that nothing dispatches is F54's `enrich`: it activated cleanly and failed
+/// every request with `FunctionNotFound`. A name the engine dispatches that
+/// create rejects is a handler someone registered and forgot to declare, so a
+/// workflow using it is refused for no reason the author can act on.
+#[tokio::test]
+async fn the_create_time_gate_agrees_with_the_running_engine() {
+    use std::collections::BTreeSet;
+
+    let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let engine = state.engine.load();
+
+    for name in orion::engine::known_functions() {
+        assert!(
+            engine.can_dispatch(name),
+            "create accepts '{name}', but the serving engine would fail every \
+             message that reaches it with FunctionNotFound"
+        );
+    }
+
+    // The other way: aliases are excluded because `known_functions` yields the
+    // canonical spelling, which is the one a `BUILTIN_FUNCTION_NAMES` entry
+    // carries.
+    let declared: BTreeSet<&str> = orion::engine::known_functions().collect();
+    for f in engine.dispatchable_functions() {
+        assert!(
+            declared.contains(f.name),
+            "the engine dispatches '{}', but create would refuse a workflow \
+             naming it",
+            f.name
+        );
+    }
+}
+
 #[tokio::test]
 async fn list_functions_serves_every_valid_name() {
     let app = test_app().await;
@@ -152,22 +277,6 @@ async fn list_functions_serves_every_valid_name() {
     let body = body_json(resp).await;
     let data = body["data"].as_array().expect("data must be an array");
     let names: Vec<&str> = data.iter().filter_map(|f| f["name"].as_str()).collect();
-
-    for engine_builtin in [
-        "map",
-        "filter",
-        "log",
-        "parse_json",
-        "parse_xml",
-        "validation",
-        "publish_json",
-        "publish_xml",
-    ] {
-        assert!(
-            names.contains(&engine_builtin),
-            "'{engine_builtin}' is valid in a workflow and must be catalogued"
-        );
-    }
 
     // An engine built-in declares no schema, and says so by omission rather
     // than by a null — a consumer branches on presence.

@@ -23,11 +23,10 @@ pub mod send_email;
 pub mod storage_head;
 pub mod storage_presign;
 
-use std::future::Future;
-use std::time::Duration;
-
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::message::Message;
+// Only the `#[cfg(test)]` harness below needs this now that the retry loop
+// itself lives upstream.
+#[cfg(test)]
 use serde_json::Value;
 
 /// Convert a dataflow `HttpMethod` to a reqwest `Method`.
@@ -49,74 +48,23 @@ pub fn extract_channel(message: &Message) -> &str {
         .unwrap_or("unknown")
 }
 
-/// How a retry loop is bounded (F8).
-#[derive(Debug, Clone, Copy)]
-pub struct RetryPolicy {
-    pub max_retries: u32,
-    pub retry_delay_ms: u64,
-    /// Wall-clock ceiling for the whole loop, attempts and backoff included.
-    /// Without it a single `http_call` could run ~127 s under a 30 s channel
-    /// timeout: individual backoffs are capped at 60 s but total elapsed was
-    /// never checked.
-    pub deadline: Option<Duration>,
-}
-
-pub async fn retry_with_policy<F, Fut>(
-    policy: RetryPolicy,
-    label: &str,
-    mut operation: F,
-) -> dataflow_rs::Result<Value>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = dataflow_rs::Result<Value>>,
-{
-    let mut last_error = None;
-    // tokio's Instant: shares a (pausable) clock with the backoff sleeps
-    // below, so the retry deadline stays coherent under a paused test clock.
-    let started = tokio::time::Instant::now();
-
-    const MAX_BACKOFF_MS: u64 = 60_000;
-
-    for attempt in 0..=policy.max_retries {
-        if attempt > 0 {
-            let delay = policy
-                .retry_delay_ms
-                .saturating_mul(1u64.checked_shl(attempt - 1).unwrap_or(u64::MAX))
-                .min(MAX_BACKOFF_MS);
-            // Sleeping past the deadline just to fail is wasted latency the
-            // caller is already waiting on.
-            if let Some(deadline) = policy.deadline
-                && started.elapsed() + Duration::from_millis(delay) >= deadline
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-        }
-
-        match operation().await {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                let deadline_left = policy
-                    .deadline
-                    .is_none_or(|deadline| started.elapsed() < deadline);
-                if e.retryable() && attempt < policy.max_retries && deadline_left {
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max = policy.max_retries,
-                        error = %e,
-                        "{} failed, retrying",
-                        label
-                    );
-                    last_error = Some(e);
-                    continue;
-                }
-                return Err(e);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
-}
+/// The retry loop `http_call` runs, re-exported from dataflow-rs.
+///
+/// This was Orion's own until dataflow-rs 3.7, which absorbed it: same three
+/// policy fields, same exponential backoff under a 60s per-sleep ceiling, same
+/// whole-loop deadline with a backoff that would cross it skipped rather than
+/// slept, and the same `tokio::time::Instant` so a paused test clock stays
+/// coherent with the sleeps. The crate has always classified errors by
+/// [`DataflowError::retryable`]; it now ships the loop that acts on it, and
+/// upstream is where that pair belongs — the classification and the mechanism
+/// reading it are one decision.
+///
+/// [`retry_with_attempts`] is the same loop reporting how many attempts it
+/// made, which is the only way a caller can say "this succeeded, but not
+/// first time".
+///
+/// [`DataflowError::retryable`]: dataflow_rs::DataflowError::retryable
+pub use dataflow_rs::{RetryPolicy, retry_with_attempts, retry_with_policy};
 
 /// Test-only shared harness: run `tasks` through a real engine with `fns`
 /// registered, seed `data` (unless null) into the message context, and return
@@ -173,8 +121,9 @@ pub(crate) async fn run_test_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dataflow_rs::engine::error::DataflowError;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     /// Five one-assert tests used to sit here, one per variant, and a new
     /// upstream variant would have gone untested. Driving off `HttpMethod::ALL`
@@ -207,84 +156,6 @@ mod tests {
     fn test_extract_channel_without_channel() {
         let message = Message::from_value(&serde_json::json!({}));
         assert_eq!(extract_channel(&message), "unknown");
-    }
-
-    /// Old `retry_with_backoff` shape: undeadlined policy. The production
-    /// callers all use `retry_with_policy` directly.
-    async fn retry<F, Fut>(max_retries: u32, delay_ms: u64, op: F) -> dataflow_rs::Result<Value>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = dataflow_rs::Result<Value>>,
-    {
-        retry_with_policy(
-            RetryPolicy {
-                max_retries,
-                retry_delay_ms: delay_ms,
-                deadline: None,
-            },
-            "test",
-            op,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn test_retry_succeeds_first_try() {
-        let result = retry(3, 1, || async { Ok(serde_json::json!({"ok": true})) }).await;
-        assert!(result.is_ok());
-        assert_eq!(result.expect("test"), serde_json::json!({"ok": true}));
-    }
-
-    #[tokio::test]
-    async fn test_retry_fails_then_succeeds() {
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = counter.clone();
-        let result = retry(3, 1, move || {
-            let c = counter_clone.clone();
-            async move {
-                let attempt = c.fetch_add(1, Ordering::SeqCst);
-                if attempt < 2 {
-                    Err(DataflowError::Io("transient".to_string()))
-                } else {
-                    Ok(serde_json::json!({"attempt": attempt}))
-                }
-            }
-        })
-        .await;
-        assert!(result.is_ok());
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_retry_non_retryable_fails_immediately() {
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = counter.clone();
-        let result = retry(3, 1, move || {
-            let c = counter_clone.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err(DataflowError::Validation("bad input".to_string()))
-            }
-        })
-        .await;
-        assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_retry_exhausts_retries() {
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_clone = counter.clone();
-        let result = retry(2, 1, move || {
-            let c = counter_clone.clone();
-            async move {
-                c.fetch_add(1, Ordering::SeqCst);
-                Err(DataflowError::Io("always fails".to_string()))
-            }
-        })
-        .await;
-        assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
     /// F8: the loop must stop retrying once the deadline is spent, rather

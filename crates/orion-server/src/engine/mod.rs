@@ -70,7 +70,9 @@ pub use handlers::{
     register_kafka_publisher, required_connector_types, requires_mongo_database,
     suggest_known_function,
 };
-pub use loader::{CUSTOM_HANDLER_FUNCTIONS, build_engine_workflows, filter_channels};
+pub use loader::{
+    CUSTOM_HANDLER_FUNCTIONS, HandlerScreen, build_engine_workflows, filter_channels,
+};
 pub use observer::MetricsObserver;
 pub use refs::{ConnectorRef, channel_call_targets, connector_refs};
 pub use reload::{

@@ -545,6 +545,35 @@ pub fn record_task_duration(workflow: &str, task: &str, function: &'static str, 
     .record(secs);
 }
 
+/// Record one workflow run's wall-clock duration, task bodies included.
+///
+/// Fed by `engine::observer` from dataflow-rs 3.7's `workflow_finished`
+/// callback. Subtracting the `orion_task_duration_seconds` sum for the same
+/// workflow gives the engine's own cost — condition evaluation, group gating,
+/// loop bookkeeping, audit-trail writes, arena management.
+///
+/// That figure existed before only as `workflow_overhead_ms` in the opt-in
+/// per-request profile surface, computed by subtracting handler timings from a
+/// whole-message total. So it was per-request, opt-in, and a residual that
+/// absorbed every unmeasured cost — including the eight sync built-ins, which
+/// nothing could time until the observer arrived. This is a direct measurement
+/// on the always-on path.
+///
+/// A workflow the rollout gate or its condition rejected never starts and is
+/// not recorded. A looping workflow reports once for the whole loop, not once
+/// per sweep — so this metric's count is workflow *runs*, and `sweeps` is
+/// deliberately not a label: it is unbounded by anything the deployment
+/// controls.
+///
+/// Same cardinality bound as the per-task histogram: `workflow` is an authored
+/// id, never a caller-supplied value.
+pub fn record_workflow_duration(workflow: &str, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!("orion_workflow_duration_seconds", "workflow" => workflow.to_owned()).record(secs);
+}
+
 // ---------------------------------------------------------------------------
 // Kafka consumer lag gauge
 // ---------------------------------------------------------------------------

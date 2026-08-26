@@ -75,25 +75,6 @@ const SELF_CONTAINED: [(&str, BuildRealHandler); 3] = [
     }),
 ];
 
-/// The names of the functions an offline run executes for real.
-#[cfg(test)]
-fn unstubbed_functions() -> impl Iterator<Item = &'static str> {
-    SELF_CONTAINED.iter().map(|(name, _)| *name)
-}
-
-/// Whether an offline run answers this function from a stub — and therefore
-/// records it.
-///
-/// Derived from the `SELF_CONTAINED` table rather than a parallel list. The two used to
-/// be separate, and a function added to one but not the other broke quietly:
-/// `correlate` would look for a recorded call that the real handler never made,
-/// hit the function-mismatch guard, and stop attaching task ids to every call
-/// after it.
-pub fn is_recorded_function(function: &str) -> bool {
-    crate::engine::CUSTOM_HANDLER_FUNCTIONS.contains(&function)
-        && !SELF_CONTAINED.iter().any(|(name, _)| *name == function)
-}
-
 /// One connector call a stubbed run would have made.
 ///
 /// `input` is the task's authored input with every field the real handler folds
@@ -105,9 +86,17 @@ pub fn is_recorded_function(function: &str) -> bool {
 pub struct RecordedCall {
     /// Position in the run, across all functions.
     pub seq: usize,
-    /// The task that made the call. Correlated from the execution trace after
-    /// the run — `TaskContext` does not carry it — so it is `None` when the
-    /// correlation cannot be made confidently.
+    /// The task that made the call, read off the context as the call is
+    /// made (`TaskContext::task_id`, dataflow-rs 3.7).
+    ///
+    /// This used to be attached afterwards, by walking the execution trace and
+    /// pairing each recorded-function step with the next recorded call. That
+    /// was best-effort by construction — a run that died partway desynced the
+    /// two sequences, and the pairing bailed out rather than mislabel — and it
+    /// needed the caller to supply a task-id-to-function map built from the
+    /// workflow JSON. The engine now carries the id into the handler, so the
+    /// label is exact and needs nothing from the caller. It is `None` only for
+    /// a handler driven outside a workflow run, which no offline run does.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     pub function: &'static str,
@@ -136,12 +125,18 @@ impl CallLog {
         Self::default()
     }
 
-    fn record(&self, function: &'static str, stub_target: Option<String>, input: Value) {
+    fn record(
+        &self,
+        ctx: &TaskContext<'_>,
+        function: &'static str,
+        stub_target: Option<String>,
+        input: Value,
+    ) {
         let mut calls = self.0.lock().expect("call log mutex poisoned");
         let seq = calls.len();
         calls.push(RecordedCall {
             seq,
-            task_id: None,
+            task_id: ctx.task_id().map(str::to_string),
             function,
             stub_target,
             input,
@@ -151,49 +146,6 @@ impl CallLog {
     /// Every recorded call, in execution order.
     pub fn calls(&self) -> Vec<RecordedCall> {
         self.0.lock().expect("call log mutex poisoned").clone()
-    }
-
-    /// Attach task ids by walking the executed steps of `trace` in step order
-    /// and pairing each recorded-function task with the next recorded call.
-    ///
-    /// `task_functions` maps a task id to the function it names, which only the
-    /// caller (holding the workflow JSON) can build.
-    ///
-    /// Best-effort by construction: if the run died partway and the two
-    /// sequences no longer line up, the surplus calls keep `task_id: None`
-    /// rather than being given a wrong one. A missing label is a gap; a wrong
-    /// one is a lie.
-    pub fn correlate(
-        &self,
-        trace: &dataflow_rs::ExecutionTrace,
-        task_functions: &HashMap<String, String>,
-    ) {
-        let mut calls = self.0.lock().expect("call log mutex poisoned");
-        let mut next = 0usize;
-        for step in &trace.steps {
-            if !matches!(step.result, dataflow_rs::StepResult::Executed) {
-                continue;
-            }
-            let Some(task_id) = step.task_id.as_deref() else {
-                continue;
-            };
-            let Some(function) = task_functions.get(task_id) else {
-                continue;
-            };
-            if !is_recorded_function(function) {
-                continue;
-            }
-            let Some(call) = calls.get_mut(next) else {
-                break;
-            };
-            // A desync means the pairing is no longer trustworthy for anything
-            // after it either, so stop rather than mislabel the rest.
-            if call.function != function {
-                break;
-            }
-            call.task_id = Some(task_id.to_string());
-            next += 1;
-        }
     }
 
     /// The log grouped by function name, in execution order within each group —
@@ -422,6 +374,7 @@ impl AsyncFunctionHandler for StubHandler {
         // of a stub still appears in the log — that is the run you most want to
         // see the payload of.
         self.log.record(
+            ctx,
             self.function,
             target.map(str::to_string),
             resolved_input(self.function, input, ctx),
@@ -453,6 +406,7 @@ impl AsyncFunctionHandler for HttpCallStub {
         // Upstream's own resolvers, so the record carries the real templated
         // path and body rather than an Orion-side approximation of them.
         self.log.record(
+            ctx,
             "http_call",
             Some(input.connector.clone()),
             serde_json::json!({
@@ -487,6 +441,7 @@ impl AsyncFunctionHandler for PublishKafkaStub {
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
         self.log.record(
+            ctx,
             "publish_kafka",
             Some(input.connector.clone()),
             serde_json::json!({
@@ -548,6 +503,7 @@ impl AsyncFunctionHandler for ChannelCallStub {
         // without running it, so a dynamic call falls back to the `"*"` entry.
         let target = (!input.channel.is_empty()).then_some(input.channel.as_str());
         self.log.record(
+            ctx,
             "channel_call",
             target.map(str::to_string),
             serde_json::json!({
@@ -838,22 +794,48 @@ mod tests {
         let calls = log.calls();
         assert_eq!(calls.len(), 1, "the call is recorded even with no stub");
         assert_eq!(calls[0].input["sql"], "SELECT 1");
+        assert_eq!(
+            calls[0].task_id.as_deref(),
+            Some("read"),
+            "the task id is read off the context as the call is made"
+        );
     }
 
-    /// Their inputs can carry inline key material, and they run for real rather
-    /// than through a stub — so they are outside what the log describes.
-    #[test]
-    fn the_unstubbed_functions_are_not_recorded() {
-        for function in unstubbed_functions() {
-            assert!(
-                !is_recorded_function(function),
-                "{function} must stay out of the call log"
-            );
-        }
-        assert!(is_recorded_function("mongo_write"));
+    /// Their inputs can carry inline key material, and they run for real
+    /// rather than through a stub — so they are outside what the log
+    /// describes.
+    ///
+    /// Asserted by running one, rather than by asking a predicate: which
+    /// handlers hold a `CallLog` is decided structurally in
+    /// `build_stub_functions_with_log`, and a second spelling of that fact is
+    /// the drift this table exists to prevent.
+    #[tokio::test]
+    async fn a_self_contained_function_runs_for_real_and_is_not_recorded() {
+        let workflow: dataflow_rs::Workflow = serde_json::from_value(json!({
+            "id": "w", "name": "w", "condition": true,
+            "tasks": [{
+                "id": "digest", "name": "Digest",
+                "function": {"name": "crypto", "input": {
+                    "op": "hash", "data": "abc", "output": "data.digest"}}
+            }]
+        }))
+        .expect("workflow parses");
+
+        let log = Arc::new(CallLog::new());
+        let engine = dataflow_rs::Engine::new(
+            vec![workflow],
+            build_stub_functions_with_log(StubTable::new(), log.clone()),
+        )
+        .expect("engine builds");
+        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        engine
+            .process_message(&mut message)
+            .await
+            .expect("crypto runs for real, with no stub to look up");
+
         assert!(
-            !is_recorded_function("map"),
-            "a dataflow-rs built-in is not a connector call"
+            log.calls().is_empty(),
+            "a self-contained function must stay out of the call log"
         );
     }
 

@@ -15,14 +15,24 @@
 //! traces are gated on `config.tracing.task_details` and deep-clone the whole
 //! message per step, so they can never be a metrics source.
 //!
+//! dataflow-rs 3.7 added the workflow lifecycle to the same callback, which
+//! closes the other half. Engine overhead — condition evaluation, group
+//! gating, loop bookkeeping, audit writes, arena management — was reachable
+//! only as `workflow_overhead_ms` in the profile surface: a *residual*, got by
+//! subtracting handler timings from a whole-message total, so it silently
+//! absorbed everything else unmeasured and was per-request and opt-in besides.
+//! `workflow_finished` reports the workflow's own wall clock, and
+//! `orion_workflow_duration_seconds` minus the task histogram's sum for the
+//! same workflow is that overhead as a measurement.
+//!
 //! Distinct from `ProfileCollector`, which stays: that is a per-request debug
 //! artifact keyed by connector, including a per-message JSONLogic resolution
 //! for `channel_call` (F49) that the engine has no concept of.
 
-use dataflow_rs::{ExecutionObserver, TaskEvent};
+use dataflow_rs::{ExecutionObserver, TaskEvent, WorkflowFinished};
 
 /// Emits `orion_task_duration_seconds{workflow,task,function}` per dispatched
-/// task.
+/// task, and `orion_workflow_duration_seconds{workflow}` per workflow run.
 pub struct MetricsObserver;
 
 impl ExecutionObserver for MetricsObserver {
@@ -38,6 +48,19 @@ impl ExecutionObserver for MetricsObserver {
             interned_function_name(event.function),
             event.duration.as_secs_f64(),
         );
+    }
+
+    fn workflow_finished(&self, event: &WorkflowFinished<'_>) {
+        // Same contract as `task_finished`: synchronous, on the executor
+        // thread, must not block or unwind. `histogram!` is a lock-free
+        // recorder write.
+        //
+        // `event.sweeps` is deliberately not a label. A looping workflow
+        // reports one event for the whole loop, and the sweep count is bounded
+        // only by the data — making it a label would let a payload grow the
+        // Prometheus label space, which is the one thing these metrics are
+        // careful never to allow.
+        crate::metrics::record_workflow_duration(event.workflow_id, event.duration.as_secs_f64());
     }
 }
 
@@ -128,6 +151,74 @@ mod tests {
             *seen.0.lock().expect("test"),
             vec![("m".to_string(), "map".to_string())],
             "a built-in dispatched inside the executor must still be timed"
+        );
+    }
+
+    /// The workflow lifecycle callback fires, and its duration covers the task
+    /// bodies inside it — which is what makes the subtraction that yields
+    /// engine overhead meaningful.
+    ///
+    /// A skipped workflow must *not* report: the overhead figure is per run,
+    /// and counting a workflow the condition rejected would dilute it with
+    /// runs that never happened.
+    #[tokio::test]
+    async fn a_workflow_reports_once_and_only_when_it_runs() {
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        #[derive(Default)]
+        struct Seen {
+            workflows: Mutex<Vec<(String, Duration)>>,
+            tasks: Mutex<Duration>,
+        }
+        impl ExecutionObserver for Seen {
+            fn task_finished(&self, e: &TaskEvent<'_>) {
+                *self.tasks.lock().expect("test") += e.duration;
+            }
+            fn workflow_finished(&self, e: &WorkflowFinished<'_>) {
+                self.workflows
+                    .lock()
+                    .expect("test")
+                    .push((e.workflow_id.to_string(), e.duration));
+            }
+        }
+
+        fn workflow(id: &str, condition: bool) -> dataflow_rs::Workflow {
+            dataflow_rs::Workflow::from_json(&format!(
+                r#"{{"id":"{id}","name":"{id}","priority":0,"condition":{condition},
+                    "tasks":[{{"id":"m","name":"m","function":{{"name":"map","input":
+                      {{"mappings":[{{"path":"data.ok","logic":true}}]}}}}}}]}}"#
+            ))
+            .expect("workflow parses")
+        }
+
+        let seen = std::sync::Arc::new(Seen::default());
+        let engine = dataflow_rs::Engine::new(
+            vec![workflow("runs", true), workflow("skipped", false)],
+            std::collections::HashMap::new(),
+        )
+        .expect("engine builds")
+        .with_observer(seen.clone());
+
+        let mut message = dataflow_rs::Message::builder().build();
+        engine
+            .process_message(&mut message)
+            .await
+            .expect("run succeeds");
+
+        let workflows = seen.workflows.lock().expect("test");
+        assert_eq!(
+            workflows
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["runs"],
+            "a workflow its condition rejected never starts, so it never finishes"
+        );
+        assert!(
+            workflows[0].1 >= *seen.tasks.lock().expect("test"),
+            "the workflow's own clock must cover the task bodies inside it, or \
+             subtracting them for the overhead figure would go negative"
         );
     }
 }

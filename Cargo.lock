@@ -1171,9 +1171,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dataflow-rs"
-version = "3.6.0"
+version = "3.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "619859340a849ddadfcadaa98f8b7aeb4e2d959fd5b38a39289a76d4ebe6cf91"
+checksum = "bce2d99f2627b91646c536a4ab4b54c93cdb7d48951273d54eb1877b333af687"
 dependencies = [
  "async-trait",
  "bumpalo",
@@ -1191,9 +1191,9 @@ dependencies = [
 
 [[package]]
 name = "datalogic-rs"
-version = "5.2.0"
+version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42943370ab283c80c44926ad0d494104ca95f3efd00f699b8fd44eaaaaed9a6f"
+checksum = "ff3e8fc27c913f0265b2d699b59f45c4bebd5cc0f904f029eeb38735e9733fc9"
 dependencies = [
  "bumpalo",
  "chrono",

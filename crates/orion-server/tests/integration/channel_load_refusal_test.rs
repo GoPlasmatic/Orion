@@ -420,3 +420,119 @@ async fn channel_whose_workflow_disappears_is_quarantined() {
         "reason must name the missing workflow, got {entry}"
     );
 }
+
+/// Insert an `active` workflow row and an `active` channel pointing at it,
+/// both straight to the DB.
+///
+/// Create-time validation refuses these task shapes, so this is how such a row
+/// occurs in practice: an import from an older instance, a hand-edited row, or
+/// a dataflow-rs upgrade that narrowed what a handler's input accepts.
+async fn insert_raw_active_workflow_and_channel(
+    state: &orion::server::state::AppState,
+    name: &str,
+    tasks_json: &str,
+) {
+    let wf = format!("wf_{name}");
+    let sql = format!(
+        "INSERT INTO workflows (workflow_id, version, name, priority, status,          rollout_percentage, condition_json, tasks_json, tags_json)          VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]')"
+    );
+    state
+        .db_pool
+        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
+        .await
+        .expect("raw workflow insert");
+
+    let sql = format!(
+        "INSERT INTO channels (channel_id, version, name, channel_type, protocol,          transport_config_json, config_json, status, priority, workflow_id)          VALUES ('ch_{name}', 1, '{name}', 'sync', 'http', '{{}}', '{{}}', 'active', 0, '{wf}')"
+    );
+    state
+        .db_pool
+        .execute_query(&sql, sea_query_sqlx::SqlxValues(sea_query::Values(vec![])))
+        .await
+        .expect("raw channel insert");
+}
+
+/// The reason a channel was quarantined, or `None` if it loaded.
+async fn quarantine_reason(app: &axum::Router, channel: &str) -> Option<String> {
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    body["channels"]["quarantined"]
+        .as_array()
+        .expect("quarantined list")
+        .iter()
+        .find(|e| e["channel"] == channel)
+        .map(|e| e["reason"].as_str().unwrap_or_default().to_string())
+}
+
+/// F23: `channel` is optional when `channel_logic` is given. The schema and
+/// the docs said so while the struct required it, so this exact workflow
+/// passed admin validation and then failed the engine build.
+///
+/// Screening now runs the handler's own `parse_input` through
+/// `Engine::check_workflow`, so what this asserts is that the real
+/// `channel_call` input type accepts the shape — not that a hand-written
+/// mirror of it does.
+#[tokio::test]
+async fn channel_call_with_only_channel_logic_loads() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    insert_raw_active_workflow_and_channel(
+        &state,
+        "dyn-fanout",
+        r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",           "input":{"channel_logic":{"var":"target"}}}}]"#,
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
+    assert_eq!(
+        quarantine_reason(&app, "dyn-fanout").await,
+        None,
+        "a channel_call carrying only channel_logic must load"
+    );
+}
+
+/// The other half: a typed field carrying the wrong type must be caught at
+/// load and quarantine only its own channel, rather than failing the build for
+/// every channel on the node.
+#[tokio::test]
+async fn channel_call_with_a_wrongly_typed_field_quarantines_only_its_channel() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    // A healthy channel alongside it, to prove the blast radius is one row.
+    common::create_and_activate_channel(
+        &app,
+        "healthy-neighbour",
+        common::simple_log_workflow("Healthy"),
+    )
+    .await;
+
+    insert_raw_active_workflow_and_channel(
+        &state,
+        "bad-typed-input",
+        r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",           "input":{"channel":7}}}]"#,
+    )
+    .await;
+
+    let (status, body) = reload_engine(&app).await;
+    assert_eq!(status, StatusCode::OK, "reload must still succeed: {body}");
+
+    let reason = quarantine_reason(&app, "bad-typed-input")
+        .await
+        .expect("a channel_call with a non-string `channel` must be quarantined");
+    assert!(
+        reason.contains("t1"),
+        "the reason must name the offending task: {reason}"
+    );
+    assert!(
+        quarantine_reason(&app, "healthy-neighbour").await.is_none()
+            && serves_ok(&app, "healthy-neighbour").await,
+        "one unusable row must not take its neighbours down"
+    );
+}

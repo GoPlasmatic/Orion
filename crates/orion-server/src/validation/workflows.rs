@@ -224,6 +224,7 @@ pub fn validate_workflow_loop_schema(
 /// | task without `id` | `201` | `503` on every request; channel quarantined at load |
 /// | task without `name` | `201` | same — both are required `String`s upstream |
 /// | two tasks sharing an `id` | `201` | `500` on activate; **the whole engine reload fails**, and at boot `Engine::new` aborts the process |
+/// | `"tasks": []` | `201` | same as the duplicate case — `Workflow::validate()` refuses a workflow with no tasks, and it is the engine *build* that runs it |
 ///
 /// The duplicate case is the worst of the three because it is not contained by
 /// the per-channel quarantine: `LogicCompiler::compile_workflows` calls
@@ -354,27 +355,65 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
     // Catch-all for the class the checks above mirror by hand: a dataflow-rs
     // upgrade can grow a task-shape requirement the mirror has not learned
     // yet, and the doc above promises "Orion accepts it" and "the engine can
-    // load it" stay the same statement. Running the engine's own parse last
-    // keeps that promise without enumerating — an unmirrored refusal lands
-    // here as a 400 instead of a 201 followed by a failure to build. Only
-    // when no field-pathed error was collected: those are the better
-    // messages, and this one exists for the gaps they miss.
-    // Through the engine's own step parser, not `Vec<Task>`: since 3.6 the
-    // flattening lives in a `deserialize_with` on `Workflow::tasks`, so a bare
-    // `Vec<Task>` would reject every grouped workflow the engine accepts.
-    if errors.is_empty()
-        && let Err(e) = serde_json::from_value::<dataflow_rs::Workflow>(serde_json::json!({
+    // load it" stay the same statement. Asking the engine keeps that promise
+    // without enumerating — an unmirrored refusal lands here as a 400 instead
+    // of a 201 followed by a failure to build. Only when no field-pathed error
+    // was collected: those are the better messages, and this one exists for
+    // the gaps they miss.
+    //
+    // `Workflow::validate_authored` (dataflow-rs 3.7) replaced a bare
+    // round-trip `from_value::<Workflow>` here. Three things improved. It
+    // reports *every* remaining problem rather than the parser's first. Each
+    // one carries the coordinate the author typed, so the error points at
+    // `tasks[1].tasks[0].id` instead of at a bare `tasks`. And it runs
+    // `Workflow::validate()` as well as the parse, which is what the engine
+    // build actually runs — so `tasks: []`, which parses cleanly and then
+    // fails `validate()`, is now refused at create instead of taken down the
+    // whole reload on activation.
+    //
+    // The workflow-level fields are synthesized: this function is given
+    // `tasks` alone, and `workflow.id` / `workflow.name` are validated by
+    // their own callers with their own messages.
+    if errors.is_empty() {
+        let synthetic = serde_json::json!({
             "id": "__shape_check__", "name": "__shape_check__",
             "condition": true, "tasks": tasks,
-        }))
-    {
-        errors.push(FieldError::new(
-            "tasks",
-            "INVALID",
-            format!("tasks do not match the engine's task shape: {e}"),
-        ));
+        });
+        errors.extend(
+            dataflow_rs::Workflow::validate_authored(&synthetic)
+                .into_iter()
+                .map(engine_issue_to_field_error),
+        );
     }
     errors
+}
+
+/// Render one [`dataflow_rs::WorkflowIssue`] as an Orion `FieldError`.
+///
+/// The code registry is closed (`orion_api::error::field_codes`), so this maps
+/// onto the codes Orion already emits rather than minting one per `IssueCode`.
+/// `IssueCode` is `#[non_exhaustive]`: a variant added upstream lands on
+/// `INVALID` and still reaches the author with the engine's own message, which
+/// is the point of having a catch-all at all.
+///
+/// The path is the engine's authored coordinate, already rooted at `tasks`, so
+/// it drops straight into a field error. A workflow-level issue carries no
+/// path and is reported against `tasks` — the only field this function was
+/// given.
+fn engine_issue_to_field_error(issue: dataflow_rs::WorkflowIssue) -> FieldError {
+    use dataflow_rs::IssueCode;
+    let code = match issue.code {
+        IssueCode::NoTasks | IssueCode::MissingStepId | IssueCode::MissingFunction => "REQUIRED",
+        IssueCode::DuplicateStepId => "DUPLICATE_TASK_ID",
+        IssueCode::InvalidTerminal => "TYPE_MISMATCH",
+        IssueCode::UnknownFunction | IssueCode::MissingHandler => "UNKNOWN_FUNCTION",
+        _ => "INVALID",
+    };
+    FieldError::new(
+        issue.path.unwrap_or_else(|| "tasks".to_string()),
+        code,
+        issue.message,
+    )
 }
 
 fn validation_with_details(message: &str, details: Vec<FieldError>) -> OrionError {
@@ -531,9 +570,7 @@ fn collect_unresolvable(
                 // Every multi-argument operator takes an array. Requiring one
                 // is what keeps `{"length": 120}` — a plain data field — out of
                 // the report.
-                if arg.is_array()
-                    && crate::engine::operators::OPERATOR_NAMES.contains(&key.as_str())
-                {
+                if arg.is_array() && crate::engine::operators::is_operator(key) {
                     out.push((
                         path.to_string(),
                         format!(
@@ -565,6 +602,19 @@ mod tests {
     use crate::validation::common::MAX_DESCRIPTION_LEN;
     use serde_json::json;
 
+    /// A minimal valid pipeline, for the tests that are about *other* fields.
+    ///
+    /// These used to pass `json!([])`, which the engine refuses — a workflow
+    /// with no tasks fails `Workflow::validate()` and so fails the whole
+    /// engine build. Create rejects it now, so a fixture standing in for
+    /// "valid tasks" has to actually be some.
+    fn one_task() -> serde_json::Value {
+        json!([{
+            "id": "t1", "name": "t1",
+            "function": {"name": "map", "input": {"mappings": []}}
+        }])
+    }
+
     #[test]
     fn test_validate_create_workflow_full() {
         let req = CreateWorkflowRequest {
@@ -573,7 +623,7 @@ mod tests {
             description: Some("A test workflow".to_string()),
             priority: 10,
             condition: json!(true),
-            tasks: json!([]),
+            tasks: one_task(),
             tags: vec!["tag1".to_string()],
             loop_config: None,
             continue_on_error: false,
@@ -589,7 +639,7 @@ mod tests {
             description: None,
             priority: 0,
             condition: json!(true),
-            tasks: json!([]),
+            tasks: one_task(),
             tags: vec![],
             loop_config: None,
             continue_on_error: false,
@@ -605,7 +655,7 @@ mod tests {
             description: Some("d".repeat(MAX_DESCRIPTION_LEN + 1)),
             priority: 0,
             condition: json!(true),
-            tasks: json!([]),
+            tasks: one_task(),
             tags: vec![],
             loop_config: None,
             continue_on_error: false,

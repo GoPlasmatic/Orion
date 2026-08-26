@@ -130,7 +130,16 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 // F6: the breaker is applied by `guarded_handler` above, the
                 // same shell every other egress path now uses. This branch used
                 // to carry its own copy — the only one in the codebase.
-                let result = super::retry_with_policy(policy, "HTTP call", || {
+                // `retry_with_attempts` rather than `retry_with_policy`: the
+                // loop moved upstream in dataflow-rs 3.7 and logs its retries
+                // through the `log` facade, which Orion does not bridge into
+                // `tracing`. Taking the count back means one warning naming
+                // how many attempts a call actually cost, instead of the
+                // per-attempt warnings that used to come out of Orion's own
+                // copy of the loop — and it says the same thing about a call
+                // that eventually *succeeded*, which the old warnings did too
+                // but nothing summarised.
+                let (result, attempts) = super::retry_with_attempts(policy, "HTTP call", || {
                     http_common::execute_request(
                         &self.client,
                         http_config,
@@ -147,6 +156,16 @@ impl AsyncFunctionHandler for HttpCallHandler {
                     )
                 })
                 .await;
+                if attempts > 1 {
+                    tracing::warn!(
+                        connector = %input.connector,
+                        method = %method,
+                        attempts,
+                        max_retries,
+                        outcome = if result.is_ok() { "succeeded" } else { "failed" },
+                        "HTTP call retried"
+                    );
+                }
                 let response_body = match result {
                     Ok(body) => body,
                     Err(e) => {

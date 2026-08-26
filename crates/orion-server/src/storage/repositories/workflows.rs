@@ -848,7 +848,7 @@ fn workflow_to_dataflow_inner(
     channel_name: &str,
     id: String,
     status: &str,
-    rollout: Option<(u8, u8)>,
+    rollout: Option<dataflow_rs::Rollout>,
 ) -> Result<DataflowWorkflow, OrionError> {
     let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
@@ -874,7 +874,7 @@ fn workflow_to_dataflow_inner(
         "tags": tags,
         "loop": loop_config,
         "continue_on_error": workflow.continue_on_error,
-        "rollout": rollout.map(|(bucket_start, bucket_end)| serde_json::json!({
+        "rollout": rollout.map(|dataflow_rs::Rollout { bucket_start, bucket_end }| serde_json::json!({
             "bucket_start": bucket_start,
             "bucket_end": bucket_end,
         })),
@@ -899,8 +899,14 @@ pub fn workflow_to_dataflow(
     )
 }
 
-/// Convert a Workflow to a dataflow-rs Workflow serving the half-open bucket
-/// range `[bucket_min, bucket_max)`, under a version-qualified id.
+/// Convert a Workflow to a dataflow-rs Workflow serving `rollout`'s half-open
+/// bucket range, under a version-qualified id.
+///
+/// The range is produced by [`dataflow_rs::Rollout::partition`] in
+/// `build_engine_workflows`, so it is already known to be representable and
+/// to be one slice of a set covering `0..100` — this used to take two `i64`
+/// bounds and re-derive that here, which meant the "unrepresentable span"
+/// arm could never be reached by any caller.
 ///
 /// The range used to be spliced into the author's condition as
 /// `{"and": [condition, {">=": [{"var": "_rollout_bucket"}, min]}, ...]}`,
@@ -915,32 +921,14 @@ pub fn workflow_to_dataflow(
 pub fn workflow_to_dataflow_with_rollout(
     workflow: &Workflow,
     channel_name: &str,
-    bucket_min: i64,
-    bucket_max: i64,
+    rollout: dataflow_rs::Rollout,
 ) -> Result<DataflowWorkflow, OrionError> {
-    // Buckets are 0–99, so both bounds fit a `u8` (100 is the exclusive top).
-    // Whether they *sum* to 100 is `build_engine_workflows`'s check, which
-    // reports the over/under case far better than this can — so only refuse a
-    // span that cannot be represented at all, and let the caller's own check
-    // speak for everything else.
-    let bounds = u8::try_from(bucket_min)
-        .ok()
-        .zip(u8::try_from(bucket_max).ok())
-        .filter(|(min, max)| min <= max)
-        .ok_or_else(|| {
-            OrionError::validation(format!(
-                "workflow '{}' v{} has an unrepresentable rollout bucket span \
-                 [{bucket_min}, {bucket_max}) — buckets are 0–100",
-                workflow.workflow_id, workflow.version
-            ))
-        })?;
-
     workflow_to_dataflow_inner(
         workflow,
         channel_name,
         format!("{}:v{}", workflow.workflow_id, workflow.version),
         &workflow.status,
-        Some(bounds),
+        Some(rollout),
     )
 }
 
@@ -1019,8 +1007,15 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow =
-            workflow_to_dataflow_with_rollout(&workflow, "default", 0, 50).expect("test");
+        let df_workflow = workflow_to_dataflow_with_rollout(
+            &workflow,
+            "default",
+            dataflow_rs::Rollout {
+                bucket_start: 0,
+                bucket_end: 50,
+            },
+        )
+        .expect("test");
         assert_eq!(df_workflow.id, "rollout-wf:v3");
         assert_eq!(df_workflow.channel, "default");
 
