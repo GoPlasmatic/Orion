@@ -42,13 +42,20 @@ fn sugared_set(label: &str) -> ScratchDir {
              "errors": { "USER_NOT_FOUND": { "status": 404, "body": "User Not Found !" } } }"#,
     )
     .unwrap();
+    // The fragment carries a task group on purpose: a guard clause is the
+    // shape 1.2.0 encourages, and until #294 the ids inside such a group were
+    // emitted verbatim into the host workflow's namespace.
     std::fs::write(
         dir.join("fragments/guard.json"),
         r#"{ "fragments": { "deny": {
               "params": { "message": { "default": "Denied." } },
               "tasks": [ { "id": "write", "name": "Write the refusal",
                 "function": { "name": "map", "input": { "mappings": [
-                  { "path": "data.denied", "logic": { "$param": "message" } } ] } } } ] } } }"#,
+                  { "path": "data.denied", "logic": { "$param": "message" } } ] } } },
+                { "id": "refused", "condition": true, "tasks": [
+                  { "id": "log", "name": "Log the refusal",
+                    "function": { "name": "map", "input": { "mappings": [
+                      { "path": "data.logged", "logic": { "$param": "message" } } ] } } } ] } ] } } }"#,
     )
     .unwrap();
     std::fs::write(
@@ -122,15 +129,25 @@ fn an_artifact_is_fully_compiled_and_passes_package_lint() {
         tasks[0]["function"]["input"]["mappings"][0]["logic"],
         "Please sign in."
     );
+    // Namespacing reaches inside the fragment's task group, and so do its
+    // parameters (#294) — an artifact carrying a bare `log` here would collide
+    // with any host task of that name, and with a second instance of the
+    // fragment.
+    assert_eq!(tasks[1]["id"], "_g.refused");
+    assert_eq!(tasks[1]["tasks"][0]["id"], "_g.log");
+    assert_eq!(
+        tasks[1]["tasks"][0]["function"]["input"]["mappings"][0]["logic"],
+        "Please sign in."
+    );
     // The splice merged rather than replaced: the shared fields arrived and
     // the call site's own survived beside them.
-    assert_eq!(tasks[1]["function"]["input"]["connector"], "mongo");
-    assert_eq!(tasks[1]["function"]["input"]["database"], "app");
-    assert_eq!(tasks[1]["function"]["input"]["collection"], "users");
+    assert_eq!(tasks[2]["function"]["input"]["connector"], "mongo");
+    assert_eq!(tasks[2]["function"]["input"]["database"], "app");
+    assert_eq!(tasks[2]["function"]["input"]["collection"], "users");
     // The deep one — inside a mapping's `logic`, where the admin API used to
     // accept it with a 201 and run it verbatim.
     assert_eq!(
-        tasks[2]["function"]["input"]["mappings"][0]["logic"]["body"],
+        tasks[3]["function"]["input"]["mappings"][0]["logic"]["body"],
         "User Not Found !"
     );
     // A directory has no stored status, so a compiled definition is meant to

@@ -1804,3 +1804,141 @@ fn a_non_rest_channel_claims_no_route() {
     let (ok, report) = lint_dir(scratch.path(), &[]);
     assert!(ok, "a kafka channel serves no route: {report}");
 }
+
+/// #294: a fragment's ids are namespaced by the call site so it "cannot
+/// collide with the including workflow, or with a second instance of itself".
+/// That held only while every step was a plain task — a fragment holding a
+/// **task group** had the group's own id rewritten and the ids inside it
+/// emitted verbatim, into the host workflow's namespace.
+///
+/// Both of the issue's reproductions, run end to end. They failed with
+/// `DUPLICATE_TASK_ID`, whose own message notes it "fails the entire engine
+/// reload rather than just this workflow" — and the author could not see it
+/// coming, because the colliding name is private to the fragment.
+#[test]
+fn a_fragments_nested_ids_are_namespaced_by_the_call_site() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("shared.json"),
+        r#"{ "fragments": { "guard": { "tasks": [
+             { "id": "probe", "name": "Probe", "function": { "name": "map",
+                 "input": { "mappings": [ { "path": "temp_data.p", "logic": 1 } ] } } },
+             { "id": "span", "condition": true, "tasks": [
+                 { "id": "inner", "name": "Inner", "function": { "name": "map",
+                     "input": { "mappings": [ { "path": "temp_data.i", "logic": 1 } ] } } } ] } ] } } }"#,
+    )
+    .unwrap();
+
+    // (1) two instances of one fragment.
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "repro", "name": "Repro",
+             "tasks": [ { "id": "a", "use": "guard" }, { "id": "b", "use": "guard" } ] }"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_with_definitions(dir);
+    assert!(
+        ok,
+        "two instances of one fragment must not collide:\n{report}"
+    );
+
+    // (2) one instance, against a host task sharing a nested task's name.
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "repro", "name": "Repro",
+             "tasks": [ { "id": "a", "use": "guard" },
+                        { "id": "inner", "name": "The workflow's own task",
+                          "function": { "name": "map", "input": { "mappings": [
+                            { "path": "temp_data.own", "logic": 1 } ] } } } ] }"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_with_definitions(dir);
+    assert!(
+        ok,
+        "a fragment's nested id must not collide with the host workflow's own:\n{report}"
+    );
+
+    // And the ids the engine actually runs are the namespaced ones — the
+    // check the issue made against a live 1.2.0 with `expect_tasks`, which
+    // reported `_session.call` namespaced beside a bare `_session_deny`.
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "repro", "name": "Repro",
+             "tasks": [ { "id": "a", "use": "guard" }, { "id": "b", "use": "guard" } ] }"#,
+    )
+    .unwrap();
+    let input = write_temp("{}", "i294");
+    let out = Command::new(orion_bin())
+        .args([
+            "dry-run",
+            "-w",
+            dir.join("wf.json").to_str().unwrap(),
+            "-i",
+            &input,
+            "--definitions",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("JSON");
+    let ran: Vec<&str> = parsed["trace"]["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter_map(|s| s["task_id"].as_str())
+        .collect();
+    assert_eq!(ran, ["a.probe", "a.inner", "b.probe", "b.inner"]);
+    let _ = std::fs::remove_file(&input);
+}
+
+/// The other half of #294. The no-nested-fragments rule read only a
+/// fragment's top-level steps, so a `use` inside a group was neither refused
+/// nor expanded: it survived into the host workflow, where it is a step the
+/// engine cannot parse. The restriction must hold at every depth.
+#[test]
+fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("shared.json"),
+        r#"{ "fragments": {
+             "leaf": { "tasks": [ { "id": "l", "name": "Leaf", "function": { "name": "map",
+                 "input": { "mappings": [ { "path": "temp_data.l", "logic": 1 } ] } } } ] },
+             "outer": { "tasks": [
+                 { "id": "span", "condition": true, "tasks": [
+                     { "id": "nested", "use": "leaf" } ] } ] } } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "nest", "name": "Nest", "tasks": [ { "id": "a", "use": "outer" } ] }"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_with_definitions(dir);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("shared.fragment_nested")
+            && report.contains("a fragment cannot include another fragment"),
+        "the restriction must be reported where it bites, rather than surfacing \
+         as an uncompiled reference against a set that can actually resolve it: {report}"
+    );
+}
+
+fn lint_with_definitions(dir: &std::path::Path) -> (bool, String) {
+    let out = Command::new(orion_bin())
+        .args([
+            "lint",
+            dir.join("wf.json").to_str().unwrap(),
+            "--definitions",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run lint");
+    let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
+    combined.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), combined)
+}

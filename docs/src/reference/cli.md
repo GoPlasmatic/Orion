@@ -574,7 +574,7 @@ resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users
 { "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
 ```
 
-Expanded task ids are namespaced by the call-site id (`_session.check`), so a fragment cannot collide with the including workflow or with a second instance of itself. A parameter with no `default` is required at every call site. A fragment cannot include another fragment.
+Expanded task ids are namespaced by the call-site id (`_session.check`), so a fragment cannot collide with the including workflow or with a second instance of itself. **Every** id the fragment contributes is prefixed, including those inside a task group — a group's own id and its members' alike, flat rather than one segment per enclosing group, so `refused`/`deny` become `_session.refused` and `_session.deny`. A parameter with no `default` is required at every call site. A fragment cannot include another fragment, at any depth.
 
 A shared document is one carrying `constants`, `errors` or `fragments` and no entity field — found by shape, like entities, and split across as many files as you like. A name defined twice is an error rather than a silent last-write-wins.
 

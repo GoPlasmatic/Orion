@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A fragment's ids were not namespaced inside a task group** (#294). Fragment
+  ids are prefixed with the call-site id so that, as the CLI reference puts it,
+  "a fragment cannot collide with the including workflow, or with a second
+  instance of itself". That held only while every step in the fragment was a
+  plain task: when a fragment contained a **task group**, only the group's own
+  `id` was rewritten and the ids of the tasks inside it were emitted verbatim,
+  into the host workflow's namespace. Using such a fragment twice produced
+  duplicate step ids; using it once collided with any host task sharing a name
+  with one of its nested tasks. Both were refused with `DUPLICATE_TASK_ID` —
+  whose message notes it "fails the entire engine reload rather than just this
+  workflow" — and the author had no way to see it coming, because the colliding
+  name is private to the fragment. This is reachable as soon as a fragment uses
+  a guard clause, which is the shape 1.2.0 otherwise encourages.
+
+  Every id a fragment contributes is now prefixed, at every depth, flat
+  (`{call-site}.{id}`) rather than one segment per enclosing group: a step id is
+  a metric label, a trace step id and a `metadata.progress` key, and groups nest
+  up to eight deep. Flat prefixing also keeps "a fragment is authored exactly
+  like a workflow" true — a fragment reusing one id across two of its own groups
+  still surfaces as a duplicate, as it would if inlined by hand.
+
+- **The no-nested-fragments rule did not hold inside a task group.** The same
+  walk read only a fragment's top-level steps, so a `use` nested in a group was
+  neither refused nor expanded: it survived into the host workflow as a step the
+  engine cannot parse. It is now refused wherever it sits, with the
+  `shared.fragment_nested` finding naming the fragment, instead of surfacing as
+  an uncompiled reference against a set that can in fact resolve it.
+
+  **Migration.** Workflows recompiled after this change get different task ids
+  for a fragment containing a group, which changes their `content_hash`. Applied
+  package versions are content-immutable, so re-applying at the same version
+  returns `409` — bump the package version. Any `expect_tasks` assertion naming a
+  nested fragment id needs updating, and an author who worked around this by
+  hand-prefixing a fragment's nested ids can drop the prefix.
+
 ### Added
 
 - **`orion-server compile <dir>` — a definition set in, files the admin API
