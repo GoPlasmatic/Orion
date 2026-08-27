@@ -86,7 +86,15 @@ impl DlqCmd {
                 exhausted,
                 limit,
                 offset,
-            } => list(client, format, quiet, channel, exhausted, limit, offset).await,
+            } => {
+                let qs = utils::build_query_string(&[
+                    ("channel", channel.clone()),
+                    ("exhausted", exhausted.map(|e| e.to_string())),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                ]);
+                list(client, format, quiet, &qs).await
+            }
             DlqSubcommand::Get { id } => get(client, format, quiet, id).await,
             DlqSubcommand::Requeue { id } => requeue(client, quiet, id).await,
             DlqSubcommand::Purge { older_than_hours } => {
@@ -96,22 +104,9 @@ impl DlqCmd {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    channel: &Option<String>,
-    exhausted: &Option<bool>,
-    limit: &Option<i64>,
-    offset: &Option<i64>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("channel", channel.clone()),
-        ("exhausted", exhausted.map(|e| e.to_string())),
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ]);
+/// The filters arrive as a prebuilt query string, the way every other `list`
+/// in this CLI takes them.
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::TRACE_DLQ)).await?;
     let entries = resp["data"].as_array().cloned().unwrap_or_default();
 

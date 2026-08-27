@@ -378,11 +378,13 @@ impl WorkflowsCmd {
                     client,
                     format,
                     quiet,
-                    paths::WORKFLOWS_IMPORT,
-                    "workflow",
-                    file,
-                    *dry_run,
-                    on_conflict.as_deref(),
+                    utils::ImportRequest {
+                        base_path: paths::WORKFLOWS_IMPORT,
+                        label: "workflow",
+                        file,
+                        dry_run: *dry_run,
+                        on_conflict: on_conflict.as_deref(),
+                    },
                 )
                 .await
             }

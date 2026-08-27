@@ -249,19 +249,14 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "Name of the storage connector.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "method",
         description: "GET (default) presigns a download; PUT presigns a direct client \
                       upload. Each answers to its own connector gate.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -269,8 +264,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "expires_in",
@@ -279,48 +273,38 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "response_content_type",
         description: "GET only: forces the Content-Type the store answers with; signed, \
                       so the client cannot alter it.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "response_content_disposition",
         description: "GET only: forces Content-Disposition (e.g. a download filename); \
                       signed.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "content_type",
         description: "PUT only: the Content-Type the uploader must send — a signed \
                       header, so an upload with any other type is refused by the store.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the presigned URL (string) is stored. Defaults \
                       to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

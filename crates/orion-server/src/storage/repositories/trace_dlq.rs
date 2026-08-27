@@ -109,6 +109,29 @@ impl TraceDlqFilter {
 
 // -- Repository trait --
 
+/// One message's worth of input to [`TraceDlqRepository::enqueue`].
+///
+/// Named fields rather than seven positional arguments: five of them are
+/// `&str` and the last two are both `i64`, so `enqueue(trace_id, channel,
+/// payload, metadata, error, 0, 5)` is a signature where swapping the payload
+/// for the metadata, or the counts for each other, compiles and silently
+/// writes the wrong row.
+pub struct DlqEnqueue<'a> {
+    pub trace_id: &'a str,
+    pub channel: &'a str,
+    pub payload_json: &'a str,
+    pub metadata_json: &'a str,
+    pub error_message: &'a str,
+    /// Seeds the new row rather than always starting at 0: the retry loop
+    /// deletes a row once resubmission succeeds, so a message that fails again
+    /// must re-enter carrying what its lineage already spent, or `max_retries`
+    /// is never reached (Q3). A row seeded at `retry_count >= max_retries` is
+    /// born exhausted — `claim_pending` skips it, which is exactly the state
+    /// `mark_exhausted` writes.
+    pub retry_count: i64,
+    pub max_retries: i64,
+}
+
 #[async_trait]
 pub trait TraceDlqRepository: Send + Sync {
     /// Enqueue a failed trace for later retry.
@@ -119,17 +142,7 @@ pub trait TraceDlqRepository: Send + Sync {
     /// `max_retries` is never reached (Q3). A row seeded at
     /// `retry_count >= max_retries` is born exhausted — `claim_pending` skips
     /// it, which is exactly the state `mark_exhausted` writes.
-    #[allow(clippy::too_many_arguments)]
-    async fn enqueue(
-        &self,
-        trace_id: &str,
-        channel: &str,
-        payload_json: &str,
-        metadata_json: &str,
-        error_message: &str,
-        retry_count: i64,
-        max_retries: i64,
-    ) -> Result<TraceDlqEntry, OrionError>;
+    async fn enqueue(&self, row: DlqEnqueue<'_>) -> Result<TraceDlqEntry, OrionError>;
 
     /// Atomically claim up to `limit` due, unleased entries for `claimant`,
     /// leasing them until now + `lease_secs`. Due = `next_retry_at <= now`,
@@ -302,16 +315,16 @@ impl SqlTraceDlqRepository {
 
 #[async_trait]
 impl TraceDlqRepository for SqlTraceDlqRepository {
-    async fn enqueue(
-        &self,
-        trace_id: &str,
-        channel: &str,
-        payload_json: &str,
-        metadata_json: &str,
-        error_message: &str,
-        retry_count: i64,
-        max_retries: i64,
-    ) -> Result<TraceDlqEntry, OrionError> {
+    async fn enqueue(&self, row: DlqEnqueue<'_>) -> Result<TraceDlqEntry, OrionError> {
+        let DlqEnqueue {
+            trace_id,
+            channel,
+            payload_json,
+            metadata_json,
+            error_message,
+            retry_count,
+            max_retries,
+        } = row;
         crate::metrics::timed_db_op("trace_dlq.enqueue", async {
             let id = uuid::Uuid::new_v4().to_string();
 
@@ -582,7 +595,15 @@ mod tests {
 
     async fn enqueue_due(repo: &SqlTraceDlqRepository, trace_id: &str) -> String {
         let entry = repo
-            .enqueue(trace_id, "orders", "{}", "{}", "boom", 0, 5)
+            .enqueue(DlqEnqueue {
+                trace_id,
+                channel: "orders",
+                payload_json: "{}",
+                metadata_json: "{}",
+                error_message: "boom",
+                retry_count: 0,
+                max_retries: 5,
+            })
             .await
             .expect("enqueue");
         make_due(repo, &entry.id).await;
@@ -666,7 +687,15 @@ mod tests {
         let max_retries = 3;
 
         let first = repo
-            .enqueue("t-poison", "orders", "{}", "{}", "boom", 0, max_retries)
+            .enqueue(DlqEnqueue {
+                trace_id: "t-poison",
+                channel: "orders",
+                payload_json: "{}",
+                metadata_json: "{}",
+                error_message: "boom",
+                retry_count: 0,
+                max_retries,
+            })
             .await
             .expect("enqueue");
         make_due(&repo, &first.id).await;
@@ -688,15 +717,15 @@ mod tests {
             let carried = claimed.retry_count + 1;
             repo.remove(&claimed.id).await.expect("remove");
             let requeued = repo
-                .enqueue(
-                    "t-poison",
-                    "orders",
-                    "{}",
-                    "{}",
-                    "boom",
-                    carried,
+                .enqueue(DlqEnqueue {
+                    trace_id: "t-poison",
+                    channel: "orders",
+                    payload_json: "{}",
+                    metadata_json: "{}",
+                    error_message: "boom",
+                    retry_count: carried,
                     max_retries,
-                )
+                })
                 .await
                 .expect("re-enqueue");
             assert_eq!(requeued.retry_count, carried, "carried count must persist");

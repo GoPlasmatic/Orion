@@ -116,7 +116,15 @@ async fn mysql_dlq_claim_leases_rows() {
     let repo = SqlTraceDlqRepository::new(pool.clone());
 
     let entry = repo
-        .enqueue("trace-1", "orders", "{}", "{}", "boom", 0, 5)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-1",
+            channel: "orders",
+            payload_json: "{}",
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .expect("enqueue");
     let orion::storage::DbPool::Mysql(mysql) = &pool else {
@@ -377,9 +385,17 @@ async fn mysql_keyset_pagination_walks_every_trace_once() {
     let mut seeded = std::collections::BTreeSet::new();
     for _ in 0..7 {
         seeded.insert(
-            repo.store_completed("orders", Some("ch-orders"), "sync", None, "{}", 1.0, None)
-                .await
-                .expect("seed trace"),
+            repo.store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+                channel: "orders",
+                channel_id: Some("ch-orders"),
+                mode: "sync",
+                input_json: None,
+                result_json: "{}",
+                duration_ms: 1.0,
+                task_trace_json: None,
+            })
+            .await
+            .expect("seed trace"),
         );
     }
 

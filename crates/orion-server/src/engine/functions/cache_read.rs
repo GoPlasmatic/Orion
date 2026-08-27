@@ -88,9 +88,7 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
         description: "Name of the cache connector to read from.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -98,16 +96,12 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where the result is stored. Defaults to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

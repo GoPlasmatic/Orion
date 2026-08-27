@@ -205,9 +205,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         description: "Signing algorithm: HS/RS/PS 256-512, ES256/384, or EdDSA.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -216,18 +214,14 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
                       reference (env://NAME). Never appears in traces or errors.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
         secret: true,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key_encoding",
         description: "How an HS secret becomes bytes: utf8 (default), base64, hex.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "claims",
@@ -235,67 +229,50 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
                       computed claims with a map task first). iat is stamped \
                       automatically.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "expires_in",
         description: "Token lifetime: integer seconds or \"<n>s|m|h|d\"; sets exp from \
                       now. Required unless claims carries an explicit exp.",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "issuer",
         description: "Convenience for the iss claim.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "audience",
         description: "Convenience for the aud claim (string or array; resolvable).",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "not_before",
         description: "Offset from now for the nbf claim: integer seconds or \
                       \"<n>s|m|h|d\".",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "kid",
         description: "Key id stamped into the token header, for rotation-aware \
                       verifiers.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the compact JWS (string) is stored. Defaults \
                       to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

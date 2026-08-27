@@ -120,21 +120,18 @@ impl TracesCmd {
                 cursor,
                 include_total,
             } => {
-                list(
-                    client,
-                    format,
-                    quiet,
-                    status,
-                    channel,
-                    mode,
-                    sort_by,
-                    sort_order,
-                    limit,
-                    offset,
-                    cursor,
-                    *include_total,
-                )
-                .await
+                let qs = utils::build_query_string(&[
+                    ("cursor", cursor.clone()),
+                    ("include_total", include_total.then(|| "true".to_string())),
+                    ("status", status.clone()),
+                    ("channel", channel.clone()),
+                    ("mode", mode.clone()),
+                    ("sort_by", sort_by.clone()),
+                    ("sort_order", sort_order.clone()),
+                    ("limit", limit.map(|l| l.to_string())),
+                    ("offset", offset.map(|o| o.to_string())),
+                ]);
+                list(client, format, quiet, &qs).await
             }
             TracesSubcommand::Get { id, token } => {
                 get(client, format, quiet, id, token.as_deref()).await
@@ -149,10 +146,12 @@ impl TracesCmd {
                     client,
                     format,
                     quiet,
-                    id,
-                    token.as_deref(),
-                    *interval,
-                    *timeout,
+                    WaitOptions {
+                        id,
+                        token: token.as_deref(),
+                        interval: *interval,
+                        timeout: *timeout,
+                    },
                 )
                 .await
             }
@@ -160,33 +159,9 @@ impl TracesCmd {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn list(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    status: &Option<String>,
-    channel: &Option<String>,
-    mode: &Option<String>,
-    sort_by: &Option<String>,
-    sort_order: &Option<String>,
-    limit: &Option<i64>,
-    offset: &Option<i64>,
-    cursor: &Option<String>,
-    include_total: bool,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("cursor", cursor.clone()),
-        ("include_total", include_total.then(|| "true".to_string())),
-        ("status", status.clone()),
-        ("channel", channel.clone()),
-        ("mode", mode.clone()),
-        ("sort_by", sort_by.clone()),
-        ("sort_order", sort_order.clone()),
-        ("limit", limit.map(|l| l.to_string())),
-        ("offset", offset.map(|o| o.to_string())),
-    ]);
-
+/// The filters arrive as a prebuilt query string, the way every other `list`
+/// in this CLI takes them.
+async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
     let resp: Value = client.get(&format!("{}{qs}", paths::TRACES)).await?;
     let traces = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -317,16 +292,29 @@ async fn get(
     Ok(status_exit_code(status))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Which trace to poll for, and how long to keep asking.
+///
+/// Grouped so `interval` and `timeout` — both bare `u64` seconds — cannot be
+/// swapped at the call site without the compiler noticing.
+struct WaitOptions<'a> {
+    id: &'a str,
+    token: Option<&'a str>,
+    interval: u64,
+    timeout: u64,
+}
+
 async fn wait(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
-    id: &str,
-    token: Option<&str>,
-    interval: u64,
-    timeout: u64,
+    opts: WaitOptions<'_>,
 ) -> Result<i32> {
+    let WaitOptions {
+        id,
+        token,
+        interval,
+        timeout,
+    } = opts;
     let qs = utils::build_query_string(&[("token", token.map(str::to_string))]);
     let start = std::time::Instant::now();
     let timeout_dur = std::time::Duration::from_secs(timeout);

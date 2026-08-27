@@ -32,13 +32,7 @@ pub fn validate_create_workflow(
             task_errors,
         ));
     }
-    let refs = stray_secret_reference_errors(&req.tasks);
-    if !refs.is_empty() {
-        return Err(validation_with_details(
-            "Workflow sends a secret reference somewhere it is never resolved",
-            refs,
-        ));
-    }
+    reject_stray_secret_references(&req.tasks)?;
     if let Some(loop_config) = &req.loop_config {
         let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
         if !loop_errors.is_empty() {
@@ -51,12 +45,21 @@ pub fn validate_create_workflow(
     Ok(())
 }
 
-/// [`secret_reference_errors`] as `FieldError`s, for the create/update paths.
-fn stray_secret_reference_errors(tasks: &Value) -> Vec<FieldError> {
-    secret_reference_errors(tasks)
+/// Refuse a workflow carrying a secret reference in a field that resolves
+/// none — [`secret_reference_errors`] as the create/update paths' refusal, so
+/// both spell the code and the summary once.
+fn reject_stray_secret_references(tasks: &Value) -> Result<(), OrionError> {
+    let refs: Vec<FieldError> = secret_reference_errors(tasks)
         .into_iter()
         .map(|(path, message)| FieldError::new(path, "UNRESOLVED_SECRET_REF", message))
-        .collect()
+        .collect();
+    if refs.is_empty() {
+        return Ok(());
+    }
+    Err(validation_with_details(
+        "Workflow sends a secret reference somewhere it is never resolved",
+        refs,
+    ))
 }
 
 pub fn validate_update_workflow(
@@ -85,13 +88,7 @@ pub fn validate_update_workflow(
                 task_errors,
             ));
         }
-        let refs = stray_secret_reference_errors(tasks);
-        if !refs.is_empty() {
-            return Err(validation_with_details(
-                "Workflow sends a secret reference somewhere it is never resolved",
-                refs,
-            ));
-        }
+        reject_stray_secret_references(tasks)?;
     }
     // `null` clears the loop and needs no checking; anything else is a config
     // that has to hold up.
@@ -589,7 +586,23 @@ use serde_json::Value;
 /// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
 pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    // Flattened, so a write inside a guard clause is checked like any other.
+    for_each_input_field(tasks, |function, field, path, value| {
+        if crate::engine::functions::schema::is_resolvable_field(function, field) {
+            collect_unresolvable(value, path, function, &mut out);
+        }
+    });
+    out
+}
+
+/// Call `visit(function name, field name, authored path, value)` for every
+/// field of every task input in `tasks`.
+///
+/// The walk itself — flatten the steps so a task inside a guard clause is
+/// reached like any other, then destructure `function.name` / `function.input`
+/// — is the same for every check that reads task inputs, and getting it wrong
+/// is silent: a flat `tasks.as_array()` loop skips everything inside a task
+/// group. One copy, so `walk_steps` is reached from one place.
+fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &Value)) {
     for (path, task) in crate::engine::walk_steps(tasks).tasks {
         let Some(function) = task.get("function") else {
             continue;
@@ -601,23 +614,14 @@ pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
             continue;
         };
         for (field, value) in input {
-            if !crate::engine::functions::schema::is_resolvable_field(name, field) {
-                continue;
-            }
-            // A secret-bearing field resolves `{"secret": …}` itself (see
-            // `engine::functions::secret_ref`), so the node is not an
-            // unresolvable operator there — it is the field's other documented
-            // spelling. `jwt_verify`'s `issuer` and `audience` are both.
-            if crate::engine::functions::schema::is_secret_field(name, field)
-                && crate::engine::functions::secret_ref::secret_name(value).is_some()
-            {
-                continue;
-            }
-            let base = format!("{path}.function.input.{field}");
-            collect_unresolvable(value, &base, name, &mut out);
+            visit(
+                name,
+                field,
+                &format!("{path}.function.input.{field}"),
+                value,
+            );
         }
     }
-    out
 }
 
 /// Every secret reference sitting in a field that does not resolve one.
@@ -641,33 +645,14 @@ pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
 /// CLI both already consume.
 pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    // Flattened, so a reference inside a guard clause is checked like any
-    // other — a task group is where one is least likely to be noticed by eye.
-    for (path, task) in crate::engine::walk_steps(tasks).tasks {
-        let Some(function) = task.get("function") else {
-            continue;
-        };
-        let (Some(name), Some(input)) = (
-            function.get("name").and_then(Value::as_str),
-            function.get("input").and_then(Value::as_object),
-        ) else {
-            continue;
-        };
-        for (field, value) in input {
-            // The whole subtree is skipped, not just its top level:
-            // `jwt_verify.keys` is an array of objects whose `key` member is
-            // the reference, so the legitimate one lives two levels down.
-            if crate::engine::functions::schema::is_secret_field(name, field) {
-                continue;
-            }
-            collect_secret_references(
-                value,
-                &format!("{path}.function.input.{field}"),
-                name,
-                &mut out,
-            );
+    for_each_input_field(tasks, |function, field, path, value| {
+        // The whole subtree is skipped, not just its top level:
+        // `jwt_verify.keys` is an array of objects whose `key` member is the
+        // reference, so the legitimate one lives two levels down.
+        if !crate::engine::functions::schema::is_secret_field(function, field) {
+            collect_secret_references(value, path, function, &mut out);
         }
-    }
+    });
     out
 }
 

@@ -17,13 +17,29 @@ async fn seed(state: &AppState) -> (String, String) {
     let pending = state
         .repos
         .trace_dlq
-        .enqueue("trace-pending", "orders", PAYLOAD, "{}", "boom", 0, 3)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-pending",
+            channel: "orders",
+            payload_json: PAYLOAD,
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 0,
+            max_retries: 3,
+        })
         .await
         .expect("enqueue pending");
     let exhausted = state
         .repos
         .trace_dlq
-        .enqueue("trace-exhausted", "payments", PAYLOAD, "{}", "boom", 3, 3)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-exhausted",
+            channel: "payments",
+            payload_json: PAYLOAD,
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 3,
+            max_retries: 3,
+        })
         .await
         .expect("enqueue exhausted");
     (pending.id, exhausted.id)

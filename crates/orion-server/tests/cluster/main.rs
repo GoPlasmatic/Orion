@@ -276,7 +276,15 @@ async fn dlq_row_claimed_by_exactly_one_node() {
     let repo_b = SqlTraceDlqRepository::new(h.state_b.db_pool.clone());
 
     let entry = repo_a
-        .enqueue("trace-x", "orders", "{}", "{}", "boom", 0, 5)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-x",
+            channel: "orders",
+            payload_json: "{}",
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .expect("enqueue");
     let orion::storage::DbPool::Postgres(pg) = &h.state_a.db_pool else {
@@ -1533,7 +1541,15 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
         h.state_a
             .repos
             .traces
-            .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
+            .store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+                channel: "cleanup-ch",
+                channel_id: None,
+                mode: "sync",
+                input_json: None,
+                result_json: "{}",
+                duration_ms: 1.0,
+                task_trace_json: None,
+            })
             .await
             .expect("seed expired trace");
     }
@@ -1549,7 +1565,15 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
         .state_a
         .repos
         .traces
-        .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
+        .store_completed(orion::storage::repositories::traces::TraceCompletedRef {
+            channel: "cleanup-ch",
+            channel_id: None,
+            mode: "sync",
+            input_json: None,
+            result_json: "{}",
+            duration_ms: 1.0,
+            task_trace_json: None,
+        })
         .await
         .expect("seed fresh trace");
 

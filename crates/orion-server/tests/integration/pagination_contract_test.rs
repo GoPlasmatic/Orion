@@ -184,7 +184,15 @@ async fn trace_dlq_list_pages_the_same_way() {
         state
             .repos
             .trace_dlq
-            .enqueue(&format!("t-{i}"), "orders", "{}", "{}", "boom", 0, 3)
+            .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+                trace_id: &format!("t-{i}"),
+                channel: "orders",
+                payload_json: "{}",
+                metadata_json: "{}",
+                error_message: "boom",
+                retry_count: 0,
+                max_retries: 3,
+            })
             .await
             .expect("enqueue");
     }

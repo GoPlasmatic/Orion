@@ -54,16 +54,38 @@ pub(crate) use process::{INITIAL_RETRY_BACKOFF_MS, next_backoff_ms};
 
 /// Bundled context for the Kafka consume loop, grouping parameters that share
 /// the same lifecycle and reducing positional argument count.
+/// Everything a consumer needs from the running instance, beyond its own
+/// `KafkaIngestConfig`.
+///
+/// A struct rather than positional parameters because half of these are
+/// `Option`: `start_consumer(&cfg, engine, registry, datalogic, None, None,
+/// None, None)` says nothing about which `None` is which, and the next
+/// optional dependency would add a ninth argument to a list already past
+/// clippy's limit.
+pub struct ConsumerDeps {
+    pub engine: Arc<crate::engine::EngineHandle>,
+    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub datalogic: Arc<datalogic_rs::Engine>,
+    /// `[vars]` as one JSON object, stamped into every ingested message's
+    /// `metadata.vars` — the Kafka half of what `build_request_metadata` does
+    /// for HTTP, so a workflow reads the same deployment values on either
+    /// transport. `None` when the instance declares no vars.
+    pub vars: Option<Arc<serde_json::Value>>,
+    pub dlq_producer: Option<Arc<KafkaProducer>>,
+    pub dlq_topic: Option<String>,
+    /// Cluster mode: enables static group membership (`group.instance.id`)
+    /// plus an explicit `session.timeout.ms`, so rolling restarts and
+    /// reload-driven consumer restarts rejoin without a full group rebalance.
+    /// `None` (single node) keeps dynamic membership.
+    pub instance_id: Option<String>,
+}
+
 struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
     engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
-    /// `[vars]` as one JSON object, stamped into every ingested message's
-    /// `metadata.vars` — the Kafka half of what `build_request_metadata` does
-    /// for HTTP, so a workflow reads the same deployment values on either
-    /// transport. `None` when the instance declares no vars.
     vars: Option<Arc<serde_json::Value>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
@@ -162,21 +184,19 @@ impl ConsumerHandle {
 /// configured topics, maps each topic to a channel, and processes messages
 /// through the engine.
 ///
-/// `instance_id` (cluster mode) enables static group membership
-/// (`group.instance.id`) plus an explicit `session.timeout.ms`, so rolling
-/// restarts and reload-driven consumer restarts rejoin without a full group
-/// rebalance. `None` (single node) keeps today's dynamic membership.
-#[allow(clippy::too_many_arguments)]
 pub fn start_consumer(
     config: &KafkaIngestConfig,
-    engine: Arc<crate::engine::EngineHandle>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
-    datalogic: Arc<datalogic_rs::Engine>,
-    vars: Option<Arc<serde_json::Value>>,
-    dlq_producer: Option<Arc<KafkaProducer>>,
-    dlq_topic: Option<String>,
-    instance_id: Option<&str>,
+    deps: ConsumerDeps,
 ) -> Result<ConsumerHandle, OrionError> {
+    let ConsumerDeps {
+        engine,
+        channel_registry,
+        datalogic,
+        vars,
+        dlq_producer,
+        dlq_topic,
+        instance_id,
+    } = deps;
     let mut client_config = ClientConfig::new();
     client_config
         .set("bootstrap.servers", config.brokers.join(","))
@@ -188,7 +208,7 @@ pub fn start_consumer(
     // single-node operator configuring it got silence. Static membership is
     // the cluster-only part.
     client_config.set("session.timeout.ms", config.session_timeout_ms.to_string());
-    if let Some(id) = instance_id {
+    if let Some(id) = &instance_id {
         client_config.set("group.instance.id", id);
     }
     // Applied last so kafka.extra_config can override any of the above

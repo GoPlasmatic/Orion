@@ -570,12 +570,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let kafka_consumer_handle = bootstrap::start_kafka_ingest(
         &config.kafka,
         &channels,
-        components.engine.clone(),
-        channel_registry.clone(),
-        components.datalogic.clone(),
-        config.vars.to_json().map(std::sync::Arc::new),
-        components.kafka_producer.clone(),
-        cluster.enabled.then(|| cluster.instance_id.as_str()),
+        bootstrap::IngestDeps {
+            engine: components.engine.clone(),
+            channel_registry: channel_registry.clone(),
+            datalogic: components.datalogic.clone(),
+            vars: components.vars.clone(),
+            kafka_producer: components.kafka_producer.clone(),
+            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
+        },
     )?;
 
     // Start the background tasks: trace persistence queue, trace queue

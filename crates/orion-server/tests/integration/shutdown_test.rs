@@ -45,13 +45,15 @@ async fn test_worker_shutdown_empty_queue() {
         orion::queue::trace_persistence::start(&global_trace_storage, trace_repo.clone());
     let (queue, worker_handle) = orion::queue::start_workers(
         &test_queue_config,
-        engine,
-        trace_repo,
-        None, // no DLQ for this test
-        channel_registry,
-        persistence_queue,
-        global_trace_storage,
-        String::new(),
+        orion::queue::WorkerDeps {
+            engine,
+            trace_repo,
+            dlq_repo: None,
+            channel_registry,
+            persistence_queue,
+            global_trace_storage,
+            rollout_sticky_header: String::new(),
+        },
     );
 
     // Drop the queue sender so the dispatcher loop exits when WorkerHandle

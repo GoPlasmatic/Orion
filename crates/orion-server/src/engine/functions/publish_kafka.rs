@@ -155,35 +155,25 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         description: "Name of the Kafka connector to publish through.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "topic",
         description: "Target topic name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key_logic",
         description: "JSONLogic expression to derive the message key.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "value_logic",
         description: "JSONLogic expression to derive the message value.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

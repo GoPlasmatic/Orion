@@ -226,15 +226,17 @@ fn try_start_ingest(
     crate::bootstrap::start_kafka_ingest(
         &state.config.kafka,
         channels,
-        state.engine.clone(),
-        state.channel_registry.clone(),
-        state.datalogic.clone(),
-        state.vars.clone(),
-        state.kafka.producer.clone(),
-        state
-            .cluster
-            .enabled
-            .then(|| state.cluster.instance_id.as_str()),
+        crate::bootstrap::IngestDeps {
+            engine: state.engine.clone(),
+            channel_registry: state.channel_registry.clone(),
+            datalogic: state.datalogic.clone(),
+            vars: state.vars.clone(),
+            kafka_producer: state.kafka.producer.clone(),
+            instance_id: state
+                .cluster
+                .enabled
+                .then(|| state.cluster.instance_id.clone()),
+        },
     )
     .map_err(|e| e.to_string())
 }

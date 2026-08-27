@@ -211,63 +211,43 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         description: "Name of the HTTP connector to call.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "method",
         description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "path",
         description: "Static path appended to the connector's base URL.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "path_logic",
         description: "JSONLogic expression evaluated to derive the request path.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "headers",
         description: "Additional request headers.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "body",
         description: "Static request body (any JSON value).",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "body_logic",
         description: "JSONLogic expression evaluated to derive the request body.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "body_format",
@@ -275,39 +255,28 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
                       (URL-encoded key/value pairs), or 'text' (string sent verbatim). \
                       Sets the content-type unless a header names one explicitly.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
         // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
         // Orion used to rewrite the key in the storage repository instead.
         alias: Some("response_path"),
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "response_format",
         description: "How the response bytes are captured at `output`: 'json' \
                       (default, parsed) or 'text' (a plain string).",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "timeout_ms",
         description: "Request timeout in milliseconds. Defaults to 30000.",
         kind: FieldKind::Number,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

@@ -22,8 +22,7 @@
 //! database row itself, which the read path masks and the API therefore cannot
 //! prove clean.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use orion::config::{AppConfig, SecretsConfig, VarsConfig};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -116,14 +115,11 @@ fn metadata_echo_workflow(name: &str) -> Value {
 async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode, Value) {
     let resp = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/data/{channel}"))
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&body).unwrap()))
-                .unwrap(),
-        )
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/data/{channel}"),
+            Some(body),
+        ))
         .await
         .expect("request");
     let status = resp.status();

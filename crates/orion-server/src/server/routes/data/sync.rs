@@ -45,15 +45,15 @@ async fn route_store_completed(
     // `should_drop` already returned for `Off`; remaining modes are Sync / Async / Batch.
     if matches!(cfg.mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
-            .store_completed(
-                trace.channel,
-                trace.channel_id,
-                "sync",
-                trace.input_json,
-                trace.response_json,
-                trace.duration_ms,
-                trace.task_trace_json,
-            )
+            .store_completed(crate::storage::repositories::traces::TraceCompletedRef {
+                channel: trace.channel,
+                channel_id: trace.channel_id,
+                mode: "sync",
+                input_json: trace.input_json,
+                result_json: trace.response_json,
+                duration_ms: trace.duration_ms,
+                task_trace_json: trace.task_trace_json,
+            })
             .await
         {
             tracing::warn!(error = %e, "Failed to store sync processing result");

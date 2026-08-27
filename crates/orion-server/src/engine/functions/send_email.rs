@@ -528,9 +528,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         description: "Name of the SMTP connector to send through.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "to",
@@ -539,26 +537,21 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "cc",
         description: "Carbon-copy recipients; same forms as 'to'.",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "bcc",
         description: "Blind-carbon-copy recipients; same forms as 'to'.",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "subject",
@@ -566,46 +559,37 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "text",
         description: "Plain-text body. At least one of 'text'/'html' is required; both \
                       together send multipart/alternative.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "html",
         description: "HTML body. At least one of 'text'/'html' is required.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "from",
         description: "Per-send sender override; honored only when the connector sets \
                       allow_from_override. Default: the connector's 'from'.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "reply_to",
         description: "Reply-To address.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "headers",
@@ -613,20 +597,14 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
                       Content-Type, ...) are rejected; intended for List-Unsubscribe, \
                       Auto-Submitted, correlation IDs.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where { message_id, response } is stored. Defaults to \
                       \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

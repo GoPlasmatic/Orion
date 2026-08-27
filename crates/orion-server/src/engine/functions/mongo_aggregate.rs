@@ -274,27 +274,21 @@ pub(super) const MONGO_AGGREGATE_FIELDS: &[FieldSchema] = &[
         description: "Name of the MongoDB connector.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "database",
         description: "Mongo database name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "collection",
         description: "Mongo collection name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "pipeline",
@@ -302,26 +296,19 @@ pub(super) const MONGO_AGGREGATE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Array,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "allow_disk_use",
         description: "Let the server spill large stages to disk. Defaults to false.",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where result documents are written.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

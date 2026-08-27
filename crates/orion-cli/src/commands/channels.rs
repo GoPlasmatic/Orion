@@ -315,11 +315,13 @@ impl ChannelsCmd {
                     client,
                     format,
                     quiet,
-                    paths::CHANNELS_IMPORT,
-                    "channel",
-                    file,
-                    *dry_run,
-                    on_conflict.as_deref(),
+                    utils::ImportRequest {
+                        base_path: paths::CHANNELS_IMPORT,
+                        label: "channel",
+                        file,
+                        dry_run: *dry_run,
+                        on_conflict: on_conflict.as_deref(),
+                    },
                 )
                 .await
             }

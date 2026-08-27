@@ -11,7 +11,8 @@ use orion::errors::OrionError;
 use orion::storage::models::Trace;
 use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqFilter};
 use orion::storage::repositories::traces::{
-    SqlTraceRepository, TraceCompletedRow, TraceFilter, TracePage, TraceRepository, TraceResultRow,
+    SqlTraceRepository, TraceCompletedRef, TraceCompletedRow, TraceFilter, TracePage,
+    TraceRepository, TraceResultRow,
 };
 
 /// Delegating wrapper that fails the first `update_status(_, "running", _)`
@@ -60,27 +61,8 @@ impl TraceRepository for FailFirstRunningWrite {
             .set_result(id, result_json, duration_ms, task_trace_json)
             .await
     }
-    async fn store_completed(
-        &self,
-        channel: &str,
-        channel_id: Option<&str>,
-        mode: &str,
-        input_json: Option<&str>,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
-        self.inner
-            .store_completed(
-                channel,
-                channel_id,
-                mode,
-                input_json,
-                result_json,
-                duration_ms,
-                task_trace_json,
-            )
-            .await
+    async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
+        self.inner.store_completed(row).await
     }
     async fn store_completed_batch(
         &self,
@@ -136,14 +118,16 @@ async fn failed_running_write_routes_message_to_dlq() {
     };
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
         &queue_config,
-        engine,
-        trace_repo.clone(),
-        Some(dlq_repo.clone()
-            as Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>),
-        channel_registry,
-        persistence_queue,
-        tracing_storage,
-        String::new(),
+        orion::queue::WorkerDeps {
+            engine,
+            trace_repo: trace_repo.clone(),
+            dlq_repo: Some(dlq_repo.clone()
+                as Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>),
+            channel_registry,
+            persistence_queue,
+            global_trace_storage: tracing_storage,
+            rollout_sticky_header: String::new(),
+        },
     );
 
     // Seed the pending row exactly as the async submit path does, then queue.
@@ -236,27 +220,8 @@ impl TraceRepository for FailAllResultWrites {
     ) -> Result<(), OrionError> {
         Err(OrionError::Storage(sqlx::Error::PoolTimedOut))
     }
-    async fn store_completed(
-        &self,
-        channel: &str,
-        channel_id: Option<&str>,
-        mode: &str,
-        input_json: Option<&str>,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
-        self.inner
-            .store_completed(
-                channel,
-                channel_id,
-                mode,
-                input_json,
-                result_json,
-                duration_ms,
-                task_trace_json,
-            )
-            .await
+    async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
+        self.inner.store_completed(row).await
     }
     async fn store_completed_batch(
         &self,
@@ -296,13 +261,15 @@ async fn run_one_message_to_terminal_status(
         orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
         &queue_config,
-        engine,
-        trace_repo.clone(),
-        None,
-        channel_registry,
-        persistence_queue,
-        tracing_storage,
-        String::new(),
+        orion::queue::WorkerDeps {
+            engine,
+            trace_repo: trace_repo.clone(),
+            dlq_repo: None,
+            channel_registry,
+            persistence_queue,
+            global_trace_storage: tracing_storage,
+            rollout_sticky_header: String::new(),
+        },
     );
 
     let trace = trace_repo
@@ -481,16 +448,7 @@ impl TraceRepository for ConcurrencyProbeRepo {
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
-    async fn store_completed(
-        &self,
-        _channel: &str,
-        _channel_id: Option<&str>,
-        _mode: &str,
-        _input_json: Option<&str>,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
+    async fn store_completed(&self, _row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         unimplemented!()
     }
     async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
@@ -590,16 +548,7 @@ impl TraceRepository for FlakyUpdateStatusRepo {
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
-    async fn store_completed(
-        &self,
-        _channel: &str,
-        _channel_id: Option<&str>,
-        _mode: &str,
-        _input_json: Option<&str>,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
+    async fn store_completed(&self, _row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         unimplemented!()
     }
     async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
@@ -686,16 +635,7 @@ impl TraceRepository for BatchSizeProbeRepo {
     ) -> Result<(), OrionError> {
         unimplemented!()
     }
-    async fn store_completed(
-        &self,
-        _channel: &str,
-        _channel_id: Option<&str>,
-        _mode: &str,
-        _input_json: Option<&str>,
-        _result_json: &str,
-        _duration_ms: f64,
-        _task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
+    async fn store_completed(&self, _row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         // The whole point of batch mode: never the per-row path.
         unimplemented!("batch mode must not fall back to per-row writes")
     }

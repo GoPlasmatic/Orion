@@ -142,80 +142,61 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         description: "Name of the MongoDB connector.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "database",
         description: "Mongo database name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "collection",
         description: "Mongo collection name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "filter",
         description: "Mongo find() filter document (extended JSON: $oid, $date, ... work). Defaults to {}. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "projection",
         description: "Mongo projection document (e.g. {\"name\": 1, \"_id\": 0}). Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "sort",
         description: "Mongo sort document (e.g. {\"created_at\": -1}). Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "limit",
         description: "Maximum documents to return; must not exceed query.max_limit. Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Number,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "skip",
         description: "Documents to skip before returning; must not exceed query.max_skip. Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Number,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where matched documents are written.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

@@ -215,8 +215,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "algorithms",
@@ -224,9 +223,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       EdDSA); alg: none is unrepresentable.",
         kind: FieldKind::Array,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "keys",
@@ -234,58 +231,45 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       key_encoding?}]. Each key takes {\"secret\": \"name\"} or a \
                       string. At least one of keys/jwks_url.",
         kind: FieldKind::Array,
-        required: false,
-        resolvable: false,
         secret: true,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "jwks_url",
         description: "HTTPS JWKS URL; cached process-wide with single-flight refresh \
                       and stale-serve — the same cache as the jwt channel mode.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "issuer",
         description: "Accepted iss value(s); string or array. {\"secret\": \"name\"} \
                       and env:// references resolve.",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
         secret: true,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "audience",
         description: "Accepted aud value(s); string or array. {\"secret\": \"name\"} \
                       and env:// references resolve (OAuth client ids).",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
         secret: true,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "leeway_secs",
         description: "Clock-skew allowance for exp/nbf. Default 30, capped at 300.",
         kind: FieldKind::Number,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "require_exp",
         description: "Whether the token must carry exp. Default true (RFC 8725).",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
@@ -293,10 +277,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       Defaults to \"data\". Rejections are typed task errors \
                       (continue_on_error branches on them).",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

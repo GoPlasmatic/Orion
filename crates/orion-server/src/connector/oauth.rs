@@ -175,6 +175,29 @@ struct TokenEntry {
 /// The process-wide token manager, held on the
 /// [`ConnectorRegistry`](super::ConnectorRegistry) beside the circuit
 /// breakers — per-connector runtime state keyed off the same identity.
+/// The context every grant acquires against: what the connector is, how it is
+/// configured, and the SSRF opt-out that config carries.
+///
+/// One shape for all three grants, so the dispatch reads as three ways of
+/// doing the same thing rather than three unrelated argument lists — and so
+/// `refresh_flow`, which needs two fields the others do not, does not become a
+/// seven-parameter signature where transposing `connector` and `fingerprint`
+/// compiles.
+#[derive(Clone, Copy)]
+struct GrantCtx<'a> {
+    deps: &'a OAuthRuntimeDeps,
+    connector: &'a str,
+    cfg: &'a OAuth2Config,
+    /// Ties cached and persisted state to the config that produced it; only
+    /// the refresh-token grant persists a row, so only it reads this.
+    fingerprint: &'a str,
+    /// How early a token counts as stale. Read by the refresh grant, which can
+    /// adopt another node's persisted access token if it is still fresh.
+    margin: Duration,
+    /// The connector's own SSRF opt-out.
+    allow_private_urls: bool,
+}
+
 pub struct OAuthTokenManager {
     entries: tokio::sync::RwLock<HashMap<String, Arc<TokenEntry>>>,
     deps: OnceLock<OAuthRuntimeDeps>,
@@ -277,27 +300,20 @@ impl OAuthTokenManager {
             st.rejected = None;
         }
 
+        let ctx = GrantCtx {
+            deps,
+            connector,
+            cfg,
+            fingerprint: &fingerprint,
+            margin,
+            allow_private_urls,
+        };
         let result = match grant {
-            OAuth2Grant::ClientCredentials => {
-                self.acquire_client_credentials(deps, connector, cfg, allow_private_urls, &mut st)
-                    .await
-            }
+            OAuth2Grant::ClientCredentials => self.acquire_client_credentials(&ctx, &mut st).await,
             OAuth2Grant::AccountCredentials => {
-                self.acquire_account_credentials(deps, connector, cfg, allow_private_urls, &mut st)
-                    .await
+                self.acquire_account_credentials(&ctx, &mut st).await
             }
-            OAuth2Grant::RefreshToken => {
-                self.refresh_flow(
-                    deps,
-                    connector,
-                    cfg,
-                    &fingerprint,
-                    margin,
-                    allow_private_urls,
-                    &mut st,
-                )
-                .await
-            }
+            OAuth2Grant::RefreshToken => self.refresh_flow(&ctx, &mut st).await,
         };
         if let Err(e) = &result
             && !e.retryable()
@@ -331,12 +347,16 @@ impl OAuthTokenManager {
 
     async fn acquire_client_credentials(
         &self,
-        deps: &OAuthRuntimeDeps,
-        connector: &str,
-        cfg: &OAuth2Config,
-        allow_private_urls: bool,
+        ctx: &GrantCtx<'_>,
         st: &mut EntryState,
     ) -> Result<String, OAuthError> {
+        let GrantCtx {
+            deps,
+            connector,
+            cfg,
+            allow_private_urls,
+            ..
+        } = *ctx;
         let mut params: Vec<(&str, String)> =
             vec![("grant_type", "client_credentials".to_string())];
         if !cfg.scopes.is_empty() {
@@ -371,12 +391,16 @@ impl OAuthTokenManager {
     /// no lease to take: correct by construction, not by omission.
     async fn acquire_account_credentials(
         &self,
-        deps: &OAuthRuntimeDeps,
-        connector: &str,
-        cfg: &OAuth2Config,
-        allow_private_urls: bool,
+        ctx: &GrantCtx<'_>,
         st: &mut EntryState,
     ) -> Result<String, OAuthError> {
+        let GrantCtx {
+            deps,
+            connector,
+            cfg,
+            allow_private_urls,
+            ..
+        } = *ctx;
         let mut params: Vec<(&str, String)> =
             vec![("grant_type", "account_credentials".to_string())];
         // Validation requires it for this grant, so an absent value here means
@@ -398,17 +422,19 @@ impl OAuthTokenManager {
         Ok(cache_token(st, &response).access_token)
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn refresh_flow(
         &self,
-        deps: &OAuthRuntimeDeps,
-        connector: &str,
-        cfg: &OAuth2Config,
-        fingerprint: &str,
-        margin: Duration,
-        allow_private_urls: bool,
+        ctx: &GrantCtx<'_>,
         st: &mut EntryState,
     ) -> Result<String, OAuthError> {
+        let GrantCtx {
+            deps,
+            connector,
+            cfg,
+            fingerprint,
+            margin,
+            allow_private_urls,
+        } = *ctx;
         // First use in this process: the freshest refresh token may be a
         // rotation another node (or a previous run) persisted — and its
         // access token may still be perfectly good.

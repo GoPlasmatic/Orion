@@ -503,16 +503,18 @@ mod tests {
     /// 500 for every subsequent request the collector saw.
     // The only way to poison a mutex is to panic while holding it, which is
     // the exact state under test.
-    #[allow(clippy::panic)]
     #[tokio::test]
     async fn a_poisoned_mutex_does_not_panic_the_request() {
         let collector = ProfileCollector::new();
         let poison = collector.clone();
-        // Panic while holding the lock, in a thread of its own so the panic
-        // does not fail the test.
+        // Unwind while holding the lock, in a thread of its own so the unwind
+        // does not fail the test. `resume_unwind` rather than `panic!`: this
+        // crate warns on `clippy::panic` and CI runs `-D warnings`, and the
+        // unwind — not the macro — is what poisons the mutex. It also skips the
+        // panic hook, so the test does not print a backtrace it expects.
         let _ = std::thread::spawn(move || {
             let _guard = poison.samples.lock().expect("acquired");
-            panic!("poison the samples mutex");
+            std::panic::resume_unwind(Box::new("poison the samples mutex"));
         })
         .join();
         assert!(

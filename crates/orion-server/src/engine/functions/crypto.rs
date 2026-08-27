@@ -631,9 +631,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         description: "Operation: hash, hmac, hmac_verify, password_hash, or password_verify.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "algorithm",
@@ -641,10 +639,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       argon2id). Per-op default; password_verify auto-detects from the \
                       stored hash.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "data",
@@ -652,19 +647,14 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       (see input_encoding); any other JSON value is hashed as its compact \
                       serialization.",
         kind: FieldKind::Any,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "input_encoding",
         description: "How a string 'data' becomes bytes: utf8 (default), hex, or base64.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -672,69 +662,52 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       engine's [secrets] store; a string is a literal or a reference \
                       like env://NAME. Never appears in traces or errors.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
         secret: true,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key_encoding",
         description: "How the resolved key becomes bytes: utf8 (default), hex, or base64 \
                       — for APIs that issue binary signing keys.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "signature",
         description: "The presented MAC to check (hmac_verify); hex, base64, or \
                       base64url, auto-detected. Compared in constant time.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "password",
         description: "The submitted password (password_hash/password_verify).",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "hash",
         description: "The stored password hash to verify against (password_verify); \
                       scheme auto-detected from its $argon2*$/$2*$ prefix.",
         kind: FieldKind::String,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "encoding",
         description: "Output encoding for hash/hmac results: hex (default), base64, or \
                       base64url (unpadded).",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "params",
         description: "password_hash cost tuning: argon2id takes memory_kib/iterations/\
                       parallelism, bcrypt takes cost. Safe defaults; bounded ranges.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
@@ -742,10 +715,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       String for hash/hmac/password_hash; boolean for \
                       hmac_verify/password_verify.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

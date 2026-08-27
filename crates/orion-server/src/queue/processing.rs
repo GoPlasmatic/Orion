@@ -630,15 +630,15 @@ async fn enqueue_dlq_row(
     let dlq_retry_count = candidate.retry_count;
     let exhausted = dlq_retry_count >= dlq_max_retries;
     if let Err(dlq_err) = dlq
-        .enqueue(
+        .enqueue(crate::storage::repositories::trace_dlq::DlqEnqueue {
             trace_id,
-            candidate.channel,
-            &payload,
-            metadata,
-            error_str,
-            dlq_retry_count,
-            dlq_max_retries,
-        )
+            channel: candidate.channel,
+            payload_json: &payload,
+            metadata_json: metadata,
+            error_message: error_str,
+            retry_count: dlq_retry_count,
+            max_retries: dlq_max_retries,
+        })
         .await
     {
         tracing::error!(

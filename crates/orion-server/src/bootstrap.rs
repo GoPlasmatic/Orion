@@ -142,6 +142,15 @@ pub struct ServingComponents {
     /// built its engine without it would refuse a workflow the serving engine
     /// runs.
     pub secrets: Arc<crate::engine::ResolvedSecrets>,
+    /// `[vars]` as one JSON object, or `None` when the instance declares none.
+    ///
+    /// Derived once, here, and cloned to every consumer — `AppState`, the
+    /// Kafka consumer, and the consumer restart on reload. The "`None` strips
+    /// the key rather than stamping `{}`" convention that makes `metadata.vars`
+    /// unforgeable lives in `VarsConfig::to_json`, and re-deriving it per
+    /// consumer is how two ingresses come to disagree about what a workflow
+    /// reads.
+    pub vars: Option<Arc<serde_json::Value>>,
     pub engine: Arc<crate::engine::EngineHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
@@ -230,6 +239,7 @@ pub async fn build_engine_components(
     // `env://PARTNER_HMAC_KEY` fails at the remote system with nothing
     // pointing back here.
     let secrets = Arc::new(crate::engine::ResolvedSecrets::resolve(&config.secrets).await?);
+    let vars = config.vars.to_json().map(Arc::new);
     if !secrets.is_empty() {
         tracing::info!(
             names = ?secrets.names().collect::<Vec<_>>(),
@@ -294,6 +304,7 @@ pub async fn build_engine_components(
             http_client,
             datalogic: datalogic_engine,
             secrets,
+            vars,
             engine,
             cache_pool,
             sql_pool_cache,
@@ -418,19 +429,34 @@ impl EngineComponents {
     }
 }
 
+/// What the Kafka ingest needs from the running instance.
+///
+/// Named fields rather than a positional list because three of the six are
+/// `Option` and the boot, test-harness and reload-restart paths all build the
+/// same set — `state.engine`, `state.datalogic`, `state.vars`,
+/// `state.kafka.producer` on the reload side, and the matching
+/// [`ServingComponents`] fields on the boot side. A bare `None` in the fifth
+/// position tells a reader nothing about which dependency is absent.
+pub struct IngestDeps {
+    pub engine: Arc<crate::engine::EngineHandle>,
+    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub datalogic: Arc<datalogic_rs::Engine>,
+    /// `[vars]` as one JSON object, stamped into every ingested message's
+    /// `metadata.vars`. `None` when the instance declares none.
+    pub vars: Option<Arc<serde_json::Value>>,
+    /// The producer the DLQ writes through, when `kafka.dlq.enabled`.
+    pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    /// Cluster mode's static group membership id; `None` on a single node.
+    pub instance_id: Option<String>,
+}
+
 /// Start the Kafka consumer in a background task. Merges config-file topic
 /// mappings with DB-driven async-channel topics. Returns `None` when Kafka
 /// is disabled or the merged topic list is empty.
-#[allow(clippy::too_many_arguments)]
 pub fn start_kafka_ingest(
     kafka_config: &config::KafkaIngestConfig,
     channels: &[crate::storage::models::Channel],
-    engine: Arc<crate::engine::EngineHandle>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
-    datalogic: Arc<datalogic_rs::Engine>,
-    vars: Option<Arc<serde_json::Value>>,
-    kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
-    instance_id: Option<&str>,
+    deps: IngestDeps,
 ) -> Result<Option<crate::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
     if !kafka_config.enabled {
         return Ok(None);
@@ -447,6 +473,14 @@ pub fn start_kafka_ingest(
         ..kafka_config.clone()
     };
 
+    let IngestDeps {
+        engine,
+        channel_registry,
+        datalogic,
+        vars,
+        kafka_producer,
+        instance_id,
+    } = deps;
     let (dlq_producer, dlq_topic) = if kafka_config.dlq.enabled {
         (kafka_producer, Some(kafka_config.dlq.topic.clone()))
     } else {
@@ -455,13 +489,15 @@ pub fn start_kafka_ingest(
 
     let handle = crate::kafka::consumer::start_consumer(
         &merged_config,
-        engine,
-        channel_registry,
-        datalogic,
-        vars,
-        dlq_producer,
-        dlq_topic,
-        instance_id,
+        crate::kafka::consumer::ConsumerDeps {
+            engine,
+            channel_registry,
+            datalogic,
+            vars,
+            dlq_producer,
+            dlq_topic,
+            instance_id,
+        },
     )?;
 
     tracing::info!(
@@ -655,13 +691,15 @@ pub fn start_background_tasks(
     // status / result writes through the configured mode.
     let (trace_queue, worker_handle) = crate::queue::start_workers(
         &config.trace_queue,
-        engine,
-        repos.traces.clone(),
-        Some(repos.trace_dlq.clone()),
-        channel_registry.clone(),
-        trace_persistence_queue.clone(),
-        config.trace_storage.clone(),
-        config.engine.rollout_sticky_header.clone(),
+        crate::queue::WorkerDeps {
+            engine,
+            trace_repo: repos.traces.clone(),
+            dlq_repo: Some(repos.trace_dlq.clone()),
+            channel_registry: channel_registry.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            global_trace_storage: config.trace_storage.clone(),
+            rollout_sticky_header: config.engine.rollout_sticky_header.clone(),
+        },
     );
 
     tracing::info!(
@@ -778,6 +816,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         http_client,
         datalogic,
         secrets,
+        vars,
         engine,
         cache_pool,
         sql_pool_cache,
@@ -791,10 +830,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // limit, which applies with the platform limiter off (S15) and keys on
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
-    // Built once and cloned per message. `None` for an instance that declares
-    // no vars, which is the signal to strip `metadata.vars` rather than stamp
-    // an empty object — see `engine::stamp_vars`.
-    let vars = config.vars.to_json().map(Arc::new);
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,
         secrets,

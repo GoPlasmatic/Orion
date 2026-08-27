@@ -140,11 +140,13 @@ impl BenchmarkCmd {
 
         let (results, elapsed) = runner::run_benchmark(
             client,
-            channel,
-            &payload,
-            self.requests,
-            self.concurrency,
-            self.timeout,
+            runner::BenchmarkPlan {
+                channel,
+                payload: &payload,
+                num_requests: self.requests,
+                concurrency: self.concurrency,
+                timeout_secs: self.timeout,
+            },
             cancel,
             quiet,
         )
@@ -208,11 +210,13 @@ impl BenchmarkCmd {
 
             match runner::run_benchmark(
                 client,
-                &res.channel_name,
-                &res.payload,
-                self.requests,
-                self.concurrency,
-                self.timeout,
+                runner::BenchmarkPlan {
+                    channel: &res.channel_name,
+                    payload: &res.payload,
+                    num_requests: self.requests,
+                    concurrency: self.concurrency,
+                    timeout_secs: self.timeout,
+                },
                 cancel,
                 quiet,
             )

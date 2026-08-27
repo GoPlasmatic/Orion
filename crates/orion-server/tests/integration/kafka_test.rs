@@ -124,13 +124,15 @@ async fn test_consumer_starts_and_stops() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -157,13 +159,15 @@ async fn test_consumer_processes_valid_message() {
     // Start consumer
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -206,13 +210,15 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -380,13 +386,15 @@ async fn test_consumer_sends_invalid_utf8_to_dlq() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -455,13 +463,15 @@ async fn test_failed_message_redelivered_after_restart() {
     // Phase 1: no DLQ producer — the message cannot be dead-lettered
     let handle = consumer::start_consumer(
         &config,
-        engine.clone(),
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine: engine.clone(),
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -498,13 +508,15 @@ async fn test_failed_message_redelivered_after_restart() {
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle2 = consumer::start_consumer(
         &config2,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -558,9 +570,19 @@ async fn test_consumer_metadata_injection() {
     .await;
 
     let config = test_kafka_config(&brokers, topic, channel);
-    let handle =
-        consumer::start_consumer(&config, engine, registry, datalogic, None, None, None, None)
-            .unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
+    )
+    .unwrap();
 
     // Produce a message with the key the validation logic demands.
     let producer: FutureProducer = ClientConfig::new()
@@ -603,13 +625,15 @@ async fn test_concurrent_producers_all_committed() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -666,13 +690,15 @@ async fn test_rapid_burst_all_committed() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -767,13 +793,15 @@ async fn test_consumer_multiple_topics() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -841,13 +869,15 @@ async fn test_consumer_partition_rebalance() {
     };
     let handle_a = consumer::start_consumer(
         &config_a,
-        engine.clone(),
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine: engine.clone(),
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -881,13 +911,15 @@ async fn test_consumer_partition_rebalance() {
     };
     let handle_b = consumer::start_consumer(
         &config_b,
-        engine.clone(),
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine: engine.clone(),
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1011,22 +1043,24 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
             ..Default::default()
         };
 
-        let start = |instance_id: Option<&str>| {
+        let start = |instance_id: Option<String>| {
             consumer::start_consumer(
                 &config,
-                engine.clone(),
-                test_registry(),
-                test_datalogic(),
-                None,
-                None,
-                None,
-                instance_id,
+                consumer::ConsumerDeps {
+                    engine: engine.clone(),
+                    channel_registry: test_registry(),
+                    datalogic: test_datalogic(),
+                    vars: None,
+                    dlq_producer: None,
+                    dlq_topic: None,
+                    instance_id,
+                },
             )
             .unwrap()
         };
 
-        let handle_a = start(instance_ids[0]);
-        let survivor = start(instance_ids[1]);
+        let handle_a = start(instance_ids[0].map(str::to_string));
+        let survivor = start(instance_ids[1].map(str::to_string));
 
         // Settle: both members assigned, all of batch 1 processed to commit.
         for i in 0..6 {
@@ -1047,7 +1081,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
         // Stop the peer and restart it immediately — inside the session
         // timeout — under the same identity (or lack of one).
         shutdown_within(handle_a, 10).await;
-        let handle_a2 = start(instance_ids[0]);
+        let handle_a2 = start(instance_ids[0].map(str::to_string));
 
         // The restarted member must actually work its partitions again: batch
         // 2 fully committed proves the rejoin succeeded on both halves.
@@ -1134,13 +1168,15 @@ async fn test_consumer_broker_disconnect_recovery() {
 
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: test_registry(),
+            datalogic: test_datalogic(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1676,13 +1712,15 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let config = guarded_kafka_config(&brokers, topic, channel, &group_id, false);
     let handle = consumer::start_consumer(
         &config,
-        engine.clone(),
-        registry.clone(),
-        datalogic.clone(),
-        None,
-        None,
-        None,
-        None,
+        consumer::ConsumerDeps {
+            engine: engine.clone(),
+            channel_registry: registry.clone(),
+            datalogic: datalogic.clone(),
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1699,13 +1737,15 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle2 = consumer::start_consumer(
         &config2,
-        engine,
-        registry,
-        datalogic,
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1749,13 +1789,15 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        registry,
-        datalogic,
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1813,13 +1855,15 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        registry,
-        datalogic,
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1867,13 +1911,15 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        registry,
-        datalogic,
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 
@@ -1973,13 +2019,15 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
     let dlq_producer = Arc::new(plain_producer(&brokers));
     let handle = consumer::start_consumer(
         &config,
-        engine,
-        registry,
-        datalogic,
-        None,
-        Some(dlq_producer),
-        Some(dlq_topic.clone()),
-        None,
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: Some(dlq_producer),
+            dlq_topic: Some(dlq_topic.clone()),
+            instance_id: None,
+        },
     )
     .unwrap();
 

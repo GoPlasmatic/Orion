@@ -398,18 +398,9 @@ where
 async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersistenceTask) {
     let result = with_write_retries(|| async {
         match &task {
-            TracePersistenceTask::StoreCompleted(row) => trace_repo
-                .store_completed(
-                    &row.channel,
-                    row.channel_id.as_deref(),
-                    &row.mode,
-                    row.input_json.as_deref(),
-                    &row.result_json,
-                    row.duration_ms,
-                    row.task_trace_json.as_deref(),
-                )
-                .await
-                .map(|_| ()),
+            TracePersistenceTask::StoreCompleted(row) => {
+                trace_repo.store_completed(row.as_view()).await.map(|_| ())
+            }
             TracePersistenceTask::SetResult(row) => {
                 trace_repo
                     .set_result(

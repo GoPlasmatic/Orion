@@ -32,15 +32,15 @@ async fn test_enqueue_and_claim_pending() {
     let (repo, pool) = dlq_repo().await;
 
     let entry = repo
-        .enqueue(
-            "trace-1",
-            "my-channel",
-            r#"{"key":"value"}"#,
-            r#"{}"#,
-            "engine error",
-            0,
-            5,
-        )
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-1",
+            channel: "my-channel",
+            payload_json: r#"{"key":"value"}"#,
+            metadata_json: r#"{}"#,
+            error_message: "engine error",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .unwrap();
 
@@ -61,7 +61,15 @@ async fn test_record_retry_increments_count() {
     let (repo, pool) = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-2", "ch", r#"{"a":1}"#, r#"{}"#, "err", 0, 5)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-2",
+            channel: "ch",
+            payload_json: r#"{"a":1}"#,
+            metadata_json: r#"{}"#,
+            error_message: "err",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .unwrap();
 
@@ -88,7 +96,15 @@ async fn test_mark_exhausted() {
     let (repo, pool) = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-3", "ch", r#"{"b":2}"#, r#"{}"#, "err", 0, 3)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-3",
+            channel: "ch",
+            payload_json: r#"{"b":2}"#,
+            metadata_json: r#"{}"#,
+            error_message: "err",
+            retry_count: 0,
+            max_retries: 3,
+        })
         .await
         .unwrap();
 
@@ -106,7 +122,15 @@ async fn test_remove() {
     let (repo, pool) = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-4", "ch", r#"{"c":3}"#, r#"{}"#, "err", 0, 5)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-4",
+            channel: "ch",
+            payload_json: r#"{"c":3}"#,
+            metadata_json: r#"{}"#,
+            error_message: "err",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .unwrap();
 
@@ -127,7 +151,15 @@ async fn test_claim_pending_respects_next_retry_at() {
     let (repo, _pool) = dlq_repo().await;
 
     let _entry = repo
-        .enqueue("trace-5", "ch", r#"{"d":4}"#, r#"{}"#, "err", 0, 5)
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-5",
+            channel: "ch",
+            payload_json: r#"{"d":4}"#,
+            metadata_json: r#"{}"#,
+            error_message: "err",
+            retry_count: 0,
+            max_retries: 5,
+        })
         .await
         .unwrap();
 

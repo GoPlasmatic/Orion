@@ -118,13 +118,15 @@ async fn poison_message_converges_on_dlq_max_retries() {
             dlq_poll_interval_secs: 1,
             ..Default::default()
         },
-        poison_engine(),
-        trace_repo.clone(),
-        Some(dlq_repo.clone()),
-        channel_registry.clone(),
-        persistence_queue,
-        trace_storage,
-        "x-orion-identity".to_string(),
+        orion::queue::WorkerDeps {
+            engine: poison_engine(),
+            trace_repo: trace_repo.clone(),
+            dlq_repo: Some(dlq_repo.clone()),
+            channel_registry: channel_registry.clone(),
+            persistence_queue,
+            global_trace_storage: trace_storage,
+            rollout_sticky_header: "x-orion-identity".to_string(),
+        },
     );
 
     let _dlq_retry = orion::queue::start_dlq_retry(

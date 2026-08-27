@@ -96,6 +96,29 @@ pub struct FieldSchema {
     pub alias: Option<&'static str>,
 }
 
+impl FieldSchema {
+    /// The neutral row every field table builds on: not required, not
+    /// resolvable, not secret, no alias.
+    ///
+    /// The tables are `const` slices, so without this every field on this
+    /// struct has to be spelled at all ~137 sites — and adding one costs a
+    /// mechanical diff long enough to hide the handful of rows where the new
+    /// value is not the default. With it, a row states only what is true of
+    /// it: `FieldSchema { name: "key", …, secret: true, ..FieldSchema::DEFAULT }`.
+    ///
+    /// `name`, `description` and `kind` have no meaningful default; every row
+    /// spells them.
+    pub const DEFAULT: Self = FieldSchema {
+        name: "",
+        description: "",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+        secret: false,
+        alias: None,
+    };
+}
+
 /// A function's cross-field authoring-time validator: `(path-suffix, code,
 /// message)` triples over a static input object; an empty suffix addresses
 /// the input object itself. Each one lives next to its handler (conventionally

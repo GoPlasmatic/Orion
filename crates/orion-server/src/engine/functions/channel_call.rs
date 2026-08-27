@@ -373,54 +373,36 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         name: "channel",
         description: "Target channel name to invoke. Mutually exclusive with channel_logic.",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "channel_logic",
         description: "JSONLogic expression evaluating to the target channel name.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "data",
         description: "Static payload to pass to the target channel.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "data_logic",
         description: "JSONLogic expression evaluating to the payload to pass.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the called channel's response is stored. Defaults to \"data\". (Was `response_path` before 1.0; still accepted.)",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "timeout_ms",
         description: "Per-call timeout in milliseconds.",
         kind: FieldKind::Number,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

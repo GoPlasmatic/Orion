@@ -652,7 +652,7 @@ pub(crate) async fn test_workflow(
 
     // Stamped the way every other ingress stamps it, so "test this workflow"
     // and a real request agree about what `metadata.vars` holds.
-    let mut metadata = req.metadata.clone();
+    let mut metadata = req.metadata;
     crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&payload)

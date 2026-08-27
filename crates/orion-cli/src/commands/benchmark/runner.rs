@@ -13,17 +13,32 @@ use orion_client::paths;
 
 use super::stats::RequestResult;
 
-#[allow(clippy::too_many_arguments)]
+/// What to send, where, and how hard.
+///
+/// Grouped because `num_requests` and `concurrency` are both bare `usize`:
+/// swapping them at a call site compiles and quietly runs a different
+/// benchmark.
+pub struct BenchmarkPlan<'a> {
+    pub channel: &'a str,
+    pub payload: &'a Value,
+    pub num_requests: usize,
+    pub concurrency: usize,
+    pub timeout_secs: u64,
+}
+
 pub async fn run_benchmark(
     client: &OrionClient,
-    channel: &str,
-    payload: &Value,
-    num_requests: usize,
-    concurrency: usize,
-    timeout_secs: u64,
+    plan: BenchmarkPlan<'_>,
     cancel: &CancellationToken,
     quiet: bool,
 ) -> Result<(Vec<RequestResult>, Duration)> {
+    let BenchmarkPlan {
+        channel,
+        payload,
+        num_requests,
+        concurrency,
+        timeout_secs,
+    } = plan;
     let semaphore = Arc::new(Semaphore::new(concurrency));
     let completed = Arc::new(AtomicUsize::new(0));
     let mut join_set = JoinSet::new();

@@ -539,9 +539,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to write to.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "write",
@@ -553,9 +551,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         // `POST /admin/workflows/validate` and `orion-server lint`, rather than
         // at the task's first request.
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "database",
@@ -564,10 +560,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       required — and checked at workflow activation — once the referenced \
                       connector is a MongoDB one (F52).",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "schema",
@@ -575,29 +568,21 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       entities and columns are rejected, so a write without one reaches \
                       nothing; pass {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "params",
         description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
                       A value of {\"var\": \"path\"} is read from the message context.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 
@@ -607,73 +592,51 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         description: "Mutation kind: \"insert\", \"update\", \"delete\", or \"upsert\".",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "target",
         description: "Logical entity to write to (schema-resolved to a table/collection).",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "values",
         description: "Row object, or array of row objects (bulk), for insert/upsert.",
         kind: FieldKind::Any,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "set",
         description: "Object of column → value assignments for update/upsert.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "filter",
         description: "Query-dialect filter selecting rows for update/delete. An \
                       update/delete without it is rejected unless \"all\": true is set.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "on_conflict",
         description: "Upsert conflict clause: { \"target\": [cols], \"action\": \"update\"|\"nothing\" }.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "returning",
         description: "Column names to return from mutated rows (Postgres/SQLite only).",
         kind: FieldKind::Array,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "all",
         description: "Acknowledge an intentionally unfiltered update/delete (affects every row).",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

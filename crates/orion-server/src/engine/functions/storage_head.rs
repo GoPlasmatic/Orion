@@ -136,9 +136,7 @@ pub(super) const STORAGE_HEAD_FIELDS: &[FieldSchema] = &[
         description: "Name of the storage connector.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -146,8 +144,7 @@ pub(super) const STORAGE_HEAD_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
@@ -155,10 +152,7 @@ pub(super) const STORAGE_HEAD_FIELDS: &[FieldSchema] = &[
                       content_type } is stored (404 means { exists: false }, not an \
                       error). Defaults to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

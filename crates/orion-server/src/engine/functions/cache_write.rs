@@ -141,9 +141,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the cache connector to write to.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "key",
@@ -151,8 +149,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "value",
@@ -160,16 +157,13 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "ttl_secs",
         description: "Time-to-live in seconds. Omit for no expiry. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Number,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

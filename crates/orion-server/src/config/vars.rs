@@ -66,19 +66,10 @@ impl VarsConfig {
         if self.is_empty() {
             return None;
         }
-        let mut out = serde_json::Map::with_capacity(self.0.len());
-        for (name, value) in &self.0 {
-            // Infallible for the value kinds `validate` admits.
-            match serde_json::to_value(value) {
-                Ok(json) => {
-                    out.insert(name.clone(), json);
-                }
-                Err(e) => {
-                    tracing::error!(var = %name, error = %e, "vars entry dropped: not representable as JSON");
-                }
-            }
-        }
-        Some(serde_json::Value::Object(out))
+        // Infallible for the value kinds `validate` admits — every `toml::Value`
+        // has a JSON form, and the one whose form is a nonsense object
+        // (`Datetime`) is refused before it can get here.
+        serde_json::to_value(&self.0).ok()
     }
 
     pub(super) fn validate(&self) -> Result<(), OrionError> {

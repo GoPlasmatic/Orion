@@ -295,9 +295,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to query.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "query",
@@ -306,9 +304,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       the per-parent page is cut in the database.",
         kind: FieldKind::Object,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "database",
@@ -317,10 +313,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       required — and checked at workflow activation — once the referenced \
                       connector is a MongoDB one (F52).",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "schema",
@@ -329,28 +322,20 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       rejected, so a query without one reaches nothing; pass \
                       {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "params",
         description: "Object of named values folded into the filter's {\"param\": ..} nodes. \
                       A value of {\"var\": \"path\"} is read from the message context.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];

@@ -210,11 +210,13 @@ impl ConnectorsCmd {
                     client,
                     format,
                     quiet,
-                    paths::CONNECTORS_IMPORT,
-                    "connector",
-                    file,
-                    *dry_run,
-                    on_conflict.as_deref(),
+                    utils::ImportRequest {
+                        base_path: paths::CONNECTORS_IMPORT,
+                        label: "connector",
+                        file,
+                        dry_run: *dry_run,
+                        on_conflict: on_conflict.as_deref(),
+                    },
                 )
                 .await
             }

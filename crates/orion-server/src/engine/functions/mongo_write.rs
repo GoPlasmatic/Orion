@@ -802,72 +802,56 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the MongoDB connector.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "database",
         description: "Mongo database name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "collection",
         description: "Mongo collection name.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "op",
         description: "Write operation: insert_one, insert_many, update_one, update_many, replace_one, delete_one, or delete_many.",
         kind: FieldKind::String,
         required: true,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "document",
         description: "The document for insert_one / replace_one (extended JSON; nested arrays/objects pass through). Accepts {\"var\": \"path\"} at any depth.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "documents",
         description: "Array of documents for insert_many; batch size is capped by write.max_rows. Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Array,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "filter",
         description: "Selection filter for update/replace/delete ops (extended JSON: $oid, $date, ... work). An empty filter requires \"all\": true and write.allow_unfiltered. Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "update",
         description: "Update document for update_one/update_many; top-level keys must be atomic operators ($set, $inc, $push, ...). Field paths may target array elements with $ (first match), $[] (every element) or $[identifier] (every element an 'array_filters' entry matches). Accepts {\"var\": \"path\"}.",
         kind: FieldKind::Object,
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "array_filters",
@@ -879,46 +863,32 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
         // cannot inject a `var` node of its own. Necessary, because the
         // predicate value almost always comes from the request. `filter` is
         // already resolvable, so this adds no new class of caller influence.
-        required: false,
         resolvable: true,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "upsert",
         description: "Insert when no document matches (update_one/update_many/replace_one). Gated as 'upsert' on the connector when true. Defaults to false.",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "ordered",
         description: "insert_many only: stop at the first failure (true, default) or attempt every document (false).",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "all",
         description: "Acknowledge an intentionally unfiltered update/replace/delete (affects every document; also requires write.allow_unfiltered).",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-        secret: false,
-        alias: None,
+        ..FieldSchema::DEFAULT
     },
 ];
 

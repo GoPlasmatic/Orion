@@ -150,23 +150,31 @@ pub struct TraceCompletedRow {
 }
 
 /// Borrowed view of a completed-trace row, so the singular path can hand its
-/// `&str` arguments straight to [`completed_values`] instead of copying the
+/// `&str` arguments straight to the insert builder instead of copying the
 /// request body and the engine result into a throwaway owned row.
-struct TraceCompletedRef<'a> {
-    channel: &'a str,
-    channel_id: Option<&'a str>,
-    mode: &'a str,
-    input_json: Option<&'a str>,
-    result_json: &'a str,
-    duration_ms: f64,
-    task_trace_json: Option<&'a str>,
+///
+/// It is also [`TraceRepository::store_completed`]'s parameter: seven
+/// positional arguments, four of them `Option`/`&str` and interchangeable by
+/// type, is a signature where a transposition compiles.
+pub struct TraceCompletedRef<'a> {
+    pub channel: &'a str,
+    /// The channel's stable ID (as opposed to `channel`, its name). `None`
+    /// when the channel could not be resolved at write time.
+    pub channel_id: Option<&'a str>,
+    pub mode: &'a str,
+    pub input_json: Option<&'a str>,
+    pub result_json: &'a str,
+    pub duration_ms: f64,
+    /// Optional per-task execution trace JSON. Populated only when the
+    /// channel has `config.tracing.task_details = true` (A2).
+    pub task_trace_json: Option<&'a str>,
 }
 
 impl TraceCompletedRow {
     /// Borrow this row as a [`TraceCompletedRef`]. Deliberately not spelled
     /// `as_ref`: an inherent method by that name trips
     /// `clippy::should_implement_trait`, which CI runs as `-D warnings`.
-    fn as_view(&self) -> TraceCompletedRef<'_> {
+    pub fn as_view(&self) -> TraceCompletedRef<'_> {
         TraceCompletedRef {
             channel: &self.channel,
             channel_id: self.channel_id.as_deref(),
@@ -352,17 +360,7 @@ pub trait TraceRepository: Send + Sync {
         duration_ms: f64,
         task_trace_json: Option<&str>,
     ) -> Result<(), OrionError>;
-    #[allow(clippy::too_many_arguments)]
-    async fn store_completed(
-        &self,
-        channel: &str,
-        channel_id: Option<&str>,
-        mode: &str,
-        input_json: Option<&str>,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError>;
+    async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError>;
 
     /// Batched variant of [`Self::store_completed`]. Default impl loops the singular
     /// method; backend implementations can override with a single multi-row
@@ -374,18 +372,7 @@ pub trait TraceRepository: Send + Sync {
     ) -> Result<Vec<String>, OrionError> {
         let mut ids = Vec::with_capacity(rows.len());
         for row in rows {
-            ids.push(
-                self.store_completed(
-                    &row.channel,
-                    row.channel_id.as_deref(),
-                    &row.mode,
-                    row.input_json.as_deref(),
-                    &row.result_json,
-                    row.duration_ms,
-                    row.task_trace_json.as_deref(),
-                )
-                .await?,
-            );
+            ids.push(self.store_completed(row.as_view()).await?);
         }
         Ok(ids)
     }
@@ -562,28 +549,10 @@ impl TraceRepository for SqlTraceRepository {
         .await
     }
 
-    async fn store_completed(
-        &self,
-        channel: &str,
-        channel_id: Option<&str>,
-        mode: &str,
-        input_json: Option<&str>,
-        result_json: &str,
-        duration_ms: f64,
-        task_trace_json: Option<&str>,
-    ) -> Result<String, OrionError> {
+    async fn store_completed(&self, row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         crate::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc();
-            let row = TraceCompletedRef {
-                channel,
-                channel_id,
-                mode,
-                input_json,
-                result_json,
-                duration_ms,
-                task_trace_json,
-            };
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -835,15 +804,15 @@ mod tests {
 
         // Create a completed trace
         let id = repo
-            .store_completed(
-                "orders",
-                Some("ch_orders"),
-                "sync",
-                None,
-                r#"{"ok":true}"#,
-                10.0,
-                None,
-            )
+            .store_completed(TraceCompletedRef {
+                channel: "orders",
+                channel_id: Some("ch_orders"),
+                mode: "sync",
+                input_json: None,
+                result_json: r#"{"ok":true}"#,
+                duration_ms: 10.0,
+                task_trace_json: None,
+            })
             .await
             .expect("test");
 
@@ -867,15 +836,15 @@ mod tests {
 
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
-            .store_completed(
-                "orders",
-                Some("ch_orders"),
-                "sync",
-                None,
-                r#"{"ok":true}"#,
-                5.0,
-                None,
-            )
+            .store_completed(TraceCompletedRef {
+                channel: "orders",
+                channel_id: Some("ch_orders"),
+                mode: "sync",
+                input_json: None,
+                result_json: r#"{"ok":true}"#,
+                duration_ms: 5.0,
+                task_trace_json: None,
+            })
             .await
             .expect("test");
 
@@ -978,7 +947,15 @@ mod tests {
         let base = chrono::Utc::now().naive_utc();
         for i in 0..n {
             let id = repo
-                .store_completed("orders", Some("ch_orders"), "sync", None, "{}", 1.0, None)
+                .store_completed(TraceCompletedRef {
+                    channel: "orders",
+                    channel_id: Some("ch_orders"),
+                    mode: "sync",
+                    input_json: None,
+                    result_json: "{}",
+                    duration_ms: 1.0,
+                    task_trace_json: None,
+                })
                 .await
                 .expect("test");
             let stamp = base
@@ -1066,9 +1043,17 @@ mod tests {
         let pool = test_pool().await;
         let repo = SqlTraceRepository::new(pool.clone());
         for _ in 0..5 {
-            repo.store_completed("orders", Some("ch_orders"), "sync", None, "{}", 1.0, None)
-                .await
-                .expect("test");
+            repo.store_completed(TraceCompletedRef {
+                channel: "orders",
+                channel_id: Some("ch_orders"),
+                mode: "sync",
+                input_json: None,
+                result_json: "{}",
+                duration_ms: 1.0,
+                task_trace_json: None,
+            })
+            .await
+            .expect("test");
         }
         let same = "2026-01-01 00:00:00";
         match &pool {

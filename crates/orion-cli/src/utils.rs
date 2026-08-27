@@ -89,17 +89,35 @@ pub fn read_json_input(file: Option<&str>, data: Option<&str>, stdin: bool) -> R
 /// server wraps the result in the `{"data": …}` admin envelope and reports
 /// `imported`/`unchanged`/`skipped`/`failed` in both real and dry-run modes.
 /// Returns exit code 1 when any item failed (or would fail).
-#[allow(clippy::too_many_arguments)]
+/// One import's worth of "what is being imported, from where, and how".
+///
+/// Grouped because `base_path`, `label` and `file` are three consecutive
+/// `&str`: transposing any two of them compiles and imports the wrong thing
+/// under the wrong name.
+pub struct ImportRequest<'a> {
+    /// The admin endpoint the array is POSTed to.
+    pub base_path: &'a str,
+    /// Singular noun for the entity, used in messages ("connector", "channel").
+    pub label: &'a str,
+    /// Path to the JSON file holding the array.
+    pub file: &'a str,
+    pub dry_run: bool,
+    pub on_conflict: Option<&'a str>,
+}
+
 pub async fn run_import(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
-    base_path: &str,
-    label: &str,
-    file: &str,
-    dry_run: bool,
-    on_conflict: Option<&str>,
+    req: ImportRequest<'_>,
 ) -> Result<i32> {
+    let ImportRequest {
+        base_path,
+        label,
+        file,
+        dry_run,
+        on_conflict,
+    } = req;
     let content = std::fs::read_to_string(file)?;
     let items: Value = serde_json::from_str(&content)?;
     if !items.is_array() {

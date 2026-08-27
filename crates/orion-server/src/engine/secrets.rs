@@ -46,15 +46,22 @@ impl ResolvedSecrets {
     /// `env://PARTNER_HMAC_KEY` — is the defect the reference syntax exists to
     /// prevent. The error names the entry and never its value.
     pub async fn resolve(declared: &SecretsConfig) -> Result<Self, OrionError> {
+        // One resolver registry for the whole section. `resolve_secret_string`
+        // would build its own per call — two `env::var` reads and a client
+        // clone each — and this runs before readiness, once per declared entry.
+        // The loop itself stays per-entry because the error has to name the
+        // entry (`secrets.partner_hmac`), not the reference it holds.
+        let resolvers = crate::connector::secrets::default_resolvers();
         let mut root = Map::with_capacity(declared.0.len());
         for (name, reference) in declared.iter() {
-            let value = crate::connector::secrets::resolve_secret_string(
-                reference,
+            let mut value = Value::String(reference.clone());
+            crate::connector::secrets::resolve_in_place(
+                &mut value,
+                &resolvers,
                 &format!("secrets.{name}"),
             )
-            .await
-            .map_err(|message| OrionError::Config { message })?;
-            root.insert(name.clone(), Value::String(value));
+            .await?;
+            root.insert(name.clone(), value);
         }
         Ok(Self {
             root: Value::Object(root),

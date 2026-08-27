@@ -24,6 +24,7 @@
 //! answer and one list behind it.
 
 use dataflow_rs::engine::error::DataflowError;
+use dataflow_rs::engine::secrets::SECRET_OPERATOR;
 use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
@@ -37,14 +38,16 @@ pub fn secret_name(value: &Value) -> Option<&str> {
     if object.len() != 1 {
         return None;
     }
-    object.get("secret")?.as_str()
+    // The operator's own name, from the engine that registers it, so the two
+    // cannot drift apart.
+    object.get(SECRET_OPERATOR)?.as_str()
 }
 
 /// Resolve one key-material field to its value.
 ///
 /// The error text names the field and, for a store miss, the key — never a
 /// value.
-pub async fn resolve_key_material(
+async fn resolve_key_material(
     value: &Value,
     field: &str,
     ctx: &TaskContext<'_>,
@@ -70,7 +73,10 @@ pub async fn resolve_key_material(
     }
 }
 
-/// [`resolve_key_material`] returning a `DataflowError`, for the handlers.
+/// Resolve one key-material field to its value, as a `DataflowError`.
+///
+/// The only entry point: the `String`-error form behind it is private, so no
+/// handler can reach it and skip this mapping.
 pub async fn key_material(
     value: &Value,
     field: &str,

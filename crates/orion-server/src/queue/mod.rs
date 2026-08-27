@@ -293,22 +293,39 @@ impl WorkerHandle {
     }
 }
 
+/// What the worker pool needs from the running instance, beyond the scalar
+/// settings it reads from `TraceQueueConfig`.
+///
+/// Named fields rather than a positional list: the two repositories are both
+/// `Arc<dyn …>` and one of them is optional, so a transposition compiles.
+pub struct WorkerDeps {
+    pub engine: Arc<crate::engine::EngineHandle>,
+    pub trace_repo: Arc<dyn TraceRepository>,
+    pub dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
+    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub persistence_queue: TracePersistenceQueue,
+    pub global_trace_storage: crate::config::TraceStorageConfig,
+    pub rollout_sticky_header: String,
+}
+
 /// Start the background worker pool and return a (TraceQueue, WorkerHandle) pair.
 ///
 /// Scalar config parameters (workers, buffer_size, timeouts, limits) are read
-/// from `config`. The Arc dependencies (engine, repos) are passed separately
+/// from `config`. The `Arc` dependencies (engine, repos) arrive in [`WorkerDeps`]
 /// because they have independent lifetimes.
-#[allow(clippy::too_many_arguments)]
 pub fn start_workers(
     config: &crate::config::TraceQueueConfig,
-    engine: Arc<crate::engine::EngineHandle>,
-    trace_repo: Arc<dyn TraceRepository>,
-    dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
-    persistence_queue: TracePersistenceQueue,
-    global_trace_storage: crate::config::TraceStorageConfig,
-    rollout_sticky_header: String,
+    deps: WorkerDeps,
 ) -> (TraceQueue, WorkerHandle) {
+    let WorkerDeps {
+        engine,
+        trace_repo,
+        dlq_repo,
+        channel_registry,
+        persistence_queue,
+        global_trace_storage,
+        rollout_sticky_header,
+    } = deps;
     let max_workers = config.workers;
     let buffer_size = config.buffer_size;
     let shutdown_timeout_secs = config.shutdown_timeout_secs;
@@ -477,13 +494,7 @@ mod tests {
         }
         async fn store_completed(
             &self,
-            _channel: &str,
-            _channel_id: Option<&str>,
-            _mode: &str,
-            _input_json: Option<&str>,
-            _result_json: &str,
-            _duration_ms: f64,
-            _task_trace_json: Option<&str>,
+            _row: crate::storage::repositories::traces::TraceCompletedRef<'_>,
         ) -> Result<String, crate::errors::OrionError> {
             unimplemented!("not used by trace cleanup")
         }

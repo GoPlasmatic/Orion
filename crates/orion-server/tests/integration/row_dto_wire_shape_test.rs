@@ -146,15 +146,15 @@ async fn app_with_dlq_entry() -> (axum::Router, String) {
     let entry = state
         .repos
         .trace_dlq
-        .enqueue(
-            "trace-1",
-            "orders",
-            r#"{"order":"A-1"}"#,
-            "{}",
-            "boom",
-            0,
-            3,
-        )
+        .enqueue(orion::storage::repositories::trace_dlq::DlqEnqueue {
+            trace_id: "trace-1",
+            channel: "orders",
+            payload_json: r#"{"order":"A-1"}"#,
+            metadata_json: "{}",
+            error_message: "boom",
+            retry_count: 0,
+            max_retries: 3,
+        })
         .await
         .expect("enqueue");
     (orion::server::build_router(state), entry.id)

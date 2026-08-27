@@ -290,13 +290,7 @@ mod tests {
     impl TraceDlqRepository for MockDlqRepo {
         async fn enqueue(
             &self,
-            _trace_id: &str,
-            _channel: &str,
-            _payload_json: &str,
-            _metadata_json: &str,
-            _error_message: &str,
-            _retry_count: i64,
-            _max_retries: i64,
+            _row: crate::storage::repositories::trace_dlq::DlqEnqueue<'_>,
         ) -> Result<TraceDlqEntry, OrionError> {
             unimplemented!("not needed for retry tests")
         }
@@ -445,13 +439,7 @@ mod tests {
         }
         async fn store_completed(
             &self,
-            _channel: &str,
-            _channel_id: Option<&str>,
-            _mode: &str,
-            _input_json: Option<&str>,
-            _result_json: &str,
-            _duration_ms: f64,
-            _task_trace_json: Option<&str>,
+            _row: crate::storage::repositories::traces::TraceCompletedRef<'_>,
         ) -> Result<String, OrionError> {
             unimplemented!()
         }
