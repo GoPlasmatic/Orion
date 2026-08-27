@@ -238,7 +238,8 @@ impl CompiledAuth {
                     None => None,
                     Some(logic) => {
                         let engine = datalogic.ok_or(
-                            "auth.authorization_logic needs the shared JSONLogic engine,                              which this caller cannot supply",
+                            "auth.authorization_logic needs the shared JSONLogic engine, \
+                             which this caller cannot supply",
                         )?;
                         Some(
                             engine
@@ -720,7 +721,8 @@ fn hmac_plan(cfg: &ChannelAuthConfig) -> Result<(HmacPlan, Vec<String>), String>
     let extraction = match (signature_prefix, signature_key) {
         (Some(_), Some(_)) => {
             return Err(
-                "auth.signature_prefix and auth.signature_key are mutually exclusive —                  a signature is either prefix-stripped or extracted from a packed header"
+                "auth.signature_prefix and auth.signature_key are mutually exclusive — \
+                 a signature is either prefix-stripped or extracted from a packed header"
                     .to_string(),
             );
         }
@@ -849,7 +851,8 @@ fn parse_template(template: &str) -> Result<Vec<Segment>, String> {
                         Some(inner) => placeholder.push(inner),
                         None => {
                             return Err(format!(
-                                "auth.message has an unterminated '{{' before the end:                                  '{template}'"
+                                "auth.message has an unterminated '{{' before the end: \
+                                 '{template}'"
                             ));
                         }
                     }
@@ -868,8 +871,11 @@ fn parse_template(template: &str) -> Result<Vec<Segment>, String> {
         segments.push(Segment::Literal(literal));
     }
     if !segments.contains(&Segment::Body) {
-        return Err("auth.message must contain {body} — a template that never covers the                     payload verifies nothing about it"
-            .to_string());
+        return Err(
+            "auth.message must contain {body} — a template that never covers the \
+             payload verifies nothing about it"
+                .to_string(),
+        );
     }
     Ok(segments)
 }
@@ -884,14 +890,16 @@ fn parse_placeholder(placeholder: &str) -> Result<Segment, String> {
                 Ok(Segment::HeaderPart(name.to_string(), key.to_string()))
             }
             Some(_) => Err(format!(
-                "auth.message placeholder '{{{placeholder}}}' is malformed —                  {{header:<name>}} or {{header:<name>:<key>}}"
+                "auth.message placeholder '{{{placeholder}}}' is malformed — \
+                 {{header:<name>}} or {{header:<name>:<key>}}"
             )),
             None if !rest.is_empty() => Ok(Segment::Header(rest.to_string())),
             None => Err("auth.message placeholder {header:} names no header".to_string()),
         };
     }
     Err(format!(
-        "auth.message placeholder '{{{placeholder}}}' is not known —          {{body}}, {{header:<name>}}, or {{header:<name>:<key>}}"
+        "auth.message placeholder '{{{placeholder}}}' is not known — \
+         {{body}}, {{header:<name>}}, or {{header:<name>:<key>}}"
     ))
 }
 

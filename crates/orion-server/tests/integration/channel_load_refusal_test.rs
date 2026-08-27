@@ -434,7 +434,9 @@ async fn insert_raw_active_workflow_and_channel(
 ) {
     let wf = format!("wf_{name}");
     let sql = format!(
-        "INSERT INTO workflows (workflow_id, version, name, priority, status,          rollout_percentage, condition_json, tasks_json, tags_json)          VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]')"
+        "INSERT INTO workflows (workflow_id, version, name, priority, status, \
+         rollout_percentage, condition_json, tasks_json, tags_json) \
+         VALUES ('{wf}', 1, '{name}', 0, 'active', 100, 'true', '{tasks_json}', '[]')"
     );
     state
         .db_pool
@@ -443,7 +445,9 @@ async fn insert_raw_active_workflow_and_channel(
         .expect("raw workflow insert");
 
     let sql = format!(
-        "INSERT INTO channels (channel_id, version, name, channel_type, protocol,          transport_config_json, config_json, status, priority, workflow_id)          VALUES ('ch_{name}', 1, '{name}', 'sync', 'http', '{{}}', '{{}}', 'active', 0, '{wf}')"
+        "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
+         transport_config_json, config_json, status, priority, workflow_id) \
+         VALUES ('ch_{name}', 1, '{name}', 'sync', 'http', '{{}}', '{{}}', 'active', 0, '{wf}')"
     );
     state
         .db_pool

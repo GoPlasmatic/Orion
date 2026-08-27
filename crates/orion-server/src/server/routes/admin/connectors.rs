@@ -615,7 +615,9 @@ pub(crate) async fn validate_connector(
     {
         warnings.push(super::ValidationIssue {
             field: "config.tls".to_string(),
-            message: "tls is 'none': credentials and message content travel in                       cleartext. Acceptable only for a local dev relay — use                       'starttls' (587) or 'implicit' (465) anywhere real."
+            message: "tls is 'none': credentials and message content travel in \
+                      cleartext. Acceptable only for a local dev relay — use \
+                      'starttls' (587) or 'implicit' (465) anywhere real."
                 .to_string(),
         });
     }
