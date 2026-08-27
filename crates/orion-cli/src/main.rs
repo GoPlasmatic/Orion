@@ -220,11 +220,13 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
     }
     // An admin key over plain http to anything but the local machine crosses
     // the network in the clear; say so once rather than let it pass silently.
+    // Printed from the URL we were given, not from the keyed client — the
+    // text is the same, and nothing derived from the key reaches stderr.
     if client.sends_credential_in_clear() {
         eprintln!(
             "{} API key will be sent over plain http to {} — use https for any server that is not local",
             "Warning:".yellow().bold(),
-            client.base_url()
+            server_url.trim_end_matches('/')
         );
     }
     Ok(client)
