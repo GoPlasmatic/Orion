@@ -52,6 +52,36 @@ impl OrionClient {
         &self.base_url
     }
 
+    /// `true` when this client would send its API key over plain `http://`
+    /// to a host other than the local machine — the one configuration in
+    /// which the credential crosses a network unencrypted. Loopback
+    /// (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) is exempt: that is
+    /// every development setup, and the bytes never leave the host. Callers
+    /// print the warning; a transport library has no business writing to
+    /// stderr.
+    pub fn sends_credential_in_clear(&self) -> bool {
+        if self.api_key.is_none() {
+            return false;
+        }
+        let Ok(url) = reqwest::Url::parse(&self.base_url) else {
+            return false;
+        };
+        if url.scheme() != "http" {
+            return false;
+        }
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        let is_loopback = host.eq_ignore_ascii_case("localhost")
+            || host.to_ascii_lowercase().ends_with(".localhost")
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback());
+        !is_loopback
+    }
+
     /// Authenticate with an API key. With no `header` (or an
     /// `Authorization`-named one) the key is sent as `Authorization: Bearer`;
     /// any other header name carries the key verbatim.
@@ -240,5 +270,31 @@ mod tests {
     fn base_url_trailing_slash_is_trimmed() {
         let client = OrionClient::new("http://localhost:8080/").expect("test");
         assert_eq!(client.base_url(), "http://localhost:8080");
+    }
+
+    #[test]
+    fn credential_in_clear_is_only_plain_http_to_a_remote_host() {
+        let keyed = |url: &str| {
+            OrionClient::new(url)
+                .expect("test")
+                .with_api_key("k".into(), None)
+        };
+        // Plain http off the box: the key would cross a network in the clear.
+        assert!(keyed("http://orion.internal:8080").sends_credential_in_clear());
+        assert!(keyed("http://10.0.0.5").sends_credential_in_clear());
+        // Encrypted, or never leaving the host: fine.
+        assert!(!keyed("https://orion.internal").sends_credential_in_clear());
+        assert!(!keyed("http://localhost:8080").sends_credential_in_clear());
+        assert!(!keyed("http://LOCALHOST").sends_credential_in_clear());
+        assert!(!keyed("http://dev.localhost").sends_credential_in_clear());
+        assert!(!keyed("http://127.0.0.1:8080").sends_credential_in_clear());
+        assert!(!keyed("http://127.1.2.3").sends_credential_in_clear());
+        assert!(!keyed("http://[::1]:8080").sends_credential_in_clear());
+        // No key: nothing to leak, whatever the URL.
+        assert!(
+            !OrionClient::new("http://orion.internal")
+                .expect("test")
+                .sends_credential_in_clear()
+        );
     }
 }

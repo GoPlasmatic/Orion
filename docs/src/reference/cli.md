@@ -213,7 +213,7 @@ Global flags apply to every subcommand:
 | Flag | Description |
 |------|-------------|
 | `--server <url>` | Orion server URL. Overrides the config file and `ORION_SERVER_URL`. |
-| `--api-key <key>` | API key for admin authentication. Falls back to `ORION_API_KEY`, then the `api_key` in `~/.orion/config.toml`. |
+| `--api-key <key>` | API key for admin authentication. Falls back to `ORION_API_KEY`, then the `api_key` in `~/.orion/config.toml`. When the key would travel over plain `http://` to any host but the local machine, a warning is printed to stderr — use `https://` for a remote server. |
 | `--api-key-header <name>` | Header name carrying the key. Default: `Authorization` with a `Bearer` prefix. |
 | `--change-context <ctx>` | Audit label for this change, e.g. `ticket=OPS-4412`. Sent as `X-Orion-Change-Context` and recorded under `details.change_context` on every audit row the command writes. Also read from `ORION_CHANGE_CONTEXT`. |
 | `--output <format>` | Output format: `table` (default), `json`, or `yaml`. |
@@ -534,7 +534,7 @@ Example: `orion-cli completions zsh > ~/.zfunc/_orion-cli`
 | `ORION_API_KEY_HEADER` | `orion-cli` | Header name carrying the key. |
 | `ORION_CHANGE_CONTEXT` | `orion-cli` | Audit change context when `--change-context` is not given. |
 | `NO_COLOR` | `orion-cli` | Disables colored output, like `--no-color`. |
-| `ORION_ADMIN_TOKEN` | `orion-server package` | Bearer token sent to the target instance's admin API. |
+| `ORION_ADMIN_TOKEN` | `orion-server package` | Bearer token sent to the target instance's admin API. A warning is printed when it would travel over plain `http://` to any host but the local machine. |
 | `ORION_SECTION__KEY` | `orion-server` | Overrides any config setting, e.g. `ORION_SERVER__PORT`. See the [Configuration Reference](./configuration.md#how-settings-are-resolved). |
 
 ## Related

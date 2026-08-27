@@ -119,9 +119,6 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
     match &cli.command {
         Commands::Benchmark(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Config(cmd) => {
@@ -130,94 +127,55 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
         }
         Commands::Health => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             commands::health::run(&client, &cli.output, cli.quiet).await
         }
         Commands::Workflows(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.verbose, cli.yes)
                 .await
         }
         Commands::Channels(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Connectors(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Send(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.verbose).await
         }
         Commands::Traces(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Engine(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Functions(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Metrics(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client).await
         }
         Commands::AuditLogs(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Backups(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Packages(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet).await
         }
         Commands::Dlq(cmd) => {
             let client = build_client(&cli)?;
-            if cli.verbose {
-                eprintln!("{} {}", "Server:".dimmed(), client.base_url());
-            }
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Completions(cmd) => {
@@ -251,11 +209,23 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         .or_else(OrionConfig::resolve_api_key);
 
     let mut client = OrionClient::new(&server_url)?;
+    if cli.verbose {
+        eprintln!("{} {}", "Server:".dimmed(), client.base_url());
+    }
     if let Some((key, header)) = api_key {
         client = client.with_api_key(key, header);
     }
     if let Some(context) = &cli.change_context {
         client = client.with_change_context(context.clone());
+    }
+    // An admin key over plain http to anything but the local machine crosses
+    // the network in the clear; say so once rather than let it pass silently.
+    if client.sends_credential_in_clear() {
+        eprintln!(
+            "{} API key will be sent over plain http to {} — use https for any server that is not local",
+            "Warning:".yellow().bold(),
+            client.base_url()
+        );
     }
     Ok(client)
 }

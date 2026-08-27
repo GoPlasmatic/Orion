@@ -36,6 +36,12 @@ impl OrionClient {
         }
     }
 
+    /// See [`orion_client::OrionClient::sends_credential_in_clear`]: an API
+    /// key over plain `http://` to a host that is not the local machine.
+    pub fn sends_credential_in_clear(&self) -> bool {
+        self.inner.sends_credential_in_clear()
+    }
+
     /// Stamp every request with `X-Orion-Change-Context`, so the audit rows a
     /// multi-command operation writes carry the caller's own label.
     pub fn with_change_context(self, context: String) -> Self {

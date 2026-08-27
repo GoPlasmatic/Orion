@@ -130,6 +130,13 @@ fn admin_client(server: &str, change_context: String) -> Result<OrionClient, Cli
     {
         client = client.with_api_key(token, None);
     }
+    // Same warning `orion-cli` prints: the token over plain http to anything
+    // but the local machine crosses the network in the clear.
+    if client.sends_credential_in_clear() {
+        eprintln!(
+            "warning: ORION_ADMIN_TOKEN will be sent over plain http to {server} — use https for any server that is not local"
+        );
+    }
     Ok(client.with_change_context(change_context))
 }
 

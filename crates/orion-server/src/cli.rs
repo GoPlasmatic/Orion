@@ -141,7 +141,10 @@ fn print_config_summary(config: &config::AppConfig) {
     println!(
         "  tracing:         {}",
         if config.tracing.enabled {
-            format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
+            format!(
+                "enabled (endpoint={})",
+                redacted(&config.tracing.otlp_endpoint)
+            )
         } else {
             "disabled".to_string()
         }

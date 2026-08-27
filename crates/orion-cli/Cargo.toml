@@ -33,7 +33,7 @@ serde_yaml = "0.9"
 orion-api = { version = "1.0.4", path = "../orion-api" }
 # The shared transport — the same client the server's `package` subcommand
 # drives. This crate owns reqwest; the CLI has no direct HTTP dependency.
-orion-client = { version = "1.0.4", path = "../orion-client" }
+orion-client = { version = "1.0.5", path = "../orion-client" }
 # Same spec as orion-server so the shared lockfile carries one `toml` tree.
 # (reqwest reaches this binary only through orion-client now.)
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
