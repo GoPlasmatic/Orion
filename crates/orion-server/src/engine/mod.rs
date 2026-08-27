@@ -76,13 +76,27 @@ pub const VARS_KEY: &str = "vars";
 /// them. That is the whole distinction between this and
 /// [`secrets`], which the engine holds precisely so it
 /// cannot record them.
+///
+/// A non-object `metadata` is replaced by an object rather than skipped when
+/// there are vars to stamp. Every ingress builds metadata differently — the
+/// HTTP route normalises the caller's value first, Kafka builds its own, and
+/// the admin test endpoint's field defaults to `null` when the caller omits it
+/// — so a helper that silently did nothing for `null` made "which ingress?"
+/// decide whether `metadata.vars` exists. It reads as absent either way to a
+/// caller who sent no metadata, and the workflow sees the same object it would
+/// have seen through the data route.
 pub fn stamp_vars(metadata: &mut serde_json::Value, vars: Option<&serde_json::Value>) {
-    if let Some(map) = metadata.as_object_mut() {
-        match vars {
-            Some(values) => {
+    match vars {
+        Some(values) => {
+            if !metadata.is_object() {
+                *metadata = serde_json::Value::Object(serde_json::Map::new());
+            }
+            if let Some(map) = metadata.as_object_mut() {
                 map.insert(VARS_KEY.to_string(), values.clone());
             }
-            None => {
+        }
+        None => {
+            if let Some(map) = metadata.as_object_mut() {
                 map.remove(VARS_KEY);
             }
         }

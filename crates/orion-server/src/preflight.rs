@@ -243,6 +243,23 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
         })
         .collect();
 
+    // The other refusal a *stored* workflow can carry unknowingly: a secret
+    // reference in a field that resolves none. It is a create/update gate, not
+    // a load-time screen, so a workflow holding one keeps serving until the
+    // next edit is refused — which is precisely the shape of break this
+    // command exists to find before an operator hits it from a pipeline.
+    findings.extend(
+        crate::validation::secret_reference_errors(&tasks)
+            .into_iter()
+            .map(|(path, message)| Finding {
+                check: "14",
+                entity: format!("workflow '{name}' {path}"),
+                problem: message,
+                remedy: "move the value to a connector, or declare it in the config                          file — under [vars] if it belongs in a trace, [secrets] if                          it does not; the next update of this workflow is refused                          until then"
+                    .to_string(),
+            }),
+    );
+
     findings.extend(check_dialect_schemas(name, &tasks));
     findings
 }
@@ -305,6 +322,43 @@ fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Finding> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The break an operator cannot otherwise see coming: the workflow keeps
+    /// serving, and the refusal arrives at whatever edits it next.
+    #[test]
+    fn a_stored_stray_secret_reference_is_reported() {
+        let tasks = json!([{
+            "id": "call", "name": "Call",
+            "function": {"name": "http_call", "input": {
+                "connector": "crm", "path": "env://API_BASE"
+            }}
+        }]);
+        let found = check_workflow_tasks("orders-wf", &tasks.to_string());
+        assert_eq!(found.len(), 1, "got {found:?}");
+        assert!(
+            found[0].entity.contains("input.path"),
+            "{}",
+            found[0].entity
+        );
+        assert!(
+            found[0].remedy.contains("[secrets]"),
+            "the remedy must name where the value goes: {}",
+            found[0].remedy
+        );
+    }
+
+    /// And the five paths that do resolve one stay quiet, or every signing
+    /// workflow in the estate reports a break that is not one.
+    #[test]
+    fn a_stored_reference_in_a_key_field_is_not_reported() {
+        let tasks = json!([{
+            "id": "mac", "name": "MAC",
+            "function": {"name": "crypto", "input": {
+                "op": "hmac", "key": "env://PARTNER_KEY", "data": {"var": "data.body"}
+            }}
+        }]);
+        assert!(check_workflow_tasks("signer", &tasks.to_string()).is_empty());
+    }
 
     #[test]
     fn a_clean_channel_config_reports_nothing() {

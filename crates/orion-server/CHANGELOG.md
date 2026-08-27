@@ -88,7 +88,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `env://` references it already listed: one exit-neutral `[secrets.reference]`
   note per `{"secret": …}` name, with the files that read it, so a deployment
   checklist covers the `[secrets]` entries the serving instance needs as well
-  as its environment variables.
+  as its environment variables. Both argument spellings are inventoried:
+  datalogic normalises `{"secret": ["name"]}` to the string form, so the engine
+  resolves either and so does every surface that reads one.
+
+- **`orion-server preflight` reports a stored stray secret reference.** The
+  create/update gate above is a break an operator cannot otherwise see coming —
+  the workflow keeps serving and the refusal arrives at whatever edits it next
+  — so the command whose job is scanning the stored estate for upgrade breaks
+  now inventories them with the remedy attached.
+
+### Fixed
+
+- **`jwt_verify.keys` is an array and stays one.** The field carries key
+  material at each entry's `key`, not at the field itself, so a bare
+  `{"secret": "name"}` in its place is refused rather than accepted: the
+  handler reads `keys` with `as_array()`, so it would have found no static key
+  and verified against JWKS alone — silently, and only for the tokens the
+  operator meant the static key to cover. The same distinction narrows
+  `UNRESOLVED_SECRET_REF`, which now holds its fire only at `keys[].key`: a
+  reference in a sibling `kid` or `key_encoding` is read verbatim, so it never
+  matches any token and is reported like any other stray one.
+
+- **`POST /admin/workflows/{id}/test` stamps `metadata.vars` when the caller
+  omits `metadata`.** The field defaults to `null`, and the stamping helper
+  skipped a non-object — so the endpoint that stands in for a real request
+  answered differently from one. The helper now builds the object rather than
+  skipping, which closes the same gap for any future ingress.
+
+- **An `issuer`/`audience` array element that resolves to nothing is dropped,
+  not refused.** The elements are `resolvable`, so
+  `[{"var": "data.aud1"}, {"var": "data.aud2"}]` is a documented spelling and a
+  request carrying only the first folds the second to `null` — an absent
+  accepted value, which is what the whole-field `null` arm already meant.
+  Dropping it can only narrow what verification accepts. Anything else
+  non-string is still an error.
+
+- **`dry-run --secrets` and a case file's `secrets` block check their value
+  kinds** where the file is named, rather than leaving a non-string to surface
+  as a task error under a case name.
 
 [GoPlasmatic/dataflow-rs#50]: https://github.com/GoPlasmatic/dataflow-rs/issues/50
 

@@ -662,7 +662,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       engine's [secrets] store; a string is a literal or a reference \
                       like env://NAME. Never appears in traces or errors.",
         kind: FieldKind::String,
-        secret: true,
+        secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

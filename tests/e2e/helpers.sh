@@ -349,6 +349,12 @@ start_server() {
     # so the config file holds a *reference*, which is the shape `[secrets]`
     # accepts — and in the reserved `ORION_SECRET_*` namespace, which the
     # startup scan for misspelled overrides deliberately skips.
+    #
+    # The heredoc below is unquoted, because `$port` and `$ORION_DB_PATH` have
+    # to interpolate — so the `[vars]` placeholder is written `\${...}`.
+    # Without the backslash bash substitutes it before the file is written and
+    # the config holds a literal, which would leave Orion's own `${VAR}` pass —
+    # the thing this suite exists to cover — never actually run.
     export E2E_VAR_TOPIC_PREFIX="eu-west"
     export ORION_SECRET_E2E_PARTNER_HMAC="e2e-partner-hmac-value"
 
@@ -375,7 +381,7 @@ format = "pretty"
 enabled = false
 
 [vars]
-topic_prefix = "${E2E_VAR_TOPIC_PREFIX}"
+topic_prefix = "\${E2E_VAR_TOPIC_PREFIX}"
 max_retries = 3
 
 [secrets]

@@ -770,6 +770,19 @@ pub(crate) fn offline_secrets(
 ) -> Result<orion::engine::ResolvedSecrets, String> {
     match value {
         serde_json::Value::Object(map) => {
+            // Checked here rather than left to the first task that reads one.
+            // `ResolvedSecrets::resolve` always produces strings, so this is
+            // the only store that can hold a shape the reader rejects — and
+            // that rejection arrives as a task error inside a `*.case.json`
+            // run, where the case name is the only context the author gets.
+            for (name, value) in map {
+                if !value.is_string() {
+                    return Err(format!(
+                        "{source}: secrets.{name} must be a string, got {}",
+                        orion::engine::utils::json_kind(value)
+                    ));
+                }
+            }
             Ok(orion::engine::ResolvedSecrets::from_values(map.clone()))
         }
         other => Err(format!(

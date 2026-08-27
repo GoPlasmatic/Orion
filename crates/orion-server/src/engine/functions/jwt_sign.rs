@@ -214,7 +214,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
                       reference (env://NAME). Never appears in traces or errors.",
         kind: FieldKind::String,
         required: true,
-        secret: true,
+        secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

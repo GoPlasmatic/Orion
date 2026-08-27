@@ -32,7 +32,13 @@ use serde_json::Value;
 /// registers on every engine — or `None` for anything else.
 ///
 /// A single-key object is the shape datalogic compiles as an operator call, so
-/// this recognises exactly what the engine would.
+/// this recognises exactly what the engine would. **Both** argument spellings
+/// count: datalogic normalises a one-element array to a single argument, so
+/// `{"secret": ["name"]}` resolves at runtime exactly as the string form does,
+/// and dataflow-rs's own authoring check reads it the same way. Recognising
+/// only the string form would leave the array form resolving in a condition,
+/// failing in a handler field, and missing from `lint`'s `[secrets]`
+/// inventory — three surfaces disagreeing about one node.
 pub fn secret_name(value: &Value) -> Option<&str> {
     let object = value.as_object()?;
     if object.len() != 1 {
@@ -40,7 +46,11 @@ pub fn secret_name(value: &Value) -> Option<&str> {
     }
     // The operator's own name, from the engine that registers it, so the two
     // cannot drift apart.
-    object.get(SECRET_OPERATOR)?.as_str()
+    match object.get(SECRET_OPERATOR)? {
+        Value::String(name) => Some(name.as_str()),
+        Value::Array(items) if items.len() == 1 => items[0].as_str(),
+        _ => None,
+    }
 }
 
 /// Resolve one key-material field to its value.
@@ -100,5 +110,17 @@ mod tests {
         assert_eq!(secret_name(&json!({"var": "data.k"})), None);
         assert_eq!(secret_name(&json!("k")), None);
         assert_eq!(secret_name(&json!({"secret": 7})), None);
+    }
+
+    /// datalogic normalises a one-element array argument to a single argument,
+    /// so the engine resolves this spelling; every Orion surface that reads a
+    /// secret node has to agree with it.
+    #[test]
+    fn the_one_element_array_spelling_is_the_same_reference() {
+        assert_eq!(secret_name(&json!({"secret": ["k"]})), Some("k"));
+        // More than one argument is an error at the operator, not a name.
+        assert_eq!(secret_name(&json!({"secret": ["k", "j"]})), None);
+        assert_eq!(secret_name(&json!({"secret": []})), None);
+        assert_eq!(secret_name(&json!({"secret": [7]})), None);
     }
 }

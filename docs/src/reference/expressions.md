@@ -234,10 +234,13 @@ material — `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys[].key`,
 `issuer` and `audience` — and nowhere else. A value *derived* from a secret
 belongs inside a function, not in a mapping.
 
-Two limits worth knowing:
+Three limits worth knowing:
 
 - **Five function fields, not every function field.** Those five read
-  `{"secret": …}` themselves, because their handlers do. Everywhere else a task
+  `{"secret": …}` themselves, because their handlers do — and inside
+  `jwt_verify.keys` it is each entry's `key`, not the entry: a reference in a
+  sibling `kid` or `key_encoding` is read verbatim and is refused like any
+  other stray one. Everywhere else a task
   input is taken as written: an `http_call` header holding `{"secret": "k"}` is
   an object where the field's type says string, so the workflow fails to load
   and the channel is quarantined. Put a credential a remote system needs on the

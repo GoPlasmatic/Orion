@@ -159,6 +159,18 @@ async fn string_or_vec(
     };
     let mut resolved = Vec::with_capacity(items.len());
     for item in items {
+        // A `null` element is dropped, not refused. The elements are
+        // `resolvable`, so `[{"var": "data.aud1"}, {"var": "data.aud2"}]` is a
+        // documented spelling and a request that carries only the first folds
+        // the second to `null` — an absent accepted value, the same thing the
+        // whole-field `None | Null` arm above already treats as "not supplied".
+        // Dropping it narrows what verification accepts, so the failure it can
+        // cause is a rejected token, never an accepted one. Anything else
+        // non-string is still an error: silently dropping a number or a
+        // misspelled operator node would hide a typo in a security control.
+        if item.is_null() {
+            continue;
+        }
         resolved.push(super::secret_ref::key_material(&item, field, ctx).await?);
     }
     Ok(resolved)
@@ -228,10 +240,13 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "keys",
         description: "Static verification keys: [{algorithm, key, kid?, \
-                      key_encoding?}]. Each key takes {\"secret\": \"name\"} or a \
-                      string. At least one of keys/jwks_url.",
+                      key_encoding?}]. Each entry's key takes {\"secret\": \"name\"} \
+                      or a string; the field itself is always an array. At least one \
+                      of keys/jwks_url.",
         kind: FieldKind::Array,
-        secret: true,
+        // Each entry's `key`, and nothing else: `kid` and `key_encoding` are
+        // read verbatim, so a reference in either is as stray as anywhere else.
+        secret_at: &["[].key"],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -247,7 +262,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       and env:// references resolve.",
         kind: FieldKind::Any,
         resolvable: true,
-        secret: true,
+        secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -256,7 +271,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       and env:// references resolve (OAuth client ids).",
         kind: FieldKind::Any,
         resolvable: true,
-        secret: true,
+        secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

@@ -73,17 +73,30 @@ pub struct FieldSchema {
     /// everything else — connector names, SQL text, output paths — stays
     /// literal by design.
     pub resolvable: bool,
-    /// Whether the handler resolves a secret reference (`env://NAME`,
-    /// `vault://…`) in this field, through
-    /// [`crate::connector::secrets::resolve_secret_string`].
+    /// Where **inside** this field the handler reads key material — a
+    /// `{"secret": "name"}` node against the engine store, or an `env://` /
+    /// `vault://` reference resolved at execution — as paths relative to the
+    /// field itself.
     ///
-    /// Five fields do: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s
-    /// `keys`, `issuer` and `audience`. Everywhere else a `scheme://` string
-    /// is a literal the handler sends on as-is — a URL spelled
-    /// `env://API_BASE`, not the variable's value — which is why
-    /// `validation::secret_reference_errors` refuses one outside these fields
-    /// rather than letting it reach the backend.
-    pub secret: bool,
+    /// `&[]` (the default) means nowhere. `&[""]` means the field's own value
+    /// is key material: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s
+    /// `issuer` and `audience`. `&["[].key"]` means each array element's `key`
+    /// member is, and nothing else in the field is: `jwt_verify.keys`.
+    ///
+    /// A path list rather than a `bool`, because the two questions a `bool`
+    /// tried to answer at once have different answers for `keys`. May this
+    /// field carry a `{"secret": …}` node in place of its declared kind?
+    /// Only if `""` is listed — `keys` is an `Array` and must stay one, or
+    /// the handler's `as_array()` reads `None` and silently verifies against
+    /// no static key at all. And where must `UNRESOLVED_SECRET_REF` hold its
+    /// fire? Only at these paths — `keys[].kid` and `keys[].key_encoding` are
+    /// read verbatim, so an `env://` there is as stray as anywhere else.
+    ///
+    /// Everywhere unlisted, a `scheme://` string is a literal the handler
+    /// sends on as-is — a URL spelled `env://API_BASE`, not the variable's
+    /// value — which is why `validation::secret_reference_errors` refuses one
+    /// outside these paths rather than letting it reach the backend.
+    pub secret_at: &'static [&'static str],
     /// A second accepted spelling for this field, or `None`.
     ///
     /// Two fields have one, both spelled `response_path` (the pre-1.0 name of
@@ -104,7 +117,7 @@ impl FieldSchema {
     /// struct has to be spelled at all ~137 sites — and adding one costs a
     /// mechanical diff long enough to hide the handful of rows where the new
     /// value is not the default. With it, a row states only what is true of
-    /// it: `FieldSchema { name: "key", …, secret: true, ..FieldSchema::DEFAULT }`.
+    /// it: `FieldSchema { name: "key", …, secret_at: &[""], ..FieldSchema::DEFAULT }`.
     ///
     /// `name`, `description` and `kind` have no meaningful default; every row
     /// spells them.
@@ -114,7 +127,7 @@ impl FieldSchema {
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
-        secret: false,
+        secret_at: &[],
         alias: None,
     };
 }
@@ -494,25 +507,27 @@ pub fn is_resolvable_field(function_name: &str, field: &str) -> bool {
     })
 }
 
-/// Whether `field` is one this function resolves a secret reference in — the
-/// only place `env://NAME` or `vault://…` means anything other than itself.
+/// Where inside `field` this function reads key material — the only paths
+/// where `env://NAME` or `vault://…` means anything other than itself.
 ///
 /// Driven off the registry rather than a per-function list for the same reason
 /// [`is_resolvable_field`] is: a function that starts resolving references in a
 /// new field declares it in the field table it already maintains, and the
 /// authoring-time check follows automatically.
 ///
-/// A function with no declared schema (an engine built-in) answers `false`:
-/// none of them resolves a reference, and treating an unknown function as
-/// permissive would make the check silently vacuous for the one case it cannot
-/// see into.
-pub fn is_secret_field(function_name: &str, field: &str) -> bool {
-    find(function_name).is_some_and(|schema| {
-        schema
-            .input_fields
-            .iter()
-            .any(|f| f.secret && (f.name == field || f.alias == Some(field)))
-    })
+/// A function with no declared schema (an engine built-in) answers `&[]`: none
+/// of them resolves a reference, and treating an unknown function as permissive
+/// would make the check silently vacuous for the one case it cannot see into.
+pub fn secret_paths(function_name: &str, field: &str) -> &'static [&'static str] {
+    find(function_name)
+        .and_then(|schema| {
+            schema
+                .input_fields
+                .iter()
+                .find(|f| f.name == field || f.alias == Some(field))
+        })
+        .map(|f| f.secret_at)
+        .unwrap_or(&[])
 }
 
 /// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
@@ -524,13 +539,18 @@ fn is_var_node(v: &Value) -> bool {
         .is_some_and(|o| o.len() == 1 && o.contains_key("var"))
 }
 
-/// A `{"secret": ..}` node — the shape a `secret` field may carry in place of a
-/// literal of its declared kind, for the same reason and with the same depth
-/// rule as [`is_var_node`]. The handler reads it through
-/// [`super::secret_ref`]; the declared kind still describes what the *resolved*
-/// value must be.
-fn is_secret_node(v: &Value) -> bool {
-    super::secret_ref::secret_name(v).is_some()
+/// Whether this field's own value may be a `{"secret": ..}` node in place of a
+/// literal of its declared kind — true only when `secret_at` lists the field
+/// root, for the same reason and with the same depth rule as [`is_var_node`].
+/// The handler reads it through [`super::secret_ref`]; the declared kind still
+/// describes what the *resolved* value must be.
+///
+/// `jwt_verify.keys` reads key material two levels down rather than at the
+/// root, so it does **not** qualify: a bare `{"secret": …}` there is an object
+/// where an array belongs, and the handler would read no static key from it at
+/// all.
+fn takes_secret_node(field: &FieldSchema, v: &Value) -> bool {
+    field.secret_at.contains(&"") && super::secret_ref::secret_name(v).is_some()
 }
 
 /// Check one field list against one JSON object, reporting paths under
@@ -578,7 +598,7 @@ fn check_fields(
             (Some(v), _)
                 if !field.kind.matches(v)
                     && !(field.resolvable && is_var_node(v))
-                    && !(field.secret && is_secret_node(v)) =>
+                    && !takes_secret_node(field, v) =>
             {
                 errors.push(
                     FieldError::new(

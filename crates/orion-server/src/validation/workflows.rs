@@ -627,12 +627,17 @@ fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &
 /// Every secret reference sitting in a field that does not resolve one.
 ///
 /// `env://NAME` and `vault://…` are resolved by the handler that reads a
-/// particular field, not by a pass over the document — so five fields turn one
-/// into a credential (`schema::is_secret_field`) and every other field sends
-/// the string on as itself. A task carrying `{"path": "env://API_BASE"}`
+/// particular *path*, not by a pass over the document — so a handful of paths
+/// turn one into a credential (`schema::secret_paths`) and everywhere else the
+/// string is sent on as itself. A task carrying `{"path": "env://API_BASE"}`
 /// requests a URL spelled `env://API_BASE` and fails with whatever the backend
 /// makes of it, which is a failure that names neither the reference nor the
 /// field.
+///
+/// The exemption is per path, not per field: `jwt_verify.keys` resolves a
+/// reference at `keys[].key` and nowhere else, so a reference in a sibling
+/// `kid` — which the handler matches verbatim against the token's — is still
+/// reported.
 ///
 /// **An error, not a warning** — the opposite call from
 /// [`unresolvable_logic_warnings`], and for the opposite reason. That check is
@@ -646,23 +651,30 @@ fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &
 pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
-        // The whole subtree is skipped, not just its top level:
-        // `jwt_verify.keys` is an array of objects whose `key` member is the
-        // reference, so the legitimate one lives two levels down.
-        if !crate::engine::functions::schema::is_secret_field(function, field) {
-            collect_secret_references(value, path, function, &mut out);
-        }
+        let exempt = crate::engine::functions::schema::secret_paths(function, field);
+        collect_secret_references(value, path, "", exempt, function, &mut out);
     });
     out
 }
 
 /// Walk one authored value, reporting every secret reference inside it.
+///
+/// `rel` is the position within the field being walked, in the notation
+/// `FieldSchema::secret_at` uses: `""` at the field root, `"[]"` for any array
+/// element, `".name"` for an object member. A node whose `rel` is listed in
+/// `exempt` is where the handler resolves key material, so it and everything
+/// under it is left alone.
 fn collect_secret_references(
     value: &Value,
     path: &str,
+    rel: &str,
+    exempt: &[&str],
     function: &str,
     out: &mut Vec<(String, String)>,
 ) {
+    if exempt.contains(&rel) {
+        return;
+    }
     match value {
         Value::String(s) => {
             // The masking policy's predicate, not a `starts_with("env://")`:
@@ -685,12 +697,26 @@ fn collect_secret_references(
         }
         Value::Object(map) => {
             for (key, child) in map {
-                collect_secret_references(child, &format!("{path}.{key}"), function, out);
+                collect_secret_references(
+                    child,
+                    &format!("{path}.{key}"),
+                    &format!("{rel}.{key}"),
+                    exempt,
+                    function,
+                    out,
+                );
             }
         }
         Value::Array(items) => {
             for (i, child) in items.iter().enumerate() {
-                collect_secret_references(child, &format!("{path}[{i}]"), function, out);
+                collect_secret_references(
+                    child,
+                    &format!("{path}[{i}]"),
+                    &format!("{rel}[]"),
+                    exempt,
+                    function,
+                    out,
+                );
             }
         }
         _ => {}
@@ -1001,6 +1027,28 @@ mod tests {
             }
         ]));
         assert!(clean.is_empty(), "got {clean:?}");
+    }
+
+    /// The exemption is per path, not per field. `jwt_verify.keys` resolves a
+    /// reference at each entry's `key` and nowhere else — `kid` is matched
+    /// verbatim against the token's, so a reference there never matches any
+    /// token and nothing says why.
+    #[test]
+    fn a_reference_in_a_sibling_of_a_key_is_still_reported() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "jwt", "name": "Verify",
+            "function": {"name": "jwt_verify", "input": {
+                "token": {"var": "data.token"},
+                "keys": [{
+                    "algorithm": "HS256",
+                    "key": {"secret": "partner_hmac"},
+                    "kid": "env://PARTNER_KID",
+                    "key_encoding": "utf8"
+                }]
+            }}
+        }]));
+        assert_eq!(found.len(), 1, "got {found:?}");
+        assert_eq!(found[0].0, "tasks[0].function.input.keys[0].kid");
     }
 
     /// A task group is where a stray reference is least likely to be caught by

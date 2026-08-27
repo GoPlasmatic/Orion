@@ -379,11 +379,13 @@ fn the_stamp_replaces_or_removes_but_never_merges() {
         "no declared vars must strip the key: {metadata}"
     );
 
-    // A non-object metadata is left alone rather than panicking — the ingress
-    // never builds one, but the helper is called before any shape guarantee.
+    // A non-object metadata becomes one rather than being skipped. Skipping is
+    // what let `POST /workflows/{id}/test` serve a caller-omitted `metadata`
+    // (which deserialises to `null`) with no vars at all, while the data route
+    // — which normalises first — stamped them.
     let mut metadata = json!("not-an-object");
     orion::engine::stamp_vars(&mut metadata, Some(&declared));
-    assert_eq!(metadata, json!("not-an-object"));
+    assert_eq!(metadata["vars"], declared, "{metadata}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1591,4 +1593,246 @@ fn an_offline_case_refuses_a_non_object_vars() {
 
     orion::engine::utils::prepare_offline_metadata(json!({ "vars": { "topic_prefix": "eu" } }))
         .expect("an object passes through");
+}
+
+/// The regression the stamping helper's own contract implies: a caller that
+/// omits `metadata` entirely still gets the instance's vars.
+///
+/// `TestWorkflowRequest.metadata` is `#[serde(default)]`, so an omitted field
+/// arrives as `Value::Null`. The data route normalises before stamping and
+/// this one does not, so a helper that skipped a non-object made the endpoint
+/// answer differently from the request it stands in for — which is the one
+/// thing it must not do.
+#[tokio::test]
+async fn the_admin_test_endpoint_stamps_vars_when_metadata_is_omitted() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    let wf_id = common::create_and_activate_workflow(&app, metadata_echo_workflow("omitted wf"))
+        .await
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            Some(json!({ "data": {} })),
+        ))
+        .await
+        .expect("test endpoint");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["output"]["meta"]["vars"]["topic_prefix"],
+        json!("eu-west"),
+        "an omitted metadata must still be stamped: {body}"
+    );
+}
+
+/// The stamp is total over the shapes an ingress can hand it, so a fifth
+/// ingress cannot forget to normalise first.
+#[test]
+fn the_stamp_replaces_a_non_object_metadata_rather_than_skipping_it() {
+    let declared = json!({ "topic_prefix": "eu-west" });
+
+    let mut null = json!(null);
+    orion::engine::stamp_vars(&mut null, Some(&declared));
+    assert_eq!(null["vars"]["topic_prefix"], json!("eu-west"), "{null}");
+
+    // With nothing declared there is nothing to stamp, so a non-object is left
+    // exactly as it was — the key is absent either way.
+    let mut still_null = json!(null);
+    orion::engine::stamp_vars(&mut still_null, None);
+    assert_eq!(still_null, json!(null));
+}
+
+/// `{"secret": ["name"]}` is the one-element-array argument datalogic
+/// normalises to the string form, so the engine resolves it. Every Orion
+/// surface that reads a secret node has to agree, or the same node resolves in
+/// a condition, fails in a handler field, and is missing from `lint`'s
+/// `[secrets]` deployment inventory.
+#[tokio::test]
+async fn the_array_spelling_of_a_secret_reads_the_same_store() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    common::create_and_activate_channel(
+        &app,
+        "sign-string-arg",
+        hmac_workflow("string arg wf", json!({"secret": "partner_hmac"})),
+    )
+    .await;
+    common::create_and_activate_channel(
+        &app,
+        "sign-array-arg",
+        hmac_workflow("array arg wf", json!({"secret": ["partner_hmac"]})),
+    )
+    .await;
+
+    let payload = json!({"data": {"payload": "order-4711"}});
+    let (string_status, string_body) = post(&app, "sign-string-arg", payload.clone()).await;
+    let (array_status, array_body) = post(&app, "sign-array-arg", payload).await;
+    assert_eq!(string_status, StatusCode::OK, "{string_body}");
+    assert_eq!(
+        array_status,
+        StatusCode::OK,
+        "the array spelling must not quarantine the channel: {array_body}"
+    );
+    assert!(
+        !array_body["data"]["mac"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "no MAC was produced: {array_body}"
+    );
+    assert_eq!(
+        string_body["data"]["mac"], array_body["data"]["mac"],
+        "both spellings name the same secret, so both must resolve to it"
+    );
+}
+
+/// The same node, seen by `lint`'s deployment inventory. A set that names a
+/// secret the target instance must declare has to be listed whichever spelling
+/// it used, or the checklist is short by exactly the entry that quarantines a
+/// channel on deploy.
+#[test]
+fn lint_inventories_both_spellings_of_a_secret_reference() {
+    for spelling in [
+        json!({"secret": "partner_hmac"}),
+        json!({"secret": ["partner_hmac"]}),
+    ] {
+        let scratch = common::ScratchDir::new("lint-secret-spelling");
+        write_scratch(
+            scratch.path(),
+            "wf.json",
+            &hmac_workflow("lint wf", spelling.clone()).to_string(),
+        );
+        let out = std::process::Command::new(common::orion_bin())
+            .args(["lint", scratch.path().to_str().expect("utf-8 path")])
+            .output()
+            .expect("invoke lint");
+        // The inventory is a note, and notes go to stderr; the summary line is
+        // what lands on stdout.
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            rendered.contains("[secrets.reference]") && rendered.contains("partner_hmac"),
+            "{spelling} must appear in the [secrets] inventory: {rendered}"
+        );
+    }
+}
+
+/// `jwt_verify.keys` is an array and stays one. Marking the field as
+/// key-material-bearing must not let a bare `{"secret": …}` stand in for the
+/// array itself: the handler reads `keys` with `as_array()`, so it would find
+/// no static key and verify against JWKS alone — silently, and only for tokens
+/// the operator meant the static key to cover.
+#[tokio::test]
+async fn a_secret_node_cannot_stand_in_for_the_keys_array() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    let (status, body) = create_workflow(
+        &app,
+        json!({
+            "id": "keys-shape", "name": "keys shape", "priority": 0, "condition": true,
+            "tasks": [{
+                "id": "verify", "name": "Verify",
+                "function": {"name": "jwt_verify", "input": {
+                    "token": {"var": "data.token"},
+                    "algorithms": ["HS256"],
+                    "keys": {"secret": "partner_hmac"},
+                    "jwks_url": "https://idp.example.com/.well-known/jwks.json"
+                }}
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a secret node where an array belongs must be refused: {body}"
+    );
+    assert!(
+        body.to_string().contains("keys"),
+        "the refusal must name the field: {body}"
+    );
+}
+
+/// An `issuer`/`audience` array is `resolvable`, so a `{"var": …}` element the
+/// request does not carry folds to `null`. That is an absent accepted value,
+/// not a malformed one: dropping it can only narrow what verification accepts,
+/// so it cannot turn a rejected token into an accepted one. Refusing the whole
+/// task instead would break workflows that predate the store.
+#[tokio::test]
+async fn an_absent_audience_element_is_dropped_rather_than_failing_the_task() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    let wf_id = common::create_and_activate_workflow(
+        &app,
+        json!({
+            "id": "aud-partial", "name": "aud partial", "priority": 0, "condition": true,
+            "tasks": [{
+                "id": "verify", "name": "Verify",
+                "function": {"name": "jwt_verify", "input": {
+                    "token": {"var": "data.token"},
+                    "algorithms": ["HS256"],
+                    "keys": [{"algorithm": "HS256", "key": {"secret": "partner_hmac"}}],
+                    // The second element is absent from every request below.
+                    "audience": [{"var": "data.aud1"}, {"var": "data.aud2"}],
+                    "output": "data.claims"
+                }}
+            }]
+        }),
+    )
+    .await
+    .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            Some(json!({ "data": { "token": "not-a-jwt", "aud1": "orders-api" } })),
+        ))
+        .await
+        .expect("test endpoint");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let rendered = body.to_string();
+    // The token is junk, so the task fails — but on the token, not on the
+    // shape of `audience`. The old code dropped the null; the intervening
+    // change turned it into "'audience' must be a string ...".
+    assert!(
+        !rendered.contains("'audience' must be a string"),
+        "an absent element must be dropped, not refused: {rendered}"
+    );
+}
+
+/// A `--secrets` / case-file store is the only one that can hold a non-string,
+/// so its shape is checked where the file is named rather than at the first
+/// task that reads one — a case-file run reports a task error under the case
+/// name and nothing else.
+#[test]
+fn an_offline_secret_must_be_a_string() {
+    let scratch = common::ScratchDir::new("offline-secret-kind");
+    let dir = scratch.path();
+    let wf = write_scratch(dir, "wf.json", signing_workflow_json());
+    let input = write_scratch(dir, "input.json", r#"{"id":"ORD-1"}"#);
+    let secrets = write_scratch(dir, "secrets.json", r#"{"partner_hmac": 12345}"#);
+
+    let out = std::process::Command::new(common::orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input, "--secrets", &secrets])
+        .output()
+        .expect("invoke dry-run");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "a non-string stand-in must fail at load: {combined}"
+    );
+    assert!(
+        combined.contains("partner_hmac") && combined.contains("string"),
+        "the failure must name the entry and the kind it needed: {combined}"
+    );
 }
