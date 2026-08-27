@@ -142,7 +142,8 @@ workflows and fixtures beside them:
 | `input` | The bare payload |
 | `stubs` | Inline connector stubs, same shape as the stub file |
 | `stubs_file` | A stub file path instead, also relative to the case file |
-| `metadata` | The request metadata, as the HTTP ingress would have built it |
+| `secrets` | Stand-in values for the `{"secret": "name"}` references the workflow reads, same shape as `dry-run --secrets` |
+| `metadata` | The request metadata, as the HTTP ingress would have built it — including `vars`, which the serving path stamps from `[vars]` |
 | `expect` | **Rooted** dotted paths mapped to expected values |
 | `expect_errors` | Expected task-error codes. **Defaults to empty** |
 | `expect_calls` | Expected connector calls per function, in order |
@@ -285,9 +286,15 @@ a production pass:
 
 Any key is accepted, since the HTTP envelope merges caller-supplied metadata.
 The reserved ones are shape-checked: `headers`/`params`/`query`/`cookies` must
-be objects of strings, `channel`/`http_method` strings, and `auth` may carry
-only `claims` — the request path builds `auth` as `{"claims": …}` and nothing
-else reaches a workflow.
+be objects of strings, `vars` an object, `channel`/`http_method` strings, and
+`auth` may carry only `claims` — the request path builds `auth` as
+`{"claims": …}` and nothing else reaches a workflow.
+
+`vars` is passed through rather than stamped: offline there is no config file to
+read `[vars]` from, so a case supplies them the way it supplies headers. The
+shape is still checked, because the serving path force-stamps the key from one
+object and a case writing a string there would be asserting on state no ingress
+can produce.
 
 `dry-run --metadata <file>` takes the same object.
 

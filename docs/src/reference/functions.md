@@ -916,7 +916,7 @@ out-of-bounds cost parameter is an authoring-time error).
 | `algorithm` | string | no | per op | `hash`: `sha256` (default), `sha512`, plus `sha1`/`md5` for legacy interop. `hmac`/`hmac_verify`: `sha256` (default), `sha512`, `sha1`. `password_hash`: `argon2id` (default), `bcrypt`. `password_verify` auto-detects from the stored hash |
 | `data` | any | for hash/hmac ops | — | Bytes to digest. A string is UTF-8 (see `input_encoding`); any other JSON value is hashed as its compact serialization, key order preserved |
 | `input_encoding` | string | no | `"utf8"` | How a *string* `data` becomes bytes: `utf8`, `hex`, `base64` |
-| `key` | string | for hmac ops | — | A literal or a secret reference (`env://NAME`, `vault://…`) resolved like connector secrets — never in traces or errors. Literals are fine for development; use references in production (workflows are not encrypted at rest) |
+| `key` | string | for hmac ops | — | `{"secret": "name"}` reads the engine's [`[secrets]`](./configuration.md#vars-and-secrets) store; a string is a literal or a reference (`env://NAME`, `vault://…`). Never in traces or errors. Literals are fine for development; workflows are not encrypted at rest, so production wants one of the other two |
 | `key_encoding` | string | no | `"utf8"` | How the resolved key becomes bytes: `utf8`, `hex`, `base64` — for APIs that issue binary signing keys |
 | `signature` | string | for `hmac_verify` | — | The presented MAC; hex, base64, or base64url, auto-detected. Compared in constant time — never verify a MAC with `==` |
 | `password` | string | for password ops | — | The submitted password |
@@ -969,7 +969,7 @@ claim.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `algorithm` | string | yes | — | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384`, `EdDSA` |
-| `key` | string | yes | — | HS secret or RS/ES/Ed **private**-key PEM; literal or secret reference |
+| `key` | string | yes | — | HS secret or RS/ES/Ed **private**-key PEM; `{"secret": "name"}`, a reference, or a literal |
 | `key_encoding` | string | no | `"utf8"` | How an HS secret becomes bytes: `utf8`, `base64`, `hex` |
 | `claims` | object | no | `{}` | Claim values fold `{"var": …}` nodes — compose computed claims with a `map` task first |
 | `expires_in` | number \| string | conditional | — | Lifetime (seconds or `"<n>s\|m\|h\|d"`) → `exp`. Required unless `claims.exp` is explicit |
@@ -997,9 +997,9 @@ is.
 |-------|------|:--------:|---------|-------------|
 | `token` | string | yes | — | The compact JWS |
 | `algorithms` | array | yes | — | Mandatory non-empty allowlist — `alg: none` and downgrades are unrepresentable |
-| `keys` | array | one of | — | `[{algorithm, key, kid?, key_encoding?}]` — public halves for the asymmetric families |
+| `keys` | array | one of | — | `[{algorithm, key, kid?, key_encoding?}]` — public halves for the asymmetric families. Each `key` takes `{"secret": "name"}`, a reference, or a literal |
 | `jwks_url` | string | one of | — | HTTPS JWKS URL |
-| `issuer` / `audience` | string \| array | no | — | Accepted `iss`/`aud` values; `env://` references resolve (OAuth client ids) |
+| `issuer` / `audience` | string \| array | no | — | Accepted `iss`/`aud` values; `{"secret": "name"}` and `env://` references resolve (OAuth client ids) |
 | `leeway_secs` | number | no | `30` | Clock-skew allowance, capped at 300 |
 | `require_exp` | boolean | no | `true` | RFC 8725: tokens must expire unless deliberately opted out |
 | `output` | string | no | `"data"` | Where the verified claims object is stored |

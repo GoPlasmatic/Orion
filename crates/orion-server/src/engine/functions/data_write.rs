@@ -540,6 +540,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -553,6 +554,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         // at the task's first request.
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -564,6 +566,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -574,6 +577,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -583,6 +587,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -591,6 +596,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];
@@ -602,6 +608,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -610,6 +617,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -618,6 +626,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -626,6 +635,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -635,6 +645,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -643,6 +654,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -651,6 +663,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Array,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -659,6 +672,7 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Bool,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

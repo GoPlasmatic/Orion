@@ -375,6 +375,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -383,6 +384,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -391,6 +393,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -399,6 +402,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -407,6 +411,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -415,6 +420,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

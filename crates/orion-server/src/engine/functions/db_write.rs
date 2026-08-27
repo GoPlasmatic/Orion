@@ -91,6 +91,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -99,6 +100,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -107,6 +109,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Array,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -115,6 +118,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

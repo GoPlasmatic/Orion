@@ -53,6 +53,42 @@ pub fn clear_error_context(metadata: &mut serde_json::Value) {
     }
 }
 
+/// The metadata key the `[vars]` config section is stamped under.
+///
+/// Platform-reserved, in the same sense as `channel` and `cookies`: an
+/// operator declares the values and every ingress stamps them, overwriting
+/// whatever the caller sent. Envelope mode merges caller-supplied `metadata`
+/// wholesale, so without that a request could forge the topic prefix its own
+/// run publishes to.
+pub const VARS_KEY: &str = "vars";
+
+/// Force `metadata.vars` to the instance's declared vars.
+///
+/// `None` — the instance declares no vars — *removes* the key rather than
+/// writing an empty object. Both halves matter: the removal is what makes the
+/// key unforgeable on an instance that declares nothing, and leaving the key
+/// absent means a workflow reading `metadata.vars.x` sees the same missing
+/// value whether the section is empty or the entry is.
+///
+/// Vars are stamped rather than held beside the message on purpose. They are
+/// deployment configuration, so they *should* appear in the trace — an
+/// operator asking "which topic did this run publish to?" is asking to see
+/// them. That is the whole distinction between this and
+/// [`secrets`], which the engine holds precisely so it
+/// cannot record them.
+pub fn stamp_vars(metadata: &mut serde_json::Value, vars: Option<&serde_json::Value>) {
+    if let Some(map) = metadata.as_object_mut() {
+        match vars {
+            Some(values) => {
+                map.insert(VARS_KEY.to_string(), values.clone());
+            }
+            None => {
+                map.remove(VARS_KEY);
+            }
+        }
+    }
+}
+
 pub mod functions;
 pub mod handlers;
 pub mod loader;
@@ -62,6 +98,7 @@ pub mod profile;
 pub mod refs;
 pub mod reload;
 pub mod runner;
+pub mod secrets;
 pub mod steps;
 pub mod utils;
 
@@ -80,4 +117,5 @@ pub use reload::{
     spawn_kafka_restart_supervisor,
 };
 pub use runner::{EngineCallResult, EngineHandle, TraceCapture, run_for_channel};
+pub use secrets::ResolvedSecrets;
 pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};

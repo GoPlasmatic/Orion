@@ -59,7 +59,7 @@ only when the stored document no longer parses, the same condition that empties
 
 ## Secrets by reference
 
-Any string field in `config` may hold `env://VAR_NAME` instead of a literal value. Orion resolves the reference each time the connector loads. An unset variable fails the create or update call — or startup — with an error naming the field. Credentials therefore never need to be sent to the API or stored in the database.
+Any string field in `config` may hold `env://VAR_NAME` instead of a literal value. Orion resolves the reference each time the connector loads, so credentials never need to be sent to the API or stored in the database. A create or update checks the config's shape, not this host's environment — an unset variable surfaces at the load that follows, where the connector is skipped and its row reports `load_status: "failed"`. [Environment Variables](./environment-variables.md#what-an-unset-variable-does) has the full table.
 
 Name the variables anything you like, with one restriction. Orion [refuses to start](./configuration.md#misspellings-are-startup-errors-not-silent-no-ops) on an `ORION_*` variable that is not one of its own settings. A secret that must live in that namespace needs the reserved prefix: `env://ORION_SECRET_STRIPE_API_KEY`.
 
@@ -507,3 +507,4 @@ List and reset breakers through the [Admin API](./admin-api.md#connectors).
 - [Function Reference](./functions.md): the task functions that call through each connector type.
 - [Portable Data Dialect](./data-dialect.md): the backend-neutral query and write language `db` and `es` serve.
 - [Configuration Reference](./configuration.md): circuit-breaker, Kafka, and every other server-level setting.
+- [Environment Variables](./environment-variables.md): `${VAR}` versus `env://`, which surfaces resolve which, and what an unset variable does.

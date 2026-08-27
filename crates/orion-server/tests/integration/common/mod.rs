@@ -163,6 +163,7 @@ async fn test_state_inner(
         components.engine.clone(),
         channel_registry.clone(),
         components.datalogic.clone(),
+        config.vars.to_json().map(std::sync::Arc::new),
         components.kafka_producer.clone(),
         cluster.enabled.then(|| cluster.instance_id.as_str()),
     )

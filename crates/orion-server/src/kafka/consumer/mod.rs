@@ -60,6 +60,11 @@ struct ConsumeLoopContext {
     engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
+    /// `[vars]` as one JSON object, stamped into every ingested message's
+    /// `metadata.vars` — the Kafka half of what `build_request_metadata` does
+    /// for HTTP, so a workflow reads the same deployment values on either
+    /// transport. `None` when the instance declares no vars.
+    vars: Option<Arc<serde_json::Value>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     processing_timeout_ms: u64,
@@ -161,11 +166,13 @@ impl ConsumerHandle {
 /// (`group.instance.id`) plus an explicit `session.timeout.ms`, so rolling
 /// restarts and reload-driven consumer restarts rejoin without a full group
 /// rebalance. `None` (single node) keeps today's dynamic membership.
+#[allow(clippy::too_many_arguments)]
 pub fn start_consumer(
     config: &KafkaIngestConfig,
     engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
+    vars: Option<Arc<serde_json::Value>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     instance_id: Option<&str>,
@@ -243,6 +250,7 @@ pub fn start_consumer(
         engine,
         channel_registry,
         datalogic,
+        vars,
         dlq_producer,
         dlq_topic,
         processing_timeout_ms,

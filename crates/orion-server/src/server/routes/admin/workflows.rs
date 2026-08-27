@@ -632,12 +632,14 @@ pub(crate) async fn test_workflow(
     // channel_call in dry-run still routes through the main engine for cross-channel calls.
     let custom_fns =
         crate::engine::build_custom_functions(crate::engine::HandlerDeps::from_state(&state));
-    let test_engine =
-        crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
-            .with_workflow(df_workflow)
-            .with_handlers(custom_fns)
-            .build()
-            .map_err(OrionError::Engine)?;
+    let test_engine = crate::engine::operators::with_orion_engine_defaults(
+        dataflow_rs::Engine::builder(),
+        &state.secrets,
+    )
+    .with_workflow(df_workflow)
+    .with_handlers(custom_fns)
+    .build()
+    .map_err(OrionError::Engine)?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {
@@ -648,9 +650,13 @@ pub(crate) async fn test_workflow(
         payload = req.data;
     }
 
+    // Stamped the way every other ingress stamps it, so "test this workflow"
+    // and a real request agree about what `metadata.vars` holds.
+    let mut metadata = req.metadata.clone();
+    crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&payload)
-        .metadata_json(&req.metadata)
+        .metadata_json(&metadata)
         .build();
 
     // Record into a trace this function owns, so the steps that ran before a

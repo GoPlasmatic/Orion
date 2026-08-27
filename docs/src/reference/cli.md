@@ -70,7 +70,7 @@ warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call 
 ./definitions: 0 connector(s), 62 workflow(s), 62 channel(s) — 1 error(s), 1 warning(s)
 ```
 
-Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `note:` findings are exit-neutral inventory, not defects — `[env.reference]` lists each environment variable the set references via `env://` and the files that reference it; neither the exit code nor `--deny-warnings` counts them.
+Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `[env.unresolved]` is an error rather than an advisory: it fires when a workflow field that resolves no secret reference contains one, which the admin API refuses on the same terms. `note:` findings are exit-neutral inventory, not defects — `[env.reference]` lists each environment variable the set references via `env://`, `[secrets.reference]` each name it reads with `{"secret": …}` and so needs declared in the serving instance's `[secrets]` section, both with the files that reference them; neither the exit code nor `--deny-warnings` counts them.
 
 Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
 
@@ -127,7 +127,7 @@ Example: `orion-server compile ./definitions --name payments --version 1.4.0 -o 
 Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace. Connector-backed tasks are answered from `--stubs`; without a matching stub the task fails and names the stub it needs.
 
 ```bash
-orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>]
+orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [--metadata <metadata.json>] [--secrets <secrets.json>]
 ```
 
 | Flag | Description |
@@ -136,7 +136,8 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [
 | `-i, --input` | Path to a JSON file used as the message payload. |
 | `-s, --stubs` | Path to a JSON file of canned connector responses. The inner key is the task's `connector` (or `channel` for `channel_call`); `"*"` matches any. |
 | `--definitions` | Directory holding the set's shared definitions, resolved before validation. |
-| `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
+| `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`, `vars`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
+| `--secrets` | Path to a JSON object of stand-in values for the `{"secret": "name"}` references the workflow reads: `{"partner_hmac": "test-key"}`. Offline there is no `[secrets]` config to resolve, and an engine with no store refuses a workflow that names one. Values are used verbatim — use throwaway ones. |
 
 The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls` — the same five documents, in the same shape, that a case's `expect` roots address — plus `output` (an alias of `data`, kept for existing `jq` filters), `trace`, `matched` and `errors`.
 

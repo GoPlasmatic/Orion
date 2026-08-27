@@ -36,6 +36,20 @@ the escape hatch for SQL the dialect cannot express.
 `crypto`, `jwt_sign` and `jwt_verify` need no connector and make no egress, so
 `orion-server dry-run` executes them for real rather than stubbing them.
 
+They are also the only functions whose fields carry key material —
+`crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and
+`audience` — and each takes two spellings. `{"secret": "name"}` reads the
+engine's `[secrets]` store, which is the one to reach for: it is an allowlist
+the operator published, and a misspelled name fails when the engine is built
+rather than in production. A string is a literal or an `env://NAME` /
+`vault://…` reference resolved at execution. Neither echoes the resolved value
+into a trace or an error.
+
+Every other field in every other function treats such a string as itself, which
+is why writing one there is refused with `UNRESOLVED_SECRET_REF` rather than
+silently sent to the backend. `functions list --output json` marks the fields
+that accept one.
+
 ## The ones you will use constantly
 
 ### `parse_json` / `parse_xml`

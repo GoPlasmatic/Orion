@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`[vars]` and `[secrets]`: the values a workflow reads that differ per
+  environment.** A definition is promoted between instances unchanged, so a
+  topic prefix or a signing key could not live inside it — the workflow had to
+  name a connector, or carry an `env://` reference in one of five fields. Both
+  sections are declared by the operator and read by name, and which one a value
+  belongs in is decided by a single question: should it appear in a trace?
+
+  A **var** is stamped into every message's `metadata.vars` at every ingress —
+  HTTP and Kafka alike — read as `{"var": "metadata.vars.name"}`, and *is*
+  recorded, deliberately: an operator asking "which topic did this run publish
+  to?" is asking to see it. It is stamped last, over whatever the caller sent,
+  because envelope mode merges caller-supplied metadata wholesale; an instance
+  declaring none strips the key rather than writing an empty object, which is
+  what makes it unforgeable in both directions. Values keep the type they were
+  written as, so `max_retries = 3` compares against `3`.
+
+  A **secret** is held by the engine rather than by the message and read as
+  `{"secret": "name"}` (dataflow-rs 3.8, [GoPlasmatic/dataflow-rs#50]). It
+  cannot appear in `Serialize for Message`, an `ExecutionTrace` snapshot, a
+  `map` mapping clone or a response body — not because those surfaces strip it,
+  but because there is nothing to strip. The engine enforces the two ways that
+  could go wrong: a workflow reading a secret where the result would be
+  recorded (a `map` mapping, a `log` field), or naming a secret the instance
+  does not declare, is refused when the engine is built and the channel is
+  quarantined with the reason named.
+
+  Each section refuses the other's value shape, because either mistake is
+  silent. A literal in `[secrets]` is a key in the deployment's file tree; a
+  reference in `[vars]` reaches the workflow as the characters
+  `env://PARTNER_HMAC_KEY`, since nothing resolves one on the way into
+  metadata. A `[secrets]` reference that cannot be resolved stops the boot.
+
+- **The five secret-bearing function fields take `{"secret": "name"}`.**
+  `crypto.key`, `jwt_sign.key` and `jwt_verify`'s `keys[].key`, `issuer` and
+  `audience` now read the engine's store as well as a literal or an `env://` /
+  `vault://` reference. Prefer the store: the workflow reaches an allowlist the
+  operator published rather than whatever the process environment holds under a
+  name the definition chose, and a misspelled name fails when the engine is
+  built rather than as a task failing in production.
+
+- **Offline stand-ins for secrets.** `orion-server dry-run --secrets <file>` and
+  a `*.case.json` `secrets` block supply values for the references a workflow
+  reads. An offline run has no config to resolve and an engine with no store
+  refuses a workflow that names a secret, so without these a workflow that signs
+  anything would be untestable.
+
+- **The `secret` JSONLogic operator** is in the documented vocabulary, and
+  `metadata.vars` joins `channel`, `cookies` and `_orion_errors` as a
+  platform-reserved metadata key.
+
+- **[Environment Variables](https://docs.goplasmatic.io/reference/environment-variables.html)**,
+  a reference page for the four ways Orion reads the environment — `ORION_*`
+  overrides, `${VAR}` substitution, `env://` references and the two declaration
+  sections — with the table of which surface resolves which, and what an unset
+  variable does in each.
+
+### Changed
+
+- **dataflow-rs 3.7 → 3.8**, for the secret store above.
+
+- **A secret reference in a field that resolves none is now refused, not
+  stored.** `env://NAME` and `vault://…` are resolved by the handler that reads
+  one particular field, so only five fields turn one into a credential and
+  every other field sends the string on as itself — a task carrying
+  `{"path": "env://API_BASE"}` requested a URL spelled `env://API_BASE` and
+  failed with whatever the backend made of it, naming neither the reference nor
+  the field. `POST /workflows`, the update, `POST /workflows/validate` and
+  `orion-server lint` now report `UNRESOLVED_SECRET_REF` against the field, and
+  `lint <dir>` fails the set with `[env.unresolved]`. An error rather than an
+  advisory, because `env://` at the head of a string has no second reading.
+
+  **A stored workflow carrying one keeps running** — this is a create/update
+  gate, not a load-time screen — but its next update is refused until the value
+  moves to a connector or a declaration.
+
+- **`orion-server lint <dir>` inventories declared secrets** alongside the
+  `env://` references it already listed: one exit-neutral `[secrets.reference]`
+  note per `{"secret": …}` name, with the files that read it, so a deployment
+  checklist covers the `[secrets]` entries the serving instance needs as well
+  as its environment variables.
+
+[GoPlasmatic/dataflow-rs#50]: https://github.com/GoPlasmatic/dataflow-rs/issues/50
+
 ## [1.2.1] - 2026-08-26
 
 ### Fixed

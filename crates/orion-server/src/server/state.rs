@@ -53,6 +53,19 @@ pub struct Caches {
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
     pub engine: Arc<crate::engine::EngineHandle>,
+    /// `[secrets]`, resolved at startup. Held so the admin plane's per-request
+    /// engines (the workflow test endpoint) carry the same store the serving
+    /// engine does — otherwise "test this workflow" would refuse a definition
+    /// that runs fine in production.
+    pub secrets: Arc<crate::engine::ResolvedSecrets>,
+    /// `[vars]` as one JSON object, or `None` when the instance declares none.
+    ///
+    /// Stamped into `metadata.vars` at every ingress, overwriting whatever the
+    /// caller sent — envelope mode merges caller-supplied metadata wholesale,
+    /// so without that a request could name its own topic prefix. `None`
+    /// strips the key instead, which is what makes it unforgeable on an
+    /// instance that declares nothing.
+    pub vars: Option<Arc<serde_json::Value>>,
     /// The six storage repositories. `repos.trace_dlq` backs the
     /// `/admin/trace-dlq` operator routes (O4) — the same repository
     /// instance the worker pool and the retry loop write to.

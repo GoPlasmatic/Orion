@@ -1691,6 +1691,35 @@ fn an_env_reference_is_reported_without_failing_deny_warnings() {
     );
 }
 
+/// The other half of the deployment checklist: a `{"secret": …}` node names an
+/// entry the serving instance must declare in `[secrets]`, and an instance
+/// that lacks one quarantines the channel. A separate check id, because the
+/// action it asks for is a config edit rather than an environment variable.
+#[test]
+fn a_declared_secret_is_inventoried_under_its_own_check_id() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"sign","name":"sign","condition":true,"tasks":[
+             {"id":"s","name":"s","function":{"name":"crypto","input":{
+               "op":"hmac","algorithm":"sha256","data":"x",
+               "key":{"secret":"partner_hmac"},"output":"data.mac"}}}]}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(ok, "an inventory note must not gate a pipeline: {report}");
+    assert!(
+        report.contains("[secrets.reference]") && report.contains("partner_hmac"),
+        "the set's [secrets] requirement is the point of the line: {report}"
+    );
+    assert!(
+        report.contains("0 warning(s)"),
+        "an inventory note is not a warning: {report}"
+    );
+}
+
 /// The inventory covers every scheme this build can resolve, not just
 /// `env://` — a set authored against Vault would otherwise report clean and
 /// then be missing a secret at deploy. And it uses the masking policy's strict

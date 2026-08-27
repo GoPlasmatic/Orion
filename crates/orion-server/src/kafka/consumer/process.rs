@@ -221,7 +221,7 @@ async fn process_one_kafka_message(
     // run is `Transport::Kafka`'s row of the matrix. Failures are not
     // silently dropped: they record metrics, log, and are committed, dead
     // lettered or left for redelivery per `classify_guard_refusal`.
-    let metadata = kafka_metadata_value(channel, topic, msg);
+    let metadata = kafka_metadata_value(channel, topic, msg, ctx.vars.as_deref());
     // F35: a quarantined channel is refused here too. Routed to the DLQ
     // rather than dropped, so the messages are replayable once the operator
     // fixes the channel's stored config.
@@ -646,10 +646,13 @@ fn commit_offset(ctx: &ConsumeLoopContext, msg: &rdkafka::message::BorrowedMessa
 /// reach it and `metadata._orion_errors` needs no explicit clearing here. If
 /// this ever starts copying record headers, it must strip
 /// [`crate::engine::ERROR_CONTEXT_KEY`] the way `build_request_metadata` does.
+/// `vars` is stamped for the same reason it is on the HTTP path: a workflow
+/// must read the same deployment values whichever transport reached it.
 fn kafka_metadata_value(
     channel: &str,
     topic: &str,
     msg: &rdkafka::message::BorrowedMessage<'_>,
+    vars: Option<&serde_json::Value>,
 ) -> serde_json::Value {
     let mut meta = serde_json::json!({
         "channel": channel,
@@ -660,6 +663,7 @@ fn kafka_metadata_value(
     if let Some(key) = msg.key().and_then(|k| std::str::from_utf8(k).ok()) {
         meta["kafka_key"] = serde_json::json!(key);
     }
+    crate::engine::stamp_vars(&mut meta, vars);
     meta
 }
 

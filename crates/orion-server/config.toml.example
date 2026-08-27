@@ -429,3 +429,33 @@
 #                                   # 45k rows/s. Capped at 1000 by SQLite's bind limit.
 # batch_flush_interval_ms = 100     # Flush a partial batch after this long
 # batch_workers = 4                 # Each worker owns an independent batch
+
+# ============================================================
+# Vars and secrets — the values that differ per environment
+# ============================================================
+#
+# A definition is promoted between instances unchanged, so anything that
+# varies by environment lives here and the workflow reads it by name. Which
+# section a value belongs in is decided by one question: should it appear in
+# a trace? Free-form maps do not fit the ORION_SECTION__KEY scheme, so
+# neither section has an env-var override — but the env-var substitution
+# documented at the top of this file works in both.
+
+# [vars]
+# Deployment values, stamped into every message's `metadata.vars` at ingress
+# and read as {"var": "metadata.vars.name"}. They ARE recorded, on purpose:
+# an operator asking "which topic did this run publish to?" is asking to see
+# them. Values keep the type they are written as, and must be literals —
+# nothing resolves a secret reference on its way into metadata.
+#   kafka_topic_prefix = "${KAFKA_TOPIC_PREFIX:-dev}"
+#   partner_base_url = "https://sandbox.partner.example"
+#   max_retries = 3
+
+# [secrets]
+# Key material, held by the engine and read as {"secret": "name"}. It is NOT
+# recorded: the store is not part of a message, so a secret cannot reach a
+# trace, a mapping clone or a response body. Values must be references — a
+# literal here is a key in the deployment's file tree — and one that cannot
+# be resolved stops the boot rather than reaching a backend as its own text.
+#   partner_hmac = "env://PARTNER_HMAC_KEY"
+#   signing_key = "vault://secret/data/orion#signing_key"

@@ -74,6 +74,15 @@ pub mod field_codes {
     /// resolve it against, so the compiled form is what it accepts:
     /// `orion-server compile <dir>` produces it.
     pub const UNCOMPILED_SOURCE: &str = "UNCOMPILED_SOURCE";
+    /// A secret reference (`env://NAME`, `vault://…`) sits in a field that
+    /// does not resolve one. Only five fields do — `crypto.key`,
+    /// `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and `audience` —
+    /// and everywhere else the string is sent on as itself, so a URL spelled
+    /// `env://API_BASE` is requested verbatim. Move the value to a connector,
+    /// or declare it in the config file: a deployment value under `[vars]`,
+    /// read as `{"var": "metadata.vars.<name>"}`, and key material under
+    /// `[secrets]`, read as `{"secret": "<name>"}` in one of the five fields.
+    pub const UNRESOLVED_SECRET_REF: &str = "UNRESOLVED_SECRET_REF";
 
     /// Every code above, for exhaustiveness checks.
     pub const ALL: &[&str] = &[
@@ -87,6 +96,7 @@ pub mod field_codes {
         DUPLICATE_TASK_ID,
         UNKNOWN_FUNCTION,
         UNCOMPILED_SOURCE,
+        UNRESOLVED_SECRET_REF,
     ];
 }
 

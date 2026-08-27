@@ -212,6 +212,44 @@ operators:
 > element is empty", so `["", "b"]` joins to `"b"` rather than `", b"`. Use
 > `join`.
 
+### Secrets
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `secret` | `{ "secret": "partner_hmac" }` | Read a value the operator declared in the `[secrets]` config section |
+
+`secret` is the only operator that reads from outside the message. Its argument
+is a name, not a path into the data context, and the value it returns is never
+recorded: the store is held by the engine rather than by the message, so a
+secret cannot reach a trace, a `map` mapping clone or a response body — there
+is nothing to strip.
+
+That guarantee is enforced, not advised. A workflow that reads a secret
+anywhere the engine would record the result — a `map` mapping, a `log` message
+or field — is refused when the engine is built, and so is a workflow naming a
+secret the instance does not declare. Both surface as a quarantined channel
+with the reason named, not as a value that silently goes missing. So read a
+secret in a **condition**, or in one of the five function fields that take key
+material — `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys[].key`,
+`issuer` and `audience` — and nowhere else. A value *derived* from a secret
+belongs inside a function, not in a mapping.
+
+Two limits worth knowing:
+
+- **Five function fields, not every function field.** Those five read
+  `{"secret": …}` themselves, because their handlers do. Everywhere else a task
+  input is taken as written: an `http_call` header holding `{"secret": "k"}` is
+  an object where the field's type says string, so the workflow fails to load
+  and the channel is quarantined. Put a credential a remote system needs on the
+  **connector**, which is what connectors are for.
+- **Workflow expressions only.** `validation_logic` and `key_logic` compile on
+  a channel-level engine that has no secret store, so `{"secret": …}` there
+  fails to compile and the channel is quarantined.
+- **Deployment values are not secrets.** A topic prefix or a partner's base URL
+  belongs in `[vars]`, read as `{"var": "metadata.vars.name"}` — which *is*
+  recorded, on purpose, because an operator reading a trace needs to see it.
+  See [Environment Variables](./environment-variables.md).
+
 ## Sharp edges
 
 Five operators take a shape or a value that is easy to get wrong. Each bullet

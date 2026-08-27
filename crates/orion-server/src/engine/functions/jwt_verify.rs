@@ -52,13 +52,13 @@ impl AsyncFunctionHandler for JwtVerifyHandler {
                 )));
             };
             let algorithm = crate::jwt::parse_algorithm(algorithm).map_err(|e| validation(&e))?;
-            let Some(key_ref) = field("key") else {
-                return Err(validation(&format!("'keys[{index}].key' is required")));
+            let key_ref = match entry.get("key") {
+                None | Some(Value::Null) => {
+                    return Err(validation(&format!("'keys[{index}].key' is required")));
+                }
+                Some(key) => key,
             };
-            let material =
-                crate::connector::secrets::resolve_secret_string(key_ref, "jwt_verify.keys")
-                    .await
-                    .map_err(|e| validation(&e))?;
+            let material = super::secret_ref::key_material(key_ref, "jwt_verify.keys", ctx).await?;
             let key = crate::jwt::decoding_key(algorithm, &material, field("key_encoding"))
                 .map_err(|e| validation(&format!("'keys[{index}]': {e}")))?;
             static_keys.push(crate::jwt::StaticKey {
@@ -144,12 +144,13 @@ async fn string_or_vec(
         None | Some(Value::Null) => return Ok(Vec::new()),
         Some(raw) => super::connector_helpers::resolve_value(raw, ctx),
     };
-    let items: Vec<String> = match raw {
-        Value::String(s) => vec![s],
-        Value::Array(items) => items
-            .into_iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect(),
+    // A `{"secret": …}` node is one item, not a map of one: it is the reserved
+    // operator's shape, so it has to be recognised before the array arm would
+    // otherwise treat it as a non-string and drop it.
+    let items: Vec<Value> = match raw {
+        raw if super::secret_ref::secret_name(&raw).is_some() => vec![raw],
+        raw @ Value::String(_) => vec![raw],
+        Value::Array(items) => items,
         _ => {
             return Err(validation(&format!(
                 "'{field}' must be a string or an array of strings"
@@ -158,11 +159,7 @@ async fn string_or_vec(
     };
     let mut resolved = Vec::with_capacity(items.len());
     for item in items {
-        resolved.push(
-            crate::connector::secrets::resolve_secret_string(&item, field)
-                .await
-                .map_err(|e| validation(&e))?,
-        );
+        resolved.push(super::secret_ref::key_material(&item, field, ctx).await?);
     }
     Ok(resolved)
 }
@@ -218,6 +215,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -227,15 +225,18 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Array,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
         name: "keys",
         description: "Static verification keys: [{algorithm, key, kid?, \
-                      key_encoding?}]. At least one of keys/jwks_url.",
+                      key_encoding?}]. Each key takes {\"secret\": \"name\"} or a \
+                      string. At least one of keys/jwks_url.",
         kind: FieldKind::Array,
         required: false,
         resolvable: false,
+        secret: true,
         alias: None,
     },
     FieldSchema {
@@ -245,24 +246,27 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
         name: "issuer",
-        description: "Accepted iss value(s); string or array. env:// references \
-                      resolve.",
+        description: "Accepted iss value(s); string or array. {\"secret\": \"name\"} \
+                      and env:// references resolve.",
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: true,
         alias: None,
     },
     FieldSchema {
         name: "audience",
-        description: "Accepted aud value(s); string or array. env:// references \
-                      resolve (OAuth client ids).",
+        description: "Accepted aud value(s); string or array. {\"secret\": \"name\"} \
+                      and env:// references resolve (OAuth client ids).",
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: true,
         alias: None,
     },
     FieldSchema {
@@ -271,6 +275,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -279,6 +284,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Bool,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -289,6 +295,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

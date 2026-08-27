@@ -186,6 +186,21 @@ A channel — an endpoint bound to that workflow:
   either is refused with `UNCOMPILED_SOURCE`, however deep in the document it
   sits. Run `orion-server compile <dir>` and send its output; do not hand-inline
   the reference.
+- **`env://` works in five workflow fields, not everywhere.** Only `crypto.key`,
+  `jwt_sign.key` and `jwt_verify`'s `keys` / `issuer` / `audience` resolve a
+  secret reference; anywhere else it is sent on as that literal text, so a POST
+  carrying one is refused with `UNRESOLVED_SECRET_REF` naming the field. Put the
+  value on a connector instead — the connector holds the credential and the
+  workflow names the connector.
+- **A value that varies by environment is `[vars]` or `[secrets]`, never a
+  literal in the definition.** The operator declares both in the config file; a
+  workflow reads a var as `{"var": "metadata.vars.name"}` and a secret as
+  `{"secret": "name"}`. The difference is traces: a var is stamped into every
+  message and *is* recorded, a secret is held by the engine and cannot be. So a
+  `map` mapping or a `log` field reading a secret is refused when the engine is
+  built, as is a name the instance does not declare — both quarantine the
+  channel. Read a secret in `crypto.key`, `jwt_sign.key` or a task condition,
+  and nowhere that gets written back.
 
 ## Get the authoritative schema at runtime
 

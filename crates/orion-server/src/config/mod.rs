@@ -14,6 +14,7 @@ mod storage;
 mod trace_queue;
 mod unknown_env;
 pub(super) mod validation;
+mod vars;
 mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
@@ -33,6 +34,7 @@ pub use server::{CompressionConfig, DocsConfig, IngestConfig, ServerConfig, TlsC
 pub use storage::StorageConfig;
 pub use trace_queue::TraceQueueConfig;
 pub use unknown_env::{RESERVED_PREFIX as RESERVED_ENV_PREFIX, looks_like_env_override};
+pub use vars::{SecretsConfig, VarsConfig};
 pub use write::WriteConfig;
 
 use serde::{Deserialize, Serialize};
@@ -74,6 +76,14 @@ pub struct AppConfig {
     pub audit: AuditConfig,
     pub admin_auth: AdminAuthConfig,
     pub cluster: ClusterConfig,
+    /// Deployment values stamped into `metadata.vars` on every message, and
+    /// therefore visible in traces. Free-form, so no env override — `${VAR}`
+    /// in the value covers that.
+    pub vars: VarsConfig,
+    /// Secret references resolved at startup and published to the engine,
+    /// where `{"secret": "name"}` reaches them. Never part of a message, so
+    /// never part of a trace.
+    pub secrets: SecretsConfig,
 }
 
 fn default_environment() -> String {
@@ -102,6 +112,8 @@ impl Default for AppConfig {
             audit: AuditConfig::default(),
             admin_auth: AdminAuthConfig::default(),
             cluster: ClusterConfig::default(),
+            vars: VarsConfig::default(),
+            secrets: SecretsConfig::default(),
         }
     }
 }

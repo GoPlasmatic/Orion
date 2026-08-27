@@ -229,6 +229,7 @@ fn try_start_ingest(
         state.engine.clone(),
         state.channel_registry.clone(),
         state.datalogic.clone(),
+        state.vars.clone(),
         state.kafka.producer.clone(),
         state
             .cluster

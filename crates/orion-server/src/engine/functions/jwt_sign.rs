@@ -42,10 +42,14 @@ impl AsyncFunctionHandler for JwtSignHandler {
             Some(name) => crate::jwt::parse_algorithm(name).map_err(|e| validation(&e))?,
             None => return Err(validation("requires 'algorithm'")),
         };
-        let Some(key_ref) = input.get("key").and_then(Value::as_str) else {
-            return Err(validation(
-                "requires 'key' (a literal or a secret reference like env://NAME)",
-            ));
+        let key_ref = match input.get("key") {
+            None | Some(Value::Null) => {
+                return Err(validation(
+                    "requires 'key' ({\"secret\": \"name\"}, a secret reference like \
+                     env://NAME, or a literal)",
+                ));
+            }
+            Some(key) => key,
         };
         let key_encoding = input.get("key_encoding").and_then(Value::as_str);
         let kid = input.get("kid").and_then(Value::as_str).map(str::to_string);
@@ -126,9 +130,7 @@ impl AsyncFunctionHandler for JwtSignHandler {
         }
 
         // The key resolves last and lives only inside this call.
-        let material = crate::connector::secrets::resolve_secret_string(key_ref, "jwt_sign.key")
-            .await
-            .map_err(|e| validation(&e))?;
+        let material = super::secret_ref::key_material(key_ref, "jwt_sign.key", ctx).await?;
         let key = crate::jwt::encoding_key(algorithm, &material, key_encoding)
             .map_err(|e| validation(&e))?;
         let token = crate::jwt::sign(algorithm, &key, kid, &Value::Object(claims))
@@ -204,15 +206,18 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
         name: "key",
-        description: "HS secret or RS/ES/Ed private-key PEM; a literal or a secret \
+        description: "HS secret or RS/ES/Ed private-key PEM: {\"secret\": \"name\"} \
+                      reads the engine's [secrets] store; a string is a literal or a \
                       reference (env://NAME). Never appears in traces or errors.",
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: true,
         alias: None,
     },
     FieldSchema {
@@ -221,6 +226,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -231,6 +237,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -240,6 +247,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -248,6 +256,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -256,6 +265,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -265,6 +275,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -274,6 +285,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -283,6 +295,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

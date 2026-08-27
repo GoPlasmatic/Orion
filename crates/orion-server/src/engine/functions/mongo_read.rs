@@ -143,6 +143,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -151,6 +152,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -159,6 +161,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -167,6 +170,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -175,6 +179,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -183,6 +188,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -191,6 +197,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -199,6 +206,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -207,6 +215,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

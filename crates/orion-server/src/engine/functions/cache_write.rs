@@ -142,6 +142,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -150,6 +151,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -158,6 +160,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -166,6 +169,7 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
 ];

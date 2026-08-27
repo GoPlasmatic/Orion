@@ -745,6 +745,7 @@ pub(crate) fn build_dry_run_engine(
     workflow_path: &str,
     stubs_path: Option<&str>,
     definitions: Option<&Catalog>,
+    secrets: &orion::engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     let stubs = match stubs_path {
         Some(path) => {
@@ -754,7 +755,28 @@ pub(crate) fn build_dry_run_engine(
         }
         None => orion::engine::functions::stub::StubTable::new(),
     };
-    build_dry_run_engine_with_stubs(workflow_path, stubs, definitions)
+    build_dry_run_engine_with_stubs(workflow_path, stubs, definitions, secrets)
+}
+
+/// Read a `--secrets` / case-file secrets document into a store.
+///
+/// The values are **stand-ins**, used verbatim: an offline run has no config
+/// file and no reason to reach a real vault, and a suite that depends on the
+/// machine's environment is a suite that passes on one laptop. Use throwaway
+/// values, and keep the file out of the repository if any of them is not.
+pub(crate) fn offline_secrets(
+    value: &serde_json::Value,
+    source: &str,
+) -> Result<orion::engine::ResolvedSecrets, String> {
+    match value {
+        serde_json::Value::Object(map) => {
+            Ok(orion::engine::ResolvedSecrets::from_values(map.clone()))
+        }
+        other => Err(format!(
+            "{source}: secrets must be a JSON object of name -> value, got {}",
+            orion::engine::utils::json_kind(other)
+        )),
+    }
 }
 
 /// Everything an offline run needs beyond the engine itself.
@@ -772,6 +794,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     workflow_path: &str,
     stubs: orion::engine::functions::stub::StubTable,
     definitions: Option<&Catalog>,
+    secrets: &orion::engine::ResolvedSecrets,
 ) -> Result<OfflineRun, Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
 
@@ -800,11 +823,13 @@ pub(crate) fn build_dry_run_engine_with_stubs(
         orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
     // Custom operators are registered here too: a dry-run must speak the same
     // expression vocabulary as the serving engine.
-    let engine =
-        orion::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
-            .with_workflow(df_workflow)
-            .with_handlers(functions)
-            .build()?;
+    let engine = orion::engine::operators::with_orion_engine_defaults(
+        dataflow_rs::Engine::builder(),
+        secrets,
+    )
+    .with_workflow(df_workflow)
+    .with_handlers(functions)
+    .build()?;
     Ok(OfflineRun { engine, log })
 }
 
@@ -820,6 +845,7 @@ pub(crate) async fn run_dry_run(
     input_path: &str,
     stubs_path: Option<&str>,
     metadata_path: Option<&str>,
+    secrets_path: Option<&str>,
     definitions: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_raw = std::fs::read_to_string(input_path)
@@ -841,8 +867,19 @@ pub(crate) async fn run_dry_run(
         None => serde_json::json!({}),
     };
 
+    let secrets = match secrets_path {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read secrets '{path}': {e}"))?;
+            let value: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
+            offline_secrets(&value, path)?
+        }
+        None => orion::engine::ResolvedSecrets::empty(),
+    };
+
     let catalog = Catalog::load_opt(definitions)?;
-    let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref())?;
+    let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
         .metadata_json(&metadata)
@@ -996,6 +1033,15 @@ struct TestCase {
     /// Inline connector stubs, in the same shape as `dry-run --stubs`.
     #[serde(default)]
     stubs: Option<serde_json::Value>,
+    /// Stand-in values for the `{"secret": "name"}` references the workflow
+    /// reads, in the same shape as `dry-run --secrets`.
+    ///
+    /// An offline run has no `[secrets]` config to resolve, and an engine
+    /// built with no store refuses a workflow that names one — so a workflow
+    /// that signs anything is untestable without this. The values are used
+    /// verbatim; use throwaway ones.
+    #[serde(default)]
+    secrets: Option<serde_json::Value>,
     /// Path to a stub file, as an alternative to inline `stubs`.
     #[serde(default)]
     stubs_file: Option<String>,
@@ -1207,7 +1253,15 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
         Err(e) => return fail(&name, e),
     };
 
-    let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs, definitions) {
+    let secrets = match case.secrets.as_ref() {
+        Some(value) => match offline_secrets(value, &name) {
+            Ok(secrets) => secrets,
+            Err(e) => return fail(&name, e),
+        },
+        None => orion::engine::ResolvedSecrets::empty(),
+    };
+
+    let run = match build_dry_run_engine_with_stubs(&workflow_path, stubs, definitions, &secrets) {
         Ok(run) => run,
         Err(e) => return fail(&name, e.to_string()),
     };

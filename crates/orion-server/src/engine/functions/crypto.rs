@@ -222,15 +222,17 @@ enum HmacMode {
 
 /// The op's `key`, resolved (literal or secret reference) and decoded per
 /// `key_encoding`. The resolved bytes never leave this call chain.
-async fn hmac_key(input: &Value) -> Result<Vec<u8>, DataflowError> {
-    let Some(key) = literal_str(input, "key")? else {
-        return Err(validation(
-            "this op requires 'key' (a literal or a secret reference like env://NAME)",
-        ));
+async fn hmac_key(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, DataflowError> {
+    let key = match input.get("key") {
+        None | Some(Value::Null) => {
+            return Err(validation(
+                "this op requires 'key' ({\"secret\": \"name\"}, a secret reference \
+                 like env://NAME, or a literal)",
+            ));
+        }
+        Some(key) => key,
     };
-    let resolved = crate::connector::secrets::resolve_secret_string(key, "crypto.key")
-        .await
-        .map_err(|e| validation(&e))?;
+    let resolved = super::secret_ref::key_material(key, "crypto.key", ctx).await?;
     if resolved.is_empty() {
         return Err(validation("'key' resolved to an empty value"));
     }
@@ -260,7 +262,7 @@ async fn hmac_op(
     // F58 ordering: the message-independent refusals (algorithm, key) come
     // before anything the message can change (data, signature).
     let algorithm = algorithm(input, HMAC_ALGORITHMS, "sha256")?;
-    let key = hmac_key(input).await?;
+    let key = hmac_key(input, ctx).await?;
     let data = data_bytes(input, ctx)?;
 
     match mode {
@@ -630,6 +632,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -640,6 +643,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -650,6 +654,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -658,16 +663,18 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
         name: "key",
-        description: "HMAC key (hmac/hmac_verify): a literal or a secret reference like \
-                      env://NAME, resolved like connector secrets. Never appears in \
-                      traces or errors.",
+        description: "HMAC key (hmac/hmac_verify): {\"secret\": \"name\"} reads the \
+                      engine's [secrets] store; a string is a literal or a reference \
+                      like env://NAME. Never appears in traces or errors.",
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: true,
         alias: None,
     },
     FieldSchema {
@@ -677,6 +684,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -686,6 +694,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -694,6 +703,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -703,6 +713,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -712,6 +723,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -721,6 +733,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -731,6 +744,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

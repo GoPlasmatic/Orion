@@ -160,11 +160,17 @@ const STRING_MAP_KEYS: [&str; 4] = ["headers", "params", "query", "cookies"];
 /// * **`_orion_errors` is cleared**, because it is engine-owned and the ingress
 ///   clears it unconditionally.
 ///
+/// `vars` is passed through rather than stamped. Offline there is no config
+/// file to read `[vars]` from, so the case supplies them the way it supplies
+/// headers — but the shape is checked, because at runtime the key is
+/// force-stamped from one object and a case writing a string there would be
+/// asserting on state no ingress can produce.
+///
 /// Returns a human-readable error for a shape the ingress could never produce:
 /// a non-object root, a `headers`/`params`/`query`/`cookies` that is not an
-/// object of strings, a non-string `channel`/`http_method`, or an `auth`
-/// carrying anything but `claims` (the ingress replaces `auth` wholesale with
-/// `{"claims": …}`, so nothing else is reachable at runtime).
+/// object of strings, a non-object `vars`, a non-string `channel`/`http_method`,
+/// or an `auth` carrying anything but `claims` (the ingress replaces `auth`
+/// wholesale with `{"claims": …}`, so nothing else is reachable at runtime).
 pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
     let mut metadata = match metadata {
         Value::Null => return Ok(serde_json::json!({})),
@@ -204,6 +210,16 @@ pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
                 json_kind(value)
             ));
         }
+    }
+
+    if let Some(vars) = metadata.get(crate::engine::VARS_KEY)
+        && !vars.is_object()
+    {
+        return Err(format!(
+            "'metadata.vars' must be an object — it is stamped from the [vars] config \
+             section, got {}",
+            json_kind(vars)
+        ));
     }
 
     if let Some(auth) = metadata.get("auth") {

@@ -76,7 +76,7 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.7.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.8.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -102,7 +102,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # The shared wire contract (DTOs, enums, error envelope, import report). The
 # server enables `utoipa` so the shared types publish in its OpenAPI document.
-orion-api = { version = "1.0.3", path = "../orion-api", features = ["utoipa"] }
+orion-api = { version = "1.0.4", path = "../orion-api", features = ["utoipa"] }
 # The shared admin-API transport — drives `orion-server package` promotion
 # against a remote instance; the same client orion-cli ships.
 orion-client = { version = "1.0.3", path = "../orion-client" }

@@ -160,6 +160,7 @@ a drift test fails the build if `src/` emits one or if this table and the
 | `DUPLICATE_TASK_ID` | Two steps in one workflow declare the same `id`. Tasks and task groups share one id namespace. |
 | `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
 | `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli.md#shared-definitions). |
+| `UNRESOLVED_SECRET_REF` | A secret reference (`env://NAME`, `vault://…`) sits in a workflow field that does not resolve one, so it would be sent on as that literal text — a URL spelled `env://API_BASE` is requested verbatim. Five fields resolve a reference: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and `audience`. See [Environment Variables](./environment-variables.md#where-a-reference-resolves). |
 
 ### How `path` is rooted
 

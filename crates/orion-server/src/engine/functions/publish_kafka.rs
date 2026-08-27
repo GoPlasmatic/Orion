@@ -156,6 +156,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -164,6 +165,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -172,6 +174,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -180,6 +183,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

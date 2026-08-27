@@ -130,6 +130,7 @@ async fn test_consumer_starts_and_stops() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -159,6 +160,7 @@ async fn test_consumer_processes_valid_message() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         None,
         None,
         None,
@@ -207,6 +209,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -380,6 +383,7 @@ async fn test_consumer_sends_invalid_utf8_to_dlq() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -457,6 +461,7 @@ async fn test_failed_message_redelivered_after_restart() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -496,6 +501,7 @@ async fn test_failed_message_redelivered_after_restart() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -553,7 +559,8 @@ async fn test_consumer_metadata_injection() {
 
     let config = test_kafka_config(&brokers, topic, channel);
     let handle =
-        consumer::start_consumer(&config, engine, registry, datalogic, None, None, None).unwrap();
+        consumer::start_consumer(&config, engine, registry, datalogic, None, None, None, None)
+            .unwrap();
 
     // Produce a message with the key the validation logic demands.
     let producer: FutureProducer = ClientConfig::new()
@@ -599,6 +606,7 @@ async fn test_concurrent_producers_all_committed() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         None,
         None,
         None,
@@ -661,6 +669,7 @@ async fn test_rapid_burst_all_committed() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         None,
         None,
         None,
@@ -764,6 +773,7 @@ async fn test_consumer_multiple_topics() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -837,6 +847,7 @@ async fn test_consumer_partition_rebalance() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -873,6 +884,7 @@ async fn test_consumer_partition_rebalance() {
         engine.clone(),
         test_registry(),
         test_datalogic(),
+        None,
         None,
         None,
         None,
@@ -1007,6 +1019,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
                 test_datalogic(),
                 None,
                 None,
+                None,
                 instance_id,
             )
             .unwrap()
@@ -1124,6 +1137,7 @@ async fn test_consumer_broker_disconnect_recovery() {
         engine,
         test_registry(),
         test_datalogic(),
+        None,
         None,
         None,
         None,
@@ -1668,6 +1682,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
 
@@ -1687,6 +1702,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
         engine,
         registry,
         datalogic,
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -1736,6 +1752,7 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
         engine,
         registry,
         datalogic,
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -1799,6 +1816,7 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
         engine,
         registry,
         datalogic,
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -1852,6 +1870,7 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
         engine,
         registry,
         datalogic,
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -1957,6 +1976,7 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
         engine,
         registry,
         datalogic,
+        None,
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,

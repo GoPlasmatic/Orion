@@ -135,6 +135,33 @@ today means building `path` / `path_logic` with `cat`, since `http_call` has no
 Without it, a value containing `&` or `#` silently restructures or truncates
 the query.
 
+## `secret` — the one operator that reads outside the message
+
+```json
+{ "secret": "partner_hmac" }
+```
+
+Its argument is a **name**, not a path: it reads the `[secrets]` section the
+operator declared in the config file. The value is held by the engine rather
+than by the message, so it cannot reach a trace, a `map` mapping clone or a
+response body — there is nothing to strip.
+
+That is enforced, not advised. A workflow reading a secret anywhere the engine
+records the result — a `map` mapping, a `log` message or field — is refused
+when the engine is built, and so is one naming a secret the instance does not
+declare. Both surface as a quarantined channel, not a missing value.
+
+So read a secret in a **task condition** or in a function field that needs key
+material (`crypto.key`, `jwt_sign.key`, `jwt_verify`'s `keys`), and nowhere
+else. A value *derived* from a secret belongs inside a function, never in a
+mapping.
+
+Two limits: `{"secret": …}` does not compile in a channel's `validation_logic`
+or `key_logic` (those run on an engine with no store, so the channel is
+quarantined), and a deployment value that is not key material belongs in
+`[vars]` instead — read as `{"var": "metadata.vars.name"}`, stamped into every
+message, and recorded in traces on purpose.
+
 ## Sharp edges
 
 Most of these fail *quietly*, with a plausible answer rather than an error.

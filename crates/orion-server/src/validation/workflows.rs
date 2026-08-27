@@ -32,6 +32,13 @@ pub fn validate_create_workflow(
             task_errors,
         ));
     }
+    let refs = stray_secret_reference_errors(&req.tasks);
+    if !refs.is_empty() {
+        return Err(validation_with_details(
+            "Workflow sends a secret reference somewhere it is never resolved",
+            refs,
+        ));
+    }
     if let Some(loop_config) = &req.loop_config {
         let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
         if !loop_errors.is_empty() {
@@ -42,6 +49,14 @@ pub fn validate_create_workflow(
         }
     }
     Ok(())
+}
+
+/// [`secret_reference_errors`] as `FieldError`s, for the create/update paths.
+fn stray_secret_reference_errors(tasks: &Value) -> Vec<FieldError> {
+    secret_reference_errors(tasks)
+        .into_iter()
+        .map(|(path, message)| FieldError::new(path, "UNRESOLVED_SECRET_REF", message))
+        .collect()
 }
 
 pub fn validate_update_workflow(
@@ -68,6 +83,13 @@ pub fn validate_update_workflow(
             return Err(validation_with_details(
                 "Workflow tasks contain invalid function inputs",
                 task_errors,
+            ));
+        }
+        let refs = stray_secret_reference_errors(tasks);
+        if !refs.is_empty() {
+            return Err(validation_with_details(
+                "Workflow sends a secret reference somewhere it is never resolved",
+                refs,
             ));
         }
     }
@@ -582,11 +604,112 @@ pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
             if !crate::engine::functions::schema::is_resolvable_field(name, field) {
                 continue;
             }
+            // A secret-bearing field resolves `{"secret": …}` itself (see
+            // `engine::functions::secret_ref`), so the node is not an
+            // unresolvable operator there — it is the field's other documented
+            // spelling. `jwt_verify`'s `issuer` and `audience` are both.
+            if crate::engine::functions::schema::is_secret_field(name, field)
+                && crate::engine::functions::secret_ref::secret_name(value).is_some()
+            {
+                continue;
+            }
             let base = format!("{path}.function.input.{field}");
             collect_unresolvable(value, &base, name, &mut out);
         }
     }
     out
+}
+
+/// Every secret reference sitting in a field that does not resolve one.
+///
+/// `env://NAME` and `vault://…` are resolved by the handler that reads a
+/// particular field, not by a pass over the document — so five fields turn one
+/// into a credential (`schema::is_secret_field`) and every other field sends
+/// the string on as itself. A task carrying `{"path": "env://API_BASE"}`
+/// requests a URL spelled `env://API_BASE` and fails with whatever the backend
+/// makes of it, which is a failure that names neither the reference nor the
+/// field.
+///
+/// **An error, not a warning** — the opposite call from
+/// [`unresolvable_logic_warnings`], and for the opposite reason. That check is
+/// advisory because operator names (`in`, `map`, `length`) are also ordinary
+/// field names, so it cannot tell a mistake from a document. `env://` at the
+/// head of a string has no second reading: nothing legitimately sends that text
+/// to a database, an SMTP server or an HTTP path.
+///
+/// Returns `(field path, message)` pairs, the shape the admin routes and the
+/// CLI both already consume.
+pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    // Flattened, so a reference inside a guard clause is checked like any
+    // other — a task group is where one is least likely to be noticed by eye.
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        let Some(function) = task.get("function") else {
+            continue;
+        };
+        let (Some(name), Some(input)) = (
+            function.get("name").and_then(Value::as_str),
+            function.get("input").and_then(Value::as_object),
+        ) else {
+            continue;
+        };
+        for (field, value) in input {
+            // The whole subtree is skipped, not just its top level:
+            // `jwt_verify.keys` is an array of objects whose `key` member is
+            // the reference, so the legitimate one lives two levels down.
+            if crate::engine::functions::schema::is_secret_field(name, field) {
+                continue;
+            }
+            collect_secret_references(
+                value,
+                &format!("{path}.function.input.{field}"),
+                name,
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
+/// Walk one authored value, reporting every secret reference inside it.
+fn collect_secret_references(
+    value: &Value,
+    path: &str,
+    function: &str,
+    out: &mut Vec<(String, String)>,
+) {
+    match value {
+        Value::String(s) => {
+            // The masking policy's predicate, not a `starts_with("env://")`:
+            // it is the one place that decides which schemes this build
+            // understands, so a `vault://` reference is caught here too rather
+            // than reaching the backend as its own text.
+            if crate::connector::secrets::is_resolvable_reference(s) {
+                out.push((
+                    path.to_string(),
+                    format!(
+                        "'{function}' does not resolve secret references in this field, so \
+                         '{s}' is sent on as that literal text. Move the value to a \
+                         connector, or declare it in the config file — a deployment value \
+                         under [vars], read as {{\"var\": \"metadata.vars.<name>\"}}, and key \
+                         material under [secrets], read as {{\"secret\": \"<name>\"}} in one \
+                         of the fields that take it."
+                    ),
+                ));
+            }
+        }
+        Value::Object(map) => {
+            for (key, child) in map {
+                collect_secret_references(child, &format!("{path}.{key}"), function, out);
+            }
+        }
+        Value::Array(items) => {
+            for (i, child) in items.iter().enumerate() {
+                collect_secret_references(child, &format!("{path}[{i}]"), function, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Walk one authored value, reporting every operator node inside it.
@@ -854,5 +977,80 @@ mod tests {
     fn test_validate_workflow_id() {
         assert!(validate_workflow_id("my-workflow-1").is_ok());
         assert!(validate_workflow_id("bad id!").is_err());
+    }
+
+    /// The motivating case: a reference in a field nothing resolves. Left
+    /// alone it is requested as a URL spelled `env://API_BASE`.
+    #[test]
+    fn a_reference_outside_a_secret_field_is_reported() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "call", "name": "Call",
+            "function": {"name": "http_call", "input": {
+                "connector": "crm",
+                "path": "env://API_BASE"
+            }}
+        }]));
+        assert_eq!(found.len(), 1, "got {found:?}");
+        assert_eq!(found[0].0, "tasks[0].function.input.path");
+        assert!(found[0].1.contains("env://API_BASE"), "{}", found[0].1);
+    }
+
+    /// The five fields that do resolve one must stay clean, including the
+    /// reference two levels down inside `jwt_verify.keys`.
+    #[test]
+    fn a_reference_in_a_secret_field_is_left_alone() {
+        let clean = secret_reference_errors(&serde_json::json!([
+            {
+                "id": "mac", "name": "MAC",
+                "function": {"name": "crypto", "input": {
+                    "op": "hmac", "key": "env://PARTNER_KEY", "data": {"var": "data.body"}
+                }}
+            },
+            {
+                "id": "jwt", "name": "Verify",
+                "function": {"name": "jwt_verify", "input": {
+                    "token": {"var": "data.token"},
+                    "keys": [{"algorithm": "HS256", "key": "env://JWT_SECRET"}],
+                    "audience": "env://OAUTH_CLIENT_ID"
+                }}
+            }
+        ]));
+        assert!(clean.is_empty(), "got {clean:?}");
+    }
+
+    /// A task group is where a stray reference is least likely to be caught by
+    /// eye, so the walk has to descend into one.
+    #[test]
+    fn a_reference_inside_a_task_group_is_reported() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "guarded", "name": "Guarded",
+            "condition": {"var": "data.ok"},
+            "tasks": [{
+                "id": "send", "name": "Send",
+                "function": {"name": "send_email", "input": {
+                    "connector": "smtp", "to": "ops@example.com",
+                    "subject": "hi", "text": "vault://secret/data/x#y"
+                }}
+            }]
+        }]));
+        assert_eq!(found.len(), 1, "got {found:?}");
+        assert!(
+            found[0].0.ends_with("function.input.text"),
+            "{}",
+            found[0].0
+        );
+    }
+
+    /// An ordinary connection string is not a secret reference — the check
+    /// asks the resolver registry, not "does it contain `://`".
+    #[test]
+    fn an_ordinary_url_is_not_a_reference() {
+        let clean = secret_reference_errors(&serde_json::json!([{
+            "id": "call", "name": "Call",
+            "function": {"name": "http_call", "input": {
+                "connector": "crm", "path": "https://example.com/v1/orders"
+            }}
+        }]));
+        assert!(clean.is_empty(), "got {clean:?}");
     }
 }

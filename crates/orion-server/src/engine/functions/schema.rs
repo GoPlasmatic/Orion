@@ -73,6 +73,17 @@ pub struct FieldSchema {
     /// everything else — connector names, SQL text, output paths — stays
     /// literal by design.
     pub resolvable: bool,
+    /// Whether the handler resolves a secret reference (`env://NAME`,
+    /// `vault://…`) in this field, through
+    /// [`crate::connector::secrets::resolve_secret_string`].
+    ///
+    /// Five fields do: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s
+    /// `keys`, `issuer` and `audience`. Everywhere else a `scheme://` string
+    /// is a literal the handler sends on as-is — a URL spelled
+    /// `env://API_BASE`, not the variable's value — which is why
+    /// `validation::secret_reference_errors` refuses one outside these fields
+    /// rather than letting it reach the backend.
+    pub secret: bool,
     /// A second accepted spelling for this field, or `None`.
     ///
     /// Two fields have one, both spelled `response_path` (the pre-1.0 name of
@@ -460,6 +471,27 @@ pub fn is_resolvable_field(function_name: &str, field: &str) -> bool {
     })
 }
 
+/// Whether `field` is one this function resolves a secret reference in — the
+/// only place `env://NAME` or `vault://…` means anything other than itself.
+///
+/// Driven off the registry rather than a per-function list for the same reason
+/// [`is_resolvable_field`] is: a function that starts resolving references in a
+/// new field declares it in the field table it already maintains, and the
+/// authoring-time check follows automatically.
+///
+/// A function with no declared schema (an engine built-in) answers `false`:
+/// none of them resolves a reference, and treating an unknown function as
+/// permissive would make the check silently vacuous for the one case it cannot
+/// see into.
+pub fn is_secret_field(function_name: &str, field: &str) -> bool {
+    find(function_name).is_some_and(|schema| {
+        schema
+            .input_fields
+            .iter()
+            .any(|f| f.secret && (f.name == field || f.alias == Some(field)))
+    })
+}
+
 /// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
 /// place of a literal of its declared kind. Nodes nested deeper are not checked
 /// here: the declared kind still describes the field's own shape, and the
@@ -467,6 +499,15 @@ pub fn is_resolvable_field(function_name: &str, field: &str) -> bool {
 fn is_var_node(v: &Value) -> bool {
     v.as_object()
         .is_some_and(|o| o.len() == 1 && o.contains_key("var"))
+}
+
+/// A `{"secret": ..}` node — the shape a `secret` field may carry in place of a
+/// literal of its declared kind, for the same reason and with the same depth
+/// rule as [`is_var_node`]. The handler reads it through
+/// [`super::secret_ref`]; the declared kind still describes what the *resolved*
+/// value must be.
+fn is_secret_node(v: &Value) -> bool {
+    super::secret_ref::secret_name(v).is_some()
 }
 
 /// Check one field list against one JSON object, reporting paths under
@@ -511,7 +552,11 @@ fn check_fields(
                     field.kind.as_str()
                 ),
             )),
-            (Some(v), _) if !field.kind.matches(v) && !(field.resolvable && is_var_node(v)) => {
+            (Some(v), _)
+                if !field.kind.matches(v)
+                    && !(field.resolvable && is_var_node(v))
+                    && !(field.secret && is_secret_node(v)) =>
+            {
                 errors.push(
                     FieldError::new(
                         format!("{path_prefix}.{}", field.name),

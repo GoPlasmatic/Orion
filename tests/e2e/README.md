@@ -56,6 +56,8 @@ tests/e2e/
 | `11_error_handling` | Error envelope rendering, failure exit codes |
 | `12_full_lifecycle` | A full create→activate→send→archive walk |
 | `13_use_cases` | Data-driven cases: scenarios from [`examples/use-cases/`](../../examples/use-cases/) (which deploy the shipped example packages) plus the runtime-behaviour cases in `cases/` |
+| `14_read_only_commands` | The read-only CLI verbs — `functions`, `metrics`, `audit-logs`, `dlq`, `completions`, `config show` |
+| `15_vars_and_secrets` | `[vars]` and `[secrets]` end to end: the harness's config file declares one of each, so this is the only layer that covers `${VAR}` substitution into a var, an `env://` reference resolved at startup, and both reaching a workflow on a real process |
 
 The suites speak the v1.0 API: every send goes through a channel bound to
 exactly one workflow (`create_channel` in `helpers.sh`), and reading a

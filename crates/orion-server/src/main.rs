@@ -187,6 +187,13 @@ enum Command {
         /// `channel_call`); `"*"` matches any.
         #[arg(short, long)]
         stubs: Option<String>,
+        /// Path to a JSON file of stand-in values for the
+        /// `{"secret": "name"}` references the workflow reads:
+        /// `{"partner_hmac": "test-key"}`. An offline run has no `[secrets]`
+        /// config to resolve, and an engine with no store refuses a workflow
+        /// that names a secret. Values are used verbatim — use throwaway ones.
+        #[arg(long)]
+        secrets: Option<String>,
         /// Directory holding the set's shared definitions — the `constants`,
         /// `errors` and `fragments` documents a `$from` or a `use` resolves
         /// against. Expansion happens before validation, so what is checked
@@ -409,6 +416,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             input,
             stubs,
             metadata,
+            secrets,
             definitions,
         }) => {
             return cli::run_dry_run(
@@ -416,6 +424,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &input,
                 stubs.as_deref(),
                 metadata.as_deref(),
+                secrets.as_deref(),
                 definitions.as_deref(),
             )
             .await;
@@ -564,6 +573,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         components.engine.clone(),
         channel_registry.clone(),
         components.datalogic.clone(),
+        config.vars.to_json().map(std::sync::Arc::new),
         components.kafka_producer.clone(),
         cluster.enabled.then(|| cluster.instance_id.as_str()),
     )?;

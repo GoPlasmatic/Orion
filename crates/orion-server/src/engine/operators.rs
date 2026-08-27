@@ -65,7 +65,12 @@ use hmac::{KeyInit, Mac};
 pub fn operator_names() -> &'static BTreeSet<String> {
     static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
     NAMES.get_or_init(|| {
-        match with_orion_engine_defaults(dataflow_rs::Engine::builder()).build() {
+        match with_orion_engine_defaults(
+            dataflow_rs::Engine::builder(),
+            &crate::engine::ResolvedSecrets::empty(),
+        )
+        .build()
+        {
             Ok(engine) => engine.operator_names().map(String::from).collect(),
             // Unreachable in practice — this builder has nothing to fail on —
             // but a lint is the wrong place to panic. An empty vocabulary
@@ -604,17 +609,27 @@ impl CustomOperator for OrionOperator {
 }
 
 /// Apply Orion's engine-wide conventions to a dataflow-rs engine builder:
-/// the custom operator vocabulary, and the failed-task error context (#280).
+/// the custom operator vocabulary, the failed-task error context (#280), and
+/// the engine's secret store.
 ///
 /// Every place that builds a workflow engine — bootstrap, reload, dry-run, the
 /// workflow test endpoint — goes through this, so what an expression can read
-/// is identical everywhere expressions run.
+/// is identical everywhere expressions run. `secrets` is a parameter for
+/// exactly that reason: it is part of what an expression can read, and a
+/// surface that built its engine without it would report `UNKNOWN_SECRET` for
+/// a workflow the serving engine runs happily. Pass
+/// [`ResolvedSecrets::empty`](crate::engine::ResolvedSecrets::empty) where
+/// there is genuinely no store — that is not the same as omitting the call,
+/// because dataflow-rs registers the `secret` operator either way and a
+/// reference against an empty store fails loudly instead of resolving to null.
 pub fn with_orion_engine_defaults(
     mut builder: dataflow_rs::engine::EngineBuilder,
+    secrets: &crate::engine::ResolvedSecrets,
 ) -> dataflow_rs::engine::EngineBuilder {
     for (name, op) in all() {
         builder = builder.with_datalogic_operator(name, op);
     }
+    builder = builder.with_secrets_json(secrets.as_json());
     // Failed-task codes, for workflows that must answer differently depending
     // on *why* a step failed. Opt-in upstream and off by default; Orion turns
     // it on for every engine so the capability does not vary by which code
@@ -624,6 +639,13 @@ pub fn with_orion_engine_defaults(
 
 /// As [`with_orion_engine_defaults`], for the datalogic engines Orion builds
 /// directly (channel-guard logic, the loader's compile parity check).
+///
+/// The one thing it cannot carry across is `secret`: that operator is
+/// registered by dataflow-rs on the engines *it* builds, and its
+/// implementation is crate-private. So `{"secret": …}` resolves in workflow
+/// expressions and not in a channel's `validation_logic` — where it fails to
+/// compile, and the channel is quarantined rather than the reference passing
+/// through as data.
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {
         builder = builder.add_operator(name, op);

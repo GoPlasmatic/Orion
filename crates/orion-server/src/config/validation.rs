@@ -43,6 +43,8 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.rate_limit.validate()?;
     config.kafka.validate()?;
     config.cluster.validate()?;
+    config.vars.validate()?;
+    config.secrets.validate()?;
     // Cross-section: cluster mode is meaningless on SQLite (single-host by
     // construction) — refuse at startup rather than corrupt silently.
     if config.cluster.enabled

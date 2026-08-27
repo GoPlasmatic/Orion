@@ -1137,9 +1137,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dataflow-rs"
-version = "3.7.0"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bce2d99f2627b91646c536a4ab4b54c93cdb7d48951273d54eb1877b333af687"
+checksum = "09bc361cd6d454191166a199ce7656b9a02b40604c271d5e0126482fdce1797a"
 dependencies = [
  "async-trait",
  "bumpalo",
@@ -3193,7 +3193,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orion-api"
-version = "1.0.3"
+version = "1.0.4"
 dependencies = [
  "chrono",
  "serde",

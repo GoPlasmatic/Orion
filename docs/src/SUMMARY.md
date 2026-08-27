@@ -84,6 +84,7 @@
 - [Connector Types](./reference/connectors.md)
 - [Portable Data Dialect](./reference/data-dialect.md)
 - [Configuration Reference](./reference/configuration.md)
+- [Environment Variables](./reference/environment-variables.md)
 - [Metrics Reference](./reference/metrics.md)
 - [Errors & Response Envelopes](./reference/errors.md)
 - [CLI Reference](./reference/cli.md)

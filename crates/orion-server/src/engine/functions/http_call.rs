@@ -212,6 +212,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -220,6 +221,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -228,6 +230,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -236,6 +239,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -244,6 +248,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -252,6 +257,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -260,6 +266,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -270,6 +277,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -278,6 +286,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
         // Orion used to rewrite the key in the storage repository instead.
         alias: Some("response_path"),
@@ -289,6 +298,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -297,6 +307,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

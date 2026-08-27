@@ -137,6 +137,21 @@ token applies without a restart. `aws-sm://`, `gcp-sm://`, and `azure-kv://` are
 reserved: a reference using one without a live resolver is refused rather than
 passed to the backend as a literal credential.
 
+Channel `auth` blocks take the same references, and three workflow functions take them for key material. Which fields resolve one — and which look like they should but do not — is [Environment Variables](../reference/environment-variables.md#where-a-reference-resolves).
+
+Key material a *workflow* reads has a better home than a reference in the definition: declare it once in `[secrets]` and name it from the task.
+
+```toml
+[secrets]
+partner_hmac = "env://PARTNER_HMAC_KEY"
+```
+
+```json
+{ "op": "hmac", "key": { "secret": "partner_hmac" }, "data": { "var": "data.body" } }
+```
+
+Two things change. The workflow reaches an **allowlist** the operator published rather than whatever the process environment holds under a name the definition chose; and a misspelled name is caught when the engine is built, not by a task failing in production. The value itself is held by the engine, never by a message, so it cannot appear in a trace snapshot, a `map` mapping clone or a response body — and the engine refuses a workflow that would copy it somewhere recorded. See [Vars and Secrets](../reference/configuration.md#vars-and-secrets).
+
 For defence below the API, encrypt the connector configs at rest:
 
 ```toml

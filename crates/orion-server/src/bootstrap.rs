@@ -137,6 +137,11 @@ pub struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
     pub datalogic: Arc<datalogic_rs::Engine>,
+    /// `[secrets]`, resolved once. Every engine built from here on carries it,
+    /// including the ones the admin plane builds per request — a surface that
+    /// built its engine without it would refuse a workflow the serving engine
+    /// runs.
+    pub secrets: Arc<crate::engine::ResolvedSecrets>,
     pub engine: Arc<crate::engine::EngineHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
@@ -218,12 +223,29 @@ pub async fn build_engine_components(
         crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build(),
     );
 
+    // Resolve `[secrets]` before anything builds an engine. A reference that
+    // cannot be resolved stops the boot: handing one onward as its own literal
+    // text is the failure the reference syntax exists to prevent, and an
+    // instance serving a workflow whose signing key is the string
+    // `env://PARTNER_HMAC_KEY` fails at the remote system with nothing
+    // pointing back here.
+    let secrets = Arc::new(crate::engine::ResolvedSecrets::resolve(&config.secrets).await?);
+    if !secrets.is_empty() {
+        tracing::info!(
+            names = ?secrets.names().collect::<Vec<_>>(),
+            "Secrets resolved"
+        );
+    }
+
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
     let engine: Arc<crate::engine::EngineHandle> =
         Arc::new(crate::engine::EngineHandle::new(Arc::new(
-            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
-                .build()?,
+            crate::engine::operators::with_orion_engine_defaults(
+                dataflow_rs::Engine::builder(),
+                &secrets,
+            )
+            .build()?,
         )));
 
     // Build cache pool (memory backend always available, redis always compiled)
@@ -271,6 +293,7 @@ pub async fn build_engine_components(
             connector_registry,
             http_client,
             datalogic: datalogic_engine,
+            secrets,
             engine,
             cache_pool,
             sql_pool_cache,
@@ -334,9 +357,11 @@ impl EngineComponents {
         // cannot parse, is quarantined per channel instead of aborting the
         // whole build. `with_handlers` is the only thing this borrow is for —
         // the workflows are added below, on the same builder.
-        let builder =
-            crate::engine::operators::with_orion_engine_defaults(dataflow_rs::Engine::builder())
-                .with_handlers(custom_functions);
+        let builder = crate::engine::operators::with_orion_engine_defaults(
+            dataflow_rs::Engine::builder(),
+            &serving.secrets,
+        )
+        .with_handlers(custom_functions);
         let (workflows, engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
         channel_registry
@@ -396,12 +421,14 @@ impl EngineComponents {
 /// Start the Kafka consumer in a background task. Merges config-file topic
 /// mappings with DB-driven async-channel topics. Returns `None` when Kafka
 /// is disabled or the merged topic list is empty.
+#[allow(clippy::too_many_arguments)]
 pub fn start_kafka_ingest(
     kafka_config: &config::KafkaIngestConfig,
     channels: &[crate::storage::models::Channel],
     engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
+    vars: Option<Arc<serde_json::Value>>,
     kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     instance_id: Option<&str>,
 ) -> Result<Option<crate::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
@@ -431,6 +458,7 @@ pub fn start_kafka_ingest(
         engine,
         channel_registry,
         datalogic,
+        vars,
         dlq_producer,
         dlq_topic,
         instance_id,
@@ -749,6 +777,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         connector_registry,
         http_client,
         datalogic,
+        secrets,
         engine,
         cache_pool,
         sql_pool_cache,
@@ -762,8 +791,14 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // limit, which applies with the platform limiter off (S15) and keys on
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
+    // Built once and cloned per message. `None` for an instance that declares
+    // no vars, which is the signal to strip `metadata.vars` rather than stamp
+    // an empty object — see `engine::stamp_vars`.
+    let vars = config.vars.to_json().map(Arc::new);
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,
+        secrets,
+        vars,
         repos,
         audit_queue,
         connector_registry,

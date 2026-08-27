@@ -119,6 +119,18 @@ fn check_workflows(
                 e.to_string(),
             ));
         }
+        // An error, not a warning: unlike an operator name, `env://` at the
+        // head of a string has no reading in which it is data. Reported
+        // separately from `schema.workflow` so a pipeline can see which of the
+        // two refused the set. `validate_create_workflow` refuses the same
+        // documents, so a set that passes here is one the admin API accepts.
+        for (path, message) in crate::validation::secret_reference_errors(&req.tasks) {
+            findings.push(Finding::error(
+                "env.unresolved",
+                format!("workflow '{}' {path}", req.name),
+                message,
+            ));
+        }
         // The advisory the single-file lint already emits, carried into set
         // mode so a directory gate is not weaker than the per-file one.
         for (path, message) in crate::validation::unresolvable_logic_warnings(&req.tasks) {
@@ -358,8 +370,9 @@ fn check_closure(
 /// warnings made `--deny-warnings` fail on every set that uses one.
 fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
     let mut refs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut secrets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for def in &set.definitions {
-        collect_env(&def.doc, def, &mut refs);
+        collect_env(&def.doc, def, &mut refs, &mut secrets);
     }
     for (needs, mut where_used) in refs {
         where_used.sort();
@@ -370,12 +383,27 @@ fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
             format!("requires {needs}"),
         ));
     }
+    // The same inventory for the other half of the deployment checklist. A
+    // separate id because the answer is a different action: an `env://`
+    // reference needs a variable in the environment, a `{"secret": …}` needs an
+    // entry in the serving instance's `[secrets]` section — and an instance
+    // that lacks one quarantines the channel rather than failing a task.
+    for (name, mut where_used) in secrets {
+        where_used.sort();
+        where_used.dedup();
+        findings.push(Finding::note(
+            "secrets.reference",
+            where_used.join(", "),
+            format!("requires a [secrets] entry named '{name}'"),
+        ));
+    }
 }
 
 fn collect_env(
     value: &Value,
     def: &super::set::Definition,
     out: &mut BTreeMap<String, Vec<String>>,
+    secrets: &mut BTreeMap<String, Vec<String>>,
 ) {
     match value {
         Value::String(s) => {
@@ -404,8 +432,21 @@ fn collect_env(
                 ));
             }
         }
-        Value::Array(items) => items.iter().for_each(|v| collect_env(v, def, out)),
-        Value::Object(map) => map.values().for_each(|v| collect_env(v, def, out)),
+        Value::Array(items) => items.iter().for_each(|v| collect_env(v, def, out, secrets)),
+        // A `{"secret": "name"}` node names a declaration the serving instance
+        // must carry, so it is inventoried and *not* descended into: the
+        // argument is a name, never a reference.
+        Value::Object(map) => {
+            if let Some(name) = crate::engine::functions::secret_ref::secret_name(value) {
+                secrets.entry(name.to_string()).or_default().push(format!(
+                    "{} '{}'",
+                    def.entity.as_str(),
+                    def.origin
+                ));
+                return;
+            }
+            map.values().for_each(|v| collect_env(v, def, out, secrets));
+        }
         _ => {}
     }
 }

@@ -32,6 +32,7 @@ Three principles shape the setup:
 | Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
+| Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | bump its version + every dependent's requirement, then `cargo package --locked --workspace` (needs a clean tree) |
 | Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |
@@ -121,7 +122,7 @@ body from its own process, where the recorder race can't occur.
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
 
-The workspace-level suite at the repo root: 13 shell suites drive a real
+The workspace-level suite at the repo root: 14 shell suites drive a real
 `orion-server` binary over HTTP with the `orion-cli` binary, both built from
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.

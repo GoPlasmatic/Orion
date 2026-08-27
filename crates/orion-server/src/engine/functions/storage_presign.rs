@@ -250,6 +250,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -259,6 +260,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -267,6 +269,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -276,6 +279,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -285,6 +289,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -294,6 +299,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -303,6 +309,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -312,6 +319,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

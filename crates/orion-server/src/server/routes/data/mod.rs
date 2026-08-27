@@ -222,6 +222,7 @@ pub(crate) async fn dynamic_handler(
         &query_params,
         &headers,
         request_config.and_then(|r| r.cookies_to_metadata.as_deref()),
+        state.vars.as_deref(),
     );
     // A name that is not in the registry is not an active channel. Without
     // this check the single-segment fallback above accepted ANY name and ran
@@ -403,7 +404,8 @@ fn shape_guard_rejection(
 
 /// Build the workflow metadata object for a request: the caller-supplied
 /// `metadata` merged with the server-supplied `channel`, `http_method`,
-/// `params`, `query`, and (credential-masked) `headers` keys.
+/// `params`, `query`, `vars`, and (credential-masked) `headers` keys.
+#[allow(clippy::too_many_arguments)]
 fn build_request_metadata(
     req_metadata: &Value,
     channel: &str,
@@ -412,6 +414,7 @@ fn build_request_metadata(
     query_params: &std::collections::HashMap<String, String>,
     headers: &axum::http::HeaderMap,
     cookie_allowlist: Option<&[String]>,
+    vars: Option<&Value>,
 ) -> Value {
     // Build metadata with all request context available for validation_logic
     let mut metadata = if req_metadata.is_object() {
@@ -433,6 +436,11 @@ fn build_request_metadata(
     // force-stamped. Without it a caller could pre-seed failures a workflow
     // then branches on.
     crate::engine::clear_error_context(&mut metadata);
+    // `metadata.vars` is platform-reserved for the same reason `cookies` is:
+    // this function's base is the caller's own `req.metadata`, so a value left
+    // in place is a value the caller chose. Stamped from `[vars]`, and removed
+    // when the instance declares none.
+    crate::engine::stamp_vars(&mut metadata, vars);
     let cookies = cookie_allowlist
         .map(|names| {
             let jar = headers

@@ -91,6 +91,7 @@ mod scenario_api_gateway_test;
 mod scenario_ecommerce_test;
 mod scenario_webhook_test;
 mod secret_references_test;
+mod secrets_and_vars_test;
 mod security_test;
 mod shutdown_test;
 mod source_form_refusal_test;

@@ -529,6 +529,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -538,6 +539,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -546,6 +548,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -554,6 +557,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -562,6 +566,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -571,6 +576,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -579,6 +585,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -588,6 +595,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -596,6 +604,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: true,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -606,6 +615,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
     FieldSchema {
@@ -615,6 +625,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        secret: false,
         alias: None,
     },
 ];

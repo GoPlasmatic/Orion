@@ -361,7 +361,17 @@ const OPERATORS: &[OperatorCase] = &[
         || json!({"join": [{"var": "nums"}, "-"]}),
         || json!("3-1-2"),
     ),
+    // ---- the engine's secret store (dataflow-rs 3.8) ----
+    // Evaluated differently from every other row — see `a_task_guarded_by`.
+    (
+        "secret",
+        || json!({"secret": "partner_hmac"}),
+        || json!("hmac-value-1a2b"),
+    ),
 ];
+
+/// The one secret [`OPERATORS`]' `secret` row declares, and its value.
+const TEST_SECRET: (&str, &str) = ("partner_hmac", "hmac-value-1a2b");
 
 /// Operator names documented in the "Available operators" section.
 ///
@@ -430,6 +440,54 @@ fn eval(logic: &Value) -> Value {
     try_eval(logic).unwrap_or_else(|e| panic!("evaluating {logic} failed: {e}"))
 }
 
+/// Whether a task guarded by `logic == expected` ran, on an engine that
+/// declares [`TEST_SECRET`].
+///
+/// `secret` cannot be proved the way every other row is, for two reasons that
+/// are both the feature working. It is registered by dataflow-rs on the
+/// engines *it* builds and its implementation is crate-private, so
+/// [`try_eval`]'s bare datalogic engine reports it as an unknown operator; and
+/// the value cannot be read out into `data` either, because dataflow-rs
+/// refuses a `map` mapping that reads a secret — recording one is precisely
+/// what the store exists to prevent. So the observable is a *condition*: a
+/// task that ran is a comparison that held, which is only possible if the
+/// operator resolved to exactly the declared value.
+async fn a_task_guarded_by(logic: &Value, expected: &Value) -> bool {
+    let (name, value) = TEST_SECRET;
+    let mut store = serde_json::Map::new();
+    store.insert(name.to_string(), json!(value));
+
+    let workflow = dataflow_rs::Workflow::from_json(
+        &json!({
+            "id": "secret_op", "name": "secret_op", "priority": 0, "condition": true,
+            "tasks": [{
+                "id": "guarded", "name": "guarded",
+                "condition": {"==": [logic, expected]},
+                "function": {"name": "map", "input": {
+                    "mappings": [{"path": "data.ran", "logic": true}]
+                }},
+            }],
+        })
+        .to_string(),
+    )
+    .expect("the guard workflow parses");
+
+    let engine = orion::engine::operators::with_orion_engine_defaults(
+        dataflow_rs::Engine::builder(),
+        &orion::engine::ResolvedSecrets::from_values(store),
+    )
+    .with_workflow(workflow)
+    .build()
+    .expect("an engine declaring the secret builds");
+
+    let mut message = dataflow_rs::Message::builder().build();
+    engine
+        .process_message(&mut message)
+        .await
+        .expect("the run succeeds");
+    message.data().get("ran") == Some(&json!(true).into())
+}
+
 /// [`OPERATORS`] and the vocabulary `engine::operators::operator_names()`
 /// reports name the same set.
 ///
@@ -469,10 +527,20 @@ fn the_operator_vocabulary_matches_the_evaluated_set() {
 
 /// Every documented operator is compiled into this build and produces its
 /// documented result.
-#[test]
-fn every_documented_operator_is_compiled() {
+#[tokio::test]
+async fn every_documented_operator_is_compiled() {
     for (name, logic, expected) in OPERATORS {
         let logic = logic();
+
+        if *name == "secret" {
+            assert!(
+                a_task_guarded_by(&logic, &expected()).await,
+                "`secret` did not resolve to the declared value — the condition \
+                 {logic} == {} did not hold",
+                expected()
+            );
+            continue;
+        }
 
         if *name == "now" {
             let got = eval(&logic);

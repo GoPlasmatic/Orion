@@ -190,6 +190,7 @@ supplies one, then stamps its own keys on top:
 | `query` | only when non-empty | Query-string parameters |
 | `headers` | always | Every request header, names lowercased. Values of `authorization`, `cookie`, `proxy-authorization`, and `x-api-key` are masked |
 | `cookies` | always, when the channel opts in | The cookies named by [`request.cookies_to_metadata`](./channel-config.md#reading-request-cookies). Absent block → the key is stripped, so a caller cannot supply it |
+| `vars` | always, when the instance declares any | The [`[vars]`](./configuration.md#vars-and-secrets) config section verbatim. No `[vars]` → the key is stripped, so a caller cannot supply it |
 
 Orion stamps nothing else on the HTTP path: no client IP, no request path, no
 trace ID. A channel in
@@ -205,6 +206,7 @@ caller `metadata` at all — the object is server-stamped keys only.
 | `kafka_partition` | Partition number |
 | `kafka_offset` | Record offset |
 | `kafka_key` | The record key — stamped only when it is valid UTF-8 |
+| `vars` | The `[vars]` config section, as on the HTTP path — a workflow reads the same deployment values whichever transport reached it |
 
 Kafka record headers are not copied into `metadata`.
 
@@ -225,8 +227,11 @@ Orion reserves these keys and no others:
 | `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
 | `metadata._orion_errors` | context | Codes of tasks that failed in this run — see [Branching on a failure](#branching-on-a-failure) |
 
-No other key or prefix in the context is reserved. `metadata.progress` is
-engine-owned too, but it belongs to dataflow-rs rather than Orion — see below.
+No other key or *prefix* in the context is reserved, but three plain metadata
+keys are still platform-owned and force-stamped at every ingress, so a caller
+cannot supply them: `channel`, `cookies` and `vars` (see [Request
+metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it
+belongs to dataflow-rs rather than Orion — see below.
 
 ### Branching on a failure
 

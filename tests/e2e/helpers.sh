@@ -341,6 +341,17 @@ start_server() {
     ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.log")
     ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.toml")
 
+    # The instance declares one var and one secret, so suite 15 can drive the
+    # whole config-file → boot → serve path: `${VAR}` substitution into
+    # `[vars]`, an `env://` reference in `[secrets]` resolved at startup, and
+    # both reaching a workflow. The in-process tests build an `AppConfig` in
+    # Rust and cannot cover any of that. Exported rather than written inline
+    # so the config file holds a *reference*, which is the shape `[secrets]`
+    # accepts — and in the reserved `ORION_SECRET_*` namespace, which the
+    # startup scan for misspelled overrides deliberately skips.
+    export E2E_VAR_TOPIC_PREFIX="eu-west"
+    export ORION_SECRET_E2E_PARTNER_HMAC="e2e-partner-hmac-value"
+
     # Orion 1.0 config schema: storage.url (not path), trace_queue (not
     # queue), and [server] no longer takes a workers count.
     cat > "$ORION_CONFIG_FILE" <<TOMLEOF
@@ -362,6 +373,13 @@ format = "pretty"
 
 [metrics]
 enabled = false
+
+[vars]
+topic_prefix = "${E2E_VAR_TOPIC_PREFIX}"
+max_retries = 3
+
+[secrets]
+partner_hmac = "env://ORION_SECRET_E2E_PARTNER_HMAC"
 TOMLEOF
 
     log_info "Starting Orion on port $port (db: $ORION_DB_PATH)"
