@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-27
+
+`orion-cli` and `orion-server` release in lockstep; 1.3.0 was server-side only
+(`[vars]` and `[secrets]`, described in the server changelog).
+
+### Security
+
+- A warning on stderr when the API key would be sent over plain `http://` to
+  any host but the local machine (`localhost`, `*.localhost`, `127.0.0.0/8`,
+  `::1`) — use `https://` for a remote server. The check lives in
+  `orion-client` 1.0.5 (`OrionClient::sends_credential_in_clear()`), which
+  this release pins.
+
+### Changed
+
+- `--verbose` prints its `Server:` line from the client builder, once, instead
+  of from each of fourteen subcommands. No visible change.
+
 ## [1.2.1] - 2026-08-26
 
 `orion-cli` and `orion-server` release in lockstep, so this version moves with
@@ -274,7 +292,8 @@ Initial release.
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.1
 [1.2.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/GoPlasmatic/Orion/compare/v1.0.0...v1.1.0

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-08-27
+
+### Security
+
+- **An API key that would travel over plain `http://` to a remote host is
+  warned about.** `orion-cli` and `orion-server package` print one line to
+  stderr when the key they are about to send would go over `http://` to any
+  host but the local machine (`localhost`, `*.localhost`, `127.0.0.0/8`,
+  `::1`). Loopback is exempt because that is every development setup and the
+  bytes never leave the host. The predicate is
+  `OrionClient::sends_credential_in_clear()` in `orion-client` 1.0.5; the
+  transport itself prints nothing.
+- `validate-config --format summary` redacts `tracing.otlp_endpoint` the way
+  it already redacts `storage.url` and the Kafka brokers — it is a URL, and a
+  URL can carry `user:password@`.
+
+### Changed
+
+- The 1.3.0 CodeQL scan's 52 alerts were triaged. Forty-eight are test
+  vectors (AWS's published SigV4 example key and signatures, webhook-preset
+  fixtures) or values that already pass through a redactor CodeQL does not
+  model, and are dismissed with the reason recorded on each; the two items
+  above are the ones that described something real. The `tests/` trees are
+  excluded from the scan, and `orion-cli`'s fourteen copies of the `--verbose`
+  `Server:` line are one, printed before the key is attached.
+
 ## [1.3.0] - 2026-08-27
 
 ### Added
@@ -3979,7 +4005,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...v1.2.0
