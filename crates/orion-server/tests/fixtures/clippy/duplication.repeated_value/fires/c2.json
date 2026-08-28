@@ -1,0 +1,10 @@
+{
+  "channel_id": "c2",
+  "name": "c2",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/c2",
+  "workflow_id": "w",
+  "config": { "rate_limit": { "requests_per_second": 20, "burst": 40 } }
+}

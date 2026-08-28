@@ -1,0 +1,11 @@
+{
+  "channel_id": "orders",
+  "name": "orders",
+  "tags": ["pkg:x"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/orders",
+  "workflow_id": "w",
+  "config": { "rate_limit": { "rps": 10, "burst": 20 }, "timeout_ms": 5000 }
+}

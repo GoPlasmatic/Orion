@@ -1,0 +1,1 @@
+{"fragments":{"guard":{"tasks":[{"id":"deny","name":"Deny","function":{"name":"map","input":{"mappings":[{"path":"data.msg","logic":{"$param":"msg"}}]}}}],"params":{"msg":{"default":"denied"}}}},"errors":{"NOT_FOUND":{"status":404,"body":"nope"}},"constants":{"db":{"connector":"mongo","database":"app"},"limit":50}}

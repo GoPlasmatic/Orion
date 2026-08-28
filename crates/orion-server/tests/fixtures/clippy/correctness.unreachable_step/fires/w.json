@@ -1,0 +1,17 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "first",
+      "name": "First",
+      "terminal": true,
+      "function": { "name": "log", "input": { "message": "x" } }
+    },
+    {
+      "id": "never",
+      "name": "Never",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

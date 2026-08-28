@@ -1,0 +1,24 @@
+{
+  "constants": {
+    "db": { "connector": "mongo", "database": "app" },
+    "limit": 50
+  },
+  "errors": {
+    "NOT_FOUND": { "status": 404, "body": "nope" }
+  },
+  "fragments": {
+    "guard": {
+      "params": { "msg": { "default": "denied" } },
+      "tasks": [
+        {
+          "id": "deny",
+          "name": "Deny",
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.msg", "logic": { "$param": "msg" } }] }
+          }
+        }
+      ]
+    }
+  }
+}

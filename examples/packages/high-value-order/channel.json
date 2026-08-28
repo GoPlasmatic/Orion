@@ -1,12 +1,10 @@
 {
   "channel_id": "high-value-orders",
-  "tags": ["pkg:high-value-order"],
   "name": "high-value-orders",
+  "tags": ["pkg:high-value-order"],
   "channel_type": "sync",
   "protocol": "http",
+  "methods": ["POST"],
   "route_pattern": "/high-value-orders",
-  "methods": [
-    "POST"
-  ],
   "workflow_id": "high-value-order"
 }

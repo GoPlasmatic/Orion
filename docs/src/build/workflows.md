@@ -166,11 +166,13 @@ For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow
 Check a workflow offline, before it can touch traffic:
 
 ```bash
+orion-server fmt workflow.json
 orion-server lint workflow.json
+orion-server clippy workflow.json
 orion-server dry-run -w workflow.json -i payload.json
 ```
 
-`lint` checks the workflow against the schema; `dry-run` executes it against a sample payload and prints the context each task produced. See [Test Workflows Offline](./testing.md).
+`fmt` writes it in the house style; `lint` checks it against the schema; `clippy` reports what `lint` accepts but you would want to know, only when certain; `dry-run` executes it against a sample payload and prints the context each task produced. See [Test Workflows Offline](./testing.md).
 
 ## Related
 

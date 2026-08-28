@@ -1,0 +1,12 @@
+{
+  "workflow_id": "c",
+  "name": "c",
+  "condition": false,
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

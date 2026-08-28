@@ -1,0 +1,1 @@
+{"workflow_id":"w","name":"w","tasks":[{"id":"call","name":"Call","function":{"name":"http_call","input":{"output":"data.customer","method":"GET","connector":"crm","path":"/customers/42"}}}]}

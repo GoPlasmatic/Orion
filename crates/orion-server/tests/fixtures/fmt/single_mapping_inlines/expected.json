@@ -1,0 +1,14 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "m",
+      "name": "Map",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "data.notification.sms_sent", "logic": true }] }
+      }
+    }
+  ]
+}

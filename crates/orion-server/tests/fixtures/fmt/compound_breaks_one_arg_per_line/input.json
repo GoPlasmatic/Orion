@@ -1,0 +1,1 @@
+{"condition":{"and":[{">=":[{"var":"data.order.amount"},100]},{"<":[{"var":"data.order.amount"},500]}]},"nested":{"if":[{"and":[{"var":"a"},{"or":[{"var":"b"},{"var":"c"}]}]},"yes","no"]}}

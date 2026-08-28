@@ -1,0 +1,1 @@
+[{"tasks":[{"id":"t","name":"T","function":{"name":"log","input":{"message":"x"}}}],"name":"w","workflow_id":"w"},{"protocol":"rest","name":"c","channel_type":"sync","workflow_id":"w"}]

@@ -554,12 +554,11 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
-        name: "database",
-        description: "MongoDB database name. Optional here because the same task shape is \
-                      valid against SQL and Elasticsearch, which need no database key; \
-                      required — and checked at workflow activation — once the referenced \
-                      connector is a MongoDB one (F52).",
-        kind: FieldKind::String,
+        name: "params",
+        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        resolvable: true,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -571,11 +570,12 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
-        name: "params",
-        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
-                      A value of {\"var\": \"path\"} is read from the message context.",
-        kind: FieldKind::Object,
-        resolvable: true,
+        name: "database",
+        description: "MongoDB database name. Optional here because the same task shape is \
+                      valid against SQL and Elasticsearch, which need no database key; \
+                      required — and checked at workflow activation — once the referenced \
+                      connector is a MongoDB one (F52).",
+        kind: FieldKind::String,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

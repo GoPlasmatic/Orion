@@ -1,0 +1,13 @@
+{
+  "name": "crm",
+  "connector_type": "http",
+  "enabled": true,
+  "tags": [],
+  "config": {
+    "url": "https://api.example.com",
+    "type": "http",
+    "method": "POST",
+    "allow_private_urls": true,
+    "retry": { "max_retries": 0, "retry_delay_ms": 100 }
+  }
+}

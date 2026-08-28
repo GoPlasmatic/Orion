@@ -502,7 +502,9 @@ The server binary also ships diagnostic and promotion subcommands you can run wi
 
 ```bash
 orion-server validate-config --format summary       # Parse + validate the config, one-screen summary, secrets redacted
+orion-server fmt ./definitions                      # Format definition files to the one house style (--check for CI)
 orion-server lint workflow.json                     # Strict-validate a workflow JSON file
+orion-server clippy ./definitions                   # Advisory checks beyond lint, said only when certain
 orion-server dry-run -w wf.json -i input.json       # Execute a workflow offline (--stubs answers connector calls)
 orion-server test examples/workflow-tests           # Run offline *.case.json workflow regression tests
 orion-server compile ./definitions -o pkg.json      # Compile a definition set ($from/use resolved) into a package artifact

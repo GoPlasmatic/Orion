@@ -1,0 +1,19 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "call",
+      "name": "Call",
+      "function": {
+        "name": "http_call",
+        "input": {
+          "connector": "crm",
+          "method": "GET",
+          "path": "/customers/42",
+          "output": "data.customer"
+        }
+      }
+    }
+  ]
+}

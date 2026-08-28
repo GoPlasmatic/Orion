@@ -1,0 +1,1 @@
+{"a":{"var":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},"b":{"!":{"var":"data.ok"}},"c":{"length":[{"var":"data.items"}]},"d":{"secret":"partner_hmac"},"e":{"missing":["data.id","data.name"]},"f":{"var":["data.nickname","anonymous"]}}

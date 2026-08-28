@@ -1,0 +1,13 @@
+{
+  "workflow_id": "loop",
+  "name": "loop",
+  "condition": { "<": [{ "var": "temp_data.i" }, 3] },
+  "loop": { "counter": "i", "max": 3 },
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

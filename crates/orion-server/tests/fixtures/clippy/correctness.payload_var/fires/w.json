@@ -1,0 +1,12 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "condition": { "!!": [{ "var": "payload.id" }] },
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

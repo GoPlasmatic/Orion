@@ -1,0 +1,11 @@
+{
+  "name": "w",
+  "loop": { "counter": "i", "init": 0, "max": 500, "increment": 1 },
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

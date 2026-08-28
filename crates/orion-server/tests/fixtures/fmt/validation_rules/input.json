@@ -1,0 +1,1 @@
+{"name":"w","tasks":[{"id":"v","name":"Validate","function":{"name":"validation","input":{"rules":[{"message":"amount must be positive","logic":{">":[{"var":"data.amount"},0]}},{"logic":{"!!":[{"var":"data.id"}]},"message":"id required"}]}}}]}

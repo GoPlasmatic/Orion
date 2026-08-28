@@ -39,6 +39,13 @@ per-file run cannot make. That is the form to use in CI.
 'examples/packages/high-value-order/workflow.json' is valid.
 ```
 
+`lint` has two neighbours. `orion-server fmt` writes every definition file
+in the one house style (`--check` in CI), and `orion-server clippy` reports
+what `lint` accepts but an author would want to know — a condition that can
+never match, steps that can never run — and only when it is certain. See
+[Definition Style](../reference/fmt.md) and
+[Advisory Checks](../reference/clippy.md).
+
 It needs no server, no database, and no network, so it is the cheapest gate you
 can put in front of a pull request. It exits non-zero on any finding.
 

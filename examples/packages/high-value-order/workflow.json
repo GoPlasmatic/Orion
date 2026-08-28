@@ -1,7 +1,7 @@
 {
   "workflow_id": "high-value-order",
-  "tags": ["pkg:high-value-order"],
   "name": "High-Value Order",
+  "tags": ["pkg:high-value-order"],
   "condition": true,
   "tasks": [
     {
@@ -18,7 +18,10 @@
         "input": {
           "mappings": [
             { "path": "data.order.flagged", "logic": true },
-            { "path": "data.order.alert", "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] } }
+            {
+              "path": "data.order.alert",
+              "logic": { "cat": ["High-value order: $", { "var": "data.order.total" }] }
+            }
           ]
         }
       }

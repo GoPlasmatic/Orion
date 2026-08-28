@@ -1,0 +1,18 @@
+{
+  "name": "w",
+  "tasks": [
+    {
+      "id": "_g",
+      "use": "guard",
+      "with": { "msg": "no" }
+    },
+    {
+      "id": "read",
+      "name": "Read",
+      "function": {
+        "name": "mongo_read",
+        "input": { "$from": "constants.db", "collection": "users" }
+      }
+    }
+  ]
+}

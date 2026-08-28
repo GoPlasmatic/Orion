@@ -1,0 +1,16 @@
+[
+  {
+    "id": "t",
+    "name": "T",
+    "function": { "name": "log", "input": { "message": "x" } }
+  },
+  {
+    "id": "g",
+    "tasks": [
+      {
+        "id": "u",
+        "use": "guard"
+      }
+    ]
+  }
+]

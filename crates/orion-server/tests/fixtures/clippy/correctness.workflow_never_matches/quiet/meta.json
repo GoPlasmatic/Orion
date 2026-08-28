@@ -1,0 +1,12 @@
+{
+  "workflow_id": "meta",
+  "name": "meta",
+  "condition": { "==": [{ "var": "metadata.channel" }, "x"] },
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

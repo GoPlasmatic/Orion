@@ -37,14 +37,19 @@
 //! because the gate exists to catch the missing channel, and a permissive
 //! default would be a gate that passes the bug it was built for.
 
+pub mod analysis;
 mod check;
+pub mod clippy;
 pub mod compile;
 mod finding;
+pub mod fmt;
+pub mod json;
 mod set;
 mod shared;
 
 pub use check::check;
 pub use compile::{Cx, Pass, Residue};
 pub use finding::{Finding, Severity};
-pub use set::{Boundary, DefinitionSet, Entity, LoadReport};
+pub use json::{Document, Node, Span, Spanned};
+pub use set::{Boundary, DefinitionSet, Entity, LoadReport, json_files};
 pub use shared::{Fragment, SharedDefinitions, first_reference};

@@ -1,0 +1,17 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "on",
+      "name": "On",
+      "function": { "name": "log", "input": { "message": "x" } }
+    },
+    {
+      "id": "off",
+      "name": "Off",
+      "condition": false,
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "workflow_id": "cond",
+  "name": "cond",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "m",
+      "name": "M",
+      "condition": { "var": "metadata.reset" },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.req", "logic": 1 }] } }
+    }
+  ]
+}

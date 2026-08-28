@@ -1,0 +1,12 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "condition": { "==": [{ "var": "metadata.vars.topic" }, "x"] },
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

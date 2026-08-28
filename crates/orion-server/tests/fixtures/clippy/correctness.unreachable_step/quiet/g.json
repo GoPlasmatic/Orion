@@ -1,0 +1,23 @@
+{
+  "workflow_id": "g",
+  "name": "g",
+  "tasks": [
+    {
+      "id": "guard",
+      "condition": { "var": "data.flag" },
+      "tasks": [
+        {
+          "id": "inner",
+          "name": "Inner",
+          "terminal": true,
+          "function": { "name": "log", "input": { "message": "x" } }
+        }
+      ]
+    },
+    {
+      "id": "after",
+      "name": "After",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "workflow_id": "neg",
+  "name": "neg",
+  "condition": { "!": { "var": "data.flag" } },
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

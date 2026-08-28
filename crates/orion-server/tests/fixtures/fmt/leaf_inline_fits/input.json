@@ -1,0 +1,1 @@
+{"condition":{">=":[{"var":"data.order.amount"},500]},"in":{"in":[{"var":"data.tier"},["vip","premium"]]},"q":{"==":[{"field":"id"},{"param":"customer_id"}]},"not":{"!":{"in":[{"var":"data.lookup.customer_id"},[1,7,42]]}},"now":{"now":[]}}

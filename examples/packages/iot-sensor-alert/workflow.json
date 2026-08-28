@@ -1,7 +1,7 @@
 {
   "workflow_id": "iot-sensor-alert",
-  "tags": ["pkg:iot-sensor-alert"],
   "name": "Sensor Alert Pipeline",
+  "tags": ["pkg:iot-sensor-alert"],
   "condition": true,
   "tasks": [
     {

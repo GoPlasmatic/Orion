@@ -6,7 +6,34 @@ workflow can be developed and regression-tested the way any other code is. This
 page is the CI author's reference for those commands.
 
 Four gates, cheapest first: `lint`, `dry-run`, `test`, and `test-connectivity`.
-The first three need nothing but the binary and your JSON files.
+The first three need nothing but the binary and your JSON files. Before any
+of them, `fmt` — not a gate on correctness, but the reason a review diff
+shows what changed rather than how it was laid out.
+
+## Format the files
+
+```bash
+orion-server fmt ./definitions          # rewrite in place
+orion-server fmt --check ./definitions  # CI: diff and exit 1 if anything would change
+```
+
+One style, no configuration — [Definition Style](../reference/fmt.md) is the
+whole of it. `fmt` never changes a value: the output is parsed again and
+compared with the input before a file is written.
+
+## Ask what could be better
+
+```bash
+orion-server clippy ./definitions               # lint's gate, then the advisory rules
+orion-server -c config.toml clippy ./definitions # + the rules that read [vars] and [secrets]
+```
+
+`clippy` says only what it is certain of — a workflow whose condition can
+never match, steps after an unconditional terminal step, a call cycle that
+always fails, a parse whose result is always overwritten, a run of steps an
+existing fragment already expresses. Every rule states its proof and when
+it stays silent: [Advisory Checks](../reference/clippy.md). There is no
+configuration and no suppression, which is why the rules are few.
 
 ## Lint a workflow file
 
@@ -334,7 +361,9 @@ actually run with.
 ```yaml
 - name: Validate workflows
   run: |
+    orion-server fmt --check workflows
     for f in workflows/*.json; do orion-server lint "$f" --deny-warnings; done
+    orion-server clippy workflows
     orion-server test ./workflow-tests
 ```
 

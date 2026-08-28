@@ -1,0 +1,20 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.x", "logic": 1 },
+            { "path": "data.y", "logic": 2 },
+            { "path": "data.x", "logic": 3 }
+          ]
+        }
+      }
+    }
+  ]
+}

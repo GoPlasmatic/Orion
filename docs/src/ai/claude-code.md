@@ -46,6 +46,7 @@ would follow by hand:
 
 ```bash
 orion-server lint order-triage.json                 # 1. offline, no server, no writes
+orion-server clippy order-triage.json               #    advisory checks, only where certain
 orion-cli workflows create -f order-triage.json     # 2. lands as a DRAFT
 orion-cli workflows test order-triage -f sample.json --trace   # 3. dry-run
 orion-cli workflows activate order-triage --dry-run # 4. pre-flight the transition

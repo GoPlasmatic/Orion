@@ -47,7 +47,9 @@ do not activate something you have not dry-run.
 
 ```bash
 # 1. Check offline first — no server, no writes, field-pathed errors
+orion-server fmt ./definitions           # one house style, nothing to configure (--check in CI)
 orion-server lint ./definitions          # a whole set: also resolves the references between files
+orion-server clippy ./definitions        # advisory rules beyond lint, only where certain (--explain <rule>)
 orion-server lint workflow.json          # or a single file
 
 # 2. Create — lands as a DRAFT, serving nothing

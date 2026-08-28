@@ -1,0 +1,1 @@
+{"tests":[{"name":"t","channel":"c","input":{"amount":750,"product":"Diamond Ring"},"expect":{".status":"ok",".data.order.tier":"vip"}}],"single":{"data.a":1}}

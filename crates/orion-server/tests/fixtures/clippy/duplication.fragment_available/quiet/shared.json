@@ -1,0 +1,17 @@
+{
+  "fragments": {
+    "deny": {
+      "params": { "msg": { "default": "denied" } },
+      "tasks": [
+        {
+          "id": "deny",
+          "name": "Deny",
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.msg", "logic": { "$param": "msg" } }] }
+          }
+        }
+      ]
+    }
+  }
+}

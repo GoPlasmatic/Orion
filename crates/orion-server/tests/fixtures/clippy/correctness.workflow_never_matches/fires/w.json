@@ -1,0 +1,12 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "condition": { "==": [{ "var": "data.type" }, "order"] },
+  "tasks": [
+    {
+      "id": "t",
+      "name": "T",
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

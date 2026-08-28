@@ -1,10 +1,10 @@
 {
   "channel_id": "order-enrichment",
-  "tags": ["pkg:channel-composition"],
   "name": "order-enrichment",
+  "tags": ["pkg:channel-composition"],
   "channel_type": "sync",
   "protocol": "rest",
-  "route_pattern": "/order-enrichment",
   "methods": ["POST"],
+  "route_pattern": "/order-enrichment",
   "workflow_id": "order-enrichment"
 }

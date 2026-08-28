@@ -42,9 +42,11 @@ docs:
 docs-preview:
     cd docs && npx wrangler dev
 
-# Format the tree in place.
+# Format the tree in place: the Rust, then every definition file and fixture
+# the repo ships (fmt_examples_test fails while one is out of style).
 fmt:
     cargo fmt
+    cargo run -q -- fmt examples tests/e2e/cases tests/e2e/fixtures
 
 # Offline workflow regression tests (the examples' *.case.json suite).
 workflow-tests:

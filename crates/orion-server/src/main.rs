@@ -229,6 +229,66 @@ enum Command {
     /// and runs a no-op query. Catches "DB credentials wrong / file
     /// unreadable" before the server tries to start.
     TestConnectivity,
+    /// Format definition files to the house style (like `cargo fmt`).
+    ///
+    /// Every `.json` under each PATH is rewritten in place — entities, shared
+    /// documents, `*.case.json` files and fixtures alike. There is one style
+    /// and nothing to configure: known keys of known shapes in canonical
+    /// order, unary JSONLogic nodes always on one line, leaf nodes on one
+    /// line when they fit in 100 columns, everything deeper broken one
+    /// argument per line. Values, number spellings and the order of unknown
+    /// keys are never changed, and the output is re-parsed and compared with
+    /// the input before anything is written.
+    Fmt {
+        /// Files or directories. Default: the current directory.
+        #[arg(default_value = ".")]
+        paths: Vec<String>,
+        /// Write nothing; print a diff for each file that is not formatted
+        /// and exit 1 if there is one.
+        #[arg(long)]
+        check: bool,
+        /// Format one document from stdin to stdout. PATH is ignored.
+        #[arg(long, conflicts_with = "check")]
+        stdin: bool,
+    },
+    /// Advisory checks beyond `lint`, said only when certain (like `cargo clippy`).
+    ///
+    /// Runs `lint`'s gate over the set, then every rule: a workflow condition
+    /// that can never match, steps after an unconditional terminal step, an
+    /// unconditional channel_call cycle, a read of `payload`, a mapping
+    /// overwritten before it is read, runs of steps an existing fragment
+    /// already expresses, objects repeated across the set, and more —
+    /// `--list` names them, `--explain <rule>` states each one's proof and
+    /// when it stays silent. There is no configuration and no suppression:
+    /// a rule fires only when its finding is certain.
+    Clippy {
+        /// A directory of definitions (set mode: every rule), or one file.
+        path: Option<String>,
+        /// Exit non-zero on warnings too, not just errors.
+        #[arg(long)]
+        deny_warnings: bool,
+        /// `text` (default) or `json` — one object per diagnostic on stdout.
+        #[arg(long, value_enum, default_value = "text")]
+        format: cli::ClippyFormat,
+        /// Print every rule with its level, scope and summary, and exit.
+        #[arg(long, conflicts_with_all = ["explain", "path"])]
+        list: bool,
+        /// Print one rule's rationale, proof and exclusions, and exit.
+        #[arg(long, value_name = "RULE", conflicts_with = "path")]
+        explain: Option<String>,
+        /// Directory holding the set's shared definitions, for a single-file
+        /// run. Implicit in set mode.
+        #[arg(long, value_name = "DIR")]
+        definitions: Option<String>,
+        /// Channel name that may be referenced without being in the set.
+        /// Repeatable.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        /// Repeatable.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
+    },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
     /// Needs no config, database, or running server. Redirect it to refresh
@@ -353,6 +413,20 @@ async fn main() {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // `fmt` reads files, not a server: no config, no "no config file" note.
+    if let Some(Command::Fmt {
+        paths,
+        check,
+        stdin,
+    }) = &cli.command
+    {
+        let code = cli::run_fmt(paths, *check, *stdin)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
     // Load configuration
     let mut config = config::load_config(cli.config.as_deref())?;
     // Resolve the instance identity once, up front, so the tracing resource,
@@ -433,7 +507,48 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             return cli::run_test(&path, definitions.as_deref()).await;
         }
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
+        Some(Command::Clippy {
+            path,
+            deny_warnings,
+            format,
+            list,
+            explain,
+            definitions,
+            requires_channels,
+            requires_connectors,
+        }) => {
+            let code = if list {
+                cli::run_clippy_list()?
+            } else if let Some(rule) = explain {
+                cli::run_clippy_explain(&rule)?
+            } else {
+                let Some(path) = path else {
+                    return Err(
+                        "clippy needs a directory or file to check (or --list / --explain)".into(),
+                    );
+                };
+                cli::run_clippy(cli::ClippyRequest {
+                    path: &path,
+                    deny_warnings,
+                    format,
+                    definitions: definitions.as_deref(),
+                    boundary: orion::definitions::Boundary {
+                        channels: requires_channels,
+                        connectors: requires_connectors,
+                    },
+                    // Only a config the operator named counts as "the serving
+                    // config": the defaults say nothing about [vars]/[secrets].
+                    config: cli.config.is_some().then_some(&config),
+                })?
+            };
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
+        // Dispatched above, before the config load.
+        Some(Command::Fmt { .. }) => unreachable!("fmt returns before config is loaded"),
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
         Some(Command::Package { command }) => {
             return match command {

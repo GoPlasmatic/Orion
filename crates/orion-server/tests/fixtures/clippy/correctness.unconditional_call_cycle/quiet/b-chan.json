@@ -1,0 +1,9 @@
+{
+  "channel_id": "b-chan",
+  "name": "b-chan",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/b-chan",
+  "workflow_id": "b"
+}

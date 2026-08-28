@@ -1,8 +1,8 @@
 {
   "workflow_id": "record-order",
-  "tags": ["pkg:postgres-orders"],
   "name": "Record Order (Postgres)",
   "description": "Insert an order with data_write, then return the customer with their order history via data_query + include.",
+  "tags": ["pkg:postgres-orders"],
   "condition": true,
   "tasks": [
     {
@@ -58,7 +58,13 @@
           "query": {
             "source": "customers",
             "filter": { "==": [{ "field": "id" }, { "param": "customer_id" }] },
-            "include": { "orders": { "fields": ["id", "item", "total"], "sort": [{ "id": "desc" }], "limit": 10 } }
+            "include": {
+              "orders": {
+                "fields": ["id", "item", "total"],
+                "sort": [{ "id": "desc" }],
+                "limit": 10
+              }
+            }
           },
           "params": { "customer_id": { "var": "data.req.customer_id" } },
           "schema": {
@@ -70,7 +76,12 @@
                   "email": { "type": "text" }
                 },
                 "relations": {
-                  "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "customer_id" }
+                  "orders": {
+                    "to": "orders",
+                    "kind": "has_many",
+                    "local": "id",
+                    "foreign": "customer_id"
+                  }
                 }
               },
               "orders": {

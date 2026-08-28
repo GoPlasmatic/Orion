@@ -1,19 +1,12 @@
 {
   "name": "IoT Sensor Alert Classification",
   "description": "Classify sensor readings by severity with validation and filtering",
-  "workflows": [
-    {
-      "file": "../packages/iot-sensor-alert/workflow.json"
-    }
-  ],
+  "workflows": [{ "file": "../packages/iot-sensor-alert/workflow.json" }],
   "tests": [
     {
       "name": "Normal temperature classified correctly",
       "channel": "sensors",
-      "input": {
-        "sensor_id": "S001",
-        "temperature": 45
-      },
+      "input": { "sensor_id": "S001", "temperature": 45 },
       "expect": {
         ".status": "ok",
         ".data.reading.severity": "normal",
@@ -24,10 +17,7 @@
     {
       "name": "Warning temperature triggers alert",
       "channel": "sensors",
-      "input": {
-        "sensor_id": "S002",
-        "temperature": 80
-      },
+      "input": { "sensor_id": "S002", "temperature": 80 },
       "expect": {
         ".status": "ok",
         ".data.reading.severity": "warning",
@@ -37,10 +27,7 @@
     {
       "name": "Critical high temperature",
       "channel": "sensors",
-      "input": {
-        "sensor_id": "S003",
-        "temperature": 95
-      },
+      "input": { "sensor_id": "S003", "temperature": 95 },
       "expect": {
         ".status": "ok",
         ".data.reading.severity": "critical",
@@ -50,10 +37,7 @@
     {
       "name": "Sub-zero temperature is critical",
       "channel": "sensors",
-      "input": {
-        "sensor_id": "S004",
-        "temperature": -5
-      },
+      "input": { "sensor_id": "S004", "temperature": -5 },
       "expect": {
         ".status": "ok",
         ".data.reading.severity": "critical",
@@ -63,10 +47,7 @@
     {
       "name": "Boundary at 70 is normal",
       "channel": "sensors",
-      "input": {
-        "sensor_id": "S005",
-        "temperature": 70
-      },
+      "input": { "sensor_id": "S005", "temperature": 70 },
       "expect": {
         ".status": "ok",
         ".data.reading.severity": "normal",

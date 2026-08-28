@@ -1,0 +1,21 @@
+{
+  "name": "w",
+  "tasks": [
+    {
+      "id": "v",
+      "name": "Validate",
+      "function": {
+        "name": "validation",
+        "input": {
+          "rules": [
+            {
+              "logic": { ">": [{ "var": "data.amount" }, 0] },
+              "message": "amount must be positive"
+            },
+            { "logic": { "!!": [{ "var": "data.id" }] }, "message": "id required" }
+          ]
+        }
+      }
+    }
+  ]
+}

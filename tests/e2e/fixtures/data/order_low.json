@@ -1,5 +1,1 @@
-{
-    "amount": 25,
-    "product": "Widget Basic",
-    "customer": "cust-002"
-}
+{ "amount": 25, "product": "Widget Basic", "customer": "cust-002" }

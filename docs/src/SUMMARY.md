@@ -88,6 +88,8 @@
 - [Metrics Reference](./reference/metrics.md)
 - [Errors & Response Envelopes](./reference/errors.md)
 - [CLI Reference](./reference/cli.md)
+- [Definition Style (`fmt`)](./reference/fmt.md)
+- [Advisory Checks (`clippy`)](./reference/clippy.md)
 - [Design Notes](./reference/design-notes.md)
 - [Support & Compatibility](./reference/support.md)
 - [Glossary](./reference/glossary.md)

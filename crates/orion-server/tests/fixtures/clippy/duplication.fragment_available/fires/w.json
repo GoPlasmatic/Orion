@@ -1,0 +1,19 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "first",
+      "name": "First",
+      "function": { "name": "log", "input": { "message": "x" } }
+    },
+    {
+      "id": "refuse",
+      "name": "Deny",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "data.msg", "logic": "no" }] }
+      }
+    }
+  ]
+}

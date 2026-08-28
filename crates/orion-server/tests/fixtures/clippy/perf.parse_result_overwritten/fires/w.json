@@ -1,0 +1,24 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "between",
+      "name": "Between",
+      "function": { "name": "log", "input": { "message": "x" } }
+    },
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "data.req", "logic": { "fixed": true } }] }
+      }
+    }
+  ]
+}

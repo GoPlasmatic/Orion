@@ -1086,96 +1086,11 @@ fn warn_on_unwritten_reads(
     written.extend(task_writes(task));
 }
 
-/// Whether `path` is covered by something already written, by prefix in either
-/// direction. A bare `data` write is the whole context and covers everything.
-fn is_written(path: &str, written: &[String]) -> bool {
-    written.iter().any(|w| {
-        w == "data"
-            || w == path
-            || path.starts_with(&format!("{w}."))
-            || w.starts_with(&format!("{path}."))
-    })
-}
-
-/// Context paths a task writes, for every function that writes one.
-///
-/// `parse_json`/`parse_xml`/`publish_json`/`publish_xml` take a bare `target`
-/// under `data`; the connector functions take a full dotted `output` path
-/// (`response_path` is the accepted pre-1.0 spelling — see `output_field_test`).
-/// `data_query`/`data_write` default that output to the `data` root when it is
-/// omitted, which is why the default is spelled out rather than skipped.
-fn task_writes(task: &Value) -> Vec<String> {
-    let Some(function) = task.get("function") else {
-        return Vec::new();
-    };
-    let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
-    let Some(input) = function.get("input") else {
-        return Vec::new();
-    };
-
-    let mut out = Vec::new();
-    match name {
-        "parse_json" | "parse_xml" | "publish_json" | "publish_xml" => {
-            if let Some(target) = input.get("target").and_then(|t| t.as_str()) {
-                out.push(format!("data.{target}"));
-            }
-        }
-        _ => {
-            match input
-                .get("output")
-                .or_else(|| input.get("response_path"))
-                .and_then(|o| o.as_str())
-            {
-                Some(path) => out.push(path.to_string()),
-                None if matches!(name, "data_query" | "data_write") => out.push("data".to_string()),
-                None => {}
-            }
-        }
-    }
-    out
-}
-
-/// Every `data.*` path a JSON subtree reads through `var`/`val`.
-///
-/// Only `data.`-rooted reads are collected. `metadata.*`, `payload`, the
-/// element rebinding inside `map`/`filter`/`reduce` (`{"var": "price"}`,
-/// `accumulator`, `current`) and the empty path are all legitimate reads of
-/// something this walk does not track, and warning about them would be noise.
-fn data_reads(value: &Value) -> Vec<String> {
-    let mut out = Vec::new();
-    collect_data_reads(value, &mut out);
-    out
-}
-
-fn collect_data_reads(value: &Value, out: &mut Vec<String>) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map {
-                if matches!(key.as_str(), "var" | "val") {
-                    // `{"var": "data.x"}` and `{"var": ["data.x", default]}`
-                    // are both spellings of one read.
-                    let path = match child {
-                        Value::String(s) => Some(s.as_str()),
-                        Value::Array(items) => items.first().and_then(|f| f.as_str()),
-                        _ => None,
-                    };
-                    if let Some(path) = path
-                        && (path == "data" || path.starts_with("data."))
-                    {
-                        out.push(path.to_string());
-                    }
-                }
-                collect_data_reads(child, out);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_data_reads(item, out);
-            }
-        }
-        _ => {}
-    }
-}
+// `is_written`, `task_writes` and `data_reads` live in
+// `definitions::analysis::dataflow` now, shared with `orion-server clippy`;
+// the advisory above is the one consumer that stays here, because it is
+// the heuristic half — the exact half is what the linter was allowed to keep.
+use crate::definitions::analysis::dataflow::{data_reads, is_written, task_writes};
 
 /// All per-task validations (required fields, condition, function name,
 /// schema, connector reference). Returns `(errors, warnings)`.

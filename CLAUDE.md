@@ -83,6 +83,10 @@ src/
 ├── config/              # Configuration loading & validation
 ├── connector/           # Connector types, registry, circuit breakers, pool caching, secret resolution
 ├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver, whose expansion descends into task groups via `engine::is_group` — a flat loop there namespaces only a fragment's top-level ids and leaks the rest into the host workflow
+│   ├── json.rs          # Order-preserving, span-carrying JSON front end (own parser; `serde_json::Value` is BTreeMap-backed and loses author order). `fmt` parses with it; `Document::locate(path)` maps a finding's path to line:col
+│   ├── analysis/        # Facts every clippy rule reads: flattened steps with reads/writes/certainty (`Reads::uncertain` = a computed or element-scoped read — a rule needing complete reads must then stay silent), every expression compiled by datalogic (`is_constant`, evaluate-against-context), the channel→workflow binding. `operators.rs` classifies every operator as scoping or not; a new operator fails a test until classified
+│   ├── clippy/          # `orion-server clippy`: `Rule` trait + `rules::ALL` registry. No configuration, no suppression — a rule ships only with a proof (`explain()` must say "Proof" and "Silent when") and `tests/fixtures/clippy/<id>/{fires,quiet}/`. Duplication rules read the *source* form (`from_directory_raw`); semantic rules the compiled form
+│   ├── fmt/             # `orion-server fmt`: style.rs (the numbers + canonical key tables — no user configuration by design), roles.rs (shape classifier; operator nodes by structure, unary/leaf/compound), printer.rs (measure-then-emit, linear). `format_str` re-parses its output and refuses to return a document that differs from the input as a `Value`
 │   └── compile.rs       # The authoring layer: an ordered pipeline of `Pass`es (source form → canonical form). A new simplification is a new pass; its `residue()` is what `compile` reports, what the pipeline test asserts empty, and what the admin API refuses by name
 ├── engine/              # Dataflow engine build/reload, observer, custom function handlers
 │   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
@@ -201,6 +205,9 @@ these edits are not optional follow-ups, they are part of the change:
 | A cross-reference check over a definition set | `definitions/check.rs` — one pass, shared by `lint <dir>` and `package lint`; give it a stable `check` id so a pipeline can grandfather it |
 | An authoring convenience (new source-form syntax) | `definitions/compile.rs` — implement `Pass`, register it in `passes()`, give it a stable id. `residue()` must mirror the rewrite **exactly**: detect more than you expand and the admin API refuses documents `compile` accepts; detect less and source form reaches the runtime. Document it under [Shared definitions](docs/src/reference/cli.md) — the same section `compile`'s per-pass report and `UNCOMPILED_SOURCE` both name |
 | A rider crate's *manifest*, not just its source | bump that crate's `[package] version` **and** the requirement in every dependent manifest — CI's "Rider crates changed" gate fails the build otherwise, and editing a dependency requirement counts as changing the crate |
+| The formatter's style (a `STYLE` number, a key table, a layout rule) | `docs/src/reference/fmt.md` (`fmt_style_drift_test`), the fixture pair under `tests/fixtures/fmt/` the rule owns, **and** `examples/` + `tests/e2e/` reformatted in the same commit — `fmt_examples_test` fails otherwise (`just fmt` does it) |
+| A function's input field table (order included) | the function's table on `docs/src/reference/functions.md` — `fmt_style_drift_test` asserts the documented order is the registry's, because `fmt` orders inputs by it |
+| A clippy rule (new, or its level/summary) | `rules::ALL`, `tests/fixtures/clippy/<id>/{fires,quiet}/` (`clippy_cases_test` refuses a rule without both; `quiet` must trip *no* rule), the table **and** a `### ` section on `docs/src/reference/clippy.md` (`clippy_docs_drift_test`), and `clippy_examples_test` must stay empty. Certain-only: `explain()` must name one of the admitted proof sources (engine evaluation, an ingress fact, engine semantics read from source, the registry, structural identity, the `-c` config) and when the rule is silent; a heuristic goes under "What is not a rule" on that page with its reason, not in the registry |
 | A container-gated test module | the `#[ignore]` name filters in `.github/workflows/ci.yml` (`ci_filter_drift_test`) — a module missing from those lines runs *nowhere*, silently |
 
 ## Reading the code: item-ID comments
@@ -224,7 +231,9 @@ orion-server -c config.toml               # Start with config
 orion-server validate-config              # Validate config (--format summary for a short view)
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
+orion-server fmt ./definitions            # Format definition files to the house style (--check for CI; one style, no configuration)
 orion-server lint workflow.json           # Strict-validate one workflow (--deny-warnings to fail on advisories)
+orion-server clippy ./definitions         # Advisory rules beyond lint, only where certain (--list, --explain <rule>; -c for the [vars]/[secrets] rules)
 orion-server lint ./definitions           # Validate a whole definition set and the references between its files
 orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # Execute a workflow offline with canned connector replies
 orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests (--definitions <dir> to resolve $from/use)

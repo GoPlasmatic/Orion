@@ -1,0 +1,20 @@
+{
+  "workflow_id": "b",
+  "name": "b",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "to_a",
+      "name": "Call a-chan",
+      "condition": { "var": "data.req.again" },
+      "function": {
+        "name": "channel_call",
+        "input": { "channel": "a-chan", "output": "data.called" }
+      }
+    }
+  ]
+}

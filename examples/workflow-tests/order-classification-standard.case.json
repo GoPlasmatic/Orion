@@ -2,5 +2,8 @@
   "name": "classifies a small order as standard",
   "workflow": "../packages/order-classification/workflow.json",
   "input": { "amount": 20, "product": "Sticker" },
-  "expect": { "data.order.tier": "standard", "data.order.discount_pct": 0 }
+  "expect": {
+    "data.order.tier": "standard",
+    "data.order.discount_pct": 0
+  }
 }

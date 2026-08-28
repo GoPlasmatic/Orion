@@ -1,0 +1,28 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "g",
+      "condition": { "var": "data.req.flag" },
+      "tasks": [
+        {
+          "id": "a",
+          "name": "A",
+          "function": { "name": "log", "input": { "message": "x" } }
+        },
+        {
+          "id": "b",
+          "name": "B",
+          "condition": { "var": "data.req.flag" },
+          "function": { "name": "log", "input": { "message": "x" } }
+        }
+      ]
+    }
+  ]
+}

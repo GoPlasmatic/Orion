@@ -47,7 +47,9 @@ a full scan).
 ## Offline, before you touch a server
 
 ```bash
+orion-server fmt ./definitions             # format to the one house style; --check diffs and exits 1
 orion-server lint ./definitions            # a whole set — also resolves references between files
+orion-server clippy ./definitions          # advisory rules beyond lint, said only when certain; --list, --explain <rule>
 orion-server lint workflow.json            # one file
 orion-server lint ./defs --deny-warnings   # advisories fail too
 ```

@@ -1,0 +1,14 @@
+{
+  "workflow_id": "b",
+  "name": "b",
+  "tasks": [
+    {
+      "id": "to_a",
+      "name": "Call a-chan",
+      "function": {
+        "name": "channel_call",
+        "input": { "channel": "a-chan", "output": "data.called" }
+      }
+    }
+  ]
+}

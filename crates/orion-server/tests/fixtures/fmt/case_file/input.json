@@ -1,0 +1,1 @@
+{"expect":{"data.order.flagged":true,"data.order.alert":"High-value order: $25000"},"input":{"order_id":"ORD-9182","total":25000},"workflow":"../packages/high-value-order/workflow.json","name":"flags an order above the threshold","expect_tasks":["parse","flag"],"stubs":{"channel_call":{"customer-lookup":{"lookup":{"tier":"vip"}}}}}

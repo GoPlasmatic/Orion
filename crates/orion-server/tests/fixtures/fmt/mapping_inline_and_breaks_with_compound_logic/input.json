@@ -1,0 +1,1 @@
+{"workflow_id":"w","name":"w","tasks":[{"id":"m","name":"Map","function":{"name":"map","input":{"mappings":[{"path":"data.a","logic":{"var":"data.b"}},{"path":"data.c","logic":{"if":[{"var":"data.flag"},{"cat":["yes ",{"var":"data.name"}]},"no"]}}]}}}]}

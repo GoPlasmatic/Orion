@@ -1,0 +1,27 @@
+{
+  "name": "w",
+  "tasks": [
+    {
+      "id": "log",
+      "name": "Log",
+      "description": "d",
+      "condition": true,
+      "terminal": false,
+      "continue_on_error": true,
+      "function": { "name": "log", "input": { "message": "hi" } }
+    },
+    {
+      "id": "guard",
+      "name": "Guard",
+      "condition": { "var": "data.stop" },
+      "terminal": true,
+      "tasks": [
+        {
+          "id": "inner",
+          "name": "Inner",
+          "function": { "name": "log", "input": { "message": "in" } }
+        }
+      ]
+    }
+  ]
+}

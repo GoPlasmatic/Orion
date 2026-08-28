@@ -1,67 +1,57 @@
 {
-    "name": "Channel body_mode payload",
-    "description": "A body_mode = \"payload\" channel takes the request body verbatim, so a request model owning a top-level 'data' key survives instead of being read as the Orion envelope and truncated to it. Reachable from the CLI only via send --raw (#282), which is why this case could not exist until that flag did.",
-    "channel_config": {
-        "request": { "body_mode": "payload" }
-    },
-    "workflows": [
+  "name": "Channel body_mode payload",
+  "description": "A body_mode = \"payload\" channel takes the request body verbatim, so a request model owning a top-level 'data' key survives instead of being read as the Orion envelope and truncated to it. Reachable from the CLI only via send --raw (#282), which is why this case could not exist until that flag did.",
+  "channel_config": { "request": { "body_mode": "payload" } },
+  "workflows": [
+    {
+      "name": "Body Mode Echo",
+      "priority": 10,
+      "condition": true,
+      "tasks": [
         {
-            "name": "Body Mode Echo",
-            "priority": 10,
-            "condition": true,
-            "tasks": [
-                {
-                    "id": "parse",
-                    "name": "Parse Payload",
-                    "function": {
-                        "name": "parse_json",
-                        "input": { "source": "payload", "target": "req" }
-                    }
-                },
-                {
-                    "id": "echo",
-                    "name": "Read a sibling of the data key",
-                    "function": {
-                        "name": "map",
-                        "input": {
-                            "mappings": [
-                                { "path": "data.echoed", "logic": { "var": "data.req.platform" } }
-                            ]
-                        }
-                    }
-                }
-            ]
-        }
-    ],
-    "tests": [
-        {
-            "name": "payload mode keeps every sibling of the data key",
-            "channel": "body-mode-test",
-            "raw": true,
-            "input": {
-                "platform": "ios",
-                "version_code": 42,
-                "data": { "title": "Nested", "message": "Inner payload" }
-            },
-            "expect": {
-                ".status": "ok",
-                ".data.req.platform": "ios",
-                ".data.req.version_code": "42",
-                ".data.req.data.title": "Nested",
-                ".data.echoed": "ios"
-            }
+          "id": "parse",
+          "name": "Parse Payload",
+          "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
         },
         {
-            "name": "without --raw the envelope itself becomes the payload",
-            "channel": "body-mode-test",
+          "id": "echo",
+          "name": "Read a sibling of the data key",
+          "function": {
+            "name": "map",
             "input": {
-                "platform": "ios",
-                "data": { "title": "Nested" }
-            },
-            "expect": {
-                ".status": "ok",
-                ".data.req.data.platform": "ios"
+              "mappings": [{ "path": "data.echoed", "logic": { "var": "data.req.platform" } }]
             }
+          }
         }
-    ]
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "name": "payload mode keeps every sibling of the data key",
+      "channel": "body-mode-test",
+      "raw": true,
+      "input": {
+        "platform": "ios",
+        "version_code": 42,
+        "data": { "title": "Nested", "message": "Inner payload" }
+      },
+      "expect": {
+        ".status": "ok",
+        ".data.req.platform": "ios",
+        ".data.req.version_code": "42",
+        ".data.req.data.title": "Nested",
+        ".data.echoed": "ios"
+      }
+    },
+    {
+      "name": "without --raw the envelope itself becomes the payload",
+      "channel": "body-mode-test",
+      "input": { "platform": "ios", "data": { "title": "Nested" } },
+      "expect": {
+        ".status": "ok",
+        ".data.req.data.platform": "ios"
+      }
+    }
+  ]
 }

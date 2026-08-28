@@ -2,5 +2,8 @@
   "name": "classifies a large order as vip",
   "workflow": "../packages/order-classification/workflow.json",
   "input": { "amount": 750, "product": "Diamond Ring" },
-  "expect": { "data.order.tier": "vip", "data.order.discount_pct": 15 }
+  "expect": {
+    "data.order.tier": "vip",
+    "data.order.discount_pct": 15
+  }
 }

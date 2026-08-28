@@ -1,0 +1,26 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.ids",
+              "logic": { "map": [{ "var": "data.req.items" }, { "var": "payload" }] }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "workflow_id": "w1",
+  "name": "w1",
+  "tasks": [
+    {
+      "id": "only1",
+      "name": "Only1",
+      "function": { "name": "log", "input": { "message": "m1" } }
+    },
+    {
+      "id": "a",
+      "name": "A",
+      "function": { "name": "log", "input": { "message": "step a" } }
+    },
+    {
+      "id": "b",
+      "name": "B",
+      "function": { "name": "log", "input": { "message": "step b" } }
+    }
+  ]
+}

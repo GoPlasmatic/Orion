@@ -10,13 +10,7 @@
         {
           "id": "parse",
           "name": "Parse Payload",
-          "function": {
-            "name": "parse_json",
-            "input": {
-              "source": "payload",
-              "target": "post"
-            }
-          }
+          "function": { "name": "parse_json", "input": { "source": "payload", "target": "post" } }
         },
         {
           "id": "moderate",
@@ -25,14 +19,8 @@
             "name": "map",
             "input": {
               "mappings": [
-                {
-                  "path": "data.post.moderated",
-                  "logic": true
-                },
-                {
-                  "path": "data.post.status",
-                  "logic": "reviewed"
-                }
+                { "path": "data.post.moderated", "logic": true },
+                { "path": "data.post.status", "logic": "reviewed" }
               ]
             }
           }
@@ -44,10 +32,7 @@
     {
       "name": "Active rule transforms data",
       "channel": "content",
-      "input": {
-        "text": "Hello world",
-        "author": "user1"
-      },
+      "input": { "text": "Hello world", "author": "user1" },
       "expect": {
         ".status": "ok",
         ".data.post.moderated": "true",
@@ -57,19 +42,9 @@
     },
     {
       "name": "Archived workflow quarantines its channel",
-      "before": [
-        {
-          "action": "archive_rule",
-          "rule_index": 0
-        },
-        {
-          "action": "reload"
-        }
-      ],
+      "before": [{ "action": "archive_rule", "rule_index": 0 }, { "action": "reload" }],
       "channel": "content",
-      "input": {
-        "text": "Should not be moderated"
-      },
+      "input": { "text": "Should not be moderated" },
       "expect_error": true
     }
   ]

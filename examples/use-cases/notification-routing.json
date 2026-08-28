@@ -1,19 +1,12 @@
 {
   "name": "Notification Routing Pipeline",
   "description": "Route notifications by severity: filter low, email for medium+, SMS for high+",
-  "workflows": [
-    {
-      "file": "../packages/notification-routing/workflow.json"
-    }
-  ],
+  "workflows": [{ "file": "../packages/notification-routing/workflow.json" }],
   "tests": [
     {
       "name": "Low severity is logged but no email/SMS",
       "channel": "notifications",
-      "input": {
-        "severity": "low",
-        "message": "Info event"
-      },
+      "input": { "severity": "low", "message": "Info event" },
       "expect": {
         ".status": "ok",
         ".data.notification.logged": "true",
@@ -24,10 +17,7 @@
     {
       "name": "Medium severity gets email only",
       "channel": "notifications",
-      "input": {
-        "severity": "medium",
-        "message": "Warning event"
-      },
+      "input": { "severity": "medium", "message": "Warning event" },
       "expect": {
         ".status": "ok",
         ".data.notification.logged": "true",
@@ -38,10 +28,7 @@
     {
       "name": "High severity gets email and SMS",
       "channel": "notifications",
-      "input": {
-        "severity": "high",
-        "message": "Alert event"
-      },
+      "input": { "severity": "high", "message": "Alert event" },
       "expect": {
         ".status": "ok",
         ".data.notification.logged": "true",
@@ -52,10 +39,7 @@
     {
       "name": "Critical severity gets full routing",
       "channel": "notifications",
-      "input": {
-        "severity": "critical",
-        "message": "Critical failure"
-      },
+      "input": { "severity": "critical", "message": "Critical failure" },
       "expect": {
         ".status": "ok",
         ".data.notification.logged": "true",

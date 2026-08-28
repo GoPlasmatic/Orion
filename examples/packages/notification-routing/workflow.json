@@ -1,13 +1,16 @@
 {
   "workflow_id": "notification-routing",
-  "tags": ["pkg:notification-routing"],
   "name": "Notification Router",
+  "tags": ["pkg:notification-routing"],
   "condition": true,
   "tasks": [
     {
       "id": "parse",
       "name": "Parse Payload",
-      "function": { "name": "parse_json", "input": { "source": "payload", "target": "notification" } }
+      "function": {
+        "name": "parse_json",
+        "input": { "source": "payload", "target": "notification" }
+      }
     },
     {
       "id": "log_all",

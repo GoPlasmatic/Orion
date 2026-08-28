@@ -1,0 +1,33 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.x", "logic": 1 },
+            { "path": "data.x", "logic": { "+": [{ "var": "data.x" }, 1] } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "n",
+      "name": "N",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.a", "logic": 1 },
+            { "path": "data.b", "logic": { "var": "data.a" } },
+            { "path": "data.a", "logic": 2 }
+          ]
+        }
+      }
+    }
+  ]
+}

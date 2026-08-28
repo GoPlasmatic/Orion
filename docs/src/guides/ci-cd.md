@@ -78,8 +78,14 @@ jobs:
             https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      - name: Check formatting
+        run: orion-server fmt --check services
+
       - name: Lint the definition set
         run: orion-server lint services --deny-warnings
+
+      - name: Advisory checks
+        run: orion-server clippy services
 
       - name: Run the offline regression suite
         run: orion-server test services
@@ -91,8 +97,11 @@ jobs:
           done
 ```
 
-Three checks, three failure modes caught before review: a definition the API
-would reject *or that does not agree with the definitions beside it*, logic that
+Five checks, five failure modes caught before review: a file not in the
+house style (so the review diff is about content), a definition the API
+would reject *or that does not agree with the definitions beside it*, a
+definition that is valid but cannot behave as written (`clippy`'s `deny`
+rules — its warnings are printed and do not fail the step), logic that
 changed behaviour, and an artifact whose closure or hash is wrong.
 
 Point `lint` at the **directory**, not at each file in turn. A per-file loop

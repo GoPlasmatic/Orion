@@ -1,0 +1,2 @@
+[secrets]
+hmac_key = "env://HMAC_KEY"

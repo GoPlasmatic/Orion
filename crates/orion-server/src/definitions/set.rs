@@ -162,6 +162,30 @@ impl DefinitionSet {
         Self::from_directory_with(dir, &super::SharedDefinitions::default())
     }
 
+    /// Load every entity under `dir` **without compiling** — `use` and
+    /// `$from` left as the author wrote them — and the shared catalog beside
+    /// them.
+    ///
+    /// What the duplication rules of `clippy` read: after expansion every
+    /// fragment call site *is* a repeated sequence, so a rule that suggests
+    /// fragments must see the form that still names them.
+    pub fn from_directory_raw(dir: &Path) -> Result<(Self, LoadReport), String> {
+        let mut set = DefinitionSet::default();
+        let mut report = LoadReport::default();
+        let mut shared_docs: Vec<(String, Value)> = Vec::new();
+        walk(dir, &mut set, &mut report, &mut shared_docs)?;
+        set.definitions.sort_by(|a, b| a.origin.cmp(&b.origin));
+        report.skipped.sort();
+        report.unparseable.sort();
+        shared_docs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut shared = super::SharedDefinitions::default();
+        for (origin, doc) in &shared_docs {
+            shared.merge(doc, origin, &mut report.findings);
+        }
+        report.shared = shared;
+        Ok((set, report))
+    }
+
     /// [`Self::from_directory`] starting from shared definitions the caller
     /// already has — how a single-file command (`dry-run`, `test`,
     /// `lint <file>`) borrows a directory's catalog without linting it.
@@ -224,6 +248,32 @@ pub(super) fn walk_json_files(
     dir: &Path,
     visit: &mut impl FnMut(std::path::PathBuf, Result<Value, String>),
 ) -> Result<(), String> {
+    walk_json_paths(dir, &mut |path| {
+        let parsed = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()));
+        visit(path, parsed);
+    })
+}
+
+/// Every `.json` file under `dir`, sorted, without reading any of them —
+/// what `fmt` walks, since it parses with its own front end.
+///
+/// The same traversal as `walk_json_files`, so what `fmt` formats and what
+/// `lint` reads are one set of files.
+pub fn json_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    walk_json_paths(dir, &mut |path| out.push(path))?;
+    out.sort();
+    Ok(out)
+}
+
+/// The traversal itself: which paths are part of a set.
+///
+/// A symlinked directory is **not** followed. A set that links to itself, or
+/// two sets that link to each other, would otherwise walk forever; a
+/// symlinked *file* is fine and is visited through the link.
+fn walk_json_paths(dir: &Path, visit: &mut impl FnMut(PathBuf)) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
     for entry in entries.filter_map(Result::ok) {
@@ -233,17 +283,20 @@ pub(super) fn walk_json_files(
         if name.starts_with('.') || name == "target" || name == "node_modules" {
             continue;
         }
-        if path.is_dir() {
-            walk_json_files(&path, visit)?;
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            walk_json_paths(&path, visit)?;
+            continue;
+        }
+        if file_type.is_symlink() && path.is_dir() {
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let parsed = std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()));
-        visit(path, parsed);
+        visit(path);
     }
     Ok(())
 }

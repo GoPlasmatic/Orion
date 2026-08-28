@@ -66,10 +66,31 @@ circuit breakers, backpressure, drain), traces/DLQ, security (auth, masking,
 SSRF, redaction), TLS (in-process `rcgen` certs), the server's own CLI
 subcommands, and OpenAPI are covered.
 
-`cli_subcommands_test.rs` is the one module that drives the **compiled binary**
-rather than the router, because the surfaces it covers — `lint` in both file and
-set mode, `dry-run`, the `*.case.json` runner — are exit codes and stdout, not
+`cli_subcommands_test.rs` and `fmt_cli_test.rs` are the modules that drive the
+**compiled binary** rather than the router, because the surfaces they cover —
+`lint` in both file and set mode, `dry-run`, the `*.case.json` runner, and
+`fmt`'s exit codes, diffs and atomic writes — are exit codes and streams, not
 HTTP responses.
+
+The formatter has its own family: `json_front_end_test.rs` pins the
+order-preserving parser to `serde_json` over the repository's JSON and a
+hand-written conformance set (`tests/fixtures/json/`); `fmt_cases_test.rs`
+runs the `tests/fixtures/fmt/<case>/{input,expected}.json` pairs, one per
+layout rule; `fmt_invariants_test.rs` asserts round-trip, idempotence and the
+width invariant over every shipped JSON file; `fmt_style_drift_test.rs` pins
+the canonical key tables to the request schemas and the reference pages; and
+`fmt_examples_test.rs` is the gate — every file under `examples/` and
+`tests/e2e/` is in the house style, or the run fails with the diff and says
+`just fmt`.
+
+`clippy` has the same shape: `clippy_cases_test.rs` runs every rule over
+`tests/fixtures/clippy/<rule>/{fires,quiet}/` — the rule must fire on the
+first and **no rule** may fire on the second — and refuses a rule without
+both; `clippy_docs_drift_test.rs` pins `docs/src/reference/clippy.md`'s
+table to the registry; `clippy_cli_test.rs` drives the binary (exit codes,
+`--list`, `--explain`, JSON, the lint-error short-circuit); and
+`clippy_examples_test.rs` is the acceptance gate — the example packages and
+the e2e workflow fixtures must trip nothing.
 
 ```bash
 cargo test --test integration                     # the whole binary

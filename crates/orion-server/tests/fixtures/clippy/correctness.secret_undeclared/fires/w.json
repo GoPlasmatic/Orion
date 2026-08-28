@@ -1,0 +1,26 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "sign",
+      "name": "Sign",
+      "function": {
+        "name": "crypto",
+        "input": {
+          "op": "hmac",
+          "algorithm": "sha256",
+          "data": { "var": "data.req.code" },
+          "key": { "secret": "hmac_key" },
+          "encoding": "hex",
+          "output": "temp_data.sig"
+        }
+      }
+    }
+  ]
+}

@@ -2,5 +2,8 @@
   "name": "the lookup channel's own workflow tiers a known customer",
   "workflow": "../packages/channel-composition/workflow-lookup.json",
   "input": { "customer_id": 42 },
-  "expect": { "data.lookup.tier": "vip", "data.lookup.discount_pct": 15 }
+  "expect": {
+    "data.lookup.tier": "vip",
+    "data.lookup.discount_pct": 15
+  }
 }

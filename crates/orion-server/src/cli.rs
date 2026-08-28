@@ -711,6 +711,367 @@ fn emit_bulk(
     Ok(())
 }
 
+// ============================================================
+// fmt — one canonical layout for every definition file
+// ============================================================
+
+/// `fmt [PATH]... [--check] [--stdin]`: rewrite definition files to the house
+/// style, the way `cargo fmt` rewrites Rust.
+///
+/// Returns the process exit code rather than an error, because the three
+/// outcomes are not one failure: `0` clean or written, `1` `--check` found a
+/// file it would rewrite, `2` a file could not be read, parsed or written.
+/// Every file is attempted — one unparseable fixture must not leave the rest
+/// of the tree unformatted — and the code reflects the worst outcome.
+///
+/// Diffs and errors go to stderr, the one-line summary to stdout, the same
+/// split `lint` makes so a script can grep the verdict.
+pub(crate) fn run_fmt(
+    paths: &[String],
+    check: bool,
+    stdin: bool,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    use orion::definitions::fmt::{FmtError, Outcome, format_str};
+
+    if stdin {
+        return run_fmt_stdin();
+    }
+
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    let mut errors = 0usize;
+    for path in paths {
+        let path = std::path::Path::new(path);
+        if path.is_dir() {
+            match orion::definitions::json_files(path) {
+                Ok(found) => files.extend(found),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    errors += 1;
+                }
+            }
+        } else if path.is_file() {
+            // Named explicitly, so taken as given whatever its extension.
+            files.push(path.to_path_buf());
+        } else {
+            eprintln!("error: '{}' is not a file or directory", path.display());
+            errors += 1;
+        }
+    }
+
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    for file in &files {
+        let shown = file.display();
+        let text = match std::fs::read(file) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(e) => {
+                    eprintln!(
+                        "error: {shown}: not valid UTF-8 at byte {}",
+                        e.utf8_error().valid_up_to()
+                    );
+                    errors += 1;
+                    continue;
+                }
+            },
+            Err(e) => {
+                eprintln!("error: {shown}: {e}");
+                errors += 1;
+                continue;
+            }
+        };
+        match format_str(&text, &shown.to_string()) {
+            Ok(Outcome::Unchanged) => unchanged += 1,
+            Ok(Outcome::Changed(formatted)) => {
+                changed += 1;
+                if check {
+                    eprint!("{}", unified_diff(&shown.to_string(), &text, &formatted));
+                } else if let Err(e) = write_atomically(file, &formatted) {
+                    eprintln!("error: {shown}: {e}");
+                    errors += 1;
+                }
+            }
+            Err(FmtError::Parse(e)) => {
+                eprintln!("error: {shown}: {e}");
+                errors += 1;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                errors += 1;
+            }
+        }
+    }
+
+    let verb = if check {
+        "would be reformatted"
+    } else {
+        "reformatted"
+    };
+    println!(
+        "{changed} file(s) {verb}, {unchanged} unchanged{}",
+        if errors > 0 {
+            format!(", {errors} error(s)")
+        } else {
+            String::new()
+        }
+    );
+    Ok(if errors > 0 {
+        2
+    } else if check && changed > 0 {
+        1
+    } else {
+        0
+    })
+}
+
+/// `fmt --stdin`: one document in, its formatted form out. Nothing reaches
+/// stdout on failure, so an editor that replaces the buffer with the output
+/// never replaces it with an error message.
+fn run_fmt_stdin() -> Result<i32, Box<dyn std::error::Error>> {
+    use orion::definitions::fmt::{Outcome, format_str};
+    use std::io::{Read, Write};
+
+    let mut text = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut text) {
+        eprintln!("error: <stdin>: {e}");
+        return Ok(2);
+    }
+    match format_str(&text, "<stdin>") {
+        Ok(Outcome::Unchanged) => {
+            std::io::stdout().write_all(text.as_bytes())?;
+            Ok(0)
+        }
+        Ok(Outcome::Changed(formatted)) => {
+            std::io::stdout().write_all(formatted.as_bytes())?;
+            Ok(0)
+        }
+        Err(e) => {
+            eprintln!("error: <stdin>: {e}");
+            Ok(2)
+        }
+    }
+}
+
+/// A unified diff in the shape `git diff` prints, so the `--check` output
+/// reads in a terminal and applies with `patch -p1`.
+fn unified_diff(path: &str, before: &str, after: &str) -> String {
+    // An absolute path would print as `a//Users/…`; `git diff` headers are
+    // relative, and so are these.
+    let path = path.trim_start_matches('/');
+    similar::TextDiff::from_lines(before, after)
+        .unified_diff()
+        .context_radius(3)
+        .header(&format!("a/{path}"), &format!("b/{path}"))
+        .to_string()
+}
+
+/// Replace `path`'s contents without a window in which it is half-written:
+/// write a sibling temp file, copy the original's permissions onto it, and
+/// rename it over the original. On any failure the temp file is removed and
+/// the original is untouched.
+///
+/// A symlink is resolved first, because renaming over the link's own path
+/// would replace the link with a regular file rather than update its target.
+fn write_atomically(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let target = path.canonicalize()?;
+    let dir = target
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string());
+    let tmp = dir.join(format!(".{name}.fmt-tmp-{}", std::process::id()));
+
+    let attempt = (|| {
+        std::fs::write(&tmp, content)?;
+        let permissions = std::fs::metadata(&target)?.permissions();
+        std::fs::set_permissions(&tmp, permissions)?;
+        std::fs::rename(&tmp, &target)
+    })();
+    if attempt.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    attempt
+}
+
+// ============================================================
+// clippy — what a set could do better, said only when certain
+// ============================================================
+
+/// Output format for `clippy`.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ClippyFormat {
+    /// `lint`'s line format with a `file:line:col` prefix; diagnostics on
+    /// stderr, the summary on stdout.
+    Text,
+    /// One JSON object per diagnostic on stdout, nothing else.
+    Json,
+}
+
+pub(crate) struct ClippyRequest<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) deny_warnings: bool,
+    pub(crate) format: ClippyFormat,
+    /// Shared-definitions catalog for a single-file run (set mode has its
+    /// own).
+    pub(crate) definitions: Option<&'a str>,
+    pub(crate) boundary: orion::definitions::Boundary,
+    /// The serving instance's config when `-c` named one — the rules that
+    /// need it are skipped otherwise, and say so.
+    pub(crate) config: Option<&'a orion::config::AppConfig>,
+}
+
+/// `clippy --list`: the registry as a table.
+pub(crate) fn run_clippy_list() -> Result<i32, Box<dyn std::error::Error>> {
+    print!("{}", orion::definitions::clippy::list_table());
+    Ok(0)
+}
+
+/// `clippy --explain <rule>`.
+pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::Error>> {
+    match orion::definitions::clippy::find(rule) {
+        Some(found) => {
+            println!(
+                "{} — {} ({}, {})\n\n{}",
+                found.id(),
+                found.summary(),
+                found.level().as_str(),
+                found.scope().as_str(),
+                found.explain()
+            );
+            Ok(0)
+        }
+        None => {
+            eprintln!("error: no rule named '{rule}' — `clippy --list` names them");
+            Ok(2)
+        }
+    }
+}
+
+/// `clippy <path>`: `lint`'s gate first, then every rule over the set.
+///
+/// Exit `1` on any error — a `lint` error or a `deny` rule — and on a
+/// warning under `--deny-warnings`; `2` when the path cannot be read as a
+/// set. Rules run only when `lint` is clean: a rule over a document the API
+/// would refuse produces a second finding about the same mistake, and a
+/// false one.
+pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::error::Error>> {
+    use orion::definitions::clippy::Diagnostic;
+    use orion::definitions::{DefinitionSet, Entity, SharedDefinitions};
+
+    let path = std::path::Path::new(req.path);
+    let (raw, compiled, shared, mut findings) = if path.is_dir() {
+        let (raw, raw_report) = DefinitionSet::from_directory_raw(path)?;
+        let (compiled, report) = DefinitionSet::from_directory(path)?;
+        for (file, error) in &report.unparseable {
+            eprintln!("warning: {} is not readable JSON: {error}", file.display());
+        }
+        for file in &report.skipped {
+            eprintln!(
+                "note: {} is not a channel, workflow or connector — skipped",
+                file.display()
+            );
+        }
+        if compiled.is_empty() {
+            eprintln!("error: no definitions found under '{}'", req.path);
+            return Ok(2);
+        }
+        let mut findings = report.findings;
+        findings.extend(orion::definitions::check(&compiled, &req.boundary, false));
+        let _ = raw_report;
+        (raw, compiled, report.shared, findings)
+    } else if path.is_file() {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
+        let doc: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("'{}' is not valid JSON: {e}", req.path))?;
+        let Some(entity) = Entity::classify(&doc) else {
+            eprintln!(
+                "error: '{}' is not a channel, workflow or connector (no 'tasks', 'channel_type' \
+                 or 'connector_type')",
+                req.path
+            );
+            return Ok(2);
+        };
+        let catalog = Catalog::load_opt(req.definitions)?;
+        let shared = catalog
+            .map(|c| c.shared)
+            .unwrap_or_else(SharedDefinitions::default);
+        let mut findings = Vec::new();
+        let mut compiled_doc = doc.clone();
+        orion::definitions::compile::compile(
+            &mut compiled_doc,
+            &orion::definitions::Cx {
+                shared: &shared,
+                origin: req.path,
+            },
+            &mut findings,
+        );
+        let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
+        let compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+        findings.extend(orion::definitions::check(&compiled, &req.boundary, false));
+        (raw, compiled, shared, findings)
+    } else {
+        eprintln!("error: '{}' is not a file or directory", req.path);
+        return Ok(2);
+    };
+
+    let mut diagnostics: Vec<Diagnostic> =
+        findings.drain(..).map(Diagnostic::from_finding).collect();
+    let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
+    let mut skipped: Vec<&str> = Vec::new();
+    if lint_errors == 0 {
+        let analysis =
+            orion::definitions::analysis::Analysis::new(&raw, &compiled, &shared, req.config);
+        let report = orion::definitions::clippy::run(&analysis);
+        diagnostics.extend(report.diagnostics);
+        skipped = report.skipped;
+    }
+
+    let errors = diagnostics.iter().filter(|d| d.is_error()).count();
+    let warnings = diagnostics.iter().filter(|d| d.is_warning()).count();
+
+    match req.format {
+        ClippyFormat::Json => {
+            for d in &diagnostics {
+                println!("{}", d.render_json());
+            }
+        }
+        ClippyFormat::Text => {
+            for d in &diagnostics {
+                eprintln!("{}", d.render_text());
+            }
+            for rule in &skipped {
+                eprintln!("note: [{rule}] skipped — needs the serving config (-c <config.toml>)");
+            }
+            if lint_errors > 0 {
+                println!(
+                    "{}: {lint_errors} lint error(s) — fix those first; clippy's rules did not run",
+                    req.path
+                );
+            } else {
+                println!(
+                    "{}: {} workflow(s), {} channel(s), {} connector(s) — {errors} error(s), \
+                     {warnings} warning(s) from {} rule(s)",
+                    req.path,
+                    compiled.count(Entity::Workflow),
+                    compiled.count(Entity::Channel),
+                    compiled.count(Entity::Connector),
+                    orion::definitions::clippy::registry().len() - skipped.len()
+                );
+            }
+        }
+    }
+
+    Ok(if errors > 0 || (req.deny_warnings && warnings > 0) {
+        1
+    } else {
+        0
+    })
+}
+
 /// Print the OpenAPI spec to stdout. Backs the checked-in `docs/openapi.json`
 /// (regenerate with `orion-server dump-openapi > docs/openapi.json`) and needs
 /// neither config, a database, nor a running server.

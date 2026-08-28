@@ -1,0 +1,19 @@
+[
+  {
+    "workflow_id": "w",
+    "name": "w",
+    "tasks": [
+      {
+        "id": "t",
+        "name": "T",
+        "function": { "name": "log", "input": { "message": "x" } }
+      }
+    ]
+  },
+  {
+    "name": "c",
+    "channel_type": "sync",
+    "protocol": "rest",
+    "workflow_id": "w"
+  }
+]

@@ -1,4 +1,4 @@
-<!-- description: Every orion-server and orion-cli command: lint, dry-run, offline tests, package promotion, plus workflow, channel, connector, trace and engine management. -->
+<!-- description: Every orion-server and orion-cli command: fmt, lint, clippy, dry-run, offline tests, package promotion, plus workflow, channel, connector, trace and engine management. -->
 # CLI Reference
 
 Orion ships two binaries: `orion-server`, the runtime with diagnostic and promotion subcommands, and `orion-cli`, the admin client. Both accept `--version`, which prints the version, git hash, and build timestamp.
@@ -121,6 +121,85 @@ wrote payments@1.4.0 (4 connectors, 62 workflows, 62 channels) to dist/package.j
 ```
 
 Example: `orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json && orion-server package apply -s https://prod.orion.internal -f dist/package.json`
+
+### `fmt`
+
+Formats definition files to the house style, the way `cargo fmt` formats Rust. One style, nothing to configure; the style itself is documented on [Definition Style](./fmt.md). Needs no config, database, or server.
+
+```bash
+orion-server fmt [PATH]... [--check] [--stdin]
+```
+
+| Flag | Description |
+|------|-------------|
+| `PATH` | Files or directories (default: `.`). Every `.json` under a directory is formatted — entities, shared documents, `*.case.json` files and fixtures alike. Hidden entries, `target/` and `node_modules/` are skipped; symlinked directories are not followed. |
+| `--check` | Write nothing. Print a unified diff for every file that is not in the house style and exit 1 if there is one — the CI form. |
+| `--stdin` | Format one document from stdin to stdout, for editor integration. On a parse error nothing reaches stdout. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Every file is formatted (or was just written). |
+| `1` | `--check` found at least one file it would rewrite. |
+| `2` | A file could not be read, parsed or written. The other files are still processed. |
+
+Files are rewritten atomically (a sibling temp file renamed over the original, permissions preserved), and only after the formatted output has been parsed again and compared with the input as the runtime sees it — a formatter that could change what a workflow means would not be safe to run from a pre-commit hook. A file that is not strict JSON, has a duplicate key, or nests deeper than the runtime's parser accepts is reported with its line and column and left untouched.
+
+```
+$ orion-server fmt --check ./definitions
+--- a/definitions/orders/channel.json
++++ b/definitions/orders/channel.json
+@@ -3,9 +3,7 @@
+   "name": "orders",
+   "channel_type": "sync",
+   "protocol": "rest",
+-  "methods": [
+-    "POST"
+-  ],
++  "methods": ["POST"],
+   "route_pattern": "/orders",
+1 file(s) would be reformatted, 61 unchanged
+```
+
+Example: `orion-server fmt ./definitions && orion-server lint ./definitions`
+
+### `clippy`
+
+Advisory checks beyond `lint`, said only when certain — the `cargo clippy` to `lint`'s `cargo check`. The rules, each with the proof it rests on and when it stays silent, are on [Advisory Checks](./clippy.md). No configuration, no suppression. Needs no database or server; takes the serving config with `-c` for the two rules that read `[vars]` and `[secrets]`.
+
+```bash
+orion-server clippy <dir | file> [--deny-warnings] [--format text|json]
+                    [--definitions DIR] [--requires-channel NAME]... [--requires-connector NAME]...
+orion-server clippy --list
+orion-server clippy --explain <rule>
+```
+
+| Flag | Description |
+|------|-------------|
+| `<dir>` / `<file>` | A directory is checked as a set (every rule); a single file as a set of one — the set-scoped rules have nothing to compare it with. |
+| `--deny-warnings` | Exit non-zero on warnings too. |
+| `--format json` | One JSON object per diagnostic on stdout — `level`, `rule`, `entity`, `file`, `path`, `line`, `column`, `message`, `remedy` — and nothing else, for editors and pipelines. |
+| `--list` | Every rule with its level, scope and summary. |
+| `--explain RULE` | One rule's rationale, its proof and when it is silent. |
+| `--definitions`, `--requires-*` | As `lint` takes them. |
+| `-c FILE` (global) | The serving instance's config. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | No error. Warnings may have been printed. |
+| `1` | A `lint` error, a `deny`-level rule, or a warning under `--deny-warnings`. |
+| `2` | The path is not a set, or a usage error. |
+
+`lint` runs first. Its findings are re-reported, and when it reports an *error* the rules do not run — the summary says `fix those first`. Diagnostics go to stderr in `lint`'s line format with a `file:line:col:` prefix wherever the source file has the same coordinates as the compiled form (no `use`, no `$from`); the one-line summary goes to stdout.
+
+```
+$ orion-server clippy ./definitions
+definitions/workflows/auth-login.json: warning: [perf.redundant_step_condition] workflow 'Auth - login' at tasks[15].tasks[0].condition: 2 consecutive steps (`send_otp` and `when_unverified`) repeat this condition, and none of them writes what it reads; it is evaluated 2 times for one answer
+        fix: wrap them in a task group carrying the condition once: { "id": …, "condition": …, "tasks": [ … ] }
+note: [correctness.metadata_var_undeclared] skipped — needs the serving config (-c <config.toml>)
+./definitions: 59 workflow(s), 62 channel(s), 9 connector(s) — 0 error(s), 1 warning(s) from 13 rule(s)
+```
+
+Example: `orion-server -c config.toml clippy ./definitions --deny-warnings`
 
 ### `dry-run`
 

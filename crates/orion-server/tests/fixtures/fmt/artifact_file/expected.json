@@ -1,0 +1,35 @@
+{
+  "package": {
+    "name": "p",
+    "version": "1.0.0",
+    "orion": "1.3.1",
+    "content_hash": "sha256:abc",
+    "exported_from": "./definitions",
+    "exported_at": "2026-08-28T00:00:00Z"
+  },
+  "requires": { "channels": [], "connectors": [] },
+  "connectors": [],
+  "workflows": [
+    {
+      "workflow_id": "w",
+      "name": "w",
+      "activate": true,
+      "tasks": [
+        {
+          "id": "t",
+          "name": "T",
+          "function": { "name": "log", "input": { "message": "x" } }
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "c",
+      "channel_type": "sync",
+      "protocol": "rest",
+      "workflow_id": "w",
+      "activate": true
+    }
+  ]
+}
