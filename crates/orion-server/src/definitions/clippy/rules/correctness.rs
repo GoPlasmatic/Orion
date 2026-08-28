@@ -574,7 +574,7 @@ impl Rule for MetadataVarUndeclared {
         true
     }
     fn summary(&self) -> &'static str {
-        "a read of metadata.vars.<name> that the config given with -c does not declare"
+        "a read of `metadata.vars.<name>` that the config given with -c does not declare"
     }
     fn explain(&self) -> &'static str {
         "`metadata.vars` is the `[vars]` section of the serving instance's config, stamped \

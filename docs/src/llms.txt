@@ -90,6 +90,8 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Metrics Reference](https://docs.goplasmatic.io/reference/metrics.html): every exported series, its type and labels
 - [Errors & Response Envelopes](https://docs.goplasmatic.io/reference/errors.html): the admin and data envelopes, every error code, verbose_errors
 - [CLI Reference](https://docs.goplasmatic.io/reference/cli.html): every orion-server and orion-cli subcommand, plus the shared-definition catalog ($from, fragments) and the compile step that resolves it
+- [Definition Style (`fmt`)](https://docs.goplasmatic.io/reference/fmt.html): the one layout `orion-server fmt` writes — the numbers, the key order of every recognised shape, the JSONLogic inlining rules; nothing to configure
+- [Advisory Checks (`clippy`)](https://docs.goplasmatic.io/reference/clippy.html): the certain-only rules `orion-server clippy` runs beyond lint, each with the proof it rests on and where it stays silent; no configuration, no suppression
 - [Design Notes](https://docs.goplasmatic.io/reference/design-notes.html): the reasoning behind dedup, cache keys, hot reload, the guard pipeline
 - [Support & Compatibility](https://docs.goplasmatic.io/reference/support.html): versioning policy, what 1.0 freezes, MSRV, platform matrix
 - [Glossary](https://docs.goplasmatic.io/reference/glossary.html): one-line definitions of the load-bearing vocabulary

@@ -1,4 +1,4 @@
-<!-- description: The advisory checks `orion-server clippy` runs beyond `lint`, each with the proof it rests on and the shapes on which it stays silent — no configuration, no suppression. -->
+<!-- description: The advisory checks `orion-server clippy` runs beyond `lint`, each with the proof it rests on and where it stays silent — no configuration, no suppression. -->
 # Advisory Checks (`clippy`)
 
 `orion-server clippy` runs `lint`'s gate over a definition set and then a
@@ -36,7 +36,7 @@ item.
 | `correctness.unconditional_call_cycle` | deny | set | channel_call edges that are all unconditional form a cycle, so every request into it fails at the depth limit |
 | `correctness.payload_var` | deny | workflow | a read of `payload` — which is not in the data context — is always null |
 | `correctness.mapping_overwritten` | warn | workflow | two mappings in one map write the same path with nothing reading it in between |
-| `correctness.metadata_var_undeclared` | deny | workflow | a read of metadata.vars.<name> that the config given with -c does not declare |
+| `correctness.metadata_var_undeclared` | deny | workflow | a read of `metadata.vars.<name>` that the config given with -c does not declare |
 | `correctness.secret_undeclared` | deny | set | a {"secret": name} that the config given with -c does not declare |
 | `perf.parse_result_overwritten` | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | `perf.redundant_step_condition` | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |

@@ -1,4 +1,4 @@
-<!-- description: Every orion-server and orion-cli command: fmt, lint, clippy, dry-run, offline tests, package promotion, plus workflow, channel, connector, trace and engine management. -->
+<!-- description: Every orion-server and orion-cli command: fmt, lint, clippy, dry-run, offline tests, package promotion, and workflow, channel, connector and engine management. -->
 # CLI Reference
 
 Orion ships two binaries: `orion-server`, the runtime with diagnostic and promotion subcommands, and `orion-cli`, the admin client. Both accept `--version`, which prints the version, git hash, and build timestamp.
