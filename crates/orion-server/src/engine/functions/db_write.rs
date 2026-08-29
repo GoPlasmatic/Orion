@@ -64,6 +64,7 @@ impl ConnectorHandler for DbWriteHandler {
         write: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let pool = self

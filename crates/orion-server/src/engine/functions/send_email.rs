@@ -133,6 +133,7 @@ impl ConnectorHandler for SendEmailHandler {
         mail: Self::Parsed,
         smtp_config: &SmtpConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let from = sender(smtp_config, mail.from_override.as_deref(), call.connector)?;

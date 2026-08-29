@@ -135,6 +135,7 @@ impl ConnectorHandler for DataWriteHandler {
         parsed: Self::Parsed,
         conn: &ConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         // F24: with no schema the registry rejects rather than passing every

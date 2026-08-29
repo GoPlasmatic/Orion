@@ -62,6 +62,7 @@ impl ConnectorHandler for StorageHeadHandler {
         key: Self::Parsed,
         storage: &crate::connector::StorageConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let (scheme, host, path) = storage

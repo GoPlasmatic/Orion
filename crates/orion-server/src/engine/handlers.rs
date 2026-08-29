@@ -192,6 +192,25 @@ pub struct HandlerDeps<'a> {
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
 }
 
+/// Register one connector handler, wrapped and keyed by its own name.
+///
+/// The wrapping is what supplies the prologue → resolve → gate → shell → output
+/// sequence, and the key is `H::NAME` rather than a string literal beside it:
+/// every other `fns.insert` here spells the function's name twice, once as the
+/// map key and once inside the handler, and nothing checked that the two agree.
+/// A handler registered under a name it does not answer to is a task that
+/// dispatches fine and reports metrics, profile samples and errors under
+/// another function's name.
+fn register<H: functions::connector_handler::ConnectorHandler>(
+    fns: &mut HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    handler: H,
+) {
+    fns.insert(
+        H::NAME.to_string(),
+        Box::new(functions::connector_handler::Connector(handler)),
+    );
+}
+
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
 /// Registers the nine Orion-specific handlers (`http_call`, `channel_call`,
@@ -218,12 +237,12 @@ pub fn build_custom_functions(
     } = deps;
     let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
-    fns.insert(
-        "http_call".to_string(),
-        Box::new(functions::http_call::HttpCallHandler {
+    register(
+        &mut fns,
+        functions::http_call::HttpCallHandler {
             registry: registry.clone(),
             client: client.clone(),
-        }),
+        },
     );
 
     fns.insert(
@@ -253,151 +272,127 @@ pub fn build_custom_functions(
         Box::new(functions::jwt_verify::JwtVerifyHandler { jwks }),
     );
 
-    fns.insert(
-        "send_email".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::send_email::SendEmailHandler {
-                registry: registry.clone(),
-                smtp_pool: smtp_pool_cache,
-            },
-        )),
+    register(
+        &mut fns,
+        functions::send_email::SendEmailHandler {
+            registry: registry.clone(),
+            smtp_pool: smtp_pool_cache,
+        },
     );
 
-    fns.insert(
-        "storage_presign".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::storage_presign::StoragePresignHandler {
-                registry: registry.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::storage_presign::StoragePresignHandler {
+            registry: registry.clone(),
+        },
     );
 
-    fns.insert(
-        "storage_head".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::storage_head::StorageHeadHandler {
-                registry: registry.clone(),
-                client: client.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::storage_head::StorageHeadHandler {
+            registry: registry.clone(),
+            client: client.clone(),
+        },
     );
 
     // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)
-    fns.insert(
-        "publish_kafka".to_string(),
-        Box::new(functions::publish_kafka::PublishKafkaHandler {
+    register(
+        &mut fns,
+        functions::publish_kafka::PublishKafkaHandler {
             registry: registry.clone(),
             producers: None,
-        }),
+        },
     );
 
     // Register SQL database handlers (db_read, db_write)
-    fns.insert(
-        "db_read".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::db_read::DbReadHandler {
-                pool_cache: sql_pool_cache.clone(),
-                registry: registry.clone(),
-                max_rows: query_config.max_limit as usize,
-            },
-        )),
+    register(
+        &mut fns,
+        functions::db_read::DbReadHandler {
+            pool_cache: sql_pool_cache.clone(),
+            registry: registry.clone(),
+            max_rows: query_config.max_limit as usize,
+        },
     );
-    fns.insert(
-        "db_write".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::db_write::DbWriteHandler {
-                pool_cache: sql_pool_cache.clone(),
-                registry: registry.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::db_write::DbWriteHandler {
+            pool_cache: sql_pool_cache.clone(),
+            registry: registry.clone(),
+        },
     );
 
     // Register the portable query handler (data_query). It renders a
     // backend-neutral filter + envelope to native SQL or a MongoDB find
     // (§ src/query/).
-    fns.insert(
-        "data_query".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::data_query::DataQueryHandler {
-                pool_cache: sql_pool_cache.clone(),
-                mongo_pool_cache: mongo_pool_cache.clone(),
-                http_client: client.clone(),
-                registry: registry.clone(),
-                limits: query_config.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::data_query::DataQueryHandler {
+            pool_cache: sql_pool_cache.clone(),
+            mongo_pool_cache: mongo_pool_cache.clone(),
+            http_client: client.clone(),
+            registry: registry.clone(),
+            limits: query_config.clone(),
+        },
     );
 
     // Register the portable write handler (data_write). It renders a
     // backend-neutral mutation envelope to a native SQL INSERT/UPDATE/DELETE/upsert,
     // a MongoDB write, or an Elasticsearch write (§ src/query/write.rs).
-    fns.insert(
-        "data_write".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::data_write::DataWriteHandler {
-                pool_cache: sql_pool_cache,
-                mongo_pool_cache: mongo_pool_cache.clone(),
-                http_client: client.clone(),
-                registry: registry.clone(),
-                write_config: write_config.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::data_write::DataWriteHandler {
+            pool_cache: sql_pool_cache,
+            mongo_pool_cache: mongo_pool_cache.clone(),
+            http_client: client.clone(),
+            registry: registry.clone(),
+            write_config: write_config.clone(),
+        },
     );
 
     // Register cache handlers (cache_read, cache_write).
     // CachePool routes to the in-memory or Redis backend per connector config.
-    fns.insert(
-        "cache_read".to_string(),
-        // Wrapped: `Connector<H>` is what supplies the prologue → resolve →
-        // gate → shell → output sequence, and an unwrapped handler is not an
-        // `AsyncFunctionHandler` at all, so it cannot be registered.
-        Box::new(functions::connector_handler::Connector(
-            functions::cache_read::CacheReadHandler {
-                cache_pool: cache_pool.clone(),
-                registry: registry.clone(),
-            },
-        )),
+    // Wrapped: `Connector<H>` is what supplies the prologue → resolve →
+    // gate → shell → output sequence, and an unwrapped handler is not an
+    // `AsyncFunctionHandler` at all, so it cannot be registered.
+    register(
+        &mut fns,
+        functions::cache_read::CacheReadHandler {
+            cache_pool: cache_pool.clone(),
+            registry: registry.clone(),
+        },
     );
-    fns.insert(
-        "cache_write".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::cache_write::CacheWriteHandler {
-                cache_pool,
-                registry: registry.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::cache_write::CacheWriteHandler {
+            cache_pool,
+            registry: registry.clone(),
+        },
     );
 
     // Register the MongoDB trio (mongo_read, mongo_write, mongo_aggregate)
-    fns.insert(
-        "mongo_read".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::mongo_read::MongoReadHandler {
-                pool_cache: mongo_pool_cache.clone(),
-                registry: registry.clone(),
-                limits: query_config.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::mongo_read::MongoReadHandler {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: registry.clone(),
+            limits: query_config.clone(),
+        },
     );
-    fns.insert(
-        "mongo_write".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::mongo_write::MongoWriteHandler {
-                pool_cache: mongo_pool_cache.clone(),
-                registry: registry.clone(),
-                write_config: write_config.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::mongo_write::MongoWriteHandler {
+            pool_cache: mongo_pool_cache.clone(),
+            registry: registry.clone(),
+            write_config: write_config.clone(),
+        },
     );
-    fns.insert(
-        "mongo_aggregate".to_string(),
-        Box::new(functions::connector_handler::Connector(
-            functions::mongo_aggregate::MongoAggregateHandler {
-                pool_cache: mongo_pool_cache,
-                registry: registry.clone(),
-                limits: query_config.clone(),
-            },
-        )),
+    register(
+        &mut fns,
+        functions::mongo_aggregate::MongoAggregateHandler {
+            pool_cache: mongo_pool_cache,
+            registry: registry.clone(),
+            limits: query_config.clone(),
+        },
     );
 
     fns
@@ -411,12 +406,12 @@ pub fn register_kafka_publisher(
     registry: Arc<ConnectorRegistry>,
     producers: Arc<crate::kafka::producer::KafkaProducerCache>,
 ) {
-    fns.insert(
-        "publish_kafka".to_string(),
-        Box::new(functions::publish_kafka::PublishKafkaHandler {
+    register(
+        fns,
+        functions::publish_kafka::PublishKafkaHandler {
             registry,
             producers: Some(producers),
-        }),
+        },
     );
 }
 

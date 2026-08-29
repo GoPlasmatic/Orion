@@ -55,6 +55,7 @@ impl ConnectorHandler for CacheReadHandler {
         key: String,
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<super::connector_handler::Produced, crate::engine::HandlerError> {
         // Workflow-purpose namespace (S19) — the mirror of `cache_write`, so a
@@ -159,6 +160,7 @@ mod tests {
                 "absent-key".to_string(),
                 &memory_connector(true),
                 &call,
+                &serde_json::json!({"connector": "c", "key": "absent-key"}),
                 &mut ctx,
             )
             .await

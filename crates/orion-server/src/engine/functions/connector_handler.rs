@@ -73,6 +73,32 @@ impl ConnectorInput for Value {
     }
 }
 
+impl ConnectorInput for dataflow_rs::engine::functions::HttpCallConfig {
+    fn connector(&self, _handler: &'static str) -> Result<&str, DataflowError> {
+        // Typed: serde already refused a task without it, so there is no
+        // "requires 'connector'" to report.
+        Ok(&self.connector)
+    }
+
+    fn output(&self) -> &str {
+        // `response_path` is optional — omitting it discards the body — so the
+        // default here is only ever consulted for a call that records nothing,
+        // and the handler returns `Produced::nothing()` for those.
+        self.response_path.as_deref().unwrap_or("data")
+    }
+}
+
+impl ConnectorInput for dataflow_rs::engine::functions::PublishKafkaConfig {
+    fn connector(&self, _handler: &'static str) -> Result<&str, DataflowError> {
+        Ok(&self.connector)
+    }
+
+    fn output(&self) -> &str {
+        // A publish records nothing; this is never read.
+        "data"
+    }
+}
+
 /// What a handler's call produced.
 ///
 /// Two things vary and both used to be expressed by each handler writing its
@@ -194,11 +220,18 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     /// See [`Produced`] for what a handler says about its result: a bare
     /// `Value` converts, and the two exceptions — no output at all, a partial
     /// bulk write — are spelled out.
+    ///
+    /// The input is here as well as in [`parse`](Self::parse) because
+    /// [`Parsed`](Self::Parsed) is not "everything the handler needs" — it is
+    /// "everything that had to be read while `ctx` was still shared". A literal
+    /// the call needs later is read from `input` here, rather than copied into
+    /// `Parsed` to survive the borrow.
     async fn run(
         &self,
         parsed: Self::Parsed,
         conn: &<Self::Kind as ConnectorTarget>::Config,
         call: &ConnectorCall<'_>,
+        input: &Self::Input,
         ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError>;
 
@@ -261,7 +294,7 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
 
             let produced = self
                 .0
-                .run(parsed, conn, &call, ctx)
+                .run(parsed, conn, &call, input, ctx)
                 .await
                 .map_err(dataflow_rs::DataflowError::from)?;
 
@@ -309,6 +342,7 @@ mod tests {
             _parsed: Self::Parsed,
             _conn: &crate::connector::CacheConnectorConfig,
             _call: &ConnectorCall<'_>,
+            _input: &Value,
             _ctx: &mut TaskContext<'_>,
         ) -> Result<Produced, HandlerError> {
             Ok(Produced::nothing())

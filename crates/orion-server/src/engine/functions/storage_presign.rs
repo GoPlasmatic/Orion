@@ -105,6 +105,7 @@ impl ConnectorHandler for StoragePresignHandler {
         presign: Self::Parsed,
         storage: &crate::connector::StorageConnectorConfig,
         _call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let (scheme, host, path) = storage

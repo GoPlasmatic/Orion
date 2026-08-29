@@ -77,6 +77,7 @@ impl ConnectorHandler for CacheWriteHandler {
         write: Self::Parsed,
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
+        _input: &Value,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         // Workflow-purpose namespace (S19): a memory backend here can never
