@@ -52,13 +52,25 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     test_state_inner(config, None).await.0
 }
 
+/// Like [`test_state_with_config`], but also hands back the pool the state was
+/// built on so a test can close it and make the next database read fail.
+///
+/// That is the only practical way to exercise a *failed* engine reload: the
+/// reload path deliberately quarantines an unusable workflow or channel rather
+/// than erroring, so the database is what is left.
+pub async fn test_state_and_pool(config: AppConfig) -> (AppState, orion::storage::DbPool) {
+    let (state, _handles, pool) = test_state_inner(config, None).await;
+    (state, pool)
+}
+
 /// Like [`test_state_with_config`] but also returns the background-task
 /// handles, so the caller can own the worker lifecycle (abort the loops,
 /// drive `TaskHandles::shutdown()` — the cluster harness and shutdown tests).
 pub async fn test_state_with_handles(
     config: AppConfig,
 ) -> (AppState, orion::bootstrap::TaskHandles) {
-    test_state_inner(config, None).await
+    let (state, handles, _pool) = test_state_inner(config, None).await;
+    (state, handles)
 }
 
 /// `test_state_with_config` with the Kafka publisher registered against
@@ -90,7 +102,11 @@ pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState
 async fn test_state_inner(
     mut config: AppConfig,
     kafka_brokers: Option<String>,
-) -> (AppState, orion::bootstrap::TaskHandles) {
+) -> (
+    AppState,
+    orion::bootstrap::TaskHandles,
+    orion::storage::DbPool,
+) {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
 
@@ -199,6 +215,9 @@ async fn test_state_inner(
     orion::metrics::set_active_workflows(active_workflow_count as f64);
     let rate_limit_state = orion::bootstrap::build_rate_limit_state(&config);
 
+    // Handed back so a test can close it — see `test_state_and_pool`.
+    let pool_handle = pool.clone();
+
     let state = orion::bootstrap::build_app_state(orion::bootstrap::AppStateParams {
         config: Arc::new(config),
         pool,
@@ -215,7 +234,7 @@ async fn test_state_inner(
         cluster,
         tasks,
     });
-    (state, task_handles)
+    (state, task_handles, pool_handle)
 }
 
 pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {

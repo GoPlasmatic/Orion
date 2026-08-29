@@ -451,3 +451,65 @@ async fn a_failed_reload_degrades_health_without_failing_readiness() {
     );
     assert_eq!(body_json(resp).await["status"], "ready");
 }
+
+/// The other half of a failed reload, and the half that regressed: the manual
+/// route has to tell its caller.
+///
+/// `POST /engine/reload` has no committed write for an error to misdescribe.
+/// That is what separates it from an activate or an archive, where the row is
+/// already live and a `5xx` invites a retry that writes a second version or
+/// collides with the first — so those degrade `/health` and answer `2xx`. A
+/// caller who *asked* for a reload and did not get one must not read
+/// `{"reloaded": true}`: a deploy pipeline gating on this route would call a
+/// rollout landed while the node still serves the previous generation.
+///
+/// Unlike the test above, this one breaks a real reload rather than setting the
+/// flag, because the flag is not what is under test — the propagation out of
+/// `audit_and_reload` is, and only a genuine failure exercises it.
+#[tokio::test]
+async fn a_failed_manual_reload_is_reported_to_the_caller() {
+    let (state, pool) = common::test_state_and_pool(orion::config::AppConfig::default()).await;
+    let degraded = state.reload_degraded.clone();
+    let app = orion::server::build_router(state);
+
+    // Baseline: the route works, so the assertion below is about the failure
+    // and not about the request never having been routed.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .await
+        .expect("reload");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Take the database away. That is the reload's remaining failure mode: an
+    // unusable workflow or channel row is quarantined rather than raised, by
+    // design, so there is nothing else to break.
+    match &pool {
+        orion::storage::DbPool::Sqlite(p) => p.close().await,
+        _ => unreachable!("the integration harness is SQLite"),
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .await
+        .expect("reload");
+    let status = resp.status();
+    assert!(
+        status.is_server_error(),
+        "a reload that did not happen must not answer {status}"
+    );
+    let body = body_json(resp).await;
+    assert!(
+        body["data"].is_null(),
+        "a failed reload must not carry a success envelope: {body}"
+    );
+
+    // And the degradation is still raised. The two reports are not
+    // alternatives: the pipeline learns from the response, a dashboard
+    // watching a fleet learns from `/health`.
+    assert!(
+        degraded.load(std::sync::atomic::Ordering::Acquire),
+        "the failure must reach /health as well as the caller"
+    );
+}

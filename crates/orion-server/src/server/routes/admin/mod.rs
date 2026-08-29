@@ -815,21 +815,20 @@ fn audit_log_draft_only(
 /// rebuild — until `POST /engine/reload` runs. Deletes always reload: nothing
 /// batches a delete.
 ///
-/// **A failed reload is not returned to the caller.** By the time this runs the
-/// mutation has committed: the row is `active` and the next successful reload
-/// will serve it. Answering `5xx` would tell the client its change failed when
-/// it did not, and the natural response — retry — writes a second version or
-/// collides with the first. So the failure is reported where it is actually
-/// actionable: `reload_engine_with_opts` logs it and raises the `engine_reload`
-/// component on `/health`. This is the argument `bump_config_epoch` already
-/// makes for a lost epoch bump, and the same inverted failure mode.
+/// **A failed reload IS returned to the caller here** — the opposite of
+/// [`reload_after_commit`], and the reason the two are separate functions.
 ///
-/// `POST /engine/reload` inherits that treatment through this function: a
-/// failed reload is logged and raised on `/health`, and the route still
-/// answers `200`. Arguably it should not — a caller who *asked* for a reload
-/// has no committed write for an error to misdescribe — but the route has
-/// always behaved this way, and changing it is a change to the API contract
-/// rather than to this comment.
+/// That one serves the mutation routes, where the row has already committed by
+/// the time the reload runs: answering `5xx` would tell the client its change
+/// failed when it did not, and the natural response — retry — writes a second
+/// version or collides with the first. So there the failure is reported where
+/// it is actionable, on `/health`. This function's only caller is
+/// `POST /engine/reload`, which has no committed write for an error to
+/// misdescribe: a caller who *asked* for a reload is told when it did not
+/// happen. Swallowing it there tells a deploy pipeline gating on this route
+/// that a rollout landed when the node is still serving the previous
+/// generation. The `/health` degradation is raised as well — the two are not
+/// alternatives.
 async fn audit_and_reload(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
@@ -845,7 +844,17 @@ async fn audit_and_reload(
         resource_type,
         resource_id,
     );
-    reload_after_commit(state, reload).await
+    if reload == ReloadMode::Defer {
+        return Ok(());
+    }
+    // `?`, where `reload_after_commit` deliberately discards: see the note
+    // above. A manual reload that failed must not answer `200`.
+    reload_engine(state).await?;
+    state
+        .cluster
+        .bump_config_epoch(crate::cluster::EpochScope::Definitions)
+        .await;
+    Ok(())
 }
 
 /// The half of [`audit_and_reload`] that runs *after* the row is committed:
