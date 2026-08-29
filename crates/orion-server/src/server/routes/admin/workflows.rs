@@ -1128,7 +1128,7 @@ mod tests {
     /// a row twice, which dedup would otherwise mask.
     #[tokio::test]
     async fn export_snapshot_pages_until_exhausted() {
-        use crate::storage::schema::{CurrentWorkflows, Workflows};
+        use crate::storage::schema::Workflows;
         use sea_query::{Asterisk, Order, Query};
 
         let pool = crate::storage::test_sqlite_pool().await;
@@ -1151,7 +1151,7 @@ mod tests {
             crate::storage::repositories::helpers::snapshot_pages(&pool, 2, |limit, offset| {
                 Query::select()
                     .column(Asterisk)
-                    .from(CurrentWorkflows::Table)
+                    .from(Workflows::Table)
                     .order_by(Workflows::WorkflowId, Order::Asc)
                     .limit(limit as u64)
                     .offset(offset as u64)

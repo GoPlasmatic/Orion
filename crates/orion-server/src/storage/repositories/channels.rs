@@ -6,10 +6,7 @@ use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::storage::models::{Channel, EntityStatus};
-use crate::storage::{
-    build_sqlx,
-    schema::{Channels, CurrentChannels},
-};
+use crate::storage::{build_sqlx, schema::Channels};
 
 use super::helpers::PaginatedResult;
 use super::helpers::{
@@ -197,7 +194,8 @@ impl SqlChannelRepository {
             self.pool.backend(),
             Query::select()
                 .column(Channels::ChannelId)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
+                .and_where(versioned::is_current_version(&spec()))
                 .and_where(Expr::col(Channels::Name).eq(name))
                 .and_where(Expr::col(Channels::ChannelId).ne(own_id))
                 .limit(1),
@@ -393,9 +391,11 @@ impl ChannelRepository for SqlChannelRepository {
             paginate(
                 &self.pool,
                 Page {
-                    from: CurrentChannels::Table.into_iden(),
+                    from: Channels::Table.into_iden(),
                     projection: Projection::All,
-                    cond,
+                    // §5: the `current_channels` view as a predicate, so the
+                    // count and the page agree and neither needs a view.
+                    cond: cond.add(versioned::is_current_version(&spec())),
                     sort: sort_iden.into_iden(),
                     order,
                     limit,
@@ -415,8 +415,9 @@ impl ChannelRepository for SqlChannelRepository {
                 |limit, offset| {
                     Query::select()
                         .column(sea_query::Asterisk)
-                        .from(CurrentChannels::Table)
+                        .from(Channels::Table)
                         .cond_where(build_condition(filter))
+                        .and_where(versioned::is_current_version(&spec()))
                         .order_by(Channels::Priority, sea_query::Order::Desc)
                         // Unique tiebreaker: OFFSET paging needs a total order.
                         .order_by(Channels::ChannelId, sea_query::Order::Asc)
@@ -750,7 +751,7 @@ mod tests {
             crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
                 .cond_where(cond),
         );
         // Empty Condition::all() produces WHERE TRUE -- no actual column filters
@@ -772,7 +773,7 @@ mod tests {
             crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
                 .cond_where(cond),
         );
         assert!(
@@ -793,7 +794,7 @@ mod tests {
             crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
                 .cond_where(cond),
         );
         assert!(
@@ -814,7 +815,7 @@ mod tests {
             crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
                 .cond_where(cond),
         );
         assert!(
@@ -839,7 +840,7 @@ mod tests {
             crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
-                .from(CurrentChannels::Table)
+                .from(Channels::Table)
                 .cond_where(cond),
         );
         assert!(

@@ -203,8 +203,19 @@ pub enum AuditLogs {
 }
 
 // ============================================================
-// Views
+// Views — retained for the contract phase only
 // ============================================================
+
+// §5: no repository reads these any more. `versioned::is_current_version` is
+// the "latest version per id" predicate that replaced them, applied to the
+// base table, so a new column reaches every reader without a view to recreate
+// — the thing that made these expensive on Postgres and MySQL, where a
+// `SELECT *` view resolves its column list at CREATE time.
+//
+// The views themselves stay in the schema for one release: a rolling deploy
+// runs the previous binary against this database, and that binary still reads
+// them. The migration that drops them is the contract half, and it also
+// deletes these two idens.
 
 #[derive(Iden)]
 pub enum CurrentWorkflows {

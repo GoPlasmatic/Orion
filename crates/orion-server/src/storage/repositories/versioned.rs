@@ -32,6 +32,46 @@ pub(crate) struct VersionedSpec {
     pub noun: &'static str,
 }
 
+/// The predicate that makes a plain `FROM <entity table>` read the *current*
+/// version of each entity — the highest `version` for each id, which is the
+/// row the `current_workflows` / `current_channels` views serve (§5).
+///
+/// Expressed as a predicate over the base table rather than as a view because
+/// a view of `SELECT *` is a liability on two of the three backends: Postgres
+/// and MySQL resolve the column list at `CREATE VIEW` time, so every migration
+/// that adds a column to `workflows` or `channels` has to drop and recreate
+/// both views — the reason `current_*` is re-created across five Postgres and
+/// five MySQL migrations, one of which (`mysql/011`) documents a non-atomic
+/// DDL failure mode that ends "finish by hand". A predicate has no schema of
+/// its own to keep in step, so a new column reaches every reader for free, the
+/// way it already does on SQLite.
+///
+/// Correlated `= (SELECT MAX(version) …)` rather than a tuple `IN`: it is one
+/// column comparison, so it composes into an existing `Condition` without
+/// touching the projection or the `FROM`, and every backend plans it against
+/// the composite primary key `(id, version)`.
+///
+/// The subquery aliases the table because it names the same one as the outer
+/// query; the outer reference stays unqualified so this drops into conditions
+/// written against bare column idens.
+pub(crate) fn is_current_version(spec: &VersionedSpec) -> Expr {
+    let inner = sea_query::Alias::new("current_v");
+    Expr::col(spec.version_col.clone()).eq(Expr::SubQuery(
+        None,
+        Box::new(
+            Query::select()
+                .expr(Expr::col(spec.version_col.clone()).max())
+                .from_as(spec.table.clone(), inner.clone())
+                .and_where(
+                    Expr::col((inner, spec.id_col.clone()))
+                        .equals((spec.table.clone(), spec.id_col.clone())),
+                )
+                .take()
+                .into(),
+        ),
+    ))
+}
+
 /// The `SELECT * WHERE id = ? AND version = ?` shape shared by
 /// [`get_version_tx`] and the read-back arm of [`write_returning_version`].
 fn version_select(spec: &VersionedSpec, id: &str, version: i64) -> sea_query::SelectStatement {
@@ -329,3 +369,131 @@ pub(crate) trait HasVersion {
 // D18: `paginate` used to live here despite having nothing to do with
 // versioned entities, and five of the seven list paths could not reach it. It
 // is now `helpers::paginate`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::schema::Channels;
+    use sea_query::IntoIden;
+
+    fn channels_spec() -> VersionedSpec {
+        VersionedSpec {
+            table: Channels::Table.into_iden(),
+            id_col: Channels::ChannelId.into_iden(),
+            version_col: Channels::Version.into_iden(),
+            status_col: Channels::Status.into_iden(),
+            priority_col: Channels::Priority.into_iden(),
+            updated_at_col: Channels::UpdatedAt.into_iden(),
+            label: "Channel",
+            noun: "channel",
+        }
+    }
+
+    /// The predicate is a correlated `MAX(version)` against the same table,
+    /// which is the view body rewritten as a `WHERE` — asserted on the text so
+    /// a rewrite that quietly drops the correlation (and so matches the global
+    /// maximum, i.e. one row for the whole table) is a red test.
+    #[test]
+    fn the_current_version_predicate_correlates_on_the_id_column() {
+        let sql = Query::select()
+            .column(Asterisk)
+            .from(channels_spec().table.clone())
+            .and_where(is_current_version(&channels_spec()))
+            .to_string(sea_query::SqliteQueryBuilder);
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "channels" WHERE "version" = (SELECT MAX("version") FROM "channels" AS "current_v" WHERE "current_v"."channel_id" = "channels"."channel_id")"#
+        );
+    }
+
+    /// §5: the predicate must select exactly the rows `current_channels`
+    /// serves. Both are run against the same database, so this is the
+    /// equivalence the migration away from the views rests on — not a claim in
+    /// a comment.
+    ///
+    /// The fixture is deliberately awkward: three ids, differing version
+    /// counts, and versions that are *not* dense (a gap at `chan-b` v2), so a
+    /// predicate that picked "the highest version in the table" or "version =
+    /// count of versions" would disagree here.
+    #[tokio::test]
+    async fn the_predicate_and_the_view_select_the_same_rows() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        for (id, version, status) in [
+            ("chan-a", 1, "archived"),
+            ("chan-a", 2, "active"),
+            ("chan-b", 1, "archived"),
+            ("chan-b", 3, "draft"),
+            ("chan-c", 7, "active"),
+        ] {
+            let (sql, values) = build_sqlx(
+                pool.backend(),
+                Query::insert()
+                    .into_table(Channels::Table)
+                    .columns([
+                        Channels::ChannelId,
+                        Channels::Version,
+                        Channels::Name,
+                        Channels::ChannelType,
+                        Channels::Protocol,
+                        Channels::Status,
+                        Channels::ConfigJson,
+                    ])
+                    .values_panic([
+                        id.into(),
+                        version.into(),
+                        format!("{id} v{version}").into(),
+                        "sync".into(),
+                        "rest".into(),
+                        status.into(),
+                        "{}".into(),
+                    ]),
+            );
+            pool.execute_query(&sql, values).await.expect("seed");
+        }
+
+        let read = |stmt: sea_query::SelectStatement| {
+            let pool = pool.clone();
+            async move {
+                let (sql, values) = build_sqlx(pool.backend(), &mut stmt.clone());
+                let mut rows: Vec<(String, i64)> = pool
+                    .fetch_all_as::<(String, i64)>(&sql, values)
+                    .await
+                    .expect("read");
+                rows.sort();
+                rows
+            }
+        };
+
+        let via_predicate = read(
+            Query::select()
+                .column(Channels::ChannelId)
+                .column(Channels::Version)
+                .from(Channels::Table)
+                .and_where(is_current_version(&channels_spec()))
+                .take(),
+        )
+        .await;
+        let via_view = read(
+            Query::select()
+                .column(Channels::ChannelId)
+                .column(Channels::Version)
+                .from(crate::storage::schema::CurrentChannels::Table)
+                .take(),
+        )
+        .await;
+
+        assert_eq!(
+            via_predicate,
+            vec![
+                ("chan-a".to_string(), 2),
+                ("chan-b".to_string(), 3),
+                ("chan-c".to_string(), 7),
+            ],
+            "the predicate must select the highest version of each id"
+        );
+        assert_eq!(
+            via_predicate, via_view,
+            "the predicate must select exactly what current_channels serves"
+        );
+    }
+}

@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::OrionError;
 use crate::storage::models::{EntityStatus, Workflow};
-use crate::storage::{
-    build_sqlx,
-    schema::{CurrentWorkflows, Workflows},
-};
+use crate::storage::{build_sqlx, schema::Workflows};
 
 use super::helpers::{
     Page, Projection, WriteStatement, clamp_pagination, map_duplicate, optional_string_value,
@@ -430,8 +427,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
-                    .from(CurrentWorkflows::Table)
+                    .from(Workflows::Table)
                     .cond_where(cond)
+                    .and_where(versioned::is_current_version(&spec()))
                     .order_by(Workflows::Priority, Order::Desc)
                     .order_by(Workflows::Name, Order::Asc)
                     // Unique tiebreaker so OFFSET paging cannot skip or repeat
@@ -466,9 +464,11 @@ impl WorkflowRepository for SqlWorkflowRepository {
             paginate(
                 &self.pool,
                 Page {
-                    from: CurrentWorkflows::Table.into_iden(),
+                    from: Workflows::Table.into_iden(),
                     projection: Projection::All,
-                    cond,
+                    // §5: the `current_workflows` view as a predicate, so the
+                    // count and the page agree and neither needs a view.
+                    cond: cond.add(versioned::is_current_version(&spec())),
                     sort: sort_iden.into_iden(),
                     order,
                     limit,
@@ -488,8 +488,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 |limit, offset| {
                     Query::select()
                         .column(Asterisk)
-                        .from(CurrentWorkflows::Table)
+                        .from(Workflows::Table)
                         .cond_where(build_condition(filter))
+                        .and_where(versioned::is_current_version(&spec()))
                         .order_by(Workflows::Priority, Order::Desc)
                         .order_by(Workflows::Name, Order::Asc)
                         // Unique tiebreaker: OFFSET paging needs a total order.
@@ -1078,7 +1079,7 @@ mod tests {
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()
             .column(Asterisk)
-            .from(CurrentWorkflows::Table)
+            .from(Workflows::Table)
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         // With no filters, there should be no WHERE clause (Condition::all() with no adds is empty)
@@ -1094,7 +1095,7 @@ mod tests {
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()
             .column(Asterisk)
-            .from(CurrentWorkflows::Table)
+            .from(Workflows::Table)
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         assert!(sql.contains("\"status\""));
@@ -1109,7 +1110,7 @@ mod tests {
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()
             .column(Asterisk)
-            .from(CurrentWorkflows::Table)
+            .from(Workflows::Table)
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         assert!(sql.contains("LIKE"));
@@ -1124,7 +1125,7 @@ mod tests {
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()
             .column(Asterisk)
-            .from(CurrentWorkflows::Table)
+            .from(Workflows::Table)
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         assert!(sql.contains("LIKE"));
@@ -1149,7 +1150,7 @@ mod tests {
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()
             .column(Asterisk)
-            .from(CurrentWorkflows::Table)
+            .from(Workflows::Table)
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         assert!(sql.contains("\"status\""));
