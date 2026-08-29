@@ -23,8 +23,7 @@ debug/
 *~
 
 # Claude Code local state
-.claude/settings.local.json
-.claude/worktrees/
+.claude*
 
 # Package tarballs dropped outside target/ (helm package, cargo package)
 *.tgz
@@ -60,9 +59,3 @@ debug/
 !/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
 !/crates/orion-server/tests/benchmark/results/v1.1.0/
-
-# Launch/marketing collateral (local only — drafts, checklists, submission notes)
-/marketing/
-
-# Internal working documents (audit backlogs, design proposals)
-/proposals/
