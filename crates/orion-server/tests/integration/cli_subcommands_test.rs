@@ -1309,6 +1309,85 @@ fn a_connector_of_the_wrong_type_is_an_error() {
     );
 }
 
+/// A MongoDB connector reached by a task that names no `database`.
+///
+/// The handler refuses this at its first request — a MongoDB connection string
+/// carries no default database — and the admin API has refused it at activation
+/// since the gate existed. Set mode did not: it knew the missing-connector and
+/// wrong-type rules and not this one, because it had its own copy of the walk
+/// rather than the gate's rules. Sharing the predicate is what closed it.
+#[test]
+fn a_mongo_task_without_a_database_is_an_error() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"docs","connector_type":"db",
+            "config":{"connection_string":"mongodb://h:27017"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"mongo_read","input":{
+              "connector":"docs","collection":"orders","output":"data.r"}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(!ok, "{report}");
+    assert!(report.contains("type.mongo_database"), "{report}");
+    assert!(
+        report.contains("no default database"),
+        "the message must say why: {report}"
+    );
+}
+
+/// The same connector and the same function, with the `database` the rule asks
+/// for: no finding. A rule that fires on the correct shape is worse than none.
+#[test]
+fn a_mongo_task_with_a_database_is_clean() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"docs","connector_type":"db",
+            "config":{"connection_string":"mongodb://h:27017"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"mongo_read","input":{
+              "connector":"docs","database":"app","collection":"orders","output":"data.r"}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "{report}");
+}
+
+/// A **SQL** `db` connector is not subject to the database rule: the database
+/// is in its connection string, and `db_read` names none.
+#[test]
+fn a_sql_task_without_a_database_is_clean() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"pg","connector_type":"db",
+            "config":{"connection_string":"postgres://h/d"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"db_read","input":{
+              "connector":"pg","query":"SELECT 1","output":"data.r"}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "{report}");
+}
+
 /// Warnings do not fail set mode, and `--deny-warnings` promotes them — the
 /// same flag and the same meaning it already has for a single file.
 #[test]

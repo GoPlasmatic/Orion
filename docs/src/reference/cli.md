@@ -56,7 +56,9 @@ orion-server lint <workflow.json | dir> [--deny-warnings]
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable, directory mode only. |
 | `--definitions` | Directory holding the set's shared `constants`, `errors` and `fragments`. Implicit when linting a directory. |
 
-**A directory is linted as a set.** Every channel, workflow and connector under it is validated, *and* the references between them are resolved — a `channel_call` target, a task's connector and its type, a channel's `workflow_id`, duplicate ids, names and routes. Those are the errors a per-file lint cannot see, because the file that would disprove them is one it never opens.
+**A directory is linted as a set.** Every channel, workflow and connector under it is validated, *and* the references between them are resolved — a `channel_call` target, a task's connector and its type, the `database` a task naming a MongoDB connector must set, a channel's `workflow_id`, duplicate ids, names and routes. Those are the errors a per-file lint cannot see, because the file that would disprove them is one it never opens.
+
+The reference rules are the same ones the admin API applies when a workflow is activated, so a set that lints clean here is one whose workflows that gate will accept.
 
 Entities are found by shape, recursively: an object with `tasks` is a workflow, `connector_type` a connector, `channel_type` or `protocol` a channel. Anything else is reported as skipped rather than silently ignored, and a directory yielding no definitions is an error.
 

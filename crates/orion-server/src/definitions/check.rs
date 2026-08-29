@@ -96,11 +96,11 @@ struct Workflows {
     tasks: Vec<(String, Value)>,
 }
 
-/// name → declared `connector_type`, for the closure checks.
+/// name → what the connector is, for the closure checks.
 fn check_connectors(
     set: &DefinitionSet,
     findings: &mut Vec<Diagnostic>,
-) -> BTreeMap<String, &'static str> {
+) -> BTreeMap<String, crate::engine::ConnectorFacts> {
     let mut by_name = BTreeMap::new();
     let mut seen: Vec<String> = Vec::new();
     for def in set.iter(Entity::Connector) {
@@ -131,7 +131,22 @@ fn check_connectors(
             ));
         }
         seen.push(req.name.clone());
-        by_name.insert(req.name.clone(), req.connector_type.as_str());
+        by_name.insert(
+            req.name.clone(),
+            crate::engine::ConnectorFacts {
+                connector_type: req.connector_type,
+                // Read from the definition's own connection string. A string
+                // still holding a `${VAR}` or an `env://` reference reads as
+                // not-Mongo, so the rules that turn on it stay silent rather
+                // than firing on a value this pass cannot see — the same
+                // stance the rest of the offline checks take.
+                is_mongo: req
+                    .config
+                    .get("connection_string")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(crate::connector::is_mongo_url),
+            },
+        );
     }
     by_name
 }
@@ -339,43 +354,59 @@ fn check_channels(
 /// boundary.
 fn check_closure(
     workflows: &Workflows,
-    connectors: &BTreeMap<String, &'static str>,
+    connectors: &BTreeMap<String, crate::engine::ConnectorFacts>,
     channels: &[String],
     boundary: &Boundary,
     findings: &mut Vec<Diagnostic>,
 ) {
     for (workflow, tasks) in &workflows.tasks {
         let entity = format!("workflow '{workflow}'");
-        for r in crate::engine::connector_refs(tasks) {
-            match connectors.get(r.connector) {
-                Some(declared) => {
-                    // The type gate the artifact lint never applied: a
-                    // `http_call` pointed at a `db` connector parses, imports,
-                    // activates, and fails at the first request.
-                    if let Some(allowed) = crate::engine::required_connector_types(r.function)
-                        && !allowed.iter().any(|t| t.as_str() == *declared)
-                    {
-                        let allowed: Vec<&str> =
-                            allowed.iter().map(ConnectorType::as_str).collect();
+        // The rules are `engine::check_connector_refs`, shared with the
+        // activation gate the admin API runs (`admin::services::workflows`).
+        // Only the lookup differs: there a live registry, here the set's own
+        // connector definitions.
+        for problem in
+            crate::engine::check_connector_refs(tasks, |name| connectors.get(name).copied())
+        {
+            match problem {
+                crate::engine::RefProblem::Missing { connector } => {
+                    if !boundary.allows_connector(connector) {
                         findings.push(Diagnostic::error(
-                            "type.connector",
+                            "closure.connector",
                             &entity,
                             format!(
-                                "'{}' needs a {} connector, but '{}' is type '{declared}'",
-                                r.function,
-                                allowed.join(" or "),
-                                r.connector
+                                "connector '{connector}' is neither in the set nor declared \
+                                 on the boundary"
                             ),
                         ));
                     }
                 }
-                None if boundary.allows_connector(r.connector) => {}
-                None => findings.push(Diagnostic::error(
-                    "closure.connector",
+                crate::engine::RefProblem::WrongType {
+                    function,
+                    connector,
+                    actual,
+                    wanted,
+                } => {
+                    let wanted: Vec<&str> = wanted.iter().map(ConnectorType::as_str).collect();
+                    findings.push(Diagnostic::error(
+                        "type.connector",
+                        &entity,
+                        format!(
+                            "'{function}' needs a {} connector, but '{connector}' is type \
+                             '{actual}'",
+                            wanted.join(" or ")
+                        ),
+                    ));
+                }
+                crate::engine::RefProblem::MissingMongoDatabase {
+                    function,
+                    connector,
+                } => findings.push(Diagnostic::error(
+                    "type.mongo_database",
                     &entity,
                     format!(
-                        "connector '{}' is neither in the set nor declared on the boundary",
-                        r.connector
+                        "'{function}' points at MongoDB connector '{connector}' but sets no \
+                         'database' — MongoDB connection strings carry no default database"
                     ),
                 )),
             }

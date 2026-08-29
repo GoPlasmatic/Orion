@@ -20,57 +20,57 @@ pub(crate) async fn ensure_connectors_exist(
     let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
         return Ok(()); // unparseable tasks are caught elsewhere
     };
+
+    // The lookup is this caller's — an async registry — so it is done first,
+    // for every name the tasks mention; the rules over the result are shared
+    // with the offline set check (`definitions::check`).
+    let mut facts: std::collections::HashMap<String, crate::engine::ConnectorFacts> =
+        std::collections::HashMap::new();
+    for r in crate::engine::connector_refs(&tasks) {
+        if facts.contains_key(r.connector) {
+            continue;
+        }
+        if let Some(config) = connectors.get(r.connector).await {
+            facts.insert(
+                r.connector.to_string(),
+                crate::engine::ConnectorFacts {
+                    connector_type: config.connector_type(),
+                    is_mongo: config.is_mongo(),
+                },
+            );
+        }
+    }
+
     let mut missing: Vec<String> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
-
-    for task in super::super::workflows::connector_refs(&tasks) {
-        let Some(config) = connectors.get(task.connector).await else {
-            if !missing.contains(&task.connector.to_string()) {
-                missing.push(task.connector.to_string());
+    for problem in crate::engine::check_connector_refs(&tasks, |name| facts.get(name).copied()) {
+        match problem {
+            crate::engine::RefProblem::Missing { connector } => {
+                if !missing.iter().any(|m| m == connector) {
+                    missing.push(connector.to_string());
+                }
             }
-            continue;
-        };
-
-        // Type. The handler would refuse this at request time via
-        // `require_*_connector`; saying so now costs one registry read.
-        let actual = config.connector_type();
-        if let Some(wanted) = crate::engine::required_connector_types(task.function)
-            && !wanted.contains(&actual)
-        {
-            problems.push(format!(
-                "task calling '{}' points at connector '{}', which is a '{actual}' \
-                 connector — '{}' requires {}",
-                task.function,
-                task.connector,
-                task.function,
+            crate::engine::RefProblem::WrongType {
+                function,
+                connector,
+                actual,
+                wanted,
+            } => problems.push(format!(
+                "task calling '{function}' points at connector '{connector}', which is a \
+                 '{actual}' connector — '{function}' requires {}",
                 wanted
                     .iter()
                     .map(|t| format!("'{t}'"))
                     .collect::<Vec<_>>()
                     .join(" or ")
-            ));
-            continue;
-        }
-
-        // Cross-field: MongoDB has no default database in its connection
-        // string, so the task must name one. `mongo_read` declares `database`
-        // required outright; `data_query`/`data_write` cannot, because the same
-        // shape is valid against SQL and Elasticsearch — which is why the
-        // schema marks it optional and the handler enforces it at request time.
-        // Whether it applies is knowable here: the connector is already
-        // resolved.
-        if config.is_mongo()
-            && crate::engine::requires_mongo_database(task.function)
-            && !task
-                .input
-                .get("database")
-                .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
-        {
-            problems.push(format!(
-                "task calling '{}' points at MongoDB connector '{}' but sets no \
-                 'database' — MongoDB connection strings carry no default database",
-                task.function, task.connector
-            ));
+            )),
+            crate::engine::RefProblem::MissingMongoDatabase {
+                function,
+                connector,
+            } => problems.push(format!(
+                "task calling '{function}' points at MongoDB connector '{connector}' but \
+                 sets no 'database' — MongoDB connection strings carry no default database"
+            )),
         }
     }
 

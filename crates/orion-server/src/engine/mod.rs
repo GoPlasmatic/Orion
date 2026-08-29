@@ -128,7 +128,10 @@ pub use loader::{
     CUSTOM_HANDLER_FUNCTIONS, HandlerScreen, build_engine_workflows, build_single, filter_channels,
 };
 pub use observer::MetricsObserver;
-pub use refs::{ConnectorRef, channel_call_targets, connector_refs};
+pub use refs::{
+    ConnectorFacts, ConnectorRef, RefProblem, channel_call_targets, check_connector_refs,
+    connector_refs,
+};
 pub use runner::{EngineCallResult, EngineHandle, TraceCapture, run_for_channel};
 pub use secrets::ResolvedSecrets;
 pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};
