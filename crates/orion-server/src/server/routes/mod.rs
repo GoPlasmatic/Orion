@@ -194,10 +194,12 @@ pub(crate) async fn health_check(
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
+    let (tasks_state, task_reports) = tasks_component(&state);
     let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
-        && kafka_state != Some("error");
+        && kafka_state != Some("error")
+        && tasks_state == "ok";
     let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
@@ -229,6 +231,7 @@ pub(crate) async fn health_check(
             "engine": "ok",
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
+            "background_tasks": tasks_state,
         },
     });
     if let Some(kafka) = kafka_state {
@@ -247,6 +250,20 @@ pub(crate) async fn health_check(
         body["channels"] = json!({
             "quarantined": quarantined_channels,
         });
+        // O9: task names are internal topology, so the per-task breakdown
+        // rides with the other admin-only detail. The coarse
+        // `components.background_tasks` above is what a monitor keys on.
+        body["background_tasks"] = json!(
+            task_reports
+                .iter()
+                .map(|r| json!({
+                    "name": r.name,
+                    "state": r.state.as_str(),
+                    "restarts": r.restarts,
+                    "required": r.criticality == crate::runtime::Criticality::Required,
+                }))
+                .collect::<Vec<_>>()
+        );
     }
 
     (http_status, Json(body))
@@ -374,8 +391,34 @@ fn kafka_component(state: &AppState) -> Option<&'static str> {
     Some(if consumer_dead { "error" } else { "ok" })
 }
 
-/// Readiness probe — checks DB, engine, cluster Redis, Kafka ingestion, and
-/// startup readiness. Use for Kubernetes `readinessProbe`.
+/// Coarse state of the node's supervised background tasks (the trace
+/// dispatcher and persistence pool, the audit writer, the retention jobs, the
+/// DLQ retry consumer, the cluster epoch watcher).
+///
+/// `"error"` means at least one `Required` task has stopped for good, which is
+/// the state that used to be invisible: a dead persistence worker dropped
+/// every trace routed to it while `/readyz` kept answering `ready`.
+/// `"degraded"` covers a task the supervisor is currently restarting, and an
+/// `Optional` one that has given up — retention stopping does not make a node
+/// unfit to serve.
+fn tasks_component(state: &AppState) -> (&'static str, Vec<crate::runtime::TaskReport>) {
+    let report = state.tasks.report();
+    let component = if report
+        .iter()
+        .any(crate::runtime::TaskReport::blocks_readiness)
+    {
+        "error"
+    } else if report.iter().any(crate::runtime::TaskReport::is_degraded) {
+        "degraded"
+    } else {
+        "ok"
+    };
+    (component, report)
+}
+
+/// Readiness probe — checks DB, engine, cluster Redis, Kafka ingestion,
+/// background tasks, and startup readiness. Use for Kubernetes
+/// `readinessProbe`.
 #[utoipa::path(
     get,
     path = "/readyz",
@@ -384,7 +427,8 @@ fn kafka_component(state: &AppState) -> Option<&'static str> {
     summary = "Readiness probe",
     description = "\
 Readiness probe. Reports `ready` only when the database responds, startup \
-has completed, — in cluster mode — the shared Redis answers `PING`, and — \
+has completed, every background task the node cannot work without is still \
+running, — in cluster mode — the shared Redis answers `PING`, and — \
 with Kafka enabled — the ingest consumer is not degraded. The \
 `components.engine` field is a constant `\"ok\"` kept for response-shape \
 stability: the engine snapshot is lock-free and cannot be unavailable once \
@@ -394,9 +438,13 @@ response cache misses, and cluster rate limiting stops enforcing; with the \
 consumer down, no message is ingested — all while the data plane keeps \
 returning 200s.
 
-The `components.cluster_redis` field is present only in cluster mode, and \
-`components.kafka` only when `kafka.enabled` is true. Unauthenticated, so \
-probes work without provisioning an admin key.",
+The `components.background_tasks` is `error` when a required task — the trace \
+dispatcher, the persistence workers, the audit writer, the DLQ retry \
+consumer, the cluster epoch watcher — has stopped for good; each of those \
+fails silently otherwise, dropping traces or audit rows while the data plane \
+keeps answering 200s. The `components.cluster_redis` field is present only in \
+cluster mode, and `components.kafka` only when `kafka.enabled` is true. \
+Unauthenticated, so probes work without provisioning an admin key.",
     responses(
         (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
         (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"),
@@ -414,9 +462,13 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let (db_ping, redis_healthy) = tokio::join!(state.ping_db(), cluster_redis_healthy(&state));
     let db_healthy = db_ping.is_ok();
     let kafka_state = kafka_component(&state);
+    let (tasks_state, _) = tasks_component(&state);
 
-    let all_ready =
-        db_healthy && initialized && redis_healthy.unwrap_or(true) && kafka_state != Some("error");
+    let all_ready = db_healthy
+        && initialized
+        && redis_healthy.unwrap_or(true)
+        && kafka_state != Some("error")
+        && tasks_state != "error";
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -428,6 +480,7 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
         // Constant by construction — see `workflows_loaded` (O16).
         "engine": "ok",
         "initialized": initialized,
+        "background_tasks": tasks_state,
     });
     if let Some(healthy) = redis_healthy {
         components["cluster_redis"] = json!(if healthy { "ok" } else { "error" });

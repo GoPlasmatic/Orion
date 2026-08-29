@@ -33,12 +33,16 @@ use tower::ServiceExt;
 use common::{body_json, json_request, post_with_idempotency_key};
 use orion::server::state::AppState;
 
-/// One cluster node: full `AppState`, its router, and the background-task
-/// handles (epoch watcher included) so teardown can stop them.
+/// One cluster node: full `AppState`, its router, and the queue drains.
+///
+/// `_handles` is held, not read: dropping it closes the trace and audit queue
+/// senders it owns, so the node's queues would shut down under the test.
+/// Teardown stops the *supervised* tasks — the epoch watcher above all —
+/// through `state.tasks`, not through this.
 struct Node {
     state: AppState,
     router: axum::Router,
-    handles: orion::bootstrap::TaskHandles,
+    _handles: orion::bootstrap::TaskHandles,
 }
 
 struct ClusterHarness {
@@ -54,15 +58,19 @@ struct ClusterHarness {
 
 impl Drop for ClusterHarness {
     fn drop(&mut self) {
-        // Abort the epoch watchers: without this, every finished test leaked
+        // Stop the epoch watchers: without this, every finished test leaked
         // watchers polling its destroyed Postgres every 200ms (a 3s connect
         // timeout each) for the rest of the serial binary run. The worker and
         // persistence tasks exit on their own when the states drop and their
         // queue senders close.
+        //
+        // `Drop` cannot await, so this only *signals* the supervisor rather
+        // than joining it — which is all that is needed here: a watcher wakes
+        // at its next tick, sees the signal and returns, instead of running
+        // for the rest of the binary. It used to be `JoinHandle::abort()`,
+        // which could cut a resync mid-reload.
         for node in &self.nodes {
-            for handle in &node.handles.cluster_task_handles {
-                handle.abort();
-            }
+            node.state.tasks.signal_shutdown();
         }
     }
 }
@@ -150,12 +158,12 @@ async fn cluster_nodes_with(
         let mut cfg = config.clone();
         cfg.cluster.instance_id = format!("node-{}", (b'a' + i as u8) as char);
         per_node(i, &mut cfg);
-        let (state, mut handles) = common::test_state_with_handles(cfg).await;
-        handles.cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
+        let (state, handles) = common::test_state_with_handles(cfg).await;
+        orion::cluster::start_cluster_tasks(&state);
         nodes.push(Node {
             router: orion::server::build_router(state.clone()),
             state,
-            handles,
+            _handles: handles,
         });
     }
 

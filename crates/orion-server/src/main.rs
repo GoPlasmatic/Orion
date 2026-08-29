@@ -698,9 +698,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Start the background tasks: trace persistence queue, trace queue
     // worker pool (with DLQ for failed async traces), trace + audit-log
     // cleanup, and the DLQ retry consumer.
-    let (trace_persistence_queue, trace_queue, audit_queue, mut task_handles) =
+    // One supervisor for every long-lived background task. It goes onto
+    // `AppState` so `/health` and `/readyz` can report their liveness, and
+    // `main` keeps its own handle so shutdown can stop them.
+    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
+    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
         bootstrap::start_background_tasks(
             &config,
+            &tasks,
             components.engine.clone(),
             &repos,
             channel_registry.clone(),
@@ -730,10 +735,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         ready: ready.clone(),
         kafka_consumer_handle,
         cluster,
+        tasks: tasks.clone(),
     });
 
-    // Cluster background tasks (epoch watcher). Empty when disabled.
-    task_handles.cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
+    // Cluster background tasks (epoch watcher). None when disabled.
+    orion::cluster::start_cluster_tasks(&state);
 
     let router = orion::server::build_router(state.clone());
 
@@ -771,6 +777,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
     }
+
+    // Stop the supervised tasks first: the retention jobs, the DLQ retry
+    // consumer and the epoch watcher all hold an `AppState` clone, and the
+    // drain below cannot start until the last trace-queue sender is gone.
+    // Cooperative, so a job in the middle of a DELETE finishes it — this
+    // used to be `JoinHandle::abort()`.
+    tasks
+        .shutdown(std::time::Duration::from_secs(
+            config.server.shutdown_force_timeout_secs,
+        ))
+        .await;
 
     // Release the state's trace-queue sender before draining the workers —
     // they exit when the last sender closes, and holding `state` here would

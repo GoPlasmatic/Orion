@@ -139,7 +139,7 @@ Three endpoints answer three different questions.
 | Endpoint | Question | Behaviour |
 |----------|----------|-----------|
 | `GET /healthz` | Is the process alive? | Always `200` while the process runs. Liveness probe. |
-| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, and — when enabled — cluster Redis answers and Kafka ingestion is not degraded. Readiness probe. |
+| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and — when enabled — cluster Redis answers and Kafka ingestion is not degraded. Readiness probe. |
 | `GET /health` | What is the state of each part? | Component-level status with degradation detail. |
 
 ```yaml
@@ -170,6 +170,33 @@ therefore see *that* something is degraded without learning *what*.
 `components.kafka` appears only when `kafka.enabled` is true. `components.engine`
 is a constant `"ok"`, kept for response-shape stability: the engine snapshot
 cannot be unavailable once the process serves.
+
+### `components.background_tasks`
+
+The node's long-lived tasks are supervised, and this is what they report:
+
+| Value | Meaning | Effect on `/readyz` |
+|---|---|---|
+| `ok` | Every task is running. | ready |
+| `degraded` | A task is being restarted after a failure, or a non-essential one has given up. | ready |
+| `error` | A task the node cannot work without has stopped for good. | **not ready** |
+
+The essential ones are the trace dispatcher, the trace persistence workers, the
+audit writer, the DLQ retry consumer, and — in cluster mode — the epoch
+watcher. Each fails silently by nature: a dead persistence worker drops traces
+and counts them as queue overflow, a dead audit writer loses the record of
+every subsequent admin mutation, a dead epoch watcher leaves the node serving
+the configuration it booted with. `error` takes the node out of rotation so the
+loss stops rather than continues unobserved.
+
+The retention jobs (trace cleanup, audit-log cleanup) are the non-essential
+ones: a node that has stopped expiring old rows still answers every request
+correctly, so they show as `degraded` and readiness is unaffected.
+
+With an admin credential, `/health` adds a `background_tasks` array naming each
+task, its state, and how many times the supervisor has restarted it. **A
+running task with a non-zero restart count is the one worth alerting on** — it
+is up now, and it has been failing.
 
 For a running instance's own view, `GET /api/v1/admin/engine/status` returns the
 version, uptime, workflow counts, and the channel list.

@@ -30,6 +30,95 @@ async fn readyz_omits_cluster_redis_on_a_single_node() {
     );
 }
 
+/// The defect the task supervisor was added for: a node whose trace
+/// persistence worker has died drops every trace routed to it — counted as an
+/// overflow, indistinguishable from load — while `/readyz` keeps answering
+/// `ready` and the data plane keeps returning 200s.
+///
+/// Driven through a task the harness's own registry supervises, because the
+/// real workers are healthy in a test app: register one, kill it, and assert
+/// the probes move. The wiring under test is the probe reading the registry,
+/// which is the same code path a dead persistence worker takes.
+#[tokio::test]
+async fn a_dead_required_task_makes_the_node_not_ready() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/readyz", None))
+        .await
+        .expect("readyz");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["components"]["background_tasks"], "ok");
+
+    // A required task dies.
+    let guard = state
+        .tasks
+        .guard("test_worker", orion::runtime::Criticality::Required);
+    tokio::spawn(guard.run(async { panic!("worker exploded") }))
+        .await
+        .expect_err("the task panicked");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/readyz", None))
+        .await
+        .expect("readyz");
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a dead required background task must take the node out of rotation"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "not_ready");
+    assert_eq!(body["components"]["background_tasks"], "error");
+
+    // /health reports it too, and names it for an admin caller.
+    let resp = app
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .expect("health");
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["components"]["background_tasks"], "error");
+    let named = body["background_tasks"]
+        .as_array()
+        .expect("the per-task breakdown is admin-visible detail")
+        .iter()
+        .any(|t| t["name"] == "test_worker" && t["state"] == "failed");
+    assert!(named, "the failed task must be named: {body}");
+}
+
+/// The complement: an optional task's death is visible on `/health` but must
+/// not pull the node out of its load balancer.
+#[tokio::test]
+async fn a_dead_optional_task_degrades_health_but_stays_ready() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    let guard = state
+        .tasks
+        .guard("test_retention", orion::runtime::Criticality::Optional);
+    tokio::spawn(guard.run(async {})).await.expect("clean exit");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/readyz", None))
+        .await
+        .expect("readyz");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["status"], "ready");
+
+    let resp = app
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .expect("health");
+    let body = body_json(resp).await;
+    assert_eq!(body["components"]["background_tasks"], "degraded");
+}
+
 #[tokio::test]
 async fn test_health_endpoint() {
     let app = common::test_app().await;

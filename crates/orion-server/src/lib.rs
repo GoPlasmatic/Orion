@@ -47,6 +47,7 @@ pub mod metrics;
 pub mod preflight;
 pub(crate) mod query;
 pub mod queue;
+pub mod runtime;
 pub mod server;
 pub mod storage;
 pub(crate) mod text;

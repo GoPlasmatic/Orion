@@ -178,13 +178,18 @@ impl AuditWriterHandle {
 /// One task, not a pool: audit volume is admin-mutation volume, and a single
 /// in-order writer keeps the rows in the order the actions happened.
 pub fn start(
+    tasks: &crate::runtime::TaskRegistry,
     config: &AuditConfig,
     repo: Arc<dyn AuditLogRepository>,
 ) -> (AuditQueue, AuditWriterHandle) {
     let (tx, mut rx) = mpsc::channel::<AuditEvent>(config.max_pending);
     let pending = Arc::new(AtomicUsize::new(0));
     let worker_pending = pending.clone();
-    let join = tokio::spawn(async move {
+    // Required: a dead writer means every admin mutation from here on is
+    // unrecorded, which is the one failure an audit trail exists to prevent.
+    // The join stays here because the drain is ordered — see `TaskHandles`.
+    let guard = tasks.guard("audit_writer", crate::runtime::Criticality::Required);
+    let join = tokio::spawn(guard.run(async move {
         // `recv` yields `None` only once every sender is dropped *and* the
         // buffer is empty — so this loop is the drain.
         while let Some(event) = rx.recv().await {
@@ -217,7 +222,7 @@ pub fn start(
             crate::metrics::set_audit_queue_depth(remaining as f64);
         }
         crate::metrics::set_audit_queue_depth(0.0);
-    });
+    }));
     (
         AuditQueue {
             tx,
@@ -313,7 +318,11 @@ mod tests {
             block: Some(Duration::from_millis(20)),
             ..RecordingRepo::new(rows.clone())
         });
-        let (queue, handle) = start(&AuditConfig::default(), repo);
+        let (queue, handle) = start(
+            &crate::runtime::TaskRegistry::new(),
+            &AuditConfig::default(),
+            repo,
+        );
         for i in 0..5 {
             queue.submit(event(&format!("action-{i}")));
         }
@@ -340,7 +349,7 @@ mod tests {
             drain_timeout_secs: 1,
             ..AuditConfig::default()
         };
-        let (queue, handle) = start(&config, repo);
+        let (queue, handle) = start(&crate::runtime::TaskRegistry::new(), &config, repo);
         queue.submit(event("stuck"));
         drop(queue);
         let started = tokio::time::Instant::now();
@@ -365,7 +374,7 @@ mod tests {
             drain_timeout_secs: 30,
             ..AuditConfig::default()
         };
-        let (queue, handle) = start(&config, repo);
+        let (queue, handle) = start(&crate::runtime::TaskRegistry::new(), &config, repo);
         queue.submit(event("recorded"));
         // Deliberately kept alive across the shutdown.
         let _stray = queue.clone();
@@ -394,7 +403,7 @@ mod tests {
             drain_timeout_secs: 1,
             ..AuditConfig::default()
         };
-        let (queue, handle) = start(&config, repo);
+        let (queue, handle) = start(&crate::runtime::TaskRegistry::new(), &config, repo);
         // `submit` must return promptly even well past capacity.
         for i in 0..50 {
             queue.submit(event(&format!("a{i}")));
@@ -428,7 +437,7 @@ mod tests {
             drain_timeout_secs: 30,
             ..AuditConfig::default()
         };
-        let (queue, handle) = start(&config, repo);
+        let (queue, handle) = start(&crate::runtime::TaskRegistry::new(), &config, repo);
 
         let mut producers = tokio::task::JoinSet::new();
         for p in 0..PRODUCERS {
@@ -479,7 +488,11 @@ mod tests {
                     fail: true,
                     ..RecordingRepo::new(rows.clone())
                 });
-                let (queue, handle) = start(&AuditConfig::default(), repo);
+                let (queue, handle) = start(
+                    &crate::runtime::TaskRegistry::new(),
+                    &AuditConfig::default(),
+                    repo,
+                );
                 queue.submit(event("delete"));
                 queue.submit(event("update"));
                 drop(queue);
@@ -516,7 +529,7 @@ mod tests {
                     drain_timeout_secs: 1,
                     ..AuditConfig::default()
                 };
-                let (queue, handle) = start(&config, repo);
+                let (queue, handle) = start(&crate::runtime::TaskRegistry::new(), &config, repo);
                 for i in 0..10 {
                     queue.submit(event(&format!("a{i}")));
                 }

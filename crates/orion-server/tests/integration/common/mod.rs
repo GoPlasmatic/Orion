@@ -171,9 +171,11 @@ async fn test_state_inner(
     )
     .expect("kafka ingest");
 
+    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
     let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
         orion::bootstrap::start_background_tasks(
             &config,
+            &tasks,
             components.engine.clone(),
             &repos,
             channel_registry.clone(),
@@ -208,6 +210,7 @@ async fn test_state_inner(
         ready,
         kafka_consumer_handle,
         cluster,
+        tasks,
     });
     (state, task_handles)
 }

@@ -109,14 +109,16 @@ async fn failed_running_write_routes_message_to_dlq() {
         mode: orion::config::TraceStorageMode::Sync,
         ..Default::default()
     };
+    let tasks = orion::runtime::TaskRegistry::new();
     let (persistence_queue, _persistence_handle) =
-        orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
+        orion::queue::trace_persistence::start(&tasks, &tracing_storage, trace_repo.clone());
     let queue_config = orion::config::TraceQueueConfig {
         workers: 1,
         buffer_size: 10,
         ..Default::default()
     };
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
+        &tasks,
         &queue_config,
         orion::queue::WorkerDeps {
             engine,
@@ -257,9 +259,11 @@ async fn run_one_message_to_terminal_status(
         mode: orion::config::TraceStorageMode::Sync,
         ..Default::default()
     };
+    let tasks = orion::runtime::TaskRegistry::new();
     let (persistence_queue, _persistence_handle) =
-        orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
+        orion::queue::trace_persistence::start(&tasks, &tracing_storage, trace_repo.clone());
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
+        &tasks,
         &queue_config,
         orion::queue::WorkerDeps {
             engine,
@@ -473,7 +477,8 @@ async fn persistence_workers_run_in_parallel() {
         async_workers: 2,
         ..Default::default()
     };
-    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+    let (queue, handle) =
+        orion::queue::trace_persistence::start(&orion::runtime::TaskRegistry::new(), &config, repo);
 
     for i in 0..2 {
         assert!(
@@ -573,7 +578,8 @@ async fn transient_persistence_failure_is_retried_not_dropped() {
         async_workers: 1,
         ..Default::default()
     };
-    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+    let (queue, handle) =
+        orion::queue::trace_persistence::start(&orion::runtime::TaskRegistry::new(), &config, repo);
     assert!(
         queue
             .submit(orion::queue::TracePersistenceTask::UpdateStatus {
@@ -682,7 +688,8 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
         batch_flush_interval_ms: 600_000,
         ..Default::default()
     };
-    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+    let (queue, handle) =
+        orion::queue::trace_persistence::start(&orion::runtime::TaskRegistry::new(), &config, repo);
 
     for i in 0..BURST {
         assert!(

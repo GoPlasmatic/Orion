@@ -126,6 +126,11 @@ pub struct AppStateInner {
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    /// The node's long-lived background tasks. Held here so `/health` and
+    /// `/readyz` can report their liveness — before this, a dead persistence
+    /// worker or DLQ retry consumer was invisible to every probe while the
+    /// data plane kept answering 200s.
+    pub tasks: Arc<crate::runtime::TaskRegistry>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::server::admin_auth::FailedAuthTracker>,

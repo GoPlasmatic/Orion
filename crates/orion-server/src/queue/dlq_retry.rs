@@ -29,20 +29,53 @@ pub struct DlqRetryOptions {
 /// Uses exponential backoff: delay = base_delay * 2^retry_count (1s, 2s, 4s, 8s, 16s, ...).
 /// After `max_retries`, the entry is marked as exhausted and no longer retried.
 pub fn start_dlq_retry(
+    tasks: &crate::runtime::TaskRegistry,
     opts: DlqRetryOptions,
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
     trace_repo: Arc<dyn TraceRepository>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) {
+    // `Arc` because the supervisor re-runs the body after a failure, so
+    // nothing can be moved into it — each attempt clones.
+    let opts = Arc::new(opts);
+    // Required: a dead retry consumer means every failed async trace stays in
+    // the DLQ forever, which is silent data loss dressed up as a healthy node.
+    tasks.supervise(
+        "dlq_retry",
+        crate::runtime::Criticality::Required,
+        move |shutdown| {
+            run_dlq_retry(
+                opts.clone(),
+                dlq_repo.clone(),
+                trace_queue.clone(),
+                trace_repo.clone(),
+                channel_registry.clone(),
+                shutdown,
+            )
+        },
+    );
+}
+
+async fn run_dlq_retry(
+    opts: Arc<DlqRetryOptions>,
+    dlq_repo: Arc<dyn TraceDlqRepository>,
+    trace_queue: TraceQueue,
+    trace_repo: Arc<dyn TraceRepository>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    mut shutdown: crate::runtime::Shutdown,
+) {
+    {
         let mut interval = tokio::time::interval(Duration::from_secs(opts.poll_interval_secs));
         // Skip the first immediate tick
         interval.tick().await;
         let job_lease_ttl = opts.poll_interval_secs + 30;
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.signalled() => return,
+            }
 
             // Refresh the depth gauge before the single-flight gate: the count
             // is a cheap read and every node should report its own view of the
@@ -244,7 +277,7 @@ pub fn start_dlq_retry(
                 }
             }
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -522,7 +555,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -545,7 +580,7 @@ mod tests {
         let _ = rx.try_recv();
         advance_and_yield(Duration::from_millis(100)).await;
 
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         let state = dlq_repo.state.lock().expect("test");
         assert!(
@@ -563,7 +598,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -580,7 +617,7 @@ mod tests {
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_secs(1)).await;
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         assert!(
             dlq_repo.state.lock().expect("test").count_calls >= 2,
@@ -606,7 +643,9 @@ mod tests {
                     let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
                     let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
                     let (queue, _rx) = make_test_queue(10);
-                    let job = start_dlq_retry(
+                    let tasks = crate::runtime::TaskRegistry::new();
+                    start_dlq_retry(
+                        &tasks,
                         DlqRetryOptions {
                             poll_interval_secs: 1,
                             batch_size: 20,
@@ -621,7 +660,7 @@ mod tests {
                     );
                     advance_and_yield(Duration::from_secs(1)).await;
                     advance_and_yield(Duration::from_secs(1)).await;
-                    job.abort();
+                    tasks.shutdown(Duration::from_secs(5)).await;
                 });
         });
         let out = handle.render();
@@ -641,7 +680,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -659,7 +700,7 @@ mod tests {
         advance_and_yield(Duration::from_secs(1)).await;
 
         let item = rx.try_recv().expect("entry should have been resubmitted");
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         assert_eq!(
             item.dlq_retry_count, 3,
@@ -674,7 +715,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -692,7 +735,7 @@ mod tests {
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_millis(100)).await;
 
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         let state = dlq_repo.state.lock().expect("test");
         assert!(
@@ -710,7 +753,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let queue = make_closed_queue();
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -728,7 +773,7 @@ mod tests {
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_millis(100)).await;
 
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         let state = dlq_repo.state.lock().expect("test");
         assert!(
@@ -747,7 +792,9 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = mock_traces.clone();
         let queue = make_closed_queue();
 
-        let handle = start_dlq_retry(
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_dlq_retry(
+            &tasks,
             DlqRetryOptions {
                 poll_interval_secs: 1,
                 batch_size: 20,
@@ -765,7 +812,7 @@ mod tests {
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_millis(100)).await;
 
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
 
         let state = dlq_repo.state.lock().expect("test");
         assert_eq!(

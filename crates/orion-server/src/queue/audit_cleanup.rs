@@ -11,23 +11,26 @@ use crate::storage::repositories::audit_logs::AuditLogRepository;
 
 /// Start a background task that periodically deletes old audit-log entries.
 ///
-/// Returns a `JoinHandle` that can be aborted on shutdown.
+/// Registered with the supervisor, which restarts it after a capped backoff
+/// if it ever stops early.
 /// If `retention_days` is 0, no cleanup task is started (retain forever).
 ///
 /// `lease_gate` (cluster mode) single-flights the job: without it every
 /// replica issues the same DELETE every tick. `None` on a single node.
 pub fn start_audit_cleanup(
+    tasks: &crate::runtime::TaskRegistry,
     retention_days: u64,
     interval_secs: u64,
     audit_repo: Arc<dyn AuditLogRepository>,
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
-) -> Option<tokio::task::JoinHandle<()>> {
+) {
     if retention_days == 0 {
         tracing::info!("Audit log retention disabled (audit.retention_days = 0)");
-        return None;
+        return;
     }
 
-    let handle = super::start_retention_job(
+    super::supervise_retention_job(
+        tasks,
         "audit_cleanup",
         interval_secs,
         lease_gate,
@@ -58,8 +61,6 @@ pub fn start_audit_cleanup(
         interval_secs = interval_secs,
         "Audit log cleanup task started"
     );
-
-    Some(handle)
 }
 
 #[cfg(test)]
@@ -158,8 +159,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_disabled_when_retention_is_zero() {
         let repo = Arc::new(MockAuditRepo::default());
-        let handle = start_audit_cleanup(0, 1, repo.clone(), None);
-        assert!(handle.is_none(), "0 days must mean retain forever");
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_audit_cleanup(&tasks, 0, 1, repo.clone(), None);
+        assert!(
+            tasks.report().is_empty(),
+            "0 days must mean retain forever — no job registered"
+        );
         // Three ticks' worth of virtual time: a wrongly-started job would
         // have deleted by now.
         advance_and_yield(Duration::from_secs(3)).await;
@@ -169,7 +174,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_ungated_job_deletes_expired_rows() {
         let repo = Arc::new(MockAuditRepo::default());
-        let handle = start_audit_cleanup(90, 1, repo.clone(), None).expect("job started");
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_audit_cleanup(&tasks, 90, 1, repo.clone(), None);
 
         // One advance consumes the skipped immediate tick, the next fires
         // the first real one.
@@ -179,7 +185,7 @@ mod tests {
             repo.deletes.load(Ordering::SeqCst) >= 1,
             "the first interval tick must run the DELETE"
         );
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
     }
 
     /// Run `job` under a thread-local Prometheus recorder on a paused
@@ -212,10 +218,11 @@ mod tests {
     fn test_successful_tick_stamps_the_job_health_gauge() {
         let out = render_job_metrics(|| async {
             let repo = Arc::new(MockAuditRepo::default());
-            let handle = start_audit_cleanup(90, 1, repo, None).expect("job started");
+            let tasks = crate::runtime::TaskRegistry::new();
+            start_audit_cleanup(&tasks, 90, 1, repo, None);
             advance_and_yield(Duration::from_secs(1)).await;
             advance_and_yield(Duration::from_secs(1)).await;
-            handle.abort();
+            tasks.shutdown(Duration::from_secs(5)).await;
         });
         assert!(
             out.contains(r#"orion_job_last_success_timestamp_seconds{job="audit_cleanup"}"#),
@@ -233,10 +240,11 @@ mod tests {
                 Arc::new(LeaseHeldElsewhere),
                 "node-b".to_string(),
             ));
-            let handle = start_audit_cleanup(90, 1, repo, Some(gate)).expect("job started");
+            let tasks = crate::runtime::TaskRegistry::new();
+            start_audit_cleanup(&tasks, 90, 1, repo, Some(gate));
             advance_and_yield(Duration::from_secs(1)).await;
             advance_and_yield(Duration::from_secs(1)).await;
-            handle.abort();
+            tasks.shutdown(Duration::from_secs(5)).await;
         });
         assert!(
             !out.contains(r#"job="audit_cleanup""#),
@@ -251,14 +259,15 @@ mod tests {
             Arc::new(LeaseHeldElsewhere),
             "node-b".to_string(),
         ));
-        let handle = start_audit_cleanup(90, 1, repo.clone(), Some(gate)).expect("job started");
+        let tasks = crate::runtime::TaskRegistry::new();
+        start_audit_cleanup(&tasks, 90, 1, repo.clone(), Some(gate));
 
         // Several ticks fire; every one must be refused by the gate.
         advance_and_yield(Duration::from_secs(1)).await;
         for _ in 0..3 {
             advance_and_yield(Duration::from_secs(1)).await;
         }
-        handle.abort();
+        tasks.shutdown(Duration::from_secs(5)).await;
         assert_eq!(
             repo.deletes.load(Ordering::SeqCst),
             0,

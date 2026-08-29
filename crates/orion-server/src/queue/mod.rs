@@ -30,59 +30,67 @@ pub use dlq_retry::{DlqRetryOptions, start_dlq_retry};
 ///
 /// `lease_gate` (cluster mode) single-flights the job: without it every
 /// replica issues the same DELETE every tick. `None` on a single node.
-fn start_retention_job<F, Fut, R>(
+async fn run_retention_job<F, Fut, R>(
     job: &'static str,
     interval_secs: u64,
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
-    delete: F,
-    report: R,
-) -> tokio::task::JoinHandle<()>
-where
-    F: Fn() -> Fut + Send + 'static,
+    delete: Arc<F>,
+    report: Arc<R>,
+    mut shutdown: crate::runtime::Shutdown,
+) where
+    F: Fn() -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<u64, crate::errors::OrionError>> + Send + 'static,
-    R: Fn(Result<u64, crate::errors::OrionError>) + Send + 'static,
+    R: Fn(Result<u64, crate::errors::OrionError>) + Send + Sync + 'static,
 {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-        // Skip the first immediate tick
-        interval.tick().await;
-        let lease_ttl = interval_secs + 60;
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+    // Skip the first immediate tick
+    interval.tick().await;
+    let lease_ttl = interval_secs + 60;
 
-        loop {
-            interval.tick().await;
-            if let Some(ref gate) = lease_gate
-                && !gate.try_acquire(job, lease_ttl).await
-            {
-                continue;
-            }
-            let outcome = delete().await;
-            if outcome.is_ok() {
-                metrics::record_job_success(job);
-            }
-            report(outcome);
+    loop {
+        // The tick races the shutdown signal, so stopping the node costs at
+        // most one pass rather than one whole interval — retention intervals
+        // are measured in hours. This used to be `JoinHandle::abort()`, which
+        // could also cut a pass between its DELETE and its metric.
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = shutdown.signalled() => return,
         }
-    })
+        if let Some(ref gate) = lease_gate
+            && !gate.try_acquire(job, lease_ttl).await
+        {
+            continue;
+        }
+        let outcome = delete().await;
+        if outcome.is_ok() {
+            metrics::record_job_success(job);
+        }
+        report(outcome);
+    }
 }
 
 /// Start a background task that periodically deletes old traces.
 ///
-/// Returns a `JoinHandle` that can be aborted on shutdown.
+/// Registered with the supervisor, which restarts it after a capped backoff
+/// if it ever stops early.
 /// If `retention_hours` is 0, no cleanup task is started.
 ///
 /// `lease_gate` (cluster mode) single-flights the job: without it every
 /// replica issues the same DELETE every tick. `None` on a single node.
 pub fn start_trace_cleanup(
+    tasks: &crate::runtime::TaskRegistry,
     retention_hours: u64,
     interval_secs: u64,
     trace_repo: Arc<dyn TraceRepository>,
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
-) -> Option<tokio::task::JoinHandle<()>> {
+) {
     if retention_hours == 0 {
         tracing::info!("Trace retention disabled (retention_hours = 0)");
-        return None;
+        return;
     }
 
-    let handle = start_retention_job(
+    supervise_retention_job(
+        tasks,
         "trace_cleanup",
         interval_secs,
         lease_gate,
@@ -113,8 +121,46 @@ pub fn start_trace_cleanup(
         interval_secs = interval_secs,
         "Trace cleanup task started"
     );
+}
 
-    Some(handle)
+/// Register a retention job with the supervisor.
+///
+/// The `Arc`s are what make the body a *factory*: [`TaskRegistry::supervise`]
+/// re-runs it after a failure, so the closures cannot be moved into it — each
+/// attempt clones them instead.
+///
+/// [`TaskRegistry::supervise`]: crate::runtime::TaskRegistry::supervise
+fn supervise_retention_job<F, Fut, R>(
+    tasks: &crate::runtime::TaskRegistry,
+    job: &'static str,
+    interval_secs: u64,
+    lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
+    delete: F,
+    report: R,
+) where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<u64, crate::errors::OrionError>> + Send + 'static,
+    R: Fn(Result<u64, crate::errors::OrionError>) + Send + Sync + 'static,
+{
+    let delete = Arc::new(delete);
+    let report = Arc::new(report);
+    // Retention is Optional: a node that has stopped expiring old rows still
+    // answers every request correctly, so this is a `/health` degradation and
+    // not a reason to take the node out of rotation.
+    tasks.supervise(
+        job,
+        crate::runtime::Criticality::Optional,
+        move |shutdown| {
+            run_retention_job(
+                job,
+                interval_secs,
+                lease_gate.clone(),
+                delete.clone(),
+                report.clone(),
+                shutdown,
+            )
+        },
+    );
 }
 
 /// A message submitted to the trace queue for async processing.
@@ -314,6 +360,7 @@ pub struct WorkerDeps {
 /// from `config`. The `Arc` dependencies (engine, repos) arrive in [`WorkerDeps`]
 /// because they have independent lifetimes.
 pub fn start_workers(
+    tasks: &crate::runtime::TaskRegistry,
     config: &crate::config::TraceQueueConfig,
     deps: WorkerDeps,
 ) -> (TraceQueue, WorkerHandle) {
@@ -360,7 +407,12 @@ pub fn start_workers(
         },
     };
 
-    let handle = tokio::spawn(processing::dispatcher_loop(rx, dispatcher_ctx));
+    // Required: the dispatcher is the only consumer of the async trace queue,
+    // so its death turns every `/async` submission into a 503 with nothing to
+    // say why. The join stays with `WorkerHandle` because the drain is ordered
+    // (see `bootstrap::TaskHandles`).
+    let guard = tasks.guard("trace_dispatcher", crate::runtime::Criticality::Required);
+    let handle = tokio::spawn(guard.run(processing::dispatcher_loop(rx, dispatcher_ctx)));
 
     let queue = TraceQueue {
         sender: tx.clone(),
@@ -528,7 +580,8 @@ mod tests {
                 .expect("test runtime")
                 .block_on(async {
                     let repo: Arc<dyn TraceRepository> = Arc::new(MockCleanupTraceRepo);
-                    let job = start_trace_cleanup(24, 1, repo, None).expect("job started");
+                    let tasks = crate::runtime::TaskRegistry::new();
+                    start_trace_cleanup(&tasks, 24, 1, repo, None);
                     // One advance consumes the skipped immediate tick, the
                     // next fires the first real one.
                     tokio::time::advance(Duration::from_secs(1)).await;
@@ -539,7 +592,7 @@ mod tests {
                     for _ in 0..20 {
                         tokio::task::yield_now().await;
                     }
-                    job.abort();
+                    tasks.shutdown(Duration::from_secs(5)).await;
                 });
         });
         let out = handle.render();

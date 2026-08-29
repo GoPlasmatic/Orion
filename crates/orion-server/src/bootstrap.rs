@@ -617,42 +617,34 @@ pub fn build_rate_limit_state(
 /// Handles for the background tasks started by [`start_background_tasks`],
 /// plus the cluster tasks `run()` adds once `AppState` exists. Owns the
 /// abort/join sequence executed on graceful shutdown.
+/// The three queue drains, in the order they must run.
+///
+/// Only the queue consumers are here. The periodic jobs (trace cleanup, audit
+/// cleanup, DLQ retry) and the cluster epoch watcher used to be `JoinHandle`s
+/// in this struct that shutdown `abort()`ed; they belong to
+/// [`crate::runtime::TaskRegistry`] now, which stops them cooperatively and —
+/// the point of the move — reports them to `/health` and `/readyz` while they
+/// are running.
+///
+/// **Why these three did not move.** Each owns the receiving end of an `mpsc`
+/// channel and stops when the last sender drops, not on a signal; and the
+/// order below is load-bearing — the worker pool submits to the persistence
+/// queue, so persistence must drain after the workers finish, and the audit
+/// writer last because an admin mutation accepted moments before SIGTERM still
+/// has a row to write. A registry joining its set concurrently under one
+/// deadline cannot express that. They register a
+/// [`crate::runtime::TaskGuard`] instead, so their liveness is reported
+/// without their shutdown being taken over.
 pub struct TaskHandles {
     trace_persistence_handle: crate::queue::trace_persistence::PersistenceWorkerHandle,
     worker_handle: crate::queue::WorkerHandle,
     audit_writer_handle: crate::queue::audit_queue::AuditWriterHandle,
-    trace_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
-    audit_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
-    dlq_retry_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Cluster background tasks (epoch watcher). Empty when disabled.
-    /// Populated by `run()` after `AppState` is built.
-    pub cluster_task_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl TaskHandles {
-    /// Graceful shutdown: abort the periodic tasks, then drain the trace
-    /// queue workers and the persistence queue — same order as before the
-    /// extraction.
+    /// Graceful shutdown: drain the trace queue workers, then the persistence
+    /// queue, then the audit writer.
     pub async fn shutdown(self) {
-        if let Some(handle) = self.trace_cleanup_handle {
-            tracing::info!("Stopping trace cleanup task...");
-            handle.abort();
-        }
-
-        if let Some(handle) = self.audit_cleanup_handle {
-            tracing::info!("Stopping audit log cleanup task...");
-            handle.abort();
-        }
-
-        if let Some(handle) = self.dlq_retry_handle {
-            tracing::info!("Stopping DLQ retry consumer...");
-            handle.abort();
-        }
-
-        for handle in self.cluster_task_handles {
-            handle.abort();
-        }
-
         tracing::info!("Shutting down trace queue workers...");
         self.worker_handle.shutdown().await;
 
@@ -672,6 +664,7 @@ impl TaskHandles {
 /// the shutdown sequence.
 pub fn start_background_tasks(
     config: &config::AppConfig,
+    tasks: &crate::runtime::TaskRegistry,
     engine: Arc<crate::engine::EngineHandle>,
     repos: &Repositories,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
@@ -686,7 +679,7 @@ pub fn start_background_tasks(
     // shutdown. Started first so no admin mutation can be accepted before
     // there is somewhere to record it.
     let (audit_queue, audit_writer_handle) =
-        crate::queue::audit_queue::start(&config.audit, repos.audit_logs.clone());
+        crate::queue::audit_queue::start(tasks, &config.audit, repos.audit_logs.clone());
     tracing::info!(
         max_pending = config.audit.max_pending,
         drain_timeout_secs = config.audit.drain_timeout_secs,
@@ -696,7 +689,7 @@ pub fn start_background_tasks(
     // Start trace persistence queue (async/batch modes). A no-op queue is
     // returned for `sync` / `off`, so callers can submit unconditionally.
     let (trace_persistence_queue, trace_persistence_handle) =
-        crate::queue::trace_persistence::start(&config.trace_storage, repos.traces.clone());
+        crate::queue::trace_persistence::start(tasks, &config.trace_storage, repos.traces.clone());
     tracing::info!(
         mode = ?config.trace_storage.mode,
         max_pending = config.trace_storage.max_pending,
@@ -707,6 +700,7 @@ pub fn start_background_tasks(
     // The pool needs the persistence queue + channel registry so it can route
     // status / result writes through the configured mode.
     let (trace_queue, worker_handle) = crate::queue::start_workers(
+        tasks,
         &config.trace_queue,
         crate::queue::WorkerDeps {
             engine,
@@ -734,7 +728,8 @@ pub fn start_background_tasks(
     });
 
     // Start trace cleanup task
-    let trace_cleanup_handle = crate::queue::start_trace_cleanup(
+    crate::queue::start_trace_cleanup(
+        tasks,
         config.trace_queue.retention_hours,
         config.trace_queue.cleanup_interval_secs,
         repos.traces.clone(),
@@ -742,7 +737,8 @@ pub fn start_background_tasks(
     );
 
     // Start audit-log cleanup task
-    let audit_cleanup_handle = crate::queue::audit_cleanup::start_audit_cleanup(
+    crate::queue::audit_cleanup::start_audit_cleanup(
+        tasks,
         config.audit.retention_days,
         config.audit.cleanup_interval_secs,
         repos.audit_logs.clone(),
@@ -750,8 +746,9 @@ pub fn start_background_tasks(
     );
 
     // Start DLQ retry consumer
-    let dlq_retry_handle = if config.trace_queue.dlq_retry_enabled {
-        let handle = crate::queue::start_dlq_retry(
+    if config.trace_queue.dlq_retry_enabled {
+        crate::queue::start_dlq_retry(
+            tasks,
             crate::queue::DlqRetryOptions {
                 poll_interval_secs: config.trace_queue.dlq_poll_interval_secs,
                 batch_size: config.trace_queue.dlq_batch_size,
@@ -769,10 +766,7 @@ pub fn start_background_tasks(
             max_retries = config.trace_queue.dlq_max_retries,
             "DLQ retry consumer started"
         );
-        Some(handle)
-    } else {
-        None
-    };
+    }
 
     (
         trace_persistence_queue,
@@ -782,10 +776,6 @@ pub fn start_background_tasks(
             trace_persistence_handle,
             worker_handle,
             audit_writer_handle,
-            trace_cleanup_handle,
-            audit_cleanup_handle,
-            dlq_retry_handle,
-            cluster_task_handles: Vec::new(),
         },
     )
 }
@@ -806,6 +796,9 @@ pub struct AppStateParams {
     pub ready: Arc<std::sync::atomic::AtomicBool>,
     pub kafka_consumer_handle: Option<crate::kafka::consumer::ConsumerHandle>,
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    /// The supervisor the background tasks registered with, so the probes can
+    /// read their liveness.
+    pub tasks: Arc<crate::runtime::TaskRegistry>,
 }
 
 /// Assemble `AppState` from the bootstrap products — the single place the
@@ -827,6 +820,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         ready,
         kafka_consumer_handle,
         cluster,
+        tasks,
     } = params;
     let ServingComponents {
         connector_registry,
@@ -880,6 +874,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         },
         trace_persistence_queue,
         cluster,
+        tasks,
         admin_auth_failures: Arc::new(Default::default()),
         trusted_proxies,
     })

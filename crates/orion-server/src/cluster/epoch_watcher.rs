@@ -11,17 +11,26 @@ use std::time::Duration;
 
 use crate::server::state::AppState;
 
-/// Spawn cluster background tasks. Returns no handles when cluster mode is
-/// disabled — the tasks simply don't exist on a single node.
-pub fn start_cluster_tasks(state: &AppState) -> Vec<tokio::task::JoinHandle<()>> {
+/// Register the cluster background tasks with the supervisor. Registers
+/// nothing when cluster mode is disabled — the tasks simply don't exist on a
+/// single node.
+pub fn start_cluster_tasks(state: &AppState) {
     if !state.cluster.enabled {
-        return Vec::new();
+        return;
     }
-    vec![start_epoch_watcher(state.clone())]
+    let watcher_state = state.clone();
+    // Required: a node whose watcher is dead never learns about another
+    // node's mutation, so it keeps serving the configuration it booted with
+    // while every probe stays green — the cluster silently splits.
+    state.tasks.supervise(
+        "epoch_watcher",
+        crate::runtime::Criticality::Required,
+        move |shutdown| run_epoch_watcher(watcher_state.clone(), shutdown),
+    );
 }
 
-fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdown) {
+    {
         let mut interval = tokio::time::interval(Duration::from_millis(
             state.config.cluster.epoch_poll_interval_ms,
         ));
@@ -34,7 +43,10 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
         );
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = shutdown.signalled() => return,
+            }
             let row = match state.cluster.repo.get_epoch().await {
                 Ok(row) => row,
                 Err(e) => {
@@ -80,7 +92,7 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                 crate::metrics::record_job_success("epoch_watcher");
             }
         }
-    })
+    }
 }
 
 /// Apply a freshly-read config epoch: run `resync` if the epoch is ahead of

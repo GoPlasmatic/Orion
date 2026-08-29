@@ -233,6 +233,7 @@ impl PersistenceWorkerHandle {
 /// `mode = Sync` or `mode = Off` (callers don't dispatch through the queue
 /// in those modes).
 pub fn start(
+    tasks: &crate::runtime::TaskRegistry,
     config: &TraceStorageConfig,
     trace_repo: Arc<dyn TraceRepository>,
 ) -> (TracePersistenceQueue, PersistenceWorkerHandle) {
@@ -252,6 +253,13 @@ pub fn start(
     let per_worker_capacity = (config.max_pending.max(1) / worker_count).max(1);
     let pending = Arc::new(AtomicUsize::new(0));
 
+    // Required: a dead persistence worker drops every trace routed to its
+    // channel — counted as an overflow, indistinguishable from load — while
+    // the node reports ready. That is the failure this supervisor exists for.
+    // One entry for the pool, shared by every worker, so any member's death
+    // fails it; the join handles stay here because the drain is ordered (see
+    // `TaskHandles`).
+    let guard = tasks.guard("trace_persistence", crate::runtime::Criticality::Required);
     let mut senders = Vec::with_capacity(worker_count);
     let mut join = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
@@ -261,13 +269,13 @@ pub fn start(
         let trace_repo = trace_repo.clone();
         let batch_size = config.batch_size.max(1);
         let flush_interval = Duration::from_millis(config.batch_flush_interval_ms.max(1));
-        join.push(tokio::spawn(async move {
+        join.push(tokio::spawn(guard.clone().run(async move {
             if is_batch {
                 run_batch_worker(rx, pending, trace_repo, batch_size, flush_interval).await;
             } else {
                 run_async_worker(rx, pending, trace_repo).await;
             }
-        }));
+        })));
     }
 
     let queue = TracePersistenceQueue {

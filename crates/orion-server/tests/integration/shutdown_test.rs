@@ -41,9 +41,13 @@ async fn test_worker_shutdown_empty_queue() {
     };
     let channel_registry = std::sync::Arc::new(orion::channel::ChannelRegistry::new());
     let global_trace_storage = orion::config::TraceStorageConfig::default();
-    let (persistence_queue, _persistence_handle) =
-        orion::queue::trace_persistence::start(&global_trace_storage, trace_repo.clone());
+    let (persistence_queue, _persistence_handle) = orion::queue::trace_persistence::start(
+        &orion::runtime::TaskRegistry::new(),
+        &global_trace_storage,
+        trace_repo.clone(),
+    );
     let (queue, worker_handle) = orion::queue::start_workers(
+        &orion::runtime::TaskRegistry::new(),
         &test_queue_config,
         orion::queue::WorkerDeps {
             engine,
@@ -136,22 +140,24 @@ async fn test_trace_cleanup_abort_is_safe() {
         );
 
     // Start cleanup with very short interval
-    let handle = orion::queue::start_trace_cleanup(72, 1, trace_repo.clone(), None);
-    assert!(
-        handle.is_some(),
-        "Cleanup task should start when retention > 0"
+    let tasks = orion::runtime::TaskRegistry::new();
+    orion::queue::start_trace_cleanup(&tasks, 72, 1, trace_repo.clone(), None);
+    assert_eq!(
+        tasks.report().len(),
+        1,
+        "Cleanup task should be registered when retention > 0"
     );
 
-    let handle = handle.unwrap();
-
-    // Let it run briefly, then abort
+    // Let it run briefly, then stop it cooperatively. The task returns at its
+    // next tick rather than being cut mid-DELETE, so the shutdown completes
+    // well inside the deadline.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    handle.abort();
-
-    // Wait for abort to complete — should not panic
-    let result = handle.await;
-    assert!(result.is_err(), "Aborted task should return JoinError");
-    assert!(result.unwrap_err().is_cancelled());
+    tasks.shutdown(std::time::Duration::from_secs(5)).await;
+    assert_eq!(
+        tasks.report()[0].state,
+        orion::runtime::TaskState::ShutDown,
+        "a cooperative stop must be recorded as a clean shutdown, not a failure"
+    );
 }
 
 /// Verify that cleanup with retention_hours=0 does not start a task.
@@ -168,9 +174,10 @@ async fn test_trace_cleanup_disabled_when_zero_retention() {
     let trace_repo: std::sync::Arc<dyn orion::storage::repositories::traces::TraceRepository> =
         std::sync::Arc::new(orion::storage::repositories::traces::SqlTraceRepository::new(pool));
 
-    let handle = orion::queue::start_trace_cleanup(0, 3600, trace_repo, None);
+    let tasks = orion::runtime::TaskRegistry::new();
+    orion::queue::start_trace_cleanup(&tasks, 0, 3600, trace_repo, None);
     assert!(
-        handle.is_none(),
+        tasks.report().is_empty(),
         "Cleanup should not start when retention is 0"
     );
 }

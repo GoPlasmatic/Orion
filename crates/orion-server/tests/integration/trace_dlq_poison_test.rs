@@ -107,10 +107,12 @@ async fn poison_message_converges_on_dlq_max_retries() {
     let channel_registry = Arc::new(ChannelRegistry::new());
     let trace_storage = TraceStorageConfig::default();
 
+    let tasks = orion::runtime::TaskRegistry::new();
     let (persistence_queue, _persistence_handle) =
-        orion::queue::trace_persistence::start(&trace_storage, trace_repo.clone());
+        orion::queue::trace_persistence::start(&tasks, &trace_storage, trace_repo.clone());
 
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
+        &tasks,
         &TraceQueueConfig {
             workers: 1,
             buffer_size: 16,
@@ -129,7 +131,8 @@ async fn poison_message_converges_on_dlq_max_retries() {
         },
     );
 
-    let _dlq_retry = orion::queue::start_dlq_retry(
+    orion::queue::start_dlq_retry(
+        &tasks,
         DlqRetryOptions {
             poll_interval_secs: 1,
             batch_size: 10,
