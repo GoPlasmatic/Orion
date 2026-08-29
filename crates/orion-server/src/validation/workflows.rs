@@ -652,7 +652,14 @@ pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
         let exempt = crate::engine::functions::schema::secret_paths(function, field);
-        collect_secret_references(value, path, "", exempt, function, &mut out);
+        // Whether a `{"secret": ..}` node in this field means anything at all
+        // — see the branch it gates in [`collect_secret_references`]. A field
+        // the handler folds expressions in, or reads key material out of, is
+        // one it looks *inside*; anywhere else the object is opaque data and a
+        // member named `secret` is a member named `secret`.
+        let inspects_nodes = crate::engine::functions::schema::is_resolvable_field(function, field)
+            || !exempt.is_empty();
+        collect_secret_references(value, path, "", exempt, function, inspects_nodes, &mut out);
     });
     out
 }
@@ -670,9 +677,48 @@ fn collect_secret_references(
     rel: &str,
     exempt: &[&str],
     function: &str,
+    inspects_nodes: bool,
     out: &mut Vec<(String, String)>,
 ) {
     if exempt.contains(&rel) {
+        return;
+    }
+    // A `{"secret": "name"}` node in a field that does not read key material.
+    //
+    // The consequence is worse than a stray operator. In a field the handler
+    // reads literally, the node is stored and sent on **as the object it is**:
+    // a database gets `{"secret":"api_key"}` as a bind parameter, an SMTP
+    // server gets it as a subject line. The author asked for a credential and
+    // the backend received a JSON object naming one.
+    //
+    // Recognised with the engine's own predicate, so this names exactly the
+    // shape that would have resolved somewhere it is read — including the
+    // one-element array spelling.
+    //
+    // **Only in a field the handler looks inside** (`inspects_nodes`), and
+    // that qualifier is what keeps this an error rather than an advisory.
+    // Unlike `env://` at the head of a string, which has no second reading, a
+    // single-key object is the *ordinary* shape of keyed data: `data_query`'s
+    // `sort` is `[{"<column>": "asc"}]`, so a column named `secret` authors as
+    // `{"secret": "asc"}` and means nothing of the kind. A field is only
+    // looked inside when the function declares it `resolvable` (it folds
+    // expression nodes) or gives it a `secret_at` (it reads key material out
+    // of one) — and in a field with neither, the engine would not have
+    // resolved the node either, so there is nothing to warn about. Same
+    // reasoning as `unresolvable_logic_warnings` staying advisory because
+    // operator names are also ordinary field names; here the answer is to
+    // narrow where the rule speaks rather than to soften what it says.
+    if inspects_nodes && let Some(name) = crate::engine::functions::secret_ref::secret_name(value) {
+        out.push((
+            path.to_string(),
+            format!(
+                "'{function}' does not read key material in this field, so \
+                 {{\"secret\": \"{name}\"}} is stored and sent on as that object rather \
+                 than resolved. Secrets are read only where a function takes a key; \
+                 for a deployment value elsewhere, declare it under [vars] and read it \
+                 as {{\"var\": \"metadata.vars.<name>\"}}."
+            ),
+        ));
         return;
     }
     match value {
@@ -703,6 +749,7 @@ fn collect_secret_references(
                     &format!("{rel}.{key}"),
                     exempt,
                     function,
+                    inspects_nodes,
                     out,
                 );
             }
@@ -715,6 +762,7 @@ fn collect_secret_references(
                     &format!("{rel}[]"),
                     exempt,
                     function,
+                    inspects_nodes,
                     out,
                 );
             }
@@ -1004,6 +1052,155 @@ mod tests {
         assert_eq!(found.len(), 1, "got {found:?}");
         assert_eq!(found[0].0, "tasks[0].function.input.path");
         assert!(found[0].1.contains("env://API_BASE"), "{}", found[0].1);
+    }
+
+    /// §3.3: a `{"secret": …}` node in a field that does not read key material
+    /// is refused at authoring time, exactly as `env://` is.
+    ///
+    /// Left alone it is not a no-op: the handler stores the node and sends it
+    /// on as an object, so a query gets `{"secret":"api_key"}` as a bind
+    /// parameter. The author asked for a credential and the database received
+    /// a JSON object naming one.
+    #[test]
+    fn a_secret_node_outside_a_key_field_is_reported() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "db_read", "input": {
+                "connector": "orders",
+                "query": "SELECT 1 WHERE token = $1",
+                "params": [{"secret": "api_key"}],
+            }},
+        }]));
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one finding, got {found:?}"
+        );
+        assert!(found[0].0.contains("params"), "{:?}", found[0]);
+        assert!(found[0].1.contains("api_key"), "{:?}", found[0]);
+    }
+
+    /// The array spelling resolves identically at runtime, so it must be
+    /// refused identically — recognising only the string form would leave one
+    /// of the two reaching a backend as an object.
+    #[test]
+    fn the_array_spelling_of_a_secret_node_is_reported_too() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "send_email", "input": {
+                "connector": "mail",
+                "subject": {"secret": ["api_key"]},
+            }},
+        }]));
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one finding, got {found:?}"
+        );
+    }
+
+    /// And silent where the handler does read key material — the whole point
+    /// of the per-path exemption. `crypto.key` takes a secret node; a check
+    /// that fired here would refuse the recommended way to write the task.
+    #[test]
+    fn a_secret_node_in_a_key_field_is_left_alone() {
+        let clean = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "crypto", "input": {
+                "operation": "hmac_sha256",
+                "data": "payload",
+                "key": {"secret": "signing_key"},
+            }},
+        }]));
+        assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    /// The exemption is per path, not per field: `jwt_verify.keys` reads key
+    /// material at `keys[].key` and nowhere else, so a secret node in a
+    /// sibling `kid` — matched verbatim against the token's — is still
+    /// reported, and the `key` beside it still is not.
+    #[test]
+    fn the_secret_node_exemption_follows_the_path_not_the_field() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "jwt_verify", "input": {
+                "token": "t",
+                "keys": [{"kid": {"secret": "which_key"}, "key": {"secret": "signing_key"}}],
+            }},
+        }]));
+        assert_eq!(
+            found.len(),
+            1,
+            "expected only the `kid` finding, got {found:?}"
+        );
+        assert!(found[0].0.contains("kid"), "{:?}", found[0]);
+    }
+
+    /// A column named `secret` is not a secret node.
+    ///
+    /// `data_query`'s `sort` is a list of single-key objects keyed by column
+    /// name, so sorting on a column called `secret` authors as
+    /// `{"secret": "asc"}` — structurally identical to the reference, and
+    /// nothing of the kind. `query` is neither `resolvable` nor
+    /// `secret_at`-bearing, so the handler never looks inside it for nodes and
+    /// neither does this check.
+    ///
+    /// The shape is what makes the `inspects_nodes` qualifier necessary rather
+    /// than tidy: without it this is a hard 400 on a legitimate query, and the
+    /// same false positive reaches any keyed-object field whose keys are the
+    /// author's own names.
+    #[test]
+    fn a_column_named_secret_is_not_a_secret_node() {
+        let clean = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "data_query", "input": {
+                "connector": "orders",
+                "schema": {"entities": {"items": {
+                    "physical": "items",
+                    "columns": {"id": {"queryable": true}, "secret": {"queryable": false}},
+                }}},
+                "query": {"source": "items", "sort": [{"secret": "asc"}]},
+                "output": "data.result",
+            }},
+        }]));
+        assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    /// The same node in the *resolvable* field of the same function is still
+    /// reported — so the rule above narrows where the check speaks, and does
+    /// not soften what it says where it does.
+    #[test]
+    fn a_secret_node_in_data_querys_resolvable_params_is_still_reported() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "data_query", "input": {
+                "connector": "orders",
+                "query": {"source": "items"},
+                "params": {"token": {"secret": "api_key"}},
+                "output": "data.result",
+            }},
+        }]));
+        assert_eq!(
+            found.len(),
+            1,
+            "expected exactly one finding, got {found:?}"
+        );
+        assert!(found[0].0.contains("params"), "{:?}", found[0]);
+    }
+
+    /// An object that merely has a `secret` member among others is data, not a
+    /// secret node — the engine would not resolve it, so neither does this.
+    #[test]
+    fn a_multi_key_object_holding_a_secret_member_is_data() {
+        let clean = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "db_read", "input": {
+                "connector": "orders",
+                "query": "SELECT 1",
+                "params": [{"secret": "a", "public": "b"}],
+            }},
+        }]));
+        assert!(clean.is_empty(), "{clean:?}");
     }
 
     /// The five fields that do resolve one must stay clean, including the
