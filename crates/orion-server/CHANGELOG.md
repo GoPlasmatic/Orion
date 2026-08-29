@@ -7,38 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **The MSRV is now 1.98** (was 1.88), and the release profile builds in a
-  single codegen unit. Both container images already build on `rust:1.98-slim`
-  and CI's MSRV job now runs the whole suite on that toolchain, so a
-  `cargo install` or from-source build needs one at least that new. Called out
-  here because [the support policy](https://goplasmatic.github.io/Orion/reference/support.html)
-  makes an MSRV bump a minor release at most.
-
-### Fixed
-
-- **A burst of admin changes no longer reaches a peer as the last change's
-  scope.** The `config_epoch` row holds one scope, so it describes one bump. A
-  node that polled and found the epoch several ahead sized its resync to the
-  *last* bump's scope anyway, and the bumps in between — whose scopes that one
-  overwrote — were applied as if they had been the same kind of change. Create a
-  connector and activate the workflow that uses it, three bumps well inside one
-  `epoch_poll_interval_ms`, and every peer read `definitions`: it rebuilt its
-  engine, never reloaded its connector registry, and answered every request
-  through the new channel with *connector not found*. An advance of more than
-  one epoch is now the widest resync, exactly as an unattributable scope is —
-  the narrow scope keeps its value for the case it was written for, a fleet at
-  rest where each change arrives on its own.
-- **A node's own bump no longer marks a peer's change applied.** The bump
-  recorded the epoch it returned as this node's watermark, but that number
-  includes any bump a peer landed in between, and this node applied only its
-  own: its inline reload re-reads the channel and workflow rows, and nothing
-  re-reads the connector registry. A peer's connector edit swallowed that way
-  stayed invisible until some later bump. A node now claims its bump only when
-  it lands on the next epoch; a jump leaves the watermark for the watcher,
-  which costs one resync and applies the change.
-
 ## [1.4.0] - 2026-08-29
 
 ### Security
@@ -80,6 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A node's own epoch bump no longer marks a peer's change applied.** The bump
+  recorded the epoch it returned as this node's watermark, but that number
+  includes any bump a peer landed in between, and this node had applied only its
+  own — its inline reload re-reads the channel and workflow rows, and nothing on
+  that path re-reads the connector registry. The watcher then never resynced for
+  that epoch at all, so a peer's connector edit stayed invisible until some later
+  bump moved the counter again. A node now claims its bump only when it lands on
+  the next epoch; a jump leaves the watermark where it is, and the watcher
+  resyncs and applies the change.
 - **Engine reloads are serialised.** `AppState` gained the `reload_lock` that
   `engine/runner.rs` already claimed existed. Without it the admin mutation
   path and the cluster epoch watcher could reload concurrently, each building
@@ -116,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The MSRV is 1.98** (was 1.88), and the release profile builds in a single
+  codegen unit. Both container images already build on `rust:1.98-slim` and
+  CI's MSRV job runs the whole suite on that toolchain, so a `cargo install` or
+  from-source build needs one at least that new. Called out here because
+  [the support policy](https://goplasmatic.github.io/Orion/reference/support.html)
+  makes an MSRV bump a minor release at most — one more reason this release is
+  minor rather than patch.
 - **A config-epoch bump records what changed, and peers resync to that.** The
   epoch was a bare counter, so every replica answered every bump with the
   widest resync there is — reload all connectors, evict every cached SQL,
@@ -123,12 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storm. A workflow or channel change now leaves peers' connector pools alone;
   a connector change still drops them, because the endpoint behind a live
   connection may now be wrong. Requires the `config_epoch_scope` and
-  `epoch_scope_binding` migrations. The scope is stamped with the epoch it was
-  written for and a peer trusts it only when the two match: the column is
-  sticky, so a node on an older release advances the counter and leaves the
+  `epoch_scope_binding` migrations. A peer narrows its resync to the scope only
+  when two things hold: the scope is stamped with the epoch it was written for,
+  and the peer is exactly one epoch behind. The stamp matters because the column
+  is sticky — a node on an older release advances the counter and leaves the
   previous scope standing, and taking that at face value would skip the
-  connector reload its change actually needed. Anything unattributable is the
-  widest resync, so a mixed-version fleet behaves exactly as it did before.
+  connector reload its change actually needed. The one-step rule matters because
+  the row holds a *single* scope: a peer several epochs behind is applying bumps
+  whose scopes overwrote each other, which is the ordinary shape of standing a
+  service up — create a connector, activate the workflow, activate the channel,
+  three bumps well inside one `epoch_poll_interval_ms`. Anything a scope cannot
+  account for in full is the widest resync, so a mixed-version fleet, and any
+  burst of changes, behaves exactly as it did before.
 - **A failed engine reload is a node-health signal on the mutation routes, and
   a client error on the one that asks for it.** Activate, archive, delete and
   rollout answer `2xx` when the reload fails and raise
