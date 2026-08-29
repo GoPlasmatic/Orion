@@ -6,13 +6,25 @@ Orion reads the process environment four ways, and which one applies is decided 
 | Mechanism | Syntax | Where you write it | Read |
 |---|---|---|---|
 | Setting override | `ORION_SECTION__KEY` | the environment itself | once, at startup |
-| Text substitution | `${VAR}`, `${VAR:-default}`, `$$` | the config file, a connector `config` | before the text is parsed |
+| Text substitution | `${VAR}`, `${VAR:-default}`, `$$` | the config file, a connector `config` *(deprecated)* | before the text is parsed |
 | Secret reference | `env://VAR`, `vault://…` | selected parsed string fields | at every load and reload |
 | Declared value | `[vars]` / `[secrets]` | the config file, read by name from a workflow | once, at startup |
 
 The first belongs to [Configuration Reference](./configuration.md): every setting has an override, and that page names them all. The rest are this page's subject. They are not interchangeable — `${VAR}` rewrites *text* before it is parsed, `env://` rewrites a *parsed value* after — which is why both reach a connector and only one reaches a config file.
 
 The fourth is different in kind: it does not rewrite anything. The operator declares a name in the config file, and a workflow reads that name. Which is why it is the one to reach for when a *workflow* needs a value that varies by environment — see [Values a workflow reads by name](#values-a-workflow-reads-by-name).
+
+## `${VAR}` in a connector is deprecated
+
+`${VAR}` reaches a stored connector `config` for historical reasons: it predates `env://` and the two overlap there and nowhere else. **Use `env://VAR` instead.** A connector whose stored config still carries a placeholder logs a deprecation warning at load and keeps resolving; it will stop resolving in a future release.
+
+The two are not equivalent, and the differences all favour `env://`:
+
+- **`${VAR}` is invisible to masking.** The policy that lets a reference survive an API read recognises `env://VAR` as a *name* and passes it through, while masking a literal as `"******"`. `${VAR}` is neither — it is an ordinary string, so it exports as itself while the credential beside it is masked.
+- **`${VAR}` substitutes text, not a value.** It runs before the JSON is parsed, so a variable holding `", "admin": true` edits the document's *structure*. `env://` replaces one already-parsed string with one string.
+- **`${VAR}` has no offline reading.** `lint`, `clippy` and `dry-run` have no process environment standing in for the deployment's, so a placeholder is opaque to them; `env://` is inventoried by the reference scan.
+
+Rewriting is mechanical — `"${DB_URL}"` becomes `"env://DB_URL"` — with one caveat: `${VAR:-default}` has no `env://` equivalent, because a defaulted credential is a credential that fails open. Give the variable a value in every environment, or move the fallback into the connector as a literal non-secret.
 
 ## Where a reference resolves
 
@@ -21,7 +33,7 @@ The fourth is different in kind: it does not rewrite anything. The operator decl
 | Surface | `${VAR}` | `env://VAR` |
 |---|---|---|
 | Config file passed with `-c` | yes | no |
-| Connector `config` — any string field, at any depth | yes | yes |
+| Connector `config` — any string field, at any depth | yes, deprecated | yes |
 | Channel `auth` — `keys`, `secret`, `secrets`, `jwt_keys[].key` | no | yes |
 | Workflow task `crypto` — `key` | no | yes |
 | Workflow task `jwt_sign` — `key` | no | yes |

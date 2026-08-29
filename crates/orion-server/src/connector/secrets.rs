@@ -130,25 +130,42 @@ pub fn is_resolvable_reference(s: &str) -> bool {
     })
 }
 
-/// Returns the default resolver registry: a working `env://` resolver, a
-/// working `vault://` resolver when the standard `VAULT_ADDR`/`VAULT_TOKEN`
-/// environment is present (H3c), and a rejecting entry for every remaining
-/// scheme in [`RESERVED_SCHEMES`] — so an unresolvable reference fails
-/// loudly instead of being handed to a backend as the literal credential.
-pub fn default_resolvers() -> Vec<Box<dyn SecretResolver>> {
-    let mut resolvers: Vec<Box<dyn SecretResolver>> = vec![Box::new(EnvSecretResolver)];
-    let vault = VaultSecretResolver::from_env();
-    let vault_live = vault.is_some();
-    if let Some(v) = vault {
-        resolvers.push(Box::new(v));
-    }
-    for scheme in RESERVED_SCHEMES {
-        if *scheme == "vault" && vault_live {
-            continue;
+/// The default resolver registry: a working `env://` resolver, a `vault://`
+/// resolver that reads the standard `VAULT_ADDR`/`VAULT_TOKEN` environment
+/// (H3c), and a rejecting entry for every remaining scheme in
+/// [`RESERVED_SCHEMES`] — so an unresolvable reference fails loudly instead of
+/// being handed to a backend as the literal credential.
+///
+/// **Built once for the process.** This is the registry every resolution site
+/// reaches for — connector load, channel-auth compile per request, the
+/// `crypto` task function, `[secrets]` startup resolution, admin
+/// validate/test — and it used to be rebuilt at each of them: a `Vec`, six
+/// boxed resolvers, two `env::var` reads and a client clone, per call.
+///
+/// Building it once is only sound because no entry closes over environment
+/// state any more. That was the previous shape's reason for existing: the
+/// `vault` entry captured `VAULT_ADDR`/`VAULT_TOKEN` at construction, so a
+/// renewed token needed a rebuilt registry. [`VaultSecretResolver`] now reads
+/// them *per resolution*, which keeps that property and adds one the rebuild
+/// never had — a token that appears after startup works without a reload.
+pub fn default_resolvers() -> &'static [Box<dyn SecretResolver>] {
+    static RESOLVERS: std::sync::OnceLock<Vec<Box<dyn SecretResolver>>> =
+        std::sync::OnceLock::new();
+    RESOLVERS.get_or_init(|| {
+        let mut resolvers: Vec<Box<dyn SecretResolver>> = vec![
+            Box::new(EnvSecretResolver),
+            Box::new(VaultSecretResolver::from_env()),
+        ];
+        // `vault` is served by the resolver above, whose own error covers the
+        // unconfigured case; the rest have no implementation to reach.
+        for scheme in RESERVED_SCHEMES {
+            if *scheme == "vault" {
+                continue;
+            }
+            resolvers.push(Box::new(ReservedSchemeResolver { scheme }));
         }
-        resolvers.push(Box::new(ReservedSchemeResolver { scheme }));
-    }
-    resolvers
+        resolvers
+    })
 }
 
 /// HashiCorp Vault KV resolver (H3c).
@@ -160,32 +177,81 @@ pub fn default_resolvers() -> Vec<Box<dyn SecretResolver>> {
 /// `data.data.<field>` first, then v1's flat `data.<field>`.
 ///
 /// Configuration is the standard Vault client environment — `VAULT_ADDR`
-/// plus `VAULT_TOKEN` — read at resolver construction, i.e. per load, so a
-/// renewed token is picked up by the next reload without a restart. Errors
+/// plus `VAULT_TOKEN` — read **per resolution**, so a renewed token is picked
+/// up by the next `vault://` lookup without a restart or a reload. Errors
 /// never include the token, and never include response bodies (a Vault error
 /// body can echo the request path, which is fine, but a success body is the
 /// secret — so bodies are parsed, not quoted).
 pub struct VaultSecretResolver {
-    addr: String,
-    token: String,
+    endpoint: VaultEndpoint,
     client: reqwest::Client,
 }
 
+/// Where a [`VaultSecretResolver`] gets its address and token.
+///
+/// The environment variant reads at resolution rather than at construction.
+/// That is what lets [`default_resolvers`] be a process-wide singleton: with
+/// the read deferred, the registry holds no snapshot of the environment to go
+/// stale, so rebuilding it buys nothing.
+enum VaultEndpoint {
+    /// Read `VAULT_ADDR` / `VAULT_TOKEN` at each resolution.
+    Environment,
+    /// Settings supplied by the caller — tests, and any embedder managing its
+    /// own Vault configuration.
+    Fixed { addr: String, token: String },
+}
+
+impl VaultEndpoint {
+    /// The address and token to use for one lookup.
+    ///
+    /// Absent environment is an error, not a pass-through: `vault://` reaching
+    /// a backend as its own literal text is exactly what this module exists to
+    /// prevent, and an unconfigured process is the likeliest way to get there.
+    fn settings(&self) -> Result<(String, String), OrionError> {
+        match self {
+            VaultEndpoint::Fixed { addr, token } => Ok((addr.clone(), token.clone())),
+            VaultEndpoint::Environment => {
+                let addr = std::env::var("VAULT_ADDR").map_err(|_| unconfigured("VAULT_ADDR"))?;
+                let token =
+                    std::env::var("VAULT_TOKEN").map_err(|_| unconfigured("VAULT_TOKEN"))?;
+                Ok((addr.trim_end_matches('/').to_string(), token))
+            }
+        }
+    }
+}
+
+/// The refusal when `vault://` is used in a process that has no Vault
+/// environment — the fail-closed answer [`ReservedSchemeResolver`] gives for
+/// the schemes that have no implementation at all.
+fn unconfigured(var: &str) -> OrionError {
+    OrionError::Config {
+        message: format!(
+            "vault:// is not usable in this process: {var} is not set. \
+             Set VAULT_ADDR and VAULT_TOKEN, or supply the value via env:// \
+             or a literal instead"
+        ),
+    }
+}
+
 impl VaultSecretResolver {
-    /// Build from `VAULT_ADDR` + `VAULT_TOKEN`; `None` when either is absent
-    /// (the fail-closed [`ReservedSchemeResolver`] then covers `vault://`).
-    pub fn from_env() -> Option<Self> {
-        let addr = std::env::var("VAULT_ADDR").ok()?;
-        let token = std::env::var("VAULT_TOKEN").ok()?;
-        Some(Self::new(addr, token))
+    /// The resolver backed by `VAULT_ADDR` + `VAULT_TOKEN`, read at each
+    /// resolution rather than here — so this is infallible and a process that
+    /// gains a Vault environment later needs no rebuild.
+    pub fn from_env() -> Self {
+        Self {
+            endpoint: VaultEndpoint::Environment,
+            client: vault_http_client(),
+        }
     }
 
     /// Explicit construction, for tests and for callers that manage their own
     /// Vault settings.
     pub fn new(addr: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
-            addr: addr.into().trim_end_matches('/').to_string(),
-            token: token.into(),
+            endpoint: VaultEndpoint::Fixed {
+                addr: addr.into().trim_end_matches('/').to_string(),
+                token: token.into(),
+            },
             client: vault_http_client(),
         }
     }
@@ -193,10 +259,9 @@ impl VaultSecretResolver {
 
 /// One HTTP client shared by every [`VaultSecretResolver`] instance.
 ///
-/// Resolvers are rebuilt per load so a renewed token is picked up, but the
-/// connection pool has no reason to follow: `default_resolvers()` runs on
-/// every connector load, channel-auth compile and admin validate/test call,
-/// and a fresh pool each time means a new TLS handshake per resolved secret.
+/// [`default_resolvers`] is itself a singleton now, so this mostly matters for
+/// the explicitly-constructed resolvers; it stays a `OnceLock` because a fresh
+/// pool per resolver means a new TLS handshake per resolved secret.
 /// Deliberately *not* the engine's shared client (`bootstrap`): that one
 /// carries the SSRF pinning and no-redirect policy for user-supplied URLs,
 /// and `VAULT_ADDR` is operator config that legitimately points at private
@@ -233,11 +298,14 @@ impl SecretResolver for VaultSecretResolver {
             });
         }
 
-        let url = format!("{}/v1/{}", self.addr, path);
+        // Read before the request, not at construction: this is where a
+        // renewed `VAULT_TOKEN` is picked up (see [`VaultEndpoint`]).
+        let (addr, token) = self.endpoint.settings()?;
+        let url = format!("{addr}/v1/{path}");
         let response = self
             .client
             .get(&url)
-            .header("X-Vault-Token", &self.token)
+            .header("X-Vault-Token", &token)
             .send()
             .await
             .map_err(|e| OrionError::Config {
@@ -286,7 +354,7 @@ impl SecretResolver for VaultSecretResolver {
 /// itself never appears in one.
 pub async fn resolve_secret_string(value: &str, field: &str) -> Result<String, String> {
     let mut json = Value::String(value.to_string());
-    resolve_in_place(&mut json, &default_resolvers(), field)
+    resolve_in_place(&mut json, default_resolvers(), field)
         .await
         .map_err(|e| e.to_string())?;
     json.as_str()
@@ -482,8 +550,11 @@ mod tests {
 
     #[tokio::test]
     async fn reserved_scheme_errors_instead_of_becoming_the_literal_password() {
-        let mut v = json!({ "auth": { "password": "vault://secret/db#password" } });
-        let err = resolve_in_place(&mut v, &default_resolvers(), "connector 'db'")
+        // `aws-sm` rather than `vault`: vault has a real resolver now, so its
+        // refusal is about configuration, not about the scheme. This test is
+        // about the schemes with no implementation at all.
+        let mut v = json!({ "auth": { "password": "aws-sm://prod/db#password" } });
+        let err = resolve_in_place(&mut v, default_resolvers(), "connector 'db'")
             .await
             .expect_err(
                 "an unimplemented scheme must fail loudly, not pass through as the password",
@@ -491,9 +562,36 @@ mod tests {
         let OrionError::Config { message } = err else {
             unreachable!("expected Config error");
         };
-        assert!(message.contains("vault"), "{message}");
+        assert!(message.contains("aws-sm"), "{message}");
         assert!(message.contains("not supported"), "{message}");
         assert!(message.contains("connector 'db'"), "{message}");
+    }
+
+    /// The other half of the same guarantee, for the one reserved scheme that
+    /// *is* implemented: a process without `VAULT_ADDR`/`VAULT_TOKEN` must
+    /// refuse a `vault://` reference rather than hand it on as the credential.
+    ///
+    /// Asserted against the refusal itself rather than by resolving through
+    /// the registry, because mutating the process environment mid-test is
+    /// unsound in a multi-threaded binary and a developer machine may well
+    /// have a live Vault environment.
+    #[test]
+    fn vault_without_an_environment_refuses_rather_than_passing_through() {
+        let OrionError::Config { message } = unconfigured("VAULT_ADDR") else {
+            unreachable!("expected Config error");
+        };
+        assert!(message.contains("vault://"), "{message}");
+        assert!(message.contains("VAULT_ADDR"), "{message}");
+    }
+
+    /// The registry is the same one every call site sees — the property that
+    /// makes borrowing it at five call sites sound (§3.7).
+    #[test]
+    fn the_default_registry_is_built_once() {
+        assert!(
+            std::ptr::eq(default_resolvers(), default_resolvers()),
+            "default_resolvers() must hand back one process-wide registry"
+        );
     }
 
     #[tokio::test]
@@ -501,7 +599,7 @@ mod tests {
         for scheme in RESERVED_SCHEMES {
             let mut v = json!({ "token": format!("{scheme}://some/path") });
             assert!(
-                resolve_in_place(&mut v, &default_resolvers(), "test")
+                resolve_in_place(&mut v, default_resolvers(), "test")
                     .await
                     .is_err(),
                 "scheme '{scheme}' must be rejected"
@@ -517,7 +615,7 @@ mod tests {
             "url": "redis://cache.internal:6379",
             "brokers": ["kafka.internal:9092"]
         });
-        resolve_in_place(&mut v, &default_resolvers(), "test")
+        resolve_in_place(&mut v, default_resolvers(), "test")
             .await
             .expect("test");
         assert_eq!(

@@ -653,7 +653,7 @@ pub(crate) async fn validate_connector(
     let mut config = req.config.clone();
     if let Err(e) = crate::connector::secrets::resolve_in_place(
         &mut config,
-        &crate::connector::secrets::default_resolvers(),
+        crate::connector::secrets::default_resolvers(),
         "config",
     )
     .await
@@ -792,7 +792,7 @@ pub(crate) async fn test_connector(
     }
     if let Err(e) = crate::connector::secrets::resolve_in_place(
         &mut config_value,
-        &crate::connector::secrets::default_resolvers(),
+        crate::connector::secrets::default_resolvers(),
         "config",
     )
     .await

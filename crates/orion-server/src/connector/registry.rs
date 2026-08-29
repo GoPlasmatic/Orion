@@ -239,8 +239,9 @@ impl ConnectorRegistry {
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
         let mut issues: Vec<ConnectorLoadIssue> = Vec::new();
-        // N23: the resolver set is connector-independent — build it once per
-        // load, not once per connector inside the loop.
+        // N23: the resolver set is connector-independent, and now a process
+        // singleton — borrowed here so the loop below is not re-deciding it
+        // per connector.
         let resolvers = super::secrets::default_resolvers();
         for connector in &connectors {
             // Every issue below carries this connector's identity; only the
@@ -263,6 +264,30 @@ impl ConnectorRegistry {
             // config-parse load issue if it doesn't fit, which names exactly
             // what to fix.
             let source_label = format!("connector '{}' config_json", connector.name);
+            // §3.7: `${VAR}` in a *stored* connector config is deprecated. It
+            // predates `env://` and overlaps it, but resolves at a different
+            // layer — textually, before the JSON is parsed — so it can inject
+            // structure rather than a value, it is invisible to the masking
+            // policy (`is_resolvable_reference` sees `${VAR}` as an ordinary
+            // string, so an export carries the placeholder while a real
+            // credential would be masked), and it is unreachable from the
+            // offline surfaces, which have no process environment to read.
+            // `env://` and `vault://` have none of those properties. Warned
+            // here rather than refused: a stored connector cannot be edited by
+            // an upgrade, and expand/contract gives the operator a release to
+            // move before the placeholder stops resolving.
+            let placeholders =
+                crate::config::env_substitute::referenced_vars(&connector.config_json);
+            if !placeholders.is_empty() {
+                tracing::warn!(
+                    connector_id = %connector.id,
+                    connector_name = %connector.name,
+                    variables = %placeholders.iter().cloned().collect::<Vec<_>>().join(", "),
+                    "DEPRECATED: this connector's config uses ${{VAR}} placeholders. \
+                     Replace each with an env:// reference (\"env://VAR\") — ${{VAR}} in \
+                     stored connector configs will stop resolving in a future release"
+                );
+            }
             let resolved = match crate::config::env_substitute::substitute(
                 &connector.config_json,
                 &source_label,
@@ -297,7 +322,7 @@ impl ConnectorRegistry {
                 }
             };
             if let Err(e) =
-                super::secrets::resolve_in_place(&mut value, &resolvers, &source_label).await
+                super::secrets::resolve_in_place(&mut value, resolvers, &source_label).await
             {
                 // Logged at ERROR, not WARN: an unresolved secret means the
                 // connector is absent at request time with no other signal
