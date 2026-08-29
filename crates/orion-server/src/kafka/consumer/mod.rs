@@ -79,7 +79,7 @@ pub struct ConsumerDeps {
     /// `None` (single node) keeps dynamic membership.
     pub instance_id: Option<String>,
     /// Where a completed message's trace row goes. See `ConsumeLoopContext`.
-    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
     pub persistence_queue: crate::queue::TracePersistenceQueue,
     /// `trace_queue.max_result_size_bytes` — the cap on a persisted result,
     /// applied here for the same reason the async path applies it.
@@ -114,7 +114,7 @@ struct ConsumeLoopContext {
     /// at all, so a Kafka-ingested message never appeared in
     /// `GET /api/v1/data/traces` and could not be retried from the DLQ. These
     /// three are what the shared `queue::trace_record` needs.
-    trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
     persistence_queue: crate::queue::TracePersistenceQueue,
     max_result_size_bytes: usize,
     /// Rebalance bookkeeping shared with the consumer context (K8). The

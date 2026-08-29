@@ -533,7 +533,9 @@ async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
 #[tokio::test]
 #[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
 async fn postgres_keyset_pagination_walks_every_trace_once() {
-    use orion::storage::repositories::traces::{SqlTraceRepository, TraceFilter, TraceRepository};
+    use orion::storage::repositories::traces::{
+        SqlTraceRepository, TraceFilter, TraceReader, TraceSink,
+    };
 
     let (_container, pool) = postgres_pool().await;
     let repo = SqlTraceRepository::new(pool.clone());

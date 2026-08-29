@@ -32,7 +32,7 @@ use super::bounded::{
 
 use crate::config::{AsyncOnOverflow, TraceStorageConfig, TraceStorageMode};
 use crate::metrics;
-use crate::storage::repositories::traces::{TraceCompletedRow, TraceRepository, TraceResultRow};
+use crate::storage::repositories::traces::{TraceCompletedRow, TraceResultRow, TraceSink};
 
 /// A unit of trace-persistence work to run on a background worker.
 #[derive(Debug)]
@@ -219,7 +219,7 @@ impl PersistenceWorkerHandle {
 pub fn start(
     tasks: &crate::runtime::TaskRegistry,
     config: &TraceStorageConfig,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
 ) -> (TracePersistenceQueue, PersistenceWorkerHandle) {
     let (worker_count, is_batch) = match config.mode {
         TraceStorageMode::Async => (config.async_workers.max(1), false),
@@ -283,7 +283,7 @@ pub fn start(
 
 async fn run_async_worker(
     mut rx: WorkerReceiver<TracePersistenceTask>,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
 ) {
     while let Some(task) = rx.recv().await {
         dispatch_one(&trace_repo, task).await;
@@ -292,7 +292,7 @@ async fn run_async_worker(
 
 async fn run_batch_worker(
     mut rx: WorkerReceiver<TracePersistenceTask>,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
     batch_size: usize,
     flush_interval: Duration,
 ) {
@@ -380,7 +380,7 @@ where
     Err(last_err.expect("at least one attempt always runs"))
 }
 
-async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersistenceTask) {
+async fn dispatch_one(trace_repo: &Arc<dyn TraceSink>, task: TracePersistenceTask) {
     let result = with_write_retries(|| async {
         match &task {
             TracePersistenceTask::StoreCompleted(row) => {
@@ -414,7 +414,7 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersiste
 }
 
 async fn flush_batches(
-    trace_repo: &Arc<dyn TraceRepository>,
+    trace_repo: &Arc<dyn TraceSink>,
     completed: &mut Vec<TraceCompletedRow>,
     results: &mut Vec<TraceResultRow>,
 ) {

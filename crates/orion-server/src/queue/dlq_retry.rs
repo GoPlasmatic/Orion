@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
-use crate::storage::repositories::traces::TraceRepository;
+use crate::storage::repositories::traces::TraceSink;
 
 use super::{QueueMessage, TraceQueue};
 
@@ -33,7 +33,7 @@ pub fn start_dlq_retry(
     opts: DlqRetryOptions,
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
 ) {
     // `Arc` because the supervisor re-runs the body after a failure, so
@@ -61,7 +61,7 @@ async fn run_dlq_retry(
     opts: Arc<DlqRetryOptions>,
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     mut shutdown: crate::runtime::Shutdown,
 ) {
@@ -287,7 +287,7 @@ mod tests {
     use crate::storage::models::{Trace, TraceDlqEntry};
     use crate::storage::repositories::helpers::PaginatedResult;
     use crate::storage::repositories::trace_dlq::TraceDlqRepository;
-    use crate::storage::repositories::traces::TraceRepository;
+    use crate::storage::repositories::traces::TraceSink;
     use async_trait::async_trait;
     use std::sync::Mutex;
 
@@ -432,8 +432,12 @@ mod tests {
         }
     }
 
+    /// The write half of the trace store. The DLQ retry path re-creates a
+    /// pending trace and settles its status; it reads nothing and expires
+    /// nothing, and now says so — this used to carry four `unimplemented!()`
+    /// bodies for methods the code under test cannot reach.
     #[async_trait]
-    impl TraceRepository for MockTraceRepo {
+    impl TraceSink for MockTraceRepo {
         async fn create_pending(
             &self,
             channel: &str,
@@ -443,9 +447,6 @@ mod tests {
             _access_token_hash: Option<&str>,
         ) -> Result<Trace, OrionError> {
             Ok(make_trace(&uuid::Uuid::new_v4().to_string(), channel))
-        }
-        async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
-            unimplemented!()
         }
         async fn update_status(
             &self,
@@ -468,22 +469,13 @@ mod tests {
             _duration_ms: f64,
             _task_trace_json: Option<&str>,
         ) -> Result<(), OrionError> {
-            unimplemented!()
+            unimplemented!("the retry path does not write results")
         }
         async fn store_completed(
             &self,
             _row: crate::storage::repositories::traces::TraceCompletedRef<'_>,
         ) -> Result<String, OrionError> {
-            unimplemented!()
-        }
-        async fn list_paginated(
-            &self,
-            _filter: &crate::storage::repositories::traces::TraceFilter,
-        ) -> Result<crate::storage::repositories::traces::TracePage, OrionError> {
-            unimplemented!()
-        }
-        async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
-            unimplemented!()
+            unimplemented!("the retry path does not write results")
         }
     }
 
@@ -550,7 +542,7 @@ mod tests {
     async fn test_successful_retry_removes_from_dlq() {
         let entry = make_dlq_entry("e1", r#"{"key":"value"}"#, 0, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
         let tasks = crate::runtime::TaskRegistry::new();
@@ -593,7 +585,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_depth_is_refreshed_every_tick() {
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
         let tasks = crate::runtime::TaskRegistry::new();
@@ -639,7 +631,7 @@ mod tests {
                 .expect("test runtime")
                 .block_on(async {
                     let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
-                    let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+                    let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
                     let (queue, _rx) = make_test_queue(10);
                     let tasks = crate::runtime::TaskRegistry::new();
                     start_dlq_retry(
@@ -675,7 +667,7 @@ mod tests {
     async fn test_resubmission_carries_originating_retry_count() {
         let entry = make_dlq_entry("e5", r#"{"ok":true}"#, 2, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
         let tasks = crate::runtime::TaskRegistry::new();
@@ -710,7 +702,7 @@ mod tests {
     async fn test_corrupt_payload_marks_exhausted() {
         let entry = make_dlq_entry("e2", "not valid json!!!", 0, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
         let tasks = crate::runtime::TaskRegistry::new();
@@ -748,7 +740,7 @@ mod tests {
         // Entry at max_retries - 1, so one more failure should exhaust it
         let entry = make_dlq_entry("e3", r#"{"ok":true}"#, 4, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceSink> = Arc::new(MockTraceRepo::default());
         let queue = make_closed_queue();
 
         let tasks = crate::runtime::TaskRegistry::new();
@@ -787,7 +779,7 @@ mod tests {
         let entry = make_dlq_entry("e4", r#"{"ok":true}"#, 1, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
         let mock_traces = Arc::new(MockTraceRepo::default());
-        let trace_repo: Arc<dyn TraceRepository> = mock_traces.clone();
+        let trace_repo: Arc<dyn TraceSink> = mock_traces.clone();
         let queue = make_closed_queue();
 
         let tasks = crate::runtime::TaskRegistry::new();

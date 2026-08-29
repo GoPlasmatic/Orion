@@ -378,7 +378,9 @@ async fn upgrade_across_the_json_column_rename_preserves_rows_views_and_triggers
 #[tokio::test]
 #[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
 async fn mysql_keyset_pagination_walks_every_trace_once() {
-    use orion::storage::repositories::traces::{SqlTraceRepository, TraceFilter, TraceRepository};
+    use orion::storage::repositories::traces::{
+        SqlTraceRepository, TraceFilter, TraceReader, TraceSink,
+    };
 
     let (_container, pool) = mysql_pool().await;
     let repo = SqlTraceRepository::new(pool.clone());

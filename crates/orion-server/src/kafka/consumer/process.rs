@@ -453,7 +453,7 @@ async fn record_trace(
 
     crate::queue::trace_record::route_store_completed(
         &cfg,
-        &ctx.trace_repo,
+        &*ctx.trace_repo,
         &ctx.persistence_queue,
         &crate::queue::trace_record::CompletedTrace {
             // Distinct from `"sync"` and `"async"`: a reader filtering

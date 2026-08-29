@@ -11,8 +11,8 @@ use orion::errors::OrionError;
 use orion::storage::models::Trace;
 use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqFilter};
 use orion::storage::repositories::traces::{
-    SqlTraceRepository, TraceCompletedRef, TraceCompletedRow, TraceFilter, TracePage,
-    TraceRepository, TraceResultRow,
+    SqlTraceRepository, TraceCompletedRef, TraceCompletedRow, TraceReader, TraceResultRow,
+    TraceSink,
 };
 
 /// Delegating wrapper that fails the first `update_status(_, "running", _)`
@@ -23,7 +23,7 @@ struct FailFirstRunningWrite {
 }
 
 #[async_trait]
-impl TraceRepository for FailFirstRunningWrite {
+impl TraceSink for FailFirstRunningWrite {
     async fn create_pending(
         &self,
         channel: &str,
@@ -35,9 +35,6 @@ impl TraceRepository for FailFirstRunningWrite {
         self.inner
             .create_pending(channel, channel_id, mode, input_json, access_token_hash)
             .await
-    }
-    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
-        self.inner.get_by_id(id).await
     }
     async fn update_status(
         &self,
@@ -73,12 +70,6 @@ impl TraceRepository for FailFirstRunningWrite {
     async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         self.inner.set_result_batch(rows).await
     }
-    async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        self.inner.list_paginated(filter).await
-    }
-    async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
-        self.inner.delete_older_than(hours).await
-    }
 }
 
 #[tokio::test]
@@ -93,7 +84,7 @@ async fn failed_running_write_routes_message_to_dlq() {
     .unwrap();
 
     let sql_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
-    let trace_repo: Arc<dyn TraceRepository> = Arc::new(FailFirstRunningWrite {
+    let trace_repo: Arc<dyn TraceSink> = Arc::new(FailFirstRunningWrite {
         inner: sql_repo.clone(),
         armed: AtomicBool::new(true),
     });
@@ -175,7 +166,7 @@ async fn failed_running_write_routes_message_to_dlq() {
     );
 
     // …and the trace row must not be stuck `pending` forever.
-    let stored = trace_repo.get_by_id(&trace.id).await.unwrap();
+    let stored = sql_repo.get_by_id(&trace.id).await.unwrap();
     assert_eq!(
         stored.status, "failed",
         "trace must leave `pending` once its message is routed to the DLQ"
@@ -189,7 +180,7 @@ struct FailAllResultWrites {
 }
 
 #[async_trait]
-impl TraceRepository for FailAllResultWrites {
+impl TraceSink for FailAllResultWrites {
     async fn create_pending(
         &self,
         channel: &str,
@@ -201,9 +192,6 @@ impl TraceRepository for FailAllResultWrites {
         self.inner
             .create_pending(channel, channel_id, mode, input_json, access_token_hash)
             .await
-    }
-    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
-        self.inner.get_by_id(id).await
     }
     async fn update_status(
         &self,
@@ -234,19 +222,18 @@ impl TraceRepository for FailAllResultWrites {
     async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         self.inner.set_result_batch(rows).await
     }
-    async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        self.inner.list_paginated(filter).await
-    }
-    async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
-        self.inner.delete_older_than(hours).await
-    }
 }
 
 /// Shared harness for the persist_success failure-arm tests: start one
 /// worker over `trace_repo` with the given queue config, submit one async
 /// message, and poll the trace row until it leaves pending/running.
+///
+/// `reader` is separate from `trace_repo` because they are separate roles: the
+/// workers write through the (possibly failure-injecting) sink, and the
+/// assertion reads the row back from the real store behind it.
 async fn run_one_message_to_terminal_status(
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceSink>,
+    reader: &dyn TraceReader,
     queue_config: orion::config::TraceQueueConfig,
 ) -> Trace {
     let engine = Arc::new(orion::engine::EngineHandle::new(Arc::new(
@@ -295,7 +282,7 @@ async fn run_one_message_to_terminal_status(
 
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        let stored = trace_repo.get_by_id(&trace.id).await.unwrap();
+        let stored = reader.get_by_id(&trace.id).await.unwrap();
         if stored.status != "pending" && stored.status != "running" {
             return stored;
         }
@@ -315,12 +302,14 @@ async fn persistent_set_result_failure_marks_trace_failed_after_retries() {
     })
     .await
     .unwrap();
-    let trace_repo: Arc<dyn TraceRepository> = Arc::new(FailAllResultWrites {
-        inner: Arc::new(SqlTraceRepository::new(pool)),
+    let sql_repo = Arc::new(SqlTraceRepository::new(pool));
+    let trace_repo: Arc<dyn TraceSink> = Arc::new(FailAllResultWrites {
+        inner: sql_repo.clone(),
     });
 
     let stored = run_one_message_to_terminal_status(
         trace_repo,
+        sql_repo.as_ref(),
         orion::config::TraceQueueConfig {
             workers: 1,
             buffer_size: 10,
@@ -353,10 +342,14 @@ async fn oversized_result_marks_trace_failed_with_size_message() {
     })
     .await
     .unwrap();
-    let trace_repo: Arc<dyn TraceRepository> = Arc::new(SqlTraceRepository::new(pool));
+    // No failure injection here — the same store is both the sink and the
+    // reader.
+    let sql_repo = Arc::new(SqlTraceRepository::new(pool));
+    let trace_repo: Arc<dyn TraceSink> = sql_repo.clone();
 
     let stored = run_one_message_to_terminal_status(
         trace_repo,
+        sql_repo.as_ref(),
         orion::config::TraceQueueConfig {
             workers: 1,
             buffer_size: 10,
@@ -417,7 +410,7 @@ fn fake_trace(id: &str) -> Trace {
 }
 
 #[async_trait]
-impl TraceRepository for ConcurrencyProbeRepo {
+impl TraceSink for ConcurrencyProbeRepo {
     async fn create_pending(
         &self,
         _channel: &str,
@@ -426,9 +419,6 @@ impl TraceRepository for ConcurrencyProbeRepo {
         _input_json: Option<&str>,
         _access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
-        unimplemented!()
-    }
-    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
         unimplemented!()
     }
     async fn update_status(
@@ -455,19 +445,13 @@ impl TraceRepository for ConcurrencyProbeRepo {
     async fn store_completed(&self, _row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         unimplemented!()
     }
-    async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        unimplemented!()
-    }
-    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
-        unimplemented!()
-    }
 }
 
 #[tokio::test]
 async fn persistence_workers_run_in_parallel() {
     let current = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let repo: Arc<dyn TraceRepository> = Arc::new(ConcurrencyProbeRepo {
+    let repo: Arc<dyn TraceSink> = Arc::new(ConcurrencyProbeRepo {
         current: current.clone(),
         max_seen: max_seen.clone(),
     });
@@ -514,7 +498,7 @@ struct FlakyUpdateStatusRepo {
 }
 
 #[async_trait]
-impl TraceRepository for FlakyUpdateStatusRepo {
+impl TraceSink for FlakyUpdateStatusRepo {
     async fn create_pending(
         &self,
         _channel: &str,
@@ -523,9 +507,6 @@ impl TraceRepository for FlakyUpdateStatusRepo {
         _input_json: Option<&str>,
         _access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
-        unimplemented!()
-    }
-    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
         unimplemented!()
     }
     async fn update_status(
@@ -556,19 +537,13 @@ impl TraceRepository for FlakyUpdateStatusRepo {
     async fn store_completed(&self, _row: TraceCompletedRef<'_>) -> Result<String, OrionError> {
         unimplemented!()
     }
-    async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        unimplemented!()
-    }
-    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
-        unimplemented!()
-    }
 }
 
 #[tokio::test]
 async fn transient_persistence_failure_is_retried_not_dropped() {
     let fails_remaining = Arc::new(std::sync::atomic::AtomicUsize::new(1));
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let repo: Arc<dyn TraceRepository> = Arc::new(FlakyUpdateStatusRepo {
+    let repo: Arc<dyn TraceSink> = Arc::new(FlakyUpdateStatusRepo {
         fails_remaining: fails_remaining.clone(),
         calls: calls.clone(),
     });
@@ -610,7 +585,7 @@ struct BatchSizeProbeRepo {
 }
 
 #[async_trait]
-impl TraceRepository for BatchSizeProbeRepo {
+impl TraceSink for BatchSizeProbeRepo {
     async fn create_pending(
         &self,
         _channel: &str,
@@ -619,9 +594,6 @@ impl TraceRepository for BatchSizeProbeRepo {
         _input_json: Option<&str>,
         _access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
-        unimplemented!()
-    }
-    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
         unimplemented!()
     }
     async fn update_status(
@@ -652,12 +624,6 @@ impl TraceRepository for BatchSizeProbeRepo {
         self.flushes.lock().unwrap().push(rows.len());
         Ok(rows.iter().map(|_| String::new()).collect())
     }
-    async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
-        unimplemented!()
-    }
-    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
-        unimplemented!()
-    }
 }
 
 /// A burst that fits inside `batch_size` must reach the DB as **one** INSERT.
@@ -677,7 +643,7 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
     const BURST: usize = 250;
 
     let flushes = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let repo: Arc<dyn TraceRepository> = Arc::new(BatchSizeProbeRepo {
+    let repo: Arc<dyn TraceSink> = Arc::new(BatchSizeProbeRepo {
         flushes: flushes.clone(),
     });
 

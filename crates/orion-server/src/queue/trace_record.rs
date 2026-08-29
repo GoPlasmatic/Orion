@@ -42,7 +42,7 @@ pub(crate) struct CompletedTrace<'a> {
 /// [`TracePlan::decide`].
 pub(crate) async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
-    trace_repo: &std::sync::Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    trace_repo: &dyn crate::storage::repositories::traces::TraceSink,
     persistence_queue: &TracePersistenceQueue,
     trace: &CompletedTrace<'_>,
 ) {

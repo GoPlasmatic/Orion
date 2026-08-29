@@ -467,7 +467,7 @@ pub struct IngestDeps {
     /// its serialized result. Kafka messages went untraced until the
     /// trace-plan/serialize/route sequence became one shared function
     /// (`queue::trace_record`).
-    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceSink>,
     pub persistence_queue: crate::queue::TracePersistenceQueue,
     pub max_result_size_bytes: usize,
 }

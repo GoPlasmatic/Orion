@@ -8,7 +8,7 @@ use crate::config::TraceStorageMode;
 use crate::metrics;
 use crate::storage::models;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
-use crate::storage::repositories::traces::TraceRepository;
+use crate::storage::repositories::traces::TraceSink;
 
 use super::QueuedItem;
 
@@ -57,7 +57,7 @@ pub(super) struct DispatcherContext {
 #[derive(Clone)]
 pub(super) struct ProcessingContext {
     pub(super) engine: Arc<crate::engine::EngineHandle>,
-    pub(super) trace_repo: Arc<dyn TraceRepository>,
+    pub(super) trace_repo: Arc<dyn TraceSink>,
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub(super) processing_timeout_ms: u64,
     pub(super) max_result_size_bytes: usize,

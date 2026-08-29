@@ -62,7 +62,7 @@ fn test_registry() -> Arc<orion::channel::ChannelRegistry> {
 struct NoopTraceRepo;
 
 #[async_trait::async_trait]
-impl orion::storage::repositories::traces::TraceRepository for NoopTraceRepo {
+impl orion::storage::repositories::traces::TraceSink for NoopTraceRepo {
     async fn create_pending(
         &self,
         _channel: &str,
@@ -72,15 +72,7 @@ impl orion::storage::repositories::traces::TraceRepository for NoopTraceRepo {
         _access_token_hash: Option<&str>,
     ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
         Err(orion::errors::OrionError::internal(
-            "not used by the consumer tests",
-        ))
-    }
-    async fn get_by_id(
-        &self,
-        _id: &str,
-    ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
-        Err(orion::errors::OrionError::internal(
-            "not used by the consumer tests",
+            "the consumer writes completed traces, never pending ones",
         ))
     }
     async fn update_status(
@@ -90,7 +82,7 @@ impl orion::storage::repositories::traces::TraceRepository for NoopTraceRepo {
         _error_message: Option<&str>,
     ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
         Err(orion::errors::OrionError::internal(
-            "not used by the consumer tests",
+            "not used by the consumer",
         ))
     }
     async fn set_result(
@@ -108,20 +100,9 @@ impl orion::storage::repositories::traces::TraceRepository for NoopTraceRepo {
     ) -> Result<String, orion::errors::OrionError> {
         Ok(String::new())
     }
-    async fn list_paginated(
-        &self,
-        _filter: &orion::storage::repositories::traces::TraceFilter,
-    ) -> Result<orion::storage::repositories::traces::TracePage, orion::errors::OrionError> {
-        Err(orion::errors::OrionError::internal(
-            "not used by the consumer tests",
-        ))
-    }
-    async fn delete_older_than(&self, _hours: u64) -> Result<u64, orion::errors::OrionError> {
-        Ok(0)
-    }
 }
 
-fn test_trace_repo() -> Arc<dyn orion::storage::repositories::traces::TraceRepository> {
+fn test_trace_repo() -> Arc<dyn orion::storage::repositories::traces::TraceSink> {
     Arc::new(NoopTraceRepo)
 }
 

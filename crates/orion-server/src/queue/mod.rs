@@ -16,7 +16,7 @@ use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 
 pub mod trace_persistence;
-use crate::storage::repositories::traces::TraceRepository;
+use crate::storage::repositories::traces::{TraceRetention, TraceSink};
 pub use trace_persistence::{PersistenceWorkerHandle, TracePersistenceQueue, TracePersistenceTask};
 
 pub use dlq_retry::{DlqRetryOptions, start_dlq_retry};
@@ -83,7 +83,7 @@ pub fn start_trace_cleanup(
     tasks: &crate::runtime::TaskRegistry,
     retention_hours: u64,
     interval_secs: u64,
-    trace_repo: Arc<dyn TraceRepository>,
+    trace_repo: Arc<dyn TraceRetention>,
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
 ) {
     if retention_hours == 0 {
@@ -371,7 +371,7 @@ impl WorkerHandle {
 /// `Arc<dyn …>` and one of them is optional, so a transposition compiles.
 pub struct WorkerDeps {
     pub engine: Arc<crate::engine::EngineHandle>,
-    pub trace_repo: Arc<dyn TraceRepository>,
+    pub trace_repo: Arc<dyn TraceSink>,
     pub dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub persistence_queue: TracePersistenceQueue,
@@ -527,58 +527,16 @@ mod tests {
         );
     }
 
-    /// `delete_older_than` succeeds and nothing else; every other method is
-    /// off the cleanup path.
+    /// The retention half of the trace store, and only that.
+    ///
+    /// This used to implement all eight `TraceRepository` methods to exercise
+    /// one, with seven `unimplemented!()` bodies standing in for a listing and
+    /// five writes the cleanup job never touches. Splitting the trait is what
+    /// lets a double say what it is a double *of*.
     struct MockCleanupTraceRepo;
 
     #[async_trait::async_trait]
-    impl TraceRepository for MockCleanupTraceRepo {
-        async fn create_pending(
-            &self,
-            _channel: &str,
-            _channel_id: Option<&str>,
-            _mode: &str,
-            _input_json: Option<&str>,
-            _access_token_hash: Option<&str>,
-        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
-            unimplemented!("not used by trace cleanup")
-        }
-        async fn get_by_id(
-            &self,
-            _id: &str,
-        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
-            unimplemented!("not used by trace cleanup")
-        }
-        async fn update_status(
-            &self,
-            _id: &str,
-            _status: &str,
-            _error_message: Option<&str>,
-        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
-            unimplemented!("not used by trace cleanup")
-        }
-        async fn set_result(
-            &self,
-            _id: &str,
-            _result_json: &str,
-            _duration_ms: f64,
-            _task_trace_json: Option<&str>,
-        ) -> Result<(), crate::errors::OrionError> {
-            unimplemented!("not used by trace cleanup")
-        }
-        async fn store_completed(
-            &self,
-            _row: crate::storage::repositories::traces::TraceCompletedRef<'_>,
-        ) -> Result<String, crate::errors::OrionError> {
-            unimplemented!("not used by trace cleanup")
-        }
-        async fn list_paginated(
-            &self,
-            _filter: &crate::storage::repositories::traces::TraceFilter,
-        ) -> Result<crate::storage::repositories::traces::TracePage, crate::errors::OrionError>
-        {
-            unimplemented!("not used by trace cleanup")
-        }
+    impl TraceRetention for MockCleanupTraceRepo {
         async fn delete_older_than(&self, _hours: u64) -> Result<u64, crate::errors::OrionError> {
             // "Nothing to delete" is still a successful tick.
             Ok(0)
@@ -601,7 +559,7 @@ mod tests {
                 .build()
                 .expect("test runtime")
                 .block_on(async {
-                    let repo: Arc<dyn TraceRepository> = Arc::new(MockCleanupTraceRepo);
+                    let repo: Arc<dyn TraceRetention> = Arc::new(MockCleanupTraceRepo);
                     let tasks = crate::runtime::TaskRegistry::new();
                     start_trace_cleanup(&tasks, 24, 1, repo, None);
                     // One advance consumes the skipped immediate tick, the

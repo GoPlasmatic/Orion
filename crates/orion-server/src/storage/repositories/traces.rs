@@ -154,7 +154,7 @@ pub struct TraceCompletedRow {
 /// `&str` arguments straight to the insert builder instead of copying the
 /// request body and the engine result into a throwaway owned row.
 ///
-/// It is also [`TraceRepository::store_completed`]'s parameter: seven
+/// It is also [`TraceSink::store_completed`]'s parameter: seven
 /// positional arguments, four of them `Option`/`&str` and interchangeable by
 /// type, is a signature where a transposition compiles.
 pub struct TraceCompletedRef<'a> {
@@ -337,8 +337,18 @@ fn result_update(
 
 // -- Repository trait --
 
+/// Writing a trace: what the request path and the background workers do.
+///
+/// Split from reading and from retention because the three have no consumer in
+/// common. The persistence queue needs these five and nothing else; it used to
+/// take a trait with eight methods to call three of them, which is also why a
+/// test double for it had to stub out a paginated listing it never touches.
+///
+/// The split is what makes an alternative sink writable at all — an OTel or
+/// ClickHouse exporter can satisfy this and could never satisfy
+/// [`TraceReader::list_paginated`].
 #[async_trait]
-pub trait TraceRepository: Send + Sync {
+pub trait TraceSink: Send + Sync {
     async fn create_pending(
         &self,
         channel: &str,
@@ -347,7 +357,6 @@ pub trait TraceRepository: Send + Sync {
         input_json: Option<&str>,
         access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError>;
-    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     async fn update_status(
         &self,
         id: &str,
@@ -392,7 +401,12 @@ pub trait TraceRepository: Send + Sync {
         }
         Ok(())
     }
+}
 
+/// Reading traces back: the `/api/v1/data/traces` endpoints.
+#[async_trait]
+pub trait TraceReader: Send + Sync {
+    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     /// One page of the trace listing, payload- and credential-free.
     ///
     /// Carries [`TraceListRow`], not [`Trace`] (D27): the list used to be a
@@ -400,9 +414,25 @@ pub trait TraceRepository: Send + Sync {
     /// message and one `access_token_hash` per row out of the database for a
     /// response that shows none of them.
     async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError>;
+}
+
+/// Ageing traces out: the retention job, and nothing else.
+#[async_trait]
+pub trait TraceRetention: Send + Sync {
     /// Delete traces older than the given number of hours. Returns the count deleted.
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError>;
 }
+
+/// Everything a full SQL-backed trace store does.
+///
+/// `AppState` holds this, and hands each consumer the narrower trait it
+/// actually uses — trait upcasting (stable since 1.86, and the MSRV is 1.88)
+/// makes `Arc<dyn TraceRepository>` coerce to any of the three. Nothing
+/// implements this directly: the blanket impl means implementing the three
+/// parts is what makes a type a repository.
+pub trait TraceRepository: TraceSink + TraceReader + TraceRetention {}
+
+impl<T: TraceSink + TraceReader + TraceRetention> TraceRepository for T {}
 
 // -- SQL implementation --
 
@@ -417,7 +447,7 @@ impl SqlTraceRepository {
 }
 
 #[async_trait]
-impl TraceRepository for SqlTraceRepository {
+impl TraceSink for SqlTraceRepository {
     async fn create_pending(
         &self,
         channel: &str,
@@ -464,18 +494,6 @@ impl TraceRepository for SqlTraceRepository {
                 || trace_not_found(&id),
             )
             .await
-        })
-        .await
-    }
-
-    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
-        crate::metrics::timed_db_op("traces.get_by_id", async {
-            let (sql, values) = build_sqlx(self.pool.backend(), &mut trace_select(id));
-
-            self.pool
-                .fetch_optional_as::<Trace>(&sql, values)
-                .await?
-                .ok_or_else(|| trace_not_found(id))
         })
         .await
     }
@@ -619,6 +637,21 @@ impl TraceRepository for SqlTraceRepository {
         })
         .await
     }
+}
+
+#[async_trait]
+impl TraceReader for SqlTraceRepository {
+    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
+        crate::metrics::timed_db_op("traces.get_by_id", async {
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut trace_select(id));
+
+            self.pool
+                .fetch_optional_as::<Trace>(&sql, values)
+                .await?
+                .ok_or_else(|| trace_not_found(id))
+        })
+        .await
+    }
 
     async fn list_paginated(&self, filter: &TraceFilter) -> Result<TracePage, OrionError> {
         crate::metrics::timed_db_op("traces.list_paginated", async {
@@ -705,7 +738,10 @@ impl TraceRepository for SqlTraceRepository {
         })
         .await
     }
+}
 
+#[async_trait]
+impl TraceRetention for SqlTraceRepository {
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
         crate::metrics::timed_db_op("traces.delete_older_than", async {
             let now = chrono::Utc::now().naive_utc();
