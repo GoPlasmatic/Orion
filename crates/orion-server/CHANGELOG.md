@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A burst of admin changes no longer reaches a peer as the last change's
+  scope.** The `config_epoch` row holds one scope, so it describes one bump. A
+  node that polled and found the epoch several ahead sized its resync to the
+  *last* bump's scope anyway, and the bumps in between — whose scopes that one
+  overwrote — were applied as if they had been the same kind of change. Create a
+  connector and activate the workflow that uses it, three bumps well inside one
+  `epoch_poll_interval_ms`, and every peer read `definitions`: it rebuilt its
+  engine, never reloaded its connector registry, and answered every request
+  through the new channel with *connector not found*. An advance of more than
+  one epoch is now the widest resync, exactly as an unattributable scope is —
+  the narrow scope keeps its value for the case it was written for, a fleet at
+  rest where each change arrives on its own.
+- **A node's own bump no longer marks a peer's change applied.** The bump
+  recorded the epoch it returned as this node's watermark, but that number
+  includes any bump a peer landed in between, and this node applied only its
+  own: its inline reload re-reads the channel and workflow rows, and nothing
+  re-reads the connector registry. A peer's connector edit swallowed that way
+  stayed invisible until some later bump. A node now claims its bump only when
+  it lands on the next epoch; a jump leaves the watermark for the watcher,
+  which costs one resync and applies the change.
+
 ## [1.4.0] - 2026-08-29
 
 ### Security

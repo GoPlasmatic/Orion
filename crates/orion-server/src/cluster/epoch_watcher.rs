@@ -2,9 +2,10 @@
 //!
 //! Every admin mutation bumps the `config_epoch` row in the shared DB (the
 //! send side, `bump_config_epoch`). Each node polls that row; when the epoch
-//! is ahead of what this node has applied it resyncs everything from the DB
-//! (connector registry + pool eviction + engine reload). Breaker resets ride
-//! the same row via `breaker_epoch`/`breaker_key`.
+//! is ahead of what this node has applied it resyncs from the DB — the engine
+//! and channel registry always, the connector registry and the cached pools
+//! when the advance does not prove otherwise (`EpochScope`). Breaker resets
+//! ride the same row via `breaker_epoch`/`breaker_key`.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -56,22 +57,14 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
                 }
             };
 
-            // What the bumping node changed, so the resync can be the size of
-            // the change. Read through `for_epoch` rather than `parse`: the
-            // scope column is sticky, so a value is only this epoch's scope
-            // when the row says it was written for this epoch. An old node's
-            // bump leaves the previous scope standing, and taking that at face
-            // value skips the connector reload its change needed.
-            let scope = crate::cluster::EpochScope::for_epoch(
-                row.epoch,
-                row.epoch_scope_at,
-                &row.epoch_scope,
-            );
-
             // A tick succeeds when the epoch was read and, if it had
             // advanced, the resync applied. A failed resync leaves the
             // gauge stale alongside the retry warning (O3).
-            let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, row.epoch, || {
+            //
+            // The scope the resync is sized to is decided in there rather than
+            // here, because it is a property of the *advance* — this node's
+            // watermark and the row together — not of the row alone.
+            let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, &row, |scope| {
                 crate::runtime::resync_from_db(&state, scope)
             })
             .await;
@@ -111,6 +104,13 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
 /// this node's watermark, and advance the watermark **only on success**.
 /// Returns whether the tick counts as successful.
 ///
+/// The scope handed to `resync` is decided here, from the watermark and the
+/// row together ([`EpochScope::for_advance`](crate::cluster::EpochScope::for_advance)): the row carries one
+/// scope, so it describes the whole advance only when the advance is the one
+/// bump that wrote it. A node several epochs behind — every node, whenever an
+/// operator makes two changes inside one poll interval — is applying bumps
+/// whose scopes overwrote each other, and must resync wide.
+///
 /// Extracted from the polling loop (T15) so the advance/retry contract is
 /// testable without a database: the watermark refusing to advance past a
 /// failed resync is the property that makes the watcher self-healing — the
@@ -118,25 +118,32 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
 /// never applied.
 async fn advance_config_epoch<F, Fut>(
     last_seen: &std::sync::atomic::AtomicI64,
-    epoch: i64,
+    row: &crate::storage::repositories::cluster::EpochRow,
     resync: F,
 ) -> bool
 where
-    F: FnOnce() -> Fut,
+    F: FnOnce(crate::cluster::EpochScope) -> Fut,
     Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
 {
     let last = last_seen.load(Ordering::Acquire);
-    if epoch <= last {
+    if row.epoch <= last {
         return true;
     }
+    let scope = crate::cluster::EpochScope::for_advance(
+        last,
+        row.epoch,
+        row.epoch_scope_at,
+        &row.epoch_scope,
+    );
     tracing::info!(
         from = last,
-        to = epoch,
+        to = row.epoch,
+        scope = scope.as_str(),
         "Config epoch advanced on another node; resyncing from DB"
     );
-    match resync().await {
+    match resync(scope).await {
         Ok(()) => {
-            last_seen.fetch_max(epoch, Ordering::AcqRel);
+            last_seen.fetch_max(row.epoch, Ordering::AcqRel);
             true
         }
         Err(e) => {
@@ -151,14 +158,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::advance_config_epoch;
+    use crate::cluster::EpochScope;
+    use crate::storage::repositories::cluster::EpochRow;
     use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+
+    /// An epoch row as a scope-aware bump leaves it: the scope stamped with
+    /// the epoch it was written for.
+    fn row(epoch: i64, scope: &str) -> EpochRow {
+        EpochRow {
+            epoch,
+            breaker_epoch: 0,
+            breaker_key: String::new(),
+            epoch_scope: scope.to_string(),
+            epoch_scope_at: epoch,
+        }
+    }
 
     /// The self-healing property: a failed resync must leave the watermark
     /// where it was, so the next tick sees the same gap and retries.
     #[tokio::test]
     async fn a_failed_resync_does_not_advance_the_watermark() {
         let last_seen = AtomicI64::new(5);
-        let ok = advance_config_epoch(&last_seen, 7, || async {
+        let ok = advance_config_epoch(&last_seen, &row(7, "definitions"), |_| async {
             Err(crate::errors::OrionError::internal("resync exploded"))
         })
         .await;
@@ -170,7 +191,8 @@ mod tests {
         );
 
         // The retry succeeding is what advances it.
-        let ok = advance_config_epoch(&last_seen, 7, || async { Ok(()) }).await;
+        let ok =
+            advance_config_epoch(&last_seen, &row(7, "definitions"), |_| async { Ok(()) }).await;
         assert!(ok);
         assert_eq!(last_seen.load(Ordering::Acquire), 7);
     }
@@ -182,7 +204,7 @@ mod tests {
     async fn an_unchanged_epoch_never_resyncs() {
         let last_seen = AtomicI64::new(7);
         let ran = AtomicBool::new(false);
-        let ok = advance_config_epoch(&last_seen, 7, || {
+        let ok = advance_config_epoch(&last_seen, &row(7, "definitions"), |_| {
             ran.store(true, Ordering::SeqCst);
             async { Ok(()) }
         })
@@ -190,5 +212,47 @@ mod tests {
         assert!(ok, "nothing to do is a successful tick");
         assert!(!ran.load(Ordering::SeqCst), "resync must not have run");
         assert_eq!(last_seen.load(Ordering::Acquire), 7);
+    }
+
+    /// One bump behind: the row's scope describes exactly the change being
+    /// applied, so the resync is the size of it. This is the whole point of
+    /// the scope — without this case every tick costs a reconnect storm.
+    #[tokio::test]
+    async fn a_single_step_advance_uses_the_row_scope() {
+        let last_seen = AtomicI64::new(6);
+        let mut applied = None;
+        advance_config_epoch(&last_seen, &row(7, "definitions"), |scope| {
+            applied = Some(scope);
+            async { Ok(()) }
+        })
+        .await;
+        assert_eq!(applied, Some(EpochScope::Definitions));
+    }
+
+    /// More than one bump behind: the scopes of the bumps in between were
+    /// overwritten — the row keeps only the last — so the advance must be the
+    /// widest resync.
+    ///
+    /// This is not a rare race. Creating a connector and activating the
+    /// workflow that uses it is three bumps, and an operator issues them back
+    /// to back: every peer sees one advance carrying the last bump's
+    /// `definitions`. Sized to that, a peer rebuilds its engine and never
+    /// reloads its connector registry, and every request through the new
+    /// channel fails on a connector the node has never heard of.
+    #[tokio::test]
+    async fn an_advance_over_several_bumps_resyncs_everything() {
+        let last_seen = AtomicI64::new(0);
+        let mut applied = None;
+        advance_config_epoch(&last_seen, &row(3, "definitions"), |scope| {
+            applied = Some(scope);
+            async { Ok(()) }
+        })
+        .await;
+        assert_eq!(
+            applied,
+            Some(EpochScope::All),
+            "a scope that describes one of three bumps cannot size the resync"
+        );
+        assert_eq!(last_seen.load(Ordering::Acquire), 3);
     }
 }

@@ -87,10 +87,11 @@ async fn a_bump_stamps_the_scope_with_its_own_epoch(backend: &str, pool: &DbPool
          right-hand side against the wrong row"
     );
     assert_eq!(
-        EpochScope::for_epoch(row.epoch, row.epoch_scope_at, &row.epoch_scope),
+        EpochScope::for_advance(before, row.epoch, row.epoch_scope_at, &row.epoch_scope),
         EpochScope::Connectors,
-        "{backend}: a freshly stamped scope must be trusted, or every bump \
-         costs the wide resync the scope exists to avoid"
+        "{backend}: a freshly stamped scope must be trusted by a peer one \
+         epoch behind, or every bump costs the wide resync the scope exists \
+         to avoid"
     );
 }
 

@@ -70,22 +70,37 @@ impl EpochScope {
         }
     }
 
-    /// The scope an epoch row actually vouches for.
+    /// The scope a node at watermark `from` may narrow to when it applies
+    /// epoch `to`.
     ///
-    /// `epoch_scope` is a *sticky* column: the writer sets it, and a writer
-    /// that predates it leaves whatever the last writer put there. So a
-    /// recognised scope is not on its own evidence that it describes *this*
-    /// epoch — after any scope-aware bump, a 1.3.x node's bump advances the
-    /// counter and leaves the earlier scope standing. `scope_at` is the epoch
-    /// the scope was written for, so the two agreeing is what makes it this
-    /// change's scope.
+    /// Two conditions, and they are one requirement seen from either end: a
+    /// narrow scope is safe only when it accounts for **every** change the
+    /// resync it sizes is about to apply.
+    ///
+    /// * **The scope must be attributable to `to`.** `epoch_scope` is a
+    ///   *sticky* column: the writer sets it, and a writer that predates it
+    ///   leaves whatever the last writer put there. So a recognised scope is
+    ///   not on its own evidence that it describes *this* epoch — after any
+    ///   scope-aware bump, a 1.3.x node's bump advances the counter and leaves
+    ///   the earlier scope standing. `scope_at` is the epoch the scope was
+    ///   written for, so the two agreeing is what makes it this change's
+    ///   scope.
+    /// * **The scope must be the only one this advance covers** — `to` is
+    ///   exactly one past `from`. The row holds *one* scope, so a node two or
+    ///   more epochs behind has lost every scope but the last: the bumps in
+    ///   between overwrote each other, and it is applying all of them in one
+    ///   resync. Create a connector and activate the workflow that uses it —
+    ///   three bumps well inside one poll interval — and a peer reading the
+    ///   row once at the end sees only `definitions`, never reloads its
+    ///   connector registry, and runs the workflow against a connector it has
+    ///   never heard of.
     ///
     /// Everything else is [`Self::All`], which is the same answer
     /// [`Self::parse`] gives an unknown value and for the same reason: a
-    /// scope this node cannot attribute must cost a wide resync, never a
-    /// missed change.
-    pub fn for_epoch(epoch: i64, scope_at: i64, raw: &str) -> Self {
-        if scope_at == epoch {
+    /// scope that does not account for the whole advance must cost a wide
+    /// resync, never a missed change.
+    pub fn for_advance(from: i64, to: i64, scope_at: i64, raw: &str) -> Self {
+        if scope_at == to && to == from + 1 {
             Self::parse(raw)
         } else {
             Self::All
@@ -121,8 +136,11 @@ pub struct ClusterRuntime {
     /// Epoch/lease coordination repository (always present; harmless when
     /// disabled — the epoch tables exist on every backend).
     pub repo: Arc<dyn ClusterRepository>,
-    /// Highest config epoch this node has already applied (its own bumps
-    /// count as applied — the inline reload happens before the bump).
+    /// Highest config epoch this node has already applied. Its own bumps
+    /// count as applied — the inline reload happens before the bump — but only
+    /// when the bump lands on the next epoch: a jump means a peer's change is
+    /// folded into the number and this node has not applied that one, so the
+    /// watermark stays put and the watcher resyncs.
     pub last_seen_epoch: AtomicI64,
     /// Highest breaker epoch this node has already applied.
     pub last_seen_breaker_epoch: AtomicI64,
@@ -151,10 +169,23 @@ impl ClusterRuntime {
         use std::sync::atomic::Ordering;
         match self.repo.bump_epoch(scope.as_str()).await {
             Ok(epoch) => {
-                // fetch_max, not store: the inline reload already applied this
-                // node's own change, but a concurrently observed higher epoch
-                // must never be masked.
-                self.last_seen_epoch.fetch_max(epoch, Ordering::AcqRel);
+                // Claim this epoch as applied only when it is the very next
+                // one. The inline reload applied *this* node's change and
+                // nothing else, so an epoch that jumped means a peer's bump
+                // landed in between — and recording the higher number would
+                // mark that peer's change applied here when it never was. The
+                // gap is not academic: this node's own reload re-reads the
+                // channel and workflow rows, but nothing re-reads the connector
+                // registry, so a peer's connector edit swallowed this way stays
+                // invisible until something else bumps. Leaving the watermark
+                // where it is costs one wide resync on the next tick, which is
+                // the same answer every other unattributable advance gets.
+                let _ = self.last_seen_epoch.compare_exchange(
+                    epoch - 1,
+                    epoch,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
                 self.propagation_degraded.store(false, Ordering::Release);
             }
             Err(e) if self.enabled => {
@@ -286,45 +317,79 @@ mod tests {
         assert!(EpochScope::All.touches_connectors());
     }
 
-    /// The hazard `for_epoch` exists for. `epoch_scope` is sticky, so after
-    /// any scoped bump the column holds a *recognised* value forever. A node
-    /// on the previous release then bumps the counter and writes neither
-    /// column, leaving that value standing over an epoch it says nothing
-    /// about — and reading it at face value skips the connector reload the
-    /// old node's change actually needed.
+    /// The stickiness hazard. `epoch_scope` is sticky, so after any scoped
+    /// bump the column holds a *recognised* value forever. A node on the
+    /// previous release then bumps the counter and writes neither column,
+    /// leaving that value standing over an epoch it says nothing about — and
+    /// reading it at face value skips the connector reload the old node's
+    /// change actually needed.
     #[test]
     fn a_scope_left_over_from_an_earlier_epoch_is_not_trusted() {
         // The scope-aware bump that wrote it: the two agree, so it counts.
         assert_eq!(
-            EpochScope::for_epoch(7, 7, "definitions"),
+            EpochScope::for_advance(6, 7, 7, "definitions"),
             EpochScope::Definitions
         );
         // A 1.3.x node then bumps 7 -> 8, touching neither scope column. The
         // stale `definitions` must not answer for epoch 8.
-        assert_eq!(EpochScope::for_epoch(8, 7, "definitions"), EpochScope::All);
+        assert_eq!(
+            EpochScope::for_advance(7, 8, 7, "definitions"),
+            EpochScope::All
+        );
         // And it must stay untrusted however far behind it falls.
-        assert_eq!(EpochScope::for_epoch(99, 7, "connectors"), EpochScope::All);
+        assert_eq!(
+            EpochScope::for_advance(98, 99, 7, "connectors"),
+            EpochScope::All
+        );
+    }
+
+    /// The coalescing hazard, and the reason a scope alone is not enough: the
+    /// row holds one scope, so a node more than one epoch behind is applying
+    /// bumps whose scopes were overwritten. Create a connector (`connectors`),
+    /// then activate the workflow that uses it (`definitions`, twice) — all
+    /// three inside one poll interval — and a peer that trusted the last scope
+    /// would rebuild its engine and never load the connector.
+    #[test]
+    fn an_advance_over_several_bumps_resyncs_everything() {
+        assert_eq!(
+            EpochScope::for_advance(0, 3, 3, "definitions"),
+            EpochScope::All
+        );
+        // Even when every bump in the span was in fact a connector bump: the
+        // row cannot say so, and a scope is only ever read as exhaustive.
+        assert_eq!(
+            EpochScope::for_advance(0, 3, 3, "connectors"),
+            EpochScope::All
+        );
+        // One step is one bump, which the row does describe.
+        assert_eq!(
+            EpochScope::for_advance(2, 3, 3, "connectors"),
+            EpochScope::Connectors
+        );
     }
 
     /// A row from before the column existed: `epoch_scope_at` defaults to 0,
     /// which can only match an epoch of 0 — so every real epoch reads wide.
     #[test]
     fn a_row_predating_the_binding_column_resyncs_everything() {
-        assert_eq!(EpochScope::for_epoch(1, 0, ""), EpochScope::All);
-        assert_eq!(EpochScope::for_epoch(42, 0, "connectors"), EpochScope::All);
+        assert_eq!(EpochScope::for_advance(0, 1, 0, ""), EpochScope::All);
+        assert_eq!(
+            EpochScope::for_advance(41, 42, 0, "connectors"),
+            EpochScope::All
+        );
     }
 
-    /// `for_epoch` narrows `parse`, it does not replace it: an unknown value
+    /// `for_advance` narrows `parse`, it does not replace it: an unknown value
     /// written for this very epoch is still the widest resync.
     #[test]
     fn an_unknown_scope_is_wide_even_when_it_matches_the_epoch() {
         assert_eq!(
-            EpochScope::for_epoch(3, 3, "something-newer"),
+            EpochScope::for_advance(2, 3, 3, "something-newer"),
             EpochScope::All
         );
-        assert_eq!(EpochScope::for_epoch(3, 3, ""), EpochScope::All);
+        assert_eq!(EpochScope::for_advance(2, 3, 3, ""), EpochScope::All);
         assert_eq!(
-            EpochScope::for_epoch(3, 3, "connectors"),
+            EpochScope::for_advance(2, 3, 3, "connectors"),
             EpochScope::Connectors
         );
     }

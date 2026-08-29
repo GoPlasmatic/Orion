@@ -106,6 +106,16 @@ endpoint and the old credentials until something else bumped. A scope counts
 only when its stamp matches the current epoch; anything else is the widest
 resync, which is what an unattributable scope has always meant.
 
+The row keeps **one** scope, so it describes one bump. A node that finds the
+epoch several ahead of what it last applied is applying all of those bumps in
+one resync, and the scopes of the earlier ones were overwritten by the later
+ones — so it resyncs wide, exactly as it would for a scope it could not
+attribute. That is the common case whenever changes come in a burst: creating a
+connector and activating the workflow that uses it is three bumps, and they
+land well inside one `epoch_poll_interval_ms`. Peers pay one wide resync for
+the burst rather than one per change, and the narrow scope does its work where
+it matters — a fleet at rest, where each change arrives on its own.
+
 ### When a change does not propagate
 
 The bump happens after the mutation is committed and live on the node that

@@ -758,8 +758,10 @@ async fn connector_update_propagates_to_other_node() {
 }
 
 /// Concurrent admin writes on different nodes converge: the epoch bump is an
-/// atomic single-row UPDATE and `last_seen_epoch` uses `fetch_max`, so
-/// neither node's bump can mask the other's.
+/// atomic single-row UPDATE, and a node claims the epoch its own bump returned
+/// only when that epoch is the next one — a bump that jumped means a peer's
+/// change is folded into the number, so the watermark stays put and the
+/// watcher resyncs for it. Neither node's bump can mask the other's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn concurrent_admin_writes_converge() {

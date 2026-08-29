@@ -29,8 +29,10 @@ pub struct EpochRow {
     pub epoch_scope: String,
     /// The epoch [`Self::epoch_scope`] was written for. Zero on a row last
     /// bumped by a writer that predates the column — and, more importantly,
-    /// stale whenever such a writer bumped *after* a scope-aware one, which
-    /// is the case [`crate::cluster::EpochScope::for_epoch`] exists to catch.
+    /// stale whenever such a writer bumped *after* a scope-aware one, which is
+    /// one of the two cases [`crate::cluster::EpochScope::for_advance`] exists
+    /// to catch; the other is a reader more than one epoch behind, for which
+    /// no stamp can vouch because the row keeps only the last scope.
     pub epoch_scope_at: i64,
 }
 
@@ -241,7 +243,8 @@ mod tests {
             assert_eq!(row.epoch_scope_at, expected);
             assert_eq!(row.epoch_scope, "connectors");
             assert_eq!(
-                crate::cluster::EpochScope::for_epoch(
+                crate::cluster::EpochScope::for_advance(
+                    row.epoch - 1,
                     row.epoch,
                     row.epoch_scope_at,
                     &row.epoch_scope
@@ -273,7 +276,12 @@ mod tests {
         assert_eq!(row.epoch_scope, "definitions", "the column is sticky");
         assert_eq!(row.epoch_scope_at, 1, "and it still names the old epoch");
         assert_eq!(
-            crate::cluster::EpochScope::for_epoch(row.epoch, row.epoch_scope_at, &row.epoch_scope),
+            crate::cluster::EpochScope::for_advance(
+                row.epoch - 1,
+                row.epoch,
+                row.epoch_scope_at,
+                &row.epoch_scope
+            ),
             crate::cluster::EpochScope::All,
             "an unattributable scope must cost the wide resync"
         );
