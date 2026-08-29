@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::message::Message;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use dataflow_rs::{Template, TemplateCompiler};
@@ -254,43 +253,51 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             .map_err(|e| guard_refusal(&target_channel, e))?;
             let _backpressure_permit = admission.backpressure_permit;
 
-            // Build a child message for the target channel.
-            let mut child_message = Message::builder()
-                .payload_json(&call_data)
-                .metadata_json(&child_meta)
-                .build();
-
-            // Get current engine snapshot and process with timeout.
             // Timeout precedence: explicit input > target channel's
             // timeout_ms > engine default (the last two resolved by the
             // guard chain, so every transport agrees on them).
-            let engine = self.engine.load();
             let timeout_ms = input
                 .timeout_ms
                 .or(admission.timeout_ms)
                 .unwrap_or(self.default_timeout_ms);
 
-            // F46: the shared runner owns the deadline arm, so the in-process
-            // call cannot drift from the sync HTTP, trace-queue and Kafka
-            // paths. No trace capture, and no profile scope — this call already
-            // runs inside the caller's.
-            match crate::engine::run_for_channel(
-                &engine,
+            // F46: the shared post-admission step owns the deadline arm and
+            // the message build, so the in-process call cannot drift from the
+            // sync HTTP, trace-queue and Kafka paths. No trace capture and no
+            // profile scope — this call already runs inside the caller's. No
+            // routing bucket either: the child executes within its caller's
+            // rollout decision rather than drawing one of its own.
+            let child = crate::engine::execute_admitted(
+                &self.engine,
                 &target_channel,
-                &mut child_message,
-                Some(timeout_ms),
-                None,
-                None,
+                &call_data,
+                &child_meta,
+                crate::engine::ExecOpts {
+                    timeout_ms: Some(timeout_ms),
+                    ..Default::default()
+                },
             )
-            .await
-            {
-                Ok((inner, _)) => inner.map_err(|e| {
-                    DataflowError::function_execution(
+            .await;
+
+            match child.outcome {
+                crate::engine::RunOutcome::Ok => {}
+                // This arm did not exist before the step was shared: the
+                // handler read only the outer `Result`, so a target whose
+                // workflow failed its tasks reported success and the caller
+                // merged whatever half-finished `data` it left behind.
+                crate::engine::RunOutcome::WorkflowErrors(summary) => {
+                    return Err(DataflowError::function_execution(
+                        format!("channel_call to '{target_channel}' failed: {summary}"),
+                        None,
+                    ));
+                }
+                crate::engine::RunOutcome::EngineError(e) => {
+                    return Err(DataflowError::function_execution(
                         format!("channel_call to '{target_channel}' failed: {e}"),
                         None,
-                    )
-                })?,
-                Err(ms) => {
+                    ));
+                }
+                crate::engine::RunOutcome::Timeout(ms) => {
                     return Err(DataflowError::Timeout(format!(
                         "channel_call to '{target_channel}' timed out after {ms}ms"
                     )));
@@ -300,7 +307,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // Strip internal tracking metadata from the child's result before merging.
             // The bridge from OwnedDataValue to serde_json::Value is the easiest way
             // to filter; we then convert the parts we care about back.
-            let result_data_json: Value = child_message.data().into();
+            let result_data_json: Value = child.message.data().into();
 
             let output = input.output.as_deref().unwrap_or("data");
             ctx.set_json(output, &result_data_json);

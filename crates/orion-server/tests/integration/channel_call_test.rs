@@ -227,6 +227,98 @@ async fn test_channel_call_missing_target() {
     assert_eq!(body["error"]["code"], "ENGINE_ERROR");
 }
 
+/// A target whose workflow fails its tasks must fail the caller.
+///
+/// The engine answers `Ok(())` even when individual workflows failed — the
+/// failures go into `message.errors()`, the "v3 contract". Every transport
+/// derives its outcome from that; `channel_call` did not, because it read only
+/// the outer `Result`. So a target that errored reported success and the
+/// caller merged whatever half-finished `data` it had left, with nothing in
+/// the response saying so. The shared post-admission step derives it once, for
+/// every transport.
+#[tokio::test]
+async fn a_target_whose_workflow_errors_fails_the_caller() {
+    let app = common::test_app().await;
+
+    // The target verifies a token that is not a JWT: valid at activation (no
+    // connector, a well-formed task), a task error at run time. A connector
+    // that does not exist would not do — activation refuses that (F52).
+    common::create_and_activate_channel(
+        &app,
+        "failing-target",
+        json!({
+            "name": "Failing Target",
+            "condition": true,
+            // The engine reports a hard task failure through the outer
+            // `Result`; `continue_on_error` is what produces the shape this
+            // test is about — `Ok(())` with the failures in
+            // `message.errors()`, the v3 contract `channel_call` ignored.
+            "continue_on_error": true,
+            "tasks": [{
+                "id": "boom",
+                "name": "Verify a token that cannot be verified",
+                "function": {
+                    "name": "jwt_verify",
+                    "input": {
+                        "token": "not-a-jwt",
+                        "algorithms": ["HS256"],
+                        "keys": [{
+                            "algorithm": "HS256",
+                            "key": "a-test-secret-at-least-32-bytes-long"
+                        }],
+                        "output": "data.claims"
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "errors-caller",
+        json!({
+            "name": "Caller Workflow",
+            "condition": true,
+            "tasks": [{
+                "id": "c1",
+                "name": "Call the failing target",
+                "function": {
+                    "name": "channel_call",
+                    "input": {
+                        "channel": "failing-target",
+                        "output": "data.result"
+                    }
+                }
+            }]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/errors-caller",
+            Some(json!({"data": {"key": "value"}})),
+        ))
+        .await
+        .unwrap();
+
+    // The caller's own task failed, so the request fails rather than
+    // answering `200 {"data":{"result":{}},"errors":[]}` — which is exactly
+    // what it did before the outcome was derived in one place. The data plane
+    // sanitizes engine errors (G1), so the client sees the generic envelope;
+    // the message naming the target and its failures is in the log and trace.
+    let status = resp.status();
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "a target whose workflow errored must not report success: {body}"
+    );
+    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+}
+
 // ============================================================
 // Recursion guards: cycle detection and max call depth
 // ============================================================

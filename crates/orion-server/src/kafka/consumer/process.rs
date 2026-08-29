@@ -320,39 +320,36 @@ async fn process_one_kafka_message(
     // channel's own `timeout_ms` can only shorten the poll gap.
     let processing_timeout_ms = admission.timeout_ms.unwrap_or(ctx.processing_timeout_ms);
 
-    let start = Instant::now();
-    // Kafka ingress carries no rollout bucket: a record has no sticky caller
-    // identity and no forwarded IP, and a random bucket per record would split
-    // one topic's traffic across canary versions non-deterministically. A
-    // message with no bucket is admitted by every workflow, rollout or not.
-    let mut message = dataflow_rs::Message::builder()
-        .payload_json(&data)
-        .metadata_json(&metadata)
-        .build();
-
-    // Clone the inner Arc<Engine> and release the lock immediately.
-    let engine_ref = ctx.engine.load();
-    let process_result = crate::engine::run_for_channel(
-        &engine_ref,
+    // The shared post-admission step. Kafka ingress carries no rollout bucket:
+    // a record has no sticky caller identity and no forwarded IP, and a random
+    // bucket per record would split one topic's traffic across canary versions
+    // non-deterministically. A message with no bucket is admitted by every
+    // workflow, rollout or not.
+    let execution = crate::engine::execute_admitted(
+        &ctx.engine,
         channel,
-        &mut message,
-        Some(processing_timeout_ms),
-        None,
-        None,
+        &data,
+        &metadata,
+        crate::engine::ExecOpts {
+            timeout_ms: Some(processing_timeout_ms),
+            ..Default::default()
+        },
     )
     .await;
 
-    let outcome = match process_result {
-        Err(_) => {
+    let status = execution.outcome.status_label();
+    let engine_duration = execution.duration;
+    let outcome = match execution.outcome {
+        crate::engine::RunOutcome::Timeout(ms) => {
             fail(
                 "timeout",
                 "kafka_timeout",
                 "Kafka message processing timed out",
-                format!("Processing timed out after {processing_timeout_ms}ms"),
+                format!("Processing timed out after {ms}ms"),
             )
             .await
         }
-        Ok((Err(e), _)) => {
+        crate::engine::RunOutcome::EngineError(e) => {
             fail(
                 "error",
                 "kafka_processing",
@@ -361,15 +358,7 @@ async fn process_one_kafka_message(
             )
             .await
         }
-        Ok((Ok(()), _)) if message.has_errors() => {
-            // v3 contract: workflow failures are pushed to
-            // message.errors() while the outer Result stays Ok.
-            let summary = message
-                .errors()
-                .iter()
-                .map(|e| format!("{}: {}", e.code, e.message))
-                .collect::<Vec<_>>()
-                .join("; ");
+        crate::engine::RunOutcome::WorkflowErrors(summary) => {
             fail(
                 "error",
                 "kafka_processing",
@@ -378,10 +367,12 @@ async fn process_one_kafka_message(
             )
             .await
         }
-        Ok((Ok(()), _)) => {
-            let duration = start.elapsed().as_secs_f64();
-            metrics::record_message(channel, "ok");
-            metrics::record_message_duration(channel, duration);
+        crate::engine::RunOutcome::Ok => {
+            // The failure arms count through `report_failure_and_dlq`, which
+            // is also where the K10 retry suppression lives; only the success
+            // arm counts here.
+            metrics::record_message(channel, status);
+            metrics::record_message_duration(channel, engine_duration.as_secs_f64());
             tracing::debug!(
                 topic = %topic,
                 channel = %channel,

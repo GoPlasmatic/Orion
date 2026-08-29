@@ -476,20 +476,10 @@ pub(super) async fn process_sync_for_channel(
     // cardinality by inventing path segments.
 
     let start = Instant::now();
-    let engine = state.engine.load();
     let sticky_identity = crate::engine::utils::rollout_identity(
         &metadata,
         &state.config.engine.rollout_sticky_header,
     );
-    // The routing bucket rides beside the context rather than inside `data`,
-    // so it never reaches the caller and never needs stripping back out.
-    let mut message = dataflow_rs::Message::builder()
-        .payload_json(&data)
-        .metadata_json(&metadata)
-        .routing_bucket(crate::engine::utils::rollout_bucket_for_identity(
-            sticky_identity,
-        ))
-        .build();
 
     // A2: when the channel opted in via `config.tracing.task_details = true`,
     // use the with-trace engine entry point so per-step inputs/outputs are
@@ -504,39 +494,68 @@ pub(super) async fn process_sync_for_channel(
             max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
         });
 
-    let workflow_start = Instant::now();
-    let result = crate::engine::run_for_channel(
-        &engine,
+    // The shared post-admission step: message build, engine snapshot, the
+    // deadline arm, the `has_errors` rule and the two metrics. What stays here
+    // is response shaping and persistence.
+    let execution = crate::engine::execute_admitted(
+        &state.engine,
         channel,
-        &mut message,
-        timeout_ms,
-        profile.as_ref(),
-        capture,
+        &data,
+        &metadata,
+        crate::engine::ExecOpts {
+            timeout_ms,
+            capture,
+            // The routing bucket rides beside the context rather than inside
+            // `data`, so it never reaches the caller and never needs stripping
+            // back out.
+            routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
+                sticky_identity,
+            )),
+            profile: profile.as_ref(),
+        },
     )
     .await;
     if let Some(ref p) = profile {
-        p.set_workflow_total(workflow_start.elapsed());
+        p.set_workflow_total(execution.duration);
     }
+    let crate::engine::Execution {
+        message,
+        task_trace,
+        outcome,
+        duration: engine_duration,
+    } = execution;
 
-    let (result, task_trace) = match result {
-        Ok(inner) => inner,
-        Err(ms) => {
-            metrics::record_message(channel, "timeout");
+    // One derivation of the label, shared with every other transport. The
+    // change this made here: a run that finished with task errors used to be
+    // counted `ok`, so a channel failing every request reported a 100% success
+    // rate while the Kafka and async paths counted the same runs as `error`.
+    metrics::record_message(channel, outcome.status_label());
+    metrics::record_message_duration(channel, engine_duration.as_secs_f64());
+
+    match outcome {
+        crate::engine::RunOutcome::Timeout(ms) => {
             metrics::record_error("timeout");
-            return Err(OrionError::Timeout {
+            Err(OrionError::Timeout {
                 channel: channel.to_string(),
                 timeout_ms: ms,
-            });
+            })
         }
-    };
-
-    match result {
-        Ok(()) => {
+        crate::engine::RunOutcome::EngineError(e) => {
+            metrics::record_error("engine");
+            Err(OrionError::Engine(e))
+        }
+        // A synchronous caller is handed its task errors in the envelope with
+        // a 200 — the response carries the whole story, and a workflow that
+        // partially succeeded still has data worth returning. Only the metric
+        // label changed with the shared step: `orion_messages_total` counts
+        // this as `error` now, as the Kafka and async paths always did.
+        crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => {
+            // The *request's* duration — guards, execution, and the response
+            // build below. `execute_admitted` already recorded the engine
+            // call's own latency on `orion_message_duration_seconds`; this one
+            // is what the trace row reports.
             let duration = start.elapsed();
-            let duration_secs = duration.as_secs_f64();
             let duration_ms = duration.as_secs_f64() * 1000.0;
-            metrics::record_message(channel, "ok");
-            metrics::record_message_duration(channel, duration_secs);
 
             // Shaped channels drain their response control out of the workflow
             // output *before* the envelope is built, so `_orion.response`
@@ -694,11 +713,6 @@ pub(super) async fn process_sync_for_channel(
                 StatusCode::OK,
                 public_json.unwrap_or(response_json),
             ))
-        }
-        Err(e) => {
-            metrics::record_message(channel, "error");
-            metrics::record_error("engine");
-            Err(OrionError::Engine(e))
         }
     }
 }

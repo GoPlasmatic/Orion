@@ -301,89 +301,57 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         return;
     }
 
-    // Build message
-    let sticky_identity =
-        crate::engine::utils::rollout_identity(&msg.metadata, &ctx.rollout_sticky_header);
-    let mut message = dataflow_rs::Message::builder()
-        .payload_json(&msg.payload)
-        .metadata_json(&msg.metadata)
-        .routing_bucket(crate::engine::utils::rollout_bucket_for_identity(
-            sticky_identity,
-        ))
-        .build();
-
-    // Clone the inner Arc<Engine> and release the lock immediately
-    let engine_ref = ctx.engine.load();
     // A2: capture the per-task execution trace when the channel opted in via
-    // `config.tracing.task_details = true`. Both arms resolve to the same
-    // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
+    // `config.tracing.task_details = true`.
     let capture = effective_trace
         .task_details
         .then_some(crate::engine::TraceCapture {
             max_snapshot_bytes: ctx.max_result_size_bytes,
         });
-    let processing_timeout_ms = timeout_ms;
-    let workflow_start = Instant::now();
-    let timeout_outcome = crate::engine::run_for_channel(
-        &engine_ref,
+
+    // The shared post-admission step: message build, engine snapshot, the
+    // deadline arm and the `has_errors` rule. What stays here is persistence
+    // and the DLQ routing.
+    let execution = crate::engine::execute_admitted(
+        &ctx.engine,
         &channel,
-        &mut message,
-        Some(processing_timeout_ms),
-        profile.as_ref(),
-        capture,
+        &msg.payload,
+        &msg.metadata,
+        crate::engine::ExecOpts {
+            timeout_ms: Some(timeout_ms),
+            capture,
+            routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
+                crate::engine::utils::rollout_identity(&msg.metadata, &ctx.rollout_sticky_header),
+            )),
+            profile: profile.as_ref(),
+        },
     )
     .await;
     if let Some(ref p) = profile {
-        p.set_workflow_total(workflow_start.elapsed());
+        p.set_workflow_total(execution.duration);
     }
-    let (result, task_trace) = match timeout_outcome {
-        Ok(inner) => inner,
-        Err(_) => {
-            tracing::warn!(
-                trace_id = %trace_id,
-                channel = %channel,
-                timeout_ms = processing_timeout_ms,
-                "Async trace processing timed out"
-            );
-            (
-                Err(dataflow_rs::DataflowError::Timeout(format!(
-                    "Processing timed out after {processing_timeout_ms}ms"
-                ))),
-                None,
-            )
-        }
-    };
+    let crate::engine::Execution {
+        message,
+        task_trace,
+        outcome,
+        duration: engine_duration,
+    } = execution;
+
     let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
         task_trace.as_ref(),
         ctx.max_result_size_bytes,
         &trace_id,
     );
 
-    let duration = start.elapsed();
-    let duration_secs = duration.as_secs_f64();
-    let duration_ms = duration.as_secs_f64() * 1000.0;
+    // The whole hop, including the status write and the persistence below —
+    // what the trace row reports. `engine_duration` is the engine call alone,
+    // which is what the latency histogram measures.
+    let duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+    metrics::record_message(metrics_channel, outcome.status_label());
+    metrics::record_message_duration(metrics_channel, engine_duration.as_secs_f64());
 
-    // v3 contract: process_message_for_channel returns Ok(()) even when
-    // individual workflows fail — failures are pushed into message.errors().
-    // Treat any captured error as a processing failure so it routes to the DLQ.
-    let result = match result {
-        Ok(()) if message.has_errors() => {
-            let summary = message
-                .errors()
-                .iter()
-                .map(|e| format!("{}: {}", e.code, e.message))
-                .collect::<Vec<_>>()
-                .join("; ");
-            Err(dataflow_rs::DataflowError::Workflow(summary))
-        }
-        other => other,
-    };
-
-    match result {
-        Ok(()) => {
-            metrics::record_message(metrics_channel, "ok");
-            metrics::record_message_duration(metrics_channel, duration_secs);
-
+    match outcome {
+        crate::engine::RunOutcome::Ok => {
             persist_success(
                 &ctx,
                 &effective_trace,
@@ -395,10 +363,31 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
             )
             .await;
         }
-        Err(e) => {
-            metrics::record_message(metrics_channel, "error");
+        crate::engine::RunOutcome::Timeout(ms) => {
+            tracing::warn!(
+                trace_id = %trace_id,
+                channel = %channel,
+                timeout_ms = ms,
+                "Async trace processing timed out"
+            );
             metrics::record_error("engine");
-
+            handle_failure(
+                &ctx,
+                trace_mode,
+                &dlq,
+                &format!("Processing timed out after {ms}ms"),
+            )
+            .await;
+        }
+        // A workflow that failed its tasks routes to the DLQ exactly like an
+        // engine failure: the async caller has no response to read the errors
+        // out of, so the retry is the only way the work happens.
+        crate::engine::RunOutcome::WorkflowErrors(summary) => {
+            metrics::record_error("engine");
+            handle_failure(&ctx, trace_mode, &dlq, &summary).await;
+        }
+        crate::engine::RunOutcome::EngineError(e) => {
+            metrics::record_error("engine");
             handle_failure(&ctx, trace_mode, &dlq, &e.to_string()).await;
         }
     }

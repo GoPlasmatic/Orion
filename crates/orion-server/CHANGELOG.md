@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`orion_messages_total{status}` counts a run that finished with task errors
+  as `error` on every transport.** The synchronous route counted it `ok` while
+  the Kafka and async paths counted it `error`, so a channel whose workflow
+  failed every request reported a 100% success rate to anything alerting on
+  that counter. **Error-rate dashboards and SLOs may step up on channels that
+  have been failing quietly.** The HTTP behaviour is unchanged: a sync caller
+  still gets `200` with the errors in the envelope, because the response
+  carries the whole story.
+- **`channel_call` fails when the target channel's workflow fails.** It read
+  only the engine's outer result, so a target whose tasks errored reported
+  success and the caller merged whatever half-finished `data` it left behind.
+  It now returns a task error naming the target and the failures, which a
+  workflow can branch on like any other.
 - **All four crates share one version.** `orion-api` and `orion-client` used
   to carry versions of their own, bumped by hand and policed by a CI step,
   because the rider publish skips a version already on crates.io. They now

@@ -10,7 +10,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`; identifies the build each replica runs. |
 | `orion_jwt_rejections_total` | Counter | `reason` | JWTs refused at channel auth, by typed cause (`expired`, `bad_signature`, `alg_rejected`, …) — the wire answer stays uniform; the dashboard does not have to. |
 | `orion_oauth_token_requests_total` | Counter | `connector`, `outcome` | Managed-OAuth2 token-endpoint requests ([connector auth](./connectors.md#managed-oauth2)): `ok`, `rejected` (`invalid_grant` and friends — non-retryable, negative-cached), `transport_error` (retryable). A rising `rejected` on a `refresh_token` connector means a burned seed. |
-| `orion_messages_total` | Counter | `channel`, `status` | Messages processed, by outcome: `ok`, `error`, `timeout`, or `duplicate`. |
+| `orion_messages_total` | Counter | `channel`, `status` | Messages processed, by outcome: `ok`, `error`, `timeout`, or `duplicate`. A run that finished with task errors is `error` on every transport, including the synchronous one that answers `200` with those errors in its envelope. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Message processing latency. |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |
 | `orion_errors_total` | Counter | `reason` | Errors by cause: `engine`, `timeout`, `panic`, `kafka_retry`, and other reason codes. |
