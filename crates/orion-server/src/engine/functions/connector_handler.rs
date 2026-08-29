@@ -15,10 +15,20 @@
 //! * **F48** — a handler names itself once, in one place, because that name
 //!   reaches metric labels, profile samples and every error message.
 //!
-//! All three were enforced by tests that read handler `.rs` files as strings
-//! and asserted on byte offsets. Each of those tests explains, carefully, that
-//! it is checking a property a type could hold. This is that type: implement
-//! [`ConnectorHandler`], and the order is the wrapper's to get right.
+//! All three were once enforced by tests that read handler `.rs` files as
+//! strings and asserted on byte offsets, over a hand-kept list of handler
+//! names. Each of those tests explained, carefully, that it was checking a
+//! property a type could hold. This is that type, and they are gone: an
+//! unwrapped handler is not an `AsyncFunctionHandler` and cannot be registered,
+//! `parse` takes the `call` as an argument so it cannot run before the prologue
+//! that built it, and `NAME` is an associated const with no second copy to
+//! disagree with.
+//!
+//! One handler does not fit the five-step order and says so where the missing
+//! step would be: `data_write`'s gate is the operation its envelope resolves
+//! to, and resolving the envelope needs the connector's own schema guards, so
+//! the answer does not exist until after the connector is in hand. It gates
+//! inside `run`, before any pool is touched.
 //!
 //! **Why a wrapper and not a blanket impl.** The natural shape —
 //! `impl<T: ConnectorHandler> AsyncFunctionHandler for T` — is rejected by the
