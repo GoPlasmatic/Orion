@@ -2,9 +2,10 @@
 //!
 //! Each test builds N full `AppState`s (nodes) sharing one Postgres
 //! testcontainer and one Redis testcontainer, with cluster mode on and a
-//! fast epoch poll. This binary is separate from `tests/integration`
-//! because the storage backend is pinned per process (`DB_BACKEND` OnceLock)
-//! and the integration binary pins SQLite; here every test uses Postgres.
+//! fast epoch poll. This binary is separate from `tests/integration`, though
+//! no longer forced to be: the backend used to be a process-global `OnceLock`
+//! that the integration binary pinned to SQLite, and it is now carried on
+//! `DbPool` itself.
 //!
 //! Containers are per-test on purpose: the outage tests pause/stop theirs,
 //! and the shared stores (config_epoch, channels, dedup keys) make each test

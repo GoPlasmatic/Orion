@@ -388,18 +388,21 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         lease_secs: u64,
     ) -> Result<Vec<TraceDlqEntry>, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.claim_pending", async {
-            let backend = crate::storage::get_backend();
+            let backend = self.pool.backend();
             let now = super::helpers::sql_now(backend);
             let lease_until = super::helpers::sql_now_plus_secs(backend, lease_secs);
             match backend {
                 DbBackend::Postgres | DbBackend::Sqlite => {
-                    let (sql, values) = build_sqlx(&mut claim_update_query(
-                        claimant,
-                        limit,
-                        now,
-                        &lease_until,
-                        backend == DbBackend::Postgres,
-                    ));
+                    let (sql, values) = build_sqlx(
+                        self.pool.backend(),
+                        &mut claim_update_query(
+                            claimant,
+                            limit,
+                            now,
+                            &lease_until,
+                            backend == DbBackend::Postgres,
+                        ),
+                    );
                     Ok(self
                         .pool
                         .fetch_all_as::<TraceDlqEntry>(&sql, values)
@@ -407,17 +410,21 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 }
                 DbBackend::Mysql => {
                     let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
-                    let (sql, values) = build_sqlx(&mut claim_select_query(limit, now));
+                    let (sql, values) =
+                        build_sqlx(self.pool.backend(), &mut claim_select_query(limit, now));
                     let rows: Vec<TraceDlqEntry> = tx.fetch_all_as(&sql, values).await?;
                     if rows.is_empty() {
                         tx.commit().await.map_err(OrionError::Storage)?;
                         return Ok(rows);
                     }
-                    let (sql, values) = build_sqlx(&mut lease_claimed_query(
-                        claimant,
-                        &lease_until,
-                        rows.iter().map(|r| r.id.as_str()),
-                    ));
+                    let (sql, values) = build_sqlx(
+                        self.pool.backend(),
+                        &mut lease_claimed_query(
+                            claimant,
+                            &lease_until,
+                            rows.iter().map(|r| r.id.as_str()),
+                        ),
+                    );
                     tx.execute_query(&sql, values).await?;
                     tx.commit().await.map_err(OrionError::Storage)?;
                     Ok(rows)
@@ -434,6 +441,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.record_retry", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 clear_lease(
                     Query::update()
                         .table(TraceDlq::Table)
@@ -452,6 +460,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     async fn remove(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.remove", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::delete()
                     .from_table(TraceDlq::Table)
                     .and_where(Expr::col(TraceDlq::Id).eq(id)),
@@ -466,6 +475,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.mark_exhausted", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 clear_lease(
                     Query::update()
                         .table(TraceDlq::Table)
@@ -499,7 +509,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.get_by_id", async {
-            let (sql, values) = build_sqlx(&mut dlq_select(id));
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut dlq_select(id));
             super::helpers::fetch_required::<TraceDlqEntry>(&self.pool, &sql, values, || {
                 OrionError::NotFound(format!("DLQ entry '{id}' not found"))
             })
@@ -567,7 +577,6 @@ mod tests {
     /// would decode a `SELECT *` just as happily — sqlx ignores extra columns.
     #[test]
     fn list_projection_never_reads_the_payload_columns() {
-        crate::storage::set_backend_for_test(crate::storage::DbBackend::Sqlite);
         let sql = super::super::helpers::page_select(&list_page(&TraceDlqFilter::default()))
             .to_string(sea_query::SqliteQueryBuilder);
         for withheld in ["payload_json", "metadata_json"] {

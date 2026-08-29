@@ -469,7 +469,7 @@ impl TraceRepository for SqlTraceRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
         crate::metrics::timed_db_op("traces.get_by_id", async {
-            let (sql, values) = build_sqlx(&mut trace_select(id));
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut trace_select(id));
 
             self.pool
                 .fetch_optional_as::<Trace>(&sql, values)
@@ -537,12 +537,10 @@ impl TraceRepository for SqlTraceRepository {
         task_trace_json: Option<&str>,
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("traces.set_result", async {
-            let (sql, values) = build_sqlx(&mut result_update(
-                id,
-                result_json,
-                duration_ms,
-                task_trace_json,
-            ));
+            let (sql, values) = build_sqlx(
+                self.pool.backend(),
+                &mut result_update(id, result_json, duration_ms, task_trace_json),
+            );
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
@@ -555,6 +553,7 @@ impl TraceRepository for SqlTraceRepository {
             let now = chrono::Utc::now().naive_utc();
 
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::insert()
                     .into_table(Traces::Table)
                     .columns(completed_columns())
@@ -587,7 +586,7 @@ impl TraceRepository for SqlTraceRepository {
                 insert.values_panic(completed_values(row.as_view(), &id, now));
                 ids.push(id);
             }
-            let (sql, values) = build_sqlx(&mut insert);
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut insert);
             self.pool.execute_query(&sql, values).await?;
             crate::metrics::record_trace_persistence_batch_size(rows.len());
             Ok(ids)
@@ -602,12 +601,15 @@ impl TraceRepository for SqlTraceRepository {
         crate::metrics::timed_db_op("traces.set_result_batch", async {
             let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
-                let (sql, values) = build_sqlx(&mut result_update(
-                    &row.id,
-                    &row.result_json,
-                    row.duration_ms,
-                    row.task_trace_json.as_deref(),
-                ));
+                let (sql, values) = build_sqlx(
+                    self.pool.backend(),
+                    &mut result_update(
+                        &row.id,
+                        &row.result_json,
+                        row.duration_ms,
+                        row.task_trace_json.as_deref(),
+                    ),
+                );
                 tx.execute_query(&sql, values).await?;
             }
             tx.commit().await.map_err(OrionError::Storage)?;
@@ -675,7 +677,7 @@ impl TraceRepository for SqlTraceRepository {
                 select.order_by(Traces::Id, order);
             }
 
-            let (sql, values) = build_sqlx(&mut select);
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut select);
             let data = self.pool.fetch_all_as::<TraceListRow>(&sql, values).await?;
 
             // A short page is the last page; anything else may have more.

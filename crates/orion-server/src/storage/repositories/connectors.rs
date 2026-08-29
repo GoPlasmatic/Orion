@@ -246,7 +246,7 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.get_by_id", async {
-            let (sql, values) = build_sqlx(&mut connector_select(id));
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut connector_select(id));
 
             self.pool
                 .fetch_optional_as::<Connector>(&sql, values)
@@ -363,6 +363,7 @@ impl ConnectorRepository for SqlConnectorRepository {
             // scalar read, not `get_by_id` — decrypting the config has no
             // business gating a delete.
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Connectors::Name)
                     .from(Connectors::Table)
@@ -375,6 +376,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .map_err(|_| OrionError::NotFound(format!("Connector '{id}' not found")))?;
 
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::delete()
                     .from_table(Connectors::Table)
                     .and_where(Expr::col(Connectors::Id).eq(id)),
@@ -395,6 +397,7 @@ impl ConnectorRepository for SqlConnectorRepository {
     async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError> {
         crate::metrics::timed_db_op("connectors.list_enabled", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Connectors::Table)
@@ -454,6 +457,7 @@ impl ConnectorRepository for SqlConnectorRepository {
     async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.get_by_name", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Connectors::Table)
@@ -476,6 +480,7 @@ impl ConnectorRepository for SqlConnectorRepository {
         use crate::storage::schema::ConnectorOauthState as S;
         crate::metrics::timed_db_op("connectors.get_oauth_state", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .columns([S::Fingerprint, S::StateJson])
                     .from(S::Table)
@@ -518,7 +523,7 @@ impl ConnectorRepository for SqlConnectorRepository {
         use crate::storage::schema::ConnectorOauthState as S;
         crate::metrics::timed_db_op("connectors.put_oauth_state", async {
             let stored = self.store_form(state_json)?;
-            let now = Expr::cust(super::helpers::sql_now(crate::storage::get_backend()));
+            let now = Expr::cust(super::helpers::sql_now(self.pool.backend()));
             let mut insert = Query::insert()
                 .into_table(S::Table)
                 .columns([S::ConnectorName, S::Fingerprint, S::StateJson, S::UpdatedAt])
@@ -534,7 +539,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                     .update_columns([S::Fingerprint, S::StateJson, S::UpdatedAt])
                     .to_owned(),
             );
-            let (sql, values) = build_sqlx(&mut insert);
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut insert);
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
@@ -545,6 +550,7 @@ impl ConnectorRepository for SqlConnectorRepository {
         use crate::storage::schema::ConnectorOauthState as S;
         crate::metrics::timed_db_op("connectors.delete_oauth_state", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::delete()
                     .from_table(S::Table)
                     .and_where(Expr::col(S::ConnectorName).eq(connector_name)),

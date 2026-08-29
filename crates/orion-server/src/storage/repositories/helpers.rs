@@ -116,6 +116,7 @@ where
 {
     use sea_query::{Asterisk, Expr, Func, Query};
     let (sql, values) = crate::storage::build_sqlx(
+        pool.backend(),
         Query::select()
             .expr(Func::count(Expr::col(Asterisk)))
             .from(table)
@@ -174,7 +175,7 @@ pub async fn paginate<T: DbRow>(
 ) -> Result<PaginatedResult<T>, OrionError> {
     let total = count_where(pool, page.from.clone(), page.cond.clone()).await?;
 
-    let (sql, values) = crate::storage::build_sqlx(&mut page_select(&page));
+    let (sql, values) = crate::storage::build_sqlx(pool.backend(), &mut page_select(&page));
     let data = pool.fetch_all_as::<T>(&sql, values).await?;
 
     Ok(PaginatedResult {
@@ -283,7 +284,7 @@ pub async fn snapshot_pages<T: DbRow>(
          a clamped page would silently truncate the snapshot"
     );
     let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
-    if crate::storage::get_backend() == crate::storage::DbBackend::Postgres {
+    if pool.backend() == crate::storage::DbBackend::Postgres {
         tx.execute_query(
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
             sea_query_sqlx::SqlxValues(sea_query::Values(Vec::new())),
@@ -293,7 +294,8 @@ pub async fn snapshot_pages<T: DbRow>(
     let mut out = Vec::new();
     let mut offset = 0i64;
     loop {
-        let (sql, values) = crate::storage::build_sqlx(&mut select_for(page_size, offset));
+        let (sql, values) =
+            crate::storage::build_sqlx(tx.backend(), &mut select_for(page_size, offset));
         let page: Vec<T> = tx.fetch_all_as(&sql, values).await?;
         let page_len = page.len() as i64;
         out.extend(page);
@@ -355,21 +357,22 @@ pub async fn update_returning_scalar<C>(
 where
     C: sea_query::IntoColumnRef,
 {
-    use crate::storage::{DbBackend, build_sqlx, get_backend};
+    use crate::storage::{DbBackend, build_sqlx};
 
-    match get_backend() {
+    let backend = pool.backend();
+    match backend {
         DbBackend::Sqlite | DbBackend::Postgres => {
             update.returning(sea_query::Query::returning().column(returning));
-            let (sql, values) = build_sqlx(update);
+            let (sql, values) = build_sqlx(backend, update);
             pool.fetch_scalar::<i64>(&sql, values)
                 .await
                 .map_err(OrionError::Storage)
         }
         DbBackend::Mysql => {
             let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
-            let (sql, values) = build_sqlx(update);
+            let (sql, values) = build_sqlx(backend, update);
             tx.execute_query(&sql, values).await?;
-            let (sql, values) = build_sqlx(read_back);
+            let (sql, values) = build_sqlx(backend, read_back);
             let (value,): (i64,) = fetch_required_tx(&mut tx, &sql, values, missing).await?;
             tx.commit().await.map_err(OrionError::Storage)?;
             Ok(value)
@@ -399,17 +402,23 @@ impl WriteStatement<'_> {
         }
     }
 
-    fn build_returning_all(&mut self) -> (String, sea_query_sqlx::SqlxValues) {
+    fn build_returning_all(
+        &mut self,
+        backend: crate::storage::DbBackend,
+    ) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
-            Self::Insert(q) => crate::storage::build_sqlx(q.returning_all()),
-            Self::Update(q) => crate::storage::build_sqlx(q.returning_all()),
+            Self::Insert(q) => crate::storage::build_sqlx(backend, q.returning_all()),
+            Self::Update(q) => crate::storage::build_sqlx(backend, q.returning_all()),
         }
     }
 
-    fn build(&mut self) -> (String, sea_query_sqlx::SqlxValues) {
+    fn build(
+        &mut self,
+        backend: crate::storage::DbBackend,
+    ) -> (String, sea_query_sqlx::SqlxValues) {
         match self {
-            Self::Insert(q) => crate::storage::build_sqlx(&mut **q),
-            Self::Update(q) => crate::storage::build_sqlx(&mut **q),
+            Self::Insert(q) => crate::storage::build_sqlx(backend, &mut **q),
+            Self::Update(q) => crate::storage::build_sqlx(backend, &mut **q),
         }
     }
 }
@@ -437,19 +446,20 @@ pub async fn write_returning_row<T: DbRow>(
     map_write_err: impl FnOnce(sqlx::Error) -> OrionError,
     missing: impl FnOnce() -> OrionError,
 ) -> Result<T, OrionError> {
-    if write.supports_returning(crate::storage::get_backend()) {
-        let (sql, values) = write.build_returning_all();
+    let backend = pool.backend();
+    if write.supports_returning(backend) {
+        let (sql, values) = write.build_returning_all(backend);
         pool.fetch_optional_as::<T>(&sql, values)
             .await
             .map_err(map_write_err)?
             .ok_or_else(missing)
     } else {
         let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
-        let (sql, values) = write.build();
+        let (sql, values) = write.build(backend);
         tx.execute_query(&sql, values)
             .await
             .map_err(map_write_err)?;
-        let (sql, values) = crate::storage::build_sqlx(read_back);
+        let (sql, values) = crate::storage::build_sqlx(backend, read_back);
         let row = fetch_required_tx(&mut tx, &sql, values, missing).await?;
         tx.commit().await.map_err(OrionError::Storage)?;
         Ok(row)
@@ -467,16 +477,17 @@ pub async fn insert_if_absent<C>(
 where
     C: sea_query::IntoIden,
 {
-    use crate::storage::{DbBackend, build_sqlx, get_backend};
+    use crate::storage::{DbBackend, build_sqlx};
 
-    match get_backend() {
+    let backend = pool.backend();
+    match backend {
         DbBackend::Sqlite | DbBackend::Postgres => {
             insert.on_conflict(
                 sea_query::OnConflict::column(conflict_col)
                     .do_nothing()
                     .to_owned(),
             );
-            let (sql, values) = build_sqlx(&mut insert);
+            let (sql, values) = build_sqlx(backend, &mut insert);
             pool.execute_query(&sql, values)
                 .await
                 .map_err(OrionError::Storage)
@@ -484,7 +495,7 @@ where
         DbBackend::Mysql => {
             // sea-query has no INSERT IGNORE rendering; patch the verb into
             // the rendered SQL rather than hand-rolling placeholders.
-            let (sql, values) = build_sqlx(&mut insert);
+            let (sql, values) = build_sqlx(backend, &mut insert);
             let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
             pool.execute_query(&sql, values)
                 .await
@@ -551,6 +562,7 @@ pub async fn delete_chunked(
             .from_subquery(inner, Alias::new("d6_chunk"))
             .to_owned();
         let (sql, values) = crate::storage::build_sqlx(
+            pool.backend(),
             Query::delete()
                 .from_table(table.clone())
                 .and_where(Expr::col(id_column.clone()).in_subquery(materialised)),

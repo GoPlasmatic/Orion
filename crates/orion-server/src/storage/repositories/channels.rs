@@ -194,6 +194,7 @@ impl SqlChannelRepository {
     /// set where it matters.
     async fn ensure_name_unclaimed(&self, name: &str, own_id: &str) -> Result<(), OrionError> {
         let (sql, values) = build_sqlx(
+            self.pool.backend(),
             Query::select()
                 .column(Channels::ChannelId)
                 .from(CurrentChannels::Table)
@@ -612,15 +613,15 @@ impl ChannelRepository for SqlChannelRepository {
             let draft: Channel = versioned::require_draft_tx(&mut tx, &spec(), channel_id).await?;
 
             // Archive current active versions
-            let (archive_sql, archive_values) = build_sqlx(&mut versioned::archive_actives_query(
-                &spec(),
-                channel_id,
-                None,
-            ));
+            let (archive_sql, archive_values) = build_sqlx(
+                self.pool.backend(),
+                &mut versioned::archive_actives_query(&spec(), channel_id, None),
+            );
             tx.execute_query(&archive_sql, archive_values).await?;
 
             // Activate the draft
             let (activate_sql, activate_values) = build_sqlx(
+                self.pool.backend(),
                 Query::update()
                     .table(Channels::Table)
                     .value(Channels::Status, EntityStatus::Active.as_str())
@@ -716,6 +717,7 @@ impl ChannelRepository for SqlChannelRepository {
     ) -> Result<Option<String>, OrionError> {
         crate::metrics::timed_db_op("channels.active_name_holder", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Channels::ChannelId)
                     .from(Channels::Table)
@@ -739,18 +741,13 @@ mod tests {
     use super::*;
     use sea_query::Asterisk;
 
-    /// Initialize the DB backend for unit tests that call `build_sqlx`.
-    fn init_test_backend() {
-        crate::storage::set_backend_for_test(crate::storage::DbBackend::Sqlite);
-    }
-
     #[test]
     fn test_build_condition_empty() {
-        init_test_backend();
         let filter = ChannelFilter::default();
         let cond = build_condition(&filter);
         // Build a query with the condition to verify it produces valid SQL
         let (sql, _) = build_sqlx(
+            crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)
@@ -766,13 +763,13 @@ mod tests {
 
     #[test]
     fn test_build_condition_status() {
-        init_test_backend();
         let filter = ChannelFilter {
             status: Some(EntityStatus::Active.as_str().to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
         let (sql, _) = build_sqlx(
+            crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)
@@ -787,13 +784,13 @@ mod tests {
 
     #[test]
     fn test_build_condition_channel_type() {
-        init_test_backend();
         let filter = ChannelFilter {
             channel_type: Some("sync".to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
         let (sql, _) = build_sqlx(
+            crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)
@@ -808,13 +805,13 @@ mod tests {
 
     #[test]
     fn test_build_condition_protocol() {
-        init_test_backend();
         let filter = ChannelFilter {
             protocol: Some("rest".to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
         let (sql, _) = build_sqlx(
+            crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)
@@ -829,7 +826,6 @@ mod tests {
 
     #[test]
     fn test_build_condition_all_filters() {
-        init_test_backend();
         let filter = ChannelFilter {
             status: Some(EntityStatus::Draft.as_str().to_string()),
             channel_type: Some("async".to_string()),
@@ -840,6 +836,7 @@ mod tests {
         };
         let cond = build_condition(&filter);
         let (sql, _) = build_sqlx(
+            crate::storage::DbBackend::Sqlite,
             Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)

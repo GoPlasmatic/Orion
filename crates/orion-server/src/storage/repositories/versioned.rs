@@ -60,7 +60,7 @@ pub(crate) async fn get_version_tx<T: DbRow>(
     id: &str,
     version: i64,
 ) -> Result<T, OrionError> {
-    let (sql, values) = build_sqlx(&mut version_select(spec, id, version));
+    let (sql, values) = build_sqlx(tx.backend(), &mut version_select(spec, id, version));
     fetch_required_tx(tx, &sql, values, || version_not_found(spec, id, version)).await
 }
 
@@ -91,6 +91,7 @@ pub(crate) async fn get_latest<T: DbRow>(
     id: &str,
 ) -> Result<T, OrionError> {
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::select()
             .column(Asterisk)
             .from(spec.table.clone())
@@ -111,6 +112,7 @@ pub(crate) async fn delete_all_versions(
     id: &str,
 ) -> Result<(), OrionError> {
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::delete()
             .from_table(spec.table.clone())
             .and_where(Expr::col(spec.id_col.clone()).eq(id)),
@@ -131,6 +133,7 @@ pub(crate) async fn list_active<T: DbRow>(
     spec: &VersionedSpec,
 ) -> Result<Vec<T>, OrionError> {
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::select()
             .column(Asterisk)
             .from(spec.table.clone())
@@ -165,8 +168,13 @@ pub(crate) async fn list_versions<T: DbRow>(
 
 /// The `SELECT * WHERE id = ? AND status = 'draft'` both draft-consuming
 /// paths (update, activate) start from.
-fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_sqlx::SqlxValues) {
+fn draft_query(
+    backend: crate::storage::DbBackend,
+    spec: &VersionedSpec,
+    id: &str,
+) -> (String, sea_query_sqlx::SqlxValues) {
     build_sqlx(
+        backend,
         Query::select()
             .column(Asterisk)
             .from(spec.table.clone())
@@ -197,7 +205,7 @@ pub(crate) async fn require_draft<T: DbRow>(
     spec: &VersionedSpec,
     id: &str,
 ) -> Result<T, OrionError> {
-    let (sql, values) = draft_query(spec, id);
+    let (sql, values) = draft_query(pool.backend(), spec, id);
     fetch_required(pool, &sql, values, || no_draft_err(spec, id)).await
 }
 
@@ -207,7 +215,7 @@ pub(crate) async fn require_draft_tx<T: DbRow>(
     spec: &VersionedSpec,
     id: &str,
 ) -> Result<T, OrionError> {
-    let (sql, values) = draft_query(spec, id);
+    let (sql, values) = draft_query(tx.backend(), spec, id);
     fetch_required_tx(tx, &sql, values, || no_draft_err(spec, id)).await
 }
 
@@ -218,7 +226,7 @@ pub(crate) async fn ensure_no_draft<T: DbRow>(
     spec: &VersionedSpec,
     id: &str,
 ) -> Result<(), OrionError> {
-    let (sql, values) = draft_query(spec, id);
+    let (sql, values) = draft_query(pool.backend(), spec, id);
     super::helpers::ensure_absent::<T>(pool, &sql, values, || {
         OrionError::Conflict(format!("{} '{id}' already has a draft version", spec.label))
     })
@@ -270,7 +278,7 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     // On SQLite the statement also stamps `updated_at` itself: the column is
     // normally maintained by an AFTER UPDATE trigger whose second write
     // RETURNING cannot see (Postgres' BEFORE trigger needs no such help).
-    let backend = crate::storage::get_backend();
+    let backend = pool.backend();
     if backend != crate::storage::DbBackend::Mysql {
         let mut update = archive_actives_query(spec, id, None);
         if backend == crate::storage::DbBackend::Sqlite {
@@ -280,7 +288,7 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
             );
         }
         update.returning_all();
-        let (sql, values) = build_sqlx(&mut update);
+        let (sql, values) = build_sqlx(backend, &mut update);
         let archived: Vec<T> = pool.fetch_all_as(&sql, values).await?;
         return archived
             .into_iter()
@@ -294,6 +302,7 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     // where a concurrent writer's row could come back instead.
     let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
     let (sql, values) = build_sqlx(
+        backend,
         Query::select()
             .column(Asterisk)
             .from(spec.table.clone())
@@ -304,7 +313,7 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     );
     let active: T = fetch_required_tx(&mut tx, &sql, values, no_active).await?;
 
-    let (sql, values) = build_sqlx(&mut archive_actives_query(spec, id, None));
+    let (sql, values) = build_sqlx(backend, &mut archive_actives_query(spec, id, None));
     tx.execute_query(&sql, values).await?;
 
     let archived = get_version_tx(&mut tx, spec, id, active.version()).await?;

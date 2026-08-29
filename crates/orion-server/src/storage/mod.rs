@@ -31,7 +31,6 @@ pub mod models;
 pub mod repositories;
 pub mod schema;
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use sea_query_sqlx::SqlxBinder;
@@ -60,8 +59,6 @@ impl std::fmt::Display for DbBackend {
     }
 }
 
-static DB_BACKEND: OnceLock<DbBackend> = OnceLock::new();
-
 /// Detect the database backend from a connection URL.
 pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
     if url.starts_with("sqlite:") || url.starts_with("file:") {
@@ -77,19 +74,6 @@ pub fn detect_backend(url: &str) -> Result<DbBackend, OrionError> {
             ),
         })
     }
-}
-
-/// Get the active database backend. Panics if not yet initialized.
-pub fn get_backend() -> DbBackend {
-    *DB_BACKEND
-        .get()
-        .expect("Database backend not initialized. Call init_pool() first.")
-}
-
-/// Set the database backend for unit tests that call `build_sqlx` without a pool.
-#[cfg(test)]
-pub fn set_backend_for_test(backend: DbBackend) {
-    DB_BACKEND.set(backend).ok();
 }
 
 // ============================================================
@@ -148,6 +132,24 @@ macro_rules! dispatch_pool {
 }
 
 impl DbPool {
+    /// The backend this pool speaks.
+    ///
+    /// D-item: this was a process-global `OnceLock<DbBackend>` set by
+    /// `init_pool_no_migrate` and read by `build_sqlx`, `write_returning_row`,
+    /// `insert_if_absent`, `archive_latest_active` and `snapshot_pages`. A
+    /// global made one process able to hold exactly one Orion store, which is
+    /// why `schema_parity` could not go through `run_migrations`, why every
+    /// repository unit test had to call `set_backend_for_test`, and why the
+    /// Postgres, MySQL and cluster suites are separate test binaries. The
+    /// variant already carries the answer.
+    pub fn backend(&self) -> DbBackend {
+        match self {
+            DbPool::Sqlite(_) => DbBackend::Sqlite,
+            DbPool::Postgres(_) => DbBackend::Postgres,
+            DbPool::Mysql(_) => DbBackend::Mysql,
+        }
+    }
+
     pub fn size(&self) -> u32 {
         dispatch_pool!(self, p => p.size())
     }
@@ -159,8 +161,10 @@ impl DbPool {
     /// property of the pool, not of any entity.
     pub async fn ping(&self) -> Result<(), sqlx::Error> {
         crate::metrics::timed_db_op("db.ping", async {
-            let (sql, values) =
-                build_sqlx(sea_query::Query::select().expr(sea_query::Expr::val(1i32)));
+            let (sql, values) = build_sqlx(
+                self.backend(),
+                sea_query::Query::select().expr(sea_query::Expr::val(1i32)),
+            );
             self.fetch_scalar::<i32>(&sql, values).await?;
             Ok(())
         })
@@ -280,6 +284,15 @@ macro_rules! dispatch_tx {
 }
 
 impl DbTransaction {
+    /// The backend this transaction speaks — see [`DbPool::backend`].
+    pub fn backend(&self) -> DbBackend {
+        match self {
+            DbTransaction::Sqlite(_) => DbBackend::Sqlite,
+            DbTransaction::Postgres(_) => DbBackend::Postgres,
+            DbTransaction::Mysql(_) => DbBackend::Mysql,
+        }
+    }
+
     pub async fn commit(self) -> Result<(), sqlx::Error> {
         match self {
             DbTransaction::Sqlite(tx) => tx.commit().await,
@@ -320,9 +333,17 @@ impl DbTransaction {
 // Query builder helper — builds SQL + bound values
 // ============================================================
 
-/// Build a SQL string and bound values using the runtime-detected backend.
-pub fn build_sqlx<S: SqlxBinder>(stmt: &mut S) -> (String, sea_query_sqlx::SqlxValues) {
-    match get_backend() {
+/// Build a SQL string and bound values in `backend`'s dialect.
+///
+/// The backend is a parameter rather than a global read: every caller holds a
+/// [`DbPool`] or a [`DbTransaction`] and can answer it with `.backend()`, and
+/// the pure query-builder helpers take it from their caller. See
+/// [`DbPool::backend`] for what the global cost.
+pub fn build_sqlx<S: SqlxBinder>(
+    backend: DbBackend,
+    stmt: &mut S,
+) -> (String, sea_query_sqlx::SqlxValues) {
+    match backend {
         DbBackend::Sqlite => stmt.build_sqlx(sea_query::SqliteQueryBuilder),
         DbBackend::Postgres => stmt.build_sqlx(sea_query::PostgresQueryBuilder),
         DbBackend::Mysql => stmt.build_sqlx(sea_query::MysqlQueryBuilder),
@@ -338,21 +359,12 @@ static MIGRATOR_POSTGRES: sqlx::migrate::Migrator = sqlx::migrate!("./migrations
 static MIGRATOR_MYSQL: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/mysql");
 
 /// The embedded migration set for one backend.
-///
-/// Public so a test can migrate a backend the current process is *not* pinned
-/// to — `get_backend()` is a process-wide `OnceLock`, which is exactly why
-/// cross-backend checks (`tests/schema_parity.rs`, D10) cannot go through
-/// [`run_migrations`].
 pub fn migrator_for(backend: DbBackend) -> &'static sqlx::migrate::Migrator {
     match backend {
         DbBackend::Sqlite => &MIGRATOR_SQLITE,
         DbBackend::Postgres => &MIGRATOR_POSTGRES,
         DbBackend::Mysql => &MIGRATOR_MYSQL,
     }
-}
-
-fn migrator() -> &'static sqlx::migrate::Migrator {
-    migrator_for(get_backend())
 }
 
 // ============================================================
@@ -407,8 +419,6 @@ pub async fn init_pool_for_startup(config: &StorageConfig) -> Result<DbPool, Ori
 /// Initialize the database connection pool without running migrations.
 pub async fn init_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     let backend = detect_backend(&config.url)?;
-    DB_BACKEND.set(backend).ok(); // Ignore if already set (e.g. tests)
-
     connect_with_retry(config, backend).await
 }
 
@@ -516,7 +526,7 @@ where
 
 /// Run pending database migrations.
 pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
-    let m = migrator();
+    let m = migrator_for(pool.backend());
     match pool {
         DbPool::Sqlite(p) => m.run(p).await,
         DbPool::Postgres(p) => m.run(p).await,
@@ -543,7 +553,7 @@ pub async fn pending_migrations(pool: &DbPool) -> Result<Vec<(i64, String)>, Ori
         }
     };
 
-    let pending: Vec<(i64, String)> = migrator()
+    let pending: Vec<(i64, String)> = migrator_for(pool.backend())
         .iter()
         .filter(|m| !applied.contains(&m.version))
         .map(|m| (m.version, m.description.to_string()))
@@ -807,5 +817,46 @@ mod tests {
             "SQLite must fail fast regardless of connect_retry_secs (elapsed {:?})",
             started.elapsed()
         );
+    }
+
+    /// One process, three dialects. This is what the `OnceLock<DbBackend>`
+    /// made impossible: the first `init_pool` latched the backend for the
+    /// process, so `build_sqlx` answered the same way for every caller
+    /// forever after — which is why `schema_parity` could not go through
+    /// `run_migrations`, why the Postgres, MySQL and cluster suites needed
+    /// their own test binaries, and why an in-process migration between two
+    /// stores could never be written.
+    ///
+    /// Placeholder syntax is the visible difference: `$1` on Postgres, `?`
+    /// on SQLite and MySQL.
+    #[test]
+    fn three_backends_render_in_one_process() {
+        let render = |backend| {
+            let (sql, _) = build_sqlx(
+                backend,
+                sea_query::Query::select()
+                    .expr(sea_query::Expr::val(1i32))
+                    .and_where(sea_query::ExprTrait::eq(
+                        sea_query::Expr::cust("x"),
+                        "seven",
+                    )),
+            );
+            sql
+        };
+
+        assert!(render(DbBackend::Postgres).contains("$1"));
+        assert!(render(DbBackend::Sqlite).contains('?'));
+        assert!(render(DbBackend::Mysql).contains('?'));
+    }
+
+    /// A pool answers for its own backend rather than for the process.
+    #[tokio::test]
+    async fn a_pool_knows_its_own_backend() {
+        let pool = test_sqlite_pool().await;
+        assert_eq!(pool.backend(), DbBackend::Sqlite);
+
+        let tx = pool.begin_tx().await.expect("tx");
+        assert_eq!(tx.backend(), DbBackend::Sqlite);
+        drop(tx);
     }
 }

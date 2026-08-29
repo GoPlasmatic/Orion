@@ -174,7 +174,7 @@ pub(crate) async fn handle_migrate(
     dry_run: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
-    let backend = orion::storage::get_backend();
+    let backend = pool.backend();
     let pending = orion::storage::pending_migrations(&pool).await?;
 
     if pending.is_empty() {

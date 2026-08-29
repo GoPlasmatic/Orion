@@ -105,15 +105,17 @@ impl PackageRepository for SqlPackageRepository {
         principal: &str,
     ) -> Result<PackageReceipt, OrionError> {
         crate::metrics::timed_db_op("packages.put", async {
-            let backend = crate::storage::get_backend();
+            let backend = self.pool.backend();
             let mut tx = self.pool.begin_write_tx().await?;
 
-            let (sql, values) = build_sqlx(&mut receipt_select(name, &req.version));
+            let (sql, values) =
+                build_sqlx(self.pool.backend(), &mut receipt_select(name, &req.version));
             let existing: Option<PackageReceipt> = tx.fetch_optional_as(&sql, values).await?;
 
             match existing {
                 None => {
                     let (sql, values) = build_sqlx(
+                        self.pool.backend(),
                         Query::insert()
                             .into_table(Packages::Table)
                             .columns([
@@ -160,6 +162,7 @@ impl PackageRepository for SqlPackageRepository {
                     // predicates make the touch a no-op — refused, not
                     // absorbed — if the row changed underneath us.
                     let (sql, values) = build_sqlx(
+                        self.pool.backend(),
                         Query::update()
                             .table(Packages::Table)
                             .value(Packages::Principal, principal)
@@ -182,6 +185,7 @@ impl PackageRepository for SqlPackageRepository {
                     // updated. The state predicate refuses the update if a
                     // concurrent PUT applied this version after our read.
                     let (sql, values) = build_sqlx(
+                        self.pool.backend(),
                         Query::update()
                             .table(Packages::Table)
                             .value(Packages::ContentHash, req.content_hash.as_str())
@@ -205,7 +209,8 @@ impl PackageRepository for SqlPackageRepository {
             }
 
             // D23: the row this PUT produced, read inside the same transaction.
-            let (sql, values) = build_sqlx(&mut receipt_select(name, &req.version));
+            let (sql, values) =
+                build_sqlx(self.pool.backend(), &mut receipt_select(name, &req.version));
             let row = fetch_required_tx(&mut tx, &sql, values, || {
                 OrionError::internal(format!(
                     "package receipt '{name}' version '{}' vanished mid-write",
@@ -232,6 +237,7 @@ impl PackageRepository for SqlPackageRepository {
             )
             .await?;
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Packages::Table)
@@ -257,6 +263,7 @@ impl PackageRepository for SqlPackageRepository {
     async fn get_by_name(&self, name: &str) -> Result<Vec<PackageReceipt>, OrionError> {
         crate::metrics::timed_db_op("packages.get_by_name", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Packages::Table)

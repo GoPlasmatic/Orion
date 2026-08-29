@@ -7,11 +7,18 @@ at the repo root.
 
 ## Test Binaries
 
-The suite is split into six test binaries. The storage backend is pinned per
-process (a global `DB_BACKEND` OnceLock), which is why the Postgres/MySQL
-storage tests and the cluster tests cannot live in the integration binary —
-and the metrics recorder is process-global too, which is why the rendered
-`/metrics` exposition gets a binary of its own.
+The suite is split into six test binaries. `metrics_exposition` has to be one
+of them: the metrics recorder is process-global, so the rendered `/metrics`
+body can only be asserted in a process that installed no other.
+
+The Postgres, MySQL and cluster binaries used to be forced apart for the same
+kind of reason — the storage backend was a process-global `OnceLock` that the
+integration binary pinned to SQLite. It is carried on `DbPool` now, so that
+constraint is gone and those three could become `#[ignore]` modules of the
+integration binary like the other Docker-gated suites. They have not been
+merged: it moves CI's `#[ignore]` name filters (`ci_filter_drift_test`) and
+relinks a 216 MB binary on every edit, which is worth doing alongside a
+per-test-process runner rather than on its own.
 
 | Binary | Location | Backend | Docker |
 |--------|----------|---------|--------|

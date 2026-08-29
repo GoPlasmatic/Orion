@@ -4,10 +4,11 @@
 //! the first coverage of MySQL as Orion's storage backend (previously it was
 //! only tested as an external `db_read`/`db_write` connector).
 //!
-//! This is a separate test binary (not part of `tests/integration/`) because
-//! the storage backend is pinned per process via a global `OnceLock`
-//! (`DB_BACKEND`): the integration binary pins SQLite, so MySQL-backed tests
-//! must run in their own process. Same reason there is one binary per backend.
+//! A separate test binary, but no longer a forced one: the backend used to be
+//! a process-global `OnceLock` that the integration binary pinned to SQLite,
+//! and it is now carried on `DbPool` itself. Merging the per-backend binaries
+//! is a test-topology change (see `tests/README.md`), not part of removing the
+//! global.
 //!
 //! Run with: `cargo test --test storage_mysql -- --ignored`
 

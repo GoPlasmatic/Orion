@@ -255,14 +255,14 @@ async fn activate_full_rollout(
     active_versions: &[Workflow],
 ) -> Result<(), OrionError> {
     if !active_versions.is_empty() {
-        let (sql, values) = build_sqlx(&mut versioned::archive_actives_query(
-            &spec(),
-            workflow_id,
-            None,
-        ));
+        let (sql, values) = build_sqlx(
+            tx.backend(),
+            &mut versioned::archive_actives_query(&spec(), workflow_id, None),
+        );
         tx.execute_query(&sql, values).await?;
     }
-    let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, 100);
+    let (sql, values) =
+        activate_workflow_version_query(tx.backend(), workflow_id, draft_version, 100);
     tx.execute_query(&sql, values).await?;
     Ok(())
 }
@@ -279,18 +279,26 @@ async fn activate_partial_rollout(
 ) -> Result<(), OrionError> {
     if let Some(primary_active) = active_versions.first() {
         if active_versions.len() > 1 {
-            let (sql, values) = build_sqlx(&mut versioned::archive_actives_query(
-                &spec(),
-                workflow_id,
-                Some(primary_active.version),
-            ));
+            let (sql, values) = build_sqlx(
+                tx.backend(),
+                &mut versioned::archive_actives_query(
+                    &spec(),
+                    workflow_id,
+                    Some(primary_active.version),
+                ),
+            );
             tx.execute_query(&sql, values).await?;
         }
-        let (sql, values) =
-            set_workflow_rollout_query(workflow_id, primary_active.version, 100 - rollout_pct);
+        let (sql, values) = set_workflow_rollout_query(
+            tx.backend(),
+            workflow_id,
+            primary_active.version,
+            100 - rollout_pct,
+        );
         tx.execute_query(&sql, values).await?;
     }
-    let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, rollout_pct);
+    let (sql, values) =
+        activate_workflow_version_query(tx.backend(), workflow_id, draft_version, rollout_pct);
     tx.execute_query(&sql, values).await?;
     Ok(())
 }
@@ -298,6 +306,7 @@ async fn activate_partial_rollout(
 /// Build the UPDATE query that sets `Status = Archived` for one specific
 /// version of a workflow.
 fn set_workflow_archived_query(
+    backend: crate::storage::DbBackend,
     workflow_id: &str,
     version: i64,
 ) -> (String, sea_query_sqlx::SqlxValues) {
@@ -306,12 +315,13 @@ fn set_workflow_archived_query(
         .value(Workflows::Status, EntityStatus::Archived.as_str())
         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
         .and_where(Expr::col(Workflows::Version).eq(version));
-    build_sqlx(&mut q)
+    build_sqlx(backend, &mut q)
 }
 
 /// Build the UPDATE query that sets `RolloutPercentage` for one specific
 /// version of a workflow.
 fn set_workflow_rollout_query(
+    backend: crate::storage::DbBackend,
     workflow_id: &str,
     version: i64,
     pct: i64,
@@ -321,12 +331,13 @@ fn set_workflow_rollout_query(
         .value(Workflows::RolloutPercentage, pct)
         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
         .and_where(Expr::col(Workflows::Version).eq(version));
-    build_sqlx(&mut q)
+    build_sqlx(backend, &mut q)
 }
 
 /// Build the UPDATE query that promotes a draft version to `Active` with
 /// the given rollout percentage.
 fn activate_workflow_version_query(
+    backend: crate::storage::DbBackend,
     workflow_id: &str,
     version: i64,
     pct: i64,
@@ -337,7 +348,7 @@ fn activate_workflow_version_query(
         .value(Workflows::RolloutPercentage, pct)
         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
         .and_where(Expr::col(Workflows::Version).eq(version));
-    build_sqlx(&mut q)
+    build_sqlx(backend, &mut q)
 }
 
 fn build_condition(filter: &WorkflowFilter) -> Condition {
@@ -416,6 +427,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             // ignore them and return every current workflow in one query.
             let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(CurrentWorkflows::Table)
@@ -635,6 +647,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             // Fetch active versions
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Workflows::Table)
@@ -690,6 +703,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             // Get active versions ordered by version DESC (newest first)
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .column(Asterisk)
                     .from(Workflows::Table)
@@ -726,16 +740,19 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             if pct == 100 {
                 // Promote the newer version: archive the older and set newer to 100%.
-                let (sql, values) = set_workflow_archived_query(workflow_id, older.version);
+                let (sql, values) =
+                    set_workflow_archived_query(tx.backend(), workflow_id, older.version);
                 tx.execute_query(&sql, values).await?;
-                let (sql, values) = set_workflow_rollout_query(workflow_id, newer.version, 100);
+                let (sql, values) =
+                    set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, 100);
                 tx.execute_query(&sql, values).await?;
             } else {
                 // Split traffic: newer = pct, older = 100 - pct.
-                let (sql, values) = set_workflow_rollout_query(workflow_id, newer.version, pct);
+                let (sql, values) =
+                    set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, pct);
                 tx.execute_query(&sql, values).await?;
                 let (sql, values) =
-                    set_workflow_rollout_query(workflow_id, older.version, 100 - pct);
+                    set_workflow_rollout_query(tx.backend(), workflow_id, older.version, 100 - pct);
                 tx.execute_query(&sql, values).await?;
             }
 

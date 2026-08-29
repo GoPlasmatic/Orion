@@ -25,6 +25,7 @@ async fn state_with_key() -> orion::server::state::AppState {
 async fn raw_config_json(state: &orion::server::state::AppState, name: &str) -> String {
     use sea_query::{Expr, ExprTrait, Query};
     let (sql, values) = orion::storage::build_sqlx(
+        state.db_pool.backend(),
         Query::select()
             .column(orion::storage::schema::Connectors::ConfigJson)
             .from(orion::storage::schema::Connectors::Table)
@@ -105,6 +106,7 @@ async fn pre_existing_plaintext_rows_keep_loading() {
     // Simulate a pre-key row by writing plaintext straight to the column.
     use sea_query::Query;
     let (sql, values) = orion::storage::build_sqlx(
+        state.db_pool.backend(),
         Query::insert()
             .into_table(orion::storage::schema::Connectors::Table)
             .columns([

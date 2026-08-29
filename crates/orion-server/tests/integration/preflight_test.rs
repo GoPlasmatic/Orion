@@ -33,6 +33,7 @@ async fn pool() -> DbPool {
 /// Write `config_json` straight onto a stored channel, the way 0.3.0 left it.
 async fn set_channel_config(pool: &DbPool, channel_id: &str, config_json: &str) {
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::update()
             .table(Channels::Table)
             .value(Channels::ConfigJson, config_json)
@@ -44,6 +45,7 @@ async fn set_channel_config(pool: &DbPool, channel_id: &str, config_json: &str) 
 /// Same for a workflow's `tasks_json`.
 async fn set_workflow_tasks(pool: &DbPool, workflow_id: &str, tasks_json: &str) {
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::update()
             .table(Workflows::Table)
             .value(Workflows::TasksJson, tasks_json)
@@ -273,6 +275,7 @@ async fn duplicate_channel_names_are_found() {
     // The create/update paths refuse the collision now, so fabricate the
     // pre-1.0 state the way 0.3.0 left it: rename the row directly.
     let (sql, values) = build_sqlx(
+        pool.backend(),
         Query::update()
             .table(Channels::Table)
             .value(Channels::Name, "orders")

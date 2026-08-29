@@ -140,6 +140,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
             }
 
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::insert()
                     .into_table(AuditLogs::Table)
                     .columns(columns)
@@ -285,6 +286,7 @@ pub(crate) mod tests {
     pub(crate) async fn backdate(pool: &DbPool, resource_id: &str, days: i64) {
         let when = chrono::Utc::now().naive_utc() - chrono::Duration::days(days);
         let (sql, values) = build_sqlx(
+            pool.backend(),
             Query::update()
                 .table(AuditLogs::Table)
                 .value(AuditLogs::CreatedAt, when)

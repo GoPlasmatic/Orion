@@ -12,7 +12,7 @@ use sea_query::{Expr, ExprTrait, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::schema::{ConfigEpoch, JobLeases};
-use crate::storage::{DbPool, build_sqlx, get_backend};
+use crate::storage::{DbBackend, DbPool, build_sqlx};
 
 use super::helpers::{fetch_required, insert_if_absent, update_returning_scalar};
 
@@ -58,8 +58,8 @@ impl SqlClusterRepository {
     }
 
     /// The DB server's own clock as a SQL expression.
-    fn now_expr() -> SimpleExpr {
-        Expr::cust(super::helpers::sql_now(get_backend()))
+    fn now_expr(backend: DbBackend) -> SimpleExpr {
+        Expr::cust(super::helpers::sql_now(backend))
     }
 
     fn missing_epoch_row() -> OrionError {
@@ -77,7 +77,7 @@ impl SqlClusterRepository {
         returning_col: ConfigEpoch,
     ) -> Result<i64, OrionError> {
         update
-            .value(ConfigEpoch::UpdatedAt, Self::now_expr())
+            .value(ConfigEpoch::UpdatedAt, Self::now_expr(self.pool.backend()))
             .and_where(Expr::col(ConfigEpoch::Id).eq(1));
         let mut read_back = Query::select()
             .column(returning_col)
@@ -111,6 +111,7 @@ impl ClusterRepository for SqlClusterRepository {
     async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
         crate::metrics::timed_db_op("cluster.get_epoch", async {
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::select()
                     .columns([
                         ConfigEpoch::Epoch,
@@ -148,21 +149,22 @@ impl ClusterRepository for SqlClusterRepository {
         ttl_secs: u64,
     ) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("cluster.try_acquire_job_lease", async {
-            let expiry: SimpleExpr =
-                Expr::cust(super::helpers::sql_now_plus_secs(get_backend(), ttl_secs));
+            let expiry: SimpleExpr = Expr::cust(super::helpers::sql_now_plus_secs(
+                self.pool.backend(),
+                ttl_secs,
+            ));
 
             // Step 1: renew own lease or take over an expired one.
             let (sql, values) = build_sqlx(
+                self.pool.backend(),
                 Query::update()
                     .table(JobLeases::Table)
                     .value(JobLeases::Holder, holder)
                     .value(JobLeases::ExpiresAt, expiry.clone())
                     .and_where(Expr::col(JobLeases::JobName).eq(job_name))
-                    .and_where(
-                        Expr::col(JobLeases::Holder)
-                            .eq(holder)
-                            .or(Expr::col(JobLeases::ExpiresAt).lt(Self::now_expr())),
-                    ),
+                    .and_where(Expr::col(JobLeases::Holder).eq(holder).or(
+                        Expr::col(JobLeases::ExpiresAt).lt(Self::now_expr(self.pool.backend())),
+                    )),
             );
             if self.pool.execute_query(&sql, values).await? > 0 {
                 return Ok(true);
