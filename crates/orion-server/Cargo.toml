@@ -58,9 +58,9 @@ path = "tests/integration/main.rs"
 harness = true
 
 # Multi-node (cluster mode) tests: two AppStates over one Postgres + one
-# Redis testcontainer. A separate binary because the storage backend is
-# pinned per process (DB_BACKEND OnceLock) and the integration binary pins
-# SQLite. Run with: cargo test --test cluster -- --ignored
+# Redis testcontainer. Its own binary so a Docker-gated Postgres suite can be
+# run and reported on its own.
+# Run with: cargo test --test cluster -- --ignored
 [[test]]
 name = "cluster"
 path = "tests/cluster/main.rs"
