@@ -40,28 +40,17 @@ use crate::storage::repositories::workflows::{WorkflowFilter, WorkflowRepository
 const PAGE_SIZE: i64 = 500;
 
 /// One thing that will break on upgrade, and what to do about it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Finding {
-    /// The `upgrading.md` checklist row this belongs to, so the report and the
-    /// guide can be read side by side.
-    pub check: &'static str,
-    /// What is affected, named the way the operator stored it.
-    pub entity: String,
-    /// What is wrong.
-    pub problem: String,
-    /// What to change.
-    pub remedy: String,
-}
-
-impl std::fmt::Display for Finding {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{}] {}\n      {}\n      fix: {}",
-            self.check, self.entity, self.problem, self.remedy
-        )
-    }
-}
+///
+/// The shared [`Diagnostic`]: `check` is the `upgrading.md` checklist row this
+/// belongs to, so the report and the guide can be read side by side; `entity`
+/// is named the way the operator stored it; `message` is what is wrong and
+/// `remedy` what to change. A scan over stored rows has no file to point at, so
+/// `file`/`path`/`line` stay `None` — which is why the location is optional on
+/// the shared type rather than a second type carrying it.
+///
+/// Every finding here is a break, so all of them are `Severity::Error` and
+/// [`Diagnostic::render_preflight`] does not print a level.
+pub use crate::definitions::Diagnostic;
 
 /// Scan every stored channel and workflow. Returns findings in a stable order:
 /// channels first, then workflows, each in repository order.
@@ -73,13 +62,13 @@ impl std::fmt::Display for Finding {
 pub async fn scan(
     channels: &dyn ChannelRepository,
     workflows: &dyn WorkflowRepository,
-) -> Result<Vec<Finding>, OrionError> {
+) -> Result<Vec<Diagnostic>, OrionError> {
     let mut findings = scan_channels(channels).await?;
     findings.extend(scan_workflows(workflows).await?);
     Ok(findings)
 }
 
-async fn scan_channels(repo: &dyn ChannelRepository) -> Result<Vec<Finding>, OrionError> {
+async fn scan_channels(repo: &dyn ChannelRepository) -> Result<Vec<Diagnostic>, OrionError> {
     let mut findings = Vec::new();
     // K7: channel names must be unique across channel_ids — the create path
     // refuses new collisions, but rows written before 1.0 can still carry
@@ -115,28 +104,25 @@ async fn scan_channels(repo: &dyn ChannelRepository) -> Result<Vec<Finding>, Ori
 /// K7: one finding per channel name that more than one `channel_id` holds.
 fn duplicate_name_findings(
     names: &std::collections::BTreeMap<String, Vec<String>>,
-) -> Vec<Finding> {
+) -> Vec<Diagnostic> {
     names
         .iter()
         .filter(|(_, ids)| ids.len() > 1)
-        .map(|(name, ids)| Finding {
-            check: "channel-names",
-            entity: format!("channel '{name}'"),
-            problem: format!(
+        .map(|(name, ids)| Diagnostic::error(
+            "channel-names",
+            format!("channel '{name}'"),
+            format!(
                 "{} channels share this name (ids: {}) — the data plane and \
                  channel_call address channels by name, so only one of them can \
                  serve, and 1.0 refuses to create or activate the collision",
                 ids.len(),
                 ids.join(", ")
             ),
-            remedy: "rename all but one (create a new version with a distinct name, \
-                     activate it), or delete the redundant channels"
-                .to_string(),
-        })
+        ).with_remedy("rename all but one (create a new version with a distinct name, activate it), or delete the redundant channels" .to_string()))
         .collect()
 }
 
-async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Finding>, OrionError> {
+async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Diagnostic>, OrionError> {
     let mut findings = Vec::new();
     let mut offset = 0i64;
     loop {
@@ -167,15 +153,17 @@ async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Finding>, O
 /// refused at every ingress — so they share one check rather than being
 /// enumerated. The serde message names the offending key, which is the part the
 /// operator needs.
-pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Finding> {
+pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Diagnostic> {
     let parsed: Result<Value, _> = serde_json::from_str(config_json);
     let Ok(value) = parsed else {
-        return vec![Finding {
-            check: "3",
-            entity: format!("channel '{name}'"),
-            problem: "its stored config is not valid JSON".to_string(),
-            remedy: "repair the config_json column, or re-create the channel".to_string(),
-        }];
+        return vec![
+            Diagnostic::error(
+                "3",
+                format!("channel '{name}'"),
+                "its stored config is not valid JSON".to_string(),
+            )
+            .with_remedy("repair the config_json column, or re-create the channel".to_string()),
+        ];
     };
 
     // An empty object is the documented "no config" default and is never
@@ -186,12 +174,14 @@ pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Finding> {
 
     match serde_json::from_value::<crate::channel::ChannelConfig>(value) {
         Ok(_) => Vec::new(),
-        Err(e) => vec![Finding {
-            check: "3",
-            entity: format!("channel '{name}'"),
-            problem: format!("its stored config no longer parses: {e}"),
-            remedy: pick_config_remedy(config_json),
-        }],
+        Err(e) => vec![
+            Diagnostic::error(
+                "3",
+                format!("channel '{name}'"),
+                format!("its stored config no longer parses: {e}"),
+            )
+            .with_remedy(pick_config_remedy(config_json)),
+        ],
     }
 }
 
@@ -216,14 +206,16 @@ fn pick_config_remedy(config_json: &str) -> String {
 
 /// Checklist rows 14 and the `data_write` envelope row, plus everything the
 /// shared task validator already knows.
-pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
+pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     let Ok(tasks) = serde_json::from_str::<Value>(tasks_json) else {
-        return vec![Finding {
-            check: "14",
-            entity: format!("workflow '{name}'"),
-            problem: "its stored tasks are not valid JSON".to_string(),
-            remedy: "repair the tasks_json column, or re-create the workflow".to_string(),
-        }];
+        return vec![
+            Diagnostic::error(
+                "14",
+                format!("workflow '{name}'"),
+                "its stored tasks are not valid JSON".to_string(),
+            )
+            .with_remedy("repair the tasks_json column, or re-create the workflow".to_string()),
+        ];
     };
 
     // The chokepoint create, update, import, POST /validate and `lint` all
@@ -231,15 +223,13 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
     // re-implementing the rules. Covers missing/duplicate task ids, unknown
     // function names, and missing required inputs (including `write`, now that
     // the pre-1.0 flat envelope is gone).
-    let mut findings: Vec<Finding> = crate::validation::validate_workflow_tasks_schema(&tasks)
+    let mut findings: Vec<Diagnostic> = crate::validation::validate_workflow_tasks_schema(&tasks)
         .into_iter()
-        .map(|e| Finding {
-            check: "14",
-            entity: format!("workflow '{name}' {}", e.path),
-            problem: e.message,
-            remedy: "fix the task and PUT the workflow; it is refused at create \
-                     and update until then"
-                .to_string(),
+        .map(|e| {
+            Diagnostic::error("14", format!("workflow '{name}' {}", e.path), e.message).with_remedy(
+                "fix the task and PUT the workflow; it is refused at create and update until then"
+                    .to_string(),
+            )
         })
         .collect();
 
@@ -251,13 +241,11 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
     findings.extend(
         crate::validation::secret_reference_errors(&tasks)
             .into_iter()
-            .map(|(path, message)| Finding {
-                check: "14",
-                entity: format!("workflow '{name}' {path}"),
-                problem: message,
-                remedy: "move the value to a connector, or declare it in the config                          file — under [vars] if it belongs in a trace, [secrets] if                          it does not; the next update of this workflow is refused                          until then"
-                    .to_string(),
-            }),
+            .map(|(path, message)| Diagnostic::error(
+            "14",
+            format!("workflow '{name}' {path}"),
+            message,
+            ).with_remedy("move the value to a connector, or declare it in the config                          file — under [vars] if it belongs in a trace, [secrets] if                          it does not; the next update of this workflow is refused                          until then" .to_string())),
     );
 
     findings.extend(check_dialect_schemas(name, &tasks));
@@ -277,7 +265,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Finding> {
 /// violation — `schema` is a genuinely optional input, and a task can legally
 /// omit it by opting into `identity` explicitly. It is a *migration* question,
 /// which is what this module is for.
-fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Finding> {
+fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
     // Flattened, like every other walk over authored tasks: a dialect task
     // inside a guard clause is one the engine will run, and an upgrade scan
@@ -301,19 +289,15 @@ fn check_dialect_schemas(workflow: &str, tasks: &Value) -> Vec<Finding> {
             .get("id")
             .and_then(Value::as_str)
             .map_or(path, str::to_string);
-        findings.push(Finding {
-            check: "14",
-            entity: format!("workflow '{workflow}' task '{task_id}' ({fname})"),
-            problem: "declares no `schema`, so it will fail at its first request. \
+        findings.push(Diagnostic::error(
+            "14",
+            format!("workflow '{workflow}' task '{task_id}' ({fname})"),
+            "declares no `schema`, so it will fail at its first request. \
                       Before 1.0 an absent schema meant `unmapped: identity` — every \
                       name passed through to the physical one, reaching every table \
                       the connector could see. The default is now `reject`"
                 .to_string(),
-            remedy: "add a `schema` declaring the entities and columns this task \
-                     uses, or `\"schema\": {\"unmapped\": \"identity\"}` to restore \
-                     the 0.x behaviour exactly"
-                .to_string(),
-        });
+        ).with_remedy("add a `schema` declaring the entities and columns this task uses, or `\"schema\": {\"unmapped\": \"identity\"}` to restore the 0.x behaviour exactly" .to_string()));
     }
     findings
 }
@@ -341,9 +325,13 @@ mod tests {
             found[0].entity
         );
         assert!(
-            found[0].remedy.contains("[secrets]"),
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("[secrets]"),
             "the remedy must name where the value goes: {}",
-            found[0].remedy
+            found[0].remedy.as_deref().unwrap_or_default()
         );
     }
 
@@ -381,9 +369,13 @@ mod tests {
         assert_eq!(found[0].check, "3");
         assert!(found[0].entity.contains("orders"));
         assert!(
-            found[0].remedy.contains("origin_allow_list"),
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("origin_allow_list"),
             "the remedy must name the new key: {}",
-            found[0].remedy
+            found[0].remedy.as_deref().unwrap_or_default()
         );
     }
 
@@ -392,14 +384,22 @@ mod tests {
         let found = check_channel_config("bulk", r#"{"backpressure": {"max_concurrent": 50}}"#);
         assert_eq!(found.len(), 1);
         assert!(
-            found[0].remedy.contains("max_concurrent_per_node"),
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("max_concurrent_per_node"),
             "the remedy must name the new key: {}",
-            found[0].remedy
+            found[0].remedy.as_deref().unwrap_or_default()
         );
         assert!(
-            found[0].remedy.contains("per replica"),
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("per replica"),
             "renaming alone is not the whole fix — the value changes meaning: {}",
-            found[0].remedy
+            found[0].remedy.as_deref().unwrap_or_default()
         );
     }
 
@@ -408,9 +408,9 @@ mod tests {
         let found = check_channel_config("typo", r#"{"deduplicaton": {"header": "Idem"}}"#);
         assert_eq!(found.len(), 1);
         assert!(
-            found[0].problem.contains("deduplicaton"),
+            found[0].message.contains("deduplicaton"),
             "the serde message names the key: {}",
-            found[0].problem
+            found[0].message
         );
     }
 
@@ -418,7 +418,7 @@ mod tests {
     fn unparseable_stored_json_is_reported_rather_than_panicking() {
         let found = check_channel_config("broken", "{not json");
         assert_eq!(found.len(), 1);
-        assert!(found[0].problem.contains("not valid JSON"));
+        assert!(found[0].message.contains("not valid JSON"));
     }
 
     #[test]
@@ -434,9 +434,13 @@ mod tests {
         assert_eq!(found[0].check, "14");
         assert!(found[0].entity.contains("read"));
         assert!(
-            found[0].remedy.contains("unmapped"),
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("unmapped"),
             "the remedy must offer the one-line escape hatch: {}",
-            found[0].remedy
+            found[0].remedy.as_deref().unwrap_or_default()
         );
     }
 
@@ -506,7 +510,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|f| f.problem.contains("Duplicate step id")),
+                .any(|f| f.message.contains("Duplicate step id")),
             "{found:?}"
         );
     }
@@ -526,20 +530,20 @@ mod tests {
         }]);
         let found = check_workflow_tasks("writer", &tasks.to_string());
         assert!(
-            found.iter().any(|f| f.problem.contains("write")),
+            found.iter().any(|f| f.message.contains("write")),
             "the missing envelope must be reported: {found:?}"
         );
     }
 
     #[test]
     fn findings_render_with_their_checklist_row() {
-        let f = Finding {
-            check: "14",
-            entity: "workflow 'w' task 't'".to_string(),
-            problem: "declares no schema".to_string(),
-            remedy: "add one".to_string(),
-        };
-        let rendered = f.to_string();
+        let f = Diagnostic::error(
+            "14",
+            "workflow 'w' task 't'".to_string(),
+            "declares no schema".to_string(),
+        )
+        .with_remedy("add one".to_string());
+        let rendered = f.render_preflight();
         assert!(
             rendered.starts_with("[14] workflow 'w' task 't'"),
             "{rendered}"

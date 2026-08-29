@@ -5,7 +5,7 @@
 //! that had been guarding promotion artifacts — with four added that a
 //! directory needs and an artifact happened not to have.
 //!
-//! Every check reports through [`Finding`] rather than a formatted string, so
+//! Every check reports through [`Diagnostic`] rather than a formatted string, so
 //! the caller decides what fails the command. That distinction is the reason
 //! this is not a `Vec<String>`: a `channel_call` resolved by `channel_logic`
 //! cannot be verified statically and must not fail a gate, while a connector
@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::connector::ConnectorType;
 
-use super::finding::Finding;
+use super::diagnostic::Diagnostic;
+use super::set::Definition;
 use super::set::{Boundary, DefinitionSet, Entity};
 use crate::storage::repositories::channels::CreateChannelRequest;
 use crate::storage::repositories::connectors::CreateConnectorRequest;
@@ -33,7 +34,49 @@ use crate::storage::repositories::workflows::CreateWorkflowRequest;
 /// linted has no such contract: it may hold a workflow the author has not
 /// assigned an id to yet, and refusing that would make the gate unusable
 /// during authoring, which is when it is most wanted.
-pub fn check(set: &DefinitionSet, boundary: &Boundary, require_explicit_ids: bool) -> Vec<Finding> {
+/// One diagnostic per structured field error a validator refused with.
+///
+/// The whole error is used only when it carries no field errors — a refusal
+/// that is not per-field. Otherwise each `FieldError` becomes its own
+/// diagnostic with its own path, because collapsing five field problems into
+/// one prose line was the defect: a set gate could say a workflow failed schema
+/// validation but not which field, and `--deny-warnings` was the only lever
+/// over the lot.
+fn schema_diagnostics(
+    check: &'static str,
+    entity: &str,
+    def: &Definition,
+    err: &crate::errors::OrionError,
+) -> Vec<Diagnostic> {
+    let fields = err.field_errors();
+    if fields.is_empty() {
+        return vec![
+            Diagnostic::error(check, entity.to_string(), err.to_string()).with_location(
+                &def.origin,
+                None,
+                None,
+            ),
+        ];
+    }
+    fields
+        .iter()
+        .map(|f| {
+            let d = Diagnostic::from_field_error(check, entity, f);
+            // The field path doubles as a document coordinate, so a schema
+            // refusal can now say `orders.json:14:5` instead of naming the
+            // workflow and leaving the author to find the field.
+            let path = d.path.clone();
+            let line = path.as_deref().and_then(|p| def.locate(p));
+            d.with_location(&def.origin, path.as_deref(), line)
+        })
+        .collect()
+}
+
+pub fn check(
+    set: &DefinitionSet,
+    boundary: &Boundary,
+    require_explicit_ids: bool,
+) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
 
     let connectors = check_connectors(set, &mut findings);
@@ -56,7 +99,7 @@ struct Workflows {
 /// name → declared `connector_type`, for the closure checks.
 fn check_connectors(
     set: &DefinitionSet,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) -> BTreeMap<String, &'static str> {
     let mut by_name = BTreeMap::new();
     let mut seen: Vec<String> = Vec::new();
@@ -64,7 +107,7 @@ fn check_connectors(
         let req: CreateConnectorRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
             Err(e) => {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "parse.connector",
                     &def.origin,
                     format!("not a connector import item: {e}"),
@@ -73,14 +116,15 @@ fn check_connectors(
             }
         };
         if let Err(e) = crate::validation::validate_create_connector(&req) {
-            findings.push(Finding::error(
+            findings.extend(schema_diagnostics(
                 "schema.connector",
-                format!("connector '{}'", req.name),
-                e.to_string(),
+                &format!("connector '{}'", req.name),
+                def,
+                &e,
             ));
         }
         if seen.contains(&req.name) {
-            findings.push(Finding::error(
+            findings.push(Diagnostic::error(
                 "duplicate.connector_name",
                 format!("connector '{}'", req.name),
                 "two connectors in the set share this name",
@@ -95,7 +139,7 @@ fn check_connectors(
 fn check_workflows(
     set: &DefinitionSet,
     require_explicit_ids: bool,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) -> Workflows {
     let loop_cap = crate::config::EngineConfig::default().max_loop_iterations;
     let mut ids = Vec::new();
@@ -104,7 +148,7 @@ fn check_workflows(
         let req: CreateWorkflowRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
             Err(e) => {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "parse.workflow",
                     &def.origin,
                     format!("not a workflow import item: {e}"),
@@ -113,10 +157,11 @@ fn check_workflows(
             }
         };
         if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap) {
-            findings.push(Finding::error(
+            findings.extend(schema_diagnostics(
                 "schema.workflow",
-                format!("workflow '{}'", req.name),
-                e.to_string(),
+                &format!("workflow '{}'", req.name),
+                def,
+                &e,
             ));
         }
         // An error, not a warning: unlike an operator name, `env://` at the
@@ -125,7 +170,7 @@ fn check_workflows(
         // two refused the set. `validate_create_workflow` refuses the same
         // documents, so a set that passes here is one the admin API accepts.
         for (path, message) in crate::validation::secret_reference_errors(&req.tasks) {
-            findings.push(Finding::error(
+            findings.push(Diagnostic::error(
                 "env.unresolved",
                 format!("workflow '{}' {path}", req.name),
                 message,
@@ -134,7 +179,7 @@ fn check_workflows(
         // The advisory the single-file lint already emits, carried into set
         // mode so a directory gate is not weaker than the per-file one.
         for (path, message) in crate::validation::unresolvable_logic_warnings(&req.tasks) {
-            findings.push(Finding::warning(
+            findings.push(Diagnostic::warning(
                 "logic.unresolvable",
                 format!("workflow '{}' {path}", req.name),
                 message,
@@ -143,7 +188,7 @@ fn check_workflows(
         match &req.workflow_id {
             Some(id) => {
                 if ids.contains(id) {
-                    findings.push(Finding::error(
+                    findings.push(Diagnostic::error(
                         "duplicate.workflow_id",
                         format!("workflow '{}'", req.name),
                         format!("two workflows in the set share workflow_id '{id}'"),
@@ -153,7 +198,7 @@ fn check_workflows(
                 tasks.push((id.clone(), req.tasks.clone()));
             }
             None if require_explicit_ids => findings.push(
-                Finding::error(
+                Diagnostic::error(
                     "missing.workflow_id",
                     format!("workflow '{}'", req.name),
                     "a package workflow must carry an explicit workflow_id — a generated \
@@ -173,7 +218,7 @@ fn check_channels(
     set: &DefinitionSet,
     workflow_ids: &[String],
     require_explicit_ids: bool,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut channel_ids: Vec<String> = Vec::new();
@@ -186,7 +231,7 @@ fn check_channels(
         let req: CreateChannelRequest = match serde_json::from_value(def.doc.clone()) {
             Ok(req) => req,
             Err(e) => {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "parse.channel",
                     &def.origin,
                     format!("not a channel import item: {e}"),
@@ -195,16 +240,17 @@ fn check_channels(
             }
         };
         if let Err(e) = crate::validation::validate_create_channel(&req) {
-            findings.push(Finding::error(
+            findings.extend(schema_diagnostics(
                 "schema.channel",
-                format!("channel '{}'", req.name),
-                e.to_string(),
+                &format!("channel '{}'", req.name),
+                def,
+                &e,
             ));
         }
         match &req.channel_id {
             Some(id) => {
                 if channel_ids.contains(id) {
-                    findings.push(Finding::error(
+                    findings.push(Diagnostic::error(
                         "duplicate.channel_id",
                         format!("channel '{}'", req.name),
                         format!("two channels in the set share channel_id '{id}'"),
@@ -212,7 +258,7 @@ fn check_channels(
                 }
                 channel_ids.push(id.clone());
             }
-            None if require_explicit_ids => findings.push(Finding::error(
+            None if require_explicit_ids => findings.push(Diagnostic::error(
                 "missing.channel_id",
                 format!("channel '{}'", req.name),
                 "a package channel must carry an explicit channel_id",
@@ -221,7 +267,7 @@ fn check_channels(
         }
         // K7: channel names are unique across channel_ids.
         if names.contains(&req.name) {
-            findings.push(Finding::error(
+            findings.push(Diagnostic::error(
                 "duplicate.channel_name",
                 format!("channel '{}'", req.name),
                 "two channels in the set share this name — channel names are unique (K7)",
@@ -252,7 +298,7 @@ fn check_channels(
                         && crate::channel::routing::methods_overlap(other_methods, &route_methods)
                 });
             match clash {
-                Some((_, _, _, first)) => findings.push(Finding::error(
+                Some((_, _, _, first)) => findings.push(Diagnostic::error(
                     "duplicate.route_pattern",
                     format!("channel '{}'", req.name),
                     format!(
@@ -272,14 +318,14 @@ fn check_channels(
         match &req.workflow_id {
             Some(wf) if !wf.is_empty() => {
                 if !workflow_ids.iter().any(|id| id == wf) {
-                    findings.push(Finding::error(
+                    findings.push(Diagnostic::error(
                         "closure.workflow",
                         format!("channel '{}'", req.name),
                         format!("workflow '{wf}' is not in the set"),
                     ));
                 }
             }
-            _ => findings.push(Finding::error(
+            _ => findings.push(Diagnostic::error(
                 "missing.workflow_id_ref",
                 format!("channel '{}'", req.name),
                 "no workflow_id — the channel can never activate",
@@ -296,7 +342,7 @@ fn check_closure(
     connectors: &BTreeMap<String, &'static str>,
     channels: &[String],
     boundary: &Boundary,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) {
     for (workflow, tasks) in &workflows.tasks {
         let entity = format!("workflow '{workflow}'");
@@ -311,7 +357,7 @@ fn check_closure(
                     {
                         let allowed: Vec<&str> =
                             allowed.iter().map(ConnectorType::as_str).collect();
-                        findings.push(Finding::error(
+                        findings.push(Diagnostic::error(
                             "type.connector",
                             &entity,
                             format!(
@@ -324,7 +370,7 @@ fn check_closure(
                     }
                 }
                 None if boundary.allows_connector(r.connector) => {}
-                None => findings.push(Finding::error(
+                None => findings.push(Diagnostic::error(
                     "closure.connector",
                     &entity,
                     format!(
@@ -338,7 +384,7 @@ fn check_closure(
         let (targets, dynamic) = crate::engine::channel_call_targets(tasks);
         for target in targets {
             if !channels.iter().any(|n| n == target) && !boundary.allows_channel(target) {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "closure.channel_call",
                     format!("workflow '{workflow}'"),
                     format!(
@@ -349,7 +395,7 @@ fn check_closure(
             }
         }
         if dynamic {
-            findings.push(Finding::warning(
+            findings.push(Diagnostic::warning(
                 "closure.channel_call_dynamic",
                 format!("workflow '{workflow}'"),
                 "resolves channel_call targets dynamically — closure checking cannot cover \
@@ -368,7 +414,7 @@ fn check_closure(
 /// where it matters. Not a warning either — there is nothing here to fix.
 /// `env://` is the documented way to author a secret, so counting these as
 /// warnings made `--deny-warnings` fail on every set that uses one.
-fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
+fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
     let mut refs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut secrets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for def in &set.definitions {
@@ -377,7 +423,7 @@ fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
     for (needs, mut where_used) in refs {
         where_used.sort();
         where_used.dedup();
-        findings.push(Finding::note(
+        findings.push(Diagnostic::note(
             "env.reference",
             where_used.join(", "),
             format!("requires {needs}"),
@@ -391,7 +437,7 @@ fn check_env_refs(set: &DefinitionSet, findings: &mut Vec<Finding>) {
     for (name, mut where_used) in secrets {
         where_used.sort();
         where_used.dedup();
-        findings.push(Finding::note(
+        findings.push(Diagnostic::note(
             "secrets.reference",
             where_used.join(", "),
             format!("requires a [secrets] entry named '{name}'"),
@@ -448,5 +494,94 @@ fn collect_env(
             map.values().for_each(|v| collect_env(v, def, out, secrets));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::definitions::{Boundary, Entity};
+
+    /// The defect this module's `schema_diagnostics` exists to close.
+    ///
+    /// A workflow with several schema problems used to produce exactly one
+    /// finding, whose message was the whole `OrionError` flattened with
+    /// `to_string()` — so a set gate could say the workflow failed validation
+    /// but not which field, and a pipeline had nothing to grandfather but the
+    /// entire `schema.workflow` family. One diagnostic per field error, each
+    /// carrying its own path, is the fix.
+    #[test]
+    fn a_schema_refusal_reports_one_diagnostic_per_field_with_its_path() {
+        // Two independent problems: no name, and a task naming no function.
+        let doc = serde_json::json!({
+            "name": "",
+            "tasks": [{"id": "t1"}],
+        });
+        let set = DefinitionSet::from_entries([(Entity::Workflow, "wf.json".to_string(), doc)]);
+
+        let schema: Vec<_> = check(&set, &Boundary::default(), false)
+            .into_iter()
+            .filter(|d| d.check == "schema.workflow")
+            .collect();
+
+        assert!(
+            !schema.is_empty(),
+            "an invalid workflow must be refused by the set check"
+        );
+        assert!(
+            schema.iter().all(|d| d.path.is_some()),
+            "every schema diagnostic must name the field it is about: {schema:#?}"
+        );
+    }
+
+    /// The parse-once payoff: a set loaded from disk carries each document's
+    /// spans, so a finding can say `file:line:col`.
+    ///
+    /// Before this, `definitions/json.rs` existed to produce exactly this and
+    /// the set threw its output away — `lint`, `check` and `compile` findings
+    /// had no origin at all, and clippy got one only by re-reading and
+    /// re-parsing every file a third time.
+    #[test]
+    fn a_finding_from_a_loaded_directory_carries_its_file_and_line() {
+        // `std::env::temp_dir` rather than a `tempfile` dependency — the same
+        // thing `config::tests` and the backup tests do.
+        let dir = std::env::temp_dir().join(format!(
+            "orion-check-spans-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("orders.json");
+        // Invalid: a task naming no function. The `name` is on line 2, the
+        // offending task on line 4.
+        std::fs::write(
+            &path,
+            "{\n  \"name\": \"\",\n  \"tasks\": [\n    { \"id\": \"t1\" }\n  ]\n}\n",
+        )
+        .expect("write");
+
+        let (set, _report) = DefinitionSet::from_directory(&dir).expect("load");
+        let located: Vec<_> = check(&set, &Boundary::default(), false)
+            .into_iter()
+            .filter(|d| d.check == "schema.workflow")
+            .collect();
+
+        assert!(!located.is_empty(), "the workflow must be refused");
+        for d in &located {
+            assert_eq!(
+                d.file.as_deref(),
+                Some(path.display().to_string().as_str()),
+                "a finding must name the file it came from"
+            );
+        }
+        let any_line = located.iter().any(|d| d.line.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            any_line,
+            "at least one finding must resolve to a line:col — that is what \
+             carrying the spans is for: {located:#?}"
+        );
     }
 }

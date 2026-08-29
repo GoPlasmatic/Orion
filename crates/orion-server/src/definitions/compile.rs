@@ -52,7 +52,7 @@
 
 use serde_json::Value;
 
-use super::finding::Finding;
+use super::diagnostic::Diagnostic;
 use super::shared::SharedDefinitions;
 
 /// What a pass may resolve against.
@@ -123,7 +123,7 @@ pub trait Pass: Send + Sync {
     fn residue(&self, doc: &Value, root: &str) -> Vec<Residue>;
 
     /// Rewrite `doc` in place, reporting what would not resolve.
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Finding>);
+    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>);
 }
 
 /// The pipeline, in order.
@@ -140,7 +140,7 @@ pub fn passes() -> &'static [&'static dyn Pass] {
 
 /// Run every pass over one authored document, returning the ids of those that
 /// had anything to do.
-pub fn compile(doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Finding>) -> Vec<&'static str> {
+pub fn compile(doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) -> Vec<&'static str> {
     let mut applied = Vec::new();
     for pass in passes() {
         // Asked before the rewrite, because after it there is nothing left to
@@ -212,7 +212,7 @@ impl Pass for Fragments {
         out
     }
 
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Finding>) {
+    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) {
         if let Some(tasks) = doc.get_mut("tasks").and_then(Value::as_array_mut) {
             let expanded = cx.shared.expand_tasks(tasks, cx.origin, findings);
             *tasks = expanded;
@@ -277,7 +277,7 @@ impl Pass for Values {
         out
     }
 
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Finding>) {
+    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) {
         cx.shared.splice(doc, cx.origin, findings);
     }
 }

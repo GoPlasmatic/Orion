@@ -30,9 +30,7 @@
 
 pub mod rules;
 
-use serde_json::Value;
-
-use crate::definitions::Finding;
+pub use crate::definitions::Diagnostic;
 use crate::definitions::Severity;
 use crate::definitions::analysis::{Analysis, WorkflowFacts};
 
@@ -128,24 +126,12 @@ pub fn find(id: &str) -> Option<&'static dyn Rule> {
     registry().iter().copied().find(|r| r.id() == id)
 }
 
-/// One thing clippy found. A [`Finding`] with where it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Diagnostic {
-    pub severity: Severity,
-    /// The rule id, or `lint`'s own `check` id for a re-reported finding.
-    pub rule: &'static str,
-    /// `workflow 'auth-login'`, as `lint` names things.
-    pub entity: String,
-    pub file: Option<String>,
-    /// `tasks[2].condition`, in the coordinates of the compiled form.
-    pub path: Option<String>,
-    /// 1-based line and column in `file`, when the source has the same
-    /// coordinates as the compiled form.
-    pub line: Option<(usize, usize)>,
-    pub message: String,
-    pub remedy: Option<String>,
-}
-
+/// The rule-aware constructors.
+///
+/// An inherent impl on the shared [`Diagnostic`], written here rather than in
+/// `diagnostic.rs`: they need a `Rule` and an `Analysis`, which are clippy's,
+/// and the shared type must not know about either. Rust allows an inherent impl
+/// anywhere in the defining crate, so this costs the call sites nothing.
 impl Diagnostic {
     /// A diagnostic on a workflow, located if the source allows it.
     pub fn on_workflow(
@@ -157,7 +143,7 @@ impl Diagnostic {
     ) -> Self {
         Self {
             severity: rule.level().severity(),
-            rule: rule.id(),
+            check: rule.id(),
             entity: format!("workflow '{}'", wf.name),
             file: Some(wf.origin.clone()),
             path: path.map(str::to_string),
@@ -178,7 +164,7 @@ impl Diagnostic {
     ) -> Self {
         Self {
             severity: rule.level().severity(),
-            rule: rule.id(),
+            check: rule.id(),
             entity: entity.into(),
             file: Some(origin.to_string()),
             path: path.map(str::to_string),
@@ -186,73 +172,6 @@ impl Diagnostic {
             message: message.into(),
             remedy: None,
         }
-    }
-
-    pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
-        self.remedy = Some(remedy.into());
-        self
-    }
-
-    /// A `lint` finding, re-reported unchanged so a clippy run is a superset
-    /// of a lint run.
-    pub fn from_finding(finding: Finding) -> Self {
-        Self {
-            severity: finding.severity,
-            rule: finding.check,
-            entity: finding.entity,
-            file: None,
-            path: None,
-            line: None,
-            message: finding.message,
-            remedy: finding.remedy,
-        }
-    }
-
-    pub fn is_error(&self) -> bool {
-        self.severity == Severity::Error
-    }
-
-    pub fn is_warning(&self) -> bool {
-        self.severity == Severity::Warning
-    }
-
-    /// The text line, in `lint`'s shape with a location prefix:
-    /// `file:line:col: warning: [rule] workflow 'x' at tasks[1]: message`.
-    pub fn render_text(&self) -> String {
-        let mut out = String::new();
-        match (&self.file, self.line) {
-            (Some(file), Some((line, col))) => out.push_str(&format!("{file}:{line}:{col}: ")),
-            (Some(file), None) => out.push_str(&format!("{file}: ")),
-            (None, _) => {}
-        }
-        out.push_str(&format!(
-            "{}: [{}] {}",
-            self.severity.as_str(),
-            self.rule,
-            self.entity
-        ));
-        if let Some(path) = &self.path {
-            out.push_str(&format!(" at {path}"));
-        }
-        out.push_str(&format!(": {}", self.message));
-        if let Some(remedy) = &self.remedy {
-            out.push_str(&format!("\n        fix: {remedy}"));
-        }
-        out
-    }
-
-    pub fn render_json(&self) -> Value {
-        serde_json::json!({
-            "level": self.severity.as_str(),
-            "rule": self.rule,
-            "entity": self.entity,
-            "file": self.file,
-            "path": self.path,
-            "line": self.line.map(|(l, _)| l),
-            "column": self.line.map(|(_, c)| c),
-            "message": self.message,
-            "remedy": self.remedy,
-        })
     }
 }
 
@@ -276,7 +195,7 @@ pub fn run(cx: &Analysis<'_>) -> Report {
     }
     // Stable order, so two runs on two machines diff to nothing.
     report.diagnostics.sort_by(|a, b| {
-        (&a.file, &a.path, a.rule, &a.message).cmp(&(&b.file, &b.path, b.rule, &b.message))
+        (&a.file, &a.path, a.check, &a.message).cmp(&(&b.file, &b.path, b.check, &b.message))
     });
     report
 }

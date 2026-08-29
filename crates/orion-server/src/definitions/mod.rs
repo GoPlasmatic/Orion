@@ -41,7 +41,7 @@ pub mod analysis;
 mod check;
 pub mod clippy;
 pub mod compile;
-mod finding;
+mod diagnostic;
 pub mod fmt;
 mod gate;
 pub mod json;
@@ -50,7 +50,7 @@ mod shared;
 
 pub use check::check;
 pub use compile::{Cx, Pass, Residue};
-pub use finding::{Finding, Severity};
+pub use diagnostic::{Diagnostic, Severity};
 pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
 pub use set::{Boundary, DefinitionSet, Entity, LoadReport, json_files};

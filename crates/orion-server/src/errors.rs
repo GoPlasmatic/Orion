@@ -411,6 +411,21 @@ impl OrionError {
     }
 }
 
+impl OrionError {
+    /// The structured field errors a validation refusal carries, empty for
+    /// every other variant.
+    ///
+    /// Exists so a caller can report them *as* structured errors. The set check
+    /// used to reach for `to_string()` here, which flattened a whole vector of
+    /// paths and codes into one prose line.
+    pub fn field_errors(&self) -> &[FieldError] {
+        match self {
+            OrionError::Validation { details, .. } => details,
+            _ => &[],
+        }
+    }
+}
+
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
         // Pull the validation details out before consuming `self` in the match,

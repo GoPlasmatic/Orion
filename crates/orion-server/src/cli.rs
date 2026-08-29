@@ -257,11 +257,11 @@ pub(crate) fn run_lint(
     // one rule instead of reaching for `--deny-warnings` and silencing every
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
-    let warnings: Vec<orion::definitions::Finding> =
+    let warnings: Vec<orion::definitions::Diagnostic> =
         orion::validation::unresolvable_logic_warnings(&req.tasks)
             .into_iter()
             .map(|(path, message)| {
-                orion::definitions::Finding::warning(
+                orion::definitions::Diagnostic::warning(
                     "logic.unresolvable",
                     format!("workflow '{}' {path}", req.name),
                     message,
@@ -1012,8 +1012,10 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
         return Ok(2);
     };
 
-    let mut diagnostics: Vec<Diagnostic> =
-        findings.drain(..).map(Diagnostic::from_finding).collect();
+    // No conversion: `check` and the clippy rules now report the same type, so
+    // a clippy run is a superset of a lint run by construction rather than by
+    // an upcast that dropped the location half of every field it copied.
+    let mut diagnostics: Vec<Diagnostic> = std::mem::take(&mut findings);
     let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
     let mut skipped: Vec<&str> = Vec::new();
     if lint_errors == 0 {
@@ -1328,7 +1330,10 @@ pub(crate) async fn run_preflight(
         findings.len()
     );
     for finding in &findings {
-        println!("{finding}\n");
+        // The three-line form, not `Display`: a preflight report is read
+        // alongside the upgrade guide, and every line of it is a break, so the
+        // severity `Display` prefixes would be the same word on every line.
+        println!("{}\n", finding.render_preflight());
     }
 
     // Non-zero so this can gate a deploy (`orion-server preflight || exit 1`),

@@ -148,16 +148,20 @@ impl<'a> Analysis<'a> {
                 ))
             })
             .collect();
+        // The set already carries each document's spans — parsed once, when it
+        // was loaded. This used to re-read every file from disk and parse it a
+        // third time, which was both wasteful and wrong for an artifact or a
+        // single in-memory document, neither of which has a file to re-read.
+        //
+        // The `$from`/`use` filter stays: after expansion a compiled path no
+        // longer addresses source coordinates, so locating one would point at
+        // the wrong node rather than at none. Fixing *that* needs the passes to
+        // record a compiled-path → source-path remap, which is its own change.
         let documents = source
             .definitions
             .iter()
             .filter(|def| crate::definitions::compile::residue(&def.doc, "").is_empty())
-            .filter_map(|def| {
-                let text = std::fs::read_to_string(&def.origin).ok()?;
-                Document::parse(&text)
-                    .ok()
-                    .map(|doc| (def.origin.clone(), doc))
-            })
+            .filter_map(|def| Some((def.origin.clone(), def.spans.clone()?)))
             .collect();
         Self {
             source,

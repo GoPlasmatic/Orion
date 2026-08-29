@@ -81,7 +81,7 @@ fn every_rule_has_a_firing_and_a_quiet_fixture_and_nothing_else_does() {
 fn every_rule_fires_on_its_fixture() {
     for (rule, dir) in rule_dirs() {
         let diagnostics = run_over(&dir.join("fires"));
-        let fired: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.rule == rule).collect();
+        let fired: Vec<&Diagnostic> = diagnostics.iter().filter(|d| d.check == rule).collect();
         assert!(
             !fired.is_empty(),
             "`{rule}` did not fire on its `fires` fixture"
@@ -90,7 +90,7 @@ fn every_rule_fires_on_its_fixture() {
         // fixtures' worth of ambiguity.
         let others: Vec<&str> = diagnostics
             .iter()
-            .map(|d| d.rule)
+            .map(|d| d.check)
             .filter(|r| *r != rule)
             .collect();
         assert!(

@@ -54,7 +54,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Map, Value};
 
-use super::finding::Finding;
+use super::diagnostic::Diagnostic;
 
 /// The reserved top-level keys that mark a document as shared definitions
 /// rather than an entity.
@@ -88,7 +88,7 @@ impl SharedDefinitions {
     /// catalog a set declares without linting the set: an author dry-running
     /// one workflow wants that workflow's references resolved, not a report on
     /// the sixty files beside it.
-    pub fn from_directory(dir: &std::path::Path) -> Result<(Self, Vec<Finding>), String> {
+    pub fn from_directory(dir: &std::path::Path) -> Result<(Self, Vec<Diagnostic>), String> {
         let mut shared = SharedDefinitions::default();
         let mut findings = Vec::new();
         let mut docs: Vec<(String, Value)> = Vec::new();
@@ -126,7 +126,7 @@ impl SharedDefinitions {
     /// `constants.json` beside a `fragments/` tree. A name defined twice is a
     /// finding rather than a last-write-wins, because which file won would
     /// depend on directory order.
-    pub fn merge(&mut self, doc: &Value, origin: &str, findings: &mut Vec<Finding>) {
+    pub fn merge(&mut self, doc: &Value, origin: &str, findings: &mut Vec<Diagnostic>) {
         let Some(obj) = doc.as_object() else {
             return;
         };
@@ -136,7 +136,7 @@ impl SharedDefinitions {
                 continue;
             }
             let Some(entries) = value.as_object() else {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "shared.namespace",
                     origin,
                     format!("'{key}' must be an object of named values"),
@@ -146,7 +146,7 @@ impl SharedDefinitions {
             let ns = self.namespaces.entry(key.clone()).or_default();
             for (name, val) in entries {
                 if ns.contains_key(name) {
-                    findings.push(Finding::error(
+                    findings.push(Diagnostic::error(
                         "shared.duplicate",
                         origin,
                         format!("'{key}.{name}' is already defined elsewhere in the set"),
@@ -158,9 +158,9 @@ impl SharedDefinitions {
         }
     }
 
-    fn merge_fragments(&mut self, value: &Value, origin: &str, findings: &mut Vec<Finding>) {
+    fn merge_fragments(&mut self, value: &Value, origin: &str, findings: &mut Vec<Diagnostic>) {
         let Some(entries) = value.as_object() else {
-            findings.push(Finding::error(
+            findings.push(Diagnostic::error(
                 "shared.namespace",
                 origin,
                 "'fragments' must be an object of named task sequences",
@@ -169,7 +169,7 @@ impl SharedDefinitions {
         };
         for (name, spec) in entries {
             if self.fragments.contains_key(name) {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "shared.duplicate",
                     origin,
                     format!("fragment '{name}' is already defined elsewhere in the set"),
@@ -177,7 +177,7 @@ impl SharedDefinitions {
                 continue;
             }
             let Some(tasks) = spec.get("tasks").and_then(Value::as_array) else {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "shared.fragment",
                     origin,
                     format!("fragment '{name}' has no 'tasks' array"),
@@ -208,7 +208,7 @@ impl SharedDefinitions {
     /// a fragment is written exactly the way a workflow is — lives in
     /// [`super::compile::passes`] with everything else the pipeline
     /// guarantees.
-    pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
+    pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Diagnostic>) {
         super::compile::compile(
             doc,
             &super::compile::Cx {
@@ -230,7 +230,7 @@ impl SharedDefinitions {
         &self,
         tasks: &[Value],
         origin: &str,
-        findings: &mut Vec<Finding>,
+        findings: &mut Vec<Diagnostic>,
     ) -> Vec<Value> {
         let mut out = Vec::with_capacity(tasks.len());
         for task in tasks {
@@ -255,7 +255,7 @@ impl SharedDefinitions {
             };
             let instance = task.get("id").and_then(Value::as_str).unwrap_or(name);
             let Some(fragment) = self.fragments.get(name) else {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "closure.fragment",
                     format!("{origin} task '{instance}'"),
                     format!("fragment '{name}' is not defined in the set"),
@@ -285,7 +285,7 @@ impl SharedDefinitions {
         name: &str,
         instance: &str,
         origin: &str,
-        findings: &mut Vec<Finding>,
+        findings: &mut Vec<Diagnostic>,
     ) -> BTreeMap<String, Value> {
         let supplied = task
             .get("with")
@@ -296,7 +296,7 @@ impl SharedDefinitions {
 
         for key in supplied.keys() {
             if !declared.contains(key) {
-                findings.push(Finding::error(
+                findings.push(Diagnostic::error(
                     "shared.fragment_param",
                     format!("{origin} task '{instance}'"),
                     format!("fragment '{name}' declares no parameter '{key}'"),
@@ -310,7 +310,7 @@ impl SharedDefinitions {
                 Some(value) => {
                     args.insert(param.clone(), value.clone());
                 }
-                None => findings.push(Finding::error(
+                None => findings.push(Diagnostic::error(
                     "shared.fragment_param",
                     format!("{origin} task '{instance}'"),
                     format!("fragment '{name}' requires parameter '{param}', which has no default"),
@@ -321,7 +321,7 @@ impl SharedDefinitions {
     }
 
     /// Walk a value, splicing every `$from` against the namespaces.
-    pub(super) fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Finding>) {
+    pub(super) fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Diagnostic>) {
         match value {
             Value::Array(items) => {
                 for item in items {
@@ -339,7 +339,7 @@ impl SharedDefinitions {
                 let replacement = match self.lookup(&path) {
                     Some(target) => apply_splice(map, target),
                     None => {
-                        findings.push(Finding::error(
+                        findings.push(Diagnostic::error(
                             "closure.shared_value",
                             origin,
                             format!("'{path}' is not defined in the set"),
@@ -399,15 +399,15 @@ pub fn first_reference(doc: &Value) -> Option<String> {
 fn collect(
     dir: &std::path::Path,
     out: &mut Vec<(String, Value)>,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) -> Result<(), String> {
-    super::set::walk_json_files(dir, &mut |path, parsed| match parsed {
+    super::set::walk_json_files(dir, &mut |path, parsed, _spans| match parsed {
         Ok(doc) => {
             if SharedDefinitions::is_shared_document(&doc) {
                 out.push((path.display().to_string(), doc));
             }
         }
-        Err(e) => findings.push(Finding::warning(
+        Err(e) => findings.push(Diagnostic::warning(
             "shared.unparseable",
             path.display().to_string(),
             format!(
@@ -476,13 +476,13 @@ fn namespace_fragment_step(
     step: &mut Value,
     instance: &str,
     fragment: &str,
-    findings: &mut Vec<Finding>,
+    findings: &mut Vec<Diagnostic>,
 ) -> bool {
     // Checked after `substitute_params` rather than before it, which is
     // equivalent: both test for the key, so a `{"use": {"$param": ..}}` is
     // refused either way.
     if step.get("use").is_some() {
-        findings.push(Finding::error(
+        findings.push(Diagnostic::error(
             "shared.fragment_nested",
             format!("fragment '{fragment}'"),
             "a fragment cannot include another fragment",
@@ -523,7 +523,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn shared() -> (SharedDefinitions, Vec<Finding>) {
+    fn shared() -> (SharedDefinitions, Vec<Diagnostic>) {
         let mut s = SharedDefinitions::default();
         let mut f = Vec::new();
         s.merge(

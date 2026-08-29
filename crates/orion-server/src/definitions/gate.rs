@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::finding::Finding;
+use super::diagnostic::Diagnostic;
 use super::{Boundary, DefinitionSet, SharedDefinitions};
 
 /// What to load beyond the compiled set.
@@ -45,7 +45,7 @@ pub struct GateReport {
     pub compiled: std::collections::BTreeMap<&'static str, usize>,
     /// The loader's findings and the check pass's, in that order — they are
     /// the same class of problem and share exit rules.
-    pub findings: Vec<Finding>,
+    pub findings: Vec<Diagnostic>,
     /// Files that are not readable JSON. Far more likely to be a mistake than
     /// [`Self::skipped`], and reported differently for that reason.
     pub unparseable: Vec<(PathBuf, String)>,

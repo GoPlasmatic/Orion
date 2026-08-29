@@ -139,7 +139,11 @@ async fn a_stored_pre_1_0_cors_channel_is_found() {
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].entity.contains("legacy-cors"), "{findings:?}");
     assert!(
-        findings[0].remedy.contains("origin_allow_list"),
+        findings[0]
+            .remedy
+            .as_deref()
+            .unwrap_or_default()
+            .contains("origin_allow_list"),
         "{findings:?}"
     );
 }
@@ -156,7 +160,11 @@ async fn a_stored_pre_1_0_backpressure_channel_is_found() {
     let findings = preflight::scan(&channels, &workflows).await.expect("scan");
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(
-        findings[0].remedy.contains("max_concurrent_per_node"),
+        findings[0]
+            .remedy
+            .as_deref()
+            .unwrap_or_default()
+            .contains("max_concurrent_per_node"),
         "{findings:?}"
     );
 }
@@ -218,7 +226,7 @@ async fn a_stored_flat_data_write_envelope_is_found() {
 
     let findings = preflight::scan(&channels, &workflows).await.expect("scan");
     assert!(
-        findings.iter().any(|f| f.problem.contains("write")),
+        findings.iter().any(|f| f.message.contains("write")),
         "{findings:?}"
     );
 }
@@ -287,5 +295,5 @@ async fn duplicate_channel_names_are_found() {
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].check, "channel-names");
     assert!(findings[0].entity.contains("orders"), "{findings:?}");
-    assert!(findings[0].problem.contains("2 channels"), "{findings:?}");
+    assert!(findings[0].message.contains("2 channels"), "{findings:?}");
 }

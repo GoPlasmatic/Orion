@@ -1,5 +1,6 @@
 //! The set itself, and the two ways one is loaded.
 
+use super::json::Document;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -85,6 +86,43 @@ pub struct Definition {
     /// `workflows[3]` for an artifact entry.
     pub origin: String,
     pub doc: Value,
+    /// The same bytes, parsed by the span-carrying front end, when it could
+    /// read them.
+    ///
+    /// Carried here so the document is parsed **once**. `definitions/json.rs`
+    /// exists to put `file:line:col` on a finding, but the set used to load
+    /// through `serde_json` and throw the spans away — so `lint`, `check` and
+    /// `compile` findings had no location at all, and `clippy` got one only by
+    /// re-reading every file from disk and parsing it a third time.
+    ///
+    /// `None` when the strict front end refused the bytes `serde_json`
+    /// accepted — a duplicate key is the realistic case. The document still
+    /// loads and is still checked; it simply cannot be located, which is
+    /// strictly better than refusing to load it. `serde_json` stays the
+    /// authority on what a set contains, because it is what the admin API
+    /// parses with: a file this front end accepted and `serde_json` did not
+    /// would be a set `lint` passes and the server rejects.
+    pub spans: Option<Document>,
+}
+
+impl Definition {
+    /// `(line, column)` of `path` within this document, when it has spans and
+    /// the path resolves.
+    ///
+    /// Two coordinate spaces meet here. A validator's `FieldError` path is
+    /// rooted at the *entity* — `workflow.name`, `channel.config.auth` —
+    /// because that is what a client reading the error envelope needs. A
+    /// document's root, on the other hand, *is* the entity, so its own
+    /// coordinate for the same node is `name`. The prefix comes off before the
+    /// lookup; without it every field path resolved to nothing and every
+    /// schema finding came back with a file but no line.
+    pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
+        let doc = self.spans.as_ref()?;
+        let prefix = format!("{}.", self.entity.as_str());
+        let path = path.strip_prefix(&prefix).unwrap_or(path);
+        let span = doc.locate(path)?;
+        Some(doc.line_col(span.start))
+    }
 }
 
 /// Channels, workflows and connectors that must be consistent with each other.
@@ -104,7 +142,7 @@ pub struct LoadReport {
     /// Problems found while merging or expanding the shared definitions —
     /// a duplicate name, an unresolvable `$from`, a missing fragment.
     /// Reported alongside the check pass's own findings.
-    pub findings: Vec<super::finding::Finding>,
+    pub findings: Vec<super::diagnostic::Diagnostic>,
     /// The catalog the set declared, after merging every shared document.
     pub shared: super::SharedDefinitions,
     /// Authoring pass id → how many documents it rewrote. What `lint` and
@@ -143,6 +181,10 @@ impl DefinitionSet {
                     entity,
                     origin,
                     doc,
+                    // An entry handed over as a `Value` has no source text to
+                    // span — an artifact entry, or a single document a caller
+                    // already parsed.
+                    spans: None,
                 })
                 .collect(),
         }
@@ -246,13 +288,21 @@ impl DefinitionSet {
 /// reporting.
 pub(super) fn walk_json_files(
     dir: &Path,
-    visit: &mut impl FnMut(std::path::PathBuf, Result<Value, String>),
+    visit: &mut impl FnMut(std::path::PathBuf, Result<Value, String>, Option<Document>),
 ) -> Result<(), String> {
     walk_json_paths(dir, &mut |path| {
-        let parsed = std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).map_err(|e| e.to_string()));
-        visit(path, parsed);
+        let read = std::fs::read_to_string(&path).map_err(|e| e.to_string());
+        let parsed = read
+            .as_ref()
+            .map_err(|e| e.clone())
+            .and_then(|raw| serde_json::from_str::<Value>(raw).map_err(|e| e.to_string()));
+        // The same bytes through the span-carrying front end, so a finding can
+        // say `file:line:col`. `serde_json` above stays the authority on
+        // whether the document *loads* — it is what the admin API parses with,
+        // so a file this front end accepts and `serde_json` refuses must not
+        // reach the checks. A file it cannot read just has no spans.
+        let spans = read.ok().and_then(|raw| Document::parse(&raw).ok());
+        visit(path, parsed, spans);
     })
 }
 
@@ -307,7 +357,7 @@ fn walk(
     report: &mut LoadReport,
     shared_docs: &mut Vec<(String, Value)>,
 ) -> Result<(), String> {
-    walk_json_files(dir, &mut |path, parsed| {
+    walk_json_files(dir, &mut |path, parsed, spans| {
         let doc = match parsed {
             Ok(doc) => doc,
             Err(e) => {
@@ -320,6 +370,7 @@ fn walk(
                 entity,
                 origin: path.display().to_string(),
                 doc,
+                spans,
             }),
             None if super::SharedDefinitions::is_shared_document(&doc) => {
                 shared_docs.push((path.display().to_string(), doc));
