@@ -584,13 +584,46 @@ fn resolve_var(spec: &Value, ctx: &TaskContext<'_>) -> Value {
     ctx.get(path).map(Value::from).unwrap_or(default)
 }
 
+/// Fold `{"var": ..}` in one input field — but only where the function's own
+/// schema says that field folds.
+///
+/// §3.3: `FieldSchema::resolvable` used to be a *second* declaration of
+/// something the handler decided for itself by calling [`resolve_value`] or
+/// not. Two hand-maintained lists of the same fact, and three surfaces reading
+/// the wrong one when they disagreed: `validation::unresolvable_logic_warnings`
+/// advises against an expression in a field it believes literal, `stub.rs`
+/// folds exactly the declared set when `dry-run` executes a workflow offline,
+/// and `analysis::operators` decides what a clippy rule can see. A handler
+/// that folded an undeclared field made `dry-run` and production disagree
+/// about the same task.
+///
+/// So the table decides and the handler asks. A field the schema does not
+/// declare `resolvable` is passed through as the literal it was authored as,
+/// whichever helper is doing the reading.
+pub fn resolve_declared_field(
+    function: &str,
+    field: &str,
+    raw: &Value,
+    ctx: &TaskContext<'_>,
+) -> Value {
+    if super::schema::is_resolvable_field(function, field) {
+        resolve_value(raw, ctx)
+    } else {
+        raw.clone()
+    }
+}
+
 /// Resolve a `params` object into concrete values for the query/write dialects.
 ///
 /// Thin wrapper over [`resolve_value`] that requires the result to be an
 /// object. Shared by `data_query` and `data_write`, which fold the returned map
 /// into the `{"param": ..}` nodes of a filter before translation.
-pub fn resolve_params(params: Option<&Value>, ctx: &TaskContext<'_>) -> Map<String, Value> {
-    match params.map(|p| resolve_value(p, ctx)) {
+pub fn resolve_params(
+    params: Option<&Value>,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Map<String, Value> {
+    match params.map(|p| resolve_declared_field(handler_name, "params", p, ctx)) {
         Some(Value::Object(map)) => map,
         _ => Map::new(),
     }
@@ -612,7 +645,7 @@ pub fn resolve_required_str(
             "{handler_name} requires '{field}' field"
         )));
     };
-    match resolve_value(raw, ctx) {
+    match resolve_declared_field(handler_name, field, raw, ctx) {
         Value::String(s) => Ok(s),
         Value::Number(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
@@ -654,7 +687,7 @@ pub fn resolve_duration_secs(
     handler_name: &str,
     field: &str,
 ) -> Result<u64, DataflowError> {
-    match resolve_value(raw, ctx) {
+    match resolve_declared_field(handler_name, field, raw, ctx) {
         Value::Number(n) => n.as_u64().ok_or_else(|| {
             DataflowError::Validation(format!(
                 "{handler_name}: '{field}' must be a positive integer"
@@ -678,7 +711,7 @@ pub fn resolve_optional_str(
 ) -> Result<Option<String>, DataflowError> {
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
-        Some(raw) => match resolve_value(raw, ctx) {
+        Some(raw) => match resolve_declared_field(handler_name, field, raw, ctx) {
             Value::String(s) => Ok(Some(s)),
             Value::Null => Ok(None),
             _ => Err(DataflowError::Validation(format!(
@@ -700,7 +733,7 @@ pub fn resolve_bind_params(
 ) -> Result<Vec<Value>, DataflowError> {
     match input.get("params") {
         None | Some(Value::Null) => Ok(Vec::new()),
-        Some(raw) => match resolve_value(raw, ctx) {
+        Some(raw) => match resolve_declared_field(handler_name, "params", raw, ctx) {
             Value::Array(a) => Ok(a),
             other => Err(DataflowError::Validation(format!(
                 "{handler_name} 'params' must resolve to an array of bind values, got {}",

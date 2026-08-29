@@ -86,7 +86,7 @@ impl ConnectorHandler for DataQueryHandler {
             // Resolved against the message — the only point at which the
             // message touches the query. It produces concrete literals, not
             // SQL, which the pure translation path then folds into the filter.
-            params: resolve_params(input.get("params"), ctx),
+            params: resolve_params(input.get("params"), <Self as ConnectorHandler>::NAME, ctx),
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, relation declarations.
             schema: input.get("schema").cloned(),

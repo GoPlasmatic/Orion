@@ -110,7 +110,7 @@ impl ConnectorHandler for DataWriteHandler {
         Ok(DataWrite {
             // Resolved against the message context (the only point the message
             // touches the mutation); it produces literals, not SQL.
-            params: resolve_params(input.get("params"), ctx),
+            params: resolve_params(input.get("params"), <Self as ConnectorHandler>::NAME, ctx),
             // Optional inline schema (privileged config): renames, allowlist,
             // and the per-column `writable` flag.
             schema: input.get("schema").cloned(),
