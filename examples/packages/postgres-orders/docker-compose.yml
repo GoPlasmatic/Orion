@@ -29,7 +29,7 @@ services:
       retries: 15
 
   orion:
-    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.4.0}
     ports:
       - "8080:8080"
     depends_on:
