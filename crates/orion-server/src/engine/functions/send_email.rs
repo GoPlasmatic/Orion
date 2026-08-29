@@ -802,10 +802,12 @@ mod tests {
             .await;
         crate::engine::functions::run_test_task(
             NAME,
-            Box::new(super::super::connector_handler::Connector(SendEmailHandler {
-                registry,
-                smtp_pool: std::sync::Arc::new(SmtpPoolCache::new(4)),
-            })),
+            Box::new(super::super::connector_handler::Connector(
+                SendEmailHandler {
+                    registry,
+                    smtp_pool: std::sync::Arc::new(SmtpPoolCache::new(4)),
+                },
+            )),
             input,
             data,
         )
@@ -963,10 +965,12 @@ mod tests {
         for _ in 0..count {
             crate::engine::functions::run_test_task(
                 NAME,
-                Box::new(super::super::connector_handler::Connector(SendEmailHandler {
-                    registry: registry.clone(),
-                    smtp_pool: smtp_pool.clone(),
-                })),
+                Box::new(super::super::connector_handler::Connector(
+                    SendEmailHandler {
+                        registry: registry.clone(),
+                        smtp_pool: smtp_pool.clone(),
+                    },
+                )),
                 input.clone(),
                 json!({}),
             )

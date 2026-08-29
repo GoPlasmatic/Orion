@@ -317,13 +317,15 @@ pub fn build_custom_functions(
     // (§ src/query/).
     fns.insert(
         "data_query".to_string(),
-        Box::new(functions::data_query::DataQueryHandler {
-            pool_cache: sql_pool_cache.clone(),
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client.clone(),
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::data_query::DataQueryHandler {
+                pool_cache: sql_pool_cache.clone(),
+                mongo_pool_cache: mongo_pool_cache.clone(),
+                http_client: client.clone(),
+                registry: registry.clone(),
+                limits: query_config.clone(),
+            },
+        )),
     );
 
     // Register the portable write handler (data_write). It renders a
@@ -331,13 +333,15 @@ pub fn build_custom_functions(
     // a MongoDB write, or an Elasticsearch write (§ src/query/write.rs).
     fns.insert(
         "data_write".to_string(),
-        Box::new(functions::data_write::DataWriteHandler {
-            pool_cache: sql_pool_cache,
-            mongo_pool_cache: mongo_pool_cache.clone(),
-            http_client: client.clone(),
-            registry: registry.clone(),
-            write_config: write_config.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::data_write::DataWriteHandler {
+                pool_cache: sql_pool_cache,
+                mongo_pool_cache: mongo_pool_cache.clone(),
+                http_client: client.clone(),
+                registry: registry.clone(),
+                write_config: write_config.clone(),
+            },
+        )),
     );
 
     // Register cache handlers (cache_read, cache_write).

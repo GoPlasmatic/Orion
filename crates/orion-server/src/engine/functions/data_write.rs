@@ -2,31 +2,32 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sqlx::any::AnyRow;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, apply_output, build_entity_registry, es_request, es_write_error,
-    is_mongo, require_op_allowed, resolve_params, send_es, timed_query, to_connect_error,
-    to_exec_error,
+    ConnectorCall, QueryBudget, build_entity_registry, es_request, es_write_error, is_mongo,
+    require_op_allowed, resolve_params, send_es, timed_query, to_connect_error, to_exec_error,
 };
 use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
+use crate::engine::HandlerError;
 use crate::query::backend::es::{EsWrite, bulk_ndjson};
 use crate::query::backend::mongo::MongoWrite;
 use crate::query::write::{ResolvedWrite, WriteOp};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "data_write";
+/// This handler's name, for the helpers that take it as an argument — a
+/// reference to the one place it is written (F48).
+const NAME: &str = <DataWriteHandler as ConnectorHandler>::NAME;
 
 /// Audit status for a bulk write that applied some but not all of its items
 /// (F28) — HTTP 207 Multi-Status, the code that exists for exactly this. Below
@@ -51,112 +52,162 @@ pub struct DataWriteHandler {
     pub write_config: crate::config::WriteConfig,
 }
 
+/// The mutation as the task states it, with `params` folded against the
+/// message.
+///
+/// The envelope is carried *unresolved* on purpose: resolving it needs the
+/// entity registry, which is built from the connector's own schema guards, so
+/// there is nothing to resolve until the connector is in hand.
+pub struct DataWrite {
+    params: Map<String, Value>,
+    schema: Option<Value>,
+    envelope: Value,
+    database: Option<String>,
+}
+
 #[async_trait]
-impl AsyncFunctionHandler for DataWriteHandler {
+impl ConnectorHandler for DataWriteHandler {
+    const NAME: &'static str = "data_write";
+    /// Like `data_query`: a `db` or an `es` connector, dispatched on the
+    /// variant.
+    type Kind = crate::connector::DataBackend;
     type Input = Value;
+    type Parsed = DataWrite;
 
-    async fn execute(
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        _call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — a task naming no connector must
-        // say so before the message is consulted at all.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-
-        // Resolve `params` against the message context (the only point the
-        // message touches the mutation); it produces literals, not SQL.
-        let params = resolve_params(input.get("params"), ctx);
-
-        call.run(&self.registry, async {
-            // The op is only known after the envelope is parsed, so the
-            // gate is applied below rather than here.
-            let connector_config = call.resolve(&self.registry, None).await?;
-
-            // Optional inline schema (privileged config): renames, allowlist, and
-            // the per-column `writable` flag. F24: with no schema the registry
-            // now rejects rather than passing every name through, and the
-            // connector's own guards apply on top.
-            let registry =
-                build_entity_registry(input.get("schema"), &connector_config, call.connector)?;
-
-            // W7: the mutation envelope is nested under `write`, mirroring
-            // `data_query`'s `query`. Before 1.0 it was flat, sharing a
-            // namespace with the handler keys (`connector`, `schema`,
-            // `params`, `database`, `output`) — so those five names could
-            // never be used by the dialect, and there was no single JSON
-            // value that *was* the envelope. The flat form is not accepted:
-            // `write` is `required` in the field schema, so the shared
-            // validator refuses it at create, update, import, `POST
-            // /admin/workflows/validate` and `orion-server lint`, and
-            // `orion-server preflight` names any task already stored in that
-            // shape.
-            let envelope = input.get("write").ok_or_else(|| {
-                query::write::WriteError::Query(query::QueryError::InvalidEnvelope(
-                    "missing `write`: the mutation envelope (op/target/values/set/filter/\
-                     on_conflict/returning/all) is nested under `write`, alongside the \
-                     handler's `connector`/`schema`/`params`/`database`/`output`"
-                        .to_string(),
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        // W7: the mutation envelope is nested under `write`, mirroring
+        // `data_query`'s `query`. Before 1.0 it was flat, sharing a namespace
+        // with the handler keys (`connector`, `schema`, `params`, `database`,
+        // `output`) — so those five names could never be used by the dialect,
+        // and there was no single JSON value that *was* the envelope. The flat
+        // form is not accepted: `write` is `required` in the field schema, so
+        // the shared validator refuses it at create, update, import, `POST
+        // /admin/workflows/validate` and `orion-server lint`, and `orion-server
+        // preflight` names any task already stored in that shape.
+        let envelope = input
+            .get("write")
+            .ok_or_else(|| {
+                DataflowError::from(query::write::WriteError::Query(
+                    query::QueryError::InvalidEnvelope(
+                        "missing `write`: the mutation envelope (op/target/values/set/filter/\
+                         on_conflict/returning/all) is nested under `write`, alongside the \
+                         handler's `connector`/`schema`/`params`/`database`/`output`"
+                            .to_string(),
+                    ),
                 ))
-            })?;
+            })?
+            .clone();
 
-            // One backend-neutral resolution: parse envelope, fold params into
-            // values/set, resolve physical names, coerce, lower the filter,
-            // and enforce the write-safety guards (W15).
-            let resolved =
-                query::write::resolve_write(envelope, &params, &registry, &self.write_config)?;
-
-            // Per-connector operation gates: a connector config can disable
-            // individual ops (e.g. delete) regardless of what workflows ask for.
-            if let Some(gates) = connector_config.operation_gates() {
-                require_op_allowed(gates, resolved.op().as_str(), call.connector)?;
-            }
-
-            let (result, outcome) = match connector_config.as_ref() {
-                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                    let database = call.require_str(input, "database")?;
-                    let mw = query::backend::mongo::render_write(&resolved)?;
-                    let client = self
-                        .mongo_pool_cache
-                        .get_client(call.connector, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    // F11: bound the write like the SQL branches bound theirs.
-                    timed_query(db.query_timeout_ms, call.name, async {
-                        execute_mongo(&client, database, mw)
-                            .await
-                            .map_err(|e| e.to_string())
-                    })
-                    .await?
-                }
-                ConnectorConfig::Db(db) => {
-                    let dialect: SqlDialect = detect_backend(&db.connection_string)
-                        .map_err(to_exec_error)?
-                        .into();
-                    let (sql, values) = query::backend::sql::render_write(&resolved, dialect)?;
-                    let pool = self
-                        .pool_cache
-                        .get_pool(call.connector, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
-                }
-                ConnectorConfig::Es(es) => {
-                    let ew = query::backend::es::render_write(&resolved)?;
-                    run_es_write(&self.http_client, es, ew).await?
-                }
-                _ => {
-                    return Err(DataflowError::Validation(format!(
-                        "Connector '{}' is not a db or es connector",
-                        call.connector
-                    )));
-                }
-            };
-
-            apply_output(ctx, call.output, result);
-            Ok(outcome)
+        Ok(DataWrite {
+            // Resolved against the message context (the only point the message
+            // touches the mutation); it produces literals, not SQL.
+            params: resolve_params(input.get("params"), ctx),
+            // Optional inline schema (privileged config): renames, allowlist,
+            // and the per-column `writable` flag.
+            schema: input.get("schema").cloned(),
+            envelope,
+            database: input
+                .get("database")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         })
-        .await
+    }
+
+    // No `gate` impl, and this is the one handler for which that is a statement
+    // rather than an omission. Which operation to gate is `resolved.op()`, and
+    // resolving the envelope needs the entity registry, which is built from the
+    // connector's schema guards — so the answer does not exist until after the
+    // connector is resolved, which is where `gate` runs from. `run` therefore
+    // applies it itself, and the property that matters is kept by construction
+    // there: the gate is checked before any pool is touched.
+
+    async fn run(
+        &self,
+        parsed: Self::Parsed,
+        conn: &ConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        // F24: with no schema the registry rejects rather than passing every
+        // name through, and the connector's own guards apply on top.
+        let registry = build_entity_registry(parsed.schema.as_ref(), conn, call.connector)?;
+
+        // One backend-neutral resolution: parse envelope, fold params into
+        // values/set, resolve physical names, coerce, lower the filter, and
+        // enforce the write-safety guards (W15).
+        let resolved = query::write::resolve_write(
+            &parsed.envelope,
+            &parsed.params,
+            &registry,
+            &self.write_config,
+        )
+        .map_err(DataflowError::from)?;
+
+        // The gate, before anything is dialled: a connector config can disable
+        // individual ops (e.g. delete) regardless of what workflows ask for.
+        if let Some(gates) = conn.operation_gates() {
+            require_op_allowed(gates, resolved.op().as_str(), call.connector)?;
+        }
+
+        let (result, outcome) = match conn {
+            ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                // A MongoDB connection string carries no default database, so
+                // this is the one branch that requires the task to name one.
+                let database = parsed.database.as_deref().ok_or_else(|| {
+                    DataflowError::Validation(format!("{} requires 'database' field", call.name))
+                })?;
+                let mw =
+                    query::backend::mongo::render_write(&resolved).map_err(DataflowError::from)?;
+                let client = self
+                    .mongo_pool_cache
+                    .get_client(call.connector, db)
+                    .await
+                    .map_err(to_connect_error)?;
+                // F11: bound the write like the SQL branches bound theirs.
+                timed_query(db.query_timeout_ms, call.name, async {
+                    execute_mongo(&client, database, mw)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+                .await?
+            }
+            ConnectorConfig::Db(db) => {
+                let dialect: SqlDialect = detect_backend(&db.connection_string)
+                    .map_err(to_exec_error)?
+                    .into();
+                let (sql, values) = query::backend::sql::render_write(&resolved, dialect)
+                    .map_err(DataflowError::from)?;
+                let pool = self
+                    .pool_cache
+                    .get_pool(call.connector, db)
+                    .await
+                    .map_err(to_connect_error)?;
+                execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
+            }
+            ConnectorConfig::Es(es) => {
+                let ew =
+                    query::backend::es::render_write(&resolved).map_err(DataflowError::from)?;
+                run_es_write(&self.http_client, es, ew).await?
+            }
+            // `DataBackend` admits `db` and `es` and nothing else; the
+            // wrong-type refusal this arm used to write is the wrapper's now.
+            other => unreachable!(
+                "DataBackend admitted a '{}' connector",
+                other.connector_type()
+            ),
+        };
+
+        // F28: a partially applied bulk write is a 207, not a success.
+        Ok(Produced::with_outcome(result, outcome))
     }
 }
 

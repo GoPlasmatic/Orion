@@ -887,7 +887,7 @@ mod observability_tests {
     //! So this list is the handlers **not yet converted**. It shrinks with each
     //! one, and when it empties these tests delete themselves — the property
     //! will be the compiler's. Do not add to it.
-    const HANDLERS: [&str; 4] = ["data_query", "data_write", "http_call", "publish_kafka"];
+    const HANDLERS: [&str; 2] = ["http_call", "publish_kafka"];
 
     fn handler_source(handler: &str) -> String {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/functions");
@@ -934,48 +934,6 @@ mod observability_tests {
             unwrapped.is_empty(),
             "these connector handlers emit no connector metrics: {unwrapped:?}"
         );
-    }
-
-    /// F58: the literal prologue runs before any message-dependent resolution.
-    ///
-    /// The handlers used to fold `key` / `filter` / `params` against the message
-    /// first, so a task missing both `connector` and `key` reported the `key`
-    /// error — the author fixed that, re-ran, and only then learned about
-    /// `connector`. Literal checks are also the unambiguous ones: no property of
-    /// the message can change their answer.
-    ///
-    /// Source order is the property, because that *is* the defect — both checks
-    /// happen, and only their sequence decides which error the caller sees.
-    #[test]
-    fn the_literal_prologue_precedes_message_dependent_resolution() {
-        // The handlers whose input is a `Value` and so carry the prologue;
-        // `http_call` and `publish_kafka` take a typed struct that serde has
-        // already validated by the time `execute` runs.
-        const RESOLVERS: [&str; 4] = [
-            "resolve_required_str(",
-            "resolve_bind_params(",
-            "resolve_params(",
-            "resolve_value(",
-        ];
-        for handler in HANDLERS {
-            let src = handler_source(handler);
-            let Some(begin) = src.find("ConnectorCall::begin(") else {
-                assert!(
-                    ["http_call", "publish_kafka"].contains(&handler),
-                    "{handler} has no ConnectorCall prologue"
-                );
-                continue;
-            };
-            for resolver in RESOLVERS {
-                if let Some(at) = src.find(resolver) {
-                    assert!(
-                        begin < at,
-                        "{handler}.rs calls {resolver} before ConnectorCall::begin, so a task \
-                         missing 'connector' reports some other field first (proposal F58)"
-                    );
-                }
-            }
-        }
     }
 
     /// F48: each handler names itself exactly once, in its `NAME` const.
