@@ -87,6 +87,17 @@ pub struct HandlerError {
     pub msg: String,
     /// Extra context for the operator-facing log, never for the client body.
     pub detail: Option<String>,
+    /// The `DataflowError` this was converted from, when it was.
+    ///
+    /// `ErrorClass` cannot express everything a `DataflowError` can — a
+    /// `Service` failure carries a service-owned `kind` that decides its HTTP
+    /// status, and re-deriving one from five classes would turn a 400 gate
+    /// refusal into a 500. Keeping the original makes
+    /// `DataflowError → HandlerError → DataflowError` the identity.
+    ///
+    /// Dropped by [`Self::prefixed`], because a rewritten message is no longer
+    /// the one the original carried.
+    original: Option<Box<DataflowError>>,
 }
 
 impl HandlerError {
@@ -95,6 +106,7 @@ impl HandlerError {
             class,
             msg: msg.to_string(),
             detail: None,
+            original: None,
         }
     }
 
@@ -111,6 +123,9 @@ impl HandlerError {
     /// own path already carries that context.
     pub fn prefixed(mut self, handler: &str) -> Self {
         self.msg = format!("{handler}: {}", self.msg);
+        // The original carried the message being replaced, so it is no longer
+        // a faithful round-trip target.
+        self.original = None;
         self
     }
 }
@@ -128,6 +143,11 @@ impl std::fmt::Display for HandlerError {
 /// to read them from, and to change if dataflow-rs revises its semantics again.
 impl From<HandlerError> for DataflowError {
     fn from(e: HandlerError) -> Self {
+        // An error that came from a `DataflowError` and was not rewritten goes
+        // back as itself. Anything else is built from its class.
+        if let Some(original) = e.original {
+            return *original;
+        }
         match e.class {
             // 400, message preserved.
             ErrorClass::CallerInput | ErrorClass::Limit => DataflowError::Validation(e.msg),
@@ -154,6 +174,15 @@ impl From<HandlerError> for DataflowError {
 /// `"Validation error: "` rather than with the handler's name.
 impl From<DataflowError> for HandlerError {
     fn from(e: DataflowError) -> Self {
+        // `Service` is the only variant with operator-only text beside the
+        // caller-safe message, and dropping it would lose the *specific*
+        // refusal — "Request validation failed" with "operation 'read' is
+        // disabled on connector 'c'" thrown away.
+        let detail = match &e {
+            DataflowError::Service { detail, .. } => detail.clone(),
+            _ => None,
+        };
+        let original = e.clone();
         let (class, msg) = match e {
             DataflowError::Validation(m) => (ErrorClass::CallerInput, m),
             DataflowError::Timeout(m) => (ErrorClass::Timeout, m),
@@ -196,7 +225,8 @@ impl From<DataflowError> for HandlerError {
         Self {
             class,
             msg,
-            detail: None,
+            detail,
+            original: Some(Box::new(original)),
         }
     }
 }
@@ -267,6 +297,44 @@ mod tests {
         assert_eq!(
             bare.prefixed("send_email").msg,
             "send_email: 'from' is not a valid address"
+        );
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use super::*;
+
+    /// `DataflowError → HandlerError → DataflowError` must be the identity for
+    /// a `Service` failure.
+    ///
+    /// The regression this exists for: a cache connector with `read` disabled
+    /// refuses through `connector_detail_error`, which is a `Service` error
+    /// whose service-owned `kind` is what makes it a 400. Round-tripping it
+    /// through the five `ErrorClass` values re-derived it as a backend failure
+    /// — a 500 `ENGINE_ERROR` — because no class can express a `kind`.
+    #[test]
+    fn a_service_error_survives_the_round_trip() {
+        let original = crate::errors::connector_detail_error("operation 'read' is disabled");
+        let back: DataflowError = HandlerError::from(original).into();
+        match back {
+            DataflowError::Service { kind, detail, .. } => {
+                assert_eq!(kind, crate::errors::kind::CONNECTOR_DETAIL);
+                assert_eq!(detail.as_deref(), Some("operation 'read' is disabled"));
+            }
+            other => unreachable!("a Service error must return as one, got {other:?}"),
+        }
+    }
+
+    /// Rewriting the message drops the original, because it is no longer the
+    /// error that message came from.
+    #[test]
+    fn prefixing_gives_up_the_round_trip() {
+        let original = crate::errors::connector_detail_error("nope");
+        let back: DataflowError = HandlerError::from(original).prefixed("crypto").into();
+        assert!(
+            matches!(back, DataflowError::FunctionExecution { .. }),
+            "a rewritten Service error is rebuilt from its class, got {back:?}"
         );
     }
 }

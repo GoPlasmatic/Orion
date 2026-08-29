@@ -334,10 +334,15 @@ pub fn build_custom_functions(
     // CachePool routes to the in-memory or Redis backend per connector config.
     fns.insert(
         "cache_read".to_string(),
-        Box::new(functions::cache_read::CacheReadHandler {
-            cache_pool: cache_pool.clone(),
-            registry: registry.clone(),
-        }),
+        // Wrapped: `Connector<H>` is what supplies the prologue → resolve →
+        // gate → shell → output sequence, and an unwrapped handler is not an
+        // `AsyncFunctionHandler` at all, so it cannot be registered.
+        Box::new(functions::connector_handler::Connector(
+            functions::cache_read::CacheReadHandler {
+                cache_pool: cache_pool.clone(),
+                registry: registry.clone(),
+            },
+        )),
     );
     fns.insert(
         "cache_write".to_string(),

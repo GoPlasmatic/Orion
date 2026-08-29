@@ -865,8 +865,19 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
-    const HANDLERS: [&str; 14] = [
-        "cache_read",
+    //! Conformance, asserted against handler *source text*.
+    //!
+    //! Every test here checks a property that a type can hold instead, and
+    //! `connector_handler::ConnectorHandler` now holds them: `NAME` is an
+    //! associated const so it cannot be written twice, `parse` runs after
+    //! `ConnectorCall::begin` by construction so the F58 ordering cannot be
+    //! reversed, and an unwrapped handler is not an `AsyncFunctionHandler` at
+    //! all, so it cannot reach the registry without the shell.
+    //!
+    //! So this list is the handlers **not yet converted**. It shrinks with each
+    //! one, and when it empties these tests delete themselves — the property
+    //! will be the compiler's. Do not add to it.
+    const HANDLERS: [&str; 13] = [
         "cache_write",
         "db_read",
         "db_write",
