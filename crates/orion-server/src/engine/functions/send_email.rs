@@ -27,7 +27,7 @@ use mail_send::smtp::AssertReply;
 use serde_json::{Value, json};
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_smtp_connector, resolve_optional_str, resolve_value,
+    ConnectorCall, apply_output, require_connector, resolve_optional_str, resolve_value,
     to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -94,7 +94,10 @@ impl AsyncFunctionHandler for SendEmailHandler {
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
-            let smtp_config = require_smtp_connector(&connector_config, call.connector)?;
+            let smtp_config = require_connector::<crate::connector::kind::Smtp>(
+                &connector_config,
+                call.connector,
+            )?;
 
             let from = sender(smtp_config, from_override.as_deref(), call.connector)?;
             let bare_id = generated_message_id(&from);

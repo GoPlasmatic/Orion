@@ -7,7 +7,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_db_connector,
+    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_connector,
     resolve_bind_params, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -47,7 +47,8 @@ impl AsyncFunctionHandler for DbWriteHandler {
         call.run(&self.registry, async {
             // Raw SQL cannot be classified per-op; it has its own gate.
             let connector_config = call.resolve(&self.registry, Some("raw_write")).await?;
-            let db_config = require_db_connector(&connector_config, call.connector)?;
+            let db_config =
+                require_connector::<crate::connector::kind::Db>(&connector_config, call.connector)?;
             reject_mongo_connector(call.name, call.connector, db_config)?;
 
             let pool = self

@@ -8,7 +8,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, json_type_name, require_cache_connector, require_op, resolve_required_str,
+    ConnectorCall, json_type_name, require_connector, require_op, resolve_required_str,
     resolve_value, to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -54,7 +54,10 @@ impl AsyncFunctionHandler for CacheWriteHandler {
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
-            let cache_config = require_cache_connector(&connector_config, call.connector)?;
+            let cache_config = require_connector::<crate::connector::kind::Cache>(
+                &connector_config,
+                call.connector,
+            )?;
             // F22e: a cache connector can be made read-only in its config.
             require_op(cache_config.operations.write, "write", call.connector)?;
 

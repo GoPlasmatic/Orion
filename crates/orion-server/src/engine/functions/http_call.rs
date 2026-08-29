@@ -41,10 +41,9 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 let connector_config =
                     super::connector_helpers::resolve_connector(&self.registry, &input.connector)
                         .await?;
-                let http_config = super::connector_helpers::require_http_connector(
-                    connector_config.as_ref(),
-                    &input.connector,
-                )?;
+                let http_config = super::connector_helpers::require_connector::<
+                    crate::connector::kind::Http,
+                >(connector_config.as_ref(), &input.connector)?;
 
                 // F22e: the connector's method allow-list, empty by default.
                 // A connector pointed at a read-only upstream can be `["GET"]`

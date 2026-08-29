@@ -10,7 +10,7 @@ use sqlx::any::{AnyRow, AnyTypeInfoKind};
 use sqlx::{Column, Row, ValueRef};
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_db_connector,
+    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_connector,
     resolve_bind_params, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -52,7 +52,8 @@ impl AsyncFunctionHandler for DbReadHandler {
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, Some("read")).await?;
-            let db_config = require_db_connector(&connector_config, call.connector)?;
+            let db_config =
+                require_connector::<crate::connector::kind::Db>(&connector_config, call.connector)?;
             reject_mongo_connector(call.name, call.connector, db_config)?;
 
             let pool = self

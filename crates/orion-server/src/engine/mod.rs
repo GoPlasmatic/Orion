@@ -103,6 +103,7 @@ pub fn stamp_vars(metadata: &mut serde_json::Value, vars: Option<&serde_json::Va
     }
 }
 
+mod error;
 pub mod execute;
 pub mod functions;
 pub mod handlers;
@@ -116,6 +117,7 @@ pub mod secrets;
 pub mod steps;
 pub mod utils;
 
+pub use error::{ErrorClass, HandlerError};
 pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted};
 pub use handlers::{
     CONNECTOR_FUNCTIONS, HandlerDeps, build_custom_functions, is_known_function, known_functions,

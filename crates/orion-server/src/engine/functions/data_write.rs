@@ -277,7 +277,7 @@ async fn execute_mongo(
                         query::backend::mongo::insert_outcome(sent, &failed),
                         "MongoDB insert",
                     ),
-                    None => Err(to_exec_error(e)),
+                    None => Err(to_exec_error(e).into()),
                 },
             }
         }

@@ -223,9 +223,7 @@ pub async fn build_engine_components(
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(std::sync::Arc::new(crate::validation::PinnedDnsResolver))
         .build()
-        .map_err(|e| {
-            crate::errors::OrionError::internal(format!("Failed to build HTTP client: {e}"))
-        })?;
+        .map_err(|e| crate::errors::OrionError::internal_from("Failed to build HTTP client", e))?;
 
     // One JWKS cache per instance, on the pinned client. `jwks_url` is
     // authored input, so this is the one egress path with no operator-chosen

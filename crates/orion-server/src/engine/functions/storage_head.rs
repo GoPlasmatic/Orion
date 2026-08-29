@@ -18,7 +18,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Value, json};
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_op, require_storage_connector, resolve_required_str,
+    ConnectorCall, apply_output, require_connector, require_op, resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::{ConnectorRegistry, sigv4};
@@ -46,7 +46,10 @@ impl AsyncFunctionHandler for StorageHeadHandler {
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
-            let storage = require_storage_connector(&connector_config, call.connector)?;
+            let storage = require_connector::<crate::connector::kind::Storage>(
+                &connector_config,
+                call.connector,
+            )?;
             require_op(storage.operations.head, "head", call.connector)?;
 
             let (scheme, host, path) = storage

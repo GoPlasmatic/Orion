@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::{Value, json};
 
+use crate::connector::PoolSlot;
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
@@ -45,15 +46,56 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.
-async fn evict_connector_pools(state: &AppState, connector_name: &str) {
-    state.caches.sql_pool_cache.evict(connector_name).await;
-    state.caches.cache_pool.evict_pool(connector_name).await;
-    state.caches.mongo_pool_cache.evict(connector_name).await;
-    state.caches.smtp_pool_cache.evict(connector_name).await;
+///
+/// The `match` is the point: [`PoolSlot`] is closed over the fields of
+/// `Caches`, so adding a cache is a new variant and a new variant is a compile
+/// error here. This used to be four unconditional calls, which could not miss a
+/// connector *type* but could silently miss a newly-added *cache* — leaving
+/// every node serving through a connection built for the old config.
+async fn evict_connector_pools(state: &AppState, connector_name: &str, slots: &[PoolSlot]) {
+    for slot in slots {
+        match slot {
+            PoolSlot::Sql => state.caches.sql_pool_cache.evict(connector_name).await,
+            PoolSlot::Mongo => state.caches.mongo_pool_cache.evict(connector_name).await,
+            PoolSlot::Cache => state.caches.cache_pool.evict_pool(connector_name).await,
+            PoolSlot::Smtp => state.caches.smtp_pool_cache.evict(connector_name).await,
+        }
+    }
     tracing::debug!(
         connector = connector_name,
+        ?slots,
         "Evicted cached connection pools"
     );
+}
+
+/// The pool slots a stored connector row can hold entries in.
+///
+/// Falls back to *every* slot when the stored type string does not parse. A
+/// type that cannot be read is a type whose pools cannot be narrowed, and the
+/// two errors are not symmetric: evicting one pool too many costs a hash lookup
+/// that misses, while evicting one too few leaves live connections open against
+/// a config that no longer exists.
+fn slots_for(connector_type: &str) -> &'static [PoolSlot] {
+    match serde_json::from_value::<crate::connector::ConnectorType>(Value::String(
+        connector_type.to_string(),
+    )) {
+        Ok(t) => t.pool_slots(),
+        Err(_) => PoolSlot::ALL,
+    }
+}
+
+/// The slots to evict when a connector moves from type `before` to type
+/// `after` — a `db` connector changed to a `cache` one has an entry in the SQL
+/// cache that its new type would never look for.
+fn slots_across(before: &str, after: &str) -> Vec<PoolSlot> {
+    let mut slots: Vec<PoolSlot> = slots_for(before)
+        .iter()
+        .chain(slots_for(after))
+        .copied()
+        .collect();
+    slots.sort();
+    slots.dedup();
+    slots
 }
 
 /// Names of active workflows whose tasks reference `connector_name`.
@@ -270,9 +312,10 @@ pub(crate) async fn update_connector(
     // evicting only the post-update one left the old key holding live TCP
     // connections against the remote database's `max_connections` until the LRU
     // happened to reclaim it.
-    evict_connector_pools(&state, &connector.name).await;
+    let slots = slots_across(&stored.connector_type, &connector.connector_type);
+    evict_connector_pools(&state, &connector.name, &slots).await;
     if let Some(old_name) = renamed_from {
-        evict_connector_pools(&state, &old_name).await;
+        evict_connector_pools(&state, &old_name, &slots).await;
     }
     audit_log(&state.audit_queue, &principal, "update", "connector", &id);
     reload_connectors(&state).await?;
@@ -299,7 +342,12 @@ pub(crate) async fn delete_connector(
     // Fetch connector name before deletion so we can evict cached pools.
     let connector = state.repos.connectors.get_by_id(&id).await?;
     state.repos.connectors.delete(&id).await?;
-    evict_connector_pools(&state, &connector.name).await;
+    evict_connector_pools(
+        &state,
+        &connector.name,
+        slots_for(&connector.connector_type),
+    )
+    .await;
     audit_log(&state.audit_queue, &principal, "delete", "connector", &id);
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -426,7 +474,12 @@ async fn upsert_connector(
                 },
             )
             .await?;
-        evict_connector_pools(state, &existing.name).await;
+        evict_connector_pools(
+            state,
+            &existing.name,
+            &slots_across(&existing.connector_type, req.connector_type.as_str()),
+        )
+        .await;
     }
     Ok(ImportAction::Updated)
 }
@@ -712,7 +765,7 @@ pub(crate) async fn test_connector(
     // registry's copy: a connector that failed to load has no registry entry,
     // and that is exactly when an operator reaches for this endpoint.
     let mut config_value: Value = serde_json::from_str(&connector.config_json)
-        .map_err(|e| OrionError::internal(format!("stored connector config is not JSON: {e}")))?;
+        .map_err(|e| OrionError::internal_from("stored connector config is not JSON", e))?;
 
     // `ConnectorConfig` is internally tagged on `type`, but the type lives in
     // its own column — inject it exactly as the registry load does, so a

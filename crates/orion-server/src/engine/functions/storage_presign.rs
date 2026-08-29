@@ -16,7 +16,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, parse_duration_secs, require_op, require_storage_connector,
+    ConnectorCall, apply_output, parse_duration_secs, require_connector, require_op,
     resolve_duration_secs, resolve_optional_str, resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -57,7 +57,10 @@ impl AsyncFunctionHandler for StoragePresignHandler {
 
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
-            let storage = require_storage_connector(&connector_config, call.connector)?;
+            let storage = require_connector::<crate::connector::kind::Storage>(
+                &connector_config,
+                call.connector,
+            )?;
             let gate = match method {
                 PresignMethod::Get => storage.operations.presign_get,
                 PresignMethod::Put => storage.operations.presign_put,

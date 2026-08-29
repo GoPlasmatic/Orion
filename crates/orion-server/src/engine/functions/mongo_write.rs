@@ -538,7 +538,7 @@ async fn execute_write(
                 let id = serde_json::to_value(&res.inserted_id).ok();
                 bulk_result(BulkOutcome::all_ok(vec![id]), "MongoDB insert")
             }
-            Err(e) => Err(to_exec_error(e)),
+            Err(e) => Err(to_exec_error(e).into()),
         },
         Prepared::InsertMany { docs, ordered } => {
             if docs.is_empty() {
@@ -569,7 +569,7 @@ async fn execute_write(
                     Some(failed) => {
                         bulk_result(unordered_insert_outcome(sent, &failed), "MongoDB insert")
                     }
-                    None => Err(to_exec_error(e)),
+                    None => Err(to_exec_error(e).into()),
                 },
             }
         }
@@ -611,7 +611,7 @@ async fn execute_write(
                     json!({ "status": "ok", "deleted": r.deleted_count }),
                     TaskOutcome::Success,
                 )),
-                Err(e) => Err(to_exec_error(e)),
+                Err(e) => Err(to_exec_error(e).into()),
             }
         }
     }
@@ -633,7 +633,7 @@ fn update_envelope(
             }
             Ok((out, TaskOutcome::Success))
         }
-        Err(e) => Err(to_exec_error(e)),
+        Err(e) => Err(to_exec_error(e).into()),
     }
 }
 

@@ -379,7 +379,7 @@ fn shaped_response(shaped: ShapedResponse) -> Response {
 /// to spell out for itself.
 fn serialize_envelope(envelope: &Value) -> Result<String, OrionError> {
     serde_json::to_string(envelope)
-        .map_err(|e| OrionError::internal(format!("Failed to serialize response: {e}")))
+        .map_err(|e| OrionError::internal_from("Failed to serialize response", e))
 }
 
 /// Generic replacement for engine error messages on the data plane (G1).

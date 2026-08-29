@@ -43,10 +43,9 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                 let connector =
                     super::connector_helpers::resolve_connector(&self.registry, &input.connector)
                         .await?;
-                let kafka_config = super::connector_helpers::require_kafka_connector(
-                    connector.as_ref(),
-                    &input.connector,
-                )?;
+                let kafka_config = super::connector_helpers::require_connector::<
+                    crate::connector::kind::Kafka,
+                >(connector.as_ref(), &input.connector)?;
                 // F22e: gate before anything else — whether the deployment has
                 // Kafka enabled says nothing about whether this connector is
                 // allowed to publish, and the refusal must be the same either

@@ -356,7 +356,7 @@ pub(crate) async fn workflow_dependencies(
 ) -> Result<Json<Value>, OrionError> {
     let workflow = state.repos.workflows.get_by_id(&id).await?;
     let tasks: Value = serde_json::from_str(&workflow.tasks_json).map_err(|e| {
-        OrionError::internal(format!("Corrupt JSON in workflow {id} tasks_json: {e}"))
+        OrionError::internal_from(format!("Corrupt JSON in workflow {id} tasks_json"), e)
     })?;
 
     let mut connectors: Vec<ConnectorDependency> = Vec::new();

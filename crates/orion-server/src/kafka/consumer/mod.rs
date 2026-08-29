@@ -217,12 +217,13 @@ impl ConsumerHandle {
         let assignment = self
             .consumer
             .assignment()
-            .map_err(|e| OrionError::internal(format!("Failed to get consumer assignment: {e}")))?;
+            .map_err(|e| OrionError::internal_from("Failed to get consumer assignment", e))?;
         if assignment.count() == 0 {
             return Ok(());
         }
-        f(&self.consumer, &assignment)
-            .map_err(|e| OrionError::internal(format!("Failed to {op} consumer partitions: {e}")))
+        f(&self.consumer, &assignment).map_err(|e| {
+            OrionError::internal_from(format!("Failed to {op} consumer partitions"), e)
+        })
     }
 
     /// Get the set of topics this consumer is subscribed to.

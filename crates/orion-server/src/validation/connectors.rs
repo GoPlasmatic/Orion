@@ -54,10 +54,38 @@ pub fn validate_connector_config(
     // because storing a connector must not depend on DNS.
     super::endpoints::validate_endpoint_schemes(&parsed)?;
 
-    // For HTTP connectors, validate the URL scheme
-    if let ConnectorConfig::Http(http_config) = &parsed
-        && !http_config.url.is_empty()
-    {
+    // Per-type rules, and exhaustive on purpose.
+    //
+    // These were six `if let ConnectorConfig::X(..)` chains, which is the one
+    // shape the compiler cannot help with: an eighth connector type would have
+    // matched none of them and validated nothing beyond the shared checks
+    // above, with no error anywhere. A `match` makes "this type has no rules of
+    // its own" something a variant has to say out loud.
+    //
+    // The bodies stay here rather than moving to `connector::kind`: they reach
+    // `url`, `send_email::parse_mailbox` and `OrionError`, and `connector` sits
+    // below `engine` and `validation` — `module_layering_test` refuses that
+    // edge, and it is right to. What belongs in `kind` is the per-type data
+    // (gate keys, pool slots, the typed accessor); what belongs here is the
+    // policy that reads it.
+    match &parsed {
+        ConnectorConfig::Http(c) => validate_http(c)?,
+        ConnectorConfig::Smtp(c) => validate_smtp(c)?,
+        ConnectorConfig::Cache(c) => validate_cache(c)?,
+        ConnectorConfig::Es(c) => validate_es(c)?,
+        // Nothing beyond the shared gate/retry/query checks and the endpoint
+        // scheme allow-list above. Kafka's brokers are shape-checked by
+        // `parse_broker`, a db connector is its connection string, and a
+        // storage connector's endpoint is scheme-checked.
+        ConnectorConfig::Kafka(_) | ConnectorConfig::Db(_) | ConnectorConfig::Storage(_) => {}
+    }
+
+    Ok(())
+}
+
+/// HTTP: URL scheme, retry bound, managed OAuth2, and the method allow-list.
+fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<(), OrionError> {
+    if !http_config.url.is_empty() {
         let parsed_url = url::Url::parse(&http_config.url).map_err(|e| {
             OrionError::validation(format!("Invalid connector URL '{}': {e}", http_config.url))
         })?;
@@ -75,104 +103,101 @@ pub fn validate_connector_config(
     // Only the HTTP connector carries a retry policy — F7 removed the inert
     // copies on db and es, so validating them here would have been validating
     // a field with no consumer.
-    if let ConnectorConfig::Http(c) = &parsed
-        && c.retry.max_retries > 16
-    {
+    if http_config.retry.max_retries > 16 {
         return Err(OrionError::validation(format!(
             "retry.max_retries must be <= 16 (backoff doubles per attempt), got {}",
-            c.retry.max_retries
+            http_config.retry.max_retries
         )));
-    }
-
-    // SMTP: the fields a send cannot proceed without are checked at the door.
-    // `from` may be a secret-style reference only in theory — sender addresses
-    // are not secrets — so a literal parse failure is a hard error here rather
-    // than a first-send surprise.
-    if let ConnectorConfig::Smtp(smtp) = &parsed {
-        if smtp.port == 0 {
-            return Err(OrionError::validation(
-                "SMTP 'port' must be nonzero".to_string(),
-            ));
-        }
-        if smtp.from.trim().is_empty() {
-            return Err(OrionError::validation(
-                "SMTP connector requires 'from' (the default sender address)".to_string(),
-            ));
-        }
-        if let Err(e) = crate::engine::functions::send_email::parse_mailbox("from", &smtp.from) {
-            return Err(OrionError::validation(e.to_string()));
-        }
-        if let crate::connector::SmtpAuth::Basic { username, .. } = &smtp.auth
-            && username.trim().is_empty()
-        {
-            return Err(OrionError::validation(
-                "SMTP auth type 'basic' requires a non-empty 'username'".to_string(),
-            ));
-        }
     }
 
     // #268: managed OAuth2. The grant-conditional shape is fully determined
     // at authoring time, so every mistake here is a create/update/import
-    // refusal, never a first-request surprise. On `es` it is refused outright:
-    // the lifecycle machinery is surface-agnostic, but the es request path
-    // does not resolve managed tokens (ES deployments authenticate with API
-    // keys in practice) — extending it is a deliberate step, not a default.
-    match &parsed {
-        ConnectorConfig::Es(es) => {
-            if matches!(&es.auth, Some(crate::connector::AuthConfig::OAuth2(_))) {
-                return Err(OrionError::validation(
-                    "auth type 'oauth2' is supported on http connectors only".to_string(),
-                ));
-            }
-        }
-        ConnectorConfig::Http(http) => {
-            if let Some(crate::connector::AuthConfig::OAuth2(o)) = &http.auth {
-                validate_oauth2(o)?;
-            }
-        }
-        _ => {}
+    // refusal, never a first-request surprise.
+    if let Some(crate::connector::AuthConfig::OAuth2(o)) = &http_config.auth {
+        validate_oauth2(o)?;
     }
 
     // F22e: an HTTP connector's operation gate is a method allow-list, so a
     // typo in it would not fail closed loudly — it would refuse every call at
     // request time, one workflow at a time. Check it at the door instead,
     // against the methods `http_call` can actually issue.
-    if let ConnectorConfig::Http(c) = &parsed {
-        for method in &c.operations.methods {
-            if !crate::connector::VALID_HTTP_METHODS
-                .iter()
-                .any(|valid| valid.eq_ignore_ascii_case(method))
-            {
-                return Err(OrionError::validation(format!(
-                    "Invalid HTTP method '{method}' in operations.methods. Must be \
-                     one of: {}",
-                    crate::connector::VALID_HTTP_METHODS.join(", ")
-                )));
-            }
-        }
-    }
-
-    // For Cache connectors, validate backend and url requirement
-    if let ConnectorConfig::Cache(cache_config) = &parsed {
-        if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
+    for method in &http_config.operations.methods {
+        if !crate::connector::VALID_HTTP_METHODS
+            .iter()
+            .any(|valid| valid.eq_ignore_ascii_case(method))
+        {
             return Err(OrionError::validation(format!(
-                "Invalid cache backend '{}'. Must be one of: {}",
-                cache_config.backend,
-                crate::connector::VALID_CACHE_BACKENDS.join(", ")
+                "Invalid HTTP method '{method}' in operations.methods. Must be \
+                     one of: {}",
+                crate::connector::VALID_HTTP_METHODS.join(", ")
             )));
         }
-        if cache_config.backend == "redis"
-            && cache_config
-                .url
-                .as_ref()
-                .is_none_or(|u| u.trim().is_empty())
-        {
-            return Err(OrionError::validation(
-                "Cache connector with backend='redis' requires a non-empty 'url'".to_string(),
-            ));
-        }
     }
+    Ok(())
+}
 
+/// Elasticsearch: managed OAuth2 is refused outright.
+///
+/// The lifecycle machinery is surface-agnostic, but the es request path does
+/// not resolve managed tokens (ES deployments authenticate with API keys in
+/// practice) — extending it is a deliberate step, not a default.
+fn validate_es(es: &crate::connector::EsConnectorConfig) -> Result<(), OrionError> {
+    if matches!(&es.auth, Some(crate::connector::AuthConfig::OAuth2(_))) {
+        return Err(OrionError::validation(
+            "auth type 'oauth2' is supported on http connectors only".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// SMTP: the fields a send cannot proceed without are checked at the door.
+///
+/// `from` may be a secret-style reference only in theory — sender addresses
+/// are not secrets — so a literal parse failure is a hard error here rather
+/// than a first-send surprise.
+fn validate_smtp(smtp: &crate::connector::SmtpConnectorConfig) -> Result<(), OrionError> {
+    if smtp.port == 0 {
+        return Err(OrionError::validation(
+            "SMTP 'port' must be nonzero".to_string(),
+        ));
+    }
+    if smtp.from.trim().is_empty() {
+        return Err(OrionError::validation(
+            "SMTP connector requires 'from' (the default sender address)".to_string(),
+        ));
+    }
+    if let Err(e) = crate::engine::functions::send_email::parse_mailbox("from", &smtp.from) {
+        return Err(OrionError::validation(e.to_string()));
+    }
+    if let crate::connector::SmtpAuth::Basic { username, .. } = &smtp.auth
+        && username.trim().is_empty()
+    {
+        return Err(OrionError::validation(
+            "SMTP auth type 'basic' requires a non-empty 'username'".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Cache: the backend name, and the URL redis cannot work without.
+fn validate_cache(cache_config: &crate::connector::CacheConnectorConfig) -> Result<(), OrionError> {
+    if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
+        return Err(OrionError::validation(format!(
+            "Invalid cache backend '{}'. Must be one of: {}",
+            cache_config.backend,
+            crate::connector::VALID_CACHE_BACKENDS.join(", ")
+        )));
+    }
+    if cache_config.backend == "redis"
+        && cache_config
+            .url
+            .as_ref()
+            .is_none_or(|u| u.trim().is_empty())
+    {
+        return Err(OrionError::validation(
+            "Cache connector with backend='redis' requires a non-empty 'url'".to_string(),
+        ));
+    }
     Ok(())
 }
 

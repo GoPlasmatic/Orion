@@ -6,10 +6,11 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
+use crate::connector::ConnectorKind;
 use crate::connector::{
-    CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig, EsConnectorConfig,
-    HttpOperationGates, OperationGates,
+    ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
 };
+use crate::engine::{ErrorClass, HandlerError};
 use crate::query::EntityRegistry;
 
 /// Build the dialect's `EntityRegistry` for one `data_query` / `data_write`
@@ -142,7 +143,7 @@ pub async fn read_es_body(
             None,
         ));
     }
-    serde_json::from_slice(&bytes).map_err(to_exec_error)
+    serde_json::from_slice(&bytes).map_err(|e| to_exec_error(e).into())
 }
 
 /// Send an ES request and parse its JSON body. Returns the status alongside so
@@ -365,9 +366,14 @@ pub fn extract_output_path(input: &Value) -> &str {
         .unwrap_or("data")
 }
 
-/// Converts any `Display`-able error into a `DataflowError::FunctionExecution`.
-pub fn to_exec_error(e: impl std::fmt::Display) -> DataflowError {
-    DataflowError::function_execution(e.to_string(), None)
+/// The backend was reached and the operation failed.
+///
+/// Kept as a named constructor because `.map_err(to_exec_error)` reads better
+/// at a call site than a struct literal; the variant it becomes, and the retry
+/// policy that variant implies, are decided once in [`HandlerError`]'s
+/// `Into<DataflowError>`.
+pub fn to_exec_error(e: impl std::fmt::Display) -> HandlerError {
+    HandlerError::new(ErrorClass::Backend, e)
 }
 
 /// A failure to *reach* a backend — pool acquisition, connection setup, DNS.
@@ -381,8 +387,8 @@ pub fn to_exec_error(e: impl std::fmt::Display) -> DataflowError {
 ///
 /// Use for "could not connect"; keep [`to_exec_error`] for "connected, and the
 /// query failed", which is genuinely not worth retrying.
-pub fn to_connect_error(e: impl std::fmt::Display) -> DataflowError {
-    DataflowError::Io(e.to_string())
+pub fn to_connect_error(e: impl std::fmt::Display) -> HandlerError {
+    HandlerError::new(ErrorClass::Connector, e)
 }
 
 /// A caller-fixable limit or shape problem, e.g. a result set over
@@ -392,8 +398,8 @@ pub fn to_connect_error(e: impl std::fmt::Display) -> DataflowError {
 /// [`to_exec_error`] made them 500 `ENGINE_ERROR` with the text replaced, so
 /// deliberately helpful guidance — *"add a LIMIT to the query or raise the
 /// cap"* — was sanitised away exactly when the caller needed it (F42).
-pub fn to_limit_error(message: impl std::fmt::Display) -> DataflowError {
-    DataflowError::Validation(message.to_string())
+pub fn to_limit_error(message: impl std::fmt::Display) -> HandlerError {
+    HandlerError::new(ErrorClass::Limit, message)
 }
 
 /// Why a [`timed_query`] operation failed, decided where it is known.
@@ -491,88 +497,22 @@ pub async fn resolve_connector(
     })
 }
 
-/// Extracts the `DbConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not a database type.
-pub fn require_db_connector<'a>(
+/// Borrow the typed config a handler needs, or say which type the connector
+/// actually is.
+///
+/// One generic where there were six functions — `require_db_connector`,
+/// `require_http_connector`, and four more — that differed only in the variant
+/// they matched and the noun they printed. Both now come from the
+/// [`ConnectorKind`] impl, so an eighth connector type costs nothing here, and
+/// the type parameter is what stops a handler asking for one kind and binding
+/// another.
+pub fn require_connector<'a, K: ConnectorKind>(
     config: &'a ConnectorConfig,
     name: &str,
-) -> Result<&'a DbConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Db(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not a database connector"
-        ))),
-    }
-}
-
-/// Extracts the `HttpConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not an HTTP type.
-pub fn require_http_connector<'a>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> Result<&'a crate::connector::HttpConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Http(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not an HTTP connector"
-        ))),
-    }
-}
-
-/// Extracts the `KafkaConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not a Kafka type.
-pub fn require_kafka_connector<'a>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> Result<&'a crate::connector::KafkaConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Kafka(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not a Kafka connector"
-        ))),
-    }
-}
-
-/// Extracts the `SmtpConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not an SMTP type.
-pub fn require_smtp_connector<'a>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> Result<&'a crate::connector::SmtpConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Smtp(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not an SMTP connector"
-        ))),
-    }
-}
-
-/// Extracts the `StorageConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not a storage type.
-pub fn require_storage_connector<'a>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> Result<&'a crate::connector::StorageConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Storage(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not a storage connector"
-        ))),
-    }
-}
-
-/// Extracts the `CacheConnectorConfig` from a `ConnectorConfig`, returning a
-/// validation error if the connector is not a cache type.
-pub fn require_cache_connector<'a>(
-    config: &'a ConnectorConfig,
-    name: &str,
-) -> Result<&'a CacheConnectorConfig, DataflowError> {
-    match config {
-        ConnectorConfig::Cache(c) => Ok(c),
-        _ => Err(crate::errors::connector_detail_error(format!(
-            "Connector '{name}' is not a cache connector"
-        ))),
-    }
+) -> Result<&'a K::Config, DataflowError> {
+    K::extract(config).ok_or_else(|| {
+        crate::errors::connector_detail_error(format!("Connector '{name}' is not {}", K::noun()))
+    })
 }
 
 /// Writes a value at `output_path` in the message context via `TaskContext::set_json`,
@@ -838,17 +778,23 @@ impl QueryBudget {
         tokio::time::timeout_at(self.deadline, operation)
             .await
             .map_err(|_| {
-                DataflowError::Timeout(format!("{handler_name} query timed out after {total_ms}ms"))
+                HandlerError::new(
+                    ErrorClass::Timeout,
+                    format!("{handler_name} query timed out after {total_ms}ms"),
+                )
             })?
-            .map_err(|e| match e.into() {
+            .map_err(|e| {
                 // F42: a limit the caller can fix is a 400 with its text
-                // intact, not a 500 with the guidance replaced.
-                QueryFailure::Limit(detail) => to_limit_error(detail),
-                QueryFailure::Backend(text) => DataflowError::function_execution(
-                    format!("{handler_name} query failed: {text}"),
-                    None,
-                ),
+                // intact, not a 500 with the guidance replaced. Both arms name
+                // a class; which `DataflowError` that becomes is decided once.
+                match e.into() {
+                    QueryFailure::Limit(detail) => to_limit_error(detail),
+                    QueryFailure::Backend(text) => {
+                        to_exec_error(format!("{handler_name} query failed: {text}"))
+                    }
+                }
             })
+            .map_err(DataflowError::from)
     }
 }
 
@@ -1059,15 +1005,20 @@ mod error_taxonomy_tests {
     /// while the identical HTTP outage was a retryable `Io`, so DLQ retry
     /// policy diverged by backend for no principled reason. dataflow-rs
     /// classifies `FunctionExecution { source: None }` as not retryable and
-    /// `Io` as retryable, so the distinction has to be made at construction.
+    /// `Io` as retryable.
+    ///
+    /// The constructors now name a class rather than a variant, and
+    /// `HandlerError`'s `Into<DataflowError>` picks the variant. Asserted
+    /// end-to-end — through the conversion — because the retryability of the
+    /// error that actually reaches the retry loop is the property that matters.
     #[test]
     fn a_failure_to_connect_is_retryable_but_a_failed_query_is_not() {
         assert!(
-            to_connect_error("connection refused").retryable(),
+            DataflowError::from(to_connect_error("connection refused")).retryable(),
             "an unreachable backend must be retryable, like the HTTP path"
         );
         assert!(
-            !to_exec_error("syntax error at or near \"SELCT\"").retryable(),
+            !DataflowError::from(to_exec_error("syntax error at or near \"SELCT\"")).retryable(),
             "a query the backend rejected is not worth retrying"
         );
     }
@@ -1076,7 +1027,9 @@ mod error_taxonomy_tests {
     /// loses it to sanitisation.
     #[test]
     fn a_limit_error_is_validation_not_execution() {
-        let err = to_limit_error("result exceeds query.max_limit — add a LIMIT");
+        let err = DataflowError::from(to_limit_error(
+            "result exceeds query.max_limit — add a LIMIT",
+        ));
         assert!(
             matches!(err, DataflowError::Validation(_)),
             "expected Validation, got {err:?}"

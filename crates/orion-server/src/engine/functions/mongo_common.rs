@@ -14,7 +14,7 @@ use futures::TryStreamExt;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
-use super::connector_helpers::{is_mongo, require_db_connector, resolve_value};
+use super::connector_helpers::{is_mongo, require_connector, resolve_value};
 use crate::connector::{ConnectorConfig, DbConnectorConfig};
 
 /// Extract the Db connector config and require a MongoDB connection string.
@@ -28,7 +28,7 @@ pub(super) fn require_mongo_connector<'a>(
     handler_name: &str,
     connector_name: &str,
 ) -> Result<&'a DbConnectorConfig, DataflowError> {
-    let db_config = require_db_connector(config, connector_name)?;
+    let db_config = require_connector::<crate::connector::kind::Db>(config, connector_name)?;
     if !is_mongo(&db_config.connection_string) {
         return Err(DataflowError::Validation(format!(
             "{handler_name} requires a MongoDB connector, but '{connector_name}' has a \

@@ -21,7 +21,7 @@ use crate::errors::OrionError;
 pub fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, OrionError> {
     let socket_addr = addr
         .parse::<std::net::SocketAddr>()
-        .map_err(|e| OrionError::internal(format!("Invalid address '{addr}': {e}")))?;
+        .map_err(|e| OrionError::internal_from(format!("Invalid address '{addr}'"), e))?;
     let domain = if socket_addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
@@ -63,7 +63,7 @@ pub async fn serve_tls(
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr: std::net::SocketAddr = addr
         .parse()
-        .map_err(|e| OrionError::internal(format!("Invalid address '{addr}': {e}")))?;
+        .map_err(|e| OrionError::internal_from(format!("Invalid address '{addr}'"), e))?;
     let shutdown_handle = handle.clone();
     let drain_secs = config.server.shutdown_drain_secs;
     let force_timeout_secs = config.server.shutdown_force_timeout_secs;
