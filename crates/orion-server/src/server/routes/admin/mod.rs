@@ -655,6 +655,19 @@ fn audit_log_draft_only(
 /// — on this node *and* every peer, since the epoch bump is deferred with the
 /// rebuild — until `POST /engine/reload` runs. Deletes always reload: nothing
 /// batches a delete.
+///
+/// **A failed reload is not returned to the caller.** By the time this runs the
+/// mutation has committed: the row is `active` and the next successful reload
+/// will serve it. Answering `5xx` would tell the client its change failed when
+/// it did not, and the natural response — retry — writes a second version or
+/// collides with the first. So the failure is reported where it is actually
+/// actionable: `reload_engine_with_opts` logs it and raises the `engine_reload`
+/// component on `/health`. This is the argument `bump_config_epoch` already
+/// makes for a lost epoch bump, and the same inverted failure mode.
+///
+/// `POST /engine/reload` is deliberately different — a caller who *asked* for a
+/// reload is told when it failed, because there is no committed write for the
+/// error to misdescribe.
 async fn audit_and_reload(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
@@ -673,7 +686,8 @@ async fn audit_and_reload(
     if reload == ReloadMode::Defer {
         return Ok(());
     }
-    reload_engine(state).await?;
+    // Not `?`: see the note above. The degradation is on `/health`.
+    let _ = reload_engine(state).await;
     // `Definitions` scope: a channel or workflow row moved, which changes the
     // engine and the channel registry and nothing else. A peer answering this
     // reloads those and leaves its connector pools alone — before the scope

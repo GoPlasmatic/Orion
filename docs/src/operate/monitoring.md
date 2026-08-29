@@ -182,6 +182,28 @@ for why that is a node-health signal rather than a client error. It clears on
 the next successful bump. `/readyz` is unaffected: this node is serving
 correctly, and ejecting it would not help the ones that are stale.
 
+### `components.engine_reload`
+
+`degraded` means the last engine reload attempt failed, so this node is still
+serving the *previous* generation of channels and workflows — correct, but no
+longer what the database says. It clears on the next successful reload.
+
+The signal exists because nothing else reports it. An admin mutation that
+commits and then fails to reload answers **2xx**, deliberately: the row is
+`active` and the next successful reload will serve it, so a `5xx` would tell the
+client its change failed when it did not — and the natural response, retrying,
+writes a second version or collides with the first. The same argument
+[`config_propagation`](#componentsconfig_propagation) makes for a lost epoch
+bump. The cluster epoch watcher's resync has no caller to tell at all.
+
+`POST /api/v1/admin/engine/reload` is the exception: a caller who *asked* for a
+reload is told when it failed, because there is no committed write for the error
+to misdescribe.
+
+`/readyz` is unaffected, for the same reason as `config_propagation`: this node
+is serving, just not the newest config, and ejecting it would trade a
+stale-config problem for an availability one.
+
 ### `components.background_tasks`
 
 The node's long-lived tasks are supervised, and this is what they report:

@@ -154,9 +154,29 @@ pub async fn reload_engine_with_opts(
     let duration = start.elapsed().as_secs_f64();
     crate::metrics::record_engine_reload_duration(duration);
 
+    // The degraded flag is set here rather than at the call sites, so it holds
+    // for every way a reload is triggered — an admin mutation, an explicit
+    // `POST /engine/reload`, and the cluster epoch watcher's resync. A failure
+    // leaves this node serving the *previous* generation: correct, but not what
+    // the database says, and nothing else would report that.
     match &result {
-        Ok(()) => crate::metrics::record_engine_reload("success"),
-        Err(_) => crate::metrics::record_engine_reload("failure"),
+        Ok(()) => {
+            crate::metrics::record_engine_reload("success");
+            state
+                .reload_degraded
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
+        Err(e) => {
+            crate::metrics::record_engine_reload("failure");
+            state
+                .reload_degraded
+                .store(true, std::sync::atomic::Ordering::Release);
+            tracing::error!(
+                error = %e,
+                "Engine reload failed: this node is still serving the previous \
+                 generation, so its running config no longer matches the database"
+            );
+        }
     }
 
     result

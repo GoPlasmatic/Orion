@@ -120,6 +120,16 @@ pub struct AppStateInner {
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,
+    /// Whether the last engine reload attempt failed — the `engine_reload`
+    /// component of `/health`.
+    ///
+    /// Set and cleared by [`crate::runtime::reload_engine_with_opts`], so every
+    /// caller is covered: the admin mutations, `POST /engine/reload`, and the
+    /// cluster epoch watcher. Deliberately **not** on `/readyz`: a node whose
+    /// reload failed is still serving the previous generation correctly, and
+    /// taking it out of rotation would replace a stale-config problem with an
+    /// availability one. The same argument `config_propagation` makes.
+    pub reload_degraded: Arc<AtomicBool>,
     /// Kafka producer, consumer handle and ingest health.
     pub kafka: Kafka,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.

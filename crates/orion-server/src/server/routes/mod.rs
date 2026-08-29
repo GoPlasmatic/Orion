@@ -195,11 +195,21 @@ pub(crate) async fn health_check(
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
     let (tasks_state, task_reports) = tasks_component(&state);
+
+    // A reload that failed leaves this node serving the previous generation:
+    // correct, but no longer what the database says. Nothing else reports that
+    // — an admin mutation now answers 2xx for a change that is committed, and
+    // the epoch watcher has no caller to tell.
+    let reload_degraded = state
+        .reload_degraded
+        .load(std::sync::atomic::Ordering::Acquire);
+
     let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && kafka_state != Some("error")
         && tasks_state == "ok"
+        && !reload_degraded
         && !(state.cluster.enabled && state.cluster.propagation_degraded());
     let status_str = if overall_healthy && fully_loaded {
         "ok"
@@ -233,6 +243,11 @@ pub(crate) async fn health_check(
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
             "background_tasks": tasks_state,
+            // `degraded`, not `error`, and absent from `/readyz` for the same
+            // reason as `config_propagation`: this node is serving, just not
+            // the newest config. Taking it out of rotation would trade a
+            // stale-config problem for an availability one.
+            "engine_reload": if reload_degraded { "degraded" } else { "ok" },
         },
     });
     if let Some(kafka) = kafka_state {

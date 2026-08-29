@@ -390,3 +390,64 @@ async fn restart_supervisor_recovers_a_downed_consumer() {
         handle.shutdown().await;
     }
 }
+
+/// A failed engine reload is a `/health` degradation and **not** a `/readyz`
+/// failure.
+///
+/// The pairing is the point. An admin mutation that commits and then fails to
+/// reload now answers 2xx — the row is `active` and the next successful reload
+/// serves it, so a 5xx would tell the client its change failed when it did
+/// not. That makes `/health` the only place the condition is visible, so it has
+/// to be visible there. `/readyz` stays ready because this node is serving
+/// correctly, just not the newest config: ejecting it would trade a
+/// stale-config problem for an availability one, which is the argument
+/// `config_propagation` already makes.
+///
+/// The flag is set directly rather than by breaking a real reload. What is
+/// under test is the probes reading it; making `list_active` fail would test
+/// sqlx.
+#[tokio::test]
+async fn a_failed_reload_degrades_health_without_failing_readiness() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let degraded = state.reload_degraded.clone();
+    let app = orion::server::build_router(state);
+
+    // Baseline: nothing has failed, so the component is present and ok.
+    let body = body_json(
+        app.clone()
+            .oneshot(json_request("GET", "/health", None))
+            .await
+            .expect("health"),
+    )
+    .await;
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["components"]["engine_reload"], "ok");
+
+    degraded.store(true, std::sync::atomic::Ordering::Release);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .expect("health");
+    // 200, not 503: the instance still serves every request it served before.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["components"]["engine_reload"], "degraded");
+    assert_eq!(
+        body["status"], "degraded",
+        "a stale engine must reach the top-level status, or a monitor keying on \
+         it sees nothing: {body}"
+    );
+
+    let resp = app
+        .oneshot(json_request("GET", "/readyz", None))
+        .await
+        .expect("readyz");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a node serving the previous generation is still serving"
+    );
+    assert_eq!(body_json(resp).await["status"], "ready");
+}

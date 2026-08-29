@@ -878,6 +878,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         jwks,
         rate_limit_state,
         ready,
+        reload_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         kafka: crate::server::state::Kafka {
             producer: kafka_producer,
             consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
