@@ -33,6 +33,7 @@ use super::connector_helpers::{
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "send_email";
@@ -72,20 +73,27 @@ impl AsyncFunctionHandler for SendEmailHandler {
         // F48/F58: the literal prologue first — connector presence, then the
         // literal-field checks no property of the message can change.
         let call = ConnectorCall::begin(NAME, input, ctx)?;
-        check_headers_field(input)?;
+        check_headers_field(input).map_err(named)?;
 
         // Resolve the message-dependent fields before the body takes the
         // breaker shell (and before `ctx` is reborrowed).
-        let to = address_list(input, "to", ctx)?
+        let to = address_list(input, "to", ctx)
+            .map_err(named)?
             .ok_or_else(|| validation("requires 'to' (an address or an array of addresses)"))?;
-        let cc = address_list(input, "cc", ctx)?.unwrap_or_default();
-        let bcc = address_list(input, "bcc", ctx)?.unwrap_or_default();
+        let cc = address_list(input, "cc", ctx)
+            .map_err(named)?
+            .unwrap_or_default();
+        let bcc = address_list(input, "bcc", ctx)
+            .map_err(named)?
+            .unwrap_or_default();
         let subject = resolve_optional_str(input, "subject", NAME, ctx)?
             .ok_or_else(|| validation("requires 'subject'"))?;
         let text = resolve_optional_str(input, "text", NAME, ctx)?;
         let html = resolve_optional_str(input, "html", NAME, ctx)?;
         if text.is_none() && html.is_none() {
-            return Err(validation("requires at least one of 'text' or 'html'"));
+            return Err(named(validation(
+                "requires at least one of 'text' or 'html'",
+            )));
         }
         let from_override = resolve_optional_str(input, "from", NAME, ctx)?;
         let reply_to = resolve_optional_str(input, "reply_to", NAME, ctx)?
@@ -158,8 +166,19 @@ impl AsyncFunctionHandler for SendEmailHandler {
     }
 }
 
-fn validation(msg: &str) -> DataflowError {
-    DataflowError::Validation(format!("{NAME}: {msg}"))
+/// A caller-fixable problem with the task's input, message **bare**.
+///
+/// Shared by `execute`, `validate_static_input` and the SMTP connector
+/// validator (which calls [`parse_mailbox`] on a stored `from`). The static and
+/// connector paths present the message beside a field path that already says
+/// what is wrong; the execution path adds the handler's name through [`named`].
+fn validation(msg: &str) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, msg)
+}
+
+/// A bare parser error on its way out through `execute`, named once.
+fn named(e: HandlerError) -> DataflowError {
+    e.prefixed(NAME).into()
 }
 
 /// An address field: one address or an array, each `addr@x` or
@@ -168,7 +187,7 @@ fn address_list(
     input: &Value,
     field: &str,
     ctx: &TaskContext<'_>,
-) -> Result<Option<Vec<Mailbox>>, DataflowError> {
+) -> Result<Option<Vec<Mailbox>>, HandlerError> {
     let raw = match input.get(field) {
         None | Some(Value::Null) => return Ok(None),
         Some(raw) => resolve_value(raw, ctx),
@@ -231,7 +250,7 @@ impl Mailbox {
 /// * the address shape is then enforced, because mail-parser is a *parser* of
 ///   real-world mail and is deliberately lenient — it will hand back a
 ///   nonsense local part rather than reject a header a live MTA emitted.
-pub(crate) fn parse_mailbox(field: &str, s: &str) -> Result<Mailbox, DataflowError> {
+pub(crate) fn parse_mailbox(field: &str, s: &str) -> Result<Mailbox, HandlerError> {
     let s = s.trim();
     let invalid = |why: &str| validation(&format!("'{field}' is not a valid email address: {why}"));
 
@@ -290,7 +309,7 @@ fn sender(
     config: &SmtpConnectorConfig,
     from_override: Option<&str>,
     connector: &str,
-) -> Result<Mailbox, DataflowError> {
+) -> Result<Mailbox, HandlerError> {
     match from_override {
         Some(from) => {
             if !config.allow_from_override {
@@ -319,7 +338,7 @@ fn generated_message_id(from: &Mailbox) -> String {
 /// Literal check on the `headers` field: an object of string values whose
 /// names are not owned by the structured fields. Shared with authoring-time
 /// validation via [`validate_static_input`].
-fn check_headers_field(input: &Value) -> Result<(), DataflowError> {
+fn check_headers_field(input: &Value) -> Result<(), HandlerError> {
     match input.get("headers") {
         None | Some(Value::Null) => Ok(()),
         Some(Value::Object(map)) => {
@@ -493,7 +512,7 @@ pub(super) fn validate_static_input(
 
     // The headers shape and the protected-name rule are fully literal.
     if let Err(e) = check_headers_field(&input) {
-        errors.push(("headers", "INVALID", strip_name(&e)));
+        errors.push(("headers", "INVALID", e.msg));
     }
 
     // Static addresses parse now instead of on the first send.
@@ -507,7 +526,7 @@ pub(super) fn validate_static_input(
         };
         for s in addresses {
             if let Err(e) = parse_mailbox(field, s) {
-                errors.push((field_name(field), "INVALID", strip_name(&e)));
+                errors.push((field_name(field), "INVALID", e.msg));
             }
         }
     }
@@ -517,10 +536,6 @@ pub(super) fn validate_static_input(
 
 fn field_name(key: &str) -> &'static str {
     super::schema::static_field_name(SEND_EMAIL_FIELDS, key, "to")
-}
-
-fn strip_name(e: &DataflowError) -> String {
-    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --

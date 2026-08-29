@@ -19,7 +19,6 @@
 //! this handler — never written to context, never quoted in an error.
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
@@ -32,6 +31,7 @@ use sha2::{Digest, Sha256, Sha512};
 use super::connector_helpers::{apply_output, resolve_required_str, resolve_value};
 use super::schema::{FieldKind, FieldSchema};
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "crypto";
@@ -75,45 +75,61 @@ pub struct CryptoHandler;
 impl AsyncFunctionHandler for CryptoHandler {
     type Input = Value;
 
+    /// The shell: run the body, then name the handler exactly once.
+    ///
+    /// Every parser below yields a **bare** message, because they are shared
+    /// with `validate_static_input`, where the `FieldError`'s own path already
+    /// says which field is wrong and a `"crypto: "` prefix is noise. On this
+    /// path the message travels away from the task that produced it, so it
+    /// needs the name — applied here, at the one point where that becomes
+    /// true, rather than formatted on by every parser and stripped back off by
+    /// the static path (which is what `strip_handler_prefix` was, and it had
+    /// silently stopped working).
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let op = match input.get("op").and_then(Value::as_str) {
-            Some(op) => op,
-            None => return Err(validation("requires 'op' (string)")),
-        };
-        let output = input
-            .get("output")
-            .and_then(Value::as_str)
-            .unwrap_or("data");
-
-        let result = match op {
-            "hash" => hash_op(input, ctx)?,
-            "hmac" => hmac_op(input, ctx, HmacMode::Compute).await?,
-            "hmac_verify" => hmac_op(input, ctx, HmacMode::Verify).await?,
-            "password_hash" => password_hash_op(input, ctx).await?,
-            "password_verify" => password_verify_op(input, ctx).await?,
-            other => {
-                return Err(validation(&format!(
-                    "unknown op '{other}' — expected one of {}",
-                    OPS.join(", ")
-                )));
-            }
-        };
-
-        apply_output(ctx, output, result);
-        Ok(TaskOutcome::Success)
+        run(ctx, input).await.map_err(|e| e.prefixed(NAME).into())
     }
 }
 
-fn validation(msg: &str) -> DataflowError {
-    DataflowError::Validation(format!("{NAME}: {msg}"))
+async fn run(ctx: &mut TaskContext<'_>, input: &Value) -> Result<TaskOutcome, HandlerError> {
+    let op = match input.get("op").and_then(Value::as_str) {
+        Some(op) => op,
+        None => return Err(validation("requires 'op' (string)")),
+    };
+    let output = input
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or("data");
+
+    let result = match op {
+        "hash" => hash_op(input, ctx)?,
+        "hmac" => hmac_op(input, ctx, HmacMode::Compute).await?,
+        "hmac_verify" => hmac_op(input, ctx, HmacMode::Verify).await?,
+        "password_hash" => password_hash_op(input, ctx).await?,
+        "password_verify" => password_verify_op(input, ctx).await?,
+        other => {
+            return Err(validation(&format!(
+                "unknown op '{other}' — expected one of {}",
+                OPS.join(", ")
+            )));
+        }
+    };
+
+    apply_output(ctx, output, result);
+    Ok(TaskOutcome::Success)
+}
+
+/// A caller-fixable problem with the task's input, message bare. See the shell
+/// on `execute` for where the handler's name is added.
+fn validation(msg: &str) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, msg)
 }
 
 /// An optional literal string field; a present non-string is an error.
-fn literal_str<'i>(input: &'i Value, field: &str) -> Result<Option<&'i str>, DataflowError> {
+fn literal_str<'i>(input: &'i Value, field: &str) -> Result<Option<&'i str>, HandlerError> {
     match input.get(field) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
@@ -126,7 +142,7 @@ fn algorithm<'i>(
     input: &'i Value,
     allowed: &[&str],
     default: &'i str,
-) -> Result<&'i str, DataflowError> {
+) -> Result<&'i str, HandlerError> {
     match literal_str(input, "algorithm")? {
         None => Ok(default),
         Some(a) if allowed.contains(&a) => Ok(a),
@@ -138,7 +154,7 @@ fn algorithm<'i>(
 }
 
 /// The output `encoding` for `hash`/`hmac` results (default hex).
-fn output_codec(input: &Value) -> Result<Codec, DataflowError> {
+fn output_codec(input: &Value) -> Result<Codec, HandlerError> {
     match literal_str(input, "encoding")? {
         None => Ok(Codec::Hex),
         Some(name) => Codec::parse(name).ok_or_else(|| {
@@ -151,7 +167,7 @@ fn output_codec(input: &Value) -> Result<Codec, DataflowError> {
 
 /// How a *string* value becomes bytes (`input_encoding` / `key_encoding`):
 /// UTF-8 by default, or decoded from hex/base64 for binary material.
-fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, DataflowError> {
+fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, HandlerError> {
     match literal_str(input, field)? {
         None | Some("utf8") => Ok(None),
         Some("hex") => Ok(Some(Codec::Hex)),
@@ -165,7 +181,7 @@ fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, DataflowError
 /// The byte model of #259, applied to `data`: strings per `input_encoding`
 /// (UTF-8 default), any other JSON value as its compact serialization — key
 /// order preserved — so "sign this payload" is first-class and deterministic.
-fn data_bytes(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, DataflowError> {
+fn data_bytes(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
     let Some(raw) = input.get("data") else {
         return Err(validation("this op requires 'data'"));
     };
@@ -205,7 +221,7 @@ fn digest_bytes(algorithm: &str, data: &[u8]) -> Vec<u8> {
     }
 }
 
-fn hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, DataflowError> {
+fn hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
     let algorithm = algorithm(input, HASH_ALGORITHMS, "sha256")?;
     let codec = output_codec(input)?;
     let data = data_bytes(input, ctx)?;
@@ -222,7 +238,7 @@ enum HmacMode {
 
 /// The op's `key`, resolved (literal or secret reference) and decoded per
 /// `key_encoding`. The resolved bytes never leave this call chain.
-async fn hmac_key(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, DataflowError> {
+async fn hmac_key(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
     let key = match input.get("key") {
         None | Some(Value::Null) => {
             return Err(validation(
@@ -247,7 +263,7 @@ async fn hmac_key(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, Dataf
 /// auto-detected. (Channel HMAC auth's auto-detection is deliberately
 /// narrower — hex then standard base64, its pre-#264 behaviour — so the two
 /// rules are related but not identical.)
-fn decode_presented_signature(s: &str) -> Result<Vec<u8>, DataflowError> {
+fn decode_presented_signature(s: &str) -> Result<Vec<u8>, HandlerError> {
     decode_bytes(Codec::Hex, s)
         .or_else(|_| decode_bytes(Codec::Base64, s))
         .or_else(|_| decode_bytes(Codec::Base64Url, s))
@@ -258,7 +274,7 @@ async fn hmac_op(
     input: &Value,
     ctx: &TaskContext<'_>,
     mode: HmacMode,
-) -> Result<Value, DataflowError> {
+) -> Result<Value, HandlerError> {
     // F58 ordering: the message-independent refusals (algorithm, key) come
     // before anything the message can change (data, signature).
     let algorithm = algorithm(input, HMAC_ALGORITHMS, "sha256")?;
@@ -296,7 +312,7 @@ fn cost_param(
     key: &str,
     default: u32,
     range: &std::ops::RangeInclusive<u64>,
-) -> Result<u32, DataflowError> {
+) -> Result<u32, HandlerError> {
     let Some(v) = params.and_then(|p| p.get(key)) else {
         return Ok(default);
     };
@@ -312,7 +328,7 @@ fn cost_param(
 
 /// Reject `params` keys the algorithm does not take — a typoed cost knob must
 /// not silently mean "use the default".
-fn check_param_keys(params: Option<&Value>, allowed: &[&str]) -> Result<(), DataflowError> {
+fn check_param_keys(params: Option<&Value>, allowed: &[&str]) -> Result<(), HandlerError> {
     let Some(Value::Object(map)) = params else {
         if params.is_some_and(|p| !p.is_null()) {
             return Err(validation("'params' must be an object"));
@@ -351,7 +367,7 @@ enum PasswordParams {
 fn password_params(
     algorithm: &str,
     params: Option<&Value>,
-) -> Result<PasswordParams, DataflowError> {
+) -> Result<PasswordParams, HandlerError> {
     match algorithm {
         "argon2id" => {
             check_param_keys(params, &["memory_kib", "iterations", "parallelism"])?;
@@ -386,7 +402,7 @@ fn password_params(
     }
 }
 
-async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, DataflowError> {
+async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
     let algorithm = algorithm(input, PASSWORD_ALGORITHMS, "argon2id")?;
     let password = resolve_required_str(input, "password", NAME, ctx)?;
 
@@ -422,7 +438,7 @@ async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value,
     }
 }
 
-async fn password_verify_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, DataflowError> {
+async fn password_verify_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
     let password = resolve_required_str(input, "password", NAME, ctx)?;
     let hash = resolve_required_str(input, "hash", NAME, ctx)?;
 
@@ -459,15 +475,13 @@ async fn password_verify_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Valu
 /// Run a CPU-bound hashing closure on the blocking pool. Password KDFs are
 /// deliberately slow; running them inline would stall an async worker for
 /// tens of milliseconds per login.
-async fn spawn_hashing<F>(f: F) -> Result<Value, DataflowError>
+async fn spawn_hashing<F>(f: F) -> Result<Value, HandlerError>
 where
     F: FnOnce() -> Result<Value, String> + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|e| {
-            DataflowError::function_execution(format!("{NAME}: hashing task failed: {e}"), None)
-        })?
+        .map_err(|e| HandlerError::new(ErrorClass::Backend, format!("hashing task failed: {e}")))?
         .map_err(|e| validation(&e))
 }
 
@@ -553,18 +567,18 @@ pub(super) fn validate_static_input(
     if !allowed_algorithms.is_empty()
         && let Err(e) = algorithm(&input, allowed_algorithms, allowed_algorithms[0])
     {
-        errors.push(("algorithm", "INVALID", strip_name(&e)));
+        errors.push(("algorithm", "INVALID", e.msg));
     }
     if optional.contains(&"encoding")
         && let Err(e) = output_codec(&input)
     {
-        errors.push(("encoding", "INVALID", strip_name(&e)));
+        errors.push(("encoding", "INVALID", e.msg));
     }
     for enc_field in ["input_encoding", "key_encoding"] {
         if optional.contains(&enc_field)
             && let Err(e) = byte_codec(&input, enc_field)
         {
-            errors.push((field_name(enc_field), "INVALID", strip_name(&e)));
+            errors.push((field_name(enc_field), "INVALID", e.msg));
         }
     }
 
@@ -595,7 +609,7 @@ pub(super) fn validate_static_input(
         if PASSWORD_ALGORITHMS.contains(&algorithm)
             && let Err(e) = password_params(algorithm, obj.get("params"))
         {
-            errors.push(("params", "INVALID", strip_name(&e)));
+            errors.push(("params", "INVALID", e.msg));
         }
     }
 
@@ -614,10 +628,6 @@ fn field_name(key: &str) -> &'static str {
 
 fn field_exists(key: &str) -> bool {
     CRYPTO_FIELDS.iter().any(|f| f.name == key)
-}
-
-fn strip_name(e: &DataflowError) -> String {
-    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --

@@ -141,6 +141,66 @@ impl From<HandlerError> for DataflowError {
     }
 }
 
+/// The inverse, for a helper that still speaks `DataflowError`.
+///
+/// A handler converted to `HandlerError` still calls shared code that has not
+/// been — the secret resolver, say — and `?` needs this to keep working.
+///
+/// The message comes from the variant's *payload*, never from `to_string()`:
+/// `Display` prepends the variant name ("Validation error: …"), and a message
+/// carrying that prefix is exactly the noise this type exists to keep out. That
+/// is not hypothetical — `strip_handler_prefix` stopped working the day it
+/// started matching at position 0, because the string it was handed began with
+/// `"Validation error: "` rather than with the handler's name.
+impl From<DataflowError> for HandlerError {
+    fn from(e: DataflowError) -> Self {
+        let (class, msg) = match e {
+            DataflowError::Validation(m) => (ErrorClass::CallerInput, m),
+            DataflowError::Timeout(m) => (ErrorClass::Timeout, m),
+            DataflowError::Io(m) => (ErrorClass::Connector, m),
+            DataflowError::FunctionExecution { context, .. } => (ErrorClass::Backend, context),
+            DataflowError::Service {
+                message, retryable, ..
+            } => (
+                // A service-classified failure declares its own retryability,
+                // so honour that rather than re-deriving it from the text.
+                if retryable {
+                    ErrorClass::Connector
+                } else {
+                    ErrorClass::Backend
+                },
+                message,
+            ),
+            DataflowError::Http { status, message } => (
+                // 4xx is the caller's; anything else is the backend's.
+                if (400..500).contains(&status) {
+                    ErrorClass::CallerInput
+                } else {
+                    ErrorClass::Backend
+                },
+                message,
+            ),
+            DataflowError::Workflow(m)
+            | DataflowError::Task(m)
+            | DataflowError::FunctionNotFound(m)
+            | DataflowError::Deserialization(m)
+            | DataflowError::LogicEvaluation(m)
+            | DataflowError::Unknown(m) => (ErrorClass::Backend, m),
+            // `DataflowError` is `#[non_exhaustive]`. A variant added upstream
+            // is classified as a backend failure — not retryable, message
+            // replaced — because that is the conservative reading of an error
+            // whose semantics this build does not know. `to_string()` here
+            // rather than a payload, since there is no arm to destructure.
+            other => (ErrorClass::Backend, other.to_string()),
+        };
+        Self {
+            class,
+            msg,
+            detail: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

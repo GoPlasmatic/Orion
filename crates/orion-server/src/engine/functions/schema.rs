@@ -886,28 +886,6 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
     errors
 }
 
-/// Drop the `"{handler}: "` prefix a handler's validation error carries — as
-/// a `FieldError` message the field path already provides the context. Shared
-/// by the `validate_static_input` implementations that reuse their execution
-/// path's error-producing parsers.
-///
-/// A **prefix**, not a split. It used to `split_once` on `"{handler}: "`, which
-/// matches anywhere in the string: a message quoting the handler's own name
-/// mid-sentence — `crypto: unknown op 'crypto: x'` — was cut at the wrong
-/// place and the caller got half its own text back.
-///
-/// This is still a format-then-unformat round trip, and the real fix is for
-/// the shared parsers to yield a bare message that the execution path
-/// prefixes and the static path does not. That restructures three handlers'
-/// parsers, so it is left as its own change; this one only removes the way it
-/// could be wrong.
-pub(super) fn strip_handler_prefix(handler: &str, e: &DataflowError) -> String {
-    let s = e.to_string();
-    s.strip_prefix(&format!("{handler}: "))
-        .map(str::to_string)
-        .unwrap_or(s)
-}
-
 /// The `&'static str` spelling of `key` in `fields` — for the
 /// `validate_static_input` tuples, whose path suffixes must be static.
 /// `fallback` covers keys outside the table (unreachable for real inputs,

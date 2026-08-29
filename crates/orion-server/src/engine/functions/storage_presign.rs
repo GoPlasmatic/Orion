@@ -21,6 +21,7 @@ use super::connector_helpers::{
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::{ConnectorRegistry, sigv4};
+use crate::engine::{ErrorClass, HandlerError};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "storage_presign";
@@ -44,8 +45,8 @@ impl AsyncFunctionHandler for StoragePresignHandler {
     ) -> dataflow_rs::Result<TaskOutcome> {
         // F48/F58: literal prologue first.
         let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let method = presign_method(input)?;
-        check_method_fields(input, method)?;
+        let method = presign_method(input).map_err(named)?;
+        check_method_fields(input, method).map_err(named)?;
 
         let key = resolve_required_str(input, "key", NAME, ctx)?;
         let expires_secs = expires_in(input, ctx)?;
@@ -103,8 +104,20 @@ impl AsyncFunctionHandler for StoragePresignHandler {
     }
 }
 
-fn validation(msg: &str) -> DataflowError {
-    DataflowError::Validation(format!("{NAME}: {msg}"))
+/// A caller-fixable problem with the task's input, message **bare**.
+///
+/// Shared by `execute` and `validate_static_input`. The static path turns it
+/// into a `FieldError`, whose own path already says which field is wrong, so a
+/// `"storage_presign: "` prefix there is noise; the execution path adds the
+/// name through [`named`]. Formatting it on here and stripping it back off was
+/// what `strip_handler_prefix` did, and it had silently stopped doing it.
+fn validation(msg: &str) -> HandlerError {
+    HandlerError::new(ErrorClass::CallerInput, msg)
+}
+
+/// A bare parser error on its way out through `execute`, named once.
+fn named(e: HandlerError) -> DataflowError {
+    e.prefixed(NAME).into()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -132,7 +145,7 @@ impl PresignMethod {
 
 /// The `method` value table — an open set: a presigned DELETE would be a new
 /// value here, never a new function.
-fn presign_method(input: &Value) -> Result<PresignMethod, DataflowError> {
+fn presign_method(input: &Value) -> Result<PresignMethod, HandlerError> {
     match input.get("method").and_then(Value::as_str) {
         None | Some("GET") => Ok(PresignMethod::Get),
         Some("PUT") => Ok(PresignMethod::Put),
@@ -145,7 +158,7 @@ fn presign_method(input: &Value) -> Result<PresignMethod, DataflowError> {
 /// The per-method field rules: response overrides are GET's, the upload
 /// content-type constraint is PUT's. Naming a field on the wrong method is a
 /// misunderstanding worth refusing, not ignoring.
-fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), DataflowError> {
+fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), HandlerError> {
     let present = |field: &str| input.get(field).is_some_and(|v| !v.is_null());
     match method {
         PresignMethod::Get if present("content_type") => Err(validation(
@@ -166,16 +179,16 @@ fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), Dataf
 /// S3's own 7-day cap.
 fn expires_in(input: &Value, ctx: &TaskContext<'_>) -> Result<u64, DataflowError> {
     let Some(raw) = input.get("expires_in") else {
-        return Err(validation(
+        return Err(named(validation(
             "requires 'expires_in' (seconds, or \"<n>s|m|h|d\")",
-        ));
+        )));
     };
     let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
     if secs == 0 || secs > MAX_EXPIRES_SECS {
-        return Err(validation(&format!(
+        return Err(named(validation(&format!(
             "'expires_in' must be between 1 second and {MAX_EXPIRES_SECS} (7 days — \
              S3's own presign ceiling), got {secs}"
-        )));
+        ))));
     }
     Ok(secs)
 }
@@ -193,14 +206,14 @@ pub(super) fn validate_static_input(
     let method = match presign_method(&input) {
         Ok(m) => Some(m),
         Err(e) => {
-            errors.push(("method", "INVALID", strip_name(&e)));
+            errors.push(("method", "INVALID", e.msg));
             None
         }
     };
     if let Some(method) = method
         && let Err(e) = check_method_fields(&input, method)
     {
-        errors.push(("method", "INVALID", strip_name(&e)));
+        errors.push(("method", "INVALID", e.msg));
     }
 
     match obj.get("expires_in") {
@@ -238,10 +251,6 @@ pub(super) fn validate_static_input(
     }
 
     errors
-}
-
-fn strip_name(e: &DataflowError) -> String {
-    super::schema::strip_handler_prefix(NAME, e)
 }
 
 // -- Input schema (F53) --

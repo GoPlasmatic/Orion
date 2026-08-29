@@ -197,3 +197,92 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod message_shape_pin {
+    //! The prefix contract, pinned before the parsers were made to yield bare
+    //! messages.
+    //!
+    //! `crypto`, `send_email` and `storage_presign` share their parsers between
+    //! two paths: `execute`, whose errors travel far from the task that
+    //! produced them and so name the handler, and `validate_static_input`,
+    //! whose errors become `FieldError`s where the field path already supplies
+    //! that context. The prefix used to be formatted on and then stripped back
+    //! off (`strip_handler_prefix`).
+    //!
+    //! Making the parsers bare and re-prefixing once at the shell is the fix,
+    //! and the way it goes wrong is silent: an execution error that loses its
+    //! prefix, or a static message that gains one. Asserted for one input per
+    //! handler, so a half-converted handler fails.
+    //!
+    //! Written before the conversion, where it failed on all three — which is
+    //! how it turned up that `strip_handler_prefix` had stopped working.
+    //! `DataflowError::Validation` renders as `"Validation error: {0}"`, so a
+    //! `strip_prefix("crypto: ")` never matches at position 0 and returned the
+    //! whole string. The `split_once` it replaced *did* match mid-string, so
+    //! hardening the function against a mid-sentence cut turned it into a
+    //! no-op, and these messages have read `"Validation error: crypto: …"`
+    //! ever since. Unreleased; this is the repair.
+
+    use serde_json::json;
+
+    /// Every static-validation message is bare — no `"{handler}: "` anywhere.
+    fn assert_no_prefix(handler: &str, errors: &[(&'static str, &'static str, String)]) {
+        let needle = format!("{handler}: ");
+        for (field, code, message) in errors {
+            assert!(
+                !message.contains(&needle),
+                "{handler}.validate_static_input returned a prefixed message for \
+                 ({field}, {code}): {message:?}"
+            );
+        }
+    }
+
+    /// The other half of the contract: on the execution path the message
+    /// *keeps* the handler's name, because there it travels away from the task
+    /// that produced it.
+    ///
+    /// Both halves are asserted because the conversion can fail in either
+    /// direction, and a lost prefix is the quieter of the two — nothing breaks,
+    /// the message is just less useful in a trace than it was.
+    #[tokio::test]
+    async fn crypto_execution_messages_keep_the_handler_name() {
+        let err = super::run_test_task(
+            "crypto",
+            Box::new(super::crypto::CryptoHandler),
+            json!({"op": "hash", "data": "x", "algorithm": "not-an-algorithm"}),
+            json!({}),
+        )
+        .await
+        .expect_err("an unknown algorithm must fail the task");
+        assert!(
+            err.contains("crypto: "),
+            "an execution-path message must name its handler: {err:?}"
+        );
+    }
+
+    #[test]
+    fn crypto_static_messages_are_bare() {
+        let obj = json!({"op": "hash", "data": "x", "algorithm": "not-an-algorithm"});
+        let errors = super::crypto::validate_static_input(obj.as_object().expect("object"));
+        assert!(!errors.is_empty(), "an unknown algorithm must be reported");
+        assert_no_prefix("crypto", &errors);
+    }
+
+    #[test]
+    fn send_email_static_messages_are_bare() {
+        let obj = json!({"connector": "c", "to": "not an address", "subject": "s", "body": "b"});
+        let errors = super::send_email::validate_static_input(obj.as_object().expect("object"));
+        assert!(!errors.is_empty(), "an invalid address must be reported");
+        assert_no_prefix("send_email", &errors);
+    }
+
+    #[test]
+    fn storage_presign_static_messages_are_bare() {
+        let obj = json!({"connector": "c", "bucket": "b", "key": "k", "method": "TELEPORT"});
+        let errors =
+            super::storage_presign::validate_static_input(obj.as_object().expect("object"));
+        assert!(!errors.is_empty(), "an unknown method must be reported");
+        assert_no_prefix("storage_presign", &errors);
+    }
+}
