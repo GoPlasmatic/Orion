@@ -195,7 +195,8 @@ pub(crate) async fn change_workflow_status(
             // the gate, because from here the workflow serves traffic and
             // a missing connector is a guaranteed runtime 500.
             let draft = state.repos.workflows.get_by_id(&id).await?;
-            ensure_workflow_connectors_exist(&state, &draft).await?;
+            super::services::workflows::ensure_connectors_exist(&state.connector_registry, &draft)
+                .await?;
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
             state.repos.workflows.activate(&id, rollout_pct).await?
         }
@@ -251,7 +252,12 @@ async fn dry_run_status_change(
                                  version first"
                             ),
                         });
-                    } else if let Err(e) = ensure_workflow_connectors_exist(state, &latest).await {
+                    } else if let Err(e) = super::services::workflows::ensure_connectors_exist(
+                        &state.connector_registry,
+                        &latest,
+                    )
+                    .await
+                    {
                         errors.extend(issues_from_error(e));
                     }
                     // A partial rollout with nothing to share traffic with is
@@ -380,99 +386,6 @@ pub(crate) async fn workflow_dependencies(
         channels: channels.into_iter().map(str::to_string).collect(),
         has_dynamic_channel_calls,
     }))
-}
-
-/// R5 / F52: every connector a workflow's tasks reference must exist, be of a
-/// type the referencing function can actually use, and carry the extra keys
-/// that type needs — all before the workflow may activate.
-///
-/// Missing connectors were previously a warning at create and unchecked at
-/// activate, so the workflow failed at its first request instead (R5). The
-/// *type* stayed unchecked even then: pointing `cache_read` at a `db`
-/// connector activated cleanly and 500'd on first traffic, though
-/// `CONNECTOR_FUNCTIONS` already implied the required kind (F52). Both are
-/// fully determined at authoring time, so both are answered here.
-async fn ensure_workflow_connectors_exist(
-    state: &AppState,
-    workflow: &crate::storage::models::Workflow,
-) -> Result<(), OrionError> {
-    let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
-        return Ok(()); // unparseable tasks are caught elsewhere
-    };
-    let mut missing: Vec<String> = Vec::new();
-    let mut problems: Vec<String> = Vec::new();
-
-    for task in connector_refs(&tasks) {
-        let Some(config) = state.connector_registry.get(task.connector).await else {
-            if !missing.contains(&task.connector.to_string()) {
-                missing.push(task.connector.to_string());
-            }
-            continue;
-        };
-
-        // Type. The handler would refuse this at request time via
-        // `require_*_connector`; saying so now costs one registry read.
-        let actual = config.connector_type();
-        if let Some(wanted) = crate::engine::required_connector_types(task.function)
-            && !wanted.contains(&actual)
-        {
-            problems.push(format!(
-                "task calling '{}' points at connector '{}', which is a '{actual}' \
-                 connector — '{}' requires {}",
-                task.function,
-                task.connector,
-                task.function,
-                wanted
-                    .iter()
-                    .map(|t| format!("'{t}'"))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
-            ));
-            continue;
-        }
-
-        // Cross-field: MongoDB has no default database in its connection
-        // string, so the task must name one. `mongo_read` declares `database`
-        // required outright; `data_query`/`data_write` cannot, because the same
-        // shape is valid against SQL and Elasticsearch — which is why the
-        // schema marks it optional and the handler enforces it at request time.
-        // Whether it applies is knowable here: the connector is already
-        // resolved.
-        if config.is_mongo()
-            && crate::engine::requires_mongo_database(task.function)
-            && !task
-                .input
-                .get("database")
-                .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
-        {
-            problems.push(format!(
-                "task calling '{}' points at MongoDB connector '{}' but sets no \
-                 'database' — MongoDB connection strings carry no default database",
-                task.function, task.connector
-            ));
-        }
-    }
-
-    if !missing.is_empty() {
-        return Err(OrionError::validation(format!(
-            "Cannot activate workflow '{}': connector(s) {} not found — create \
-             them first, or fix the reference",
-            workflow.workflow_id,
-            missing
-                .iter()
-                .map(|m| format!("'{m}'"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
-    if !problems.is_empty() {
-        return Err(OrionError::validation(format!(
-            "Cannot activate workflow '{}': {}",
-            workflow.workflow_id,
-            problems.join("; ")
-        )));
-    }
-    Ok(())
 }
 
 // ============================================================

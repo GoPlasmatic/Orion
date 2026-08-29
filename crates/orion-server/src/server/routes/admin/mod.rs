@@ -5,6 +5,7 @@ pub(crate) mod connectors;
 pub(crate) mod engine;
 pub(crate) mod functions;
 pub(crate) mod packages;
+pub(crate) mod services;
 pub(crate) mod trace_dlq;
 pub(crate) mod workflows;
 
