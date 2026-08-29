@@ -165,8 +165,15 @@ pub const TRACE_STATUS_COMPLETED: &str = "completed";
 pub const TRACE_STATUS_FAILED: &str = "failed";
 
 // -- Trace mode constants --
+// The transport a traced message arrived on, as written to `traces.mode` and
+// accepted by `GET /api/v1/data/traces?mode=`. The field is an open string on
+// the wire, so a client must tolerate a value it does not know — but these are
+// the ones the runtime writes.
 pub const TRACE_MODE_SYNC: &str = "sync";
 pub const TRACE_MODE_ASYNC: &str = "async";
+/// A message consumed from Kafka. Unlike the two HTTP modes, its row carries
+/// no `channel_id` and no `input_json`.
+pub const TRACE_MODE_KAFKA: &str = "kafka";
 
 #[cfg(test)]
 mod tests {
@@ -257,5 +264,6 @@ mod tests {
     fn test_trace_mode_constants() {
         assert_eq!(TRACE_MODE_SYNC, "sync");
         assert_eq!(TRACE_MODE_ASYNC, "async");
+        assert_eq!(TRACE_MODE_KAFKA, "kafka");
     }
 }
