@@ -88,8 +88,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kafka DLQ topic, the log), and says what to do today if per-message traces
   are required. No behaviour change.
 
+### Fixed
+
+- **`POST /workflows/{id}/test` and `orion-server dry-run` now screen the
+  workflow the way boot and reload do.** Both assembled the engine builder by
+  hand and called `.build()`, which is not the same check: `http_call`,
+  `publish_kafka` and `enrich` deserialize into typed built-in variants, so a
+  workflow naming one builds cleanly with no handler behind it and then fails
+  every request with `FunctionNotFound`. Orion never registers `enrich`. The
+  result was a green dry run followed by a channel that would not serve — and,
+  worse in reverse, a green *test* before an activation that quarantines. Both
+  now answer with the same `HandlerScreen` the serving engine uses, so an
+  unusable task is a `400` naming the workflow and the task.
+
 ### Internal
 
+- Engine construction over a single workflow is one function
+  (`engine::build_single`) that screens, and loading-plus-checking a definition
+  directory is one function (`definitions::gate_directory`) that both
+  `lint <dir>` and `clippy <dir>` run — so a file one of them cannot read is
+  reported by both or by neither.
 - The import upsert is written once for both versioned entities
   (`VersionedUpsert`), rather than a per-kind copy whose dry-run branch had to
   keep agreeing with its own real branch by hand.

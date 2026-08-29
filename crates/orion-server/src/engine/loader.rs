@@ -186,6 +186,57 @@ fn screen_workflow(
         .join("; "))
 }
 
+/// Build an engine over exactly one workflow, screened the way the serving
+/// engine screens.
+///
+/// Four places in the tree build a workflow engine, and until this existed only
+/// two of them went through the [`HandlerScreen`]: boot and reload. The other
+/// two — `orion-server dry-run` and `POST /workflows/{id}/test` — assembled the
+/// builder by hand and called `.build()`, so they answered a *different
+/// question* from the one they are asked.
+///
+/// `.build()` alone is not the same check. It refuses an unregistered *custom*
+/// function, but `http_call`, `publish_kafka` and `enrich` deserialize into
+/// typed built-in variants, so a workflow naming one builds cleanly with no
+/// handler behind it and fails every request with `FunctionNotFound`. Orion
+/// registers the first two and never registers `enrich` — which is exactly the
+/// case that made this screen exist (F54). The author saw a green dry run and a
+/// channel that would not serve; worse in reverse, since "test this workflow"
+/// is the endpoint people trust before activating.
+///
+/// So the screen is not optional and not the caller's to remember. `handlers`
+/// go on the builder first, because that is what the screen consults — pass
+/// the same map the surface would run with (the real handlers for the test
+/// endpoint, the stub table for a dry run), and the answer is about *that*
+/// engine.
+///
+/// `Err` is the joined screen message, in the same wording
+/// [`build_engine_workflows`] puts in a `ChannelLoadIssue`, so an author reads
+/// one explanation of an unusable task wherever they meet it.
+pub fn build_single(
+    workflow: dataflow_rs::Workflow,
+    handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    secrets: &crate::engine::ResolvedSecrets,
+) -> Result<dataflow_rs::Engine, crate::errors::OrionError> {
+    let builder = crate::engine::operators::with_orion_engine_defaults(
+        dataflow_rs::Engine::builder(),
+        secrets,
+    )
+    .with_handlers(handlers);
+
+    screen_workflow(&workflow, &builder).map_err(|e| {
+        crate::errors::OrionError::validation(format!(
+            "workflow '{}' has an unusable task: {e}",
+            workflow.id
+        ))
+    })?;
+
+    builder
+        .with_workflow(workflow)
+        .build()
+        .map_err(crate::errors::OrionError::Engine)
+}
+
 /// Convert active channels and their workflows to dataflow-rs workflows for the engine.
 ///
 /// For each active channel, finds the associated workflow(s) and builds
@@ -684,6 +735,74 @@ mod tests {
                 && issues[0].reason.contains("task 't1'"),
             "reason should name the offending task and function: {}",
             issues[0].reason
+        );
+    }
+
+    // ---- build_single: the screen is not the caller's to remember --------
+
+    fn one_task_workflow(function: &str, input: serde_json::Value) -> dataflow_rs::Workflow {
+        serde_json::from_value(serde_json::json!({
+            "id": "wf-1",
+            "name": "wf-1",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "t1",
+                "function": { "name": function, "input": input }
+            }],
+        }))
+        .expect("a well-formed workflow")
+    }
+
+    /// The divergence this closes, in its sharpest form.
+    ///
+    /// `enrich` is a dataflow-rs built-in that *requires a handler*, and Orion
+    /// never registers one (F54). So it deserializes, `.build()` accepts it,
+    /// and every request fails with `FunctionNotFound` — which is why
+    /// `dry-run` and `POST /workflows/{id}/test` calling `.build()` by hand
+    /// gave a green answer for a workflow boot would quarantine.
+    #[test]
+    fn build_single_refuses_a_built_in_with_no_handler_behind_it() {
+        // `dataflow_rs::Engine` is not `Debug`, so unwrap the arms by hand.
+        let Err(err) = build_single(
+            one_task_workflow(
+                "enrich",
+                serde_json::json!({ "connector": "c", "merge_path": "data" }),
+            ),
+            std::collections::HashMap::new(),
+            &crate::engine::ResolvedSecrets::empty(),
+        ) else {
+            unreachable!(
+                "`enrich` has no handler in any Orion engine — building it is \
+                 the bug this screen exists to catch"
+            );
+        };
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("wf-1") && msg.contains("t1"),
+            "the refusal must name the workflow and the task: {msg}"
+        );
+        assert!(
+            matches!(err, crate::errors::OrionError::Validation { .. }),
+            "an unusable task is the author's document to fix, not a server \
+             fault: {err:?}"
+        );
+    }
+
+    /// The control: a self-contained built-in needs no handler, so the same
+    /// call builds. Without this the test above would pass for a `build_single`
+    /// that refuses everything.
+    #[test]
+    fn build_single_builds_a_workflow_every_engine_can_run() {
+        assert!(
+            build_single(
+                one_task_workflow("log", serde_json::json!({ "message": "x" })),
+                std::collections::HashMap::new(),
+                &crate::engine::ResolvedSecrets::empty(),
+            )
+            .is_ok(),
+            "`log` is self-contained — every engine dispatches it"
         );
     }
 }

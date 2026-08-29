@@ -628,17 +628,18 @@ pub(crate) async fn test_workflow(
         ))
     })?;
 
-    // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
-    // channel_call in dry-run still routes through the main engine for cross-channel calls.
+    // An isolated engine over just this workflow, on the same registries and
+    // pools the serving engine uses (`handler_deps`) and screened the same way
+    // (`build_single`). `channel_call` still routes through the main engine for
+    // cross-channel calls.
+    //
+    // The screen is the point: this endpoint used to assemble the builder by
+    // hand and call `.build()`, so it accepted a workflow that boot and reload
+    // would quarantine — a green "test this workflow" followed by a channel
+    // that will not serve. A task nothing can dispatch is now a 400 naming it,
+    // here, before anyone activates.
     let custom_fns = crate::engine::build_custom_functions(crate::runtime::handler_deps(&state));
-    let test_engine = crate::engine::operators::with_orion_engine_defaults(
-        dataflow_rs::Engine::builder(),
-        &state.secrets,
-    )
-    .with_workflow(df_workflow)
-    .with_handlers(custom_fns)
-    .build()
-    .map_err(OrionError::Engine)?;
+    let test_engine = crate::engine::build_single(df_workflow, custom_fns, &state.secrets)?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {

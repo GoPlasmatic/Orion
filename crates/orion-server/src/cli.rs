@@ -402,23 +402,23 @@ fn load_and_gate(
     require_ids: bool,
     deny_warnings: bool,
 ) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
-    let (set, report) =
-        orion::definitions::DefinitionSet::from_directory(std::path::Path::new(dir))?;
+    let report = orion::definitions::gate_directory(
+        std::path::Path::new(dir),
+        &boundary,
+        orion::definitions::GateOpts {
+            require_ids,
+            want_raw: false,
+        },
+    )?;
 
     // Say what was not read. A set lint that silently ignores a file reports
     // green over a set it did not finish reading, which is the failure this
     // command exists to remove rather than relocate.
-    for (path, error) in &report.unparseable {
-        eprintln!("warning: {} is not readable JSON: {error}", path.display());
-    }
-    for path in &report.skipped {
-        eprintln!(
-            "note: {} is not a channel, workflow or connector — skipped",
-            path.display()
-        );
+    for notice in report.notices() {
+        eprintln!("{notice}");
     }
 
-    if set.is_empty() {
+    if report.set.is_empty() {
         return Err(format!(
             "no definitions found under '{dir}'. A definition is a JSON object with \
              'tasks' (workflow), 'channel_type' (channel) or 'connector_type' (connector)."
@@ -426,19 +426,9 @@ fn load_and_gate(
         .into());
     }
 
-    // The loader's findings — an unresolvable `$from`, a missing fragment, a
-    // name defined twice — are the same class as the check pass's and share
-    // its exit rules, which is the whole reason #286 came first.
-    let mut findings = report.findings;
-    findings.extend(orion::definitions::check(&set, &boundary, require_ids));
-
-    let errors = findings.iter().filter(|f| f.is_error()).count();
-    // Counted by severity rather than as "everything that is not an error":
-    // the report also carries inventory notes, and gating on those made
-    // `--deny-warnings` fail on any set that references an environment
-    // variable.
-    let warnings = findings.iter().filter(|f| f.is_warning()).count();
-    for finding in &findings {
+    let errors = report.errors();
+    let warnings = report.warnings();
+    for finding in &report.findings {
         eprintln!("{finding}");
     }
 
@@ -464,9 +454,9 @@ fn load_and_gate(
     println!(
         "{dir}: {} connector(s), {} workflow(s), {} channel(s){shared} — {errors} error(s), \
          {warnings} warning(s)",
-        set.count(Entity::Connector),
-        set.count(Entity::Workflow),
-        set.count(Entity::Channel),
+        report.set.count(Entity::Connector),
+        report.set.count(Entity::Workflow),
+        report.set.count(Entity::Channel),
     );
 
     if errors > 0 {
@@ -475,7 +465,7 @@ fn load_and_gate(
     if deny_warnings && warnings > 0 {
         return Err(format!("{warnings} warning(s) in '{dir}' and --deny-warnings is set").into());
     }
-    Ok(set)
+    Ok(report.set)
 }
 
 /// What `compile` writes.
@@ -963,25 +953,29 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
 
     let path = std::path::Path::new(req.path);
     let (raw, compiled, shared, mut findings) = if path.is_dir() {
-        let (raw, raw_report) = DefinitionSet::from_directory_raw(path)?;
-        let (compiled, report) = DefinitionSet::from_directory(path)?;
-        for (file, error) in &report.unparseable {
-            eprintln!("warning: {} is not readable JSON: {error}", file.display());
+        // The same gate `lint <dir>` runs — one sequence, so a file this
+        // command cannot read is reported by both or by neither. `want_raw`
+        // because the duplication rules read the *source* form: two documents
+        // that share a `$from` are not duplicates of each other.
+        let report = orion::definitions::gate_directory(
+            path,
+            &req.boundary,
+            orion::definitions::GateOpts {
+                require_ids: false,
+                want_raw: true,
+            },
+        )?;
+        for notice in report.notices() {
+            eprintln!("{notice}");
         }
-        for file in &report.skipped {
-            eprintln!(
-                "note: {} is not a channel, workflow or connector — skipped",
-                file.display()
-            );
-        }
-        if compiled.is_empty() {
+        if report.set.is_empty() {
             eprintln!("error: no definitions found under '{}'", req.path);
             return Ok(2);
         }
-        let mut findings = report.findings;
-        findings.extend(orion::definitions::check(&compiled, &req.boundary, false));
-        let _ = raw_report;
-        (raw, compiled, report.shared, findings)
+        let raw = report
+            .raw
+            .unwrap_or_else(|| DefinitionSet::from_entries([]));
+        (raw, report.set, report.shared, report.findings)
     } else if path.is_file() {
         let text =
             std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
@@ -1198,15 +1192,13 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
     let functions =
         orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
-    // Custom operators are registered here too: a dry-run must speak the same
-    // expression vocabulary as the serving engine.
-    let engine = orion::engine::operators::with_orion_engine_defaults(
-        dataflow_rs::Engine::builder(),
-        secrets,
-    )
-    .with_workflow(df_workflow)
-    .with_handlers(functions)
-    .build()?;
+    // `build_single` registers the custom operators — a dry run must speak the
+    // same expression vocabulary as the serving engine — and screens the
+    // workflow against the handlers above, which is what makes a dry run's
+    // verdict mean something. Screened against the *stub* table on purpose:
+    // the question a dry run answers is "will this run offline", and the stub
+    // table is the handler set it will run against.
+    let engine = orion::engine::build_single(df_workflow, functions, secrets)?;
     Ok(OfflineRun { engine, log })
 }
 
