@@ -16,23 +16,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::Value;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error,
+    ConnectorCall, require_op_allowed, resolve_value, timed_query, to_connect_error,
 };
-use super::mongo_common::{docs_to_json, drain_capped, require_mongo_connector};
+use super::mongo_common::{docs_to_json, drain_capped, require_mongo_backend};
 use super::schema::{FieldKind, FieldSchema};
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
+use crate::engine::HandlerError;
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "mongo_aggregate";
+/// This handler's name, for the helpers that take it as an argument — a
+/// reference to the one place it is written (F48).
+const NAME: &str = <MongoAggregateHandler as ConnectorHandler>::NAME;
 
 /// Read-only stages, allowed on any MongoDB connector whose `read` gate is on.
 /// One row per stage — growth is data.
@@ -86,19 +87,36 @@ pub struct MongoAggregateHandler {
     pub limits: QueryConfig,
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for MongoAggregateHandler {
-    type Input = Value;
+/// The pipeline as it will actually run: `{"var": ..}` folded at any depth,
+/// every stage checked against the allowlist, and the answer to the one
+/// question the gate needs — whether any stage writes.
+pub struct Aggregation {
+    database: String,
+    collection: String,
+    allow_disk_use: bool,
+    pipeline: Vec<Document>,
+    wants_write_stage: bool,
+}
 
-    async fn execute(
+#[async_trait]
+impl ConnectorHandler for MongoAggregateHandler {
+    const NAME: &'static str = "mongo_aggregate";
+    type Kind = crate::connector::kind::Db;
+    type Input = Value;
+    type Parsed = Aggregation;
+
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let database = call.require_str(input, "database")?;
-        let collection = call.require_str(input, "collection")?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        let database = call.require_str(input, "database")?.to_string();
+        let collection = call.require_str(input, "collection")?.to_string();
         let allow_disk_use = input
             .get("allow_disk_use")
             .and_then(Value::as_bool)
@@ -107,7 +125,7 @@ impl AsyncFunctionHandler for MongoAggregateHandler {
         // Fold `{"var": ..}` at any depth, then validate the *resolved* stages
         // — the allowlist judges what will actually run, not what was typed.
         let raw = input.get("pipeline").ok_or_else(|| {
-            DataflowError::Validation(format!("{NAME} requires 'pipeline' field"))
+            DataflowError::Validation(format!("{} requires 'pipeline' field", call.name))
         })?;
         let resolved = resolve_value(raw, ctx);
         let stages = pipeline_stages(&resolved)?;
@@ -117,45 +135,67 @@ impl AsyncFunctionHandler for MongoAggregateHandler {
         let pipeline = super::mongo_common::documents_from_values(
             stages.iter().map(|(_, stage)| *stage),
             "pipeline",
-            NAME,
+            call.name,
         )?;
 
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, Some("read")).await?;
-            let db_config = require_mongo_connector(&connector_config, NAME, call.connector)?;
-            // The write stages are default-deny: `$out`/`$merge` run only on a
-            // connector that explicitly says its aggregations may write.
-            if wants_write_stage && !db_config.aggregate_write_stages {
-                return Err(crate::errors::connector_detail_error(format!(
-                    "pipeline contains a write stage ($out/$merge), which is disabled \
-                     on connector '{}' — set \"aggregate_write_stages\": true on the \
-                     connector to permit it",
-                    call.connector
-                )));
-            }
-
-            let client = self
-                .pool_cache
-                .get_client(call.connector, db_config)
-                .await
-                .map_err(to_connect_error)?;
-            let coll = client.database(database).collection::<Document>(collection);
-            let cap = self.limits.max_limit as usize;
-            let docs: Vec<Document> = timed_query(db_config.query_timeout_ms, call.name, async {
-                // F11: one wall-clock bound over connect + aggregate + drain.
-                let mut agg = coll.aggregate(pipeline);
-                if allow_disk_use {
-                    agg = agg.allow_disk_use(true);
-                }
-                let cursor = agg.await.map_err(|e| e.to_string())?;
-                drain_capped(cursor, cap, NAME).await
-            })
-            .await?;
-
-            apply_output(ctx, call.output, docs_to_json(&docs));
-            Ok(TaskOutcome::Success)
+        Ok(Aggregation {
+            database,
+            collection,
+            allow_disk_use,
+            pipeline,
+            wants_write_stage,
         })
-        .await
+    }
+
+    fn gate(
+        aggregation: &Self::Parsed,
+        conn: &crate::connector::DbConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        require_op_allowed(&conn.operations, "read", connector)?;
+        require_mongo_backend(conn, <Self as ConnectorHandler>::NAME, connector)?;
+        // The write stages are default-deny: `$out`/`$merge` run only on a
+        // connector that explicitly says its aggregations may write. Decided
+        // from the resolved pipeline, which is why the gate reads the parse.
+        if aggregation.wants_write_stage && !conn.aggregate_write_stages {
+            return Err(crate::errors::connector_detail_error(format!(
+                "pipeline contains a write stage ($out/$merge), which is disabled on \
+                 connector '{connector}' — set \"aggregate_write_stages\": true on the \
+                 connector to permit it"
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        aggregation: Self::Parsed,
+        db_config: &crate::connector::DbConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let client = self
+            .pool_cache
+            .get_client(call.connector, db_config)
+            .await
+            .map_err(to_connect_error)?;
+        let coll = client
+            .database(&aggregation.database)
+            .collection::<Document>(&aggregation.collection);
+        let cap = self.limits.max_limit as usize;
+        let docs: Vec<Document> = timed_query(db_config.query_timeout_ms, call.name, async {
+            // F11: one wall-clock bound over connect + aggregate + drain.
+            let mut agg = coll.aggregate(aggregation.pipeline);
+            if aggregation.allow_disk_use {
+                agg = agg.allow_disk_use(true);
+            }
+            let cursor = agg.await.map_err(|e| e.to_string())?;
+            drain_capped(cursor, cap, NAME).await
+        })
+        .await?;
+
+        Ok(docs_to_json(&docs).into())
     }
 }
 

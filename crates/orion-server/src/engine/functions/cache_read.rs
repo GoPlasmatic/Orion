@@ -56,7 +56,7 @@ impl ConnectorHandler for CacheReadHandler {
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
         _ctx: &mut TaskContext<'_>,
-    ) -> Result<Value, crate::engine::HandlerError> {
+    ) -> Result<super::connector_handler::Produced, crate::engine::HandlerError> {
         // Workflow-purpose namespace (S19) — the mirror of `cache_write`, so a
         // workflow reads exactly what workflows wrote and never the dedup store
         // or response cache.
@@ -72,10 +72,12 @@ impl ConnectorHandler for CacheReadHandler {
         // inverse. The raw-string fallback is kept deliberately: a key written
         // by something other than Orion may hold a bare string, and surfacing
         // that as a string beats failing the task.
+        // A miss is a result — `null` at `output` — not an absence of one.
         Ok(match value {
             Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
             None => Value::Null,
-        })
+        }
+        .into())
     }
 }
 
@@ -162,8 +164,8 @@ mod tests {
             .await
             .expect("a miss is not an error");
         assert_eq!(
-            value,
-            Value::Null,
+            value.value,
+            Some(Value::Null),
             "a cache miss reads as null, not as a failure"
         );
     }

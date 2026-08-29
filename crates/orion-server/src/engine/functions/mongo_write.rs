@@ -20,23 +20,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, require_op_allowed, timed_query, to_connect_error, to_exec_error,
 };
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{
-    require_document, require_mongo_connector, resolve_document, resolve_document_array,
+    require_document, require_mongo_backend, resolve_document, resolve_document_array,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::config::WriteConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
+use crate::engine::HandlerError;
 use crate::query::backend::mongo::insert_outcome;
 use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::write::WriteError;
@@ -144,21 +145,42 @@ pub struct MongoWriteHandler {
     pub write_config: WriteConfig,
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for MongoWriteHandler {
-    type Input = Value;
+/// A resolved write, with the two facts the gate needs kept alongside it: the
+/// operation and whether it upserts together decide *which* gate applies, and
+/// a gate chosen after the driver call would not be one.
+pub struct MongoWrite {
+    database: String,
+    collection: String,
+    op: MongoOp,
+    upsert: bool,
+    write: Prepared,
+}
 
-    async fn execute(
+#[async_trait]
+impl ConnectorHandler for MongoWriteHandler {
+    const NAME: &'static str = "mongo_write";
+    type Kind = crate::connector::kind::Db;
+    type Input = Value;
+    type Parsed = MongoWrite;
+
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let database = call.require_str(input, "database")?;
-        let collection = call.require_str(input, "collection")?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        let database = call.require_str(input, "database")?.to_string();
+        let collection = call.require_str(input, "collection")?.to_string();
         let op = MongoOp::parse(call.require_str(input, "op")?).ok_or_else(|| {
-            DataflowError::Validation(format!("{NAME} 'op' must be one of {}", MongoOp::VALUES))
+            DataflowError::Validation(format!(
+                "{} 'op' must be one of {}",
+                call.name,
+                MongoOp::VALUES
+            ))
         })?;
         let upsert = literal_bool(input, "upsert");
         let ordered = input
@@ -166,41 +188,71 @@ impl AsyncFunctionHandler for MongoWriteHandler {
             .and_then(Value::as_bool)
             .unwrap_or(true);
 
-        // Resolve the op's documents against the message, then apply the
-        // shared write guards before anything touches the network.
+        // Resolve the op's documents against the message, then apply the shared
+        // write guards before anything touches the network.
         let write = prepare(op, input, upsert, ordered, ctx)?;
         guard_unfiltered(op, &write, literal_bool(input, "all"), &self.write_config)?;
         if let Prepared::InsertMany { docs, .. } = &write
             && docs.len() as u64 > self.write_config.max_rows
         {
-            return Err(WriteError::TooManyRows {
+            return Err(DataflowError::from(WriteError::TooManyRows {
                 requested: docs.len(),
                 max: self.write_config.max_rows,
-            }
+            })
             .into());
         }
 
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, Some(op.gate(upsert))).await?;
-            let db_config = require_mongo_connector(&connector_config, NAME, call.connector)?;
-
-            let client = self
-                .pool_cache
-                .get_client(call.connector, db_config)
-                .await
-                .map_err(to_connect_error)?;
-            let coll = client.database(database).collection::<Document>(collection);
-
-            // F11: one wall-clock bound over connect + write.
-            let (result, outcome) = timed_query(db_config.query_timeout_ms, call.name, async {
-                execute_write(&coll, write).await.map_err(|e| e.to_string())
-            })
-            .await?;
-
-            apply_output(ctx, call.output, result);
-            Ok(outcome)
+        Ok(MongoWrite {
+            database,
+            collection,
+            op,
+            upsert,
+            write,
         })
-        .await
+    }
+
+    fn gate(
+        parsed: &Self::Parsed,
+        conn: &crate::connector::DbConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        // insert / update / upsert / delete are separately gateable, and which
+        // one this task is depends on the envelope it parsed.
+        require_op_allowed(&conn.operations, parsed.op.gate(parsed.upsert), connector)?;
+        Ok(require_mongo_backend(
+            conn,
+            <Self as ConnectorHandler>::NAME,
+            connector,
+        )?)
+    }
+
+    async fn run(
+        &self,
+        parsed: Self::Parsed,
+        db_config: &crate::connector::DbConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let client = self
+            .pool_cache
+            .get_client(call.connector, db_config)
+            .await
+            .map_err(to_connect_error)?;
+        let coll = client
+            .database(&parsed.database)
+            .collection::<Document>(&parsed.collection);
+
+        // F11: one wall-clock bound over connect + write.
+        let (result, outcome) = timed_query(db_config.query_timeout_ms, call.name, async {
+            execute_write(&coll, parsed.write)
+                .await
+                .map_err(|e| e.to_string())
+        })
+        .await?;
+
+        // F28: a partially applied ordered batch is a 207, not a success —
+        // which is the one outcome a connector handler chooses for itself.
+        Ok(Produced::with_outcome(result, outcome))
     }
 }
 

@@ -1,21 +1,19 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_connector,
-    resolve_bind_params, timed_query, to_connect_error,
+    ConnectorCall, bind_json_params, reject_mongo_connector, require_op_allowed, timed_query,
+    to_connect_error,
 };
+use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
-
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "db_write";
+use crate::engine::HandlerError;
 
 /// Executes SQL write queries (INSERT, UPDATE, DELETE) against external databases
 /// configured via connectors.
@@ -25,55 +23,67 @@ pub struct DbWriteHandler {
 }
 
 #[async_trait]
-impl AsyncFunctionHandler for DbWriteHandler {
+impl ConnectorHandler for DbWriteHandler {
+    const NAME: &'static str = "db_write";
+    type Kind = crate::connector::kind::Db;
     type Input = Value;
+    /// The same shape `db_read` parses — a literal statement and message-derived
+    /// binds — because the two differ in what the database does with it, not in
+    /// what the task says.
+    type Parsed = DbRead;
 
-    async fn execute(
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — `connector` and `query` are
-        // both literal keys, so a task missing either must be told before
-        // anything about the message is consulted.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let query = call.require_str(input, "query")?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        DbRead::parse_statement(call, input, ctx)
+    }
 
-        // Bind values are resolved against the message context; the SQL text
-        // itself is never message-derived, so parameters stay the only
-        // request-controlled part of the statement.
-        let params = resolve_bind_params(input, call.name, ctx)?;
+    fn gate(
+        _parsed: &Self::Parsed,
+        conn: &crate::connector::DbConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        // Raw SQL cannot be classified per-op; it has its own gate.
+        require_op_allowed(&conn.operations, "raw_write", connector)?;
+        Ok(reject_mongo_connector(
+            <Self as ConnectorHandler>::NAME,
+            connector,
+            conn,
+        )?)
+    }
 
-        call.run(&self.registry, async {
-            // Raw SQL cannot be classified per-op; it has its own gate.
-            let connector_config = call.resolve(&self.registry, Some("raw_write")).await?;
-            let db_config =
-                require_connector::<crate::connector::kind::Db>(&connector_config, call.connector)?;
-            reject_mongo_connector(call.name, call.connector, db_config)?;
+    async fn run(
+        &self,
+        write: Self::Parsed,
+        db_config: &crate::connector::DbConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let pool = self
+            .pool_cache
+            .get_pool(call.connector, db_config)
+            .await
+            .map_err(to_connect_error)?;
 
-            let pool = self
-                .pool_cache
-                .get_pool(call.connector, db_config)
-                .await
-                .map_err(to_connect_error)?;
+        let sqlx_query = bind_json_params(sqlx::query(write.query()), write.params());
+        let result = timed_query(
+            db_config.query_timeout_ms,
+            call.name,
+            sqlx_query.execute(&pool),
+        )
+        .await?;
 
-            let sqlx_query = bind_json_params(sqlx::query(query), &params);
-
-            let result = timed_query(
-                db_config.query_timeout_ms,
-                call.name,
-                sqlx_query.execute(&pool),
-            )
-            .await?;
-
-            let output = serde_json::json!({
-                "rows_affected": result.rows_affected(),
-            });
-
-            apply_output(ctx, call.output, output);
-            Ok(TaskOutcome::Success)
+        Ok(serde_json::json!({
+            "rows_affected": result.rows_affected(),
         })
-        .await
+        .into())
     }
 }
 

@@ -2,23 +2,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 use sqlx::any::{AnyRow, AnyTypeInfoKind};
 use sqlx::{Column, Row, ValueRef};
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_connector,
+    ConnectorCall, bind_json_params, reject_mongo_connector, require_op_allowed,
     resolve_bind_params, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
+use crate::engine::HandlerError;
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "db_read";
+/// This handler's name, for the row-conversion helpers below — a reference to
+/// the one place it is written (F48), not a second spelling of it.
+const NAME: &str = <DbReadHandler as ConnectorHandler>::NAME;
 
 /// Executes SQL SELECT queries against external databases configured via connectors.
 pub struct DbReadHandler {
@@ -30,70 +31,117 @@ pub struct DbReadHandler {
     pub max_rows: usize,
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for DbReadHandler {
-    type Input = Value;
+/// The statement and its bind values.
+///
+/// The SQL text is a literal read from the task; only the parameters come from
+/// the message, which is what keeps them the sole request-controlled part of
+/// the statement.
+pub struct DbRead {
+    query: String,
+    params: Vec<Value>,
+}
 
-    async fn execute(
-        &self,
-        ctx: &mut TaskContext<'_>,
+impl DbRead {
+    /// The parse both raw-SQL handlers do. Shared rather than copied because
+    /// `db_read` and `db_write` differ in what the database does with the
+    /// statement, not in what the task says.
+    pub(super) fn parse_statement(
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — `connector` and `query` are
-        // both literal keys, so a task missing either must be told before
-        // anything about the message is consulted.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let query = call.require_str(input, "query")?;
-
-        // Bind values are resolved against the message context; the SQL text
-        // itself is never message-derived, so parameters stay the only
-        // request-controlled part of the statement.
-        let params = resolve_bind_params(input, call.name, ctx)?;
-
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, Some("read")).await?;
-            let db_config =
-                require_connector::<crate::connector::kind::Db>(&connector_config, call.connector)?;
-            reject_mongo_connector(call.name, call.connector, db_config)?;
-
-            let pool = self
-                .pool_cache
-                .get_pool(call.connector, db_config)
-                .await
-                .map_err(to_connect_error)?;
-
-            let sqlx_query = bind_json_params(sqlx::query(query), &params);
-
-            let max_rows = self.max_rows;
-            let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, call.name, async {
-                use futures::TryStreamExt;
-                let mut stream = sqlx_query.fetch(&pool);
-                let mut rows: Vec<AnyRow> = Vec::new();
-                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
-                    if rows.len() >= max_rows {
-                        // F42: classified so `timed_query` reports it as a 400
-                        // with the text intact rather than a 500 with the
-                        // guidance sanitised away. The guidance *is* the
-                        // message, so losing it loses the point.
-                        return Err(
-                            crate::engine::functions::connector_helpers::QueryFailure::Limit(
-                                format!(
-                                    "{NAME} result exceeds query.max_limit ({max_rows} rows) — \
-                             add a LIMIT to the query or raise the cap"
-                                ),
-                            ),
-                        );
-                    }
-                    rows.push(row);
-                }
-                Ok(rows)
-            })
-            .await?;
-
-            apply_output(ctx, call.output, Value::Array(rows_to_json(&rows)?));
-            Ok(TaskOutcome::Success)
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self, HandlerError> {
+        Ok(Self {
+            query: call.require_str(input, "query")?.to_string(),
+            params: resolve_bind_params(input, call.name, ctx)?,
         })
-        .await
+    }
+
+    pub(super) fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub(super) fn params(&self) -> &[Value] {
+        &self.params
+    }
+}
+
+#[async_trait]
+impl ConnectorHandler for DbReadHandler {
+    const NAME: &'static str = "db_read";
+    type Kind = crate::connector::kind::Db;
+    type Input = Value;
+    type Parsed = DbRead;
+
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
+        &self,
+        call: &ConnectorCall<'_>,
+        input: &Value,
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        DbRead::parse_statement(call, input, ctx)
+    }
+
+    fn gate(
+        _parsed: &Self::Parsed,
+        conn: &crate::connector::DbConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        require_op_allowed(&conn.operations, "read", connector)?;
+        // A Mongo connection string in a `db` connector is the right type and
+        // the wrong backend: both are `ConnectorConfig::Db`, and only the
+        // string tells them apart.
+        Ok(reject_mongo_connector(
+            <Self as ConnectorHandler>::NAME,
+            connector,
+            conn,
+        )?)
+    }
+
+    async fn run(
+        &self,
+        read: Self::Parsed,
+        db_config: &crate::connector::DbConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let pool = self
+            .pool_cache
+            .get_pool(call.connector, db_config)
+            .await
+            .map_err(to_connect_error)?;
+
+        let sqlx_query = bind_json_params(sqlx::query(read.query()), read.params());
+
+        let max_rows = self.max_rows;
+        let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, call.name, async {
+            use futures::TryStreamExt;
+            let mut stream = sqlx_query.fetch(&pool);
+            let mut rows: Vec<AnyRow> = Vec::new();
+            while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                if rows.len() >= max_rows {
+                    // F42: classified so `timed_query` reports it as a 400 with
+                    // the text intact rather than a 500 with the guidance
+                    // sanitised away. The guidance *is* the message, so losing
+                    // it loses the point.
+                    return Err(
+                        crate::engine::functions::connector_helpers::QueryFailure::Limit(format!(
+                            "{} result exceeds query.max_limit ({max_rows} rows) — add a \
+                             LIMIT to the query or raise the cap",
+                            call.name
+                        )),
+                    );
+                }
+                rows.push(row);
+            }
+            Ok(rows)
+        })
+        .await?;
+
+        Ok(Value::Array(rows_to_json(&rows)?).into())
     }
 }
 

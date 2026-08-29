@@ -73,6 +73,53 @@ impl ConnectorInput for Value {
     }
 }
 
+/// What a handler's call produced.
+///
+/// Two things vary and both used to be expressed by each handler writing its
+/// own tail: whether there is a value to record at `output`, and whether the
+/// task succeeded outright. `cache_write` and `publish_kafka` are the calls
+/// whose effect *is* the call, and they declare no `output` field; a partially
+/// applied bulk write is the one non-`Success` outcome any connector handler
+/// produces (F28 — 207, with applied/failed/never-attempted named).
+///
+/// `From<Value>` keeps the ordinary case one word, and the two exceptions have
+/// to say so explicitly rather than inherit a default.
+pub struct Produced {
+    /// The value to record at the task's `output` path, or `None` when the
+    /// call has no result to record.
+    pub value: Option<Value>,
+    /// The task's outcome. `Success` for everything but a partial bulk write.
+    pub outcome: TaskOutcome,
+}
+
+impl From<Value> for Produced {
+    fn from(value: Value) -> Self {
+        Self {
+            value: Some(value),
+            outcome: TaskOutcome::Success,
+        }
+    }
+}
+
+impl Produced {
+    /// A call whose effect is the call: nothing is written at `output`.
+    pub fn nothing() -> Self {
+        Self {
+            value: None,
+            outcome: TaskOutcome::Success,
+        }
+    }
+
+    /// A value recorded at `output` under a task outcome the handler chose —
+    /// today only [`TaskOutcome::Status`] for a partial bulk write.
+    pub fn with_outcome(value: Value, outcome: TaskOutcome) -> Self {
+        Self {
+            value: Some(value),
+            outcome,
+        }
+    }
+}
+
 /// One connector handler's own logic, with the shell factored out.
 ///
 /// The associated [`Kind`](Self::Kind) is what makes the typed config arrive
@@ -143,13 +190,17 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     ///
     /// This is the seam a fake backend plugs into. Everything above it is the
     /// wrapper's; everything below is the connector's.
+    ///
+    /// See [`Produced`] for what a handler says about its result: a bare
+    /// `Value` converts, and the two exceptions — no output at all, a partial
+    /// bulk write — are spelled out.
     async fn run(
         &self,
         parsed: Self::Parsed,
         conn: &<Self::Kind as ConnectorTarget>::Config,
         call: &ConnectorCall<'_>,
         ctx: &mut TaskContext<'_>,
-    ) -> Result<Value, HandlerError>;
+    ) -> Result<Produced, HandlerError>;
 
     /// Parse the raw task JSON into [`Input`](Self::Input).
     ///
@@ -208,14 +259,16 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
             let conn = require_connector::<H::Kind>(&config, call.connector)?;
             H::gate(&parsed, conn, call.connector).map_err(dataflow_rs::DataflowError::from)?;
 
-            let value = self
+            let produced = self
                 .0
                 .run(parsed, conn, &call, ctx)
                 .await
                 .map_err(dataflow_rs::DataflowError::from)?;
 
-            apply_output(ctx, call.output, value);
-            Ok(TaskOutcome::Success)
+            if let Some(value) = produced.value {
+                apply_output(ctx, call.output, value);
+            }
+            Ok(produced.outcome)
         })
         .await
     }
@@ -257,8 +310,8 @@ mod tests {
             _conn: &crate::connector::CacheConnectorConfig,
             _call: &ConnectorCall<'_>,
             _ctx: &mut TaskContext<'_>,
-        ) -> Result<Value, HandlerError> {
-            Ok(Value::Null)
+        ) -> Result<Produced, HandlerError> {
+            Ok(Produced::nothing())
         }
     }
 

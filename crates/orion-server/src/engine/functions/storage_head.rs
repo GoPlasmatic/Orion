@@ -12,19 +12,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Value, json};
 
-use super::connector_helpers::{
-    ConnectorCall, apply_output, require_connector, require_op, resolve_required_str,
-};
+use super::connector_handler::{ConnectorHandler, Produced};
+use super::connector_helpers::{ConnectorCall, require_op, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::{ConnectorRegistry, sigv4};
-
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "storage_head";
+use crate::engine::HandlerError;
 
 /// Workflow function handler for object-metadata lookups.
 pub struct StorageHeadHandler {
@@ -33,101 +28,113 @@ pub struct StorageHeadHandler {
 }
 
 #[async_trait]
-impl AsyncFunctionHandler for StorageHeadHandler {
+impl ConnectorHandler for StorageHeadHandler {
+    const NAME: &'static str = "storage_head";
+    type Kind = crate::connector::kind::Storage;
     type Input = Value;
+    /// The object key, resolved against the message — asking about one fixed
+    /// object is not what this function is for.
+    type Parsed = String;
 
-    async fn execute(
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let key = resolve_required_str(input, "key", NAME, ctx)?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        Ok(resolve_required_str(input, "key", call.name, ctx)?)
+    }
 
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, None).await?;
-            let storage = require_connector::<crate::connector::kind::Storage>(
-                &connector_config,
-                call.connector,
-            )?;
-            require_op(storage.operations.head, "head", call.connector)?;
+    fn gate(
+        _key: &Self::Parsed,
+        conn: &crate::connector::StorageConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        Ok(require_op(conn.operations.head, "head", connector)?)
+    }
 
-            let (scheme, host, path) = storage
-                .address(Some(&key))
-                .map_err(DataflowError::Validation)?;
-            let url = format!("{scheme}://{host}{path}");
+    async fn run(
+        &self,
+        key: Self::Parsed,
+        storage: &crate::connector::StorageConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let (scheme, host, path) = storage
+            .address(Some(&key))
+            .map_err(DataflowError::Validation)?;
+        let url = format!("{scheme}://{host}{path}");
 
-            // S6: the one network call the storage surface makes gets the
-            // same private-address posture as every other egress.
-            if !storage.allow_private_urls
-                && let Err(msg) = crate::validation::validate_url_not_private(&url).await
-            {
-                return Err(DataflowError::function_execution(
-                    format!("SSRF protection: {msg}"),
-                    None,
-                ));
-            }
+        // S6: the one network call the storage surface makes gets the same
+        // private-address posture as every other egress.
+        if !storage.allow_private_urls
+            && let Err(msg) = crate::validation::validate_url_not_private(&url).await
+        {
+            return Err(
+                DataflowError::function_execution(format!("SSRF protection: {msg}"), None).into(),
+            );
+        }
 
-            let amz_date = sigv4::amz_date_now();
-            let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
-            let mut req = self
-                .client
-                .head(&url)
-                .timeout(std::time::Duration::from_millis(storage.timeout_ms));
-            for (name, value) in sigv4::sign_headers(&sig_ctx, "HEAD") {
-                req = req.header(name, value);
-            }
+        let amz_date = sigv4::amz_date_now();
+        let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
+        let mut req = self
+            .client
+            .head(&url)
+            .timeout(std::time::Duration::from_millis(storage.timeout_ms));
+        for (name, value) in sigv4::sign_headers(&sig_ctx, "HEAD") {
+            req = req.header(name, value);
+        }
 
-            let response = req.send().await.map_err(|e| {
-                if e.is_timeout() {
-                    DataflowError::Timeout(format!(
-                        "storage_head via '{}' timed out",
-                        call.connector
-                    ))
-                } else {
-                    // `without_url`: this message names the connector rather
-                    // than the endpoint on purpose, and reqwest's `Display`
-                    // would put the URL back (#281).
-                    DataflowError::Io(format!(
-                        "storage_head via '{}' failed: {}",
-                        call.connector,
-                        e.without_url()
-                    ))
-                }
-            })?;
-
-            let status = response.status();
-            let result = if status == reqwest::StatusCode::NOT_FOUND {
-                json!({ "exists": false })
-            } else if status.is_success() {
-                let header = |name: &str| {
-                    response
-                        .headers()
-                        .get(name)
-                        .and_then(|v| v.to_str().ok())
-                        .map(str::to_string)
-                };
-                json!({
-                    "exists": true,
-                    "size": header("content-length")
-                        .and_then(|v| v.parse::<u64>().ok()),
-                    "etag": header("etag").map(|v| v.trim_matches('"').to_string()),
-                    "last_modified": header("last-modified"),
-                    "content_type": header("content-type"),
-                })
+        let response = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                DataflowError::Timeout(format!("storage_head via '{}' timed out", call.connector))
             } else {
-                // 403 and friends are task errors: unlike absence, they say
-                // the *question* could not be asked.
-                return Err(DataflowError::function_execution(
-                    format!("storage_head via '{}': HTTP {status}", call.connector),
-                    None,
-                ));
-            };
+                // `without_url`: this message names the connector rather than
+                // the endpoint on purpose, and reqwest's `Display` would put
+                // the URL back (#281).
+                DataflowError::Io(format!(
+                    "storage_head via '{}' failed: {}",
+                    call.connector,
+                    e.without_url()
+                ))
+            }
+        })?;
 
-            apply_output(ctx, call.output, result);
-            Ok(TaskOutcome::Success)
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            // A missing object is data, not failure — "is it there yet?" is
+            // the question this function exists to ask.
+            return Ok(json!({ "exists": false }).into());
+        }
+        if !status.is_success() {
+            // 403 and friends are task errors: unlike absence, they say the
+            // *question* could not be asked.
+            return Err(DataflowError::function_execution(
+                format!("storage_head via '{}': HTTP {status}", call.connector),
+                None,
+            )
+            .into());
+        }
+
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        Ok(json!({
+            "exists": true,
+            "size": header("content-length").and_then(|v| v.parse::<u64>().ok()),
+            "etag": header("etag").map(|v| v.trim_matches('"').to_string()),
+            "last_modified": header("last-modified"),
+            "content_type": header("content-type"),
         })
-        .await
+        .into())
     }
 }
 
@@ -232,11 +239,13 @@ mod tests {
             .insert_for_test("media", ConnectorConfig::Storage(config))
             .await;
         crate::engine::functions::run_test_task(
-            NAME,
-            Box::new(StorageHeadHandler {
-                registry,
-                client: reqwest::Client::new(),
-            }),
+            StorageHeadHandler::NAME,
+            Box::new(super::super::connector_handler::Connector(
+                StorageHeadHandler {
+                    registry,
+                    client: reqwest::Client::new(),
+                },
+            )),
             input,
             Value::Null,
         )

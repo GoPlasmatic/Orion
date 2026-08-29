@@ -887,21 +887,7 @@ mod observability_tests {
     //! So this list is the handlers **not yet converted**. It shrinks with each
     //! one, and when it empties these tests delete themselves — the property
     //! will be the compiler's. Do not add to it.
-    const HANDLERS: [&str; 13] = [
-        "cache_write",
-        "db_read",
-        "db_write",
-        "data_query",
-        "data_write",
-        "mongo_read",
-        "mongo_write",
-        "mongo_aggregate",
-        "http_call",
-        "publish_kafka",
-        "send_email",
-        "storage_presign",
-        "storage_head",
-    ];
+    const HANDLERS: [&str; 4] = ["data_query", "data_write", "http_call", "publish_kafka"];
 
     fn handler_source(handler: &str) -> String {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/functions");

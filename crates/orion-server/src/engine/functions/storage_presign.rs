@@ -10,97 +10,132 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, parse_duration_secs, require_connector, require_op,
-    resolve_duration_secs, resolve_optional_str, resolve_required_str,
+    ConnectorCall, parse_duration_secs, require_op, resolve_duration_secs, resolve_optional_str,
+    resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::{ConnectorRegistry, sigv4};
 use crate::engine::{ErrorClass, HandlerError};
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "storage_presign";
-
 /// S3's own ceiling on presigned-URL lifetime: 7 days, in seconds.
 const MAX_EXPIRES_SECS: u64 = 604_800;
+
+/// This handler's name, for the free functions below — a reference to the one
+/// place it is written (F48), not a second spelling of it.
+const NAME: &str = <StoragePresignHandler as ConnectorHandler>::NAME;
 
 /// Workflow function handler that presigns object-storage URLs.
 pub struct StoragePresignHandler {
     pub registry: Arc<ConnectorRegistry>,
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for StoragePresignHandler {
-    type Input = Value;
+/// The presign request, read from the task and folded against the message.
+///
+/// The method is parsed here rather than in the body because it decides *which*
+/// gate applies, and a gate chosen after the URL is signed is not a gate.
+pub struct Presign {
+    method: PresignMethod,
+    key: String,
+    expires_secs: u64,
+    response_content_type: Option<String>,
+    response_content_disposition: Option<String>,
+    content_type: Option<String>,
+}
 
-    async fn execute(
+#[async_trait]
+impl ConnectorHandler for StoragePresignHandler {
+    const NAME: &'static str = "storage_presign";
+    type Kind = crate::connector::kind::Storage;
+    type Input = Value;
+    type Parsed = Presign;
+
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: literal prologue first.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
         let method = presign_method(input).map_err(named)?;
         check_method_fields(input, method).map_err(named)?;
-
-        let key = resolve_required_str(input, "key", NAME, ctx)?;
-        let expires_secs = expires_in(input, ctx)?;
-        let response_content_type =
-            resolve_optional_str(input, "response_content_type", NAME, ctx)?;
-        let response_content_disposition =
-            resolve_optional_str(input, "response_content_disposition", NAME, ctx)?;
-        let content_type = resolve_optional_str(input, "content_type", NAME, ctx)?;
-
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, None).await?;
-            let storage = require_connector::<crate::connector::kind::Storage>(
-                &connector_config,
-                call.connector,
-            )?;
-            let gate = match method {
-                PresignMethod::Get => storage.operations.presign_get,
-                PresignMethod::Put => storage.operations.presign_put,
-            };
-            require_op(gate, method.gate_name(), call.connector)?;
-
-            let (scheme, host, path) = storage
-                .address(Some(&key))
-                .map_err(DataflowError::Validation)?;
-
-            // Response overrides ride the signed query; a PUT content-type is
-            // a signed header the client must then send verbatim.
-            let mut extra_query: Vec<(String, String)> = Vec::new();
-            if let Some(v) = &response_content_type {
-                extra_query.push(("response-content-type".to_string(), v.clone()));
-            }
-            if let Some(v) = &response_content_disposition {
-                extra_query.push(("response-content-disposition".to_string(), v.clone()));
-            }
-            let mut extra_headers: Vec<(String, String)> = Vec::new();
-            if let Some(v) = &content_type {
-                extra_headers.push(("content-type".to_string(), v.clone()));
-            }
-
-            let amz_date = sigv4::amz_date_now();
-            let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
-            let url = sigv4::presign_url(
-                &sig_ctx,
-                &scheme,
-                method.as_str(),
-                expires_secs,
-                &extra_query,
-                &extra_headers,
-            );
-
-            apply_output(ctx, call.output, Value::String(url));
-            Ok(TaskOutcome::Success)
+        Ok(Presign {
+            method,
+            key: resolve_required_str(input, "key", call.name, ctx)?,
+            expires_secs: expires_in(input, ctx)?,
+            response_content_type: resolve_optional_str(
+                input,
+                "response_content_type",
+                call.name,
+                ctx,
+            )?,
+            response_content_disposition: resolve_optional_str(
+                input,
+                "response_content_disposition",
+                call.name,
+                ctx,
+            )?,
+            content_type: resolve_optional_str(input, "content_type", call.name, ctx)?,
         })
-        .await
+    }
+
+    fn gate(
+        presign: &Self::Parsed,
+        conn: &crate::connector::StorageConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        // GET and PUT are gated separately: a connector that may hand out read
+        // links has said nothing about handing out write ones.
+        let gate = match presign.method {
+            PresignMethod::Get => conn.operations.presign_get,
+            PresignMethod::Put => conn.operations.presign_put,
+        };
+        Ok(require_op(gate, presign.method.gate_name(), connector)?)
+    }
+
+    async fn run(
+        &self,
+        presign: Self::Parsed,
+        storage: &crate::connector::StorageConnectorConfig,
+        _call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let (scheme, host, path) = storage
+            .address(Some(&presign.key))
+            .map_err(DataflowError::Validation)?;
+
+        // Response overrides ride the signed query; a PUT content-type is a
+        // signed header the client must then send verbatim.
+        let mut extra_query: Vec<(String, String)> = Vec::new();
+        if let Some(v) = &presign.response_content_type {
+            extra_query.push(("response-content-type".to_string(), v.clone()));
+        }
+        if let Some(v) = &presign.response_content_disposition {
+            extra_query.push(("response-content-disposition".to_string(), v.clone()));
+        }
+        let mut extra_headers: Vec<(String, String)> = Vec::new();
+        if let Some(v) = &presign.content_type {
+            extra_headers.push(("content-type".to_string(), v.clone()));
+        }
+
+        let amz_date = sigv4::amz_date_now();
+        let sig_ctx = sigv4::SigningContext::for_storage(storage, &host, &path, &amz_date);
+        Ok(Value::String(sigv4::presign_url(
+            &sig_ctx,
+            &scheme,
+            presign.method.as_str(),
+            presign.expires_secs,
+            &extra_query,
+            &extra_headers,
+        ))
+        .into())
     }
 }
 
@@ -350,7 +385,9 @@ mod tests {
             .await;
         crate::engine::functions::run_test_task(
             NAME,
-            Box::new(StoragePresignHandler { registry }),
+            Box::new(super::super::connector_handler::Connector(
+                StoragePresignHandler { registry },
+            )),
             input,
             Value::Null,
         )

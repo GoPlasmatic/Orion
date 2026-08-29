@@ -2,21 +2,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, json_type_name, require_connector, require_op, resolve_required_str,
-    resolve_value, to_connect_error, to_exec_error,
+    ConnectorCall, json_type_name, require_op, resolve_required_str, resolve_value,
+    to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
-
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "cache_write";
+use crate::engine::HandlerError;
 
 /// Workflow function handler for writing values to a cache backend.
 pub struct CacheWriteHandler {
@@ -24,86 +21,108 @@ pub struct CacheWriteHandler {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+/// Everything the write needs from the task and the message, folded before the
+/// body takes `ctx` mutably — without which the task could only ever write one
+/// constant, to one constant key.
+pub struct CacheWrite {
+    key: String,
+    value: Value,
+    ttl: Option<u64>,
+}
+
 #[async_trait]
-impl AsyncFunctionHandler for CacheWriteHandler {
+impl ConnectorHandler for CacheWriteHandler {
+    const NAME: &'static str = "cache_write";
+    type Kind = crate::connector::kind::Cache;
     type Input = Value;
+    type Parsed = CacheWrite;
 
-    async fn execute(
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — a task naming no connector
-        // must say so before anything about the message is consulted.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-
-        // Key, value, and TTL are all resolved against the message context up
-        // front: the handler body below takes `ctx` mutably, and without this
-        // the whole task could only ever write one constant.
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
         let key = resolve_required_str(input, "key", call.name, ctx)?;
         let value = match input.get("value") {
             Some(v) => resolve_value(v, ctx),
             None => {
-                return Err(DataflowError::Validation(format!(
-                    "{} requires 'value'",
-                    call.name
-                )));
+                return Err(
+                    DataflowError::Validation(format!("{} requires 'value'", call.name)).into(),
+                );
             }
         };
-        let ttl = resolve_ttl_secs(input, ctx)?;
-
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, None).await?;
-            let cache_config = require_connector::<crate::connector::kind::Cache>(
-                &connector_config,
-                call.connector,
-            )?;
-            // F22e: a cache connector can be made read-only in its config.
-            require_op(cache_config.operations.write, "write", call.connector)?;
-
-            // Workflow-purpose namespace (S19): a memory backend here can
-            // never alias the dedup store or response cache, so a crafted
-            // `dedup:{channel}:…` key is just an ordinary workflow key.
-            let backend = self
-                .cache_pool
-                .get_backend(CachePurpose::Workflow, call.connector, cache_config)
-                .await
-                .map_err(to_connect_error)?;
-
-            // Always JSON-encode, including strings, so `cache_read` is the
-            // exact inverse. Storing strings raw made the round-trip lossy:
-            // writing "123" stored `123`, which read back as the *number* 123,
-            // and "true"/"null" likewise changed type — silently breaking any
-            // downstream JSONLogic comparison (proposal N13).
-            let value_str = serde_json::to_string(&value).map_err(|e| {
-                DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
-            })?;
-
-            if let Some(ttl) = ttl {
-                backend
-                    .set_ex(&key, &value_str, ttl)
-                    .await
-                    .map_err(to_exec_error)?;
-            } else {
-                backend.set(&key, &value_str).await.map_err(to_exec_error)?;
-            }
-
-            tracing::debug!(
-                key = %key,
-                ttl = ?ttl,
-                "Wrote value to cache"
-            );
-
-            Ok(TaskOutcome::Success)
+        Ok(CacheWrite {
+            key,
+            value,
+            ttl: resolve_ttl_secs(input, call.name, ctx)?,
         })
-        .await
+    }
+
+    fn gate(
+        _parsed: &Self::Parsed,
+        conn: &crate::connector::CacheConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        // F22e: a cache connector can be made read-only in its config.
+        Ok(require_op(conn.operations.write, "write", connector)?)
+    }
+
+    async fn run(
+        &self,
+        write: Self::Parsed,
+        conn: &crate::connector::CacheConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        // Workflow-purpose namespace (S19): a memory backend here can never
+        // alias the dedup store or response cache, so a crafted
+        // `dedup:{channel}:…` key is just an ordinary workflow key.
+        let backend = self
+            .cache_pool
+            .get_backend(CachePurpose::Workflow, call.connector, conn)
+            .await
+            .map_err(to_connect_error)?;
+
+        // Always JSON-encode, including strings, so `cache_read` is the exact
+        // inverse. Storing strings raw made the round-trip lossy: writing "123"
+        // stored `123`, which read back as the *number* 123, and "true"/"null"
+        // likewise changed type — silently breaking any downstream JSONLogic
+        // comparison (proposal N13).
+        let value_str = serde_json::to_string(&write.value).map_err(|e| {
+            DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
+        })?;
+
+        match write.ttl {
+            Some(ttl) => backend
+                .set_ex(&write.key, &value_str, ttl)
+                .await
+                .map_err(to_exec_error)?,
+            None => backend
+                .set(&write.key, &value_str)
+                .await
+                .map_err(to_exec_error)?,
+        }
+
+        tracing::debug!(key = %write.key, ttl = ?write.ttl, "Wrote value to cache");
+
+        // The write is the whole effect: this handler declares no `output`.
+        Ok(Produced::nothing())
     }
 }
 
 /// Resolve `ttl_secs` to whole seconds. Absent or null means "no expiry"; a
 /// value that resolves to something uninterpretable is an error rather than a
 /// silent fall-through to a key that never expires.
-fn resolve_ttl_secs(input: &Value, ctx: &TaskContext<'_>) -> Result<Option<u64>, DataflowError> {
+fn resolve_ttl_secs(
+    input: &Value,
+    name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<u64>, DataflowError> {
     let Some(raw) = input.get("ttl_secs") else {
         return Ok(None);
     };
@@ -119,12 +138,12 @@ fn resolve_ttl_secs(input: &Value, ctx: &TaskContext<'_>) -> Result<Option<u64>,
                 Ok(Some(f as u64))
             } else {
                 Err(DataflowError::Validation(format!(
-                    "{NAME} 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
+                    "{name} 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
                 )))
             }
         }
         other => Err(DataflowError::Validation(format!(
-            "{NAME} 'ttl_secs' must resolve to a number, got {}",
+            "{name} 'ttl_secs' must resolve to a number, got {}",
             json_type_name(&other)
         ))),
     }

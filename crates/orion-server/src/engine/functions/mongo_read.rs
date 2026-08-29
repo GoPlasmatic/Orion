@@ -2,26 +2,27 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, resolve_value, timed_query, to_connect_error,
+    ConnectorCall, require_op_allowed, resolve_value, timed_query, to_connect_error,
 };
 use super::mongo_common::{
-    docs_to_json, drain_capped, require_mongo_connector, resolve_document, resolve_u64,
+    docs_to_json, drain_capped, require_mongo_backend, resolve_document, resolve_u64,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
+use crate::engine::HandlerError;
 use crate::query::QueryError;
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "mongo_read";
+/// This handler's name, for the helpers that take it as an argument — a
+/// reference to the one place it is written (F48).
+const NAME: &str = <MongoReadHandler as ConnectorHandler>::NAME;
 
 /// Workflow function handler for reading documents from MongoDB.
 pub struct MongoReadHandler {
@@ -33,38 +34,50 @@ pub struct MongoReadHandler {
     pub limits: QueryConfig,
 }
 
+/// The `find` the task describes, with every message-dependent part already
+/// folded: `{"var": ..}` nodes may sit at any depth of the filter, so a
+/// per-request query is expressible.
+pub struct MongoFind {
+    database: String,
+    collection: String,
+    filter: Document,
+    projection: Option<Document>,
+    sort: Option<Document>,
+    limit: Option<u64>,
+    skip: Option<u64>,
+}
+
 #[async_trait]
-impl AsyncFunctionHandler for MongoReadHandler {
+impl ConnectorHandler for MongoReadHandler {
+    const NAME: &'static str = "mongo_read";
+    type Kind = crate::connector::kind::Db;
     type Input = Value;
+    type Parsed = MongoFind;
 
-    async fn execute(
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — `connector`, `database` and
-        // `collection` are all literal keys, so a task missing any of them must
-        // be told before the filter is folded against the message.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
-        let database = call.require_str(input, "database")?;
-        let collection = call.require_str(input, "collection")?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        let database = call.require_str(input, "database")?.to_string();
+        let collection = call.require_str(input, "collection")?.to_string();
 
-        // The filter is folded against the message context before the handler
-        // body takes `ctx` mutably; `{"var": ..}` nodes may sit at any depth of
-        // the document, so a per-request query is expressible.
         let filter_val = input
             .get("filter")
             .map(|f| resolve_value(f, ctx))
             .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-        let filter_doc = bson::to_document(&filter_val)
+        let filter = bson::to_document(&filter_val)
             .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
 
         // #263: optional find options — additive; a task naming none behaves
         // exactly as before.
-        let projection = resolve_document(input, "projection", NAME, ctx)?;
-        let sort = resolve_document(input, "sort", NAME, ctx)?;
-        let limit = resolve_u64(input, "limit", NAME, ctx)?;
-        let skip = resolve_u64(input, "skip", NAME, ctx)?;
+        let limit = resolve_u64(input, "limit", call.name, ctx)?;
+        let skip = resolve_u64(input, "skip", call.name, ctx)?;
         // The dialect's reject-never-clamp rule for both bounds. An absent
         // `limit` deliberately does NOT fall back to `default_limit`: the
         // pre-#263 contract is "everything the filter matches, capped", and a
@@ -72,59 +85,85 @@ impl AsyncFunctionHandler for MongoReadHandler {
         if let Some(l) = limit
             && l > self.limits.max_limit
         {
-            return Err(QueryError::LimitExceeded {
+            return Err(DataflowError::from(QueryError::LimitExceeded {
                 requested: l,
                 max: self.limits.max_limit,
-            }
+            })
             .into());
         }
         if let Some(s) = skip
             && s > self.limits.max_skip
         {
-            return Err(QueryError::SkipExceeded {
+            return Err(DataflowError::from(QueryError::SkipExceeded {
                 requested: s,
                 max: self.limits.max_skip,
-            }
+            })
             .into());
         }
 
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, Some("read")).await?;
-            let db_config = require_mongo_connector(&connector_config, NAME, call.connector)?;
-
-            let client = self
-                .pool_cache
-                .get_client(call.connector, db_config)
-                .await
-                .map_err(to_connect_error)?;
-
-            let coll = client.database(database).collection::<Document>(collection);
-            let cap = self.limits.max_limit as usize;
-            let docs: Vec<Document> = timed_query(db_config.query_timeout_ms, call.name, async {
-                // F11: the Mongo driver has no per-query timeout of its
-                // own here — timed_query bounds connect + find + drain.
-                let mut find = coll.find(filter_doc);
-                if let Some(p) = projection {
-                    find = find.projection(p);
-                }
-                if let Some(s) = sort {
-                    find = find.sort(s);
-                }
-                if let Some(sk) = skip {
-                    find = find.skip(sk);
-                }
-                if let Some(l) = limit {
-                    find = find.limit(l as i64);
-                }
-                let cursor = find.await.map_err(|e| e.to_string())?;
-                drain_capped(cursor, cap, NAME).await
-            })
-            .await?;
-
-            apply_output(ctx, call.output, docs_to_json(&docs));
-            Ok(TaskOutcome::Success)
+        Ok(MongoFind {
+            database,
+            collection,
+            filter,
+            projection: resolve_document(input, "projection", call.name, ctx)?,
+            sort: resolve_document(input, "sort", call.name, ctx)?,
+            limit,
+            skip,
         })
-        .await
+    }
+
+    fn gate(
+        _parsed: &Self::Parsed,
+        conn: &crate::connector::DbConnectorConfig,
+        connector: &str,
+    ) -> Result<(), HandlerError> {
+        require_op_allowed(&conn.operations, "read", connector)?;
+        Ok(require_mongo_backend(
+            conn,
+            <Self as ConnectorHandler>::NAME,
+            connector,
+        )?)
+    }
+
+    async fn run(
+        &self,
+        find: Self::Parsed,
+        db_config: &crate::connector::DbConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let client = self
+            .pool_cache
+            .get_client(call.connector, db_config)
+            .await
+            .map_err(to_connect_error)?;
+
+        let coll = client
+            .database(&find.database)
+            .collection::<Document>(&find.collection);
+        let cap = self.limits.max_limit as usize;
+        let docs: Vec<Document> = timed_query(db_config.query_timeout_ms, call.name, async {
+            // F11: the Mongo driver has no per-query timeout of its own here —
+            // timed_query bounds connect + find + drain.
+            let mut q = coll.find(find.filter);
+            if let Some(p) = find.projection {
+                q = q.projection(p);
+            }
+            if let Some(s) = find.sort {
+                q = q.sort(s);
+            }
+            if let Some(sk) = find.skip {
+                q = q.skip(sk);
+            }
+            if let Some(l) = find.limit {
+                q = q.limit(l as i64);
+            }
+            let cursor = q.await.map_err(|e| e.to_string())?;
+            drain_capped(cursor, cap, NAME).await
+        })
+        .await?;
+
+        Ok(docs_to_json(&docs).into())
     }
 }
 

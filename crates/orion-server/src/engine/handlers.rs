@@ -255,25 +255,31 @@ pub fn build_custom_functions(
 
     fns.insert(
         "send_email".to_string(),
-        Box::new(functions::send_email::SendEmailHandler {
-            registry: registry.clone(),
-            smtp_pool: smtp_pool_cache,
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::send_email::SendEmailHandler {
+                registry: registry.clone(),
+                smtp_pool: smtp_pool_cache,
+            },
+        )),
     );
 
     fns.insert(
         "storage_presign".to_string(),
-        Box::new(functions::storage_presign::StoragePresignHandler {
-            registry: registry.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::storage_presign::StoragePresignHandler {
+                registry: registry.clone(),
+            },
+        )),
     );
 
     fns.insert(
         "storage_head".to_string(),
-        Box::new(functions::storage_head::StorageHeadHandler {
-            registry: registry.clone(),
-            client: client.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::storage_head::StorageHeadHandler {
+                registry: registry.clone(),
+                client: client.clone(),
+            },
+        )),
     );
 
     // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)
@@ -288,18 +294,22 @@ pub fn build_custom_functions(
     // Register SQL database handlers (db_read, db_write)
     fns.insert(
         "db_read".to_string(),
-        Box::new(functions::db_read::DbReadHandler {
-            pool_cache: sql_pool_cache.clone(),
-            registry: registry.clone(),
-            max_rows: query_config.max_limit as usize,
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::db_read::DbReadHandler {
+                pool_cache: sql_pool_cache.clone(),
+                registry: registry.clone(),
+                max_rows: query_config.max_limit as usize,
+            },
+        )),
     );
     fns.insert(
         "db_write".to_string(),
-        Box::new(functions::db_write::DbWriteHandler {
-            pool_cache: sql_pool_cache.clone(),
-            registry: registry.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::db_write::DbWriteHandler {
+                pool_cache: sql_pool_cache.clone(),
+                registry: registry.clone(),
+            },
+        )),
     );
 
     // Register the portable query handler (data_query). It renders a
@@ -346,36 +356,44 @@ pub fn build_custom_functions(
     );
     fns.insert(
         "cache_write".to_string(),
-        Box::new(functions::cache_write::CacheWriteHandler {
-            cache_pool,
-            registry: registry.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::cache_write::CacheWriteHandler {
+                cache_pool,
+                registry: registry.clone(),
+            },
+        )),
     );
 
     // Register the MongoDB trio (mongo_read, mongo_write, mongo_aggregate)
     fns.insert(
         "mongo_read".to_string(),
-        Box::new(functions::mongo_read::MongoReadHandler {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::mongo_read::MongoReadHandler {
+                pool_cache: mongo_pool_cache.clone(),
+                registry: registry.clone(),
+                limits: query_config.clone(),
+            },
+        )),
     );
     fns.insert(
         "mongo_write".to_string(),
-        Box::new(functions::mongo_write::MongoWriteHandler {
-            pool_cache: mongo_pool_cache.clone(),
-            registry: registry.clone(),
-            write_config: write_config.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::mongo_write::MongoWriteHandler {
+                pool_cache: mongo_pool_cache.clone(),
+                registry: registry.clone(),
+                write_config: write_config.clone(),
+            },
+        )),
     );
     fns.insert(
         "mongo_aggregate".to_string(),
-        Box::new(functions::mongo_aggregate::MongoAggregateHandler {
-            pool_cache: mongo_pool_cache,
-            registry: registry.clone(),
-            limits: query_config.clone(),
-        }),
+        Box::new(functions::connector_handler::Connector(
+            functions::mongo_aggregate::MongoAggregateHandler {
+                pool_cache: mongo_pool_cache,
+                registry: registry.clone(),
+                limits: query_config.clone(),
+            },
+        )),
     );
 
     fns

@@ -17,26 +17,25 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
-use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address;
 use mail_builder::headers::raw::Raw;
 use mail_send::smtp::AssertReply;
 use serde_json::{Value, json};
 
+use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_connector, resolve_optional_str, resolve_value,
-    to_connect_error,
+    ConnectorCall, resolve_optional_str, resolve_value, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
 use crate::engine::{ErrorClass, HandlerError};
 
-/// This handler's name in metrics, profiles and error messages (F48).
-const NAME: &str = "send_email";
+/// This handler's name, for the free functions below — a reference to the one
+/// place it is written (F48), not a second spelling of it.
+const NAME: &str = <SendEmailHandler as ConnectorHandler>::NAME;
 
 /// Header names owned by the structured fields — a task `headers` entry naming
 /// one is refused (at create and here), so the two surfaces cannot fight over
@@ -61,31 +60,45 @@ pub struct SendEmailHandler {
     pub smtp_pool: Arc<SmtpPoolCache>,
 }
 
-#[async_trait]
-impl AsyncFunctionHandler for SendEmailHandler {
-    type Input = Value;
+/// The mail as the task describes it, every field already folded against the
+/// message. What is *not* here is the sender: it depends on the connector,
+/// which is not resolved yet.
+pub struct Mail {
+    to: Vec<Mailbox>,
+    cc: Vec<Mailbox>,
+    bcc: Vec<Mailbox>,
+    subject: String,
+    text: Option<String>,
+    html: Option<String>,
+    from_override: Option<String>,
+    reply_to: Option<Mailbox>,
+    headers: Option<Value>,
+}
 
-    async fn execute(
+#[async_trait]
+impl ConnectorHandler for SendEmailHandler {
+    const NAME: &'static str = "send_email";
+    type Kind = crate::connector::kind::Smtp;
+    type Input = Value;
+    type Parsed = Mail;
+
+    fn registry(&self) -> &Arc<ConnectorRegistry> {
+        &self.registry
+    }
+
+    fn parse(
         &self,
-        ctx: &mut TaskContext<'_>,
+        _call: &ConnectorCall<'_>,
         input: &Value,
-    ) -> dataflow_rs::Result<TaskOutcome> {
-        // F48/F58: the literal prologue first — connector presence, then the
-        // literal-field checks no property of the message can change.
-        let call = ConnectorCall::begin(NAME, input, ctx)?;
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self::Parsed, HandlerError> {
+        // The literal-field check first: no property of the message can change
+        // whether `headers` names a protected header (F58).
         check_headers_field(input).map_err(named)?;
 
-        // Resolve the message-dependent fields before the body takes the
-        // breaker shell (and before `ctx` is reborrowed).
         let to = address_list(input, "to", ctx)
             .map_err(named)?
             .ok_or_else(|| validation("requires 'to' (an address or an array of addresses)"))?;
-        let cc = address_list(input, "cc", ctx)
-            .map_err(named)?
-            .unwrap_or_default();
-        let bcc = address_list(input, "bcc", ctx)
-            .map_err(named)?
-            .unwrap_or_default();
         let subject = resolve_optional_str(input, "subject", NAME, ctx)?
             .ok_or_else(|| validation("requires 'subject'"))?;
         let text = resolve_optional_str(input, "text", NAME, ctx)?;
@@ -95,74 +108,88 @@ impl AsyncFunctionHandler for SendEmailHandler {
                 "requires at least one of 'text' or 'html'",
             )));
         }
-        let from_override = resolve_optional_str(input, "from", NAME, ctx)?;
-        let reply_to = resolve_optional_str(input, "reply_to", NAME, ctx)?
-            .map(|s| parse_mailbox("reply_to", &s))
-            .transpose()?;
 
-        call.run(&self.registry, async {
-            let connector_config = call.resolve(&self.registry, None).await?;
-            let smtp_config = require_connector::<crate::connector::kind::Smtp>(
-                &connector_config,
-                call.connector,
-            )?;
-
-            let from = sender(smtp_config, from_override.as_deref(), call.connector)?;
-            let bare_id = generated_message_id(&from);
-            let message = build_message(MessageParts {
-                from: &from,
-                message_id: &bare_id,
-                to: &to,
-                cc: &cc,
-                subject: &subject,
-                reply_to,
-                headers: input.get("headers"),
-                text,
-                html,
-            })?;
-
-            // Bcc rides the envelope only — it is deliberately absent from the
-            // headers `build_message` rendered, so a blind copy stays blind.
-            let recipients: Vec<&str> = to
-                .iter()
-                .chain(cc.iter())
-                .chain(bcc.iter())
-                .map(|mbox| mbox.email.as_str())
-                .collect();
-
-            let pool = self
-                .smtp_pool
-                .get_pool(call.connector, smtp_config)
-                .await
-                .map_err(to_connect_error)?;
-            let mut client = pool.checkout().await.map_err(to_connect_error)?;
-
-            // One attempt, no retry loop — see the module comment. The
-            // breaker (via `call.run`) still counts this failure.
-            let response = match deliver(&mut client, &from, &recipients, &message).await {
-                Ok(reply) => {
-                    pool.checkin(client).await;
-                    reply
-                }
-                Err(e) => {
-                    // Deliberately not returned to the pool: after a failure
-                    // part-way through a transaction the connection's protocol
-                    // state is unknown, and the next send would inherit it.
-                    return Err(DataflowError::function_execution(
-                        format!("SMTP send via '{}' failed: {e}", call.connector),
-                        None,
-                    ));
-                }
-            };
-
-            let result = json!({
-                "message_id": format!("<{bare_id}>"),
-                "response": response,
-            });
-            apply_output(ctx, call.output, result);
-            Ok(TaskOutcome::Success)
+        Ok(Mail {
+            to,
+            cc: address_list(input, "cc", ctx)
+                .map_err(named)?
+                .unwrap_or_default(),
+            bcc: address_list(input, "bcc", ctx)
+                .map_err(named)?
+                .unwrap_or_default(),
+            subject,
+            text,
+            html,
+            from_override: resolve_optional_str(input, "from", NAME, ctx)?,
+            reply_to: resolve_optional_str(input, "reply_to", NAME, ctx)?
+                .map(|s| parse_mailbox("reply_to", &s))
+                .transpose()?,
+            headers: input.get("headers").cloned(),
         })
-        .await
+    }
+
+    async fn run(
+        &self,
+        mail: Self::Parsed,
+        smtp_config: &SmtpConnectorConfig,
+        call: &ConnectorCall<'_>,
+        _ctx: &mut TaskContext<'_>,
+    ) -> Result<Produced, HandlerError> {
+        let from = sender(smtp_config, mail.from_override.as_deref(), call.connector)?;
+        let bare_id = generated_message_id(&from);
+        let message = build_message(MessageParts {
+            from: &from,
+            message_id: &bare_id,
+            to: &mail.to,
+            cc: &mail.cc,
+            subject: &mail.subject,
+            reply_to: mail.reply_to,
+            headers: mail.headers.as_ref(),
+            text: mail.text,
+            html: mail.html,
+        })?;
+
+        // Bcc rides the envelope only — it is deliberately absent from the
+        // headers `build_message` rendered, so a blind copy stays blind.
+        let recipients: Vec<&str> = mail
+            .to
+            .iter()
+            .chain(mail.cc.iter())
+            .chain(mail.bcc.iter())
+            .map(|mbox| mbox.email.as_str())
+            .collect();
+
+        let pool = self
+            .smtp_pool
+            .get_pool(call.connector, smtp_config)
+            .await
+            .map_err(to_connect_error)?;
+        let mut client = pool.checkout().await.map_err(to_connect_error)?;
+
+        // One attempt, no retry loop — see the module comment. The breaker
+        // (via the handler shell) still counts this failure.
+        let response = match deliver(&mut client, &from, &recipients, &message).await {
+            Ok(reply) => {
+                pool.checkin(client).await;
+                reply
+            }
+            Err(e) => {
+                // Deliberately not returned to the pool: after a failure
+                // part-way through a transaction the connection's protocol
+                // state is unknown, and the next send would inherit it.
+                return Err(DataflowError::function_execution(
+                    format!("SMTP send via '{}' failed: {e}", call.connector),
+                    None,
+                )
+                .into());
+            }
+        };
+
+        Ok(json!({
+            "message_id": format!("<{bare_id}>"),
+            "response": response,
+        })
+        .into())
     }
 }
 
@@ -176,9 +203,12 @@ fn validation(msg: &str) -> HandlerError {
     HandlerError::new(ErrorClass::CallerInput, msg)
 }
 
-/// A bare parser error on its way out through `execute`, named once.
-fn named(e: HandlerError) -> DataflowError {
-    e.prefixed(NAME).into()
+/// A bare parser error on its way out through the execution path, named once.
+///
+/// The static-validation path does not call this: there the `FieldError`'s own
+/// field path already says which task input was wrong.
+fn named(e: HandlerError) -> HandlerError {
+    e.prefixed(NAME)
 }
 
 /// An address field: one address or an array, each `addr@x` or
@@ -772,10 +802,10 @@ mod tests {
             .await;
         crate::engine::functions::run_test_task(
             NAME,
-            Box::new(SendEmailHandler {
+            Box::new(super::super::connector_handler::Connector(SendEmailHandler {
                 registry,
                 smtp_pool: std::sync::Arc::new(SmtpPoolCache::new(4)),
-            }),
+            })),
             input,
             data,
         )
@@ -933,10 +963,10 @@ mod tests {
         for _ in 0..count {
             crate::engine::functions::run_test_task(
                 NAME,
-                Box::new(SendEmailHandler {
+                Box::new(super::super::connector_handler::Connector(SendEmailHandler {
                     registry: registry.clone(),
                     smtp_pool: smtp_pool.clone(),
-                }),
+                })),
                 input.clone(),
                 json!({}),
             )

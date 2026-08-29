@@ -14,28 +14,27 @@ use futures::TryStreamExt;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
-use super::connector_helpers::{is_mongo, require_connector, resolve_value};
-use crate::connector::{ConnectorConfig, DbConnectorConfig};
+use super::connector_helpers::{is_mongo, resolve_value};
+use crate::connector::DbConnectorConfig;
 
-/// Extract the Db connector config and require a MongoDB connection string.
+/// The MongoDB half of a `db` connector's identity.
 ///
-/// `require_db_connector` only checks the `ConnectorConfig` variant, and both
-/// SQL and MongoDB connectors are `Db` — without the scheme check a SQL
-/// connector reached the Mongo driver and produced an opaque driver error
-/// instead of a validation one (F29).
-pub(super) fn require_mongo_connector<'a>(
-    config: &'a ConnectorConfig,
+/// The type gate stops at `db`: SQL and MongoDB are one `ConnectorConfig::Db`
+/// variant and only the connection string tells them apart, so the kind check
+/// (`require_connector::<Db>`, now the handler wrapper's job) cannot answer
+/// this and each Mongo handler asks it in its gate.
+pub(super) fn require_mongo_backend(
+    db_config: &DbConnectorConfig,
     handler_name: &str,
     connector_name: &str,
-) -> Result<&'a DbConnectorConfig, DataflowError> {
-    let db_config = require_connector::<crate::connector::kind::Db>(config, connector_name)?;
+) -> Result<(), DataflowError> {
     if !is_mongo(&db_config.connection_string) {
         return Err(DataflowError::Validation(format!(
             "{handler_name} requires a MongoDB connector, but '{connector_name}' has a \
              non-MongoDB connection string (expected a mongodb:// or mongodb+srv:// URL)"
         )));
     }
-    Ok(db_config)
+    Ok(())
 }
 
 /// Resolve an optional document-shaped field: fold `{"var": ..}` nodes, then
