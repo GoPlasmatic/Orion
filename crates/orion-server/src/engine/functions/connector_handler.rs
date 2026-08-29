@@ -29,14 +29,49 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dataflow_rs::TemplateCompiler;
+use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::connector_helpers::{ConnectorCall, apply_output, require_connector};
-use crate::connector::{ConnectorKind, ConnectorRegistry};
+use super::connector_helpers::{
+    ConnectorCall, apply_output, extract_output_path, require_connector, require_str_field,
+};
+use crate::connector::{ConnectorRegistry, ConnectorTarget};
 use crate::engine::HandlerError;
+
+/// The literal prologue, read from a handler's own input type.
+///
+/// Two of the fourteen connector handlers do not take freeform JSON:
+/// `http_call` and `publish_kafka` are dataflow-rs's own typed configs, and
+/// they used to be the two that called `guarded_handler` by hand precisely
+/// because [`ConnectorCall::begin`] could only read a `Value`. The prologue is
+/// the same question in both cases — *which connector, and where does the
+/// answer go* — so it is asked through a trait rather than through a shape.
+///
+/// Implementations must read **only literal keys**. Anything message-dependent
+/// belongs in [`ConnectorHandler::parse`], which runs after this (F58).
+pub trait ConnectorInput: DeserializeOwned + Send + Sync + 'static {
+    /// The connector this task targets. `handler` is the name that appears in
+    /// the "requires 'connector'" message when there is none.
+    fn connector(&self, handler: &'static str) -> Result<&str, DataflowError>;
+
+    /// Where the handler's result is written, defaulting to `data`.
+    fn output(&self) -> &str;
+}
+
+impl ConnectorInput for Value {
+    fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
+        require_str_field(self, "connector", handler)
+    }
+
+    fn output(&self) -> &str {
+        extract_output_path(self)
+    }
+}
 
 /// One connector handler's own logic, with the shell factored out.
 ///
@@ -54,7 +89,15 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     const NAME: &'static str;
 
     /// The connector type this handler speaks.
-    type Kind: ConnectorKind;
+    ///
+    /// [`ConnectorTarget`] rather than `ConnectorKind` so that the portable
+    /// dialect — valid against `db` or `es` — can name its two-variant target
+    /// and get the same wrong-type refusal as everything else.
+    type Kind: ConnectorTarget;
+
+    /// The task input's shape. `Value` for the twelve handlers taking freeform
+    /// JSON; a typed config for `http_call` and `publish_kafka`.
+    type Input: ConnectorInput;
 
     /// Everything read from the task input and the message before the
     /// connector is looked up.
@@ -72,7 +115,7 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &Self::Input,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError>;
 
@@ -82,8 +125,15 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     /// connector's answer, not the backend's: it must happen before anything is
     /// dialled. Default is "no gate of its own" — a connector type whose
     /// `operations` vocabulary is empty.
+    ///
+    /// Takes the parsed input because for two handlers the gate is not fixed:
+    /// `mongo_write` gates on the operation its envelope names, and
+    /// `data_write` on the one its command resolves to. A gate chosen after
+    /// the backend is dialled would be no gate at all, so the parsed input has
+    /// to reach it here.
     fn gate(
-        _conn: &<Self::Kind as ConnectorKind>::Config,
+        _parsed: &Self::Parsed,
+        _conn: &<Self::Kind as ConnectorTarget>::Config,
         _connector: &str,
     ) -> Result<(), HandlerError> {
         Ok(())
@@ -96,10 +146,26 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     async fn run(
         &self,
         parsed: Self::Parsed,
-        conn: &<Self::Kind as ConnectorKind>::Config,
+        conn: &<Self::Kind as ConnectorTarget>::Config,
         call: &ConnectorCall<'_>,
         ctx: &mut TaskContext<'_>,
     ) -> Result<Value, HandlerError>;
+
+    /// Parse the raw task JSON into [`Input`](Self::Input).
+    ///
+    /// Forwarded to `AsyncFunctionHandler::parse_input` by the wrapper, with
+    /// the same default, so wrapping a handler cannot silently drop a custom
+    /// parse.
+    fn parse_input(input: &Value) -> dataflow_rs::Result<Self::Input> {
+        serde_json::from_value(input.clone()).map_err(DataflowError::from_serde)
+    }
+
+    /// Compile the `Template` fields of a just-parsed input, once at engine
+    /// build. Forwarded by the wrapper for the same reason as
+    /// [`parse_input`](Self::parse_input).
+    fn compile_input(_input: &mut Self::Input, _c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+        Ok(())
+    }
 }
 
 /// The shell, applied to a [`ConnectorHandler`].
@@ -111,12 +177,20 @@ pub struct Connector<H>(pub H);
 
 #[async_trait]
 impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
-    type Input = Value;
+    type Input = H::Input;
+
+    fn parse_input(input: &Value) -> dataflow_rs::Result<Self::Input> {
+        H::parse_input(input)
+    }
+
+    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+        H::compile_input(input, c)
+    }
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &Value,
+        input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
         // The literal prologue: a task naming no connector says so before
         // anything about the message is consulted (F58).
@@ -132,7 +206,7 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
         call.run(registry, async {
             let config = call.resolve(registry, None).await?;
             let conn = require_connector::<H::Kind>(&config, call.connector)?;
-            H::gate(conn, call.connector).map_err(dataflow_rs::DataflowError::from)?;
+            H::gate(&parsed, conn, call.connector).map_err(dataflow_rs::DataflowError::from)?;
 
             let value = self
                 .0
@@ -144,5 +218,79 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
             Ok(TaskOutcome::Success)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connector::ConnectorRegistry;
+
+    /// A handler whose `parse` needs a field the task does not set, so the two
+    /// possible complaints — the literal `connector` and the message-dependent
+    /// `key` — are both available and their order is the thing under test.
+    struct Probe(Arc<ConnectorRegistry>);
+
+    #[async_trait]
+    impl ConnectorHandler for Probe {
+        const NAME: &'static str = "probe";
+        type Kind = crate::connector::kind::Cache;
+        type Input = Value;
+        type Parsed = String;
+
+        fn registry(&self) -> &Arc<ConnectorRegistry> {
+            &self.0
+        }
+
+        fn parse(
+            &self,
+            call: &ConnectorCall<'_>,
+            input: &Value,
+            _ctx: &TaskContext<'_>,
+        ) -> Result<Self::Parsed, HandlerError> {
+            Ok(call.require_str(input, "key")?.to_string())
+        }
+
+        async fn run(
+            &self,
+            _parsed: Self::Parsed,
+            _conn: &crate::connector::CacheConnectorConfig,
+            _call: &ConnectorCall<'_>,
+            _ctx: &mut TaskContext<'_>,
+        ) -> Result<Value, HandlerError> {
+            Ok(Value::Null)
+        }
+    }
+
+    /// F58, as a property of the wrapper rather than of each handler's source.
+    ///
+    /// A task missing both `connector` and the handler's own field must be told
+    /// about `connector`: the author fixes it, re-runs, and only then learns
+    /// about `key` — which is the ordering that made this a defect. Every
+    /// handler used to be checked for it by reading its `.rs` file and
+    /// comparing byte offsets, one test per handler in a list that a new
+    /// handler could simply not join. Here it is unconditional: `parse` takes
+    /// the `call` as an argument, so it cannot run before the prologue that
+    /// built it.
+    #[tokio::test]
+    async fn the_literal_prologue_is_reported_before_anything_message_dependent() {
+        let handler = Connector(Probe(Arc::new(ConnectorRegistry::new(Default::default()))));
+        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs::Message::from_value(&serde_json::json!({}));
+        let mut ctx = TaskContext::new(&mut message, &datalogic);
+
+        let err = handler
+            .execute(&mut ctx, &serde_json::json!({}))
+            .await
+            .expect_err("a task naming no connector cannot run");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("connector"),
+            "the literal prologue must be reported first: {msg}"
+        );
+        assert!(
+            !msg.contains("'key'"),
+            "the message-dependent field must not pre-empt it: {msg}"
+        );
     }
 }

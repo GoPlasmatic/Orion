@@ -53,24 +53,37 @@ impl PoolSlot {
     ];
 }
 
-/// One connector type's typed half.
+/// What a handler names when it asks for a connector.
 ///
 /// The associated `Config` is what makes this worth being a trait rather than a
-/// table: a handler asks for the kind it needs and gets that variant's config
-/// back, so `require::<Db>(…)` cannot compile into an SMTP accessor.
-pub trait ConnectorKind {
-    /// The variant this kind is.
-    const TYPE: ConnectorType;
-    /// The typed config behind that variant.
+/// table: a handler asks for the target it needs and gets that config back, so
+/// `require::<Db>(…)` cannot compile into an SMTP accessor.
+///
+/// Separate from [`ConnectorKind`] because two handlers do not target a single
+/// type: `data_query` and `data_write` speak the portable dialect, which is
+/// valid against `db` *or* `es` and dispatches on the resolved variant. They
+/// used to take the whole `ConnectorConfig` and produce their own "is not a db
+/// or es connector" refusal after resolution; [`DataBackend`] makes it the same
+/// refusal, from the same place, as every other wrong-type message.
+pub trait ConnectorTarget {
+    /// The typed config a handler binds once the connector is acceptable.
     type Config;
 
-    /// Borrow this kind's config out of a parsed connector, or `None` when the
-    /// connector is a different type.
+    /// Borrow this target's config out of a parsed connector, or `None` when
+    /// the connector is one this target does not accept.
     fn extract(config: &ConnectorConfig) -> Option<&Self::Config>;
 
     /// The noun used when a workflow points a handler at the wrong type —
     /// "is not a database connector".
     fn noun() -> &'static str;
+}
+
+/// One connector type's typed half: a [`ConnectorTarget`] that is exactly one
+/// variant, and so can answer the per-variant questions a union cannot —
+/// which `ConnectorType` it is, and which pool caches it lives in.
+pub trait ConnectorKind: ConnectorTarget {
+    /// The variant this kind is.
+    const TYPE: ConnectorType;
 }
 
 macro_rules! kinds {
@@ -79,8 +92,7 @@ macro_rules! kinds {
             /// Marker type: see [`ConnectorKind`].
             pub struct $kind;
 
-            impl ConnectorKind for $kind {
-                const TYPE: ConnectorType = ConnectorType::$variant;
+            impl ConnectorTarget for $kind {
                 type Config = $config;
 
                 fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
@@ -94,6 +106,10 @@ macro_rules! kinds {
                     $noun
                 }
             }
+
+            impl ConnectorKind for $kind {
+                const TYPE: ConnectorType = ConnectorType::$variant;
+            }
         )*
     };
 }
@@ -106,6 +122,26 @@ kinds! {
     Es      => Es,      EsConnectorConfig,      "an Elasticsearch connector";
     Smtp    => Smtp,    SmtpConnectorConfig,    "an SMTP connector";
     Storage => Storage, StorageConnectorConfig, "a storage connector";
+}
+
+/// The portable data dialect's target: `db` or `es`.
+///
+/// Its `Config` is the whole [`ConnectorConfig`] because the handler dispatches
+/// on the variant — SQL, MongoDB (a `db` connector whose connection string says
+/// so) and Elasticsearch are three different query translations, and which one
+/// applies is not knowable before the connector is resolved.
+pub struct DataBackend;
+
+impl ConnectorTarget for DataBackend {
+    type Config = ConnectorConfig;
+
+    fn extract(config: &ConnectorConfig) -> Option<&Self::Config> {
+        matches!(config, ConnectorConfig::Db(_) | ConnectorConfig::Es(_)).then_some(config)
+    }
+
+    fn noun() -> &'static str {
+        "a db or es connector"
+    }
 }
 
 impl ConnectorType {
@@ -185,6 +221,35 @@ mod tests {
             "a kafka connector is not a db one"
         );
         assert_eq!(Db::noun(), "a database connector");
+    }
+
+    /// The one target that is not a kind: it accepts two variants and refuses
+    /// the rest, which is the refusal `data_query` used to produce by hand
+    /// after resolving the connector itself.
+    #[test]
+    fn the_data_backend_target_accepts_db_and_es_and_nothing_else() {
+        let db = ConnectorConfig::Db(DbConnectorConfig {
+            connection_string: "sqlite::memory:".to_string(),
+            max_connections: None,
+            connect_timeout_ms: None,
+            query_timeout_ms: None,
+            allow_private_urls: false,
+            operations: Default::default(),
+            dialect: Default::default(),
+            aggregate_write_stages: false,
+        });
+        let kafka = ConnectorConfig::Kafka(KafkaConnectorConfig {
+            brokers: vec!["localhost:9092".to_string()],
+            topic: "orders".to_string(),
+            allow_private_urls: false,
+            operations: Default::default(),
+        });
+        assert!(DataBackend::extract(&db).is_some());
+        assert!(
+            DataBackend::extract(&kafka).is_none(),
+            "the portable dialect does not speak Kafka"
+        );
+        assert_eq!(DataBackend::noun(), "a db or es connector");
     }
 
     /// The `db` variant covers both backends, so both caches must be evicted

@@ -6,7 +6,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
-use crate::connector::ConnectorKind;
+use crate::connector::ConnectorTarget;
 use crate::connector::{
     ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
 };
@@ -208,16 +208,20 @@ impl<'a> ConnectorCall<'a> {
     /// reported the wrong one — the author fixed `key`, re-ran, and only then
     /// learned about `connector`. Cheap literal checks are also the ones whose
     /// failure is unambiguous: nothing about the message can change the answer.
-    pub fn begin(
+    /// Generic over the input's shape, not over `Value`: `http_call` and
+    /// `publish_kafka` take dataflow-rs's typed configs, and the prologue is
+    /// the same question for them. See
+    /// [`ConnectorInput`](super::connector_handler::ConnectorInput).
+    pub fn begin<I: super::connector_handler::ConnectorInput>(
         name: &'static str,
-        input: &'a Value,
+        input: &'a I,
         ctx: &TaskContext<'_>,
     ) -> Result<Self, DataflowError> {
         Ok(Self {
             name,
-            connector: require_str_field(input, "connector", name)?,
+            connector: input.connector(name)?,
             channel: super::extract_channel(ctx.message()).to_string(),
-            output: extract_output_path(input),
+            output: input.output(),
         })
     }
 
@@ -503,10 +507,16 @@ pub async fn resolve_connector(
 /// One generic where there were six functions — `require_db_connector`,
 /// `require_http_connector`, and four more — that differed only in the variant
 /// they matched and the noun they printed. Both now come from the
-/// [`ConnectorKind`] impl, so an eighth connector type costs nothing here, and
-/// the type parameter is what stops a handler asking for one kind and binding
-/// another.
-pub fn require_connector<'a, K: ConnectorKind>(
+/// [`ConnectorTarget`] impl, so an eighth connector type costs nothing here,
+/// and the type parameter is what stops a handler asking for one kind and
+/// binding another.
+///
+/// The bound is [`ConnectorTarget`] rather than `ConnectorKind` so that the two
+/// handlers accepting more than one variant — the portable dialect's
+/// `data_query` and `data_write`, via `DataBackend` — produce their wrong-type
+/// refusal here with every other handler's, instead of after resolution in
+/// their own words.
+pub fn require_connector<'a, K: ConnectorTarget>(
     config: &'a ConnectorConfig,
     name: &str,
 ) -> Result<&'a K::Config, DataflowError> {

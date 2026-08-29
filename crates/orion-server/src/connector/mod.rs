@@ -23,7 +23,7 @@ pub use config::{
     StorageOperationGates, StorageProvider, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
     VALID_HTTP_METHODS, is_mongo_url,
 };
-pub use kind::{ConnectorKind, PoolSlot};
+pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
 pub(crate) use masking::MASK;
 pub use masking::{
     find_masked_value, mask_channel_config, mask_connector, mask_secrets, redact_url_secrets,

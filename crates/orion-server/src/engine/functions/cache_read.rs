@@ -22,6 +22,7 @@ pub struct CacheReadHandler {
 impl ConnectorHandler for CacheReadHandler {
     const NAME: &'static str = "cache_read";
     type Kind = crate::connector::kind::Cache;
+    type Input = Value;
     /// The key, resolved against the message. `{"var": "data.id"}` is the
     /// whole point of a per-request cache lookup, so it has to be folded
     /// before the body takes `ctx` mutably.
@@ -41,6 +42,7 @@ impl ConnectorHandler for CacheReadHandler {
     }
 
     fn gate(
+        _key: &String,
         conn: &crate::connector::CacheConnectorConfig,
         connector: &str,
     ) -> Result<(), crate::engine::HandlerError> {
@@ -171,8 +173,12 @@ mod tests {
     /// dialled. It is also now callable on its own.
     #[test]
     fn a_write_only_connector_refuses_a_read() {
-        let err = <CacheReadHandler as ConnectorHandler>::gate(&memory_connector(false), "c")
-            .expect_err("a read must be refused when the gate is off");
+        let err = <CacheReadHandler as ConnectorHandler>::gate(
+            &"k".to_string(),
+            &memory_connector(false),
+            "c",
+        )
+        .expect_err("a read must be refused when the gate is off");
         // The specific refusal is the operator-facing detail; `msg` is the
         // caller-safe half. Both must survive the conversion.
         assert_eq!(err.msg, "Request validation failed");
