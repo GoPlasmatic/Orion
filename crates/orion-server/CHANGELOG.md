@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-29
+
 ### Security
 
 - **JWKS fetches are address-checked and go through the SSRF-pinned HTTP
@@ -26,6 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it**, or JWT verification against that issuer will fail with
   `keys_unavailable`.
 
+
+- **A channel's `auth.keys` now face a failed-attempt budget, as the admin API
+  key has since S12.** The admin credential had exponential backoff; the
+  *public* one — on the data plane, reachable by anyone who knows a channel
+  name, behind a per-channel rate limit that is off by default — had none, so
+  it faced online guessing at the full request rate. Applies to
+  `auth.mode = "api_key"` and `"hmac"`, where every failure is a wrong
+  credential. Deliberately **not** to `"jwt"`: an expired token is a routine,
+  legitimate failure a well-behaved client answers by refreshing, and locking a
+  client out for it would punish the correct behaviour.
+
+  The budget is keyed per `(channel, client)` rather than per client, because a
+  shared egress address is the norm on the data plane and one misconfigured
+  integration must not lock its whole NAT out of every other channel. A
+  lockout answers with the same `401` and the same message as a wrong key, so a
+  caller cannot learn from the response that it is being throttled. Lockouts
+  count on `orion_errors_total{reason="channel_auth_locked_out"}`.
+
 ### Fixed
 
 - **Engine reloads are serialised.** `AppState` gained the `reload_lock` that
@@ -41,6 +61,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while holding the reload lock. On timeout the task is left to finish rather
   than aborted, so no in-flight commit is cancelled.
 
+
+- **`is_retryable()` no longer claims every `503` is retryable.** A quarantined
+  channel and a closed queue reported `true`; neither clears without operator
+  action.
+- **The Kafka consumer no longer defers a guard refusal that will never
+  clear.** Any `ServiceUnavailable` deferred the offset and replayed the
+  record — correct for backpressure and a backend blip, but for a cause that
+  does not fix itself it would hold the partition for as long as the node
+  stayed broken. Deferral now follows the same transience judgement as
+  `Retry-After`.
+- **`POST /workflows/{id}/test` and `orion-server dry-run` now screen the
+  workflow the way boot and reload do.** Both assembled the engine builder by
+  hand and called `.build()`, which is not the same check: `http_call`,
+  `publish_kafka` and `enrich` deserialize into typed built-in variants, so a
+  workflow naming one builds cleanly with no handler behind it and then fails
+  every request with `FunctionNotFound`. Orion never registers `enrich`. The
+  result was a green dry run followed by a channel that would not serve — and,
+  worse in reverse, a green *test* before an activation that quarantines. Both
+  now answer with the same `HandlerScreen` the serving engine uses, so an
+  unusable task is a `400` naming the workflow and the task.
+
 ### Changed
 
 - **A config-epoch bump records what changed, and peers resync to that.** The
@@ -49,9 +90,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MongoDB and cache pool. One workflow activation was a fleet-wide reconnect
   storm. A workflow or channel change now leaves peers' connector pools alone;
   a connector change still drops them, because the endpoint behind a live
-  connection may now be wrong. Requires the `config_epoch_scope` migration. A
-  bump from a node running an older release carries no scope and is read as
-  "everything", so a mixed-version fleet behaves exactly as it did before.
+  connection may now be wrong. Requires the `config_epoch_scope` and
+  `epoch_scope_binding` migrations. The scope is stamped with the epoch it was
+  written for and a peer trusts it only when the two match: the column is
+  sticky, so a node on an older release advances the counter and leaves the
+  previous scope standing, and taking that at face value would skip the
+  connector reload its change actually needed. Anything unattributable is the
+  widest resync, so a mixed-version fleet behaves exactly as it did before.
+- **A failed engine reload is a node-health signal on the mutation routes, and
+  a client error on the one that asks for it.** Activate, archive, delete and
+  rollout answer `2xx` when the reload fails and raise
+  `components.engine_reload: "degraded"` on `/health`: the row has already
+  committed and is already serving, so a `5xx` would tell the client its change
+  failed when it had not, and the natural retry writes a second version or
+  collides with the first. `POST /api/v1/admin/engine/reload` is the exception
+  and propagates, because it writes nothing — there is no committed change for
+  an error to misdescribe, and a deploy pipeline gating on that route must not
+  read `{"reloaded": true}` for a reload that did not happen. `/readyz` is
+  unaffected either way: the node is serving, just not the newest config.
 - **A failed epoch bump is a node-health signal, not a client error.** The bump
   happens after the mutation is committed and live on the node that served it,
   so a `500` told the client its change had failed when it had not — and its
@@ -82,14 +138,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publishes `orion-api` and `orion-client` at the server's version — 1.0.4 and
   1.0.5 are the last under the old scheme, and an existing pin on either keeps
   resolving.
-- **Kafka ingress writes no trace row**, which is now stated rather than
-  implied: `docs/src/operate/traces.md` names the gap, lists what a Kafka
-  channel does have instead (the message metrics, the `orion_kafka_*` set, the
-  Kafka DLQ topic, the log), and says what to do today if per-message traces
-  are required. No behaviour change.
+- **A Kafka-ingested message writes a trace row**, so the transports are
+  finally uniform. The row carries `mode = "kafka"` and
+  `GET /api/v1/data/traces?mode=kafka` selects it; `channel_id` and
+  `input_json` are deliberately null, because a Kafka message arrives on no
+  route and its payload is already the workflow input. Per-channel
+  `config.tracing` and the global `trace_storage.mode` apply as everywhere
+  else. **Note the volume.** `trace_storage.mode` defaults to `sync`, so a
+  Kafka-heavy deployment gains one inline insert per consumed message, on the
+  consume loop, ahead of the offset commit. Set it to `async`, `batch` or
+  `off`, or sample per channel, before upgrading such a node.
 
 ### Added
 
+- **`orion_api::TRACE_MODE_KAFKA`**, so the shared constant set names every
+  mode the runtime writes. The trace `mode` field is an open string by design —
+  an unknown value deserializes rather than failing — which is exactly why the
+  gap could open quietly when Kafka tracing landed.
 - **A `503` now carries `Retry-After` when retrying is the answer, and
   deliberately omits it when it is not.** `ServiceUnavailable` carried only a
   string, so four unrelated causes — a quarantined channel, a guard backend
@@ -99,49 +164,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outage `5`, and the two that do not clear on their own send no header at all
   rather than inviting a retry loop against a node an operator has to fix.
 
-### Security
-
-- **A channel's `auth.keys` now face a failed-attempt budget, as the admin API
-  key has since S12.** The admin credential had exponential backoff; the
-  *public* one — on the data plane, reachable by anyone who knows a channel
-  name, behind a per-channel rate limit that is off by default — had none, so
-  it faced online guessing at the full request rate. Applies to
-  `auth.mode = "api_key"` and `"hmac"`, where every failure is a wrong
-  credential. Deliberately **not** to `"jwt"`: an expired token is a routine,
-  legitimate failure a well-behaved client answers by refreshing, and locking a
-  client out for it would punish the correct behaviour.
-
-  The budget is keyed per `(channel, client)` rather than per client, because a
-  shared egress address is the norm on the data plane and one misconfigured
-  integration must not lock its whole NAT out of every other channel. A
-  lockout answers with the same `401` and the same message as a wrong key, so a
-  caller cannot learn from the response that it is being throttled. Lockouts
-  count on `orion_errors_total{reason="channel_auth_locked_out"}`.
-
-### Fixed
-
-- **`is_retryable()` no longer claims every `503` is retryable.** A quarantined
-  channel and a closed queue reported `true`; neither clears without operator
-  action.
-- **The Kafka consumer no longer defers a guard refusal that will never
-  clear.** Any `ServiceUnavailable` deferred the offset and replayed the
-  record — correct for backpressure and a backend blip, but for a cause that
-  does not fix itself it would hold the partition for as long as the node
-  stayed broken. Deferral now follows the same transience judgement as
-  `Retry-After`.
-- **`POST /workflows/{id}/test` and `orion-server dry-run` now screen the
-  workflow the way boot and reload do.** Both assembled the engine builder by
-  hand and called `.build()`, which is not the same check: `http_call`,
-  `publish_kafka` and `enrich` deserialize into typed built-in variants, so a
-  workflow naming one builds cleanly with no handler behind it and then fails
-  every request with `FunctionNotFound`. Orion never registers `enrich`. The
-  result was a green dry run followed by a channel that would not serve — and,
-  worse in reverse, a green *test* before an activation that quarantines. Both
-  now answer with the same `HandlerScreen` the serving engine uses, so an
-  unusable task is a `400` naming the workflow and the task.
-
 ### Internal
 
+- `#[doc(hidden)]` and its comment are attached to `bootstrap` again. The new
+  top-level `auth` module landed alphabetically between the attribute and the
+  module it was written for, so both moved down one: `auth` became doc-hidden
+  under a description of startup wiring, and `bootstrap` started rendering as
+  an undocumented public module.
 - The failed-auth tracker moved from `server::admin_auth` to a top-level
   `auth` module, because `channel` is below `server` and now needs it —
   `module_layering_test` is what said so.
@@ -4171,7 +4200,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...v1.2.1

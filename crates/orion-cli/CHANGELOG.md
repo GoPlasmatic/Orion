@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-29
+
+`orion-cli` and `orion-server` release in lockstep. 1.4.0 is server-side
+only — the CLI has no change of its own beyond the shared workspace
+version; see the server changelog.
+
 ## [1.3.1] - 2026-08-27
 
 `orion-cli` and `orion-server` release in lockstep; 1.3.0 was server-side only
@@ -292,7 +298,8 @@ Initial release.
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.1
 [1.2.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/GoPlasmatic/Orion/compare/v1.1.0...v1.2.0
