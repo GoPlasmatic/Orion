@@ -266,6 +266,8 @@ pub(crate) async fn dynamic_handler(
         datalogic: &state.datalogic,
         origin: headers.get("origin").and_then(|v| v.to_str().ok()),
         caller_identity: &client_ip,
+        // The HTTP transports are the two that present a credential (S12).
+        auth_backoff: Some(&state.channel_auth_failures),
         header: &header_lookup,
         // The bytes as received, not `req.data`. A webhook signature is
         // computed over the wire body, and `ProcessRequest::from_body` has

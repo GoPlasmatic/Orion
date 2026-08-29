@@ -235,6 +235,8 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 origin: None,
                 caller_identity: &calling_channel,
                 header: &header_lookup,
+                // Authenticated at the edge; this call presents no credential.
+                auth_backoff: None,
                 // An in-process call presents no credential and signs no body; its
                 // ingress authenticated at the edge (see `Transport::guards`).
                 raw_body: None,

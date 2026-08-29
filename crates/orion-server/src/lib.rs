@@ -33,6 +33,7 @@
 /// fail-fast connector refusal, background tasks) instead of reimplementing
 /// it, but not part of the documented 1.0 API surface.
 #[doc(hidden)]
+pub mod auth;
 pub mod bootstrap;
 pub mod channel;
 pub mod cluster;

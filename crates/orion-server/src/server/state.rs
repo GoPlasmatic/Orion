@@ -133,7 +133,16 @@ pub struct AppStateInner {
     pub tasks: Arc<crate::runtime::TaskRegistry>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
-    pub admin_auth_failures: Arc<crate::server::admin_auth::FailedAuthTracker>,
+    pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,
+    /// The same, for channel credentials — a separate budget on purpose.
+    ///
+    /// One shared tracker would let guessing at a public data-plane channel
+    /// lock the same address out of the admin plane, and the reverse. They are
+    /// different credentials answering to different operators, so they get
+    /// different budgets; keys are `channel\u{1f}client`, which also keeps one
+    /// misconfigured integration behind a NAT from locking that address out of
+    /// every *other* channel.
+    pub channel_auth_failures: Arc<crate::auth::FailedAuthTracker>,
     /// `rate_limit.trusted_proxies`, parsed once at startup.
     ///
     /// Held here rather than read off `rate_limit_state` because client

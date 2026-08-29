@@ -876,6 +876,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         cluster,
         tasks,
         admin_auth_failures: Arc::new(Default::default()),
+        channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,
     })
 }

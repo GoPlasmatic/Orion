@@ -99,6 +99,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outage `5`, and the two that do not clear on their own send no header at all
   rather than inviting a retry loop against a node an operator has to fix.
 
+### Security
+
+- **A channel's `auth.keys` now face a failed-attempt budget, as the admin API
+  key has since S12.** The admin credential had exponential backoff; the
+  *public* one — on the data plane, reachable by anyone who knows a channel
+  name, behind a per-channel rate limit that is off by default — had none, so
+  it faced online guessing at the full request rate. Applies to
+  `auth.mode = "api_key"` and `"hmac"`, where every failure is a wrong
+  credential. Deliberately **not** to `"jwt"`: an expired token is a routine,
+  legitimate failure a well-behaved client answers by refreshing, and locking a
+  client out for it would punish the correct behaviour.
+
+  The budget is keyed per `(channel, client)` rather than per client, because a
+  shared egress address is the norm on the data plane and one misconfigured
+  integration must not lock its whole NAT out of every other channel. A
+  lockout answers with the same `401` and the same message as a wrong key, so a
+  caller cannot learn from the response that it is being throttled. Lockouts
+  count on `orion_errors_total{reason="channel_auth_locked_out"}`.
+
 ### Fixed
 
 - **`is_retryable()` no longer claims every `503` is retryable.** A quarantined
@@ -123,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- The failed-auth tracker moved from `server::admin_auth` to a top-level
+  `auth` module, because `channel` is below `server` and now needs it —
+  `module_layering_test` is what said so.
 - A `timed_query` operation classifies its own failure with a `QueryFailure`
   value instead of prefixing its error string with a marker the wrapper looked
   for and stripped. Control flow no longer runs through a string: a message

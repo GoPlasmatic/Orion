@@ -208,6 +208,12 @@ pub struct GuardRequest<'a> {
     pub caller_identity: &'a str,
     /// Named header lookup (see [`HeaderLookup`]).
     pub header: HeaderLookup<'a>,
+    /// Failed-credential budget for `auth.mode = "api_key"` / `"hmac"` (S12).
+    /// `None` for the transports that present no credential — Kafka
+    /// authenticates at the broker connection, and an in-process
+    /// `channel_call` authenticated at the edge — so there is nothing to
+    /// count and no client to count it against.
+    pub auth_backoff: Option<&'a crate::auth::FailedAuthTracker>,
     /// The request body exactly as received, for `auth.mode = "hmac"`.
     ///
     /// A webhook signature is computed over these bytes, so verification has to
@@ -384,6 +390,8 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.header,
             req.raw_body,
             req.datalogic,
+            req.auth_backoff,
+            req.caller_identity,
         )
         .await?
     } else {
@@ -554,6 +562,8 @@ async fn check_auth(
     header: HeaderLookup<'_>,
     raw_body: Option<&[u8]>,
     datalogic: &datalogic_rs::Engine,
+    backoff: Option<&crate::auth::FailedAuthTracker>,
+    client: &str,
 ) -> Result<Option<Value>, OrionError> {
     let Some(cfg) = channel_config else {
         return Ok(None);
@@ -561,13 +571,60 @@ async fn check_auth(
     let Some(ref auth) = cfg.auth else {
         return Ok(None);
     };
-    auth.authenticate(header, raw_body, datalogic)
+
+    // S12, extended to the data plane. The admin API key has had a
+    // failed-attempt budget since S12; a channel's own `auth.keys` had none,
+    // so the *public* credential faced unlimited online guessing at whatever
+    // rate the channel's rate limit allowed — and that limit is off by
+    // default. Counted only for the modes where every failure is a wrong
+    // credential (see `CompiledAuth::failures_are_guesses`).
+    // `channel\u{1f}client`, not the client alone: a shared egress address is
+    // the norm on the data plane, so a per-client lockout would let one
+    // misconfigured integration lock its whole NAT out of every *other*
+    // channel too. The cost is that an attacker who knows N channel names gets
+    // N independent budgets — bounded, and each of those channels has its own
+    // unrelated key.
+    let budget = backoff
+        .filter(|_| auth.failures_are_guesses())
+        .map(|tracker| (tracker, format!("{channel}\u{1f}{client}")));
+    if let Some((tracker, key)) = &budget
+        && let Some(remaining) = tracker.locked_for(key)
+    {
+        crate::metrics::record_error("channel_auth_locked_out");
+        tracing::warn!(
+            channel = %channel,
+            remaining_ms = remaining.as_millis() as u64,
+            "Channel authentication refused: client is in failed-auth backoff"
+        );
+        // The same refusal as a wrong key: a caller must not learn from the
+        // response that it is being rate-limited on credentials.
+        return Err(crate::channel::auth::refused());
+    }
+
+    let outcome = auth
+        .authenticate(header, raw_body, datalogic)
         .await
         .map(|outcome| outcome.claims)
         .inspect_err(|_| {
             metrics::record_message(channel, "unauthorized");
             tracing::warn!(channel = %channel, "Channel authentication failed");
-        })
+        });
+
+    if let Some((tracker, key)) = &budget {
+        match &outcome {
+            Ok(_) => tracker.record_success(key),
+            Err(_) => {
+                if let Some(lockout) = tracker.record_failure(key) {
+                    tracing::warn!(
+                        channel = %channel,
+                        lockout_ms = lockout.as_millis() as u64,
+                        "Channel authentication: client entered failed-auth backoff"
+                    );
+                }
+            }
+        }
+    }
+    outcome
 }
 
 /// N24: this is a **server-side origin allow-list**, not CORS. It sets no
@@ -1639,6 +1696,7 @@ mod tests {
             data,
             metadata,
             datalogic,
+            auth_backoff: None,
             origin: None,
             caller_identity: "10.0.0.1",
             header: NO_HEADERS,

@@ -834,3 +834,115 @@ async fn broken_jwt_configs_are_refused_at_create() {
         );
     }
 }
+
+/// S12 on the data plane: a channel's own `auth.keys` must not face unlimited
+/// online guessing.
+///
+/// The admin API key has had a failed-attempt budget since S12. A channel's
+/// key had none — and it is the *public* credential, on a port anyone who
+/// knows a channel name can reach, behind a rate limit that is off by default.
+/// After the grace period the guard refuses without even comparing, so the
+/// attacker's rate collapses to the backoff rather than the request rate.
+///
+/// The refusal is byte-identical to a wrong key: a caller must not be able to
+/// tell from the response that it is being throttled on credentials, or it
+/// learns when to pause.
+#[tokio::test]
+async fn repeated_wrong_keys_put_a_client_into_backoff() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "guessable",
+        common::echo_workflow("guessable-wf"),
+        api_key_config("the-real-key"),
+    )
+    .await;
+
+    let wrong = |app: axum::Router| async move {
+        app.oneshot(request_with_header(
+            "/api/v1/data/guessable",
+            ("X-API-Key", "wrong"),
+            json!({"data": {"x": 1}}),
+        ))
+        .await
+        .unwrap()
+    };
+
+    // The grace period: a human fat-fingering a key is not an attacker.
+    for attempt in 0..5 {
+        let resp = wrong(app.clone()).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "attempt {attempt} must be refused"
+        );
+    }
+
+    // Past it, the *correct* key is refused too — the client is locked out,
+    // not the credential rejected. This is the assertion that fails without
+    // the budget: before it, a right key always worked no matter how many
+    // wrong ones preceded it.
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/guessable",
+            ("X-API-Key", "the-real-key"),
+            json!({"data": {"x": 1}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "a locked-out client is refused even with the right key"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["error"]["message"], "Channel authentication failed",
+        "the lockout must be indistinguishable from a wrong key: {body}"
+    );
+}
+
+/// The budget is per `(channel, client)`. A shared egress address is the norm
+/// on the data plane, so one misconfigured integration must not lock its whole
+/// NAT out of every other channel.
+#[tokio::test]
+async fn a_lockout_on_one_channel_does_not_reach_another() {
+    let app = common::test_app().await;
+    for name in ["ch-a", "ch-b"] {
+        common::create_and_activate_channel_with_config(
+            &app,
+            name,
+            common::echo_workflow(&format!("{name}-wf")),
+            api_key_config("shared-key"),
+        )
+        .await;
+    }
+
+    for _ in 0..8 {
+        let _ = app
+            .clone()
+            .oneshot(request_with_header(
+                "/api/v1/data/ch-a",
+                ("X-API-Key", "wrong"),
+                json!({"data": {"x": 1}}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/ch-b",
+            ("X-API-Key", "shared-key"),
+            json!({"data": {"x": 1}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "guessing at ch-a must not lock this client out of ch-b"
+    );
+}

@@ -268,6 +268,8 @@ async fn process_one_kafka_message(
         // topic unless `key_logic` says otherwise.
         caller_identity: topic,
         header: &header_lookup,
+        // Kafka authenticates at the broker connection, not per record.
+        auth_backoff: None,
         // Kafka does not authenticate per record — the broker connection
         // does (see `Transport::guards`), so there is no body to sign.
         raw_body: None,

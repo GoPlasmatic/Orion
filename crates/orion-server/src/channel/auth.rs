@@ -143,7 +143,7 @@ struct TimestampSpec {
 /// One message for every cause — wrong key, absent header, malformed
 /// signature — because distinguishing them tells an unauthenticated caller
 /// which half of the credential they got right.
-fn refused() -> OrionError {
+pub(crate) fn refused() -> OrionError {
     OrionError::Unauthorized("Channel authentication failed".into())
 }
 
@@ -330,6 +330,19 @@ impl CompiledAuth {
     /// reorders keys and normalises whitespace, and the signature would never
     /// match again. `datalogic` evaluates `authorization_logic`; it is the
     /// same engine that compiled it.
+    /// Whether a failure of this mode is evidence of *guessing*, and so worth
+    /// counting against a client's backoff budget.
+    ///
+    /// `api_key` and `hmac` are: every failure is a wrong credential, and a
+    /// legitimate client never produces one. `jwt` is deliberately not — an
+    /// expired token is a routine, legitimate failure that a well-behaved
+    /// client answers by refreshing (it is the one reason `RejectReason`
+    /// surfaces on the wire for exactly that purpose), and locking a client
+    /// out for it would punish the correct behaviour.
+    pub fn failures_are_guesses(&self) -> bool {
+        matches!(self, Self::ApiKey { .. } | Self::Hmac(_))
+    }
+
     pub async fn authenticate(
         &self,
         header: HeaderLookup<'_>,
