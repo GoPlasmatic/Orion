@@ -348,6 +348,14 @@ async fn process_one_kafka_message(
 
     let status = execution.outcome.status_label();
     let engine_duration = execution.duration;
+
+    // The trace row, before the outcome is consumed by the match below.
+    //
+    // Every outcome is recorded, not just the successful one: a message that
+    // timed out or failed its workflows is exactly the one an operator goes
+    // looking for, and it is what the DLQ retry path reads.
+    record_trace(ctx, channel, channel_runtime.as_deref(), &execution).await;
+
     let outcome = match execution.outcome {
         crate::engine::RunOutcome::Timeout(ms) => {
             fail(
@@ -392,6 +400,83 @@ async fn process_one_kafka_message(
     };
     settle_dedup_claim(dedup_claim, outcome).await;
     outcome
+}
+
+/// Persist the trace for one dispatched Kafka message.
+///
+/// The same three steps the HTTP paths take — decide, serialize, route — via
+/// the shared `queue::trace_record`. `TracePlan::decide` runs first so a
+/// sampled-out or `errors_only` trace costs no serialization, which is the
+/// whole reason that decision is separable.
+///
+/// Failures are logged and dropped: a trace that cannot be written must not
+/// stop a message being committed, exactly as on the HTTP side.
+async fn record_trace(
+    ctx: &ConsumeLoopContext,
+    channel: &str,
+    runtime: Option<&crate::channel::ChannelRuntimeConfig>,
+    execution: &crate::engine::Execution,
+) {
+    let has_errors = !matches!(execution.outcome, crate::engine::RunOutcome::Ok);
+    // `None` is a channel absent from the registry snapshot — not a
+    // quarantined one, which `require_serviceable` reports as `Err` and which
+    // never reaches here. There is no per-channel `tracing` block to read, and
+    // no channel to attribute the row to, so nothing is written.
+    let Some(runtime) = runtime else {
+        return;
+    };
+    let cfg = runtime.trace_storage;
+    let plan = crate::queue::trace_record::TracePlan::decide(&cfg, has_errors);
+    if !plan.persists() {
+        return;
+    }
+
+    let Ok(result_json) = serde_json::to_string(&execution.message) else {
+        tracing::warn!(channel, "Failed to serialize Kafka result for its trace");
+        return;
+    };
+    if ctx.max_result_size_bytes > 0 && result_json.len() > ctx.max_result_size_bytes {
+        crate::metrics::record_trace_dropped("result_too_large");
+        tracing::warn!(
+            channel,
+            result_bytes = result_json.len(),
+            cap = ctx.max_result_size_bytes,
+            "Kafka result exceeds trace_queue.max_result_size_bytes; trace not stored"
+        );
+        return;
+    }
+    let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
+        execution.task_trace.as_ref(),
+        ctx.max_result_size_bytes,
+        channel,
+    );
+
+    crate::queue::trace_record::route_store_completed(
+        &cfg,
+        &ctx.trace_repo,
+        &ctx.persistence_queue,
+        &crate::queue::trace_record::CompletedTrace {
+            // Distinct from `"sync"` and `"async"`: a reader filtering
+            // `GET /data/traces?mode=` needs to be able to ask for the
+            // transport, and a Kafka message is neither of the other two.
+            mode: "kafka",
+            channel,
+            // A Kafka channel is addressed by topic, not by id, and the
+            // consumer resolves the channel by name — there is no channel_id
+            // in scope that is not a second lookup for a column nothing reads
+            // on this path.
+            channel_id: None,
+            // The record's payload is already on `execution.message`, so
+            // storing it again would double every trace row for a value the
+            // result carries.
+            input_json: None,
+            response_json: &result_json,
+            duration_ms: execution.duration.as_secs_f64() * 1000.0,
+            has_errors,
+            task_trace_json: task_trace_json.as_deref(),
+        },
+    )
+    .await;
 }
 
 /// Settle the idempotency key this delivery claimed at admission (N16).

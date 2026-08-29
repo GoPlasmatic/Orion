@@ -154,6 +154,16 @@ async fn test_state_inner(
         .expect("load channels");
     ready.store(true, std::sync::atomic::Ordering::Release);
 
+    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
+    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
+        orion::bootstrap::start_background_tasks(
+            &config,
+            &tasks,
+            components.engine.clone(),
+            &repos,
+            channel_registry.clone(),
+            &cluster,
+        );
     // None unless the test's config carries `[kafka.topics]` mappings (the
     // DB is empty at boot, so DB-driven topics never contribute); wired for
     // parity with production either way.
@@ -167,20 +177,13 @@ async fn test_state_inner(
             vars: components.vars.clone(),
             kafka_producer: components.kafka_producer.clone(),
             instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
+            trace_repo: repos.traces.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
         },
     )
     .expect("kafka ingest");
 
-    let tasks = Arc::new(orion::runtime::TaskRegistry::new());
-    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
-        orion::bootstrap::start_background_tasks(
-            &config,
-            &tasks,
-            components.engine.clone(),
-            &repos,
-            channel_registry.clone(),
-            &cluster,
-        );
     // Divergence 2: process-global metrics recorder (see doc comment).
     //
     // T37: through orion's own init rather than a raw `PrometheusBuilder` —

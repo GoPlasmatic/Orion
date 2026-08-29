@@ -3,6 +3,7 @@ pub mod audit_queue;
 mod bounded;
 mod dlq_retry;
 mod processing;
+pub(crate) mod trace_record;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

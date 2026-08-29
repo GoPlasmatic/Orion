@@ -269,6 +269,9 @@ fn try_start_ingest(
                 .cluster
                 .enabled
                 .then(|| state.cluster.instance_id.clone()),
+            trace_repo: state.repos.traces.clone(),
+            persistence_queue: state.trace_persistence_queue.clone(),
+            max_result_size_bytes: state.config.trace_queue.max_result_size_bytes,
         },
     )
     .map_err(|e| e.to_string())

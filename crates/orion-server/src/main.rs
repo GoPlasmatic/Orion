@@ -682,19 +682,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    let kafka_consumer_handle = bootstrap::start_kafka_ingest(
-        &config.kafka,
-        &channels,
-        bootstrap::IngestDeps {
-            engine: components.engine.clone(),
-            channel_registry: channel_registry.clone(),
-            datalogic: components.datalogic.clone(),
-            vars: components.vars.clone(),
-            kafka_producer: components.kafka_producer.clone(),
-            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
-        },
-    )?;
-
     // Start the background tasks: trace persistence queue, trace queue
     // worker pool (with DLQ for failed async traces), trace + audit-log
     // cleanup, and the DLQ retry consumer.
@@ -711,6 +698,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             channel_registry.clone(),
             &cluster,
         );
+
+    // Kafka ingest starts **after** the background tasks, not before.
+    //
+    // The consumer now writes a `traces` row per message, so it needs the
+    // persistence queue that `start_background_tasks` returns. Starting it
+    // first would also have meant a window in which records were consumed and
+    // dispatched with no trace sink behind them — the same reason the HTTP
+    // server is started last.
+    let kafka_consumer_handle = bootstrap::start_kafka_ingest(
+        &config.kafka,
+        &channels,
+        bootstrap::IngestDeps {
+            engine: components.engine.clone(),
+            channel_registry: channel_registry.clone(),
+            datalogic: components.datalogic.clone(),
+            vars: components.vars.clone(),
+            kafka_producer: components.kafka_producer.clone(),
+            instance_id: cluster.enabled.then(|| cluster.instance_id.clone()),
+            trace_repo: repos.traces.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
+        },
+    )?;
 
     // Set initial active rules gauge
     orion::metrics::set_active_workflows(active_workflow_count as f64);

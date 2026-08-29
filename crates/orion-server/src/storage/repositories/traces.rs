@@ -16,7 +16,8 @@ pub struct TraceFilter {
     pub status: Option<String>,
     /// Filter by channel.
     pub channel: Option<String>,
-    /// Filter by mode: sync, async.
+    /// Filter by mode: `sync`, `async` or `kafka` — the transport the
+    /// message arrived on.
     pub mode: Option<String>,
     /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,

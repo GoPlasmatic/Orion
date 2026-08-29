@@ -52,6 +52,79 @@ fn test_registry() -> Arc<orion::channel::ChannelRegistry> {
     Arc::new(orion::channel::ChannelRegistry::new())
 }
 
+/// Trace plumbing the consumer now requires.
+///
+/// These tests drive the consume loop against an **empty** channel registry, so
+/// `record_trace` returns before it reaches either of these — but the consumer
+/// takes them by value, so they have to exist. The recorder answers `Ok` rather
+/// than panicking: a test that starts writing traces should see them ignored,
+/// not blow up somewhere unrelated to what it is asserting.
+struct NoopTraceRepo;
+
+#[async_trait::async_trait]
+impl orion::storage::repositories::traces::TraceRepository for NoopTraceRepo {
+    async fn create_pending(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _access_token_hash: Option<&str>,
+    ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
+        Err(orion::errors::OrionError::internal(
+            "not used by the consumer tests",
+        ))
+    }
+    async fn get_by_id(
+        &self,
+        _id: &str,
+    ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
+        Err(orion::errors::OrionError::internal(
+            "not used by the consumer tests",
+        ))
+    }
+    async fn update_status(
+        &self,
+        _id: &str,
+        _status: &str,
+        _error_message: Option<&str>,
+    ) -> Result<orion::storage::models::Trace, orion::errors::OrionError> {
+        Err(orion::errors::OrionError::internal(
+            "not used by the consumer tests",
+        ))
+    }
+    async fn set_result(
+        &self,
+        _id: &str,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<(), orion::errors::OrionError> {
+        Ok(())
+    }
+    async fn store_completed(
+        &self,
+        _row: orion::storage::repositories::traces::TraceCompletedRef<'_>,
+    ) -> Result<String, orion::errors::OrionError> {
+        Ok(String::new())
+    }
+    async fn list_paginated(
+        &self,
+        _filter: &orion::storage::repositories::traces::TraceFilter,
+    ) -> Result<orion::storage::repositories::traces::TracePage, orion::errors::OrionError> {
+        Err(orion::errors::OrionError::internal(
+            "not used by the consumer tests",
+        ))
+    }
+    async fn delete_older_than(&self, _hours: u64) -> Result<u64, orion::errors::OrionError> {
+        Ok(0)
+    }
+}
+
+fn test_trace_repo() -> Arc<dyn orion::storage::repositories::traces::TraceRepository> {
+    Arc::new(NoopTraceRepo)
+}
+
 /// Shared datalogic engine for consumer tests.
 fn test_datalogic() -> Arc<datalogic_rs::Engine> {
     Arc::new(datalogic_rs::Engine::new())
@@ -132,6 +205,9 @@ async fn test_consumer_starts_and_stops() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -167,6 +243,9 @@ async fn test_consumer_processes_valid_message() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -218,6 +297,9 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -394,6 +476,9 @@ async fn test_consumer_sends_invalid_utf8_to_dlq() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -471,6 +556,9 @@ async fn test_failed_message_redelivered_after_restart() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -516,6 +604,9 @@ async fn test_failed_message_redelivered_after_restart() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -580,6 +671,9 @@ async fn test_consumer_metadata_injection() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -633,6 +727,9 @@ async fn test_concurrent_producers_all_committed() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -698,6 +795,9 @@ async fn test_rapid_burst_all_committed() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -801,6 +901,9 @@ async fn test_consumer_multiple_topics() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -877,6 +980,9 @@ async fn test_consumer_partition_rebalance() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -919,6 +1025,9 @@ async fn test_consumer_partition_rebalance() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1054,6 +1163,9 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
                     dlq_producer: None,
                     dlq_topic: None,
                     instance_id,
+                    trace_repo: test_trace_repo(),
+                    persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+                    max_result_size_bytes: 0,
                 },
             )
             .unwrap()
@@ -1176,6 +1288,9 @@ async fn test_consumer_broker_disconnect_recovery() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1720,6 +1835,9 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
             dlq_producer: None,
             dlq_topic: None,
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1745,6 +1863,9 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1797,6 +1918,9 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1863,6 +1987,9 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -1919,6 +2046,9 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -2027,6 +2157,9 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
             dlq_producer: Some(dlq_producer),
             dlq_topic: Some(dlq_topic.clone()),
             instance_id: None,
+            trace_repo: test_trace_repo(),
+            persistence_queue: orion::queue::TracePersistenceQueue::disabled(),
+            max_result_size_bytes: 0,
         },
     )
     .unwrap();
@@ -2049,4 +2182,85 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
         "kafka.processing_timeout_ms must not be what stopped it: {error}"
     );
     shutdown_within(handle, 10).await;
+}
+
+/// A Kafka-ingested message produces a `traces` row, tagged `mode = "kafka"`.
+///
+/// This is the gap `docs/src/operate/traces.md` used to describe in a section
+/// called "Kafka ingress writes no trace". The consumer shared admission and
+/// dispatch with HTTP but wrote nothing, so a Kafka estate was observable
+/// through metrics and the DLQ topic and *not* through the one surface whose
+/// job is to say what happened to a given message.
+///
+/// The assertion is on the row, not on a metric: a counter that moves proves
+/// the consumer ran, and what regressed here was the write at the end of it.
+#[tokio::test]
+#[ignore]
+async fn a_kafka_message_writes_a_trace_row() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-kafka-trace";
+    let channel = "kafka-trace-ch";
+    let group_id = format!("kafka-trace-{}", uuid::Uuid::new_v4());
+
+    // Sync trace storage, so the row is written inline and the test does not
+    // race a background persistence worker.
+    let mut config = orion::config::AppConfig::default();
+    config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    let state = crate::common::test_state_with_kafka(config, "127.0.0.1:1").await;
+    let traces = state.repos.traces.clone();
+    let engine = state.engine.clone();
+    let registry = state.channel_registry.clone();
+    let datalogic = state.datalogic.clone();
+    let persistence_queue = state.trace_persistence_queue.clone();
+    let app = orion::server::build_router(state);
+
+    crate::common::create_and_activate_channel(
+        &app,
+        channel,
+        crate::common::simple_log_workflow("Kafka Trace"),
+    )
+    .await;
+
+    let handle = consumer::start_consumer(
+        &guarded_kafka_config(&brokers, topic, channel, &group_id, false),
+        consumer::ConsumerDeps {
+            engine,
+            channel_registry: registry,
+            datalogic,
+            vars: None,
+            dlq_producer: None,
+            dlq_topic: None,
+            instance_id: None,
+            trace_repo: traces.clone(),
+            persistence_queue,
+            max_result_size_bytes: 0,
+        },
+    )
+    .unwrap();
+
+    produce(&brokers, topic, "k1", r#"{"data":{"id":1}}"#).await;
+
+    let filter = orion::storage::repositories::traces::TraceFilter {
+        channel: Some(channel.to_string()),
+        mode: Some("kafka".to_string()),
+        ..Default::default()
+    };
+    let mut found = None;
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let page = traces.list_paginated(&filter).await.expect("list traces");
+        if let Some(row) = page.data.into_iter().next() {
+            found = Some(row);
+            break;
+        }
+    }
+    shutdown_within(handle, 10).await;
+
+    let row = found.expect("a Kafka-ingested message must leave a traces row");
+    assert_eq!(row.channel, channel);
+    assert_eq!(
+        row.mode, "kafka",
+        "the row must name the transport, so a reader can tell it from the two HTTP paths"
+    );
 }

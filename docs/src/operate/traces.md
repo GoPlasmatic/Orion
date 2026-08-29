@@ -87,15 +87,29 @@ submissions; `max_queue_memory_bytes` caps their total payload size. Whichever
 is reached first, new submissions answer `503` rather than growing memory
 without limit — load shedding, not queueing forever.
 
-## Kafka ingress writes no trace
+## Kafka ingress
 
 A message consumed from Kafka runs the same admission guards and the same
-workflow dispatch as an HTTP request, but it does **not** produce a `traces`
-row. It is invisible to `orion-cli traces list`, to
-`GET /api/v1/admin/traces`, and to the dead letter queue below, whatever
-`trace_storage.mode` or a channel's `config.tracing` says.
+workflow dispatch as an HTTP request, and it produces a `traces` row like one.
+The row's `mode` is `kafka`, so it can be told apart from the two HTTP paths:
 
-What you do have for a Kafka channel:
+```bash
+curl "$ORION/api/v1/data/traces?mode=kafka&limit=20" -H "x-api-key: $KEY"
+```
+
+The channel's `config.tracing` and the global `trace_storage.mode` apply as they
+do everywhere else — `off`, `errors_only` and `sample_rate` all suppress the row
+for a Kafka message exactly as they do for an HTTP one, and a suppressed trace
+costs no serialization.
+
+Two fields differ from an HTTP trace, and both are deliberate:
+
+| Field | On a Kafka trace | Why |
+|---|---|---|
+| `channel_id` | absent | A Kafka channel is addressed by topic; the consumer resolves it by name, and the id is a second lookup for a column nothing reads on this path. |
+| `input_json` | absent | The record's payload is already carried on the stored result, so storing it again would double the row for a value it holds. |
+
+Alongside the trace, a Kafka channel still has:
 
 | Signal | Where |
 |---|---|
@@ -105,16 +119,8 @@ What you do have for a Kafka channel:
 | The failing record itself | the Kafka DLQ topic (`kafka.dlq`), which carries the record and the reason |
 | Per-message detail | the process log — every refusal and failure is logged with `topic` and `channel` |
 
-So a Kafka estate is observable, but not *replayable from Orion*: the record,
-not the trace, is the artefact you re-drive. If you need per-message trace rows
-for a topic today, have the producer's consumer post to the channel's HTTP
-`/async` endpoint instead.
-
-This is a gap rather than a design decision, and it is tracked: the four
-transports each re-implement the step between "admitted" and "response
-shaped", and the Kafka copy is the one that was written without the
-persistence queue. Closing it is part of consolidating that step, not a change
-to the consumer alone.
+The record, not the trace, is still what you re-drive after a failure: the
+Kafka DLQ topic holds it. The trace is what tells you what happened.
 
 ## Drain the dead letter queue
 

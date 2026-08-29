@@ -78,26 +78,25 @@ pub struct ConsumerDeps {
     /// reload-driven consumer restarts rejoin without a full group rebalance.
     /// `None` (single node) keeps dynamic membership.
     pub instance_id: Option<String>,
+    /// Where a completed message's trace row goes. See `ConsumeLoopContext`.
+    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    pub persistence_queue: crate::queue::TracePersistenceQueue,
+    /// `trace_queue.max_result_size_bytes` — the cap on a persisted result,
+    /// applied here for the same reason the async path applies it.
+    pub max_result_size_bytes: usize,
 }
 
 /// What one consume loop needs to dispatch a record.
 ///
-/// **No trace repository and no persistence queue, deliberately recorded
-/// here.** A Kafka-ingested message shares admission (`channel::guards::admit`)
-/// and dispatch (`engine::run_for_channel`) with HTTP, but it writes no
-/// `traces` row, so it is invisible to `/api/v1/admin/traces` and to the trace
-/// DLQ — while the HTTP `/async` path is fully traced. What a Kafka channel
-/// has instead is the `orion_messages_total` / `orion_message_duration_seconds`
-/// pair (recorded by `process::dispatch`), the `orion_kafka_*` metrics, the
-/// Kafka DLQ topic, and the log.
-///
-/// This is a gap, not a design decision — `docs/src/operate/traces.md` says so
-/// in those words. It is not closed here because the fix is not "add two
-/// fields": the four transports (sync HTTP, the trace queue, this loop and
-/// `channel_call`) each re-implement everything between admission and response
-/// shaping, and giving this one a persistence queue means writing a fifth copy
-/// of the trace-plan/serialize/route sequence that lives in
-/// `routes/data/sync.rs`. It closes when that step becomes one function.
+/// This carries a trace repository and a persistence queue, which it did not
+/// used to. A Kafka-ingested message shares admission
+/// (`channel::guards::admit`) and dispatch (`engine::execute_admitted`) with
+/// HTTP, but wrote no `traces` row — so it was invisible to
+/// `/api/v1/data/traces` and to the trace DLQ, while the HTTP `/async` path was
+/// fully traced. The reason recorded here was that closing it meant writing a
+/// fifth copy of the trace-plan/serialize/route sequence in
+/// `routes/data/sync.rs`, and that it would close "when that step becomes one
+/// function". It is one function now — `queue::trace_record` — so this is that.
 struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
@@ -109,6 +108,15 @@ struct ConsumeLoopContext {
     dlq_topic: Option<String>,
     processing_timeout_ms: u64,
     lag_poll_interval_secs: u64,
+    /// Where a completed Kafka message's trace row is written.
+    ///
+    /// The consumer shares admission and dispatch with HTTP but wrote no trace
+    /// at all, so a Kafka-ingested message never appeared in
+    /// `GET /api/v1/data/traces` and could not be retried from the DLQ. These
+    /// three are what the shared `queue::trace_record` needs.
+    trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    persistence_queue: crate::queue::TracePersistenceQueue,
+    max_result_size_bytes: usize,
     /// Rebalance bookkeeping shared with the consumer context (K8). The
     /// revocation flag is dispatched only from `recv()` polls, so the retry
     /// loop can observe it between messages, never mid-retry — see
@@ -261,6 +269,9 @@ pub fn start_consumer(
         dlq_producer,
         dlq_topic,
         instance_id,
+        trace_repo,
+        persistence_queue,
+        max_result_size_bytes,
     } = deps;
     let mut client_config = ClientConfig::new();
     client_config
@@ -342,6 +353,9 @@ pub fn start_consumer(
         lag_poll_interval_secs,
         rebalance: rebalance.clone(),
         retry_budget_ms: process::in_place_retry_budget_ms(&config.extra_config),
+        trace_repo,
+        persistence_queue,
+        max_result_size_bytes,
     };
     let handle = tokio::spawn(consume_loop(ctx, shutdown_rx));
 

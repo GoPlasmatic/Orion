@@ -463,6 +463,13 @@ pub struct IngestDeps {
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     /// Cluster mode's static group membership id; `None` on a single node.
     pub instance_id: Option<String>,
+    /// Where a completed Kafka message's trace row is written, and the cap on
+    /// its serialized result. Kafka messages went untraced until the
+    /// trace-plan/serialize/route sequence became one shared function
+    /// (`queue::trace_record`).
+    pub trace_repo: Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    pub persistence_queue: crate::queue::TracePersistenceQueue,
+    pub max_result_size_bytes: usize,
 }
 
 /// Start the Kafka consumer in a background task. Merges config-file topic
@@ -495,6 +502,9 @@ pub fn start_kafka_ingest(
         vars,
         kafka_producer,
         instance_id,
+        trace_repo,
+        persistence_queue,
+        max_result_size_bytes,
     } = deps;
     let (dlq_producer, dlq_topic) = if kafka_config.dlq.enabled {
         (kafka_producer, Some(kafka_config.dlq.topic.clone()))
@@ -512,6 +522,9 @@ pub fn start_kafka_ingest(
             dlq_producer,
             dlq_topic,
             instance_id,
+            trace_repo,
+            persistence_queue,
+            max_result_size_bytes,
         },
     )?;
 
