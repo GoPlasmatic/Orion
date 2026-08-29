@@ -57,9 +57,16 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
             };
 
             // What the bumping node changed, so the resync can be the size of
-            // the change. An empty or unrecognised value reads as
-            // `EpochScope::All`, which is what a pre-scope writer produces.
-            let scope = crate::cluster::EpochScope::parse(&row.epoch_scope);
+            // the change. Read through `for_epoch` rather than `parse`: the
+            // scope column is sticky, so a value is only this epoch's scope
+            // when the row says it was written for this epoch. An old node's
+            // bump leaves the previous scope standing, and taking that at face
+            // value skips the connector reload its change needed.
+            let scope = crate::cluster::EpochScope::for_epoch(
+                row.epoch,
+                row.epoch_scope_at,
+                &row.epoch_scope,
+            );
 
             // A tick succeeds when the epoch was read and, if it had
             // advanced, the resync applied. A failed resync leaves the

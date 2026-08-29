@@ -70,6 +70,28 @@ impl EpochScope {
         }
     }
 
+    /// The scope an epoch row actually vouches for.
+    ///
+    /// `epoch_scope` is a *sticky* column: the writer sets it, and a writer
+    /// that predates it leaves whatever the last writer put there. So a
+    /// recognised scope is not on its own evidence that it describes *this*
+    /// epoch — after any scope-aware bump, a 1.3.x node's bump advances the
+    /// counter and leaves the earlier scope standing. `scope_at` is the epoch
+    /// the scope was written for, so the two agreeing is what makes it this
+    /// change's scope.
+    ///
+    /// Everything else is [`Self::All`], which is the same answer
+    /// [`Self::parse`] gives an unknown value and for the same reason: a
+    /// scope this node cannot attribute must cost a wide resync, never a
+    /// missed change.
+    pub fn for_epoch(epoch: i64, scope_at: i64, raw: &str) -> Self {
+        if scope_at == epoch {
+            Self::parse(raw)
+        } else {
+            Self::All
+        }
+    }
+
     /// Whether a peer answering this scope must reload the connector registry
     /// and drop its cached pools.
     pub fn touches_connectors(self) -> bool {
@@ -262,6 +284,49 @@ mod tests {
         assert_eq!(EpochScope::parse("something-newer"), EpochScope::All);
         assert_eq!(EpochScope::default(), EpochScope::All);
         assert!(EpochScope::All.touches_connectors());
+    }
+
+    /// The hazard `for_epoch` exists for. `epoch_scope` is sticky, so after
+    /// any scoped bump the column holds a *recognised* value forever. A node
+    /// on the previous release then bumps the counter and writes neither
+    /// column, leaving that value standing over an epoch it says nothing
+    /// about — and reading it at face value skips the connector reload the
+    /// old node's change actually needed.
+    #[test]
+    fn a_scope_left_over_from_an_earlier_epoch_is_not_trusted() {
+        // The scope-aware bump that wrote it: the two agree, so it counts.
+        assert_eq!(
+            EpochScope::for_epoch(7, 7, "definitions"),
+            EpochScope::Definitions
+        );
+        // A 1.3.x node then bumps 7 -> 8, touching neither scope column. The
+        // stale `definitions` must not answer for epoch 8.
+        assert_eq!(EpochScope::for_epoch(8, 7, "definitions"), EpochScope::All);
+        // And it must stay untrusted however far behind it falls.
+        assert_eq!(EpochScope::for_epoch(99, 7, "connectors"), EpochScope::All);
+    }
+
+    /// A row from before the column existed: `epoch_scope_at` defaults to 0,
+    /// which can only match an epoch of 0 — so every real epoch reads wide.
+    #[test]
+    fn a_row_predating_the_binding_column_resyncs_everything() {
+        assert_eq!(EpochScope::for_epoch(1, 0, ""), EpochScope::All);
+        assert_eq!(EpochScope::for_epoch(42, 0, "connectors"), EpochScope::All);
+    }
+
+    /// `for_epoch` narrows `parse`, it does not replace it: an unknown value
+    /// written for this very epoch is still the widest resync.
+    #[test]
+    fn an_unknown_scope_is_wide_even_when_it_matches_the_epoch() {
+        assert_eq!(
+            EpochScope::for_epoch(3, 3, "something-newer"),
+            EpochScope::All
+        );
+        assert_eq!(EpochScope::for_epoch(3, 3, ""), EpochScope::All);
+        assert_eq!(
+            EpochScope::for_epoch(3, 3, "connectors"),
+            EpochScope::Connectors
+        );
     }
 
     /// The whole point: a channel or workflow change must not drop a single

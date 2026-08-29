@@ -91,10 +91,20 @@ scope existed the epoch was a bare counter, so every node answered every bump
 with the widest resync there is: one workflow activation dropped every pooled
 connection across the whole fleet.
 
-A node running an older release bumps the epoch without a scope, and its peers
-read that as "everything". A mixed-version fleet therefore behaves as it did
-before — the reconnect storm, never a missed change — and stops as soon as
-every node is writing scopes.
+A node running an older release bumps the epoch without writing a scope, and
+its peers read that as "everything". A mixed-version fleet therefore behaves as
+it did before — the reconnect storm, never a missed change — and stops as soon
+as every node is writing scopes.
+
+That holds because the scope is *stamped with the epoch it was written for*,
+not merely stored. The scope column is sticky: an older node's bump advances
+the counter and leaves whatever the last scope-aware node wrote still sitting
+there. Read at face value, a connector change made by an old node would arrive
+at its peers wearing the previous change's `definitions` label, and they would
+skip the connector reload and pool eviction it needed — serving the old
+endpoint and the old credentials until something else bumped. A scope counts
+only when its stamp matches the current epoch; anything else is the widest
+resync, which is what an unattributable scope has always meant.
 
 ### When a change does not propagate
 

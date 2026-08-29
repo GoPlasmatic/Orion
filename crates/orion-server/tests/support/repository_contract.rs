@@ -43,6 +43,55 @@ pub async fn run_all(backend: &str, pool: &DbPool) {
     an_audited_write_commits_both_rows(backend, &repos).await;
     a_dropped_audited_write_rolls_back(backend, &repos).await;
     the_current_version_read_returns_the_newest(backend, &repos).await;
+    a_bump_stamps_the_scope_with_its_own_epoch(backend, pool).await;
+}
+
+/// A config-epoch bump stamps `epoch_scope_at` with the epoch it produced.
+///
+/// This is here rather than in a SQLite unit test because the two assignments
+/// share one `UPDATE` and the backends disagree about what a right-hand side
+/// means there: MySQL evaluates a multi-column `SET` left to right and lets a
+/// later assignment read a column the same statement has already updated,
+/// while SQLite and PostgreSQL evaluate every right-hand side against the old
+/// row. `bump_epoch` writes `epoch_scope_at` before `epoch` so that `epoch + 1`
+/// is the same new value on all three — and only a cross-backend case can say
+/// so, because on SQLite alone the two orders are indistinguishable.
+///
+/// The stamp is what lets a reader tell this change's scope from one left
+/// behind by an earlier bump: `epoch_scope` is sticky, so a node running a
+/// release that predates it advances the counter and leaves a *recognised*
+/// scope standing over an epoch it says nothing about.
+async fn a_bump_stamps_the_scope_with_its_own_epoch(backend: &str, pool: &DbPool) {
+    use orion::cluster::EpochScope;
+    use orion::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
+
+    let repo = SqlClusterRepository::new(pool.clone());
+    let before = repo.get_epoch().await.expect("get_epoch").epoch;
+    let bumped = repo.bump_epoch("connectors").await.expect("bump_epoch");
+    let row = repo.get_epoch().await.expect("get_epoch");
+
+    assert_eq!(
+        row.epoch,
+        before + 1,
+        "{backend}: the bump must advance once"
+    );
+    assert_eq!(
+        row.epoch, bumped,
+        "{backend}: the read-back must match what the bump returned"
+    );
+    assert_eq!(row.epoch_scope, "connectors", "{backend}: scope round-trip");
+    assert_eq!(
+        row.epoch_scope_at, row.epoch,
+        "{backend}: the scope must be stamped with the epoch it was written \
+         for — a value one either side of it means the SET evaluated a \
+         right-hand side against the wrong row"
+    );
+    assert_eq!(
+        EpochScope::for_epoch(row.epoch, row.epoch_scope_at, &row.epoch_scope),
+        EpochScope::Connectors,
+        "{backend}: a freshly stamped scope must be trusted, or every bump \
+         costs the wide resync the scope exists to avoid"
+    );
 }
 
 fn channel_request(id: &str) -> CreateChannelRequest {

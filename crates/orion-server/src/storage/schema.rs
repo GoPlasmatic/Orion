@@ -157,6 +157,10 @@ pub enum ConfigEpoch {
     Epoch,
     /// What the bumping node changed, so a peer can scope its resync.
     EpochScope,
+    /// The epoch [`ConfigEpoch::EpochScope`] was written for. A scope is only
+    /// trustworthy when this matches [`ConfigEpoch::Epoch`] — see
+    /// [`crate::cluster::EpochScope::for_epoch`].
+    EpochScopeAt,
     BreakerEpoch,
     BreakerKey,
     UpdatedAt,

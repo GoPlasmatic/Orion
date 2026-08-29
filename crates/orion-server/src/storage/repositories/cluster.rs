@@ -27,6 +27,11 @@ pub struct EpochRow {
     /// older writer bumped, which a reader treats as "everything" — see
     /// [`crate::cluster::EpochScope::parse`].
     pub epoch_scope: String,
+    /// The epoch [`Self::epoch_scope`] was written for. Zero on a row last
+    /// bumped by a writer that predates the column — and, more importantly,
+    /// stale whenever such a writer bumped *after* a scope-aware one, which
+    /// is the case [`crate::cluster::EpochScope::for_epoch`] exists to catch.
+    pub epoch_scope_at: i64,
 }
 
 #[async_trait]
@@ -109,6 +114,16 @@ impl ClusterRepository for SqlClusterRepository {
             // epoch always sees the scope that goes with it.
             let update = Query::update()
                 .table(ConfigEpoch::Table)
+                // `epoch_scope_at` is assigned BEFORE `epoch`, and the order
+                // is load-bearing: MySQL evaluates a multi-column SET left to
+                // right and lets a later assignment read a column the same
+                // statement already updated, while SQLite and PostgreSQL
+                // evaluate every right-hand side against the old row. Written
+                // first, `epoch + 1` is the same new value on all three.
+                .value(
+                    ConfigEpoch::EpochScopeAt,
+                    Expr::col(ConfigEpoch::Epoch).add(1),
+                )
                 .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
                 .value(ConfigEpoch::EpochScope, scope)
                 .to_owned();
@@ -127,6 +142,7 @@ impl ClusterRepository for SqlClusterRepository {
                         ConfigEpoch::BreakerEpoch,
                         ConfigEpoch::BreakerKey,
                         ConfigEpoch::EpochScope,
+                        ConfigEpoch::EpochScopeAt,
                     ])
                     .from(ConfigEpoch::Table)
                     .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
@@ -208,6 +224,59 @@ mod tests {
         assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 1);
         assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 2);
         assert_eq!(repo.get_epoch().await.expect("get").epoch, 2);
+    }
+
+    /// A bump stamps the scope with the epoch it produced, so a reader can
+    /// tell this change's scope from one left behind by an earlier bump.
+    /// Both columns move in one statement — the read-back must never show a
+    /// scope trailing its epoch by one, which is what a right-hand side
+    /// evaluated against the *new* `epoch` would produce.
+    #[tokio::test]
+    async fn a_bump_binds_the_scope_to_the_epoch_it_wrote() {
+        let repo = test_repo().await;
+        for expected in 1..=3 {
+            assert_eq!(repo.bump_epoch("connectors").await.expect("bump"), expected);
+            let row = repo.get_epoch().await.expect("get");
+            assert_eq!(row.epoch, expected);
+            assert_eq!(row.epoch_scope_at, expected);
+            assert_eq!(row.epoch_scope, "connectors");
+            assert_eq!(
+                crate::cluster::EpochScope::for_epoch(
+                    row.epoch,
+                    row.epoch_scope_at,
+                    &row.epoch_scope
+                ),
+                crate::cluster::EpochScope::Connectors
+            );
+        }
+    }
+
+    /// The rolling-deploy case, reproduced against the real column: a writer
+    /// that predates the binding advances `epoch` alone. The scope it leaves
+    /// behind is recognised, so only `epoch_scope_at` can disqualify it.
+    #[tokio::test]
+    async fn an_unstamped_bump_leaves_the_previous_scope_untrusted() {
+        let repo = test_repo().await;
+        repo.bump_epoch("definitions").await.expect("bump");
+
+        // What a 1.3.x binary's bump_epoch does: the counter, nothing else.
+        let update = Query::update()
+            .table(ConfigEpoch::Table)
+            .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
+            .to_owned();
+        repo.update_epoch_row(update, ConfigEpoch::Epoch)
+            .await
+            .expect("legacy bump");
+
+        let row = repo.get_epoch().await.expect("get");
+        assert_eq!(row.epoch, 2);
+        assert_eq!(row.epoch_scope, "definitions", "the column is sticky");
+        assert_eq!(row.epoch_scope_at, 1, "and it still names the old epoch");
+        assert_eq!(
+            crate::cluster::EpochScope::for_epoch(row.epoch, row.epoch_scope_at, &row.epoch_scope),
+            crate::cluster::EpochScope::All,
+            "an unattributable scope must cost the wide resync"
+        );
     }
 
     #[tokio::test]
