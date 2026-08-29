@@ -80,6 +80,24 @@ pub struct ConsumerDeps {
     pub instance_id: Option<String>,
 }
 
+/// What one consume loop needs to dispatch a record.
+///
+/// **No trace repository and no persistence queue, deliberately recorded
+/// here.** A Kafka-ingested message shares admission (`channel::guards::admit`)
+/// and dispatch (`engine::run_for_channel`) with HTTP, but it writes no
+/// `traces` row, so it is invisible to `/api/v1/admin/traces` and to the trace
+/// DLQ — while the HTTP `/async` path is fully traced. What a Kafka channel
+/// has instead is the `orion_messages_total` / `orion_message_duration_seconds`
+/// pair (recorded by `process::dispatch`), the `orion_kafka_*` metrics, the
+/// Kafka DLQ topic, and the log.
+///
+/// This is a gap, not a design decision — `docs/src/operate/traces.md` says so
+/// in those words. It is not closed here because the fix is not "add two
+/// fields": the four transports (sync HTTP, the trace queue, this loop and
+/// `channel_call`) each re-implement everything between admission and response
+/// shaping, and giving this one a persistence queue means writing a fifth copy
+/// of the trace-plan/serialize/route sequence that lives in
+/// `routes/data/sync.rs`. It closes when that step becomes one function.
 struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
@@ -103,6 +121,23 @@ struct ConsumeLoopContext {
     retry_budget_ms: u64,
 }
 
+/// Grace added to `kafka.processing_timeout_ms` to get the shutdown join
+/// deadline: enough for one in-flight dispatch to finish, plus the commit and
+/// the loop's own exit, and no more.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The join deadline for one consumer, derived from its own per-message
+/// budget rather than picked as a constant: the loop can be inside a dispatch
+/// when the signal arrives, and that dispatch is already bounded by
+/// `kafka.processing_timeout_ms` (`process_until_committed` clamps a channel's
+/// `timeout_ms` to it), so anything shorter would routinely report a healthy
+/// consumer as wedged. `saturating_add` because `Duration`'s `+` panics on
+/// overflow and `processing_timeout_ms` is operator input — unreachable at any
+/// value a person would type, and not worth leaving to that.
+fn shutdown_deadline(processing_timeout_ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(processing_timeout_ms).saturating_add(SHUTDOWN_GRACE)
+}
+
 /// Handle for managing the Kafka consumer lifecycle.
 pub struct ConsumerHandle {
     shutdown_tx: watch::Sender<bool>,
@@ -110,16 +145,45 @@ pub struct ConsumerHandle {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topics: HashSet<String>,
     rebalance: Arc<RebalanceState>,
+    /// Deadline for [`Self::shutdown`]'s join.
+    shutdown_timeout: std::time::Duration,
 }
 
 impl ConsumerHandle {
-    /// Signal the consumer to shut down and wait for it to finish.
+    /// Signal the consumer to shut down and wait for it to finish, bounded by
+    /// `kafka.processing_timeout_ms` plus [`SHUTDOWN_GRACE`].
+    ///
+    /// The bound is what makes this callable from a request path. The loop
+    /// checks the shutdown watch between polls and inside its retry backoff,
+    /// so it normally exits within one dispatch — but rdkafka's `recv()` and
+    /// an offset commit are both blocking calls into the C client, and a
+    /// broker that stops answering makes them arbitrarily slow. Unbounded,
+    /// that hangs SIGTERM handling *and* an engine reload, which now shuts a
+    /// consumer down while holding `AppStateInner::reload_lock`.
+    ///
+    /// On timeout the task is left detached rather than aborted: it holds a
+    /// `StreamConsumer` whose drop leaves the consumer group, and cancelling
+    /// it mid-commit is how an offset is lost. It is already unsubscribed from
+    /// the caller's point of view — the handle is consumed here — so the worst
+    /// case is one lingering task that finishes its own commit and exits.
     pub async fn shutdown(self) {
         if let Err(e) = self.shutdown_tx.send(true) {
             tracing::error!(error = %e, "Failed to send Kafka consumer shutdown signal");
         }
-        if let Err(e) = self.join_handle.await {
-            tracing::error!(error = %e, "Kafka consumer task panicked during shutdown");
+        let timeout = self.shutdown_timeout;
+        match tokio::time::timeout(timeout, self.join_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "Kafka consumer task panicked during shutdown");
+            }
+            Err(_) => {
+                crate::metrics::record_error("kafka_shutdown_timeout");
+                tracing::warn!(
+                    timeout_ms = timeout.as_millis() as u64,
+                    "Kafka consumer did not stop within its shutdown deadline; \
+                     leaving it to finish in the background"
+                );
+            }
         }
     }
 
@@ -286,6 +350,7 @@ pub fn start_consumer(
         consumer,
         topics: topic_set,
         rebalance,
+        shutdown_timeout: shutdown_deadline(processing_timeout_ms),
     })
 }
 
@@ -412,5 +477,22 @@ mod tests {
         assert_eq!(topic_map.get("orders").expect("test"), "order-channel");
         assert_eq!(topic_map.get("events").expect("test"), "event-channel");
         assert!(!topic_map.contains_key("unknown"));
+    }
+
+    /// The shutdown join is bounded, and bounded by the consumer's own
+    /// per-message budget: a deadline shorter than one dispatch would report
+    /// every busy consumer as wedged, and an operator's `processing_timeout_ms`
+    /// must not be able to panic the addition.
+    #[test]
+    fn the_shutdown_deadline_outlasts_one_dispatch_and_cannot_overflow() {
+        let budget = crate::config::KafkaIngestConfig::default().processing_timeout_ms;
+        let deadline = shutdown_deadline(budget);
+        assert!(deadline > std::time::Duration::from_millis(budget));
+        assert_eq!(
+            deadline,
+            std::time::Duration::from_millis(budget) + SHUTDOWN_GRACE
+        );
+
+        assert!(shutdown_deadline(u64::MAX) >= std::time::Duration::from_millis(u64::MAX));
     }
 }
