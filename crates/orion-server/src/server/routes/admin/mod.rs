@@ -716,6 +716,24 @@ fn audit_log(
     resource_type: &str,
     resource_id: &str,
 ) {
+    queue.submit(audit_event(principal, action, resource_type, resource_id));
+}
+
+/// Build one audit event, and emit the parts of the trail that are not the
+/// database row: the `audit`-target log line and the Prometheus counter.
+///
+/// Split out of [`audit_log`] because the row now has two sinks (§2.6). A
+/// mutation that touches the active set carries its event into the
+/// transaction that makes the change ([`audited_write`]); everything else —
+/// an event with no entity write to join — goes on the queue. Both need the
+/// log line and the counter, and neither should be the place they are
+/// written.
+fn audit_event(
+    principal: &Option<Extension<AdminPrincipal>>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) -> crate::queue::audit_queue::AuditEvent {
     let who = principal
         .as_ref()
         .map(|e| e.0.key_id.as_str())
@@ -732,13 +750,35 @@ fn audit_log(
     );
     crate::metrics::record_admin_audit(action, resource_type);
 
-    queue.submit(crate::queue::audit_queue::AuditEvent {
+    crate::queue::audit_queue::AuditEvent {
         principal: who.to_string(),
         action: action.to_string(),
         resource_type: resource_type.to_string(),
         resource_id: resource_id.to_string(),
         details,
-    });
+    }
+}
+
+/// Begin an active-set mutation whose audit row commits with it (§2.6).
+///
+/// The route runs its write against `guard.tx()` and finishes with
+/// `guard.commit()`; the audit row is written by that commit and nowhere else,
+/// so there is no ordering for a caller to get wrong and no window in which
+/// the change is live and unrecorded. Dropping the guard on any `?` rolls the
+/// write back.
+///
+/// The reload stays *outside* — see [`reload_after_commit`].
+async fn audited_write<'a>(
+    state: &'a AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) -> Result<crate::storage::repositories::AuditedWrite<'a>, crate::errors::OrionError> {
+    state
+        .repos
+        .audited(audit_event(principal, action, resource_type, resource_id))
+        .await
 }
 
 /// Record an audit-log event for a mutation that intentionally does NOT
@@ -756,10 +796,17 @@ fn audit_log_draft_only(
     audit_log(queue, principal, action, resource_type, resource_id);
 }
 
-/// Record an audit-log event and trigger an engine reload. The standard
-/// post-mutation sequence for admin operations that change the active set
-/// (activate / archive / delete / update-rollout). Drafts do NOT reload —
-/// use [`audit_log_draft_only`] in those code paths.
+/// Queue an audit-log event and trigger an engine reload.
+///
+/// **For events with no entity write to join.** Since §2.6 the active-set
+/// mutations — activate, archive, delete, update-rollout — carry their audit
+/// row into the transaction that makes the change ([`audited_write`]) and then
+/// call [`reload_after_commit`], because an audit row written after its
+/// mutation has committed can be lost for a change that is already live. What
+/// is left here is `POST /engine/reload`, which republishes the engine without
+/// writing a row of its own: there is no transaction to join, and nothing for
+/// a lost audit row to misrepresent. Drafts do NOT reload — use
+/// [`audit_log_draft_only`] in those code paths.
 ///
 /// K4: `reload` is [`ReloadMode::Defer`] only where the caller opted in via
 /// query parameter (status changes, rollout); the row is committed and the
@@ -777,9 +824,12 @@ fn audit_log_draft_only(
 /// component on `/health`. This is the argument `bump_config_epoch` already
 /// makes for a lost epoch bump, and the same inverted failure mode.
 ///
-/// `POST /engine/reload` is deliberately different — a caller who *asked* for a
-/// reload is told when it failed, because there is no committed write for the
-/// error to misdescribe.
+/// `POST /engine/reload` inherits that treatment through this function: a
+/// failed reload is logged and raised on `/health`, and the route still
+/// answers `200`. Arguably it should not — a caller who *asked* for a reload
+/// has no committed write for an error to misdescribe — but the route has
+/// always behaved this way, and changing it is a change to the API contract
+/// rather than to this comment.
 async fn audit_and_reload(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
@@ -795,6 +845,25 @@ async fn audit_and_reload(
         resource_type,
         resource_id,
     );
+    reload_after_commit(state, reload).await
+}
+
+/// The half of [`audit_and_reload`] that runs *after* the row is committed:
+/// republish the engine, then tell the cluster.
+///
+/// Separate from the audit half because since §2.6 an active-set mutation
+/// writes its audit row inside its own transaction, and this is what is left
+/// to do once that transaction has committed. It must stay outside the
+/// transaction in both directions: a reload reads the rows this change wrote,
+/// so it cannot run before the commit, and it is not a database write, so
+/// rolling back could not undo it.
+///
+/// Every caveat in [`audit_and_reload`]'s doc about a failed reload applies
+/// here unchanged — it is the code that does the ignoring.
+async fn reload_after_commit(
+    state: &AppState,
+    reload: ReloadMode,
+) -> Result<(), crate::errors::OrionError> {
     if reload == ReloadMode::Defer {
         return Ok(());
     }

@@ -1022,3 +1022,67 @@ async fn mutations_just_before_shutdown_are_still_recorded() {
         "the drain must persist a mutation accepted immediately before shutdown"
     );
 }
+
+/// §2.6: an active-set change and its audit row are one commit, so the row is
+/// there the instant the mutation answers — no queue to drain, nothing to poll
+/// for.
+///
+/// This is the observable form of the guarantee. Before, the audit row was
+/// handed to a bounded queue after the entity write had already committed, so
+/// between those two points the change was live and unrecorded — and it stayed
+/// that way if the process exited, if the queue was full, or if the INSERT
+/// failed. Every other test in this file polls (`wait_for_audit_entries`)
+/// because that is what a queued write requires; this one deliberately does
+/// not, and would go red if the audit row went back on the queue.
+#[tokio::test]
+async fn an_active_set_change_is_audited_before_it_answers() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::simple_log_workflow("Synchronous Audit")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // No polling, no sleep: the next request the client could possibly make.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/audit-logs?limit=100",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let entries = body["data"].as_array().expect("audit entries");
+
+    assert!(
+        entries.iter().any(|e| e["resource_type"] == "workflow"
+            && e["action"] == "status_active"
+            && e["resource_id"] == wf_id.as_str()),
+        "the activation committed but its audit row is not visible yet — the row \
+         must commit with the change, not behind it: {body}"
+    );
+}

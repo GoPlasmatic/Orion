@@ -91,6 +91,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AuditLogRepository for MockAuditRepo {
+        async fn insert_tx(
+            &self,
+            _tx: &mut crate::storage::DbTransaction,
+            _event: &crate::storage::repositories::audit_logs::AuditEvent,
+        ) -> Result<(), OrionError> {
+            unreachable!("this fake is only driven through the queue, which uses `insert`")
+        }
+
         async fn insert(
             &self,
             _principal: &str,

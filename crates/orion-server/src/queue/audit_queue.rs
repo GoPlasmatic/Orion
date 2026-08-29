@@ -24,17 +24,11 @@ use crate::config::AuditConfig;
 use crate::storage::repositories::audit_logs::AuditLogRepository;
 
 /// One admin action, owned and ready to insert.
-#[derive(Debug, Clone)]
-pub struct AuditEvent {
-    /// The actor: a derived per-key id (see
-    /// [`crate::server::admin_auth::AdminPrincipal`]) or `"anonymous"`.
-    pub principal: String,
-    pub action: String,
-    pub resource_type: String,
-    pub resource_id: String,
-    /// JSON request context — `request_id`, `client_ip`, `user_agent`.
-    pub details: Option<String>,
-}
+///
+/// Defined beside the repository that writes it — this queue is one of its two
+/// sinks, and since §2.6 the other one (the mutation's own transaction) is the
+/// path a change that touches the active set takes.
+pub use crate::storage::repositories::audit_logs::AuditEvent;
 
 /// Producer handle held by `AppState`. Cheap to clone; every clone must be
 /// dropped before the writer can finish draining.
@@ -233,6 +227,14 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AuditLogRepository for RecordingRepo {
+        async fn insert_tx(
+            &self,
+            _tx: &mut crate::storage::DbTransaction,
+            _event: &AuditEvent,
+        ) -> Result<(), OrionError> {
+            unreachable!("this fake is only driven through the queue, which uses `insert`")
+        }
+
         async fn insert(
             &self,
             principal: &str,

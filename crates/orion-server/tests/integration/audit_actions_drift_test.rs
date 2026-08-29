@@ -9,7 +9,7 @@
 //!
 //! The call sites are the authority. This module walks `src/`, reads the
 //! action and resource type out of every `audit_log` / `audit_log_draft_only` /
-//! `audit_and_reload` call, and asserts against the table in
+//! `audit_and_reload` / `audited_write` call, and asserts against the table in
 //! `operate/audit-logs.md`:
 //!
 //! 1. Every emitted `(action, resource_type)` pair is documented.
@@ -38,7 +38,17 @@ const AUDIT_LOGS_MD: &str = concat!(
 
 /// The helpers that write an audit row. Each takes the action as its third
 /// argument and the resource type as its fourth.
-const WRITERS: [&str; 3] = ["audit_log(", "audit_log_draft_only(", "audit_and_reload("];
+///
+/// `audited_write` is the §2.6 path — the active-set mutations, whose audit
+/// row commits inside the transaction that makes the change rather than going
+/// on the queue. It has the same argument shape as the other three because it
+/// records the same row; the difference is only *when* the row is written.
+const WRITERS: [&str; 4] = [
+    "audit_log(",
+    "audit_log_draft_only(",
+    "audit_and_reload(",
+    "audited_write(",
+];
 
 /// Actions built with `format!`, and the values the interpolation can actually
 /// take.

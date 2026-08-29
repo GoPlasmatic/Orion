@@ -15,7 +15,6 @@ use crate::storage::repositories::channels::{
 };
 
 use super::StatusAction;
-use super::audit_and_reload;
 use super::audit_log_draft_only;
 use crate::storage::repositories::helpers::VersionFilter;
 
@@ -145,16 +144,14 @@ pub(crate) async fn delete_channel(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
-    state.repos.channels.delete(&id).await?;
-    audit_and_reload(
-        &state,
-        &principal,
-        "delete",
-        "channel",
-        &id,
-        super::ReloadMode::Now,
-    )
-    .await?;
+    // §2.6: the delete and its audit row commit together. A delete that
+    // committed with the audit row still queued could leave an active channel
+    // gone with nothing recording who removed it.
+    let mut write = super::audited_write(&state, &principal, "delete", "channel", &id).await?;
+    state.repos.channels.delete_tx(write.tx(), &id).await?;
+    write.commit().await?;
+
+    super::reload_after_commit(&state, super::ReloadMode::Now).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -196,23 +193,29 @@ pub(crate) async fn change_channel_status(
         let envelope = super::ValidationEnvelope::new(errors, Vec::new());
         return Ok(Json(serde_json::to_value(envelope)?));
     }
-    let channel = match action {
-        StatusAction::Activate => {
-            let draft = state.repos.channels.get_by_id(&id).await?;
-            super::check_activation(&lifecycle, &draft).await?;
-            state.repos.channels.activate(&id).await?
-        }
-        StatusAction::Archive => state.repos.channels.archive(&id).await?,
-    };
-    audit_and_reload(
+    // The gates run before the transaction opens: they only read, and a
+    // refusal must not hold a write lock while it is being decided.
+    if matches!(action, StatusAction::Activate) {
+        let draft = state.repos.channels.get_by_id(&id).await?;
+        super::check_activation(&lifecycle, &draft).await?;
+    }
+
+    // §2.6: the status change and its audit row commit together.
+    let mut write = super::audited_write(
         &state,
         &principal,
         &format!("status_{}", req.status),
         "channel",
         &id,
-        query.reload,
     )
     .await?;
+    let channel = match action {
+        StatusAction::Activate => state.repos.channels.activate_tx(write.tx(), &id).await?,
+        StatusAction::Archive => state.repos.channels.archive_tx(write.tx(), &id).await?,
+    };
+    write.commit().await?;
+
+    super::reload_after_commit(&state, query.reload).await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 

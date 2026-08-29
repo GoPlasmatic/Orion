@@ -70,6 +70,25 @@ where
         .transpose()
 }
 
+/// One admin action, owned and ready to insert.
+///
+/// Lives beside the repository that writes it rather than beside the queue
+/// that carries it: the queue is one of two sinks now (§2.6), and the other —
+/// [`AuditLogRepository::insert_tx`], writing inside the caller's transaction
+/// — is the one a mutation goes through when it can. A type owned by either
+/// sink would have to be named by the other.
+#[derive(Debug, Clone)]
+pub struct AuditEvent {
+    /// The actor: a derived per-key id (see
+    /// [`crate::server::admin_auth::AdminPrincipal`]) or `"anonymous"`.
+    pub principal: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    /// JSON request context — `request_id`, `client_ip`, `user_agent`.
+    pub details: Option<String>,
+}
+
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
     /// Insert an audit log entry.
@@ -80,6 +99,23 @@ pub trait AuditLogRepository: Send + Sync {
         resource_type: &str,
         resource_id: &str,
         details: Option<&str>,
+    ) -> Result<(), OrionError>;
+
+    /// Insert an audit log entry inside a caller-owned transaction, so it
+    /// commits with the mutation it describes (§2.6).
+    ///
+    /// The difference from [`Self::insert`] is the whole point of the method:
+    /// an audit row written after its entity write has committed can be lost —
+    /// the process can exit, or the queue can be full — leaving a change that
+    /// is *live* with no record of who made it. Inside the transaction there
+    /// is no window: either both rows are there or neither is.
+    ///
+    /// Takes `&mut DbTransaction` rather than beginning one, because the
+    /// entity write owns the transaction and this joins it.
+    async fn insert_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        event: &AuditEvent,
     ) -> Result<(), OrionError>;
 
     /// List audit log entries matching `filter`, newest first. `total` counts
@@ -104,6 +140,46 @@ impl SqlAuditLogRepository {
     }
 }
 
+/// The INSERT both sinks run — the queue's own connection, and the caller's
+/// transaction. One builder so the two can never write different rows.
+fn insert_statement(
+    principal: &str,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+    details: Option<&str>,
+) -> sea_query::InsertStatement {
+    let id = uuid::Uuid::new_v4().to_string();
+
+    // `columns()` REPLACES the column list and `values_panic()` appends
+    // a whole new row — so the optional `details` column has to be folded
+    // into a single columns/values pair, not added in a second call.
+    let mut columns = vec![
+        AuditLogs::Id,
+        AuditLogs::Principal,
+        AuditLogs::Action,
+        AuditLogs::ResourceType,
+        AuditLogs::ResourceId,
+    ];
+    let mut row: Vec<SimpleExpr> = vec![
+        Expr::val(id.as_str()),
+        Expr::val(principal),
+        Expr::val(action),
+        Expr::val(resource_type),
+        Expr::val(resource_id),
+    ];
+    if let Some(d) = details {
+        columns.push(AuditLogs::Details);
+        row.push(Expr::val(d));
+    }
+
+    Query::insert()
+        .into_table(AuditLogs::Table)
+        .columns(columns)
+        .values_panic(row)
+        .to_owned()
+}
+
 #[async_trait]
 impl AuditLogRepository for SqlAuditLogRepository {
     async fn insert(
@@ -115,38 +191,33 @@ impl AuditLogRepository for SqlAuditLogRepository {
         details: Option<&str>,
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("audit_logs.insert", async {
-            let id = uuid::Uuid::new_v4().to_string();
-
-            // `columns()` REPLACES the column list and `values_panic()` appends
-            // a whole new row — so the optional `details` column has to be folded
-            // into a single columns/values pair, not added in a second call.
-            let mut columns = vec![
-                AuditLogs::Id,
-                AuditLogs::Principal,
-                AuditLogs::Action,
-                AuditLogs::ResourceType,
-                AuditLogs::ResourceId,
-            ];
-            let mut row: Vec<SimpleExpr> = vec![
-                Expr::val(id.as_str()),
-                Expr::val(principal),
-                Expr::val(action),
-                Expr::val(resource_type),
-                Expr::val(resource_id),
-            ];
-            if let Some(d) = details {
-                columns.push(AuditLogs::Details);
-                row.push(Expr::val(d));
-            }
-
             let (sql, values) = build_sqlx(
                 self.pool.backend(),
-                Query::insert()
-                    .into_table(AuditLogs::Table)
-                    .columns(columns)
-                    .values_panic(row),
+                &mut insert_statement(principal, action, resource_type, resource_id, details),
             );
             self.pool.execute_query(&sql, values).await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn insert_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        event: &AuditEvent,
+    ) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("audit_logs.insert_tx", async {
+            let (sql, values) = build_sqlx(
+                tx.backend(),
+                &mut insert_statement(
+                    &event.principal,
+                    &event.action,
+                    &event.resource_type,
+                    &event.resource_id,
+                    event.details.as_deref(),
+                ),
+            );
+            tx.execute_query(&sql, values).await?;
             Ok(())
         })
         .await

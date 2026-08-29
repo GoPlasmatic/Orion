@@ -21,7 +21,6 @@ use crate::storage::repositories::workflows::{
 };
 
 use super::StatusAction;
-use super::audit_and_reload;
 use super::audit_log;
 use super::audit_log_draft_only;
 use super::{ValidationEnvelope, ValidationIssue, issues_from_error};
@@ -138,16 +137,12 @@ pub(crate) async fn delete_workflow(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
-    state.repos.workflows.delete(&id).await?;
-    audit_and_reload(
-        &state,
-        &principal,
-        "delete",
-        "workflow",
-        &id,
-        super::ReloadMode::Now,
-    )
-    .await?;
+    // §2.6: the delete and its audit row commit together.
+    let mut write = super::audited_write(&state, &principal, "delete", "workflow", &id).await?;
+    state.repos.workflows.delete_tx(write.tx(), &id).await?;
+    write.commit().await?;
+
+    super::reload_after_commit(&state, super::ReloadMode::Now).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -188,24 +183,36 @@ pub(crate) async fn change_workflow_status(
         let envelope = dry_run_status_change(&lifecycle, &state, &id, &action, &req).await?;
         return Ok(Json(serde_json::to_value(envelope)?));
     }
-    let workflow = match action {
-        StatusAction::Activate => {
-            let draft = state.repos.workflows.get_by_id(&id).await?;
-            super::check_activation(&lifecycle, &draft).await?;
-            let rollout_pct = req.rollout_percentage.unwrap_or(100);
-            state.repos.workflows.activate(&id, rollout_pct).await?
-        }
-        StatusAction::Archive => state.repos.workflows.archive(&id).await?,
-    };
-    audit_and_reload(
+    // The gates run before the transaction opens: they only read, and a
+    // refusal must not hold a write lock while it is being decided.
+    if matches!(action, StatusAction::Activate) {
+        let draft = state.repos.workflows.get_by_id(&id).await?;
+        super::check_activation(&lifecycle, &draft).await?;
+    }
+
+    // §2.6: the status change and its audit row commit together.
+    let mut write = super::audited_write(
         &state,
         &principal,
         &format!("status_{}", req.status),
         "workflow",
         &id,
-        query.reload,
     )
     .await?;
+    let workflow = match action {
+        StatusAction::Activate => {
+            let rollout_pct = req.rollout_percentage.unwrap_or(100);
+            state
+                .repos
+                .workflows
+                .activate_tx(write.tx(), &id, rollout_pct)
+                .await?
+        }
+        StatusAction::Archive => state.repos.workflows.archive_tx(write.tx(), &id).await?,
+    };
+    write.commit().await?;
+
+    super::reload_after_commit(&state, query.reload).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -414,20 +421,20 @@ pub(crate) async fn update_rollout(
     Path(id): Path<String>,
     OrionJson(req): OrionJson<RolloutUpdateRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    // §2.6: the rollout shift and its audit row commit together. This one is
+    // the sharpest case for it — a rollout moves live traffic between two
+    // active versions and writes no new row, so the audit trail is the only
+    // record that the split changed at all.
+    let mut write =
+        super::audited_write(&state, &principal, "update_rollout", "workflow", &id).await?;
     let workflow = state
         .repos
         .workflows
-        .update_rollout(&id, req.rollout_percentage)
+        .update_rollout_tx(write.tx(), &id, req.rollout_percentage)
         .await?;
-    audit_and_reload(
-        &state,
-        &principal,
-        "update_rollout",
-        "workflow",
-        &id,
-        query.reload,
-    )
-    .await?;
+    write.commit().await?;
+
+    super::reload_after_commit(&state, query.reload).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 

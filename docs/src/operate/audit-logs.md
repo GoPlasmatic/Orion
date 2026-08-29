@@ -111,8 +111,21 @@ retention obligation — just know that nothing else trims the table.
 
 ## Do not lose events
 
-Audit rows are written through a bounded queue, and a full queue **drops** rows
-rather than blocking the admin request that produced them:
+**A change to the active set is audited in the same transaction that makes it.**
+Activating, archiving, deleting and re-splitting a rollout each write their
+audit row alongside the entity row and commit both together. Either the change
+and its record are there or neither is — there is no window in which a
+definition is live and unrecorded, and the row is queryable the moment the
+request returns, with no delay to wait out.
+
+That is also a refusal: if the audit row cannot be written, the mutation is
+rolled back and the request fails. A change you cannot account for is worse
+than a change that did not happen.
+
+Everything else — `test`, `reload`, `backup`, and the per-row events of a bulk
+import — has no single entity write to commit with, and goes through a bounded
+queue instead. A full queue **drops** rows rather than blocking the admin
+request that produced them:
 
 ```toml
 [audit]
@@ -126,7 +139,9 @@ Every drop is counted in `orion_audit_events_dropped_total{reason="queue_full"}`
 > **Alert on that counter existing at all, not on a rate.** A dropped audit
 > event is a hole in the trail, and no later query can tell you what was in it.
 > Raise `max_pending` if a bursty admin plane — a large import, a fleet-wide
-> promotion — is enough to fill it.
+> promotion — is enough to fill it. Note what the counter can and cannot mean
+> now: a drop is never a lost record of an activation, archive, delete or
+> rollout, because those do not use the queue.
 
 `drain_timeout_secs` bounds how long shutdown waits for the queue to empty. It
 is rejected at startup if set to `0`: unlike the other timeouts, zero here would

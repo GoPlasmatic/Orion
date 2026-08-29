@@ -145,25 +145,44 @@ pub(crate) async fn get_latest<T: DbRow>(
     .await
 }
 
-/// Delete every version of an entity; `NotFound` when none existed.
-pub(crate) async fn delete_all_versions(
-    pool: &DbPool,
-    spec: &VersionedSpec,
-    id: &str,
-) -> Result<(), OrionError> {
-    let (sql, values) = build_sqlx(
-        pool.backend(),
-        Query::delete()
-            .from_table(spec.table.clone())
-            .and_where(Expr::col(spec.id_col.clone()).eq(id)),
-    );
-    if pool.execute_query(&sql, values).await? == 0 {
+/// The DELETE, and the `NotFound` for an id that had no versions. Shared so
+/// the pooled and transactional forms cannot differ on either.
+fn delete_all_versions_query(spec: &VersionedSpec, id: &str) -> sea_query::DeleteStatement {
+    Query::delete()
+        .from_table(spec.table.clone())
+        .and_where(Expr::col(spec.id_col.clone()).eq(id))
+        .to_owned()
+}
+
+fn deleted_or_missing(rows: u64, spec: &VersionedSpec, id: &str) -> Result<(), OrionError> {
+    if rows == 0 {
         return Err(OrionError::NotFound(format!(
             "{} '{id}' not found",
             spec.label
         )));
     }
     Ok(())
+}
+
+/// Delete every version of an entity; `NotFound` when none existed.
+pub(crate) async fn delete_all_versions(
+    pool: &DbPool,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<(), OrionError> {
+    let (sql, values) = build_sqlx(pool.backend(), &mut delete_all_versions_query(spec, id));
+    deleted_or_missing(pool.execute_query(&sql, values).await?, spec, id)
+}
+
+/// [`delete_all_versions`] inside a caller-owned transaction, so the delete
+/// and its audit row commit together (§2.6).
+pub(crate) async fn delete_all_versions_tx(
+    tx: &mut DbTransaction,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<(), OrionError> {
+    let (sql, values) = build_sqlx(tx.backend(), &mut delete_all_versions_query(spec, id));
+    deleted_or_missing(tx.execute_query(&sql, values).await?, spec, id)
 }
 
 /// All active versions across entities, highest priority first (engine load
@@ -299,12 +318,6 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     spec: &VersionedSpec,
     id: &str,
 ) -> Result<T, OrionError> {
-    // 404, not 400: every sibling lookup in this module maps a missing row to
-    // NotFound, and "which status code does a missing entity give?" should not
-    // depend on which repository method you happened to call (proposal G7).
-    let no_active =
-        || OrionError::NotFound(format!("No active version found for {} '{id}'", spec.noun));
-
     // D23. Postgres and SQLite do the whole thing in one statement: archive
     // every active version and take the archived rows back — the newest is
     // the row this method returns, and no rows means nothing was active. One
@@ -314,33 +327,71 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     // Read-then-write transactions that cannot collapse into one statement
     // take `DbPool::begin_write_tx` instead (D30), which starts SQLite with
     // BEGIN IMMEDIATE so no read snapshot exists to go stale.
-    //
-    // On SQLite the statement also stamps `updated_at` itself: the column is
-    // normally maintained by an AFTER UPDATE trigger whose second write
-    // RETURNING cannot see (Postgres' BEFORE trigger needs no such help).
     let backend = pool.backend();
     if backend != crate::storage::DbBackend::Mysql {
-        let mut update = archive_actives_query(spec, id, None);
-        if backend == crate::storage::DbBackend::Sqlite {
-            update.value(
-                spec.updated_at_col.clone(),
-                Expr::cust(super::helpers::sql_now(backend)),
-            );
-        }
-        update.returning_all();
-        let (sql, values) = build_sqlx(backend, &mut update);
+        let (sql, values) = build_sqlx(backend, &mut archive_returning_query(spec, id, backend));
         let archived: Vec<T> = pool.fetch_all_as(&sql, values).await?;
-        return archived
-            .into_iter()
-            .max_by_key(|row| row.version())
-            .ok_or_else(no_active);
+        return newest_or_no_active(archived, spec, id);
     }
 
-    // MySQL (no RETURNING): find the newest active version, archive every
-    // active one, and read the archived row back — all inside one
-    // transaction. The read-back used to run on the pool after the archive,
-    // where a concurrent writer's row could come back instead.
     let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+    let archived = archive_latest_active_mysql(&mut tx, spec, id).await?;
+    tx.commit().await.map_err(OrionError::Storage)?;
+    Ok(archived)
+}
+
+/// [`archive_latest_active`] inside a caller-owned transaction, so the archive
+/// and its audit row commit together (§2.6).
+///
+/// The single-statement path is kept rather than collapsed into the MySQL one:
+/// it is the same statement, and running it inside the caller's transaction is
+/// sound because that transaction is a `begin_write_tx` — the D30 shape, which
+/// on SQLite holds the write lock from BEGIN and so has no read snapshot to go
+/// stale.
+pub(crate) async fn archive_latest_active_tx<T: DbRow + HasVersion>(
+    tx: &mut DbTransaction,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<T, OrionError> {
+    let backend = tx.backend();
+    if backend != crate::storage::DbBackend::Mysql {
+        let (sql, values) = build_sqlx(backend, &mut archive_returning_query(spec, id, backend));
+        let archived: Vec<T> = tx.fetch_all_as(&sql, values).await?;
+        return newest_or_no_active(archived, spec, id);
+    }
+    archive_latest_active_mysql(tx, spec, id).await
+}
+
+/// Archive every active version and return the archived rows.
+///
+/// On SQLite the statement also stamps `updated_at` itself: the column is
+/// normally maintained by an AFTER UPDATE trigger whose second write
+/// RETURNING cannot see (Postgres' BEFORE trigger needs no such help).
+fn archive_returning_query(
+    spec: &VersionedSpec,
+    id: &str,
+    backend: crate::storage::DbBackend,
+) -> sea_query::UpdateStatement {
+    let mut update = archive_actives_query(spec, id, None);
+    if backend == crate::storage::DbBackend::Sqlite {
+        update.value(
+            spec.updated_at_col.clone(),
+            Expr::cust(super::helpers::sql_now(backend)),
+        );
+    }
+    update.returning_all();
+    update
+}
+
+/// MySQL has no RETURNING: find the newest active version, archive every
+/// active one, and read the archived row back — all in one transaction, so
+/// the read-back cannot pick up a concurrent writer's row.
+async fn archive_latest_active_mysql<T: DbRow + HasVersion>(
+    tx: &mut DbTransaction,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<T, OrionError> {
+    let backend = tx.backend();
     let (sql, values) = build_sqlx(
         backend,
         Query::select()
@@ -351,14 +402,32 @@ pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
             .order_by(spec.version_col.clone(), Order::Desc)
             .limit(1),
     );
-    let active: T = fetch_required_tx(&mut tx, &sql, values, no_active).await?;
+    let active: T = fetch_required_tx(tx, &sql, values, || no_active(spec, id)).await?;
 
     let (sql, values) = build_sqlx(backend, &mut archive_actives_query(spec, id, None));
     tx.execute_query(&sql, values).await?;
 
-    let archived = get_version_tx(&mut tx, spec, id, active.version()).await?;
-    tx.commit().await.map_err(OrionError::Storage)?;
-    Ok(archived)
+    get_version_tx(tx, spec, id, active.version()).await
+}
+
+/// 404, not 400: every sibling lookup in this module maps a missing row to
+/// NotFound, and "which status code does a missing entity give?" should not
+/// depend on which repository method you happened to call (proposal G7).
+fn no_active(spec: &VersionedSpec, id: &str) -> OrionError {
+    OrionError::NotFound(format!("No active version found for {} '{id}'", spec.noun))
+}
+
+/// The newest of the rows an archive returned, or the `no_active` refusal when
+/// it archived nothing.
+fn newest_or_no_active<T: HasVersion>(
+    archived: Vec<T>,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<T, OrionError> {
+    archived
+        .into_iter()
+        .max_by_key(|row| row.version())
+        .ok_or_else(|| no_active(spec, id))
 }
 
 /// The one field [`archive_latest_active`] needs off the fetched row.
@@ -403,6 +472,164 @@ mod tests {
         assert_eq!(
             sql,
             r#"SELECT * FROM "channels" WHERE "version" = (SELECT MAX("version") FROM "channels" AS "current_v" WHERE "current_v"."channel_id" = "channels"."channel_id")"#
+        );
+    }
+
+    /// Seed one channel row directly, so the version/status shape under test
+    /// is stated rather than arrived at through the lifecycle methods.
+    async fn seed(pool: &DbPool, id: &str, version: i64, status: &str) {
+        let (sql, values) = build_sqlx(
+            pool.backend(),
+            Query::insert()
+                .into_table(Channels::Table)
+                .columns([
+                    Channels::ChannelId,
+                    Channels::Version,
+                    Channels::Name,
+                    Channels::ChannelType,
+                    Channels::Protocol,
+                    Channels::Status,
+                    Channels::ConfigJson,
+                ])
+                .values_panic([
+                    id.into(),
+                    version.into(),
+                    format!("{id} v{version}").into(),
+                    "sync".into(),
+                    "rest".into(),
+                    status.into(),
+                    "{}".into(),
+                ]),
+        );
+        pool.execute_query(&sql, values).await.expect("seed");
+    }
+
+    async fn statuses(pool: &DbPool, id: &str) -> Vec<(i64, String)> {
+        let (sql, values) = build_sqlx(
+            pool.backend(),
+            Query::select()
+                .column(Channels::Version)
+                .column(Channels::Status)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(id))
+                .order_by(Channels::Version, Order::Asc),
+        );
+        pool.fetch_all_as::<(i64, String)>(&sql, values)
+            .await
+            .expect("read")
+    }
+
+    /// `archive_latest_active` returns the *newest* archived version, and
+    /// archives every active one — not just the newest. A partial rollout has
+    /// two active versions at once, so archiving one of them and leaving the
+    /// other serving is the failure this guards.
+    #[tokio::test]
+    async fn archiving_takes_every_active_version_and_returns_the_newest() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        seed(&pool, "chan-arch", 1, "archived").await;
+        seed(&pool, "chan-arch", 2, "active").await;
+        seed(&pool, "chan-arch", 3, "active").await;
+
+        let archived: crate::storage::models::Channel =
+            archive_latest_active(&pool, &channels_spec(), "chan-arch")
+                .await
+                .expect("archive");
+        assert_eq!(archived.version, 3, "the newest active version is returned");
+
+        assert_eq!(
+            statuses(&pool, "chan-arch").await,
+            vec![
+                (1, "archived".to_string()),
+                (2, "archived".to_string()),
+                (3, "archived".to_string()),
+            ],
+            "every active version must be archived, not only the newest"
+        );
+    }
+
+    /// Nothing active is a `NotFound`, not an `Ok` with a stale row — the
+    /// distinction the admin route turns into a 404.
+    #[tokio::test]
+    async fn archiving_with_nothing_active_is_not_found() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        seed(&pool, "chan-draft-only", 1, "draft").await;
+
+        let err = archive_latest_active::<crate::storage::models::Channel>(
+            &pool,
+            &channels_spec(),
+            "chan-draft-only",
+        )
+        .await
+        .expect_err("no active version must be NotFound");
+        assert!(
+            matches!(err, OrionError::NotFound(ref m) if m.contains("No active version")),
+            "got: {err:?}"
+        );
+    }
+
+    /// §2.6: the transactional twin must archive exactly what the pooled one
+    /// does. They are separate code paths — the pooled form runs the statement
+    /// on the pool, the tx form inside the caller's transaction — so the
+    /// equivalence is asserted rather than assumed.
+    #[tokio::test]
+    async fn the_transactional_archive_matches_the_pooled_one() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        seed(&pool, "chan-tx", 1, "active").await;
+        seed(&pool, "chan-tx", 2, "active").await;
+
+        let mut tx = pool.begin_write_tx().await.expect("tx");
+        let archived: crate::storage::models::Channel =
+            archive_latest_active_tx(&mut tx, &channels_spec(), "chan-tx")
+                .await
+                .expect("archive");
+        tx.commit().await.expect("commit");
+
+        assert_eq!(archived.version, 2);
+        assert_eq!(
+            statuses(&pool, "chan-tx").await,
+            vec![(1, "archived".to_string()), (2, "archived".to_string())]
+        );
+    }
+
+    /// A delete takes the whole version history, and a delete of an id that
+    /// was never there is `NotFound` rather than a silent success.
+    #[tokio::test]
+    async fn deleting_removes_every_version_and_a_miss_is_not_found() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        seed(&pool, "chan-del", 1, "archived").await;
+        seed(&pool, "chan-del", 2, "active").await;
+
+        delete_all_versions(&pool, &channels_spec(), "chan-del")
+            .await
+            .expect("delete");
+        assert!(statuses(&pool, "chan-del").await.is_empty());
+
+        assert!(
+            matches!(
+                delete_all_versions(&pool, &channels_spec(), "never-existed").await,
+                Err(OrionError::NotFound(_))
+            ),
+            "deleting an absent id must be NotFound, not a no-op success"
+        );
+    }
+
+    /// The transactional delete rolls back with its transaction — which is
+    /// what makes it safe to pair with an audit row (§2.6).
+    #[tokio::test]
+    async fn a_rolled_back_transactional_delete_leaves_the_rows() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        seed(&pool, "chan-keep", 1, "active").await;
+
+        let mut tx = pool.begin_write_tx().await.expect("tx");
+        delete_all_versions_tx(&mut tx, &channels_spec(), "chan-keep")
+            .await
+            .expect("delete");
+        drop(tx);
+
+        assert_eq!(
+            statuses(&pool, "chan-keep").await,
+            vec![(1, "active".to_string())],
+            "a dropped transaction must not have deleted anything"
         );
     }
 

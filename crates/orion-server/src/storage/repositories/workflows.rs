@@ -153,6 +153,33 @@ pub trait WorkflowRepository: Send + Sync {
     async fn archive(&self, workflow_id: &str) -> Result<Workflow, OrionError>;
     /// Update rollout percentage of an active pair.
     async fn update_rollout(&self, workflow_id: &str, pct: i64) -> Result<Workflow, OrionError>;
+
+    // The four active-set mutations, inside a caller-owned transaction, so the
+    // audit row for the change commits with it (§2.6). Each is the body its
+    // pooled twin runs; the twin is that body plus a transaction of its own,
+    // so the two cannot drift.
+    async fn activate_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+        rollout_pct: i64,
+    ) -> Result<Workflow, OrionError>;
+    async fn archive_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+    ) -> Result<Workflow, OrionError>;
+    async fn delete_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+    ) -> Result<(), OrionError>;
+    async fn update_rollout_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+        pct: i64,
+    ) -> Result<Workflow, OrionError>;
     /// Create a new draft version by copying the latest active version.
     async fn create_new_version(&self, workflow_id: &str) -> Result<Workflow, OrionError>;
     /// List all versions of a workflow.
@@ -626,6 +653,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
         .await
     }
 
+    async fn delete_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+    ) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("workflows.delete", async {
+            versioned::delete_all_versions_tx(tx, &spec(), workflow_id).await
+        })
+        .await
+    }
+
     async fn list_active(&self) -> Result<Vec<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.list_active", async {
             versioned::list_active(&self.pool, &spec()).await
@@ -642,47 +680,59 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
         crate::metrics::timed_db_op("workflows.activate", async {
             let mut tx = self.pool.begin_write_tx().await?;
-
-            let draft: Workflow =
-                versioned::require_draft_tx(&mut tx, &spec(), workflow_id).await?;
-
-            // Fetch active versions
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Workflows::Version, Order::Desc),
-            );
-
-            let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
-
-            if rollout_pct == 100 {
-                activate_full_rollout(&mut tx, workflow_id, draft.version, &active_versions)
-                    .await?;
-            } else {
-                activate_partial_rollout(
-                    &mut tx,
-                    workflow_id,
-                    draft.version,
-                    &active_versions,
-                    rollout_pct,
-                )
-                .await?;
-            }
-
-            // D23: read the promoted row back inside the transaction that
-            // promoted it — this used to run on the pool after `tx.commit()`.
-            let activated =
-                versioned::get_version_tx(&mut tx, &spec(), workflow_id, draft.version).await?;
-
+            let activated = self.activate_tx(&mut tx, workflow_id, rollout_pct).await?;
             tx.commit().await?;
-
             Ok(activated)
         })
         .await
+    }
+
+    async fn activate_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+        rollout_pct: i64,
+    ) -> Result<Workflow, OrionError> {
+        // Re-checked here rather than only in `activate`: this is a trait
+        // method a route can reach directly, and the bound is the rollout
+        // arithmetic's precondition, not the pooled wrapper's.
+        if !(0..=100).contains(&rollout_pct) {
+            return Err(OrionError::validation(
+                "rollout_percentage must be between 0 and 100".to_string(),
+            ));
+        }
+
+        let draft: Workflow = versioned::require_draft_tx(tx, &spec(), workflow_id).await?;
+
+        // Fetch active versions
+        let (sql, values) = build_sqlx(
+            tx.backend(),
+            Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
+                .order_by(Workflows::Version, Order::Desc),
+        );
+
+        let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
+
+        if rollout_pct == 100 {
+            activate_full_rollout(tx, workflow_id, draft.version, &active_versions).await?;
+        } else {
+            activate_partial_rollout(
+                tx,
+                workflow_id,
+                draft.version,
+                &active_versions,
+                rollout_pct,
+            )
+            .await?;
+        }
+
+        // D23: read the promoted row back inside the transaction that
+        // promoted it — this used to run on the pool after `tx.commit()`.
+        versioned::get_version_tx(tx, &spec(), workflow_id, draft.version).await
     }
 
     async fn archive(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
@@ -692,81 +742,98 @@ impl WorkflowRepository for SqlWorkflowRepository {
         .await
     }
 
+    async fn archive_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+    ) -> Result<Workflow, OrionError> {
+        crate::metrics::timed_db_op("workflows.archive", async {
+            versioned::archive_latest_active_tx(tx, &spec(), workflow_id).await
+        })
+        .await
+    }
+
     async fn update_rollout(&self, workflow_id: &str, pct: i64) -> Result<Workflow, OrionError> {
+        crate::metrics::timed_db_op("workflows.update_rollout", async {
+            let mut tx = self.pool.begin_write_tx().await?;
+            let updated = self.update_rollout_tx(&mut tx, workflow_id, pct).await?;
+            tx.commit().await?;
+            Ok(updated)
+        })
+        .await
+    }
+
+    async fn update_rollout_tx(
+        &self,
+        tx: &mut crate::storage::DbTransaction,
+        workflow_id: &str,
+        pct: i64,
+    ) -> Result<Workflow, OrionError> {
         if !(1..=100).contains(&pct) {
             return Err(OrionError::validation(
                 "rollout_percentage must be between 1 and 100".to_string(),
             ));
         }
 
-        crate::metrics::timed_db_op("workflows.update_rollout", async {
-            let mut tx = self.pool.begin_write_tx().await?;
+        // Get active versions ordered by version DESC (newest first)
+        let (sql, values) = build_sqlx(
+            tx.backend(),
+            Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
+                .order_by(Workflows::Version, Order::Desc),
+        );
 
-            // Get active versions ordered by version DESC (newest first)
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Workflows::Version, Order::Desc),
-            );
+        let mut active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
 
-            let mut active_versions: Vec<Workflow> =
-                tx.fetch_all_as::<Workflow>(&sql, values).await?;
+        if active_versions.is_empty() {
+            return Err(OrionError::validation(format!(
+                "No active versions found for workflow '{workflow_id}'"
+            )));
+        }
 
-            if active_versions.is_empty() {
-                return Err(OrionError::validation(format!(
-                    "No active versions found for workflow '{workflow_id}'"
-                )));
-            }
-
-            if active_versions.len() == 1 {
-                if pct == 100 {
-                    // Already at 100% with one version, just confirm: nothing
-                    // is written, and the row was read inside this
-                    // transaction, so it is current as-is (D23 — this used to
-                    // re-fetch it from the pool while the tx was still open).
-                    tx.commit().await?;
-                    return Ok(active_versions.swap_remove(0));
-                }
-                return Err(OrionError::validation(
-                    "Cannot set partial rollout with only one active version".to_string(),
-                ));
-            }
-
-            let newer = &active_versions[0];
-            let older = &active_versions[1];
-
+        if active_versions.len() == 1 {
             if pct == 100 {
-                // Promote the newer version: archive the older and set newer to 100%.
-                let (sql, values) =
-                    set_workflow_archived_query(tx.backend(), workflow_id, older.version);
-                tx.execute_query(&sql, values).await?;
-                let (sql, values) =
-                    set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, 100);
-                tx.execute_query(&sql, values).await?;
-            } else {
-                // Split traffic: newer = pct, older = 100 - pct.
-                let (sql, values) =
-                    set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, pct);
-                tx.execute_query(&sql, values).await?;
-                let (sql, values) =
-                    set_workflow_rollout_query(tx.backend(), workflow_id, older.version, 100 - pct);
-                tx.execute_query(&sql, values).await?;
+                // Already at 100% with one version: nothing is written, and
+                // the row was read inside this transaction, so it is current
+                // as-is (D23 — this used to re-fetch it from the pool while
+                // the tx was still open). The caller still commits, because
+                // the audit row travelling with this call is a write even
+                // when the rollout is not (§2.6).
+                return Ok(active_versions.swap_remove(0));
             }
+            return Err(OrionError::validation(
+                "Cannot set partial rollout with only one active version".to_string(),
+            ));
+        }
 
-            // D23: read the adjusted row back inside the transaction that
-            // adjusted it — this used to run on the pool after `tx.commit()`.
-            let updated =
-                versioned::get_version_tx(&mut tx, &spec(), workflow_id, newer.version).await?;
+        let newer = &active_versions[0];
+        let older = &active_versions[1];
 
-            tx.commit().await?;
+        if pct == 100 {
+            // Promote the newer version: archive the older and set newer to 100%.
+            let (sql, values) =
+                set_workflow_archived_query(tx.backend(), workflow_id, older.version);
+            tx.execute_query(&sql, values).await?;
+            let (sql, values) =
+                set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, 100);
+            tx.execute_query(&sql, values).await?;
+        } else {
+            // Split traffic: newer = pct, older = 100 - pct.
+            let (sql, values) =
+                set_workflow_rollout_query(tx.backend(), workflow_id, newer.version, pct);
+            tx.execute_query(&sql, values).await?;
+            let (sql, values) =
+                set_workflow_rollout_query(tx.backend(), workflow_id, older.version, 100 - pct);
+            tx.execute_query(&sql, values).await?;
+        }
 
-            Ok(updated)
-        })
-        .await
+        // D23: read the adjusted row back inside the transaction that
+        // adjusted it — this used to run on the pool after `tx.commit()`.
+        let newer_version = newer.version;
+        versioned::get_version_tx(tx, &spec(), workflow_id, newer_version).await
     }
 
     async fn create_new_version(&self, workflow_id: &str) -> Result<Workflow, OrionError> {

@@ -1,4 +1,4 @@
-use crate::storage::DbPool;
+use crate::storage::{DbPool, DbTransaction};
 use async_trait::async_trait;
 use sea_query::{Condition, Expr, ExprTrait, Query};
 use serde::{Deserialize, Serialize};
@@ -144,6 +144,22 @@ pub trait ChannelRepository: Send + Sync {
     async fn activate(&self, channel_id: &str) -> Result<Channel, OrionError>;
     /// Archive the latest active version of a channel.
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError>;
+
+    // The three active-set mutations, inside a caller-owned transaction, so
+    // the audit row for the change commits with it (§2.6). Each is the body
+    // its pooled twin above runs; the twin is that body plus a transaction of
+    // its own, so the two cannot drift.
+    async fn activate_tx(
+        &self,
+        tx: &mut DbTransaction,
+        channel_id: &str,
+    ) -> Result<Channel, OrionError>;
+    async fn archive_tx(
+        &self,
+        tx: &mut DbTransaction,
+        channel_id: &str,
+    ) -> Result<Channel, OrionError>;
+    async fn delete_tx(&self, tx: &mut DbTransaction, channel_id: &str) -> Result<(), OrionError>;
     /// Create a new draft version by copying the latest version.
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError>;
     /// The id of a *different* active channel holding `name`, if any (K7).
@@ -600,6 +616,13 @@ impl ChannelRepository for SqlChannelRepository {
         .await
     }
 
+    async fn delete_tx(&self, tx: &mut DbTransaction, channel_id: &str) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("channels.delete", async {
+            versioned::delete_all_versions_tx(tx, &spec(), channel_id).await
+        })
+        .await
+    }
+
     async fn list_active(&self) -> Result<Vec<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_active", async {
             versioned::list_active(&self.pool, &spec()).await
@@ -610,43 +633,59 @@ impl ChannelRepository for SqlChannelRepository {
     async fn activate(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.activate", async {
             let mut tx = self.pool.begin_write_tx().await?;
-
-            let draft: Channel = versioned::require_draft_tx(&mut tx, &spec(), channel_id).await?;
-
-            // Archive current active versions
-            let (archive_sql, archive_values) = build_sqlx(
-                self.pool.backend(),
-                &mut versioned::archive_actives_query(&spec(), channel_id, None),
-            );
-            tx.execute_query(&archive_sql, archive_values).await?;
-
-            // Activate the draft
-            let (activate_sql, activate_values) = build_sqlx(
-                self.pool.backend(),
-                Query::update()
-                    .table(Channels::Table)
-                    .value(Channels::Status, EntityStatus::Active.as_str())
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Version).eq(draft.version)),
-            );
-
-            tx.execute_query(&activate_sql, activate_values).await?;
-
-            // D23: read the promoted row back inside the transaction that
-            // promoted it — this used to run on the pool after `tx.commit()`.
-            let activated =
-                versioned::get_version_tx(&mut tx, &spec(), channel_id, draft.version).await?;
-
+            let activated = self.activate_tx(&mut tx, channel_id).await?;
             tx.commit().await?;
-
             Ok(activated)
         })
         .await
     }
 
+    async fn activate_tx(
+        &self,
+        tx: &mut DbTransaction,
+        channel_id: &str,
+    ) -> Result<Channel, OrionError> {
+        let backend = tx.backend();
+        let draft: Channel = versioned::require_draft_tx(tx, &spec(), channel_id).await?;
+
+        // Archive current active versions
+        let (archive_sql, archive_values) = build_sqlx(
+            backend,
+            &mut versioned::archive_actives_query(&spec(), channel_id, None),
+        );
+        tx.execute_query(&archive_sql, archive_values).await?;
+
+        // Activate the draft
+        let (activate_sql, activate_values) = build_sqlx(
+            backend,
+            Query::update()
+                .table(Channels::Table)
+                .value(Channels::Status, EntityStatus::Active.as_str())
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Version).eq(draft.version)),
+        );
+
+        tx.execute_query(&activate_sql, activate_values).await?;
+
+        // D23: read the promoted row back inside the transaction that
+        // promoted it — this used to run on the pool after `tx.commit()`.
+        versioned::get_version_tx(tx, &spec(), channel_id, draft.version).await
+    }
+
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.archive", async {
             versioned::archive_latest_active(&self.pool, &spec(), channel_id).await
+        })
+        .await
+    }
+
+    async fn archive_tx(
+        &self,
+        tx: &mut DbTransaction,
+        channel_id: &str,
+    ) -> Result<Channel, OrionError> {
+        crate::metrics::timed_db_op("channels.archive", async {
+            versioned::archive_latest_active_tx(tx, &spec(), channel_id).await
         })
         .await
     }
