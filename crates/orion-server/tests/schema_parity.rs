@@ -38,10 +38,16 @@
 //!   index — exists everywhere with deliberately different key columns for the
 //!   same reason; it is allow-listed by name in `DIVERGENT_INDEX_COLUMNS`.
 //! - **Defaults, collation, storage parameters.** Not compared.
-//! - **Triggers.** Compared nowhere: SQLite uses `RAISE(ABORT)`, Postgres
-//!   `plpgsql` functions and MySQL `SIGNAL`, so even the names diverge for
-//!   good reason. The single-draft and active-immutability rules are covered
-//!   behaviourally by `storage_postgres.rs` / `storage_mysql.rs`.
+//! - **Trigger bodies.** Not compared as text, and never will be: SQLite uses
+//!   `RAISE(ABORT)`, Postgres `plpgsql` functions with `IS DISTINCT FROM`, and
+//!   MySQL `SIGNAL` with `<=>`, so even the names diverge for good reason.
+//!   What *is* compared is the part that carries the rule — the set of columns
+//!   each active-immutability trigger guards, which is identical across the
+//!   three dialects and is read back out of the migration text by
+//!   `active_immutability_triggers_guard_the_same_columns_on_every_backend`.
+//!   The single-draft rule is matched by message text
+//!   (`single_draft_trigger_message_matches_the_code`), and both are also
+//!   covered behaviourally by `storage_postgres.rs` / `storage_mysql.rs`.
 //!
 //! Nullability *is* compared. A column that is `NOT NULL` on two backends and
 //! nullable on the third is the same silent-until-fatal drift as a width
@@ -1078,4 +1084,195 @@ fn single_draft_trigger_message_matches_the_code() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+}
+
+// ============================================================
+// Active-immutability triggers guard the same columns everywhere
+// ============================================================
+
+/// Content columns an *active* row may legitimately be edited through, with
+/// the endpoint that does it.
+///
+/// The active-immutability rule exists so that a definition the engine is
+/// serving cannot change under it without a new version. A column listed here
+/// is an admitted exception: a value that is deliberately tuned in place, on a
+/// row that is already active, through a route built for exactly that.
+///
+/// Kept as a table rather than left implicit because the two failure modes are
+/// asymmetric. A column missing from the triggers by *accident* is a hole in
+/// the rule; one missing on purpose is a feature — and only a written-down
+/// list can tell the next person which they are looking at.
+const MUTABLE_WHILE_ACTIVE: &[(&str, &str, &str)] = &[(
+    "workflows",
+    "rollout_percentage",
+    "PATCH /workflows/{id}/rollout shifts traffic between two active versions \
+     in place; a rollout that needed a new version could not be a rollout",
+)];
+
+/// The set of columns an active-immutability trigger compares, read out of the
+/// migration that last defined it.
+///
+/// Trigger *bodies* are not comparable across the three backends and never
+/// will be — SQLite raises with `RAISE(ABORT)`, Postgres with a `plpgsql`
+/// function and `IS DISTINCT FROM`, MySQL with `SIGNAL` and `<=>`. What *is*
+/// comparable, and what the rule actually consists of, is the column list:
+/// every backend spells the same set of `OLD.<column>` comparisons in its own
+/// syntax. This reads that set back out of the text, so the three can be held
+/// to it.
+///
+/// `status` is dropped: it appears in every body as the guard on the rule
+/// itself (`OLD.status = 'active'`), not as a column the rule protects.
+fn guarded_columns(body: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("OLD.") {
+        rest = &rest[at + 4..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        let name = &rest[..end];
+        if !name.is_empty() && name != "status" {
+            out.insert(name.to_string());
+        }
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// The last definition of each active-immutability rule per backend, as
+/// `(backend, entity) → guarded columns`.
+///
+/// "Last" matters: the rule is re-stated by every migration that adds a
+/// content column, precisely because the comparisons are explicit. Only the
+/// most recent definition is in force, so only it is compared.
+fn active_immutability_rules() -> BTreeMap<(&'static str, String), BTreeSet<String>> {
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut rules: BTreeMap<(&'static str, String), BTreeSet<String>> = BTreeMap::new();
+
+    for backend in ["sqlite", "postgres", "mysql"] {
+        let dir = migrations.join(backend);
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sql"))
+            .collect();
+        files.sort();
+
+        for file in files {
+            let sql = std::fs::read_to_string(&file).expect("read migration");
+            // Postgres puts the comparisons in the function the trigger calls,
+            // the other two inline them in the trigger. Both are matched by
+            // the shared `<entity>_active_immutable` name.
+            for entity in ["workflows", "channels"] {
+                let marker = format!("{entity}_active_immutable");
+                let Some(start) = sql.rfind(&marker) else {
+                    continue;
+                };
+                let columns = guarded_columns(&sql[start..]);
+                if !columns.is_empty() {
+                    rules.insert((backend, entity.to_string()), columns);
+                }
+            }
+        }
+    }
+    rules
+}
+
+/// A content column added on all three backends but left out of one backend's
+/// active-immutability trigger is editable in place on that backend and not on
+/// the others — an active definition mutating under a running engine, with no
+/// new version and no audit trail of the change.
+///
+/// That is the same silent-until-fatal shape the column-type comparison exists
+/// for, and it is a live risk rather than a hypothetical one: the rule is
+/// re-stated by hand in each of the three migration sets every time a content
+/// column is added (`sqlite/012`, `postgres/016`, `mysql/015` are the loop
+/// column's three copies), and the three sequences are numbered independently,
+/// so nothing but this test notices a set that got two of them.
+#[test]
+fn active_immutability_triggers_guard_the_same_columns_on_every_backend() {
+    let rules = active_immutability_rules();
+    assert!(
+        !rules.is_empty(),
+        "found no active-immutability triggers at all — this test has stopped \
+         looking at anything, which is worse than a mismatch"
+    );
+
+    for entity in ["workflows", "channels"] {
+        let per_backend: Vec<(&str, &BTreeSet<String>)> = ["sqlite", "postgres", "mysql"]
+            .iter()
+            .map(|b| {
+                let columns = rules.get(&(*b, entity.to_string())).unwrap_or_else(|| {
+                    panic!("{b} has no active-immutability rule for `{entity}`")
+                });
+                (*b, columns)
+            })
+            .collect();
+
+        let (first_backend, first) = per_backend[0];
+        for (backend, columns) in &per_backend[1..] {
+            assert_eq!(
+                first,
+                *columns,
+                "the `{entity}` active-immutability trigger guards different columns on \
+                 {first_backend} and {backend}, so an active {entity} row is editable in \
+                 place on one backend and not the other.\n  \
+                 only on {first_backend}: {:?}\n  only on {backend}: {:?}",
+                first.difference(columns).collect::<Vec<_>>(),
+                columns.difference(first).collect::<Vec<_>>(),
+            );
+        }
+    }
+}
+
+/// The other half: the guarded set must cover every content column the table
+/// actually has. Parity alone is satisfied by a column that all three
+/// backends forgot.
+///
+/// "Content" is everything but the identity columns (`<entity>_id`,
+/// `version`), the lifecycle column the rule keys on (`status`), the two
+/// timestamps the rule must *not* guard — an activation legitimately stamps
+/// `updated_at` — and [`MUTABLE_WHILE_ACTIVE`]. The column list comes from the
+/// live SQLite schema, so adding a column is what makes this test speak up.
+#[tokio::test]
+async fn active_immutability_triggers_cover_every_content_column() {
+    let schema = sqlite_schema().await;
+    let rules = active_immutability_rules();
+
+    for (entity, id_column) in [("workflows", "workflow_id"), ("channels", "channel_id")] {
+        let mutable: BTreeSet<&str> = MUTABLE_WHILE_ACTIVE
+            .iter()
+            .filter(|(t, _, _)| *t == entity)
+            .map(|(_, c, _)| *c)
+            .collect();
+        let columns = schema
+            .tables
+            .get(entity)
+            .unwrap_or_else(|| panic!("`{entity}` must exist in the SQLite schema"));
+        let content: BTreeSet<String> = columns
+            .keys()
+            .filter(|c| {
+                !matches!(
+                    c.as_str(),
+                    "version" | "status" | "created_at" | "updated_at"
+                ) && c.as_str() != id_column
+                    && !mutable.contains(c.as_str())
+            })
+            .cloned()
+            .collect();
+
+        let guarded = rules
+            .get(&("sqlite", entity.to_string()))
+            .unwrap_or_else(|| panic!("sqlite has no active-immutability rule for `{entity}`"));
+
+        let unguarded: Vec<&String> = content.difference(guarded).collect();
+        assert!(
+            unguarded.is_empty(),
+            "these `{entity}` content columns are not covered by the \
+             active-immutability trigger, so an active {entity} can be edited in place \
+             through them — no new version, no audit row, and the running engine keeps \
+             serving the definition it loaded: {unguarded:?}"
+        );
+    }
 }
