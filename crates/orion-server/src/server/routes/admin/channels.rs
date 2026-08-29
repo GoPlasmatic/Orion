@@ -190,36 +190,16 @@ pub(crate) async fn change_channel_status(
     OrionJson(req): OrionJson<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
+    let lifecycle = ChannelLifecycle::new(&state);
     if query.dry_run {
-        let envelope = dry_run_status_change(&state, &id, &action).await?;
+        let errors = super::status_change_findings(&lifecycle, &id, &action).await?;
+        let envelope = super::ValidationEnvelope::new(errors, Vec::new());
         return Ok(Json(serde_json::to_value(envelope)?));
     }
     let channel = match action {
         StatusAction::Activate => {
-            // R7: refuse a channel whose route another active channel already
-            // claims. Same shape as R5/F52 gating workflow activation — the
-            // question is fully answerable here, and answering it later means
-            // answering it wrong: the loser's declared path resolves to the
-            // winner's workflow, which is a wrong answer rather than an error.
             let draft = state.repos.channels.get_by_id(&id).await?;
-            super::services::channels::ensure_route_is_unclaimed(
-                &*state.repos.channels,
-                &state.config.server.data_mounts,
-                &draft,
-            )
-            .await?;
-            // K8: and refuse a channel whose workflow cannot serve. This gate
-            // was documented (and relied on by the promotion flow's ordering)
-            // before it existed in code — the failure used to surface later,
-            // as a reload-time quarantine with no error to the caller.
-            super::services::channels::ensure_workflow_is_active(&*state.repos.workflows, &draft)
-                .await?;
-            // K7: and a name another *active* channel holds. Create/update
-            // refuse the collision at write time; this catches rows written
-            // before that gate existed, at the moment the collision would
-            // start losing requests.
-            super::services::channels::ensure_name_is_unclaimed(&*state.repos.channels, &draft)
-                .await?;
+            super::check_activation(&lifecycle, &draft).await?;
             state.repos.channels.activate(&id).await?
         }
         StatusAction::Archive => state.repos.channels.archive(&id).await?,
@@ -236,82 +216,83 @@ pub(crate) async fn change_channel_status(
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 
-/// K3: every gate the real transition runs, as findings instead of failures —
-/// the same functions the un-dry-run path calls, so `valid: true` cannot
-/// drift from "the real request would succeed". "Not found" arrives as an
-/// `errors` entry in a 200, so a CLI can pre-flight a whole package without
-/// tripping over the first missing entity.
-async fn dry_run_status_change(
-    state: &AppState,
-    id: &str,
-    action: &StatusAction,
-) -> Result<super::ValidationEnvelope, OrionError> {
-    let mut errors = Vec::new();
-    let warnings = Vec::new();
+/// [`VersionedLifecycle`](super::VersionedLifecycle) for channels: the three
+/// gates a channel activation runs, in the order it runs them.
+///
+/// Each takes the one thing it reads — a repository, the configured data mounts
+/// — rather than the whole state, which is what makes them askable outside a
+/// request (`services::channels`).
+struct ChannelLifecycle<'a> {
+    channels: &'a dyn crate::storage::repositories::channels::ChannelRepository,
+    workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
+    data_mounts: &'a [String],
+}
 
-    match action {
-        StatusAction::Activate => match state.repos.channels.get_by_id(id).await {
-            Ok(latest) => {
-                if latest.status != crate::storage::models::EntityStatus::Draft.as_str() {
-                    errors.push(super::ValidationIssue {
-                        field: "status".to_string(),
-                        message: format!(
-                            "No draft version found for channel '{id}' — create a new \
-                             version first"
-                        ),
-                    });
-                } else {
-                    if let Err(e) = super::services::channels::ensure_route_is_unclaimed(
-                        &*state.repos.channels,
-                        &state.config.server.data_mounts,
-                        &latest,
-                    )
-                    .await
-                    {
-                        errors.extend(super::issues_from_error(e));
-                    }
-                    if let Err(e) = super::services::channels::ensure_workflow_is_active(
-                        &*state.repos.workflows,
-                        &latest,
-                    )
-                    .await
-                    {
-                        errors.extend(super::issues_from_error(e));
-                    }
-                    if let Err(e) = super::services::channels::ensure_name_is_unclaimed(
-                        &*state.repos.channels,
-                        &latest,
-                    )
-                    .await
-                    {
-                        errors.extend(super::issues_from_error(e));
-                    }
-                }
-            }
-            Err(OrionError::NotFound(_)) => errors.push(super::ValidationIssue {
-                field: "(root)".to_string(),
-                message: format!("Channel '{id}' not found"),
-            }),
-            Err(e) => return Err(e),
-        },
-        StatusAction::Archive => {
-            let has_active = state
-                .repos
-                .channels
-                .list_active()
-                .await?
-                .iter()
-                .any(|c| c.channel_id == id);
-            if !has_active {
-                errors.push(super::ValidationIssue {
-                    field: "status".to_string(),
-                    message: format!("No active version found for channel '{id}'"),
-                });
-            }
+impl<'a> ChannelLifecycle<'a> {
+    fn new(state: &'a AppState) -> Self {
+        Self {
+            channels: &*state.repos.channels,
+            workflows: &*state.repos.workflows,
+            data_mounts: &state.config.server.data_mounts,
         }
     }
+}
 
-    Ok(super::ValidationEnvelope::new(errors, warnings))
+impl super::VersionedLifecycle for ChannelLifecycle<'_> {
+    type Row = crate::storage::models::Channel;
+    const NOUN: &'static str = "channel";
+
+    fn row_status(row: &Self::Row) -> &str {
+        &row.status
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError> {
+        self.channels.get_by_id(id).await
+    }
+
+    async fn has_active(&self, id: &str) -> Result<bool, OrionError> {
+        Ok(self
+            .channels
+            .list_active()
+            .await?
+            .iter()
+            .any(|c| c.channel_id == id))
+    }
+
+    async fn activation_gates(&self, draft: &Self::Row) -> Vec<OrionError> {
+        let mut refusals = Vec::new();
+        // R7: refuse a channel whose route another active channel already
+        // claims. The question is fully answerable here, and answering it later
+        // means answering it wrong: the loser's declared path resolves to the
+        // winner's workflow, which is a wrong answer rather than an error.
+        if let Err(e) = super::services::channels::ensure_route_is_unclaimed(
+            self.channels,
+            self.data_mounts,
+            draft,
+        )
+        .await
+        {
+            refusals.push(e);
+        }
+        // K8: and refuse a channel whose workflow cannot serve. This gate was
+        // documented (and relied on by the promotion flow's ordering) before it
+        // existed in code — the failure used to surface later, as a reload-time
+        // quarantine with no error to the caller.
+        if let Err(e) =
+            super::services::channels::ensure_workflow_is_active(self.workflows, draft).await
+        {
+            refusals.push(e);
+        }
+        // K7: and a name another *active* channel holds. Create/update refuse
+        // the collision at write time; this catches rows written before that
+        // gate existed, at the moment the collision would start losing requests.
+        if let Err(e) =
+            super::services::channels::ensure_name_is_unclaimed(self.channels, draft).await
+        {
+            refusals.push(e);
+        }
+        refusals
+    }
 }
 
 // ============================================================

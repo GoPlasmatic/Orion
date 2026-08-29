@@ -183,20 +183,15 @@ pub(crate) async fn change_workflow_status(
     OrionJson(req): OrionJson<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
+    let lifecycle = WorkflowLifecycle::new(&state);
     if query.dry_run {
-        let envelope = dry_run_status_change(&state, &id, &action, &req).await?;
+        let envelope = dry_run_status_change(&lifecycle, &state, &id, &action, &req).await?;
         return Ok(Json(serde_json::to_value(envelope)?));
     }
     let workflow = match action {
         StatusAction::Activate => {
-            // R5: refuse to activate a workflow that cannot run. Connector
-            // references stay a warning at create time (connectors and
-            // workflows may be authored in either order) — activation is
-            // the gate, because from here the workflow serves traffic and
-            // a missing connector is a guaranteed runtime 500.
             let draft = state.repos.workflows.get_by_id(&id).await?;
-            super::services::workflows::ensure_connectors_exist(&state.connector_registry, &draft)
-                .await?;
+            super::check_activation(&lifecycle, &draft).await?;
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
             state.repos.workflows.activate(&id, rollout_pct).await?
         }
@@ -214,84 +209,85 @@ pub(crate) async fn change_workflow_status(
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
-/// K3: every gate the real transition runs, as findings instead of failures.
+/// [`VersionedLifecycle`](super::VersionedLifecycle) for workflows.
 ///
-/// The rule that keeps this honest is the `/validate` rule (R20) one endpoint
-/// over: the checks are the *same functions* the real path calls
-/// ([`ensure_workflow_connectors_exist`], the repository's rollout bounds),
-/// so `valid: true` cannot come to mean something weaker than "the
-/// un-dry-run request would succeed". Findings that the real path reports as
-/// a 4xx arrive here as `errors` entries in a 200 — a plan wants the report,
-/// not the failure — including "not found", so a CLI can pre-flight a whole
-/// package without tripping over the first missing entity.
+/// One gate, and it is the one that matters: R5 — refuse to activate a workflow
+/// that cannot run. Connector references stay a warning at create time
+/// (connectors and workflows may be authored in either order); activation is
+/// the gate, because from here the workflow serves traffic and a missing
+/// connector is a guaranteed runtime 500.
+struct WorkflowLifecycle<'a> {
+    workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
+    connectors: &'a crate::connector::ConnectorRegistry,
+}
+
+impl<'a> WorkflowLifecycle<'a> {
+    fn new(state: &'a AppState) -> Self {
+        Self {
+            workflows: &*state.repos.workflows,
+            connectors: &state.connector_registry,
+        }
+    }
+}
+
+impl super::VersionedLifecycle for WorkflowLifecycle<'_> {
+    type Row = crate::storage::models::Workflow;
+    const NOUN: &'static str = "workflow";
+
+    fn row_status(row: &Self::Row) -> &str {
+        &row.status
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError> {
+        self.workflows.get_by_id(id).await
+    }
+
+    async fn has_active(&self, id: &str) -> Result<bool, OrionError> {
+        Ok(self
+            .workflows
+            .list_active()
+            .await?
+            .iter()
+            .any(|w| w.workflow_id == id))
+    }
+
+    async fn activation_gates(&self, draft: &Self::Row) -> Vec<OrionError> {
+        match super::services::workflows::ensure_connectors_exist(self.connectors, draft).await {
+            Ok(()) => Vec::new(),
+            Err(e) => vec![e],
+        }
+    }
+}
+
+/// The shared driver, plus the rollout arithmetic that is a workflow's alone.
+///
+/// The rollout bounds and the "nothing to share traffic with" warning stay
+/// here rather than moving into the trait: a channel has no rollout, and giving
+/// the shared driver a channel-shaped hole to accommodate one would undo the
+/// point of sharing it. What is shared is the part the two entities genuinely
+/// agree on — not found, no draft, the gates, and archive's active check.
 async fn dry_run_status_change(
+    lifecycle: &WorkflowLifecycle<'_>,
     state: &AppState,
     id: &str,
     action: &StatusAction,
     req: &StatusChangeRequest,
 ) -> Result<ValidationEnvelope, OrionError> {
-    let mut errors = Vec::new();
+    let mut errors = super::status_change_findings(lifecycle, id, action).await?;
     let mut warnings = Vec::new();
 
-    match action {
-        StatusAction::Activate => {
-            let rollout_pct = req.rollout_percentage.unwrap_or(100);
-            if !(0..=100).contains(&rollout_pct) {
-                errors.push(ValidationIssue {
-                    field: "rollout_percentage".to_string(),
-                    message: "rollout_percentage must be between 0 and 100".to_string(),
-                });
-            }
-            match state.repos.workflows.get_by_id(id).await {
-                Ok(latest) => {
-                    if latest.status != crate::storage::models::EntityStatus::Draft.as_str() {
-                        errors.push(ValidationIssue {
-                            field: "status".to_string(),
-                            message: format!(
-                                "No draft version found for workflow '{id}' — create a new \
-                                 version first"
-                            ),
-                        });
-                    } else if let Err(e) = super::services::workflows::ensure_connectors_exist(
-                        &state.connector_registry,
-                        &latest,
-                    )
-                    .await
-                    {
-                        errors.extend(issues_from_error(e));
-                    }
-                    // A partial rollout with nothing to share traffic with is
-                    // accepted by the real path and quarantined at engine
-                    // load — say so here, where it is still cheap to fix.
-                    if (0..100).contains(&rollout_pct) {
-                        let has_active = state
-                            .repos
-                            .workflows
-                            .list_active()
-                            .await?
-                            .iter()
-                            .any(|w| w.workflow_id == id);
-                        if !has_active {
-                            warnings.push(ValidationIssue {
-                                field: "rollout_percentage".to_string(),
-                                message: format!(
-                                    "partial rollout of {rollout_pct}% with no currently \
-                                     active version: the active set would sum to \
-                                     {rollout_pct}%, and the serving channel is quarantined \
-                                     until rollout percentages sum to 100"
-                                ),
-                            });
-                        }
-                    }
-                }
-                Err(OrionError::NotFound(_)) => errors.push(ValidationIssue {
-                    field: "(root)".to_string(),
-                    message: format!("Workflow '{id}' not found"),
-                }),
-                Err(e) => return Err(e),
-            }
+    if let StatusAction::Activate = action {
+        let rollout_pct = req.rollout_percentage.unwrap_or(100);
+        if !(0..=100).contains(&rollout_pct) {
+            errors.push(ValidationIssue {
+                field: "rollout_percentage".to_string(),
+                message: "rollout_percentage must be between 0 and 100".to_string(),
+            });
         }
-        StatusAction::Archive => {
+        // A partial rollout with nothing to share traffic with is accepted by
+        // the real path and quarantined at engine load — say so here, where it
+        // is still cheap to fix.
+        if (0..100).contains(&rollout_pct) {
             let has_active = state
                 .repos
                 .workflows
@@ -300,9 +296,14 @@ async fn dry_run_status_change(
                 .iter()
                 .any(|w| w.workflow_id == id);
             if !has_active {
-                errors.push(ValidationIssue {
-                    field: "status".to_string(),
-                    message: format!("No active version found for workflow '{id}'"),
+                warnings.push(ValidationIssue {
+                    field: "rollout_percentage".to_string(),
+                    message: format!(
+                        "partial rollout of {rollout_pct}% with no currently active \
+                         version: the active set would sum to {rollout_pct}%, and the \
+                         serving channel is quarantined until rollout percentages sum \
+                         to 100"
+                    ),
                 });
             }
         }

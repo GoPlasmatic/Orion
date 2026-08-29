@@ -389,6 +389,117 @@ pub(crate) async fn versioned_upsert<T: VersionedUpsert>(
     Ok(action)
 }
 
+/// What a versioned entity's status transition needs, per kind.
+///
+/// The gates themselves live in [`services`] and are unchanged; what this adds
+/// is that the *list* of them is written once. It used to be written twice per
+/// entity — once in `change_*_status` and once in `dry_run_status_change` —
+/// with the second copy's doc comment asserting that it called "the same
+/// functions the un-dry-run path calls". That was true, by inspection, in two
+/// places, which is the arrangement whose failure is silent: a gate added to
+/// the real path and not to the dry run makes `valid: true` mean less than
+/// "the real request would succeed", and nothing says so.
+///
+/// A route-layer adapter per entity rather than a change to the repository
+/// traits, for the same reason [`VersionedUpsert`] is one: this is a sequence
+/// two handlers share, not a storage contract four other callers depend on.
+pub(crate) trait VersionedLifecycle {
+    /// The stored row, as `get_by_id` returns it.
+    type Row;
+
+    /// The entity noun used in messages: `"channel"`, `"workflow"`.
+    const NOUN: &'static str;
+
+    /// The latest stored version's status, as `EntityStatus::as_str` spells it.
+    fn row_status(row: &Self::Row) -> &str;
+
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError>;
+
+    /// Whether any version of this entity is currently active.
+    async fn has_active(&self, id: &str) -> Result<bool, OrionError>;
+
+    /// Every gate activation runs, **all** of them evaluated.
+    ///
+    /// Returning a list rather than short-circuiting is what lets one
+    /// implementation serve both callers: a plan wants every problem at once,
+    /// and the real path wants the first — which it can take from the same
+    /// list. The alternative, a `Result` the dry run calls repeatedly, is two
+    /// orders again.
+    async fn activation_gates(&self, row: &Self::Row) -> Vec<OrionError>;
+}
+
+/// The real path: run the activation gates and fail on the first refusal.
+pub(crate) async fn check_activation<T: VersionedLifecycle>(
+    entity: &T,
+    row: &T::Row,
+) -> Result<(), OrionError> {
+    match entity.activation_gates(row).await.into_iter().next() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// K3: every gate the real transition runs, as findings instead of failures.
+///
+/// The rule that keeps this honest is the `/validate` rule (R20) one endpoint
+/// over: the checks are the *same functions* the real path calls, so
+/// `valid: true` cannot come to mean something weaker than "the un-dry-run
+/// request would succeed". Findings the real path reports as a 4xx arrive here
+/// as `errors` entries in a 200 — a plan wants the report, not the failure —
+/// including "not found", so a CLI can pre-flight a whole package without
+/// tripping over the first missing entity.
+/// Returns the findings rather than a [`ValidationEnvelope`] because `valid` is
+/// derived once, at construction, from the final lists — so a caller with
+/// findings of its own (a workflow's rollout arithmetic) must contribute them
+/// before the envelope exists, not push them into one afterwards.
+pub(crate) async fn status_change_findings<T: VersionedLifecycle>(
+    entity: &T,
+    id: &str,
+    action: &StatusAction,
+) -> Result<Vec<ValidationIssue>, OrionError> {
+    let noun = T::NOUN;
+    let mut errors = Vec::new();
+
+    match action {
+        StatusAction::Activate => match entity.get_by_id(id).await {
+            Ok(latest) => {
+                if T::row_status(&latest) != crate::storage::models::EntityStatus::Draft.as_str() {
+                    errors.push(ValidationIssue {
+                        field: "status".to_string(),
+                        message: format!(
+                            "No draft version found for {noun} '{id}' — create a new \
+                             version first"
+                        ),
+                    });
+                } else {
+                    for e in entity.activation_gates(&latest).await {
+                        errors.extend(issues_from_error(e));
+                    }
+                }
+            }
+            Err(OrionError::NotFound(_)) => errors.push(ValidationIssue {
+                field: "(root)".to_string(),
+                message: format!(
+                    "{}{} '{id}' not found",
+                    noun[..1].to_uppercase(),
+                    &noun[1..]
+                ),
+            }),
+            Err(e) => return Err(e),
+        },
+        StatusAction::Archive => {
+            if !entity.has_active(id).await? {
+                errors.push(ValidationIssue {
+                    field: "status".to_string(),
+                    message: format!("No active version found for {noun} '{id}'"),
+                });
+            }
+        }
+    }
+
+    Ok(errors)
+}
+
 // ============================================================
 // The `/validate` response shape, shared by all three entities
 // ============================================================
