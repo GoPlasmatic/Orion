@@ -71,7 +71,16 @@ const SELF_CONTAINED: [(&str, BuildRealHandler); 3] = [
     ("crypto", || Box::new(super::crypto::CryptoHandler)),
     ("jwt_sign", || Box::new(super::jwt_sign::JwtSignHandler)),
     ("jwt_verify", || {
-        Box::new(super::jwt_verify::JwtVerifyHandler)
+        // Its own cache: a dry run has no `AppState` to borrow one from, and
+        // a stubbed run is offline anyway — a `jwks_url` here is meant to be
+        // unreachable, and the private-address rule stays on so it fails the
+        // same way it would in production.
+        Box::new(super::jwt_verify::JwtVerifyHandler {
+            jwks: std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+                reqwest::Client::new(),
+                false,
+            )),
+        })
     }),
 ];
 

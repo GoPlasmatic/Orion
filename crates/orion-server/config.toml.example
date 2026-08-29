@@ -336,6 +336,17 @@
 # header = "Authorization"      # "Authorization" expects `Bearer <key>`; any other value
                                 # (e.g. "X-API-Key") expects the raw key
 
+[jwt]
+# JWT verification policy that is instance-wide rather than per channel or per
+# task. The per-issuer settings (algorithms, issuer, audience, leeway, the JWKS
+# URL itself) live on the channel's auth block or the jwt_verify task.
+# allow_private_jwks_urls = false   # Allow a jwks_url that resolves to a private or link-local
+                                # address. Off by default: jwks_url is authored input and the
+                                # only egress path with no operator-configured connector behind
+                                # it, so it is address-checked on every fetch exactly like an
+                                # http connector without allow_private_urls. Turn it on for an
+                                # in-cluster issuer (a Keycloak on a service address).
+
 [cors]
 # allowed_origins = ["*"]       # Exactly ["*"] is permissive CORS. Rejected at startup when
                                 # environment starts with "prod" — list explicit origins

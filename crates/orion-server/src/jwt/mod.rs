@@ -85,6 +85,13 @@ impl RejectReason {
     }
 }
 
+/// Where a verifier fetches rotating public keys: the endpoint plus the
+/// instance's [`jwks::JwksCache`].
+pub struct JwksSource {
+    pub url: String,
+    pub cache: std::sync::Arc<jwks::JwksCache>,
+}
+
 /// One accepted verification key, compiled: the parsed key material plus the
 /// routing facts (`kid`, algorithm).
 pub struct StaticKey {
@@ -97,7 +104,11 @@ pub struct StaticKey {
 /// `jwt_verify`.
 pub struct Verifier {
     pub static_keys: Vec<StaticKey>,
-    pub jwks_url: Option<String>,
+    /// The JWKS endpoint and the cache that serves it, or `None` for a
+    /// static-keys-only verifier. The two travel together so a URL can never
+    /// be configured without the cache that would fetch it — the cache is
+    /// per-instance (`AppState`), not a process global.
+    pub jwks: Option<JwksSource>,
     pub algorithms: Vec<Algorithm>,
     pub issuer: Vec<String>,
     pub audience: Vec<String>,
@@ -158,8 +169,11 @@ impl Verifier {
         }
 
         // JWKS: routed by kid; a miss forces one rate-limited refetch.
-        if let Some(url) = &self.jwks_url {
-            let keys = jwks::decoding_keys(url, kid, header.alg).await?;
+        if let Some(source) = &self.jwks {
+            let keys = source
+                .cache
+                .decoding_keys(&source.url, kid, header.alg)
+                .await?;
             for key in &keys {
                 saw_candidate = true;
                 match try_key(token, key, validation) {

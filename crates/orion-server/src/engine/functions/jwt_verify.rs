@@ -17,7 +17,13 @@ use super::schema::{FieldKind, FieldSchema};
 const NAME: &str = "jwt_verify";
 
 /// Workflow function handler that verifies JWTs.
-pub struct JwtVerifyHandler;
+pub struct JwtVerifyHandler {
+    /// The instance's JWKS cache. Held rather than reached for globally: it
+    /// carries the SSRF-pinned HTTP client and the operator's
+    /// `jwt.allow_private_jwks_urls` policy, neither of which a process-wide
+    /// `OnceLock` could be given.
+    pub jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
+}
 
 #[async_trait]
 impl AsyncFunctionHandler for JwtVerifyHandler {
@@ -68,21 +74,24 @@ impl AsyncFunctionHandler for JwtVerifyHandler {
             });
         }
 
-        let jwks_url = match input.get("jwks_url").and_then(Value::as_str) {
+        let jwks = match input.get("jwks_url").and_then(Value::as_str) {
             None => None,
             Some(url) => {
                 crate::jwt::validate_jwks_url(url)
                     .map_err(|e| validation(&format!("'jwks_url' {e}")))?;
-                Some(url.to_string())
+                Some(crate::jwt::JwksSource {
+                    url: url.to_string(),
+                    cache: self.jwks.clone(),
+                })
             }
         };
-        if static_keys.is_empty() && jwks_url.is_none() {
+        if static_keys.is_empty() && jwks.is_none() {
             return Err(validation("requires 'keys' and/or 'jwks_url'"));
         }
 
         let verifier = crate::jwt::Verifier {
             static_keys,
-            jwks_url,
+            jwks,
             algorithms,
             issuer: string_or_vec(input, "issuer", ctx).await?,
             audience: string_or_vec(input, "audience", ctx).await?,
@@ -314,7 +323,15 @@ mod tests {
             "jwt_sign".to_string(),
             Box::new(super::super::jwt_sign::JwtSignHandler),
         );
-        fns.insert("jwt_verify".to_string(), Box::new(JwtVerifyHandler));
+        fns.insert(
+            "jwt_verify".to_string(),
+            Box::new(JwtVerifyHandler {
+                jwks: std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+                    reqwest::Client::new(),
+                    false,
+                )),
+            }),
+        );
         crate::engine::functions::run_test_tasks(
             fns,
             json!([
@@ -613,9 +630,17 @@ mod tests {
             )
             .expect("test")
         };
+        // The mock listens on loopback, which the fetch-time private-address
+        // check refuses — the same check `jwt.allow_private_jwks_urls` exists
+        // to switch off for an in-cluster issuer. Exercising the cache against
+        // a local mock is exactly that case.
+        let cache = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            true,
+        ));
         let core = crate::jwt::Verifier {
             static_keys: Vec::new(),
-            jwks_url: Some(url),
+            jwks: Some(crate::jwt::JwksSource { url, cache }),
             algorithms: vec![jsonwebtoken::Algorithm::HS256],
             issuer: Vec::new(),
             audience: Vec::new(),

@@ -371,6 +371,9 @@ where
     ov_list!(channel_filter.include);
     ov_list!(channel_filter.exclude);
 
+    // JWT verification (JWKS egress policy)
+    ov!(jwt.allow_private_jwks_urls: bool);
+
     // Admin auth
     ov!(admin_auth.enabled: bool);
     ov!(admin_auth.header: String);

@@ -154,10 +154,12 @@ impl CompiledAuth {
     /// `datalogic` compiles `authorization_logic`; it must be the same engine
     /// the guards evaluate with (bootstrap's shared instance). `None` is for
     /// callers that cannot evaluate logic — compiling a config that carries
-    /// `authorization_logic` then fails loudly.
+    /// `authorization_logic` then fails loudly. `jwks` is the instance's key
+    /// cache and follows the same rule for `auth.jwks_url`.
     pub async fn compile(
         cfg: &ChannelAuthConfig,
         datalogic: Option<&DatalogicEngine>,
+        jwks: Option<&std::sync::Arc<crate::jwt::jwks::JwksCache>>,
     ) -> Result<Self, String> {
         match cfg.mode {
             AuthMode::ApiKey => {
@@ -248,10 +250,23 @@ impl CompiledAuth {
                         )
                     }
                 };
+                let jwks = match plan.jwks_url {
+                    None => None,
+                    Some(url) => {
+                        let cache = jwks.ok_or(
+                            "auth.jwks_url needs the shared JWKS cache, \
+                             which this caller cannot supply",
+                        )?;
+                        Some(crate::jwt::JwksSource {
+                            url,
+                            cache: cache.clone(),
+                        })
+                    }
+                };
                 Ok(Self::Jwt(std::sync::Arc::new(CompiledJwt {
                     verifier: crate::jwt::Verifier {
                         static_keys,
-                        jwks_url: plan.jwks_url,
+                        jwks,
                         algorithms: plan.algorithms,
                         issuer: plan.issuer,
                         audience: plan.audience,
@@ -1047,7 +1062,7 @@ mod tests {
 
     #[tokio::test]
     async fn api_key_defaults_to_bearer_on_authorization() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None)
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None, None)
             .await
             .expect("compiles");
         let headers = [("Authorization", "Bearer s3cret")];
@@ -1062,7 +1077,7 @@ mod tests {
     /// prefix would be decorative.
     #[tokio::test]
     async fn api_key_requires_the_scheme_prefix() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None)
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None, None)
             .await
             .expect("compiles");
         let headers = [("Authorization", "s3cret")];
@@ -1078,7 +1093,9 @@ mod tests {
     async fn a_custom_header_takes_a_bare_key() {
         let mut cfg = api_key_config(&["s3cret"]);
         cfg.header = Some("X-API-Key".to_string());
-        let auth = CompiledAuth::compile(&cfg, None).await.expect("compiles");
+        let auth = CompiledAuth::compile(&cfg, None, None)
+            .await
+            .expect("compiles");
         let headers = [("X-API-Key", "s3cret")];
         assert!(
             auth.authenticate(&lookup(&headers), None, &dl())
@@ -1089,7 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_wrong_or_missing_key_is_refused() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None)
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None, None)
             .await
             .expect("compiles");
         assert!(
@@ -1104,7 +1121,7 @@ mod tests {
     /// possible without a window of refusals.
     #[tokio::test]
     async fn any_configured_key_is_accepted() {
-        let auth = CompiledAuth::compile(&api_key_config(&["old", "new"]), None)
+        let auth = CompiledAuth::compile(&api_key_config(&["old", "new"]), None, None)
             .await
             .expect("compiles");
         for key in ["old", "new"] {
@@ -1123,9 +1140,9 @@ mod tests {
     async fn api_key_mode_requires_keys() {
         let mut cfg = api_key_config(&[]);
         cfg.keys = None;
-        assert!(CompiledAuth::compile(&cfg, None).await.is_err());
+        assert!(CompiledAuth::compile(&cfg, None, None).await.is_err());
         let empty = api_key_config(&[]);
-        assert!(CompiledAuth::compile(&empty, None).await.is_err());
+        assert!(CompiledAuth::compile(&empty, None, None).await.is_err());
     }
 
     fn hmac_config(secret: &str, prefix: Option<&str>) -> ChannelAuthConfig {
@@ -1144,7 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn hmac_accepts_a_correct_hex_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
             .await
             .expect("compiles");
         let body = br#"{"id":"evt_1","amount":2000}"#;
@@ -1160,7 +1177,7 @@ mod tests {
     /// The GitHub spelling: `sha256=<hex>`.
     #[tokio::test]
     async fn hmac_strips_a_configured_signature_prefix() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", Some("sha256=")), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", Some("sha256=")), None, None)
             .await
             .expect("compiles");
         let body = br#"{"action":"opened"}"#;
@@ -1176,7 +1193,7 @@ mod tests {
     /// The Shopify spelling: base64.
     #[tokio::test]
     async fn hmac_accepts_a_base64_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
             .await
             .expect("compiles");
         let body = br#"{"order":1}"#;
@@ -1196,7 +1213,7 @@ mod tests {
     /// invalidates the signature.
     #[tokio::test]
     async fn hmac_refuses_a_tampered_body() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
             .await
             .expect("compiles");
         let signed = br#"{"amount":2000}"#;
@@ -1212,7 +1229,7 @@ mod tests {
 
     #[tokio::test]
     async fn hmac_refuses_a_signature_from_the_wrong_secret() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
             .await
             .expect("compiles");
         let body = br#"{"a":1}"#;
@@ -1227,7 +1244,7 @@ mod tests {
 
     #[tokio::test]
     async fn hmac_refuses_a_malformed_or_absent_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None)
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
             .await
             .expect("compiles");
         let body = br#"{"a":1}"#;
@@ -1251,14 +1268,14 @@ mod tests {
     async fn hmac_mode_requires_a_secret() {
         let mut cfg = hmac_config("x", None);
         cfg.secret = None;
-        assert!(CompiledAuth::compile(&cfg, None).await.is_err());
+        assert!(CompiledAuth::compile(&cfg, None, None).await.is_err());
     }
 
     /// Every refusal reads the same, so a caller cannot learn which half of the
     /// credential was right by comparing messages.
     #[tokio::test]
     async fn every_refusal_carries_the_same_message() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None)
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]), None, None)
             .await
             .expect("compiles");
         let missing = auth
@@ -1285,7 +1302,10 @@ mod tests {
     }
 
     async fn compiled_hmac(cfg: &ChannelAuthConfig) -> CompiledHmac {
-        match CompiledAuth::compile(cfg, None).await.expect("compiles") {
+        match CompiledAuth::compile(cfg, None, None)
+            .await
+            .expect("compiles")
+        {
             CompiledAuth::Hmac(h) => h,
             CompiledAuth::ApiKey { .. } | CompiledAuth::Jwt(_) => {
                 unreachable!("an hmac config compiles to Hmac")
@@ -1363,7 +1383,7 @@ mod tests {
 
         // Shopify: SHA-256, base64 — and hex must NOT be accepted, because
         // the preset pins the encoding.
-        let auth = CompiledAuth::compile(&preset_config("shopify", "shpss"), None)
+        let auth = CompiledAuth::compile(&preset_config("shopify", "shpss"), None, None)
             .await
             .expect("compiles");
         let raw = sign::<Hmac<Sha256>>(b"shpss", body);
@@ -1389,7 +1409,7 @@ mod tests {
         );
 
         // Webex: SHA-1 over the raw body.
-        let auth = CompiledAuth::compile(&preset_config("webex", "wxsecret"), None)
+        let auth = CompiledAuth::compile(&preset_config("webex", "wxsecret"), None, None)
             .await
             .expect("compiles");
         let sha1_hex = hex::encode(sign::<Hmac<Sha1>>(b"wxsecret", body));
@@ -1406,7 +1426,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_preset_matches_the_documented_spelling() {
-        let auth = CompiledAuth::compile(&preset_config("github", "ghs"), None)
+        let auth = CompiledAuth::compile(&preset_config("github", "ghs"), None, None)
             .await
             .expect("compiles");
         let body = br#"{"action":"opened"}"#;
@@ -1430,7 +1450,9 @@ mod tests {
             secrets: Some(vec!["new".to_string()]),
             ..Default::default()
         };
-        let auth = CompiledAuth::compile(&cfg, None).await.expect("compiles");
+        let auth = CompiledAuth::compile(&cfg, None, None)
+            .await
+            .expect("compiles");
         let body = b"payload";
         for secret in [b"old".as_slice(), b"new".as_slice()] {
             let sig = hex::encode(sign::<Hmac<Sha256>>(secret, body));
@@ -1595,7 +1617,7 @@ mod tests {
     }
 
     async fn jwt_auth(cfg: &ChannelAuthConfig) -> CompiledAuth {
-        CompiledAuth::compile(cfg, Some(&dl()))
+        CompiledAuth::compile(cfg, Some(&dl()), None)
             .await
             .expect("compiles")
     }
@@ -1875,7 +1897,7 @@ mod tests {
     #[tokio::test]
     async fn jwt_short_hs_secret_is_refused() {
         let cfg = jwt_config(&["HS512"], "much-too-short");
-        let err = CompiledAuth::compile(&cfg, Some(&dl()))
+        let err = CompiledAuth::compile(&cfg, Some(&dl()), None)
             .await
             .expect_err("test");
         assert!(err.contains("RFC 7518"), "{err}");

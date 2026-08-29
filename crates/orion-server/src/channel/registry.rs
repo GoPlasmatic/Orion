@@ -317,11 +317,31 @@ impl RegistrySnapshot {
     }
 }
 
+/// Everything [`ChannelRegistry::reload`] needs beyond the channel rows.
+///
+/// Named rather than positional for the reason [`crate::engine::HandlerDeps`]
+/// is: five same-shaped borrows in a row is a silent-transposition hazard the
+/// compiler cannot see, and the two production callers (boot and reload) build
+/// the identical set from `ServingComponents` and `AppState` respectively.
+pub struct ReloadDeps<'a> {
+    pub connector_registry: &'a ConnectorRegistry,
+    pub cache_pool: &'a CachePool,
+    pub datalogic: &'a DatalogicEngine,
+    /// The instance's JWKS cache, for `auth.mode = "jwt"` channels.
+    pub jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
+    pub global_trace_storage: &'a TraceStorageConfig,
+}
+
 /// Everything [`ChannelRegistry::build_runtime`] needs beyond the channel row.
 struct RuntimeDeps<'a> {
     connector_registry: &'a ConnectorRegistry,
     cache_pool: &'a CachePool,
     datalogic: &'a DatalogicEngine,
+    /// The instance's JWKS cache, for `auth.mode = "jwt"` channels. Like
+    /// `datalogic` and `cache_pool` it is a process singleton, so a carried-over
+    /// `ChannelRuntimeConfig` holding a compiled verifier built from it stays
+    /// valid — see [`DepsFingerprint`].
+    jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
 }
@@ -737,16 +757,20 @@ impl ChannelRegistry {
         // worst possible reading of the operator's intent.
         let auth = match parsed_config.auth.as_ref() {
             Some(cfg) => Some(
-                crate::channel::auth::CompiledAuth::compile(cfg, Some(deps.datalogic))
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(
-                            channel = %channel.name,
-                            error = %e,
-                            "Refusing to load channel: auth config cannot be compiled"
-                        );
-                        issue(format!("auth: {e}"))
-                    })?,
+                crate::channel::auth::CompiledAuth::compile(
+                    cfg,
+                    Some(deps.datalogic),
+                    Some(deps.jwks),
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: auth config cannot be compiled"
+                    );
+                    issue(format!("auth: {e}"))
+                })?,
             ),
             None => None,
         };
@@ -796,12 +820,16 @@ impl ChannelRegistry {
     pub async fn reload(
         &self,
         channels: &[Channel],
-        connector_registry: &ConnectorRegistry,
-        cache_pool: &CachePool,
-        datalogic: &DatalogicEngine,
-        global_trace_storage: &TraceStorageConfig,
+        deps: ReloadDeps<'_>,
         engine_issues: Vec<ChannelLoadIssue>,
     ) {
+        let ReloadDeps {
+            connector_registry,
+            cache_pool,
+            datalogic,
+            jwks,
+            global_trace_storage,
+        } = deps;
         // Read-modify-write on the snapshot: serialise it so two reloads
         // cannot both build from the same outgoing generation.
         let _reload_guard = self.reload_lock.lock().await;
@@ -810,6 +838,7 @@ impl ChannelRegistry {
             connector_registry,
             cache_pool,
             datalogic,
+            jwks,
             global_trace_storage,
             cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
         };
@@ -983,6 +1012,7 @@ mod tests {
         connectors: ConnectorRegistry,
         cache_pool: CachePool,
         datalogic: DatalogicEngine,
+        jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
         trace_storage: TraceStorageConfig,
     }
 
@@ -994,6 +1024,7 @@ mod tests {
                 ),
                 cache_pool: CachePool::new(4, 60, 1000),
                 datalogic: DatalogicEngine::new(),
+                jwks: test_jwks(),
                 trace_storage: TraceStorageConfig::default(),
             }
         }
@@ -1015,14 +1046,26 @@ mod tests {
             registry
                 .reload(
                     channels,
-                    &self.connectors,
-                    &self.cache_pool,
-                    &self.datalogic,
-                    &self.trace_storage,
+                    ReloadDeps {
+                        connector_registry: &self.connectors,
+                        cache_pool: &self.cache_pool,
+                        datalogic: &self.datalogic,
+                        jwks: &self.jwks,
+                        global_trace_storage: &self.trace_storage,
+                    },
                     engine_issues,
                 )
                 .await;
         }
+    }
+
+    /// A JWKS cache for tests: no channel config here sets `auth.jwks_url`,
+    /// so nothing is ever fetched through it.
+    fn test_jwks() -> std::sync::Arc<crate::jwt::jwks::JwksCache> {
+        std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ))
     }
 
     fn cluster_backends() -> ClusterBackends {
@@ -1089,10 +1132,13 @@ mod tests {
         registry
             .reload(
                 &[channel],
-                &registry_with_cache("ro-cache", false).await,
-                &CachePool::new(4, 60, 1000),
-                &DatalogicEngine::new(),
-                &TraceStorageConfig::default(),
+                ReloadDeps {
+                    connector_registry: &registry_with_cache("ro-cache", false).await,
+                    cache_pool: &CachePool::new(4, 60, 1000),
+                    datalogic: &DatalogicEngine::new(),
+                    jwks: &test_jwks(),
+                    global_trace_storage: &TraceStorageConfig::default(),
+                },
                 Vec::new(),
             )
             .await;
@@ -1119,10 +1165,13 @@ mod tests {
         registry
             .reload(
                 &[channel],
-                &registry_with_cache("rw-cache", true).await,
-                &CachePool::new(4, 60, 1000),
-                &DatalogicEngine::new(),
-                &TraceStorageConfig::default(),
+                ReloadDeps {
+                    connector_registry: &registry_with_cache("rw-cache", true).await,
+                    cache_pool: &CachePool::new(4, 60, 1000),
+                    datalogic: &DatalogicEngine::new(),
+                    jwks: &test_jwks(),
+                    global_trace_storage: &TraceStorageConfig::default(),
+                },
                 Vec::new(),
             )
             .await;
@@ -1147,10 +1196,13 @@ mod tests {
         registry
             .reload(
                 &[channel],
-                &registry_with_cache("ro-cache", false).await,
-                &CachePool::new(4, 60, 1000),
-                &DatalogicEngine::new(),
-                &TraceStorageConfig::default(),
+                ReloadDeps {
+                    connector_registry: &registry_with_cache("ro-cache", false).await,
+                    cache_pool: &CachePool::new(4, 60, 1000),
+                    datalogic: &DatalogicEngine::new(),
+                    jwks: &test_jwks(),
+                    global_trace_storage: &TraceStorageConfig::default(),
+                },
                 Vec::new(),
             )
             .await;

@@ -3,6 +3,7 @@ mod cluster;
 mod engine;
 mod env_overrides;
 pub(crate) mod env_substitute;
+mod jwt;
 mod kafka;
 mod logging;
 mod observability;
@@ -22,6 +23,7 @@ pub use admin_auth::{AdminAuthConfig, constant_time_eq};
 pub use cluster::ClusterConfig;
 pub use engine::EngineConfig;
 pub use env_overrides::known_env_override_keys;
+pub use jwt::JwtConfig;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use observability::{
@@ -75,6 +77,8 @@ pub struct AppConfig {
     pub channel_filter: ChannelFilterConfig,
     pub audit: AuditConfig,
     pub admin_auth: AdminAuthConfig,
+    /// Instance-wide JWT verification policy (the JWKS egress rule).
+    pub jwt: JwtConfig,
     pub cluster: ClusterConfig,
     /// Deployment values stamped into `metadata.vars` on every message, and
     /// therefore visible in traces. Free-form, so no env override — `${VAR}`
@@ -111,6 +115,7 @@ impl Default for AppConfig {
             channel_filter: ChannelFilterConfig::default(),
             audit: AuditConfig::default(),
             admin_auth: AdminAuthConfig::default(),
+            jwt: JwtConfig::default(),
             cluster: ClusterConfig::default(),
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),

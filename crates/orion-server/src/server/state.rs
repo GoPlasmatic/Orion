@@ -112,6 +112,11 @@ pub struct AppStateInner {
     pub metrics_handle: PrometheusHandle,
     pub http_client: reqwest::Client,
     pub datalogic: Arc<DatalogicEngine>,
+    /// The instance's JWKS cache, built on `http_client` — the client with
+    /// `PinnedDnsResolver`. Both verify surfaces (the channel `jwt` auth mode
+    /// and the `jwt_verify` task) share it, so a key set is fetched once per
+    /// URL per instance and an issuer's rotation is seen by both at once.
+    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,

@@ -137,6 +137,9 @@ pub struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
     pub datalogic: Arc<datalogic_rs::Engine>,
+    /// The JWKS cache, built on `http_client` so key fetches ride the pinned
+    /// resolver and the shared connection pool.
+    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
     /// `[secrets]`, resolved once. Every engine built from here on carries it,
     /// including the ones the admin plane builds per request — a surface that
     /// built its engine without it would refuse a workflow the serving engine
@@ -224,6 +227,15 @@ pub async fn build_engine_components(
             crate::errors::OrionError::internal(format!("Failed to build HTTP client: {e}"))
         })?;
 
+    // One JWKS cache per instance, on the pinned client. `jwks_url` is
+    // authored input, so this is the one egress path with no operator-chosen
+    // connector behind it; `jwt.allow_private_jwks_urls` is its equivalent of
+    // a connector's `allow_private_urls`.
+    let jwks = Arc::new(crate::jwt::jwks::JwksCache::new(
+        http_client.clone(),
+        config.jwt.allow_private_jwks_urls,
+    ));
+
     // Shared datalogic engine — used by handlers for template evaluation and
     // by the channel registry to pre-compile per-channel JSONLogic. Carries
     // Orion's custom operators so channel-level expressions speak the same
@@ -282,6 +294,7 @@ pub async fn build_engine_components(
         client: http_client.clone(),
         engine: engine.clone(),
         channel_registry: channel_registry.clone(),
+        jwks: jwks.clone(),
         engine_config: &config.engine,
         query_config: &config.query,
         write_config: &config.write,
@@ -303,6 +316,7 @@ pub async fn build_engine_components(
             connector_registry,
             http_client,
             datalogic: datalogic_engine,
+            jwks,
             secrets,
             vars,
             engine,
@@ -378,10 +392,13 @@ impl EngineComponents {
         channel_registry
             .reload(
                 &channels,
-                &serving.connector_registry,
-                &serving.cache_pool,
-                &serving.datalogic,
-                &config.trace_storage,
+                crate::channel::ReloadDeps {
+                    connector_registry: &serving.connector_registry,
+                    cache_pool: &serving.cache_pool,
+                    datalogic: &serving.datalogic,
+                    jwks: &serving.jwks,
+                    global_trace_storage: &config.trace_storage,
+                },
                 engine_issues,
             )
             .await;
@@ -815,6 +832,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         connector_registry,
         http_client,
         datalogic,
+        jwks,
         secrets,
         vars,
         engine,
@@ -852,6 +870,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         metrics_handle,
         http_client,
         datalogic,
+        jwks,
         rate_limit_state,
         ready,
         kafka: crate::server::state::Kafka {

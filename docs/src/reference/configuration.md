@@ -497,6 +497,18 @@ api_keys = ["sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f0
 
 A malformed `sha256:` entry is a startup error, not a key that silently never matches. Audit entries record a hash prefix for hashed keys, so you can tell which key performed a mutation without storing the key.
 
+## JWT Verification
+
+Instance-wide policy for JWT verification. The per-issuer settings — algorithms, issuer, audience, leeway and the JWKS URL itself — belong to the channel's [`auth` block](channel-config.md) or to the [`jwt_verify`](functions.md#jwt_verify) task, because each describes one issuer relationship. What lives here is the operator's egress policy for fetching keys.
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `jwt.allow_private_jwks_urls` | `false` | `ORION_JWT__ALLOW_PRIVATE_JWKS_URLS` | Turn on for an issuer on a private address (an in-cluster Keycloak, a sidecar). |
+
+`jwks_url` is authored input — a field of a channel's `auth` block or of a `jwt_verify` task — and it is the one egress path in the runtime with no operator-configured connector behind it. So it is checked twice: the URL must be `https://` where it is authored, and the address it resolves to is checked on **every fetch**, exactly as an `http` connector without `allow_private_urls` is. The split is deliberate — an admin API that resolves DNS before accepting a channel is an admin API that hangs when the issuer is down, and a host that was public when the channel was stored can be private by the time it is dialled.
+
+Setting this to `true` disables the address check for every JWKS fetch on the instance. It is instance-wide rather than per channel because a per-channel opt-out would let the author of a definition grant themselves the egress the setting exists to gate.
+
 ## CORS
 
 | Setting | Default | Env var | When to change |

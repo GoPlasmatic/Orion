@@ -1541,7 +1541,7 @@ mod tests {
                 ..Default::default()
             };
             self.auth = Some(
-                crate::channel::auth::CompiledAuth::compile(&cfg, None)
+                crate::channel::auth::CompiledAuth::compile(&cfg, None, None)
                     .await
                     .expect("test auth compiles"),
             );

@@ -94,10 +94,13 @@ pub async fn reload_engine_with_opts(
             .channel_registry
             .reload(
                 &channels,
-                &state.connector_registry,
-                &state.caches.cache_pool,
-                &state.datalogic,
-                &state.config.trace_storage,
+                crate::channel::ReloadDeps {
+                    connector_registry: &state.connector_registry,
+                    cache_pool: &state.caches.cache_pool,
+                    datalogic: &state.datalogic,
+                    jwks: &state.jwks,
+                    global_trace_storage: &state.config.trace_storage,
+                },
                 engine_issues,
             )
             .await;

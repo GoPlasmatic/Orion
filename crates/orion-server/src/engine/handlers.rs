@@ -178,6 +178,9 @@ pub struct HandlerDeps<'a> {
     pub client: reqwest::Client,
     pub engine: Arc<crate::engine::EngineHandle>,
     pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    /// The instance's JWKS cache — `jwt_verify`'s key source, shared with the
+    /// channel `jwt` auth mode so both see one issuer rotation at once.
+    pub jwks: Arc<crate::jwt::jwks::JwksCache>,
     pub engine_config: &'a crate::config::EngineConfig,
     pub query_config: &'a crate::config::QueryConfig,
     pub write_config: &'a crate::config::WriteConfig,
@@ -199,6 +202,7 @@ impl<'a> HandlerDeps<'a> {
             client: state.http_client.clone(),
             engine: state.engine.clone(),
             channel_registry: state.channel_registry.clone(),
+            jwks: state.jwks.clone(),
             engine_config: &state.config.engine,
             query_config: &state.config.query,
             write_config: &state.config.write,
@@ -225,6 +229,7 @@ pub fn build_custom_functions(
         client,
         engine,
         channel_registry,
+        jwks,
         engine_config,
         query_config,
         write_config,
@@ -267,7 +272,7 @@ pub fn build_custom_functions(
     );
     fns.insert(
         "jwt_verify".to_string(),
-        Box::new(functions::jwt_verify::JwtVerifyHandler),
+        Box::new(functions::jwt_verify::JwtVerifyHandler { jwks }),
     );
 
     fns.insert(
