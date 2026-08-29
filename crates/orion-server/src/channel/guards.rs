@@ -726,10 +726,13 @@ async fn check_rate_limit(
                         "Rate-limit backend error; failing closed (request refused)"
                     );
                     metrics::record_rate_limit_rejected(channel);
-                    Err(OrionError::ServiceUnavailable(format!(
-                        "Channel '{channel}' cannot check its rate limit: the backend is \
-                         unavailable and the channel is configured to fail closed"
-                    )))
+                    Err(OrionError::unavailable(
+                        crate::errors::Unavailable::GuardBackend,
+                        format!(
+                            "Channel '{channel}' cannot check its rate limit: the backend \
+                             is unavailable and the channel is configured to fail closed"
+                        ),
+                    ))
                 }
             }
         }
@@ -967,11 +970,14 @@ async fn check_deduplication(
                         header = %dedup.header,
                         "Dedup backend error; failing closed (request refused)"
                     );
-                    return Err(OrionError::ServiceUnavailable(format!(
-                        "Channel '{channel}' cannot verify the idempotency key: the \
-                         deduplication backend is unavailable and the channel is \
-                         configured to fail closed"
-                    )));
+                    return Err(OrionError::unavailable(
+                        crate::errors::Unavailable::GuardBackend,
+                        format!(
+                            "Channel '{channel}' cannot verify the idempotency key: the \
+                             deduplication backend is unavailable and the channel is \
+                             configured to fail closed"
+                        ),
+                    ));
                 }
             }
         }
@@ -1016,9 +1022,10 @@ fn acquire_backpressure(
             Ok(permit) => Ok(Some(permit)),
             Err(_) => {
                 metrics::record_error("backpressure");
-                Err(OrionError::ServiceUnavailable(format!(
-                    "Channel '{channel}' is at capacity"
-                )))
+                Err(OrionError::unavailable(
+                    crate::errors::Unavailable::AtCapacity,
+                    format!("Channel '{channel}' is at capacity"),
+                ))
             }
         }
     } else {
@@ -2001,7 +2008,7 @@ mod tests {
             .build();
         let verdict = apply_guards(request(Transport::Kafka, &deny, &dl, &data, &meta)).await;
         assert!(
-            matches!(verdict, Err(OrionError::ServiceUnavailable(_))),
+            matches!(verdict, Err(OrionError::ServiceUnavailable { .. })),
             "deny must refuse with 503, not 429"
         );
     }
@@ -2302,7 +2309,7 @@ mod tests {
         for transport in [Transport::Kafka, Transport::ChannelCall] {
             let verdict = apply_guards(request(transport, &runtime, &dl, &data, &meta)).await;
             assert!(
-                matches!(verdict, Err(OrionError::ServiceUnavailable(_))),
+                matches!(verdict, Err(OrionError::ServiceUnavailable { .. })),
                 "{transport:?} must be shed while the permit is held"
             );
         }
@@ -2444,7 +2451,7 @@ mod tests {
         let result =
             super::check_deduplication("test-channel", &cfg, IDEMPOTENCY, None, None).await;
         assert!(
-            matches!(result, Err(OrionError::ServiceUnavailable(_))),
+            matches!(result, Err(OrionError::ServiceUnavailable { .. })),
             "deny must refuse with 503"
         );
     }
@@ -2711,7 +2718,7 @@ mod tests {
         req.header = IDEMPOTENCY;
         assert!(matches!(
             apply_guards(req).await,
-            Err(OrionError::ServiceUnavailable(_))
+            Err(OrionError::ServiceUnavailable { .. })
         ));
         assert!(
             store

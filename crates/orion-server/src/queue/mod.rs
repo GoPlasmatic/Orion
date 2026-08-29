@@ -273,10 +273,13 @@ impl TraceQueue {
         if self.max_memory_bytes > 0 && total > self.max_memory_bytes {
             self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
             metrics::record_trace_queue_rejected("memory");
-            return Err(crate::errors::OrionError::ServiceUnavailable(format!(
-                "Trace queue memory limit exceeded ({} + {} > {} bytes)",
-                prev, payload_size, self.max_memory_bytes
-            )));
+            return Err(crate::errors::OrionError::unavailable(
+                crate::errors::Unavailable::AtCapacity,
+                format!(
+                    "Trace queue memory limit exceeded ({} + {} > {} bytes)",
+                    prev, payload_size, self.max_memory_bytes
+                ),
+            ));
         }
         metrics::set_trace_queue_memory_bytes(total as f64);
 
@@ -290,16 +293,22 @@ impl TraceQueue {
                 // hold a slice of the channel's `max_concurrent_per_node`.
                 mpsc::error::TrySendError::Full(_) => {
                     metrics::record_trace_queue_rejected("full");
-                    crate::errors::OrionError::ServiceUnavailable(format!(
-                        "Trace queue is full ({} messages pending)",
-                        self.pending_count.load(Ordering::Relaxed)
-                    ))
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    crate::errors::OrionError::ServiceUnavailable(
-                        "Trace queue is closed".to_string(),
+                    crate::errors::OrionError::unavailable(
+                        crate::errors::Unavailable::AtCapacity,
+                        format!(
+                            "Trace queue is full ({} messages pending)",
+                            self.pending_count.load(Ordering::Relaxed)
+                        ),
                     )
                 }
+                // Not `AtCapacity`: a closed channel means the dispatcher is
+                // gone, which no amount of waiting fixes. The node reports it
+                // on `/health` as a dead background task, and this refusal
+                // sends no `Retry-After` rather than inviting a loop.
+                mpsc::error::TrySendError::Closed(_) => crate::errors::OrionError::unavailable(
+                    crate::errors::Unavailable::QueueClosed,
+                    "Trace queue is closed",
+                ),
             });
         }
 
@@ -461,7 +470,7 @@ mod tests {
                 .expect_err("full queue must be rejected");
 
         assert!(
-            matches!(err, crate::errors::OrionError::ServiceUnavailable(_)),
+            matches!(err, crate::errors::OrionError::ServiceUnavailable { .. }),
             "expected ServiceUnavailable, got: {err:?}"
         );
     }
@@ -500,7 +509,7 @@ mod tests {
             .await
             .expect_err("closed queue must be rejected");
         assert!(
-            matches!(err, crate::errors::OrionError::ServiceUnavailable(_)),
+            matches!(err, crate::errors::OrionError::ServiceUnavailable { .. }),
             "expected Queue error, got: {err:?}"
         );
     }

@@ -431,9 +431,10 @@ impl ChannelRegistry {
     ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
         let snapshot = self.snapshot.load();
         if let Some(reason) = snapshot.quarantined.get(name) {
-            return Err(crate::errors::OrionError::ServiceUnavailable(format!(
-                "Channel '{name}' failed to load and is not being served: {reason}"
-            )));
+            return Err(crate::errors::OrionError::unavailable(
+                crate::errors::Unavailable::ChannelQuarantined,
+                format!("Channel '{name}' failed to load and is not being served: {reason}"),
+            ));
         }
         Ok(snapshot.by_name.get(name).cloned())
     }

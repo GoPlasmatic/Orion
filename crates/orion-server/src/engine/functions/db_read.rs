@@ -70,14 +70,18 @@ impl AsyncFunctionHandler for DbReadHandler {
                 let mut rows: Vec<AnyRow> = Vec::new();
                 while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if rows.len() >= max_rows {
-                        // F42: marked so `timed_query` reports it as a 400
+                        // F42: classified so `timed_query` reports it as a 400
                         // with the text intact rather than a 500 with the
-                        // guidance sanitised away.
-                        return Err(format!(
-                            "{}{NAME} result exceeds query.max_limit ({max_rows} rows) — \
-                             add a LIMIT to the query or raise the cap",
-                            crate::engine::functions::connector_helpers::LIMIT_MARKER
-                        ));
+                        // guidance sanitised away. The guidance *is* the
+                        // message, so losing it loses the point.
+                        return Err(
+                            crate::engine::functions::connector_helpers::QueryFailure::Limit(
+                                format!(
+                                    "{NAME} result exceeds query.max_limit ({max_rows} rows) — \
+                             add a LIMIT to the query or raise the cap"
+                                ),
+                            ),
+                        );
                     }
                     rows.push(row);
                 }

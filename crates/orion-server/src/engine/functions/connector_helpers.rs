@@ -396,10 +396,53 @@ pub fn to_limit_error(message: impl std::fmt::Display) -> DataflowError {
     DataflowError::Validation(message.to_string())
 }
 
-/// Prefix a `timed_query` operation puts on a message that is a caller-fixable
-/// limit rather than a backend failure, so the wrapper can classify it (F42).
-/// Stripped before the message is surfaced.
-pub const LIMIT_MARKER: &str = "orion.limit: ";
+/// Why a [`timed_query`] operation failed, decided where it is known.
+///
+/// The distinction matters: a limit the caller can fix is a 400 with its text
+/// intact, a backend failure is a 500 with the text sanitised. Only the
+/// operation itself can tell them apart, and it used to say so by **prefixing
+/// its error string** with a marker the wrapper looked for and stripped
+/// (F42) — control flow through a string, in the one place a value under a
+/// `Result`'s `Err` was already available to carry it. A message that happened
+/// to start with the marker would have been misread as a limit; a limit whose
+/// text was reformatted anywhere in between would have silently become a 500.
+///
+/// `From<String>` maps to [`Self::Backend`], so an operation with nothing to
+/// distinguish keeps returning `Result<_, String>` and reads the same.
+#[derive(Debug)]
+pub enum QueryFailure {
+    /// The backend was reached and the operation failed. A 500 with the text
+    /// replaced — a driver error names hosts, tables and sometimes values.
+    Backend(String),
+    /// A limit the caller can fix — a result set over `query.max_limit`, say.
+    /// A 400 with the message intact, because the message is the guidance:
+    /// *"add a LIMIT to the query or raise the cap"* is useless once
+    /// sanitised.
+    Limit(String),
+}
+
+impl From<String> for QueryFailure {
+    fn from(message: String) -> Self {
+        Self::Backend(message)
+    }
+}
+
+/// A driver error is always a backend failure — the query reached the server
+/// and the server refused it. Spelled out so `?` keeps working inside an
+/// operation, which is the idiom every one of them uses.
+impl From<sqlx::Error> for QueryFailure {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Backend(e.to_string())
+    }
+}
+
+impl std::fmt::Display for QueryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Backend(m) | Self::Limit(m) => f.write_str(m),
+        }
+    }
+}
 
 /// Extracts a required string field from a JSON value, returning a validation
 /// error that names the handler and field on failure.
@@ -789,7 +832,7 @@ impl QueryBudget {
     pub async fn run<F, T, E>(&self, handler_name: &str, operation: F) -> Result<T, DataflowError>
     where
         F: std::future::Future<Output = Result<T, E>>,
-        E: std::fmt::Display,
+        E: Into<QueryFailure>,
     {
         let total_ms = self.total_ms;
         tokio::time::timeout_at(self.deadline, operation)
@@ -797,17 +840,14 @@ impl QueryBudget {
             .map_err(|_| {
                 DataflowError::Timeout(format!("{handler_name} query timed out after {total_ms}ms"))
             })?
-            .map_err(|e| {
-                // F42: a limit the caller can fix is a 400 with its text intact,
-                // not a 500 with the guidance replaced.
-                let text = e.to_string();
-                if let Some(detail) = text.strip_prefix(LIMIT_MARKER) {
-                    return to_limit_error(detail);
-                }
-                DataflowError::function_execution(
+            .map_err(|e| match e.into() {
+                // F42: a limit the caller can fix is a 400 with its text
+                // intact, not a 500 with the guidance replaced.
+                QueryFailure::Limit(detail) => to_limit_error(detail),
+                QueryFailure::Backend(text) => DataflowError::function_execution(
                     format!("{handler_name} query failed: {text}"),
                     None,
-                )
+                ),
             })
     }
 }
@@ -823,7 +863,7 @@ pub async fn timed_query<F, T, E>(
 ) -> Result<T, DataflowError>
 where
     F: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
+    E: Into<QueryFailure>,
 {
     QueryBudget::start(timeout_ms)
         .run(handler_name, operation)
@@ -1044,18 +1084,41 @@ mod error_taxonomy_tests {
         assert!(!err.retryable(), "a limit does not fix itself on retry");
     }
 
-    /// `timed_query` is where the marker is turned back into a classification;
-    /// the marker itself must never reach a caller.
+    /// A limit the operation classified reaches the caller as a 400 with its
+    /// message intact — the guidance *is* the message.
+    ///
+    /// This used to be carried by prefixing the error string with a marker
+    /// that `timed_query` looked for and stripped. The classification is a
+    /// value under the `Err` now, so there is no marker to leak, no message
+    /// that can be mistaken for one, and no reformatting in between that can
+    /// lose it.
     #[tokio::test]
-    async fn timed_query_classifies_a_marked_limit_and_strips_the_marker() {
+    async fn timed_query_reports_a_classified_limit_as_validation() {
         let err = timed_query(Some(1_000), "db_read", async {
-            Err::<(), String>(format!("{LIMIT_MARKER}too many rows — add a LIMIT"))
+            Err::<(), _>(QueryFailure::Limit(
+                "too many rows — add a LIMIT".to_string(),
+            ))
         })
         .await
         .expect_err("the operation failed");
         assert!(
             matches!(err, DataflowError::Validation(ref m) if m == "too many rows — add a LIMIT"),
-            "expected a stripped Validation, got {err:?}"
+            "expected the message intact under Validation, got {err:?}"
+        );
+    }
+
+    /// A message that *looks* like the old marker is just a message now. The
+    /// string-prefix scheme could not tell the difference.
+    #[tokio::test]
+    async fn a_backend_failure_is_never_reclassified_by_its_text() {
+        let err = timed_query(Some(1_000), "db_read", async {
+            Err::<(), String>("orion.limit: not a limit, just text".to_string())
+        })
+        .await
+        .expect_err("the operation failed");
+        assert!(
+            matches!(err, DataflowError::FunctionExecution { .. }),
+            "text cannot promote a backend failure to a limit: {err:?}"
         );
     }
 

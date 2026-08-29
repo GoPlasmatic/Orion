@@ -88,8 +88,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Kafka DLQ topic, the log), and says what to do today if per-message traces
   are required. No behaviour change.
 
+### Added
+
+- **A `503` now carries `Retry-After` when retrying is the answer, and
+  deliberately omits it when it is not.** `ServiceUnavailable` carried only a
+  string, so four unrelated causes — a quarantined channel, a guard backend
+  that is down, something at capacity, a queue whose consumer has died —
+  arrived indistinguishable, and none of them said when to come back. They are
+  now a typed `reason`: at-capacity answers `Retry-After: 1`, a guard-backend
+  outage `5`, and the two that do not clear on their own send no header at all
+  rather than inviting a retry loop against a node an operator has to fix.
+
 ### Fixed
 
+- **`is_retryable()` no longer claims every `503` is retryable.** A quarantined
+  channel and a closed queue reported `true`; neither clears without operator
+  action.
+- **The Kafka consumer no longer defers a guard refusal that will never
+  clear.** Any `ServiceUnavailable` deferred the offset and replayed the
+  record — correct for backpressure and a backend blip, but for a cause that
+  does not fix itself it would hold the partition for as long as the node
+  stayed broken. Deferral now follows the same transience judgement as
+  `Retry-After`.
 - **`POST /workflows/{id}/test` and `orion-server dry-run` now screen the
   workflow the way boot and reload do.** Both assembled the engine builder by
   hand and called `.build()`, which is not the same check: `http_call`,
@@ -103,6 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- A `timed_query` operation classifies its own failure with a `QueryFailure`
+  value instead of prefixing its error string with a marker the wrapper looked
+  for and stripped. Control flow no longer runs through a string: a message
+  that happens to start with the old marker is just a message, and a limit
+  whose text is reformatted in between cannot silently become a 500.
+- `strip_handler_prefix` strips a prefix rather than splitting on the first
+  match anywhere, so a message quoting the handler's own name mid-sentence is
+  no longer cut at the wrong place.
 - Engine construction over a single workflow is one function
   (`engine::build_single`) that screens, and loading-plus-checking a definition
   directory is one function (`definitions::gate_directory`) that both

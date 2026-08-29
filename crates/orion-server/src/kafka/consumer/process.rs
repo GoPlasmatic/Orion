@@ -92,7 +92,14 @@ pub(super) fn classify_guard_refusal(error: &crate::errors::OrionError) -> Guard
     use crate::errors::OrionError;
     match error {
         OrionError::Conflict(_) => GuardDisposition::Duplicate,
-        OrionError::RateLimited(_) | OrionError::ServiceUnavailable(_) => {
+        OrionError::RateLimited(_) => GuardDisposition::Deferred,
+        // Deferring holds the offset and replays the record, which is right
+        // only while the cause clears on its own. `ServiceUnavailable` used to
+        // defer unconditionally — so a cause that never clears (a quarantined
+        // channel, a dead queue consumer) would have blocked the partition for
+        // as long as the node stayed broken. The reason says which it is, and
+        // the same judgement drives `Retry-After` and `is_retryable`.
+        OrionError::ServiceUnavailable { reason, .. } if reason.is_transient() => {
             GuardDisposition::Deferred
         }
         _ => GuardDisposition::Terminal,
@@ -705,7 +712,10 @@ mod tests {
             GuardDisposition::Deferred
         );
         assert_eq!(
-            classify_guard_refusal(&OrionError::ServiceUnavailable("at capacity".into())),
+            classify_guard_refusal(&OrionError::unavailable(
+                crate::errors::Unavailable::AtCapacity,
+                "at capacity"
+            )),
             GuardDisposition::Deferred
         );
 

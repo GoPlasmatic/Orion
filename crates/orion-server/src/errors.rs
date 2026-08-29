@@ -99,8 +99,11 @@ pub enum OrionError {
     #[error("Response too large: {0}")]
     ResponseTooLarge(String),
 
-    #[error("Service unavailable: {0}")]
-    ServiceUnavailable(String),
+    #[error("Service unavailable: {message}")]
+    ServiceUnavailable {
+        reason: Unavailable,
+        message: String,
+    },
 
     #[error("Timeout: channel '{channel}' exceeded {timeout_ms}ms")]
     Timeout { channel: String, timeout_ms: u64 },
@@ -121,6 +124,54 @@ pub enum OrionError {
     Serialization(#[from] serde_json::Error),
 }
 
+/// Why a request was refused with `503`.
+///
+/// `ServiceUnavailable` carried only a formatted string, and four unrelated
+/// causes arrived through it: a channel quarantined at load, a guard whose
+/// backend is down, a queue or channel at capacity, and a queue whose consumer
+/// has died. They differ in the one thing a `503` is supposed to tell a
+/// caller — *come back, and when* — and nothing could tell them apart without
+/// reading English. `is_retryable` said `true` for all four, which is wrong
+/// for two of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailable {
+    /// The channel failed to load and is refused at every ingress (F35).
+    /// **Not transient**: it clears when an operator fixes the definition and
+    /// reloads, not on any timescale a client should wait out.
+    ChannelQuarantined,
+    /// A guard's backend — the rate-limit store, the dedup store — could not
+    /// be reached and the channel is configured to fail closed. Transient:
+    /// the backend comes back.
+    GuardBackend,
+    /// The channel, node or queue is at capacity. Transient and short — this
+    /// is backpressure working, and the caller should retry soon.
+    AtCapacity,
+    /// The queue behind this request has no consumer: its worker died. **Not
+    /// transient** without operator action, and the node reports it on
+    /// `/health` (`components.background_tasks`).
+    QueueClosed,
+}
+
+impl Unavailable {
+    /// Whether a client retrying, on its own, could succeed.
+    pub fn is_transient(self) -> bool {
+        matches!(self, Self::GuardBackend | Self::AtCapacity)
+    }
+
+    /// Seconds to put in `Retry-After`, or `None` when retrying is not the
+    /// answer. A `503` with no hint leaves every client to invent its own
+    /// backoff; a `503` that will never clear should not invite one at all.
+    pub fn retry_after_secs(self) -> Option<u32> {
+        match self {
+            // Backpressure clears as fast as the work in front of it.
+            Self::AtCapacity => Some(1),
+            // A backend outage is not measured in single seconds.
+            Self::GuardBackend => Some(5),
+            Self::ChannelQuarantined | Self::QueueClosed => None,
+        }
+    }
+}
+
 impl OrionError {
     /// Whether this error is likely transient and the operation could succeed on retry.
     pub fn is_retryable(&self) -> bool {
@@ -128,9 +179,17 @@ impl OrionError {
             OrionError::Storage(_) => true,
             OrionError::Engine(e) => e.retryable(),
             OrionError::RateLimited(_) => true,
-            OrionError::ServiceUnavailable(_) => true,
+            OrionError::ServiceUnavailable { reason, .. } => reason.is_transient(),
             OrionError::Timeout { .. } => true,
             _ => false,
+        }
+    }
+
+    /// A `503` whose cause the caller can act on.
+    pub fn unavailable(reason: Unavailable, message: impl Into<String>) -> Self {
+        OrionError::ServiceUnavailable {
+            reason,
+            message: message.into(),
         }
     }
 
@@ -219,10 +278,10 @@ impl OrionError {
                 codes::METHOD_NOT_ALLOWED,
                 msg.clone(),
             ),
-            OrionError::ServiceUnavailable(msg) => (
+            OrionError::ServiceUnavailable { message, .. } => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 codes::SERVICE_UNAVAILABLE,
-                msg.clone(),
+                message.clone(),
             ),
             OrionError::RateLimited(msg) | OrionError::RateLimitKeyUnavailable(msg) => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -398,6 +457,20 @@ impl IntoResponse for OrionError {
             response.headers_mut().insert(
                 axum::http::header::RETRY_AFTER,
                 axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        // A 503 says the same thing, when there is something to say. Before
+        // `Unavailable` there was nothing to say it *with*: four causes shared
+        // one string variant, so every 503 either carried no hint or the wrong
+        // one. A cause that will not clear on its own — a quarantined channel,
+        // a queue whose consumer died — deliberately sends no header rather
+        // than inviting a retry loop against a node an operator has to fix.
+        if let OrionError::ServiceUnavailable { reason, .. } = self
+            && let Some(secs) = reason.retry_after_secs()
+        {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(secs),
             );
         }
         // A refused bearer token answers with the RFC 6750 challenge — the
@@ -619,12 +692,60 @@ mod tests {
     /// queue-closed together as `503`. The adjacent arm in `TraceQueue::submit`
     /// (queue *full*) was already `ServiceUnavailable`, so the two halves of one
     /// condition answered with different status codes.
+    ///
+    /// They still share the status, and now differ where they should: full is
+    /// backpressure and clears, closed means the dispatcher is gone and does
+    /// not. `Unavailable` is what lets one variant say both.
     #[test]
-    fn a_closed_queue_is_service_unavailable() {
-        let err = OrionError::ServiceUnavailable("queue is closed".to_string());
+    fn a_closed_queue_is_service_unavailable_but_not_retryable() {
+        let err = OrionError::unavailable(Unavailable::QueueClosed, "queue is closed");
+        assert!(
+            !err.is_retryable(),
+            "a closed queue has no consumer — retrying cannot help"
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER),
+            "a 503 that will not clear must not invite a retry loop"
+        );
+    }
+
+    /// The complement: backpressure says come back, and says when.
+    #[test]
+    fn an_at_capacity_refusal_carries_retry_after() {
+        let err = OrionError::unavailable(Unavailable::AtCapacity, "channel is at capacity");
         assert!(err.is_retryable());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("1"),
+            "backpressure clears as fast as the work in front of it"
+        );
+    }
+
+    /// A quarantined channel is the other non-transient cause, and the one a
+    /// client is most likely to hammer: it looks exactly like an outage.
+    #[test]
+    fn a_quarantined_channel_does_not_invite_a_retry() {
+        let err = OrionError::unavailable(
+            Unavailable::ChannelQuarantined,
+            "Channel 'orders' failed to load and is not being served",
+        );
+        assert!(!err.is_retryable());
+        let response = err.into_response();
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER),
+            "it clears when an operator fixes the definition, not on a timer"
+        );
     }
 
     #[test]
@@ -656,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_retryable_queue() {
-        assert!(OrionError::ServiceUnavailable("closed".to_string()).is_retryable());
+        assert!(OrionError::unavailable(Unavailable::AtCapacity, "queue is full").is_retryable());
     }
 
     #[test]
@@ -678,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_service_unavailable_retryable() {
-        assert!(OrionError::ServiceUnavailable("queue full".to_string()).is_retryable());
+        assert!(OrionError::unavailable(Unavailable::AtCapacity, "queue full").is_retryable());
     }
 
     #[test]
@@ -779,7 +900,7 @@ mod tests {
                 .contains("dup")
         );
         assert!(
-            OrionError::ServiceUnavailable("closed".to_string())
+            OrionError::unavailable(Unavailable::AtCapacity, "closed")
                 .to_string()
                 .contains("closed")
         );
@@ -814,7 +935,7 @@ mod tests {
             OrionError::RateLimitKeyUnavailable(_) => "RateLimitKeyUnavailable",
             OrionError::PayloadTooLarge(_) => "PayloadTooLarge",
             OrionError::ResponseTooLarge(_) => "ResponseTooLarge",
-            OrionError::ServiceUnavailable(_) => "ServiceUnavailable",
+            OrionError::ServiceUnavailable { .. } => "ServiceUnavailable",
             OrionError::Timeout { .. } => "Timeout",
             OrionError::UnsupportedMediaType(_) => "UnsupportedMediaType",
             OrionError::MethodNotAllowed(_) => "MethodNotAllowed",
@@ -907,7 +1028,7 @@ mod tests {
                 "RESPONSE_TOO_LARGE",
             ),
             (
-                OrionError::ServiceUnavailable("closed".into()),
+                OrionError::unavailable(Unavailable::AtCapacity, "closed"),
                 StatusCode::SERVICE_UNAVAILABLE,
                 "SERVICE_UNAVAILABLE",
             ),
