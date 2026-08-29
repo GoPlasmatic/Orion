@@ -362,6 +362,101 @@ mod tests {
         v.as_object().expect("test input is an object").clone()
     }
 
+    fn mongo_connector(aggregate_write_stages: bool) -> crate::connector::DbConnectorConfig {
+        crate::connector::DbConnectorConfig {
+            connection_string: "mongodb://localhost:27017".to_string(),
+            max_connections: None,
+            connect_timeout_ms: None,
+            query_timeout_ms: None,
+            allow_private_urls: true,
+            operations: Default::default(),
+            dialect: Default::default(),
+            aggregate_write_stages,
+        }
+    }
+
+    /// Parse a pipeline the way the shell does, so `gate` can be asked about
+    /// it. No engine, no registry entry, no MongoDB.
+    fn parse(pipeline: Value) -> Aggregation {
+        let handler = MongoAggregateHandler {
+            pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(2)),
+            registry: Arc::new(ConnectorRegistry::new(Default::default())),
+            limits: Default::default(),
+        };
+        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let ctx = TaskContext::new(&mut message, &datalogic);
+        let call = ConnectorCall {
+            name: MongoAggregateHandler::NAME,
+            connector: "analytics",
+            channel: "ch".to_string(),
+            output: "data",
+        };
+        let input = json!({
+            "connector": "analytics",
+            "database": "db",
+            "collection": "events",
+            "pipeline": pipeline,
+        });
+        ConnectorHandler::parse(&handler, &call, &input, &ctx).expect("the pipeline parses")
+    }
+
+    /// The default-deny that had no test: `$out` and `$merge` write to a
+    /// collection, so they run only on a connector that says its aggregations
+    /// may write.
+    ///
+    /// Reachable in-process because the gate is a function of the parse and the
+    /// connector, not of a live server — which is the whole reason the handler
+    /// shape is a trait. Before this it could only be exercised against a
+    /// container.
+    #[test]
+    fn a_write_stage_needs_the_connectors_opt_in() {
+        let parsed = parse(json!([
+            { "$match": { "status": "active" } },
+            { "$out": "rollup" },
+        ]));
+
+        let err = <MongoAggregateHandler as ConnectorHandler>::gate(
+            &parsed,
+            &mongo_connector(false),
+            "analytics",
+        )
+        .expect_err("a write stage must be refused by default");
+        let detail = err.detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("$out/$merge"),
+            "the refusal must name the stages it is about: {detail:?}"
+        );
+
+        assert!(
+            <MongoAggregateHandler as ConnectorHandler>::gate(
+                &parsed,
+                &mongo_connector(true),
+                "analytics",
+            )
+            .is_ok(),
+            "the same pipeline runs on a connector that opted in"
+        );
+    }
+
+    /// The other half: a read-only pipeline is unaffected by the opt-in, so
+    /// leaving it off costs nothing for the ordinary case.
+    #[test]
+    fn a_read_only_pipeline_passes_the_gate_either_way() {
+        let parsed = parse(json!([{ "$group": { "_id": "$q", "n": { "$sum": 1 } } }]));
+        for opted_in in [false, true] {
+            assert!(
+                <MongoAggregateHandler as ConnectorHandler>::gate(
+                    &parsed,
+                    &mongo_connector(opted_in),
+                    "analytics",
+                )
+                .is_ok(),
+                "a read-only pipeline must not depend on aggregate_write_stages"
+            );
+        }
+    }
+
     #[test]
     fn a_read_only_pipeline_passes_authoring_validation() {
         let errs = validate_static_input(&obj(json!({ "pipeline": [

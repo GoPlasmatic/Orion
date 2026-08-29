@@ -953,6 +953,104 @@ mod tests {
         v.as_object().expect("test input is an object").clone()
     }
 
+    fn mongo_connector(
+        gates: crate::connector::OperationGates,
+    ) -> crate::connector::DbConnectorConfig {
+        crate::connector::DbConnectorConfig {
+            connection_string: "mongodb://localhost:27017".to_string(),
+            max_connections: None,
+            connect_timeout_ms: None,
+            query_timeout_ms: None,
+            allow_private_urls: true,
+            operations: gates,
+            dialect: Default::default(),
+            aggregate_write_stages: false,
+        }
+    }
+
+    /// Parse a task the way the shell does, so `gate` can be asked about it.
+    fn parse(input: Value) -> MongoWrite {
+        let handler = MongoWriteHandler {
+            pool_cache: Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(2)),
+            registry: Arc::new(ConnectorRegistry::new(Default::default())),
+            write_config: Default::default(),
+        };
+        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let ctx = TaskContext::new(&mut message, &datalogic);
+        let call = ConnectorCall {
+            name: MongoWriteHandler::NAME,
+            connector: "orders",
+            channel: "ch".to_string(),
+            output: "data",
+        };
+        ConnectorHandler::parse(&handler, &call, &input, &ctx).expect("the task parses")
+    }
+
+    /// The gate `mongo_write` picks is not fixed: an update that upserts is
+    /// gated as `upsert`, so a connector that permits updates and refuses
+    /// upserts refuses this one and allows the same task without `upsert`.
+    ///
+    /// This is the reason `gate` takes the parsed input, and it is testable
+    /// in-process for the same reason `mongo_aggregate`'s is: the answer is a
+    /// function of the task and the connector, not of a live server.
+    #[test]
+    fn an_upsert_is_gated_as_an_upsert_not_an_update() {
+        let update_only = crate::connector::OperationGates {
+            upsert: false,
+            ..Default::default()
+        };
+        let task = |upsert: bool| {
+            json!({
+                "connector": "orders", "database": "db", "collection": "orders",
+                "op": "update_one", "upsert": upsert,
+                "filter": { "_id": "1" }, "update": { "$set": { "status": "paid" } },
+            })
+        };
+
+        let err = <MongoWriteHandler as ConnectorHandler>::gate(
+            &parse(task(true)),
+            &mongo_connector(update_only.clone()),
+            "orders",
+        )
+        .expect_err("an upsert must hit the upsert gate, which is off");
+        let detail = err.detail.as_deref().unwrap_or_default();
+        assert!(
+            detail.contains("'upsert'"),
+            "the refusal must name the gate it hit: {detail:?}"
+        );
+
+        assert!(
+            <MongoWriteHandler as ConnectorHandler>::gate(
+                &parse(task(false)),
+                &mongo_connector(update_only),
+                "orders",
+            )
+            .is_ok(),
+            "the same update without upsert is gated as 'update', which is on"
+        );
+    }
+
+    /// A `db` connector holding a SQL connection string is the right type and
+    /// the wrong backend — the check that outlived `require_mongo_connector`.
+    #[test]
+    fn a_sql_connection_string_is_refused_by_the_gate() {
+        let mut conn = mongo_connector(Default::default());
+        conn.connection_string = "postgres://localhost/app".to_string();
+        let task = json!({
+            "connector": "orders", "database": "db", "collection": "orders",
+            "op": "insert_one", "document": { "id": 1 },
+        });
+
+        let err = <MongoWriteHandler as ConnectorHandler>::gate(&parse(task), &conn, "orders")
+            .expect_err("mongo_write cannot speak to a SQL connector");
+        assert!(
+            err.msg.contains("MongoDB connector"),
+            "the refusal must say which backend is required: {:?}",
+            err.msg
+        );
+    }
+
     // ---- validate_static_input: the authoring-time contract ----
 
     #[test]
