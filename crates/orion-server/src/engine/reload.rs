@@ -23,19 +23,43 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
     reload_engine_with_opts(state, ReloadOpts::default()).await
 }
 
-/// Epoch-driven full resync from the database, run by the watcher when
-/// another node's mutation advanced the config epoch. Beyond a plain engine
-/// reload it also refreshes the connector registry and evicts all cached
-/// connector pools — a remote node cannot know *which* connector changed,
-/// and pools rebuild lazily on next use.
-pub async fn resync_from_db(state: &AppState) -> Result<(), crate::errors::OrionError> {
-    state
-        .connector_registry
-        .reload(state.repos.connectors.as_ref())
-        .await?;
-    state.caches.sql_pool_cache.evict_all().await;
-    state.caches.mongo_pool_cache.evict_all().await;
-    state.caches.cache_pool.evict_all_pools().await;
+/// Epoch-driven resync from the database, run by the watcher when another
+/// node's mutation advanced the config epoch.
+///
+/// `scope` is what the bumping node said it changed. It used to be nothing at
+/// all — the epoch was a bare counter — so this always did the widest resync
+/// there is: reload every connector and evict every cached SQL, MongoDB and
+/// cache pool. One workflow activation was therefore a fleet-wide reconnect
+/// storm, every node dropping every pooled connection for a change that
+/// touched no connector.
+///
+/// [`EpochScope::Definitions`] skips the connector half. That is sound in the
+/// direction that matters: the channel registry keys its per-channel reuse on
+/// the connector registry's generation token
+/// (`channel::registry::DepsFingerprint`), and not reloading connectors leaves
+/// that token where it is, so a channel whose connectors did not change is
+/// carried over with its limiters and semaphores intact — which is exactly
+/// what should happen. It also honours that module's standing rule, *never
+/// evict a pool without loading connectors*, by doing neither.
+///
+/// An unknown scope reads as [`EpochScope::All`], so a bump from a newer node
+/// this one does not understand costs the storm rather than a missed change.
+pub async fn resync_from_db(
+    state: &AppState,
+    scope: crate::cluster::EpochScope,
+) -> Result<(), crate::errors::OrionError> {
+    if scope.touches_connectors() {
+        state
+            .connector_registry
+            .reload(state.repos.connectors.as_ref())
+            .await?;
+        // Paired with the reload above, always: a pool dropped without its
+        // connector being re-read is a pool rebuilt from config this node has
+        // not re-checked.
+        state.caches.sql_pool_cache.evict_all().await;
+        state.caches.mongo_pool_cache.evict_all().await;
+        state.caches.cache_pool.evict_all_pools().await;
+    }
     reload_engine_with_opts(
         state,
         ReloadOpts {

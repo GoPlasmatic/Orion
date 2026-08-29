@@ -34,7 +34,14 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
         .connector_registry
         .reload(state.repos.connectors.as_ref())
         .await?;
-    state.cluster.bump_config_epoch().await
+    // `Connectors` scope: a peer answering this bump must reload its registry
+    // and drop its cached pools, because the endpoint or the credentials
+    // behind a live connection may now be wrong.
+    state
+        .cluster
+        .bump_config_epoch(crate::cluster::EpochScope::Connectors)
+        .await;
+    Ok(())
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.

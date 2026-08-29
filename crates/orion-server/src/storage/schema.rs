@@ -155,6 +155,8 @@ pub enum ConfigEpoch {
     Table,
     Id,
     Epoch,
+    /// What the bumping node changed, so a peer can scope its resync.
+    EpochScope,
     BreakerEpoch,
     BreakerKey,
     UpdatedAt,

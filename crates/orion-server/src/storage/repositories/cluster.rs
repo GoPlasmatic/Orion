@@ -22,12 +22,18 @@ pub struct EpochRow {
     pub epoch: i64,
     pub breaker_epoch: i64,
     pub breaker_key: String,
+    /// What the bumping node changed, as
+    /// [`crate::cluster::EpochScope::as_str`] wrote it. Empty for a row an
+    /// older writer bumped, which a reader treats as "everything" — see
+    /// [`crate::cluster::EpochScope::parse`].
+    pub epoch_scope: String,
 }
 
 #[async_trait]
 pub trait ClusterRepository: Send + Sync {
-    /// Atomically increment the config epoch; returns the post-increment value.
-    async fn bump_epoch(&self) -> Result<i64, OrionError>;
+    /// Atomically increment the config epoch, recording what changed;
+    /// returns the post-increment value.
+    async fn bump_epoch(&self, scope: &str) -> Result<i64, OrionError>;
 
     /// Read the current epoch row.
     async fn get_epoch(&self) -> Result<EpochRow, OrionError>;
@@ -97,11 +103,14 @@ impl SqlClusterRepository {
 
 #[async_trait]
 impl ClusterRepository for SqlClusterRepository {
-    async fn bump_epoch(&self) -> Result<i64, OrionError> {
+    async fn bump_epoch(&self, scope: &str) -> Result<i64, OrionError> {
         crate::metrics::timed_db_op("cluster.bump_epoch", async {
+            // Counter and scope in one statement: a reader that sees the new
+            // epoch always sees the scope that goes with it.
             let update = Query::update()
                 .table(ConfigEpoch::Table)
                 .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
+                .value(ConfigEpoch::EpochScope, scope)
                 .to_owned();
             self.update_epoch_row(update, ConfigEpoch::Epoch).await
         })
@@ -117,6 +126,7 @@ impl ClusterRepository for SqlClusterRepository {
                         ConfigEpoch::Epoch,
                         ConfigEpoch::BreakerEpoch,
                         ConfigEpoch::BreakerKey,
+                        ConfigEpoch::EpochScope,
                     ])
                     .from(ConfigEpoch::Table)
                     .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
@@ -195,8 +205,8 @@ mod tests {
     async fn test_bump_epoch_increments() {
         let repo = test_repo().await;
         assert_eq!(repo.get_epoch().await.expect("get").epoch, 0);
-        assert_eq!(repo.bump_epoch().await.expect("bump"), 1);
-        assert_eq!(repo.bump_epoch().await.expect("bump"), 2);
+        assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 1);
+        assert_eq!(repo.bump_epoch("definitions").await.expect("bump"), 2);
         assert_eq!(repo.get_epoch().await.expect("get").epoch, 2);
     }
 

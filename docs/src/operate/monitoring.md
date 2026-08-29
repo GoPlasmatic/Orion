@@ -171,6 +171,17 @@ therefore see *that* something is degraded without learning *what*.
 is a constant `"ok"`, kept for response-shape stability: the engine snapshot
 cannot be unavailable once the process serves.
 
+### `components.config_propagation`
+
+Cluster mode only. `degraded` means this node committed a change, applied it
+locally, and then failed to advance the shared config epoch — so the other
+replicas have not been told. The request that made the change still succeeded,
+because it did; see
+[Cluster › When a change does not propagate](cluster.md#when-a-change-does-not-propagate)
+for why that is a node-health signal rather than a client error. It clears on
+the next successful bump. `/readyz` is unaffected: this node is serving
+correctly, and ejecting it would not help the ones that are stale.
+
 ### `components.background_tasks`
 
 The node's long-lived tasks are supervised, and this is what they report:

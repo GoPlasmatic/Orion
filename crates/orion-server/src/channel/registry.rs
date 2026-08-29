@@ -254,10 +254,11 @@ impl ChannelRow {
 ///   `(purpose, connector)` and is never evicted at all, and a Redis backend
 ///   holds a self-healing `ConnectionManager` against the same URL the
 ///   re-resolved one would use. Every eviction path — the connector admin
-///   handlers and `resync_from_db` — reloads the connector registry in the
-///   same breath, so a connector that actually changed moves the token and
-///   forces the rebuild. **An eviction that is not paired with a connector
-///   load would not.**
+///   handlers, and `resync_from_db` on a scope that touches connectors —
+///   reloads the connector registry in the same breath, so a connector that
+///   actually changed moves the token and forces the rebuild. **An eviction
+///   that is not paired with a connector load would not.** A
+///   definitions-scoped resync satisfies the rule by doing neither.
 /// - **`cluster_redis`** — held by the registry itself, fixed at construction.
 ///
 /// So the obligation this key places on the rest of the process is: keep the

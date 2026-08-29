@@ -56,11 +56,16 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
                 }
             };
 
+            // What the bumping node changed, so the resync can be the size of
+            // the change. An empty or unrecognised value reads as
+            // `EpochScope::All`, which is what a pre-scope writer produces.
+            let scope = crate::cluster::EpochScope::parse(&row.epoch_scope);
+
             // A tick succeeds when the epoch was read and, if it had
             // advanced, the resync applied. A failed resync leaves the
             // gauge stale alongside the retry warning (O3).
             let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, row.epoch, || {
-                crate::engine::resync_from_db(&state)
+                crate::engine::resync_from_db(&state, scope)
             })
             .await;
 

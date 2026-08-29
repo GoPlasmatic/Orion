@@ -125,7 +125,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ClusterRepository for LeaseHeldElsewhere {
-        async fn bump_epoch(&self) -> Result<i64, OrionError> {
+        async fn bump_epoch(&self, _scope: &str) -> Result<i64, OrionError> {
             unreachable!("not used by audit cleanup")
         }
 

@@ -591,7 +591,15 @@ async fn audit_and_reload(
         return Ok(());
     }
     reload_engine(state).await?;
-    state.cluster.bump_config_epoch().await
+    // `Definitions` scope: a channel or workflow row moved, which changes the
+    // engine and the channel registry and nothing else. A peer answering this
+    // reloads those and leaves its connector pools alone — before the scope
+    // existed, every activation dropped every pooled connection on every node.
+    state
+        .cluster
+        .bump_config_epoch(crate::cluster::EpochScope::Definitions)
+        .await;
+    Ok(())
 }
 
 /// The admin API, with its own body limit.

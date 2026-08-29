@@ -43,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A config-epoch bump records what changed, and peers resync to that.** The
+  epoch was a bare counter, so every replica answered every bump with the
+  widest resync there is — reload all connectors, evict every cached SQL,
+  MongoDB and cache pool. One workflow activation was a fleet-wide reconnect
+  storm. A workflow or channel change now leaves peers' connector pools alone;
+  a connector change still drops them, because the endpoint behind a live
+  connection may now be wrong. Requires the `config_epoch_scope` migration. A
+  bump from a node running an older release carries no scope and is read as
+  "everything", so a mixed-version fleet behaves exactly as it did before.
+- **A failed epoch bump is a node-health signal, not a client error.** The bump
+  happens after the mutation is committed and live on the node that served it,
+  so a `500` told the client its change had failed when it had not — and its
+  retry wrote a second version. The mutation now succeeds and the node reports
+  `components.config_propagation: "degraded"` on `/health` (cluster mode only,
+  cleared by the next successful bump) with
+  `orion_errors_total{reason="config_epoch_bump"}` alongside. `/readyz` is
+  unaffected: this node is correct; it is the peers that are stale.
 - **`orion_messages_total{status}` counts a run that finished with task errors
   as `error` on every transport.** The synchronous route counted it `ok` while
   the Kafka and async paths counted it `error`, so a channel whose workflow

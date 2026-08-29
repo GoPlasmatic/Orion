@@ -69,13 +69,54 @@ rebalance.
 
 | Concern | How it works |
 |---|---|
-| **Config changes** | Every admin mutation advances a shared config epoch in the database. Each replica polls it every `epoch_poll_interval_ms` and resyncs its engine, connector registry, and cached pools. A change through *any* node reaches *all* nodes. |
+| **Config changes** | Every admin mutation advances a shared config epoch in the database, recording *what* it changed. Each replica polls it every `epoch_poll_interval_ms` and resyncs the parts that moved. A change through *any* node reaches *all* nodes — see [How a change reaches every node](#how-a-change-reaches-every-node). |
 | **Deduplication** | On the shared Redis: the same idempotency key on two nodes gets exactly one execution and a `409` for the replay. |
 | **Response caching** | Shared, so a second node serves a warm cache instead of warming its own. |
 | **Per-channel rate limits** | A shared fixed window — the configured rate holds across all replicas combined. |
 | **Background jobs** | Trace cleanup and DLQ retry take a per-tick lease, so one node runs each job. DLQ rows are additionally row-leased, so each entry is retried once. |
 | **Kafka consumers** | Static group membership keyed by `instance_id`; rolling restarts rejoin without a full rebalance. |
 | **Circuit-breaker resets** | `POST /circuit-breakers/{key}` fans out over the epoch bus — one call resets the key everywhere. |
+
+### How a change reaches every node
+
+The bump carries a **scope**, and the replicas resync to it:
+
+| What you changed | What every other node does |
+|---|---|
+| A workflow or a channel | Rebuilds its engine and channel registry. Connector pools are untouched. |
+| A connector (create, update, delete, reload) | The above, plus reloads its connector registry and drops its cached SQL, MongoDB and cache pools — the endpoint or the credentials behind a live connection may now be wrong. |
+
+Only the second row costs reconnections, and that is the point. Before the
+scope existed the epoch was a bare counter, so every node answered every bump
+with the widest resync there is: one workflow activation dropped every pooled
+connection across the whole fleet.
+
+A node running an older release bumps the epoch without a scope, and its peers
+read that as "everything". A mixed-version fleet therefore behaves as it did
+before — the reconnect storm, never a missed change — and stops as soon as
+every node is writing scopes.
+
+### When a change does not propagate
+
+The bump happens after the mutation is committed and live on the node that
+served it. If the bump itself fails — the database went away between the two —
+that node keeps serving the change and the others never hear about it. The
+request still succeeds, because it did: the row is written, and a `500` would
+only invite a retry that writes a second version.
+
+The signal is on the node instead. `/health` carries a `config_propagation`
+component in cluster mode:
+
+```json
+{ "components": { "config_propagation": "degraded" } }
+```
+
+`degraded` means at least one bump has failed since the last successful one,
+and peers may be serving stale configuration. It clears on the next successful
+bump — any mutation will do, because a resync re-reads everything from the
+database rather than applying a delta. `/readyz` is deliberately unaffected:
+this node is correct, and taking it out of rotation would not tell the others.
+Alert on the component, and on `orion_errors_total{reason="config_epoch_bump"}`.
 
 ## What stays per node
 

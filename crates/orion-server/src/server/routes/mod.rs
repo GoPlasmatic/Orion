@@ -199,7 +199,8 @@ pub(crate) async fn health_check(
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && kafka_state != Some("error")
-        && tasks_state == "ok";
+        && tasks_state == "ok"
+        && !(state.cluster.enabled && state.cluster.propagation_degraded());
     let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
@@ -236,6 +237,17 @@ pub(crate) async fn health_check(
     });
     if let Some(kafka) = kafka_state {
         body["components"]["kafka"] = json!(kafka);
+    }
+    // Cluster mode only: outside it there are no peers to propagate to.
+    // `degraded`, not `error`, and absent from `/readyz` on purpose — this
+    // node is serving the change correctly; it is the peers that have not
+    // heard, and taking this one out of rotation would not tell them.
+    if state.cluster.enabled {
+        body["components"]["config_propagation"] = json!(if state.cluster.propagation_degraded() {
+            "degraded"
+        } else {
+            "ok"
+        });
     }
     if show_detail {
         body["git_hash"] = json!(env!("GIT_HASH"));

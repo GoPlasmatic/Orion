@@ -112,11 +112,14 @@ impl ConnectorRegistry {
     /// honest; a future path that mutates `configs` without loading would have
     /// to advance it too.
     ///
-    /// "On change" rather than "on load" is the whole point on a remote node:
-    /// `resync_from_db` reloads the connector registry on every epoch tick
-    /// regardless of what the originating mutation touched, so a token that
-    /// moved per load would leave every node but the mutating one rebuilding
-    /// every channel on every admin operation in the cluster.
+    /// "On change" rather than "on load" still matters on a remote node.
+    /// `resync_from_db` no longer reloads connectors on every epoch tick — the
+    /// bump carries an [`crate::cluster::EpochScope`] and a definitions-only
+    /// change skips the connector half entirely — but a connector-scoped bump,
+    /// an unknown scope, and every bump from a pre-scope node all still reload
+    /// here. A token that moved per load would make each of those rebuild
+    /// every channel's runtime on every node, which is exactly the cost N17
+    /// exists to remove.
     pub fn config_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
@@ -359,11 +362,11 @@ impl ConnectorRegistry {
         // N17: the token is [`crate::channel::ChannelRegistry`]'s cache key,
         // so it must move when the effective connector set moves and stay put
         // when it does not. Advancing it on every *load* rather than every
-        // *change* would be sound but useless: `resync_from_db` reloads
-        // connectors unconditionally on every epoch tick, so any admin
-        // mutation anywhere in the cluster — a channel edit, a workflow
-        // activation — would invalidate every channel's cached runtime on
-        // every other node, which is exactly the cost N17 exists to remove.
+        // *change* would be sound but useless: a connector-scoped resync (and
+        // every bump from a node too old to write a scope) reloads connectors
+        // on every remote node, so the token would invalidate every channel's
+        // cached runtime on all of them — exactly the cost N17 exists to
+        // remove.
         //
         // Advanced *after* the swap, so anything that reads the token and
         // then the configs cannot pair a new token with old configs.
@@ -653,12 +656,12 @@ mod tests {
 
     // ---- N17: the generation token tracks changes, not loads --------------
 
-    /// The one that matters in a cluster. `resync_from_db` reloads the
-    /// connector registry on *every* epoch tick, whatever the originating
-    /// mutation touched — so if the token moved per load, every remote node
-    /// would rebuild every channel's runtime config on every admin operation
-    /// anywhere in the cluster, and N17's whole saving would be confined to
-    /// the node that made the change.
+    /// The one that matters in a cluster. A connector-scoped resync reloads
+    /// the connector registry on every remote node, and so does every bump
+    /// from a node too old to write a scope — so if the token moved per load,
+    /// each of those would rebuild every channel's runtime config on every
+    /// node, and N17's whole saving would be confined to the node that made
+    /// the change.
     #[tokio::test]
     async fn reloading_an_unchanged_connector_set_does_not_move_the_token() {
         let repo = StubConnectorRepo::with(vec![(
