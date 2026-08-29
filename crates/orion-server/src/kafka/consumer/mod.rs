@@ -151,7 +151,7 @@ pub struct ConsumerHandle {
 
 impl ConsumerHandle {
     /// Signal the consumer to shut down and wait for it to finish, bounded by
-    /// `kafka.processing_timeout_ms` plus [`SHUTDOWN_GRACE`].
+    /// `kafka.processing_timeout_ms` plus a fixed grace (`SHUTDOWN_GRACE`).
     ///
     /// The bound is what makes this callable from a request path. The loop
     /// checks the shutdown watch between polls and inside its retry backoff,
