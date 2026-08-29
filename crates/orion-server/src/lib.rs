@@ -28,12 +28,12 @@
 //! runtime).
 #![warn(clippy::unwrap_used, clippy::panic)]
 
+pub mod auth;
 /// Startup wiring shared by the binary and the test harness. Doc-hidden:
 /// reachable so tests exercise the REAL boot path (engine components,
 /// fail-fast connector refusal, background tasks) instead of reimplementing
 /// it, but not part of the documented 1.0 API surface.
 #[doc(hidden)]
-pub mod auth;
 pub mod bootstrap;
 pub mod channel;
 pub mod cluster;
