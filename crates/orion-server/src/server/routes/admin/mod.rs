@@ -305,6 +305,89 @@ pub(crate) fn versioned_upsert_action(status: &str, identical: bool) -> ImportAc
     }
 }
 
+/// What [`versioned_upsert`] needs of a versioned entity.
+///
+/// The import upsert was written out once per kind — `upsert_channel` and
+/// `upsert_workflow` were the same forty lines modulo the repository type, the
+/// id field's name, and which pair of content-hash functions to call. The
+/// sequence they share is not incidental: *no id means create; an id nobody
+/// has seen means create; otherwise compare content, ask
+/// [`versioned_upsert_action`] what that means, and apply it — or, on a dry
+/// run, apply nothing and report what would have happened.* Two copies of that
+/// is two places for the dry-run branch to stop matching the real one.
+///
+/// A small adapter per entity rather than a change to the repository traits:
+/// the traits are the storage contract and four other callers depend on their
+/// shapes, while this is one route-layer sequence that happens to need four of
+/// their methods.
+pub(crate) trait VersionedUpsert {
+    /// The stored row type, as `get_by_id` returns it.
+    type Row;
+    /// The create/replace request type.
+    type Request;
+
+    /// The entity id the request names, or `None` when it names none — the
+    /// store generates one and there is nothing to conflict with.
+    fn request_id(req: &Self::Request) -> Option<String>;
+    /// The latest stored version's status, as `EntityStatus::as_str` spells it.
+    fn row_status(row: &Self::Row) -> &str;
+    /// Whether the stored row and the request carry the same content, by the
+    /// same content hash the import receipt reports.
+    fn content_matches(row: &Self::Row, req: &Self::Request) -> Result<bool, OrionError>;
+
+    async fn create(&self, req: &Self::Request) -> Result<(), OrionError>;
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError>;
+    async fn create_new_version(&self, id: &str) -> Result<(), OrionError>;
+    async fn replace_draft(&self, id: &str, req: &Self::Request) -> Result<(), OrionError>;
+}
+
+/// Import one versioned entity under `on_conflict=new_version`, or report what
+/// that would do when `dry_run`.
+///
+/// The dry-run branch is the reason this is one function: it must decide
+/// *exactly* what the real path decides and then do none of it, and the only
+/// way to be sure of that is for both to be the same code.
+pub(crate) async fn versioned_upsert<T: VersionedUpsert>(
+    entity: &T,
+    req: T::Request,
+    dry_run: bool,
+) -> Result<ImportAction, OrionError> {
+    let Some(id) = T::request_id(&req) else {
+        // No id → the store generates one; nothing to conflict with.
+        if !dry_run {
+            entity.create(&req).await?;
+        }
+        return Ok(ImportAction::Created);
+    };
+
+    let latest = match entity.get_by_id(&id).await {
+        Ok(latest) => latest,
+        Err(OrionError::NotFound(_)) => {
+            if !dry_run {
+                entity.create(&req).await?;
+            }
+            return Ok(ImportAction::Created);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let action =
+        versioned_upsert_action(T::row_status(&latest), T::content_matches(&latest, &req)?);
+    if !dry_run {
+        match action {
+            ImportAction::UpdatedDraft => {
+                entity.replace_draft(&id, &req).await?;
+            }
+            ImportAction::NewVersion => {
+                entity.create_new_version(&id).await?;
+                entity.replace_draft(&id, &req).await?;
+            }
+            _ => {}
+        }
+    }
+    Ok(action)
+}
+
 // ============================================================
 // The `/validate` response shape, shared by all three entities
 // ============================================================

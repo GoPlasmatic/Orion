@@ -54,13 +54,25 @@ pub fn map_duplicate(e: sqlx::Error, conflict_msg: impl FnOnce() -> String) -> O
     match &e {
         sqlx::Error::Database(db_err)
             if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
-                || db_err.message().contains("Only one draft version allowed") =>
+                || db_err.message().contains(SINGLE_DRAFT_TRIGGER_MSG) =>
         {
             OrionError::Conflict(conflict_msg())
         }
         _ => OrionError::Storage(e),
     }
 }
+
+/// The text the single-draft triggers raise, as far as this matches it.
+///
+/// SQLite's `RAISE(ABORT, …)` and MySQL's `SIGNAL SQLSTATE '45000'` carry no
+/// constraint kind sqlx can classify, so the only thing left to recognise them
+/// by is what they say. That makes a message string in a migration file part
+/// of this crate's behaviour: change the wording in a new migration and the
+/// 409 silently becomes a 500. The migrations are checksum-frozen, so the
+/// existing spellings cannot drift — but a *new* trigger can be written with a
+/// different one, which is what `single_draft_trigger_message_matches_the_code`
+/// in `tests/schema_parity.rs` refuses.
+pub const SINGLE_DRAFT_TRIGGER_MSG: &str = "Only one draft version allowed";
 
 /// The database's own current time, per backend. Lease and claim comparisons
 /// use this (never node clocks) so every replica agrees with the DB.

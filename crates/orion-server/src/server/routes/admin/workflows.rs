@@ -738,30 +738,33 @@ pub(crate) async fn import_workflows(
     let probe = state.repos.workflows.clone();
     let upsert_repo = state.repos.workflows.clone();
     let loop_cap = state.config.engine.max_loop_iterations;
-    let outcome = super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _, _, _>(
-        items,
-        query.dry_run,
-        query.on_conflict,
-        super::ImportOps {
-            validate: |w: &CreateWorkflowRequest| {
-                crate::validation::validate_create_workflow(w, loop_cap)
+    let outcome =
+        super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _, _, _>(
+            items,
+            query.dry_run,
+            query.on_conflict,
+            super::ImportOps {
+                validate: |w: &CreateWorkflowRequest| {
+                    crate::validation::validate_create_workflow(w, loop_cap)
+                },
+                conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
+                exists: |id: String| {
+                    let repo = probe.clone();
+                    async move { exists_or_err(repo.get_by_id(&id).await) }
+                },
+                create: |w: CreateWorkflowRequest| {
+                    let repo = repo.clone();
+                    async move { repo.create(&w).await.map(|_| ()) }
+                },
+                upsert: |w: CreateWorkflowRequest, dry_run: bool| {
+                    let repo = upsert_repo.clone();
+                    async move {
+                        super::versioned_upsert(&WorkflowUpsert(repo.as_ref()), w, dry_run).await
+                    }
+                },
             },
-            conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
-            exists: |id: String| {
-                let repo = probe.clone();
-                async move { exists_or_err(repo.get_by_id(&id).await) }
-            },
-            create: |w: CreateWorkflowRequest| {
-                let repo = repo.clone();
-                async move { repo.create(&w).await.map(|_| ()) }
-            },
-            upsert: |w: CreateWorkflowRequest, dry_run: bool| {
-                let repo = upsert_repo.clone();
-                async move { upsert_workflow(repo.as_ref(), w, dry_run).await }
-            },
-        },
-    )
-    .await;
+        )
+        .await;
     if query.dry_run {
         return Ok(super::import_response(true, outcome));
     }
@@ -783,50 +786,42 @@ pub(crate) async fn import_workflows(
     Ok(super::import_response(false, outcome))
 }
 
-/// K2: one workflow item under `on_conflict=new_version`. The decision table
-/// (including the archived-entity invariant) is [`super::versioned_upsert_action`];
-/// this supplies the workflow repository's verbs.
-async fn upsert_workflow(
-    repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
-    req: CreateWorkflowRequest,
-    dry_run: bool,
-) -> Result<super::ImportAction, OrionError> {
-    use super::ImportAction;
+/// [`super::VersionedUpsert`] for workflows — the twin of `ChannelUpsert`,
+/// and the pair is why the sequence itself is written once.
+struct WorkflowUpsert<'a>(&'a dyn crate::storage::repositories::workflows::WorkflowRepository);
 
-    let Some(id) = req.workflow_id.clone() else {
-        // No id → the store generates one; nothing to conflict with.
-        if !dry_run {
-            repo.create(&req).await?;
-        }
-        return Ok(ImportAction::Created);
-    };
-    let latest = match repo.get_by_id(&id).await {
-        Ok(latest) => latest,
-        Err(OrionError::NotFound(_)) => {
-            if !dry_run {
-                repo.create(&req).await?;
-            }
-            return Ok(ImportAction::Created);
-        }
-        Err(e) => return Err(e),
-    };
+impl super::VersionedUpsert for WorkflowUpsert<'_> {
+    type Row = crate::storage::models::Workflow;
+    type Request = CreateWorkflowRequest;
 
-    let identical = crate::storage::content::workflow_content(&latest)?
-        == crate::storage::content::workflow_request_content(&req);
-    let action = super::versioned_upsert_action(&latest.status, identical);
-    if !dry_run {
-        match action {
-            ImportAction::UpdatedDraft => {
-                repo.replace_draft(&id, &req).await?;
-            }
-            ImportAction::NewVersion => {
-                repo.create_new_version(&id).await?;
-                repo.replace_draft(&id, &req).await?;
-            }
-            _ => {}
-        }
+    fn request_id(req: &Self::Request) -> Option<String> {
+        req.workflow_id.clone()
     }
-    Ok(action)
+
+    fn row_status(row: &Self::Row) -> &str {
+        &row.status
+    }
+
+    fn content_matches(row: &Self::Row, req: &Self::Request) -> Result<bool, OrionError> {
+        Ok(crate::storage::content::workflow_content(row)?
+            == crate::storage::content::workflow_request_content(req))
+    }
+
+    async fn create(&self, req: &Self::Request) -> Result<(), OrionError> {
+        self.0.create(req).await.map(|_| ())
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError> {
+        self.0.get_by_id(id).await
+    }
+
+    async fn create_new_version(&self, id: &str) -> Result<(), OrionError> {
+        self.0.create_new_version(id).await.map(|_| ())
+    }
+
+    async fn replace_draft(&self, id: &str, req: &Self::Request) -> Result<(), OrionError> {
+        self.0.replace_draft(id, req).await.map(|_| ())
+    }
 }
 
 /// Turn a `get_by_id` result into an existence answer.

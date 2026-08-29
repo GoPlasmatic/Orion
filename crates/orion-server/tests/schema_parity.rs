@@ -995,3 +995,87 @@ async fn schema_is_identical_across_backends() {
         problems.join("\n  ")
     );
 }
+
+// ============================================================
+// The trigger message `map_duplicate` matches
+// ============================================================
+
+/// `helpers::map_duplicate` turns a single-draft trigger violation into a
+/// `409 Conflict`, and on SQLite and MySQL it can only recognise one by its
+/// **message text**: `RAISE(ABORT, …)` and `SIGNAL SQLSTATE '45000'` carry no
+/// constraint kind sqlx can classify. That makes a string literal in a
+/// migration file part of the crate's behaviour, and nothing checked the two
+/// agreed.
+///
+/// The stakes are quiet: a trigger written with different wording still
+/// enforces the rule, so no data is at risk — the API just answers `500`
+/// instead of `409` for a duplicate draft, on one backend, and the client that
+/// would have retried sensibly gives up instead.
+///
+/// The existing spellings cannot drift (migrations are checksum-frozen), so
+/// what this guards is the *next* one.
+#[test]
+fn single_draft_trigger_message_matches_the_code() {
+    use orion::storage::repositories::helpers::SINGLE_DRAFT_TRIGGER_MSG;
+
+    let migrations = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+    let mut raising = Vec::new();
+
+    for backend in ["sqlite", "postgres", "mysql"] {
+        let dir = migrations.join(backend);
+        let mut files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "sql"))
+            .collect();
+        files.sort();
+
+        for file in files {
+            let sql = std::fs::read_to_string(&file).expect("read migration");
+            for (n, line) in sql.lines().enumerate() {
+                // Every way the three backends raise from a trigger.
+                let raises = line.contains("RAISE(ABORT")
+                    || line.contains("RAISE EXCEPTION")
+                    || line.contains("MESSAGE_TEXT");
+                if !raises {
+                    continue;
+                }
+                // Only the single-draft rule is matched by text; the
+                // active-immutability triggers surface as plain 500s by design.
+                if !line.to_lowercase().contains("draft") {
+                    continue;
+                }
+                let where_ = format!(
+                    "{backend}/{}:{}",
+                    file.file_name().unwrap().display(),
+                    n + 1
+                );
+                raising.push((where_, line.trim().to_string()));
+            }
+        }
+    }
+
+    assert!(
+        !raising.is_empty(),
+        "found no single-draft trigger messages at all — this test has stopped \
+         looking at anything, which is worse than a mismatch"
+    );
+
+    let mismatched: Vec<&(String, String)> = raising
+        .iter()
+        .filter(|(_, line)| !line.contains(SINGLE_DRAFT_TRIGGER_MSG))
+        .collect();
+
+    assert!(
+        mismatched.is_empty(),
+        "these single-draft triggers do not say `{SINGLE_DRAFT_TRIGGER_MSG}`, so \
+         `map_duplicate` will not recognise them and a duplicate draft will \
+         answer 500 instead of 409:\n  {}",
+        mismatched
+            .iter()
+            .map(|(w, l)| format!("{w}: {l}"))
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}

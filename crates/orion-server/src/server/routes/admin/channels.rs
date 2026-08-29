@@ -527,28 +527,31 @@ pub(crate) async fn import_channels(
     let repo = state.repos.channels.clone();
     let probe = state.repos.channels.clone();
     let upsert_repo = state.repos.channels.clone();
-    let outcome = super::import_items::<CreateChannelRequest, _, _, _, _, _, _, _, _>(
-        items,
-        query.dry_run,
-        query.on_conflict,
-        super::ImportOps {
-            validate: crate::validation::validate_create_channel,
-            conflict_key: |c: &CreateChannelRequest| c.channel_id.clone(),
-            exists: |id: String| {
-                let repo = probe.clone();
-                async move { super::workflows::exists_or_err(repo.get_by_id(&id).await) }
+    let outcome =
+        super::import_items::<CreateChannelRequest, _, _, _, _, _, _, _, _>(
+            items,
+            query.dry_run,
+            query.on_conflict,
+            super::ImportOps {
+                validate: crate::validation::validate_create_channel,
+                conflict_key: |c: &CreateChannelRequest| c.channel_id.clone(),
+                exists: |id: String| {
+                    let repo = probe.clone();
+                    async move { super::workflows::exists_or_err(repo.get_by_id(&id).await) }
+                },
+                create: |ch: CreateChannelRequest| {
+                    let repo = repo.clone();
+                    async move { repo.create(&ch).await.map(|_| ()) }
+                },
+                upsert: |ch: CreateChannelRequest, dry_run: bool| {
+                    let repo = upsert_repo.clone();
+                    async move {
+                        super::versioned_upsert(&ChannelUpsert(repo.as_ref()), ch, dry_run).await
+                    }
+                },
             },
-            create: |ch: CreateChannelRequest| {
-                let repo = repo.clone();
-                async move { repo.create(&ch).await.map(|_| ()) }
-            },
-            upsert: |ch: CreateChannelRequest, dry_run: bool| {
-                let repo = upsert_repo.clone();
-                async move { upsert_channel(repo.as_ref(), ch, dry_run).await }
-            },
-        },
-    )
-    .await;
+        )
+        .await;
     if query.dry_run {
         return Ok(super::import_response(true, outcome));
     }
@@ -566,49 +569,42 @@ pub(crate) async fn import_channels(
     Ok(super::import_response(false, outcome))
 }
 
-/// K2: one channel item under `on_conflict=new_version`. The decision table
-/// (including the archived-entity invariant) is [`super::versioned_upsert_action`];
-/// this supplies the channel repository's verbs.
-async fn upsert_channel(
-    repo: &dyn crate::storage::repositories::channels::ChannelRepository,
-    req: CreateChannelRequest,
-    dry_run: bool,
-) -> Result<super::ImportAction, OrionError> {
-    use super::ImportAction;
+/// [`super::VersionedUpsert`] for channels — what the shared import upsert
+/// needs of this entity and nothing more.
+struct ChannelUpsert<'a>(&'a dyn crate::storage::repositories::channels::ChannelRepository);
 
-    let Some(id) = req.channel_id.clone() else {
-        if !dry_run {
-            repo.create(&req).await?;
-        }
-        return Ok(ImportAction::Created);
-    };
-    let latest = match repo.get_by_id(&id).await {
-        Ok(latest) => latest,
-        Err(OrionError::NotFound(_)) => {
-            if !dry_run {
-                repo.create(&req).await?;
-            }
-            return Ok(ImportAction::Created);
-        }
-        Err(e) => return Err(e),
-    };
+impl super::VersionedUpsert for ChannelUpsert<'_> {
+    type Row = crate::storage::models::Channel;
+    type Request = CreateChannelRequest;
 
-    let identical = crate::storage::content::channel_content(&latest)?
-        == crate::storage::content::channel_request_content(&req);
-    let action = super::versioned_upsert_action(&latest.status, identical);
-    if !dry_run {
-        match action {
-            ImportAction::UpdatedDraft => {
-                repo.replace_draft(&id, &req).await?;
-            }
-            ImportAction::NewVersion => {
-                repo.create_new_version(&id).await?;
-                repo.replace_draft(&id, &req).await?;
-            }
-            _ => {}
-        }
+    fn request_id(req: &Self::Request) -> Option<String> {
+        req.channel_id.clone()
     }
-    Ok(action)
+
+    fn row_status(row: &Self::Row) -> &str {
+        &row.status
+    }
+
+    fn content_matches(row: &Self::Row, req: &Self::Request) -> Result<bool, OrionError> {
+        Ok(crate::storage::content::channel_content(row)?
+            == crate::storage::content::channel_request_content(req))
+    }
+
+    async fn create(&self, req: &Self::Request) -> Result<(), OrionError> {
+        self.0.create(req).await.map(|_| ())
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Self::Row, OrionError> {
+        self.0.get_by_id(id).await
+    }
+
+    async fn create_new_version(&self, id: &str) -> Result<(), OrionError> {
+        self.0.create_new_version(id).await.map(|_| ())
+    }
+
+    async fn replace_draft(&self, id: &str, req: &Self::Request) -> Result<(), OrionError> {
+        self.0.replace_draft(id, req).await.map(|_| ())
+    }
 }
 
 // ============================================================

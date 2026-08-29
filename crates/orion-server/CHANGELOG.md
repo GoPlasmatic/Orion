@@ -90,6 +90,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- The import upsert is written once for both versioned entities
+  (`VersionedUpsert`), rather than a per-kind copy whose dry-run branch had to
+  keep agreeing with its own real branch by hand.
+- `schema_parity` asserts that a single-draft trigger says what
+  `map_duplicate` matches. On SQLite and MySQL that message text is the only
+  thing identifying the violation, so a future trigger worded differently would
+  turn a duplicate draft's `409` into a `500` on one backend, quietly.
+- Five upward dependency edges removed and a `module_layering_test` added that
+  refuses new ones: engine reload and the handler-dependency mapping moved to
+  `runtime/`, the encoding table and HMAC helpers to `crypto/`, and the request
+  and trace contexts split so the halves that are not about HTTP sit below it.
 - The database backend is carried on `DbPool` rather than in a process-global
   `OnceLock`, so one process can hold two stores. `build_sqlx` takes it as a
   parameter and `set_backend_for_test` is gone.
