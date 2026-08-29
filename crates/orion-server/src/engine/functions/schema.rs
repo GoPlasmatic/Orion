@@ -140,12 +140,39 @@ impl FieldSchema {
 pub type StaticValidator =
     fn(&serde_json::Map<String, Value>) -> Vec<(&'static str, &'static str, String)>;
 
+/// Where a task's output lands in the message context.
+///
+/// `definitions::analysis::dataflow::task_writes` used to answer this with a
+/// hand-written `match` over function names — a mirror of every handler's
+/// output semantics, kept in a different file from the handlers, pinned by no
+/// test. That is the exact drift class the rest of this repo turns into build
+/// failures, so the answer moves next to the function that owns it and the
+/// analysis reads it from here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum WriteShape {
+    /// The dotted path in `output` (or its pre-1.0 spelling `response_path`).
+    /// `default_root` is what the write lands on when neither is given — `None`
+    /// for a function that writes nothing without being told where.
+    OutputPath { default_root: Option<&'static str> },
+    /// `data.{target}` — the engine's parse/publish built-ins, whose `target`
+    /// is a key under `data` rather than a full path.
+    Target,
+    /// Each `mappings[].path`, which are already full paths.
+    Mappings,
+    /// Writes nothing into the context.
+    Nothing,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionSchema {
     pub name: &'static str,
     pub description: &'static str,
     pub category: &'static str,
     pub input_fields: &'static [FieldSchema],
+    /// Where this function's output lands. Read by the authoring analysis, so
+    /// a new handler cannot reach the clippy rules with its writes unknown —
+    /// `every_function_declares_where_it_writes` refuses one that tries.
+    pub writes: WriteShape,
     /// Whether a key outside `input_fields` is an error rather than ignored.
     ///
     /// True for the functions dataflow-rs owns the config struct for
@@ -194,6 +221,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Read a value from a cache connector (Redis or in-memory).",
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -202,6 +230,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Write a value to a cache connector.",
         category: "connector",
         input_fields: CACHE_WRITE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -210,6 +239,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Execute a SELECT against a SQL connector.",
         category: "connector",
         input_fields: DB_READ_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -218,6 +248,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Execute INSERT/UPDATE/DELETE against a SQL connector.",
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -226,6 +257,9 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Run a backend-neutral query (filter + envelope) against a SQL, MongoDB, or Elasticsearch connector.",
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
+        writes: WriteShape::OutputPath {
+            default_root: Some("data"),
+        },
         deny_unknown: false,
         validate_static: None,
     },
@@ -234,6 +268,9 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL, MongoDB, or Elasticsearch connector.",
         category: "connector",
         input_fields: DATA_WRITE_FIELDS,
+        writes: WriteShape::OutputPath {
+            default_root: Some("data"),
+        },
         deny_unknown: false,
         validate_static: None,
     },
@@ -242,6 +279,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Run find() against a MongoDB connector, with optional projection/sort/limit/skip.",
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -252,6 +290,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // Strict: a typoed `upsert` or `ordered` silently changes what a
         // write does — the crypto/send_email rationale exactly.
         input_fields: MONGO_WRITE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::mongo_write::validate_static_input),
     },
@@ -260,6 +299,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Run an aggregation pipeline against a MongoDB connector (stage-allowlisted; $out/$merge behind a connector opt-in).",
         category: "connector",
         input_fields: MONGO_AGGREGATE_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
@@ -268,6 +308,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Invoke another channel's workflow in-process (no HTTP hop).",
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: false,
         validate_static: None,
     },
@@ -279,6 +320,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // more here than anywhere: a typoed field on a crypto op would
         // silently mean "use the default".
         input_fields: CRYPTO_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::crypto::validate_static_input),
     },
@@ -287,6 +329,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Mint a signed JWT (login, refresh, client assertions).",
         category: "utility",
         input_fields: JWT_SIGN_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::jwt_sign::validate_static_input),
     },
@@ -295,6 +338,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Verify a JWT mid-workflow (provider id_tokens, refresh tokens) against static keys or a JWKS.",
         category: "utility",
         input_fields: JWT_VERIFY_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::jwt_verify::validate_static_input),
     },
@@ -303,6 +347,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "HTTP request to an HTTP connector with retry + circuit breaker.",
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: None,
     },
@@ -313,6 +358,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // Same rationale as crypto: a typoed field on an email (a lost `bcc`,
         // a misspelled `reply_to`) silently changes who gets what.
         input_fields: SEND_EMAIL_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::send_email::validate_static_input),
     },
@@ -321,6 +367,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Compute a time-limited presigned URL for one object — no data path.",
         category: "connector",
         input_fields: STORAGE_PRESIGN_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: Some(super::storage_presign::validate_static_input),
     },
@@ -329,6 +376,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Object metadata (exists/size/etag) from a storage connector.",
         category: "connector",
         input_fields: STORAGE_HEAD_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: None,
     },
@@ -337,6 +385,7 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Publish a message to a Kafka topic via a Kafka connector.",
         category: "connector",
         input_fields: PUBLISH_KAFKA_FIELDS,
+        writes: WriteShape::OutputPath { default_root: None },
         deny_unknown: true,
         validate_static: None,
     },
@@ -409,48 +458,87 @@ pub struct CatalogueEntry {
 /// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
 /// with no Orion-declared input schema.
 ///
-/// `(name, description, aliases)` — the three things that vary. Every entry is
-/// `category: "data"` (the fourth wire value, matching the grouping
+/// `(name, description, aliases, writes)` — the four things that vary. Every
+/// entry is `category: "data"` (the fourth wire value, matching the grouping
 /// `reference/functions.md` already gives these in its summary table),
 /// `source: Engine`, and no input schema, so [`catalogue`] supplies those
 /// rather than each row restating them.
 /// Descriptions are the code's, and `functions_docs_drift_test` checks the
 /// page against them rather than the reverse.
-const ENGINE_BUILTINS: &[(&str, &str, &[&str])] = &[
+///
+/// `writes` is here for the same reason it is on [`FunctionSchema`]: the
+/// authoring analysis has to know where a built-in puts its output, and the
+/// only defensible place to say so is beside the row that declares the
+/// built-in.
+const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape)] = &[
     (
         "parse_json",
         "Parse the raw payload into the data context.",
         &[],
+        WriteShape::Target,
     ),
     (
         "parse_xml",
         "Parse an XML payload into the data context.",
         &[],
+        WriteShape::Target,
     ),
     (
         "map",
         "Transform and reshape data with JSONLogic mappings.",
         &[],
+        WriteShape::Mappings,
     ),
-    ("filter", "Gate the pipeline on a JSONLogic condition.", &[]),
+    (
+        "filter",
+        "Gate the pipeline on a JSONLogic condition.",
+        &[],
+        WriteShape::Nothing,
+    ),
     (
         "validation",
         "Collect validation errors from JSONLogic rules.",
         // Upstream accepts both spellings; they are one function.
         &["validate"],
+        WriteShape::Nothing,
     ),
-    ("log", "Emit a structured log line.", &[]),
+    (
+        "log",
+        "Emit a structured log line.",
+        &[],
+        WriteShape::Nothing,
+    ),
     (
         "publish_json",
         "Serialize a context field to a JSON string.",
         &[],
+        WriteShape::Target,
     ),
     (
         "publish_xml",
         "Serialize a context field to an XML string.",
         &[],
+        WriteShape::Target,
     ),
 ];
+
+/// Where `function` writes its output, for any function a workflow may name —
+/// Orion's handlers and the engine's built-ins alike.
+///
+/// `None` for a name neither table knows, which is a function that does not
+/// exist: the analysis then reports no writes rather than guessing a shape for
+/// it. That is a deliberate change from the previous hand-written `match`,
+/// whose catch-all arm applied the `output`/`response_path` rule to *any*
+/// unrecognised name — so a typoed function silently contributed a write.
+pub fn write_shape(function: &str) -> Option<WriteShape> {
+    if let Some(schema) = REGISTRY.iter().find(|s| s.name == function) {
+        return Some(schema.writes);
+    }
+    ENGINE_BUILTINS
+        .iter()
+        .find(|(name, _, aliases, _)| *name == function || aliases.contains(&function))
+        .map(|(_, _, _, writes)| *writes)
+}
 
 /// Every function a workflow may name, sorted by name.
 ///
@@ -471,7 +559,7 @@ pub fn catalogue() -> Vec<CatalogueEntry> {
         .chain(
             ENGINE_BUILTINS
                 .iter()
-                .map(|&(name, description, aliases)| CatalogueEntry {
+                .map(|&(name, description, aliases, _writes)| CatalogueEntry {
                     name,
                     description,
                     category: "data",
@@ -834,6 +922,67 @@ pub(super) fn static_field_name(
         .map(|f| f.name)
         .find(|n| *n == key)
         .unwrap_or(fallback)
+}
+
+#[cfg(test)]
+mod write_shape_tests {
+    use super::*;
+
+    /// The guard this whole field exists for: a 19th handler cannot reach the
+    /// authoring analysis with its output semantics unknown.
+    ///
+    /// Both tables are checked, because `task_writes` reads both — a built-in
+    /// added upstream and mirrored here without a shape would be just as silent
+    /// as a new Orion handler without one.
+    #[test]
+    fn every_function_declares_where_it_writes() {
+        for schema in REGISTRY {
+            assert!(
+                write_shape(schema.name).is_some(),
+                "function '{}' has no WriteShape",
+                schema.name
+            );
+        }
+        for (name, _, aliases, _) in ENGINE_BUILTINS {
+            assert!(
+                write_shape(name).is_some(),
+                "built-in '{name}' has no WriteShape"
+            );
+            for alias in *aliases {
+                assert!(
+                    write_shape(alias).is_some(),
+                    "built-in alias '{alias}' has no WriteShape"
+                );
+            }
+        }
+    }
+
+    /// A name neither table knows contributes no writes, rather than being run
+    /// through the generic `output` rule. See `task_writes`.
+    #[test]
+    fn an_unknown_function_has_no_write_shape() {
+        assert!(write_shape("no_such_function").is_none());
+    }
+
+    /// The three shapes the analysis distinguishes, pinned to the functions
+    /// that motivated them.
+    #[test]
+    fn the_declared_shapes_match_the_handlers_they_describe() {
+        assert_eq!(write_shape("map"), Some(WriteShape::Mappings));
+        assert_eq!(write_shape("parse_json"), Some(WriteShape::Target));
+        assert_eq!(write_shape("filter"), Some(WriteShape::Nothing));
+        assert_eq!(
+            write_shape("data_query"),
+            Some(WriteShape::OutputPath {
+                default_root: Some("data")
+            }),
+            "data_query defaults its output to the data root"
+        );
+        assert_eq!(
+            write_shape("db_read"),
+            Some(WriteShape::OutputPath { default_root: None })
+        );
+    }
 }
 
 #[cfg(test)]

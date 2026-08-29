@@ -8,6 +8,7 @@
 //! a read of *something* this walk cannot name, and every rule built on it
 //! must then stay silent rather than guess.
 
+use crate::engine::functions::schema::WriteShape;
 use serde_json::Value;
 
 use super::operators;
@@ -146,12 +147,19 @@ pub fn data_reads(value: &Value) -> Vec<String> {
 
 /// Context paths a task writes, for every function that writes one.
 ///
-/// `parse_json`/`parse_xml`/`publish_json`/`publish_xml` take a bare `target`
-/// under `data`; `map` writes each mapping's `path`; the connector functions
-/// take a full dotted `output` path (`response_path` is the accepted pre-1.0
-/// spelling). `data_query`/`data_write` default that output to the `data`
-/// root when it is omitted, which is why the default is spelled out rather
-/// than skipped.
+/// The *shape* comes from the function registry
+/// ([`crate::engine::functions::schema::write_shape`]), not from a `match`
+/// here. This function used to carry its own copy of every handler's output
+/// semantics — in a different file from the handlers, pinned by no test, which
+/// is the drift class the rest of this repo turns into build failures. Now the
+/// handler declares where it writes and this reads the declaration; extracting
+/// the path from the task's input is all that is left.
+///
+/// An unknown function name yields no writes. The previous catch-all applied
+/// the `output`/`response_path` rule to any unrecognised name, so a typoed
+/// function contributed a phantom write to the analysis — a function that does
+/// not exist is already a lint error, and guessing on top of it only made the
+/// clippy rules reason about a pipeline that cannot run.
 pub fn task_writes(task: &Value) -> Vec<String> {
     let Some(function) = task.get("function") else {
         return Vec::new();
@@ -160,15 +168,18 @@ pub fn task_writes(task: &Value) -> Vec<String> {
     let Some(input) = function.get("input") else {
         return Vec::new();
     };
+    let Some(shape) = crate::engine::functions::schema::write_shape(name) else {
+        return Vec::new();
+    };
 
     let mut out = Vec::new();
-    match name {
-        "parse_json" | "parse_xml" | "publish_json" | "publish_xml" => {
+    match shape {
+        WriteShape::Target => {
             if let Some(target) = input.get("target").and_then(Value::as_str) {
                 out.push(format!("data.{target}"));
             }
         }
-        "map" => {
+        WriteShape::Mappings => {
             if let Some(mappings) = input.get("mappings").and_then(Value::as_array) {
                 for mapping in mappings {
                     if let Some(path) = mapping.get("path").and_then(Value::as_str) {
@@ -177,17 +188,17 @@ pub fn task_writes(task: &Value) -> Vec<String> {
                 }
             }
         }
-        _ => {
+        WriteShape::OutputPath { default_root } => {
             match input
                 .get("output")
                 .or_else(|| input.get("response_path"))
                 .and_then(Value::as_str)
             {
                 Some(path) => out.push(path.to_string()),
-                None if matches!(name, "data_query" | "data_write") => out.push("data".to_string()),
-                None => {}
+                None => out.extend(default_root.map(str::to_string)),
             }
         }
+        WriteShape::Nothing => {}
     }
     out
 }
