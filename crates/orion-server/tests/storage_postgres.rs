@@ -642,3 +642,19 @@ async fn postgres_keyset_ordering_is_served_by_the_new_index() {
          added by migration 011, else every page sorts the table:\n{plan}"
     );
 }
+
+#[path = "support/repository_contract.rs"]
+mod contract;
+
+/// Every repository behaviour in the shared contract, on Postgres.
+///
+/// The contract is written once (`tests/support/repository_contract.rs`) and
+/// driven from here, from `storage_mysql.rs`, and from the integration binary
+/// for SQLite — so a case added for one backend is asserted on all three
+/// rather than becoming a fourth hand-written round-trip.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_satisfies_the_repository_contract() {
+    let (_container, pool) = postgres_pool().await;
+    contract::run_all("postgres", &pool).await;
+}

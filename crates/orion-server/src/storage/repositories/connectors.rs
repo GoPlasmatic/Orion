@@ -561,3 +561,238 @@ impl ConnectorRepository for SqlConnectorRepository {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::config_encryption::ConfigCipher;
+    use serde_json::json;
+
+    /// A 32-byte key, hex-encoded — the shape `storage.connector_encryption_key`
+    /// takes. Fixed rather than random so a failure is reproducible.
+    const TEST_KEY: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    async fn plain_repo() -> (DbPool, SqlConnectorRepository) {
+        let pool = crate::storage::test_sqlite_pool().await;
+        let repo = SqlConnectorRepository::new(pool.clone());
+        (pool, repo)
+    }
+
+    fn encrypting(pool: &DbPool) -> SqlConnectorRepository {
+        SqlConnectorRepository::with_cipher(
+            pool.clone(),
+            Some(std::sync::Arc::new(
+                ConfigCipher::from_hex(TEST_KEY).expect("cipher"),
+            )),
+        )
+    }
+
+    fn request(name: &str, config: serde_json::Value) -> CreateConnectorRequest {
+        CreateConnectorRequest {
+            id: Some(name.to_string()),
+            name: name.to_string(),
+            connector_type: crate::connector::ConnectorType::Http,
+            config,
+            enabled: None,
+            tags: vec![],
+        }
+    }
+
+    /// Read `config_json` as the database actually holds it, bypassing the
+    /// repository — the only way to tell "encrypted at rest" from "decrypted
+    /// on the way out", which is the whole claim H3 makes.
+    async fn stored_config(pool: &DbPool, id: &str) -> String {
+        let (sql, values) = build_sqlx(
+            pool.backend(),
+            Query::select()
+                .column(Connectors::ConfigJson)
+                .from(Connectors::Table)
+                .and_where(Expr::col(Connectors::Id).eq(id)),
+        );
+        pool.fetch_optional_as::<(String,)>(&sql, values)
+            .await
+            .expect("read")
+            .expect("row")
+            .0
+    }
+
+    #[tokio::test]
+    async fn a_connector_round_trips_without_a_cipher() {
+        let (pool, repo) = plain_repo().await;
+        let created = repo
+            .create(&request(
+                "plain",
+                json!({"base_url": "https://example.test"}),
+            ))
+            .await
+            .expect("create");
+        assert_eq!(created.name, "plain");
+
+        let read = repo.get_by_id("plain").await.expect("read back");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&read.config_json).expect("json")["base_url"],
+            "https://example.test"
+        );
+        assert_eq!(
+            stored_config(&pool, "plain").await,
+            read.config_json,
+            "with no key configured the stored form is the plaintext form"
+        );
+    }
+
+    /// H3: with a key configured the credential is not in the table, and the
+    /// repository is the only thing that can read it back. Asserted on the
+    /// *stored bytes*, because "we call encrypt somewhere" is not the claim —
+    /// "a database dump does not carry the credential" is.
+    #[tokio::test]
+    async fn a_configured_cipher_encrypts_at_rest_and_decrypts_on_read() {
+        let (pool, _) = plain_repo().await;
+        let repo = encrypting(&pool);
+
+        repo.create(&request("secretive", json!({"token": "hunter2"})))
+            .await
+            .expect("create");
+
+        let at_rest = stored_config(&pool, "secretive").await;
+        assert!(
+            ConfigCipher::is_encrypted(&at_rest),
+            "the stored config must be enveloped: {at_rest}"
+        );
+        assert!(
+            !at_rest.contains("hunter2"),
+            "the credential must not be readable in the table: {at_rest}"
+        );
+
+        let read = repo.get_by_id("secretive").await.expect("read back");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&read.config_json).expect("json")["token"],
+            "hunter2",
+            "the repository must hand back plaintext"
+        );
+    }
+
+    /// A row written before the key existed stays readable: turning encryption
+    /// on must not strand the estate that predates it.
+    #[tokio::test]
+    async fn plaintext_rows_written_before_the_key_still_read() {
+        let (pool, plain) = plain_repo().await;
+        plain
+            .create(&request("legacy", json!({"token": "old"})))
+            .await
+            .expect("create without a key");
+
+        let read = encrypting(&pool)
+            .get_by_id("legacy")
+            .await
+            .expect("a pre-key row must still read once a key is configured");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&read.config_json).expect("json")["token"],
+            "old"
+        );
+    }
+
+    /// The opposite direction is not recoverable, so it is loud. Handing the
+    /// literal `enc:v1:…` string on as a config would fail at every downstream
+    /// use with a message naming anything but the actual cause.
+    #[tokio::test]
+    async fn an_encrypted_row_without_a_key_is_a_loud_error() {
+        let (pool, plain) = plain_repo().await;
+        encrypting(&pool)
+            .create(&request("enciphered", json!({"token": "hunter2"})))
+            .await
+            .expect("create with a key");
+
+        let err = plain
+            .get_by_id("enciphered")
+            .await
+            .expect_err("an encrypted row with no key must not be served as-is");
+        let message = err.to_string();
+        assert!(
+            message.contains("connector_encryption_key"),
+            "the error must name the missing setting: {message}"
+        );
+    }
+
+    /// An update re-encrypts: the write path is `store_form` on both create
+    /// and update, and a version that encrypted only on insert would silently
+    /// write the next config in clear.
+    #[tokio::test]
+    async fn an_update_re_encrypts_the_new_config() {
+        let (pool, _) = plain_repo().await;
+        let repo = encrypting(&pool);
+        repo.create(&request("rotating", json!({"token": "first"})))
+            .await
+            .expect("create");
+
+        repo.update(
+            "rotating",
+            &UpdateConnectorRequest {
+                name: None,
+                connector_type: None,
+                config: Some(json!({"token": "second"})),
+                enabled: None,
+                tags: None,
+            },
+        )
+        .await
+        .expect("update");
+
+        let at_rest = stored_config(&pool, "rotating").await;
+        assert!(ConfigCipher::is_encrypted(&at_rest), "{at_rest}");
+        assert!(!at_rest.contains("second"), "{at_rest}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &repo.get_by_id("rotating").await.expect("read").config_json
+            )
+            .expect("json")["token"],
+            "second"
+        );
+    }
+
+    /// `list_enabled` is what the registry loads, so a disabled connector must
+    /// not appear in it — and it decrypts like every other read path.
+    #[tokio::test]
+    async fn list_enabled_skips_disabled_connectors_and_still_decrypts() {
+        let (pool, _) = plain_repo().await;
+        let repo = encrypting(&pool);
+        repo.create(&CreateConnectorRequest {
+            enabled: Some(false),
+            ..request("off", json!({"token": "no"}))
+        })
+        .await
+        .expect("create disabled");
+        repo.create(&request("on", json!({"token": "yes"})))
+            .await
+            .expect("create enabled");
+
+        let enabled = repo.list_enabled().await.expect("list");
+        let names: Vec<&str> = enabled.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["on"]);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&enabled[0].config_json).expect("json")["token"],
+            "yes",
+            "list_enabled feeds the registry, so it must decrypt like get_by_id"
+        );
+    }
+
+    /// Names are unique: the data plane and `channel_call` address connectors
+    /// by name, so a duplicate is a conflict rather than a second row.
+    #[tokio::test]
+    async fn a_duplicate_name_is_a_conflict() {
+        let (_pool, repo) = plain_repo().await;
+        repo.create(&request("only-one", json!({})))
+            .await
+            .expect("create");
+        let err = repo
+            .create(&CreateConnectorRequest {
+                id: Some("a-different-id".to_string()),
+                ..request("only-one", json!({}))
+            })
+            .await
+            .expect_err("a duplicate connector name must be refused");
+        assert!(
+            matches!(err, OrionError::Conflict(_)),
+            "expected a Conflict, got: {err:?}"
+        );
+    }
+}

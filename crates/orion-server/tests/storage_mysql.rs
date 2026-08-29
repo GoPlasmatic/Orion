@@ -461,3 +461,19 @@ async fn mysql_keyset_pagination_walks_every_trace_once() {
         Some(7)
     );
 }
+
+#[path = "support/repository_contract.rs"]
+mod contract;
+
+/// Every repository behaviour in the shared contract, on MySQL.
+///
+/// The backend this matters most for: MySQL has no `RETURNING`, so
+/// `archive_latest_active` runs an entirely separate implementation here, and
+/// its equivalence to the single-statement form on the other two is something
+/// only a shared contract can assert.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_satisfies_the_repository_contract() {
+    let (_container, pool) = mysql_pool().await;
+    contract::run_all("mysql", &pool).await;
+}

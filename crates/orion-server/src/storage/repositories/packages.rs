@@ -282,3 +282,218 @@ impl PackageRepository for SqlPackageRepository {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn repo() -> SqlPackageRepository {
+        SqlPackageRepository::new(crate::storage::test_sqlite_pool().await)
+    }
+
+    fn put(version: &str, hash: &str, state: PackageState) -> PutPackageReceiptRequest {
+        PutPackageReceiptRequest {
+            version: version.to_string(),
+            content_hash: hash.to_string(),
+            state,
+        }
+    }
+
+    /// The receipt table's whole purpose is the applied-version immutability
+    /// rule, and every branch of it lives in one `match` on the existing row.
+    /// Each arm gets an assertion here, in the order the trait doc states
+    /// them, because the arms differ only in which predicate the write
+    /// carries — a difference no type checks.
+    #[tokio::test]
+    async fn a_new_version_is_inserted_as_requested() {
+        let repo = repo().await;
+        let receipt = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:aaa", PackageState::Staged),
+                "ci",
+            )
+            .await
+            .expect("insert");
+        assert_eq!(receipt.version, "1.0.0");
+        assert_eq!(receipt.content_hash, "sha256:aaa");
+        assert_eq!(receipt.state, PackageState::Staged.as_str());
+        assert_eq!(receipt.principal, "ci");
+    }
+
+    /// A staged version is a draft: content may still change under it, and it
+    /// may be promoted. Neither is a conflict.
+    #[tokio::test]
+    async fn a_staged_version_is_updated_in_place() {
+        let repo = repo().await;
+        repo.put(
+            "orders",
+            &put("1.0.0", "sha256:aaa", PackageState::Staged),
+            "ci",
+        )
+        .await
+        .expect("stage");
+
+        let restaged = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:bbb", PackageState::Staged),
+                "ci",
+            )
+            .await
+            .expect("re-stage with new content");
+        assert_eq!(
+            restaged.content_hash, "sha256:bbb",
+            "a staged version's content is still mutable"
+        );
+
+        let applied = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:bbb", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect("promote");
+        assert_eq!(applied.state, PackageState::Applied.as_str());
+    }
+
+    /// Re-applying the identical artifact is the retry a promotion pipeline
+    /// performs, so it must be a no-op and not a 409.
+    #[tokio::test]
+    async fn re_applying_the_same_content_is_idempotent() {
+        let repo = repo().await;
+        repo.put(
+            "orders",
+            &put("1.0.0", "sha256:aaa", PackageState::Applied),
+            "ci",
+        )
+        .await
+        .expect("apply");
+        let again = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:aaa", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect("re-applying identical content must be accepted");
+        assert_eq!(again.state, PackageState::Applied.as_str());
+        assert_eq!(again.content_hash, "sha256:aaa");
+    }
+
+    /// The rule the table exists for: an applied version's content is fixed.
+    /// Different bytes under the same version is the mistake that makes a
+    /// promotion receipt worthless, so it is refused rather than recorded.
+    #[tokio::test]
+    async fn applied_content_cannot_change_under_the_same_version() {
+        let repo = repo().await;
+        repo.put(
+            "orders",
+            &put("1.0.0", "sha256:aaa", PackageState::Applied),
+            "ci",
+        )
+        .await
+        .expect("apply");
+
+        let err = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:zzz", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect_err("different content under an applied version must conflict");
+        assert!(
+            matches!(err, OrionError::Conflict(ref m) if m.contains("immutable")),
+            "expected the immutability conflict, got: {err:?}"
+        );
+
+        // And the stored row is the one that was applied, not the refused one.
+        let stored = repo.get_by_name("orders").await.expect("read back");
+        assert_eq!(stored[0].content_hash, "sha256:aaa");
+    }
+
+    /// An applied version cannot be demoted back to staged: the receipt is the
+    /// record that this content ran here, and a later `staged` PUT would erase
+    /// that without changing what is deployed.
+    #[tokio::test]
+    async fn an_applied_version_cannot_be_demoted_to_staged() {
+        let repo = repo().await;
+        repo.put(
+            "orders",
+            &put("1.0.0", "sha256:aaa", PackageState::Applied),
+            "ci",
+        )
+        .await
+        .expect("apply");
+        assert!(
+            repo.put(
+                "orders",
+                &put("1.0.0", "sha256:aaa", PackageState::Staged),
+                "ci"
+            )
+            .await
+            .is_err(),
+            "an applied version must not be demotable to staged"
+        );
+    }
+
+    /// `get_by_name` is newest-first, and a package with no receipts is a
+    /// `NotFound` rather than an empty list — the distinction the admin route
+    /// turns into 404 versus 200.
+    #[tokio::test]
+    async fn receipts_read_back_newest_first_and_a_miss_is_not_found() {
+        let repo = repo().await;
+        for version in ["1.0.0", "1.1.0", "1.2.0"] {
+            repo.put(
+                "orders",
+                &put(version, "sha256:aaa", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect("apply");
+        }
+
+        let receipts = repo.get_by_name("orders").await.expect("read back");
+        let versions: Vec<&str> = receipts.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(versions, ["1.2.0", "1.1.0", "1.0.0"]);
+
+        assert!(
+            matches!(
+                repo.get_by_name("no-such-package").await,
+                Err(OrionError::NotFound(_))
+            ),
+            "a package with no receipts must be NotFound, not an empty list"
+        );
+    }
+
+    /// Receipts for different packages do not collide on version: the key is
+    /// `(name, version)`, and a shared version string is the normal case in an
+    /// estate that versions its packages together.
+    #[tokio::test]
+    async fn the_receipt_key_is_name_and_version_together() {
+        let repo = repo().await;
+        repo.put(
+            "orders",
+            &put("1.0.0", "sha256:aaa", PackageState::Applied),
+            "ci",
+        )
+        .await
+        .expect("apply orders");
+        repo.put(
+            "billing",
+            &put("1.0.0", "sha256:bbb", PackageState::Applied),
+            "ci",
+        )
+        .await
+        .expect("a different package at the same version must not conflict");
+
+        assert_eq!(
+            repo.get_by_name("billing").await.expect("read back")[0].content_hash,
+            "sha256:bbb"
+        );
+        let page = repo.list(50, 0).await.expect("list");
+        assert_eq!(page.total, 2);
+    }
+}

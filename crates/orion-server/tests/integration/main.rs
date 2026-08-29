@@ -95,6 +95,7 @@ mod protocol_required_fields_test;
 mod queue_durability_test;
 mod rate_limit_test;
 mod readiness_test;
+mod repository_contract_test;
 mod response_shaping_test;
 mod rest_routing_test;
 mod row_dto_wire_shape_test;
