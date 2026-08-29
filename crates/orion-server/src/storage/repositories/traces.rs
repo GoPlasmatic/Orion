@@ -426,7 +426,7 @@ pub trait TraceRetention: Send + Sync {
 /// Everything a full SQL-backed trace store does.
 ///
 /// `AppState` holds this, and hands each consumer the narrower trait it
-/// actually uses — trait upcasting (stable since 1.86, and the MSRV is 1.88)
+/// actually uses — trait upcasting (stable since 1.86, and the MSRV is 1.98)
 /// makes `Arc<dyn TraceRepository>` coerce to any of the three. Nothing
 /// implements this directly: the blanket impl means implementing the three
 /// parts is what makes a type a repository.

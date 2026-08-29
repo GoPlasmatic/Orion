@@ -556,9 +556,8 @@ pub fn build_stub_functions_with_log(
         // the local environment, and jwt_verify with a JWKS does fetch keys;
         // a missing variable or an unreachable JWKS is an honest failure, not
         // a gap in stubbing.) Looked up before the match rather than as a
-        // guard on it: an `if let` guard is unstable on the 1.88 MSRV, and the
-        // two are separate questions anyway — is this function stubbed at all,
-        // and if so does it need a typed stub.
+        // guard on it: the two are separate questions — is this function
+        // stubbed at all, and if so does it need a typed stub.
         let self_contained = SELF_CONTAINED
             .iter()
             .find(|(name, _)| *name == function)

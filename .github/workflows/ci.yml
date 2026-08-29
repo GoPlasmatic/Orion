@@ -87,7 +87,7 @@ jobs:
   # rust-version in Cargo.toml is a public stability promise; this job is
   # the only thing that keeps it honest (proposal T9).
   msrv:
-    name: MSRV (1.88)
+    name: MSRV (1.98)
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -98,7 +98,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master (toolchain from `with`)
         with:
-          toolchain: "1.88"
+          toolchain: "1.98"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
@@ -106,7 +106,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       # Run the suite, not just `cargo check`: the promise is that a
-      # contributor on 1.88 can build AND test, which also keeps
+      # contributor on 1.98 can build AND test, which also keeps
       # dev-dependencies honest about the MSRV.
       - name: Test on MSRV
         run: cargo test --workspace --no-fail-fast

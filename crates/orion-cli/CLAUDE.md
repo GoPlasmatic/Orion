@@ -42,7 +42,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 ## Architecture
 
-**Rust 1.88+ (workspace MSRV), edition 2024, async with Tokio.**
+**Rust 1.98+ (workspace MSRV), edition 2024, async with Tokio.**
 
 ### Module Layout
 

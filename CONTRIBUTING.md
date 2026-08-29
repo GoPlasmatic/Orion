@@ -8,7 +8,7 @@ Contributions are welcome! Whether it's a bug fix, new feature, documentation im
 
 **Prerequisites:**
 
-- [Rust 1.88+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.88)
+- [Rust 1.98+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.98)
 - SQLite (bundled — no separate install needed)
 
 **Clone and build:**

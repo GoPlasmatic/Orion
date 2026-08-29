@@ -37,7 +37,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 ```
 
-**From source** (requires Rust 1.88+):
+**From source** (requires Rust 1.98+):
 
 ```bash
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server
@@ -82,7 +82,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/relea
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.ps1 | iex"
 ```
 
-**From source** (requires Rust 1.88+):
+**From source** (requires Rust 1.98+):
 
 ```bash
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-cli

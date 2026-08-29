@@ -112,7 +112,7 @@ removal date; supplying both spellings in one input is a duplicate-field error.
 
 ## Rust toolchain (MSRV)
 
-The minimum supported Rust version is **1.88**, declared as `rust-version` in
+The minimum supported Rust version is **1.98**, declared as `rust-version` in
 `Cargo.toml` and enforced by a dedicated CI job. An MSRV bump is a **minor**
 release at most and is called out in the changelog. This matters only when
 building from source — the released binaries and images are self-contained.
@@ -138,7 +138,7 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
   `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
   `x86_64-pc-windows-msvc`. The rationale for what is and is not on that
   list lives on the [Deploy with Docker](../operate/docker.md) page.
-- **From source** — any platform with a Rust 1.88+ toolchain; Linux and macOS
+- **From source** — any platform with a Rust 1.98+ toolchain; Linux and macOS
   are exercised routinely, and CI runs on Linux.
 
 ## What support is (and is not)

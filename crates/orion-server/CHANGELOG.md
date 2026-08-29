@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The MSRV is now 1.98** (was 1.88), and the release profile builds in a
+  single codegen unit. Both container images already build on `rust:1.98-slim`
+  and CI's MSRV job now runs the whole suite on that toolchain, so a
+  `cargo install` or from-source build needs one at least that new. Called out
+  here because [the support policy](https://goplasmatic.github.io/Orion/reference/support.html)
+  makes an MSRV bump a minor release at most.
+
 ### Fixed
 
 - **A burst of admin changes no longer reaches a peer as the last change's

@@ -28,7 +28,7 @@ default-members = ["crates/orion-server"]
 # cycle of its own, and no tag names either.
 version = "1.4.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.98"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
 
@@ -60,6 +60,7 @@ split-debuginfo = "unpacked"
 codegen-units = 256
 
 [profile.release]
+codegen-units = 1
 strip = true
 
 # Inherits release optimizations but keeps debug symbols so samply / Instruments
