@@ -352,7 +352,7 @@ async fn restart_supervisor_recovers_a_downed_consumer() {
 
     // The supervisor retries (first attempt after ~1s), restores the
     // consumer, and clears the flag.
-    orion::engine::spawn_kafka_restart_supervisor(&state);
+    orion::runtime::spawn_kafka_restart_supervisor(&state);
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {

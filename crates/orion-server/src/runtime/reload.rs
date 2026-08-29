@@ -33,7 +33,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 /// storm, every node dropping every pooled connection for a change that
 /// touched no connector.
 ///
-/// [`EpochScope::Definitions`] skips the connector half. That is sound in the
+/// [`EpochScope::Definitions`](crate::cluster::EpochScope::Definitions) skips the connector half. That is sound in the
 /// direction that matters: the channel registry keys its per-channel reuse on
 /// the connector registry's generation token
 /// (`channel::registry::DepsFingerprint`), and not reloading connectors leaves
@@ -42,7 +42,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 /// what should happen. It also honours that module's standing rule, *never
 /// evict a pool without loading connectors*, by doing neither.
 ///
-/// An unknown scope reads as [`EpochScope::All`], so a bump from a newer node
+/// An unknown scope reads as [`EpochScope::All`](crate::cluster::EpochScope::All), so a bump from a newer node
 /// this one does not understand costs the storm rather than a missed change.
 pub async fn resync_from_db(
     state: &AppState,

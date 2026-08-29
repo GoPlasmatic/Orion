@@ -244,7 +244,7 @@ fn build_pool(
     // eagerly — even for `SmtpTls::None` — and panics if no process-level
     // crypto provider has been chosen. See the helper for why Orion's graph
     // cannot auto-select one.
-    crate::server::tls::ensure_crypto_provider();
+    crate::crypto::ensure_provider();
 
     let mut builder = SmtpClientBuilder::new(config.host.clone(), config.port)
         .map_err(|e| OrionError::validation(format!("SMTP connector '{connector_name}': {e}")))?

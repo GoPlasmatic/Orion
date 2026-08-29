@@ -15,7 +15,7 @@
 use hmac::Hmac;
 use sha2::{Digest, Sha256};
 
-use crate::engine::operators::mac_compute;
+use crate::crypto::mac_compute;
 
 /// Everything the signing chain needs to know about one request's identity.
 /// Secrets arrive already resolved (the connector registry resolves `env://`

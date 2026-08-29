@@ -385,7 +385,7 @@ impl IntoResponse for OrionError {
                 code: code.to_string(),
                 message,
                 details,
-                request_id: crate::server::request_context::request_id(),
+                request_id: crate::request_context::request_id(),
             },
         };
 
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_id_embedded_when_scoped() {
-        use crate::server::request_context::{REQUEST_CONTEXT, RequestContext};
+        use crate::request_context::{REQUEST_CONTEXT, RequestContext};
         let ctx = RequestContext {
             request_id: "req-abc-123".to_string(),
             ..Default::default()
@@ -1233,7 +1233,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_id_absent_when_empty() {
-        use crate::server::request_context::{REQUEST_CONTEXT, RequestContext};
+        use crate::request_context::{REQUEST_CONTEXT, RequestContext};
         let response = REQUEST_CONTEXT
             .scope(RequestContext::default(), async {
                 OrionError::validation("x").into_response()

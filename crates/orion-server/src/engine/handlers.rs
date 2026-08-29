@@ -172,7 +172,9 @@ pub fn requires_mongo_database(function: &str) -> bool {
 /// throwaway engine over the same dependencies. Two call sites with ten
 /// same-typed `Arc`s between them is a silent-transposition hazard the compiler
 /// cannot see; every field here already lives on `AppState`, so
-/// [`HandlerDeps::from_state`] is the only form the second call site needs.
+/// `runtime::handler_deps` is the only form the second call site needs. That
+/// constructor is in `runtime` and not here because it takes an `AppState`,
+/// and a module the request path sits below should not know that type.
 pub struct HandlerDeps<'a> {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
@@ -188,30 +190,6 @@ pub struct HandlerDeps<'a> {
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
-}
-
-impl<'a> HandlerDeps<'a> {
-    /// Borrow the handler dependencies straight off a live `AppState`.
-    ///
-    /// The dry-run engine in `POST /workflows/{id}/test` must be built from the
-    /// *same* registries and pools as the serving engine — a copy that drifted
-    /// would make dry-run results a lie about production.
-    pub fn from_state(state: &'a crate::server::state::AppState) -> Self {
-        Self {
-            registry: state.connector_registry.clone(),
-            client: state.http_client.clone(),
-            engine: state.engine.clone(),
-            channel_registry: state.channel_registry.clone(),
-            jwks: state.jwks.clone(),
-            engine_config: &state.config.engine,
-            query_config: &state.config.query,
-            write_config: &state.config.write,
-            cache_pool: state.caches.cache_pool.clone(),
-            sql_pool_cache: state.caches.sql_pool_cache.clone(),
-            mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
-            smtp_pool_cache: state.caches.smtp_pool_cache.clone(),
-        }
-    }
 }
 
 /// Build the custom function handlers for the dataflow-rs engine.

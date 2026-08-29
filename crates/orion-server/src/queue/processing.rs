@@ -259,7 +259,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
-    let _cx = crate::server::trace_context::set_parent_from_map(&msg.trace_headers);
+    let _cx = crate::trace_context::set_parent_from_map(&msg.trace_headers);
 
     let trace_id = msg.trace_id;
     let channel = msg.channel;

@@ -111,7 +111,6 @@ pub mod observer;
 pub mod operators;
 pub mod profile;
 pub mod refs;
-pub mod reload;
 pub mod runner;
 pub mod secrets;
 pub mod steps;
@@ -128,10 +127,6 @@ pub use loader::{
 };
 pub use observer::MetricsObserver;
 pub use refs::{ConnectorRef, channel_call_targets, connector_refs};
-pub use reload::{
-    ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db,
-    spawn_kafka_restart_supervisor,
-};
 pub use runner::{EngineCallResult, EngineHandle, TraceCapture, run_for_channel};
 pub use secrets::ResolvedSecrets;
 pub use steps::{MAX_STEP_DEPTH, is_group, leaf_tasks, walk_steps};

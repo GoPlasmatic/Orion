@@ -352,7 +352,7 @@ pub async fn execute_request(
         // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
         {
             let mut trace_headers = std::collections::HashMap::new();
-            crate::server::trace_context::inject_trace_context(&mut trace_headers);
+            crate::trace_context::inject_trace_context(&mut trace_headers);
             for (k, v) in &trace_headers {
                 req = req.header(k, v);
             }

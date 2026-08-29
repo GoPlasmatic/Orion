@@ -538,7 +538,7 @@ async fn submit_async(
 
     let trace_headers = {
         let mut h = std::collections::HashMap::new();
-        crate::server::trace_context::inject_trace_context(&mut h);
+        crate::trace_context::inject_trace_context(&mut h);
         h
     };
 

@@ -354,7 +354,7 @@ pub enum AuthMode {
 ///
 /// Named `request` to pair with [`ChannelResponseConfig`] — and deliberately
 /// **not** `request_context`, which is already the name of the request-id /
-/// audit module (`crate::server::request_context`).
+/// audit module (`crate::request_context`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ChannelRequestConfig {

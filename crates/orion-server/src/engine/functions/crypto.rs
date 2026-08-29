@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256, Sha512};
 
 use super::connector_helpers::{apply_output, resolve_required_str, resolve_value};
 use super::schema::{FieldKind, FieldSchema};
-use crate::engine::operators::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
+use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "crypto";

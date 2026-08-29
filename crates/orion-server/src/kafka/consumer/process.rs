@@ -214,7 +214,7 @@ async fn process_one_kafka_message(
 
     // Extract W3C trace context from Kafka message headers and attach it as
     // parent of the current tracing span (held for the rest of this scope).
-    let _parent_cx = crate::server::trace_context::set_parent_from_map(&headers);
+    let _parent_cx = crate::trace_context::set_parent_from_map(&headers);
 
     // S1/N16: apply the target channel's ingress guards before dispatch,
     // through the same function every other transport uses — which guards

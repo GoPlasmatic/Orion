@@ -283,7 +283,7 @@ pub fn parse_algorithm(name: &str) -> Result<Algorithm, String> {
 /// How a textual HS secret becomes bytes — the #259 `key_encoding` precedent
 /// (`utf8` default, or `base64`/`hex` for binary secrets, Supabase-class).
 pub fn secret_bytes(secret: &str, key_encoding: Option<&str>) -> Result<Vec<u8>, String> {
-    use crate::engine::operators::{Codec, decode_bytes};
+    use crate::crypto::{Codec, decode_bytes};
     match key_encoding {
         None | Some("utf8") => Ok(secret.as_bytes().to_vec()),
         Some("base64") => decode_bytes(Codec::Base64, secret)

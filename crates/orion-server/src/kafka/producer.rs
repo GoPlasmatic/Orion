@@ -139,7 +139,7 @@ impl KafkaProducer {
         // Inject trace context as Kafka message headers
         let headers = {
             let mut trace_headers = std::collections::HashMap::new();
-            crate::server::trace_context::inject_trace_context(&mut trace_headers);
+            crate::trace_context::inject_trace_context(&mut trace_headers);
             let mut kafka_headers = OwnedHeaders::new();
             for (k, v) in &trace_headers {
                 kafka_headers = kafka_headers.insert(Header {

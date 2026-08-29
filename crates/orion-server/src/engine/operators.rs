@@ -36,11 +36,8 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use base64::Engine as _;
-use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use dataflow_rs::datalogic_rs::operator::EvalContext;
 use dataflow_rs::datalogic_rs::{self as datalogic, ArenaExt, CustomOperator, DataValue, Error};
-use hmac::{KeyInit, Mac};
 
 /// Every JSONLogic operator this build evaluates — datalogic-rs's core and
 /// extension sets (reached through dataflow-rs's `all-operators` feature) plus
@@ -88,89 +85,15 @@ pub fn operator_names() -> &'static BTreeSet<String> {
     })
 }
 
+/// The encoding table and the MAC helpers live in [`crate::crypto`] — a
+/// primitive four modules outside the engine need does not belong in the
+/// JSONLogic operator registry, which is where it grew. Re-exported here
+/// because the operators below are its heaviest user.
+pub(crate) use crate::crypto::{Codec, decode_bytes, encode_bytes};
+
 /// Whether `name` is an operator this build evaluates, rather than a data key.
 pub fn is_operator(name: &str) -> bool {
     operator_names().contains(name)
-}
-
-/// Standard-alphabet decoder that accepts padded and unpadded input.
-/// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]
-/// (padded); this leniency is decode-only.
-const B64_STD_LENIENT: GeneralPurpose = GeneralPurpose::new(
-    &base64::alphabet::STANDARD,
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
-
-/// URL-safe-alphabet decoder that accepts padded and unpadded input.
-/// Encoding always uses [`base64::engine::general_purpose::URL_SAFE_NO_PAD`] —
-/// the unpadded RFC 4648 §5 form JWS uses, per the #259 encoding table.
-const B64_URL_LENIENT: GeneralPurpose = GeneralPurpose::new(
-    &base64::alphabet::URL_SAFE,
-    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
-);
-
-/// Which alphabet an [`Encode`]/[`Decode`] instance speaks. Shared with the
-/// `crypto` function so the two features implement the #259 encoding table
-/// exactly once.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Codec {
-    Base64,
-    Base64Url,
-    Hex,
-}
-
-impl Codec {
-    /// The canonical name → codec table (`hex`, `base64`, `base64url`) —
-    /// one vocabulary for every surface that names an encoding. Callers own
-    /// their defaults and error wording.
-    pub(crate) fn parse(name: &str) -> Option<Codec> {
-        match name {
-            "hex" => Some(Codec::Hex),
-            "base64" => Some(Codec::Base64),
-            "base64url" => Some(Codec::Base64Url),
-            _ => None,
-        }
-    }
-}
-
-/// Canonical encoding of `bytes` per the #259 table: hex lowercase, base64
-/// standard padded, base64url unpadded (the JWS form).
-pub(crate) fn encode_bytes(codec: Codec, bytes: &[u8]) -> String {
-    match codec {
-        Codec::Base64 => base64::engine::general_purpose::STANDARD.encode(bytes),
-        Codec::Base64Url => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
-        Codec::Hex => hex::encode(bytes),
-    }
-}
-
-/// Strict decode per the same table; the base64 forms tolerate padded and
-/// unpadded input.
-pub(crate) fn decode_bytes(codec: Codec, s: &str) -> Result<Vec<u8>, String> {
-    match codec {
-        Codec::Base64 => B64_STD_LENIENT.decode(s).map_err(|e| e.to_string()),
-        Codec::Base64Url => B64_URL_LENIENT.decode(s).map_err(|e| e.to_string()),
-        Codec::Hex => hex::decode(s).map_err(|e| e.to_string()),
-    }
-}
-
-/// Compute an HMAC over `data` — the one spelling of the MAC primitive that
-/// the `crypto` function and SigV4 signing share.
-pub(crate) fn mac_compute<M: Mac + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
-    let mut mac = M::new_from_slice(key).expect("HMAC accepts any key length");
-    mac.update(data);
-    mac.finalize().into_bytes().to_vec()
-}
-
-/// Verify an HMAC — constant-time and length-checked (`verify_slice`), which
-/// is the reason the verify surfaces exist at all: without this helper the
-/// obvious spelling is `==` on the computed MAC. Shared by the `crypto`
-/// function's `hmac_verify` and channel HMAC auth.
-pub(crate) fn mac_verify<M: Mac + KeyInit>(key: &[u8], data: &[u8], signature: &[u8]) -> bool {
-    let Ok(mut mac) = M::new_from_slice(key) else {
-        return false;
-    };
-    mac.update(data);
-    mac.verify_slice(signature).is_ok()
 }
 
 /// The text an encoder operates on: strings as-is (borrowed — no copy on the

@@ -171,7 +171,7 @@ async fn engine_reload_waits_on_the_reload_lock() {
 
     let reload = tokio::spawn({
         let state = state.clone();
-        async move { orion::engine::reload_engine(&state).await }
+        async move { orion::runtime::reload_engine(&state).await }
     });
 
     // Long enough for the spawned task to be scheduled and reach the lock.

@@ -29,7 +29,7 @@ use crate::channel::guards::HeaderLookup;
 use crate::config::constant_time_eq;
 use dataflow_rs::datalogic_rs::{Engine as DatalogicEngine, Logic};
 
-use crate::engine::operators::{Codec, decode_bytes, mac_verify};
+use crate::crypto::{Codec, decode_bytes, mac_verify};
 use crate::errors::OrionError;
 
 /// A channel's authentication policy, resolved and pre-hashed at load time.
@@ -1290,7 +1290,7 @@ mod tests {
     }
     // -- #264: templates, presets, rotation, replay windows --
 
-    use crate::engine::operators::mac_compute as sign;
+    use crate::crypto::mac_compute as sign;
 
     fn preset_config(preset: &str, secret: &str) -> ChannelAuthConfig {
         ChannelAuthConfig {

@@ -165,7 +165,7 @@ pub fn render(template: &str, ctx: &RenderContext<'_>) -> Option<String> {
             // redaction policy lives, so this adds no new source of content.
             Segment::Message => out.push_str(ctx.message),
             Segment::RequestId => {
-                out.push_str(&crate::server::request_context::request_id().unwrap_or_default())
+                out.push_str(&crate::request_context::request_id().unwrap_or_default())
             }
             Segment::Channel => out.push_str(ctx.channel),
             Segment::Timestamp => out

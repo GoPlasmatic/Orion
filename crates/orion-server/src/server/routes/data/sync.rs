@@ -602,7 +602,7 @@ pub(super) async fn process_sync_for_channel(
                     state.config.verbose_errors(),
                 ));
                 response["request_id"] =
-                    json!(crate::server::request_context::request_id().unwrap_or_default());
+                    json!(crate::request_context::request_id().unwrap_or_default());
                 Some(serialize_envelope(&response)?)
             } else {
                 None

@@ -53,7 +53,7 @@ pub struct Caches {
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
     pub engine: Arc<crate::engine::EngineHandle>,
-    /// Serialises [`crate::engine::reload_engine_with_opts`] end to end.
+    /// Serialises [`crate::runtime::reload_engine_with_opts`] end to end.
     ///
     /// A reload is a read-modify-write across two published values: it reads
     /// the active channels and workflows from the database, builds the new

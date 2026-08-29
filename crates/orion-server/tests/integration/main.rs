@@ -75,6 +75,7 @@ mod mdbook_pin_drift_test;
 mod metrics_docs_drift_test;
 mod metrics_endpoint_test;
 mod migration_guard_test;
+mod module_layering_test;
 mod mongodb_test;
 mod mysql_test;
 mod oauth2_connector_test;

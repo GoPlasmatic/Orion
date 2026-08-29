@@ -630,8 +630,7 @@ pub(crate) async fn test_workflow(
 
     // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
     // channel_call in dry-run still routes through the main engine for cross-channel calls.
-    let custom_fns =
-        crate::engine::build_custom_functions(crate::engine::HandlerDeps::from_state(&state));
+    let custom_fns = crate::engine::build_custom_functions(crate::runtime::handler_deps(&state));
     let test_engine = crate::engine::operators::with_orion_engine_defaults(
         dataflow_rs::Engine::builder(),
         &state.secrets,

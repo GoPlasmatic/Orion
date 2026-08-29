@@ -65,7 +65,7 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
             // advanced, the resync applied. A failed resync leaves the
             // gauge stale alongside the retry warning (O3).
             let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, row.epoch, || {
-                crate::engine::resync_from_db(&state, scope)
+                crate::runtime::resync_from_db(&state, scope)
             })
             .await;
 

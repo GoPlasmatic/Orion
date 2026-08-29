@@ -98,7 +98,7 @@ async fn a_definitions_resync_leaves_cached_pools_open() {
         .expect("pool opens");
     assert!(!pool.is_closed());
 
-    orion::engine::resync_from_db(&state, orion::cluster::EpochScope::Definitions)
+    orion::runtime::resync_from_db(&state, orion::cluster::EpochScope::Definitions)
         .await
         .expect("resync");
     assert!(
@@ -109,7 +109,7 @@ async fn a_definitions_resync_leaves_cached_pools_open() {
     // The complement: a connector change still evicts, because the endpoint or
     // the credentials behind a live connection may now be wrong. The evict
     // handler closes on a detached task, so give it a moment.
-    orion::engine::resync_from_db(&state, orion::cluster::EpochScope::Connectors)
+    orion::runtime::resync_from_db(&state, orion::cluster::EpochScope::Connectors)
         .await
         .expect("resync");
     for _ in 0..50 {

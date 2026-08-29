@@ -16,8 +16,8 @@ use serde_json::json;
 
 use axum::Extension;
 
-use crate::engine::reload_engine;
 use crate::errors::OrionError;
+use crate::runtime::reload_engine;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
 
@@ -488,7 +488,7 @@ pub(crate) const ANONYMOUS_PRINCIPAL: &str = "anonymous";
 /// directly), and individual fields are omitted when empty rather than
 /// recorded as `""`.
 fn request_details() -> Option<String> {
-    let ctx = crate::server::request_context::current()?;
+    let ctx = crate::request_context::current()?;
     let mut details = serde_json::Map::new();
     if !ctx.request_id.is_empty() {
         details.insert("request_id".into(), json!(ctx.request_id));
