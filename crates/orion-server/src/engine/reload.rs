@@ -52,6 +52,12 @@ pub async fn reload_engine_with_opts(
 ) -> Result<(), crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
+    // One reload at a time, process-wide. Everything below is a
+    // read-modify-write over the database rows and the two published values
+    // (channel registry, engine); overlapping reloads read the same rows and
+    // the loser's `store` wins. See `AppStateInner::reload_lock`.
+    let _reload_guard = state.reload_lock.lock().await;
+
     let result = async {
         let channels = state.repos.channels.list_active().await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);

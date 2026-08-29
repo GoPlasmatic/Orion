@@ -832,6 +832,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,
+        reload_lock: tokio::sync::Mutex::new(()),
         secrets,
         vars,
         repos,

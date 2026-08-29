@@ -24,9 +24,11 @@ use super::profile;
 /// started with until it drops the `Arc`. N17 made the same change to the
 /// channel-registry snapshot for the same reason.
 ///
-/// Reloads are still serialised, by the `reload_lock` in `AppState` — that is
-/// a separate concern (two concurrent reloads would each build from a possibly
-/// stale read) and is not what this type is for.
+/// Serialising *reloads* is a separate concern and not what this type is for:
+/// two concurrent reloads would each build from a possibly stale read, and the
+/// loser's `store` would win. `AppStateInner::reload_lock` is what prevents
+/// that; this type only guarantees that whichever engine is published is
+/// published atomically.
 pub struct EngineHandle(ArcSwap<dataflow_rs::Engine>);
 
 impl EngineHandle {

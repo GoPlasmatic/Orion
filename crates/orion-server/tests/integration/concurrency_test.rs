@@ -149,6 +149,94 @@ async fn test_engine_reload_under_data_load() {
 }
 
 // ============================================================
+// Engine reload is serialised by AppState::reload_lock
+// ============================================================
+
+/// A reload is a read-modify-write: it reads the active rows, builds the new
+/// engine from the current one, republishes the registry and stores the
+/// engine. Two of them interleaved would each build from the same pre-mutation
+/// read and the loser's `store` would win — so `reload_engine` must take
+/// `AppStateInner::reload_lock` for the whole sequence, not just for the
+/// registry rebuild (which has a lock of its own that does not cover the
+/// engine store).
+///
+/// Holding the lock from the test is what makes this deterministic: with the
+/// acquisition removed from `reload_engine_with_opts` the spawned reload runs
+/// to completion while the guard is held and the `is_finished` assertion fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn engine_reload_waits_on_the_reload_lock() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+
+    let guard = state.reload_lock.lock().await;
+
+    let reload = tokio::spawn({
+        let state = state.clone();
+        async move { orion::engine::reload_engine(&state).await }
+    });
+
+    // Long enough for the spawned task to be scheduled and reach the lock.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !reload.is_finished(),
+        "reload completed while reload_lock was held — the reload is not serialised"
+    );
+
+    drop(guard);
+    reload
+        .await
+        .expect("reload task")
+        .expect("reload succeeds once the lock is free");
+}
+
+/// Concurrent reloads racing a mutation converge on the mutation's outcome.
+/// Without the lock the losing build — made from the pre-activation read —
+/// can `store` last and leave the new channel unrouted until the next reload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_reloads_converge_on_the_latest_rows() {
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "converge-ch",
+        common::simple_log_workflow("Converge Workflow"),
+    )
+    .await;
+
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            app.oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/engine/reload",
+                None,
+            ))
+            .await
+            .unwrap()
+            .status()
+        }));
+    }
+    for status in join_all(tasks).await {
+        assert_eq!(status, StatusCode::OK, "reload failed with {status}");
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/converge-ch",
+            Some(json!({"data": {"after": true}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the channel is unrouted after concurrent reloads"
+    );
+}
+
+// ============================================================
 // Channel status race: activate/deactivate while sending data
 // ============================================================
 

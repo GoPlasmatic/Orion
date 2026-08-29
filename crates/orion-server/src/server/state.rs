@@ -53,6 +53,26 @@ pub struct Caches {
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
     pub engine: Arc<crate::engine::EngineHandle>,
+    /// Serialises [`crate::engine::reload_engine_with_opts`] end to end.
+    ///
+    /// A reload is a read-modify-write across two published values: it reads
+    /// the active channels and workflows from the database, builds the new
+    /// engine from the *current* one (`with_new_workflows` carries the handler
+    /// registry across), republishes the channel registry, and then stores the
+    /// engine. Two callers can start one concurrently — the admin mutations
+    /// (`audit_and_reload`) and the cluster epoch watcher — and without this
+    /// they interleave: both read the same pre-mutation rows, and whichever
+    /// `store`s last wins. That is the *older* build often enough to matter,
+    /// which leaves a just-activated channel invisible until the next reload.
+    ///
+    /// `ChannelRegistry`'s own `reload_lock` does not cover this: it guards the
+    /// registry's read-modify-write alone, and the engine is stored outside it.
+    ///
+    /// Held across the Kafka consumer restart too, which is the one part that
+    /// can sleep (up to 5 s of epoch jitter). A concurrent reload waiting that
+    /// long is the correct outcome — the alternative is publishing an engine
+    /// built from rows it re-read while the first reload was still running.
+    pub reload_lock: tokio::sync::Mutex<()>,
     /// `[secrets]`, resolved at startup. Held so the admin plane's per-request
     /// engines (the workflow test endpoint) carry the same store the serving
     /// engine does — otherwise "test this workflow" would refuse a definition
