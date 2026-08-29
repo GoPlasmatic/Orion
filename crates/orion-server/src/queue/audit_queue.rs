@@ -17,11 +17,9 @@
 //! open, so the drain gives up and says how many rows it abandoned.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
-
+use super::bounded::{BoundedWorker, DrainHandle, DrainOutcome, DrainWitness, Rejected};
 use crate::config::AuditConfig;
 use crate::storage::repositories::audit_logs::AuditLogRepository;
 
@@ -42,8 +40,7 @@ pub struct AuditEvent {
 /// dropped before the writer can finish draining.
 #[derive(Clone)]
 pub struct AuditQueue {
-    tx: mpsc::Sender<AuditEvent>,
-    pending: Arc<AtomicUsize>,
+    queue: BoundedWorker<AuditEvent>,
 }
 
 impl AuditQueue {
@@ -54,30 +51,14 @@ impl AuditQueue {
     /// response behind that stall, so the drop is counted and logged at
     /// `error` rather than swallowed: `orion_audit_events_dropped_total` going
     /// non-zero means the audit trail has a hole in it.
+    ///
+    /// The reservation ordering that keeps the depth counter sound lives in
+    /// `BoundedWorker::try_submit`; this method only decides what a refusal
+    /// means for an audit trail.
     pub fn submit(&self, event: AuditEvent) {
-        // Count the event **before** it becomes visible to the writer, and
-        // undo that on a failed send. Incrementing afterwards is unsound: a
-        // writer that dequeues, inserts and decrements before the producer's
-        // `fetch_add` lands runs `fetch_sub` at zero and wraps the counter to
-        // `usize::MAX` — which is then published as `orion_audit_queue_depth`
-        // and, on a drain timeout, added to
-        // `orion_audit_events_dropped_total{reason="drain_timeout"}`. The
-        // mirror image is worse: the drain's zero-witness could fire while a
-        // row was still buffered and abort the writer with it unwritten,
-        // which is the O7 defect this module exists to close. Ordering the
-        // increment first can only ever over-count for the instant a send
-        // takes, and over-counting merely makes the drain wait.
-        self.pending.fetch_add(1, Ordering::AcqRel);
-        match self.tx.try_send(event) {
-            Ok(()) => {
-                // Refresh the gauge here as well as in the writer: the one
-                // condition it exists to show is a stalled writer with
-                // submissions backing up, and a stalled writer never reaches
-                // its own `set_audit_queue_depth`.
-                crate::metrics::set_audit_queue_depth(self.depth() as f64);
-            }
-            Err(mpsc::error::TrySendError::Full(event)) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
+        match self.queue.try_submit(event) {
+            Ok(()) => {}
+            Err(Rejected::Full(event)) => {
                 crate::metrics::record_audit_event_dropped("queue_full");
                 tracing::error!(
                     action = %event.action,
@@ -87,8 +68,7 @@ impl AuditQueue {
                      Raise audit.max_pending or investigate why audit writes are stalled"
                 );
             }
-            Err(mpsc::error::TrySendError::Closed(event)) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
+            Err(Rejected::Closed(event)) => {
                 // Only reachable after the writer has exited, i.e. during
                 // shutdown. Not an operator-actionable condition on its own.
                 crate::metrics::record_audit_event_dropped("writer_stopped");
@@ -103,21 +83,21 @@ impl AuditQueue {
 
     /// Events accepted but not yet written — the value published as
     /// `orion_audit_queue_depth`.
+    ///
+    /// "Not yet written", not "not yet dequeued": the writer holds each event's
+    /// lease across its INSERT, so this reaching zero is what lets the drain
+    /// stop early (see `DrainWitness::QueueEmpty`).
     pub fn depth(&self) -> usize {
-        self.pending.load(Ordering::Acquire)
+        self.queue.depth()
     }
 }
 
 /// Shutdown handle for the writer task.
 pub struct AuditWriterHandle {
     join: tokio::task::JoinHandle<()>,
-    pending: Arc<AtomicUsize>,
+    drain: DrainHandle<AuditEvent>,
     drain_timeout: Duration,
 }
-
-/// How often the drain re-checks the queue depth. Short, because it runs once
-/// per process and only at shutdown.
-const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 impl AuditWriterHandle {
     /// Wait for the queue to drain, bounded by `audit.drain_timeout_secs`.
@@ -135,32 +115,26 @@ impl AuditWriterHandle {
     ///
     /// Truncation is reported, never silent: an audit trail that lost rows has
     /// to say so, and the count is the number an investigator will not find.
-    pub async fn shutdown(mut self) {
-        let queued = self.pending.load(Ordering::Acquire);
+    pub async fn shutdown(self) {
+        let queued = self.drain.depth();
         if queued > 0 {
             tracing::info!(pending = queued, "Draining audit-log queue...");
         }
-        let pending = self.pending.clone();
-        let drained = tokio::time::timeout(self.drain_timeout, async {
-            tokio::select! {
-                result = &mut self.join => result,
-                () = async {
-                    while pending.load(Ordering::Acquire) > 0 {
-                        tokio::time::sleep(DRAIN_POLL_INTERVAL).await;
-                    }
-                } => Ok(()),
-            }
-        })
-        .await;
-        // Idle by construction on every path above; stop it so a lingering
-        // sender cannot keep the task alive past the process's last statement.
-        self.join.abort();
 
-        match drained {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::error!(error = %e, "Audit writer task panicked"),
-            Err(_) => {
-                let lost = self.pending.load(Ordering::Acquire);
+        match self
+            .drain
+            .drain(
+                vec![self.join],
+                DrainWitness::QueueEmpty,
+                self.drain_timeout,
+            )
+            .await
+        {
+            DrainOutcome::Drained => {}
+            DrainOutcome::WorkerPanicked => {
+                tracing::error!("Audit writer task panicked")
+            }
+            DrainOutcome::TimedOut { lost } => {
                 crate::metrics::record_audit_events_dropped("drain_timeout", lost as u64);
                 tracing::error!(
                     lost,
@@ -182,17 +156,25 @@ pub fn start(
     config: &AuditConfig,
     repo: Arc<dyn AuditLogRepository>,
 ) -> (AuditQueue, AuditWriterHandle) {
-    let (tx, mut rx) = mpsc::channel::<AuditEvent>(config.max_pending);
-    let pending = Arc::new(AtomicUsize::new(0));
-    let worker_pending = pending.clone();
+    let (queue, mut receivers) = BoundedWorker::<AuditEvent>::new(
+        1,
+        config.max_pending,
+        crate::metrics::set_audit_queue_depth,
+    );
+    let mut rx = receivers.pop().expect("one shard was requested");
+    let drain = queue.drain_handle();
+
     // Required: a dead writer means every admin mutation from here on is
     // unrecorded, which is the one failure an audit trail exists to prevent.
     // The join stays here because the drain is ordered — see `TaskHandles`.
     let guard = tasks.guard("audit_writer", crate::runtime::Criticality::Required);
     let join = tokio::spawn(guard.run(async move {
-        // `recv` yields `None` only once every sender is dropped *and* the
-        // buffer is empty — so this loop is the drain.
-        while let Some(event) = rx.recv().await {
+        // `recv_leased` yields `None` only once every sender is dropped *and*
+        // the buffer is empty — so this loop is the drain. Each event's lease
+        // is held across the INSERT and released when `event` goes out of
+        // scope, which is what makes a depth of zero mean "written", not
+        // merely "dequeued".
+        while let Some(event) = rx.recv_leased().await {
             if let Err(e) = repo
                 .insert(
                     &event.principal,
@@ -212,25 +194,15 @@ pub fn start(
                     "Failed to persist audit log entry"
                 );
             }
-            // Release: the drain's `Acquire` load of zero must mean every
-            // write above it has actually happened. Never underflows —
-            // `submit` increments before the send that made this event
-            // visible (`saturating_sub` only guards the arithmetic below).
-            let remaining = worker_pending
-                .fetch_sub(1, Ordering::Release)
-                .saturating_sub(1);
-            crate::metrics::set_audit_queue_depth(remaining as f64);
         }
         crate::metrics::set_audit_queue_depth(0.0);
     }));
+
     (
-        AuditQueue {
-            tx,
-            pending: pending.clone(),
-        },
+        AuditQueue { queue },
         AuditWriterHandle {
             join,
-            pending,
+            drain,
             drain_timeout: Duration::from_secs(config.drain_timeout_secs),
         },
     )

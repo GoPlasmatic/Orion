@@ -22,10 +22,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
 // Flush-deadline clock: tokio's Instant so the deadline arithmetic and the
-// `tokio::time::timeout` it feeds share one (pausable) clock.
+// `recv_timeout` it feeds share one (pausable) clock.
 use tokio::time::Instant;
+
+use super::bounded::{
+    BoundedWorker, DrainHandle, DrainOutcome, DrainWitness, Recv, WorkerReceiver,
+};
 
 use crate::config::{AsyncOnOverflow, TraceStorageConfig, TraceStorageMode};
 use crate::metrics;
@@ -57,9 +60,12 @@ pub enum TracePersistenceTask {
 /// `batch_workers` > 1 delivered no parallelism at all.
 #[derive(Clone)]
 pub struct TracePersistenceQueue {
-    senders: Vec<mpsc::Sender<TracePersistenceTask>>,
-    next: Arc<AtomicUsize>,
-    pending: Arc<AtomicUsize>,
+    /// One shard per worker (Q7), with round-robin fan-out and the reservation
+    /// ordering that keeps the depth gauge sound. The previous shared
+    /// `Arc<Mutex<Receiver>>` serialized all workers behind one lock — which
+    /// the batch worker held across its flush-interval `timeout(recv)` — so
+    /// `async_workers`/`batch_workers` > 1 delivered no parallelism at all.
+    queue: BoundedWorker<TracePersistenceTask>,
     overflow_policy: AsyncOnOverflow,
     overflow_block_timeout: Duration,
     /// Drops accumulated since the last warning. Q12: overflow used to be
@@ -97,9 +103,7 @@ impl TracePersistenceQueue {
     /// `Ok(false)`.
     pub fn disabled() -> Self {
         Self {
-            senders: Vec::new(),
-            next: Arc::new(AtomicUsize::new(0)),
-            pending: Arc::new(AtomicUsize::new(0)),
+            queue: BoundedWorker::disabled(metrics::set_trace_persistence_queue_depth),
             overflow_policy: AsyncOnOverflow::Drop,
             overflow_block_timeout: Duration::ZERO,
             dropped_since_warn: Arc::new(AtomicUsize::new(0)),
@@ -112,52 +116,27 @@ impl TracePersistenceQueue {
     /// dropped (queue full or queue disabled). Never errors — overflow is
     /// surfaced via `trace_dropped_total{reason="overflow"}`.
     pub async fn submit(&self, task: TracePersistenceTask) -> bool {
-        if self.senders.is_empty() {
+        if self.queue.is_disabled() {
             return false;
         }
-        let start = self.next.fetch_add(1, Ordering::Relaxed);
-        let send_result = match self.overflow_policy {
-            AsyncOnOverflow::Drop => {
-                // Round-robin, falling through to the other workers when the
-                // preferred one is full — a stalled worker should not drop
-                // tasks while its siblings sit idle.
-                let mut task = task;
-                let mut outcome = Err("full");
-                for i in 0..self.senders.len() {
-                    let sender = &self.senders[(start + i) % self.senders.len()];
-                    match sender.try_send(task) {
-                        Ok(()) => {
-                            outcome = Ok(());
-                            break;
-                        }
-                        Err(mpsc::error::TrySendError::Full(t))
-                        | Err(mpsc::error::TrySendError::Closed(t)) => task = t,
-                    }
-                }
-                outcome
-            }
-            AsyncOnOverflow::Block => {
-                let sender = &self.senders[start % self.senders.len()];
-                match tokio::time::timeout(self.overflow_block_timeout, sender.send(task)).await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(_)) => Err("closed"),
-                    Err(_) => Err("timeout"),
-                }
-            }
+        let accepted = match self.overflow_policy {
+            // Round-robin with fallthrough — a stalled worker should not drop
+            // tasks while its siblings sit idle.
+            AsyncOnOverflow::Drop => self.queue.try_submit(task).is_ok(),
+            // One shard, no fallthrough: this policy exists to slow the
+            // producer down, and hunting for a free sibling is the opposite.
+            AsyncOnOverflow::Block => self
+                .queue
+                .submit_blocking(task, self.overflow_block_timeout)
+                .await
+                .is_ok(),
         };
-        match send_result {
-            Ok(()) => {
-                let n = self.pending.fetch_add(1, Ordering::Relaxed) + 1;
-                metrics::set_trace_persistence_queue_depth(n as f64);
-                true
-            }
-            Err(_) => {
-                metrics::record_trace_dropped("overflow");
-                self.dropped_since_warn.fetch_add(1, Ordering::Relaxed);
-                self.warn_if_window_elapsed();
-                false
-            }
+        if !accepted {
+            metrics::record_trace_dropped("overflow");
+            self.dropped_since_warn.fetch_add(1, Ordering::Relaxed);
+            self.warn_if_window_elapsed();
         }
+        accepted
     }
 
     /// Emit one overflow warning per [`OVERFLOW_WARN_INTERVAL_MS`], carrying
@@ -192,38 +171,43 @@ impl TracePersistenceQueue {
     }
 }
 
-/// Lifecycle handle. Drop the inner senders on shutdown and await drain.
+/// Lifecycle handle. Releases the producer side on shutdown and awaits drain.
 pub struct PersistenceWorkerHandle {
-    _senders: Vec<mpsc::Sender<TracePersistenceTask>>,
-    join: Vec<tokio::task::JoinHandle<()>>,
+    drain: Option<DrainHandle<TracePersistenceTask>>,
+    joins: Vec<tokio::task::JoinHandle<()>>,
     shutdown_timeout: Duration,
 }
 
 impl PersistenceWorkerHandle {
     pub fn noop() -> Self {
         Self {
-            _senders: Vec::new(),
-            join: Vec::new(),
+            drain: None,
+            joins: Vec::new(),
             shutdown_timeout: Duration::ZERO,
         }
     }
 
     /// Drop the producer side and wait for workers to drain, bounded by
     /// `shutdown_timeout`.
+    ///
+    /// `DrainWitness::TasksExit` and not `QueueEmpty`: both workers release a
+    /// task's slot on dequeue and write afterwards — the batch worker holds
+    /// whole flushes in memory — so a depth of zero here would mean the channel
+    /// is empty, not that the rows have landed.
     pub async fn shutdown(self) {
-        drop(self._senders);
-        if self.join.is_empty() {
+        let Some(drain) = self.drain else {
             return;
-        }
-        let deadline = tokio::time::Instant::now() + self.shutdown_timeout;
-        for handle in self.join {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                handle.abort();
-                continue;
+        };
+        match drain
+            .drain(self.joins, DrainWitness::TasksExit, self.shutdown_timeout)
+            .await
+        {
+            DrainOutcome::Drained => {}
+            DrainOutcome::WorkerPanicked => {
+                tracing::error!("Trace persistence worker panicked")
             }
-            if tokio::time::timeout(remaining, handle).await.is_err() {
-                tracing::warn!("Trace persistence worker did not finish within shutdown timeout");
+            DrainOutcome::TimedOut { .. } => {
+                tracing::warn!("Trace persistence worker did not finish within shutdown timeout")
             }
         }
     }
@@ -251,7 +235,12 @@ pub fn start(
     // One channel per worker (Q7); `max_pending` stays the total bound by
     // splitting the capacity across workers.
     let per_worker_capacity = (config.max_pending.max(1) / worker_count).max(1);
-    let pending = Arc::new(AtomicUsize::new(0));
+    let (queue, receivers) = BoundedWorker::<TracePersistenceTask>::new(
+        worker_count,
+        per_worker_capacity,
+        metrics::set_trace_persistence_queue_depth,
+    );
+    let drain = queue.drain_handle();
 
     // Required: a dead persistence worker drops every trace routed to its
     // channel — counted as an overflow, indistinguishable from load — while
@@ -260,57 +249,49 @@ pub fn start(
     // fails it; the join handles stay here because the drain is ordered (see
     // `TaskHandles`).
     let guard = tasks.guard("trace_persistence", crate::runtime::Criticality::Required);
-    let mut senders = Vec::with_capacity(worker_count);
-    let mut join = Vec::with_capacity(worker_count);
-    for _ in 0..worker_count {
-        let (tx, rx) = mpsc::channel::<TracePersistenceTask>(per_worker_capacity);
-        senders.push(tx);
-        let pending = pending.clone();
+    let mut joins = Vec::with_capacity(worker_count);
+    for rx in receivers {
         let trace_repo = trace_repo.clone();
         let batch_size = config.batch_size.max(1);
         let flush_interval = Duration::from_millis(config.batch_flush_interval_ms.max(1));
-        join.push(tokio::spawn(guard.clone().run(async move {
+        joins.push(tokio::spawn(guard.clone().run(async move {
             if is_batch {
-                run_batch_worker(rx, pending, trace_repo, batch_size, flush_interval).await;
+                run_batch_worker(rx, trace_repo, batch_size, flush_interval).await;
             } else {
-                run_async_worker(rx, pending, trace_repo).await;
+                run_async_worker(rx, trace_repo).await;
             }
         })));
     }
 
-    let queue = TracePersistenceQueue {
-        senders: senders.clone(),
-        next: Arc::new(AtomicUsize::new(0)),
-        pending,
-        overflow_policy: config.async_on_overflow,
-        overflow_block_timeout: Duration::from_millis(config.overflow_block_timeout_ms),
-        dropped_since_warn: Arc::new(AtomicUsize::new(0)),
-        last_warn_ms: Arc::new(AtomicU64::new(NEVER_WARNED)),
-        started: Instant::now(),
-    };
     let handle = PersistenceWorkerHandle {
-        _senders: senders,
-        join,
+        drain: Some(drain),
+        joins,
         shutdown_timeout: Duration::from_secs(30),
     };
-    (queue, handle)
+    (
+        TracePersistenceQueue {
+            queue,
+            overflow_policy: config.async_on_overflow,
+            overflow_block_timeout: Duration::from_millis(config.overflow_block_timeout_ms),
+            dropped_since_warn: Arc::new(AtomicUsize::new(0)),
+            last_warn_ms: Arc::new(AtomicU64::new(NEVER_WARNED)),
+            started: Instant::now(),
+        },
+        handle,
+    )
 }
 
 async fn run_async_worker(
-    mut rx: mpsc::Receiver<TracePersistenceTask>,
-    pending: Arc<AtomicUsize>,
+    mut rx: WorkerReceiver<TracePersistenceTask>,
     trace_repo: Arc<dyn TraceRepository>,
 ) {
     while let Some(task) = rx.recv().await {
-        let n = pending.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
-        metrics::set_trace_persistence_queue_depth(n as f64);
         dispatch_one(&trace_repo, task).await;
     }
 }
 
 async fn run_batch_worker(
-    mut rx: mpsc::Receiver<TracePersistenceTask>,
-    pending: Arc<AtomicUsize>,
+    mut rx: WorkerReceiver<TracePersistenceTask>,
     trace_repo: Arc<dyn TraceRepository>,
     batch_size: usize,
     flush_interval: Duration,
@@ -330,12 +311,8 @@ async fn run_batch_worker(
     loop {
         let now = Instant::now();
         let until = deadline.saturating_duration_since(now);
-        let recv = tokio::time::timeout(until, rx.recv()).await;
-
-        match recv {
-            Ok(Some(task)) => {
-                let n = pending.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
-                metrics::set_trace_persistence_queue_depth(n as f64);
+        match rx.recv_timeout(until).await {
+            Recv::Item(task) => {
                 match task {
                     TracePersistenceTask::StoreCompleted(row) => completed.push(row),
                     TracePersistenceTask::SetResult(row) => results.push(row),
@@ -358,12 +335,12 @@ async fn run_batch_worker(
                     deadline = Instant::now() + flush_interval;
                 }
             }
-            Ok(None) => {
+            Recv::Closed => {
                 // Channel closed: drain remaining batches and exit.
                 flush_batches(&trace_repo, &mut completed, &mut results).await;
                 return;
             }
-            Err(_) => {
+            Recv::Elapsed => {
                 // Deadline elapsed: flush whatever we have.
                 flush_batches(&trace_repo, &mut completed, &mut results).await;
                 deadline = Instant::now() + flush_interval;

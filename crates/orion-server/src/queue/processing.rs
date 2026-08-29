@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::Semaphore;
 
 use crate::config::TraceStorageMode;
 use crate::metrics;
@@ -32,8 +32,12 @@ fn serialize_result_with_profile(
 }
 
 /// Shared counters for queue observability metrics.
+///
+/// Queue *depth* is not here: it belongs to the `BoundedWorker` the dispatcher
+/// receives from, which releases each item's reservation as it is dequeued.
+/// These two cover what happens after that — how many traces are executing, and
+/// how many payload bytes they hold.
 pub(super) struct QueueCounters {
-    pub(super) pending: Arc<AtomicUsize>,
     pub(super) active: Arc<AtomicUsize>,
     pub(super) memory_bytes: Arc<AtomicUsize>,
 }
@@ -79,9 +83,15 @@ struct DlqCandidate<'a> {
 
 /// Main dispatcher loop: receives traces from the channel and spawns processing
 /// tasks, limited by a semaphore to `max_workers` concurrent traces.
-pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueuedItem>, ctx: DispatcherContext) {
+pub(super) async fn dispatcher_loop(
+    mut rx: super::bounded::WorkerReceiver<QueuedItem>,
+    ctx: DispatcherContext,
+) {
     let semaphore = Arc::new(Semaphore::new(ctx.max_workers));
 
+    // `recv` releases the item's depth reservation as it hands it over — the
+    // item is no longer queued, it is running. `orion_trace_workers_active`
+    // below is what covers it from here.
     while let Some(item) = rx.recv().await {
         // Acquire a permit — blocks if all workers are busy
         let permit = match semaphore.clone().acquire_owned().await {
@@ -92,13 +102,7 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueuedItem>, ctx: Dis
         // Release exactly what `enqueue` reserved for this item
         let estimated_size = item.payload_size;
 
-        // Dequeued — decrement pending, increment active
-        let pending = ctx
-            .counters
-            .pending
-            .fetch_sub(1, Ordering::Relaxed)
-            .saturating_sub(1);
-        metrics::set_trace_queue_depth(pending as f64);
+        // Dequeued — now active.
         let active = ctx.counters.active.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_workers_active(active as f64);
 

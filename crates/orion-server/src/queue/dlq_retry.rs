@@ -517,17 +517,15 @@ mod tests {
         buffer_size: usize,
     ) -> (
         TraceQueue,
-        tokio::sync::mpsc::Receiver<crate::queue::QueuedItem>,
+        crate::queue::bounded::WorkerReceiver<crate::queue::QueuedItem>,
     ) {
-        let (tx, rx) = tokio::sync::mpsc::channel::<crate::queue::QueuedItem>(buffer_size);
-        let queue = TraceQueue::new_for_test(tx);
-        (queue, rx)
+        TraceQueue::new_for_test(buffer_size)
     }
 
     fn make_closed_queue() -> TraceQueue {
-        let (tx, rx) = tokio::sync::mpsc::channel::<crate::queue::QueuedItem>(1);
+        let (queue, rx) = TraceQueue::new_for_test(1);
         drop(rx); // receiver dropped → send will fail
-        TraceQueue::new_for_test(tx)
+        queue
     }
 
     // ----------------------------------------------------------------

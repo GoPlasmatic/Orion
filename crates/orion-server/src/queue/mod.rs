@@ -1,5 +1,6 @@
 pub mod audit_cleanup;
 pub mod audit_queue;
+mod bounded;
 mod dlq_retry;
 mod processing;
 
@@ -8,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::mpsc;
 
+use self::bounded::{BoundedWorker, DrainHandle, DrainOutcome, DrainWitness, Rejected};
 use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 
@@ -207,22 +208,27 @@ pub(crate) struct QueuedItem {
 /// worker pool that runs in the background.
 #[derive(Clone)]
 pub struct TraceQueue {
-    sender: mpsc::Sender<QueuedItem>,
-    pending_count: Arc<AtomicUsize>,
+    queue: BoundedWorker<QueuedItem>,
     memory_bytes: Arc<AtomicUsize>,
     max_memory_bytes: usize,
 }
 
 impl TraceQueue {
-    /// Create a TraceQueue for testing. The receiver must be consumed elsewhere.
+    /// Create a TraceQueue for testing, with its receiver handed back so a test
+    /// can hold it (a full queue) or drop it (a closed one).
     #[cfg(test)]
-    pub(crate) fn new_for_test(sender: mpsc::Sender<QueuedItem>) -> Self {
-        Self {
-            sender,
-            pending_count: Arc::new(AtomicUsize::new(0)),
-            memory_bytes: Arc::new(AtomicUsize::new(0)),
-            max_memory_bytes: 100_000_000,
-        }
+    pub(crate) fn new_for_test(capacity: usize) -> (Self, bounded::WorkerReceiver<QueuedItem>) {
+        let (queue, mut receivers) =
+            BoundedWorker::new(1, capacity, metrics::set_trace_queue_depth);
+        let rx = receivers.pop().expect("one shard was requested");
+        (
+            Self {
+                queue,
+                memory_bytes: Arc::new(AtomicUsize::new(0)),
+                max_memory_bytes: 100_000_000,
+            },
+            rx,
+        )
     }
 
     /// Submit a trace to the queue for background processing.
@@ -283,45 +289,46 @@ impl TraceQueue {
         }
         metrics::set_trace_queue_memory_bytes(total as f64);
 
-        if let Err(err) = self.sender.try_send(item) {
-            // Release the reservation taken above — the item never entered the
-            // queue, so nothing downstream will subtract it.
-            self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
-            return Err(match err {
-                // The rejected message is dropped here, releasing the
-                // backpressure permit it carried — a shed submission must not
-                // hold a slice of the channel's `max_concurrent_per_node`.
-                mpsc::error::TrySendError::Full(_) => {
-                    metrics::record_trace_queue_rejected("full");
-                    crate::errors::OrionError::unavailable(
-                        crate::errors::Unavailable::AtCapacity,
-                        format!(
-                            "Trace queue is full ({} messages pending)",
-                            self.pending_count.load(Ordering::Relaxed)
-                        ),
-                    )
-                }
-                // Not `AtCapacity`: a closed channel means the dispatcher is
-                // gone, which no amount of waiting fixes. The node reports it
-                // on `/health` as a dead background task, and this refusal
-                // sends no `Retry-After` rather than inviting a loop.
-                mpsc::error::TrySendError::Closed(_) => crate::errors::OrionError::unavailable(
-                    crate::errors::Unavailable::QueueClosed,
-                    "Trace queue is closed",
-                ),
-            });
+        // Sheds rather than waits — see the doc comment above. The depth
+        // reservation and its release on refusal are `BoundedWorker`'s; the
+        // memory reservation released here is this queue's own.
+        match self.queue.try_submit(item) {
+            Ok(()) => Ok(()),
+            Err(rejected) => {
+                // The item never entered the queue, so nothing downstream will
+                // subtract the bytes reserved for it.
+                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
+                Err(match rejected {
+                    // The rejected message is dropped here, releasing the
+                    // backpressure permit it carried — a shed submission must
+                    // not hold a slice of the channel's `max_concurrent_per_node`.
+                    Rejected::Full(_) => {
+                        metrics::record_trace_queue_rejected("full");
+                        crate::errors::OrionError::unavailable(
+                            crate::errors::Unavailable::AtCapacity,
+                            format!(
+                                "Trace queue is full ({} messages pending)",
+                                self.queue.depth()
+                            ),
+                        )
+                    }
+                    // Not `AtCapacity`: a closed channel means the dispatcher is
+                    // gone, which no amount of waiting fixes. The node reports it
+                    // on `/health` as a dead background task, and this refusal
+                    // sends no `Retry-After` rather than inviting a loop.
+                    Rejected::Closed(_) => crate::errors::OrionError::unavailable(
+                        crate::errors::Unavailable::QueueClosed,
+                        "Trace queue is closed",
+                    ),
+                })
+            }
         }
-
-        let pending = self.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
-        metrics::set_trace_queue_depth(pending as f64);
-
-        Ok(())
     }
 }
 
 /// Handle returned from `start_workers` to manage the worker lifecycle.
 pub struct WorkerHandle {
-    _sender: mpsc::Sender<QueuedItem>,
+    drain: DrainHandle<QueuedItem>,
     join_handle: tokio::task::JoinHandle<()>,
     shutdown_timeout_secs: u64,
 }
@@ -329,21 +336,29 @@ pub struct WorkerHandle {
 impl WorkerHandle {
     /// Gracefully shut down the worker pool.
     ///
-    /// Drops the sender (the TraceQueue clone also holds one), so call this
-    /// only after the HTTP server has stopped accepting new requests.
-    /// The returned future resolves when all in-flight traces are complete.
+    /// Releases this handle's producer clone (the `TraceQueue` on `AppState`
+    /// holds one too), so call this only after the HTTP server has stopped
+    /// accepting new requests. The returned future resolves when all in-flight
+    /// traces are complete — the dispatcher waits for its own spawned workers
+    /// before exiting, which is why `DrainWitness::TasksExit` is the right
+    /// witness here and a depth of zero is not.
     pub async fn shutdown(self) {
-        drop(self._sender);
-        // Wait for the dispatcher with a timeout to prevent hanging on stuck traces
         let timeout = Duration::from_secs(self.shutdown_timeout_secs);
-        if tokio::time::timeout(timeout, self.join_handle)
+        match self
+            .drain
+            .drain(vec![self.join_handle], DrainWitness::TasksExit, timeout)
             .await
-            .is_err()
         {
-            tracing::warn!(
-                timeout_secs = self.shutdown_timeout_secs,
-                "Trace queue workers did not shut down within timeout, proceeding with exit"
-            );
+            DrainOutcome::Drained => {}
+            DrainOutcome::WorkerPanicked => {
+                tracing::error!("Trace queue dispatcher panicked")
+            }
+            DrainOutcome::TimedOut { .. } => {
+                tracing::warn!(
+                    timeout_secs = self.shutdown_timeout_secs,
+                    "Trace queue workers did not shut down within timeout, proceeding with exit"
+                );
+            }
         }
     }
 }
@@ -387,8 +402,10 @@ pub fn start_workers(
     let shutdown_timeout_secs = config.shutdown_timeout_secs;
     let max_queue_memory_bytes = config.max_queue_memory_bytes;
 
-    let (tx, rx) = mpsc::channel::<QueuedItem>(buffer_size);
-    let pending_count = Arc::new(AtomicUsize::new(0));
+    let (bounded, mut receivers) =
+        BoundedWorker::<QueuedItem>::new(1, buffer_size, metrics::set_trace_queue_depth);
+    let rx = receivers.pop().expect("one shard was requested");
+    let drain = bounded.drain_handle();
     let active_workers = Arc::new(AtomicUsize::new(0));
     let memory_bytes = Arc::new(AtomicUsize::new(0));
 
@@ -398,7 +415,6 @@ pub fn start_workers(
         max_workers,
         shutdown_timeout_secs,
         counters: processing::QueueCounters {
-            pending: pending_count.clone(),
             active: active_workers,
             memory_bytes: memory_bytes.clone(),
         },
@@ -424,13 +440,12 @@ pub fn start_workers(
     let handle = tokio::spawn(guard.run(processing::dispatcher_loop(rx, dispatcher_ctx)));
 
     let queue = TraceQueue {
-        sender: tx.clone(),
-        pending_count,
+        queue: bounded,
         memory_bytes,
         max_memory_bytes: max_queue_memory_bytes,
     };
     let worker_handle = WorkerHandle {
-        _sender: tx,
+        drain,
         join_handle: handle,
         shutdown_timeout_secs,
     };
@@ -456,8 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_rejects_when_buffer_is_full() {
-        let (tx, _rx) = mpsc::channel::<QueuedItem>(1);
-        let queue = TraceQueue::new_for_test(tx);
+        let (queue, _rx) = TraceQueue::new_for_test(1);
 
         queue.submit(test_message("t1")).await.expect("first fits");
 
@@ -483,8 +497,7 @@ mod tests {
             .try_acquire_owned()
             .expect("permit available");
 
-        let (tx, _rx) = mpsc::channel::<QueuedItem>(1);
-        let queue = TraceQueue::new_for_test(tx);
+        let (queue, _rx) = TraceQueue::new_for_test(1);
         queue.submit(test_message("t1")).await.expect("first fits");
 
         let mut msg = test_message("t2");
@@ -500,9 +513,8 @@ mod tests {
 
     #[tokio::test]
     async fn submit_reports_closed_queue_separately() {
-        let (tx, rx) = mpsc::channel::<QueuedItem>(1);
+        let (queue, rx) = TraceQueue::new_for_test(1);
         drop(rx);
-        let queue = TraceQueue::new_for_test(tx);
 
         let err = queue
             .submit(test_message("t1"))
