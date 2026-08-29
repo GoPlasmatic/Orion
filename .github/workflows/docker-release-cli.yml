@@ -89,7 +89,7 @@ jobs:
           SHOULD_RELEASE=1
           # P19: refuse a version the binary does not report.
           if [ "${RELEASE}" = "1" ]; then
-            CARGO_VERSION=$(grep -m1 '^version = ' crates/orion-cli/Cargo.toml | cut -d'"' -f2)
+            CARGO_VERSION=$(.github/scripts/crate-version.sh orion-cli)
             if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
               # Only ONE case is a benign mismatch: a bare tag pushed for a
               # server-only release, which the CLI is simply not part of. An
@@ -97,12 +97,12 @@ jobs:
               # and must stay a hard error — a dispatch's GITHUB_REF_NAME is a
               # branch, so the override has to be tested before the tag shape.
               if [ -n "${TAG_OVERRIDE}" ]; then
-                echo "::error::tag_override says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Re-publish from a ref whose Cargo.toml agrees."
+                echo "::error::tag_override says ${VERSION} but orion-cli is at ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Re-publish from a ref whose version agrees."
                 exit 1
               fi
               case "${GITHUB_REF_NAME}" in
                 orion-cli-*)
-                  echo "::error::Release version says ${VERSION} but crates/orion-cli/Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
+                  echo "::error::Release version says ${VERSION} but orion-cli is at ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose version agrees."
                   exit 1
                   ;;
                 *)

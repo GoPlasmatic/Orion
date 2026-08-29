@@ -89,10 +89,12 @@ jobs:
       # orion-api. Both are dependencies of orion-server, so they are still
       # required even though the CLI no longer publishes.
       #
-      # Corollary (the one rule this places on development): any change to a
-      # rider crate must bump its version. A same-version change would be
-      # skipped here and the binary would publish against the older crates.io
-      # content while the repo builds against the newer local content.
+      # Skip-if-present would be a hazard if a rider could change without its
+      # version changing — the binary would publish against older crates.io
+      # content while the repo builds the newer local content. It cannot: all
+      # four crates share `workspace.package.version`, so a release moves every
+      # rider's version too. (This used to be a hand-maintained rule with a CI
+      # step diffing the rider directories; see RELEASING.md.)
       - name: Publish rider crates (only unpublished versions)
         if: ${{ steps.pkg.outputs.packages != '' }}
         run: .github/scripts/publish-crates.sh orion-api orion-client

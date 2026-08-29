@@ -296,14 +296,14 @@ rider crates only — `orion-cli` ships through the installers, the Homebrew
 tap and GHCR, because its crates.io name belongs to an unrelated crate. The
 secrets they need and the full procedure are in `RELEASING.md`.
 
-1. **Version alignment.** The root `Cargo.toml` is a virtual manifest with no
-   version of its own. `orion-server` and `orion-cli` are versioned in
-   lockstep, so set the same `version` in both `crates/orion-server/Cargo.toml`
-   and `crates/orion-cli/Cargo.toml`; a bare `v`-prefixed tag (`v1.0.0`)
-   releases every package at that version. Any change to the rider crates
-   (`orion-api`, `orion-client`) must bump their versions too, or the rider
-   publish skips them and the published `orion-server` resolves older
-   crates.io content. The Helm chart needs **no** manual bump —
+1. **Version bump.** All four crates share `workspace.package.version` in the
+   root `Cargo.toml`; `cargo release <level>` rewrites it and the two
+   `[workspace.dependencies]` requirements together, then tags. A bare
+   `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
+   lockstep is what keeps the rider crates (`orion-api`, `orion-client`)
+   publishable — their version always moves with a release, so the
+   skip-if-present rider publish can never leave `orion-server` resolving
+   older crates.io content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from
    the tag at publish time; the in-tree `Chart.yaml` value is a development
    placeholder.

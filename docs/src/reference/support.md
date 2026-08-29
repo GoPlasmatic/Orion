@@ -52,13 +52,20 @@ line. Endpoint additions and new optional fields are not considered breaking.
 | The `orion-api` / `orion-client` **Rust** APIs | **No** — see below |
 | The **database schema** | **No** — internal |
 
-**The client crates carry their own versions.** `orion-api` and `orion-client`
-are published so `orion-cli` and third-party tools can share the server's exact
-wire types, but their version numbers move independently of the server's and
-are not tied to a server release. Treat their *Rust* surface as semver'd on its
-own crate version, not on the server's — a server minor may ship alongside a
-crate major. The **wire format** those crates describe is covered by the HTTP
-contract above, whichever crate version you read it with.
+**The client crates share the server's version.** `orion-api` and
+`orion-client` are published so `orion-cli` and third-party tools can share the
+server's exact wire types, and every crate in the workspace carries the same
+version number — `orion-api` 1.4.0 is the contract `orion-server` 1.4.0
+serializes. Their *Rust* surface is still outside the support contract, so a
+version bump is not a promise about it: pin an exact version if you build
+against these crates directly. What *is* promised, whichever crate version you
+read it with, is the **wire format** they describe — that is the HTTP contract
+above.
+
+Releases up to and including 1.3.1 predate this rule: the two crates were
+versioned independently until then, and `orion-api` 1.0.4 / `orion-client`
+1.0.5 are the last published under the old scheme. An existing pin on one of
+those keeps resolving; it simply will not match its server's number.
 
 **The database schema is internal.** Tables, views, triggers and column
 spellings may change in any minor via a migration. Read Orion's data through

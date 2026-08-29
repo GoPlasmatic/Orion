@@ -15,13 +15,28 @@ name refs explicitly rather than relying on the current branch.
 ## What a release-shaped tag triggers
 
 The workspace has two releasable packages, `orion-server` and `orion-cli`,
-**versioned in lockstep**. A bare `v*` tag (e.g. `v1.0.0`, `v1.0.0-rc.1`) is
-the joint release: dist announces every dist-able package sitting at the
-tagged version, so one tag yields one GitHub release carrying both sets of
-archives, both installers and both tap formulae, and both docker-release
-workflows build their image. Keeping the two `version` fields equal is the
-whole mechanism — let them drift and the bare tag silently releases only the
-package that matches.
+**versioned in lockstep** — as is everything else in the workspace. There is
+one version number, `workspace.package.version` in the root `Cargo.toml`, and
+all four crates inherit it with `version.workspace = true`. A bare `v*` tag
+(e.g. `v1.0.0`, `v1.0.0-rc.1`) is the joint release: dist announces every
+dist-able package sitting at the tagged version, so one tag yields one GitHub
+release carrying both sets of archives, both installers and both tap formulae,
+and both docker-release workflows build their image.
+
+`cargo release <level|version>` is the tool for the bump. It rewrites
+`workspace.package.version` and the two `workspace.dependencies` requirements
+(the only other places the number appears — a path dependency still needs a
+`version` to be publishable), commits, and tags. It is configured not to push
+or publish: the tag is what starts the pipelines, and publishing stays with
+`crates-publish.yml`, which is idempotent and knows the rider order.
+
+```bash
+cargo release patch --execute      # or minor / major / 1.4.0-rc.1
+git push origin refs/tags/v1.3.2
+```
+
+Editing `workspace.package.version` by hand and tagging works just as well;
+the tool exists so the three numbers cannot drift apart.
 
 **Only `orion-server` is published to crates.io.** `orion-cli` is not, and
 this is deliberate: the `orion-cli` name on crates.io was registered in
@@ -54,24 +69,25 @@ The two shared library crates (`orion-api`,
 `orion-client`) are never tagged: crates-publish publishes them automatically
 as riders — in dependency order, skipping versions already on crates.io —
 right before `orion-server`, since crates.io refuses a crate whose
-dependency it doesn't host. The corollary for maintainers: any change to a
-rider crate must bump its version, or the rider skips it and the released
-binary resolves the older crates.io content.
+dependency it doesn't host.
 
-CI enforces this — the `package` job's *Rider crates changed must have their
-version bumped* step diffs each rider against the push base and fails the build
-if one changed without a bump. Two things about it are easy to be caught by:
+**Lockstep is what makes the riders safe, and it is why there is nothing to
+remember here.** Skip-if-present means a rider whose contents changed without
+a version bump would be skipped at publish time, leaving the released binary
+linked against older crates.io content while the repo builds the newer local
+one — a divergence nothing in CI can see, because the workspace always
+resolves the path dependency. Sharing one workspace version makes that
+unrepresentable: a release moves the number, so every rider's version moves
+with it.
 
-- **A manifest edit is a change.** Bumping `orion-api` means editing the
-  `orion-api = { version = … }` requirement in every dependent — and one of
-  those dependents is `orion-client`, itself a rider. That edit makes
-  `orion-client` a changed rider needing its own bump, which cascades to *its*
-  dependents' requirements. Bumping one rider usually means bumping both.
-- **A doc-comment-only change still counts**, and should: the tarball crates.io
-  receives is different, and docs.rs would otherwise serve the old text against
-  the new release.
+It used to be a maintainer obligation instead — bump each rider you touched,
+then bump every dependent whose requirement you had to edit, which made *that*
+dependent a changed rider needing its own bump — policed by a `package`-job
+step that diffed the rider directories against the push base. The step and the
+cascade are both gone; if you find yourself hand-editing a `version` in a
+member manifest, that is the mistake.
 
-`cargo package --locked --workspace` — what the same job runs next — is the
+`cargo package --locked --workspace` — what the `package` job runs — is the
 local rehearsal. It needs a **clean working tree**, so run it after committing
 the bump, not before. A server-release tag starts three independent
 pipelines, all gated on a successful CI run for the tagged commit (T10):

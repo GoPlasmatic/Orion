@@ -33,7 +33,7 @@ Three principles shape the setup:
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
-| Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | bump its version + every dependent's requirement, then `cargo package --locked --workspace` (needs a clean tree) |
+| Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all four crates share `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |

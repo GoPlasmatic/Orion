@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **JWKS fetches are address-checked and go through the SSRF-pinned HTTP
+  client.** `jwks_url` is authored input — a channel's `auth` block or a
+  `jwt_verify` task field — and it was the one egress path in the runtime with
+  no operator-configured connector behind it, served by a process-global cache
+  with its own unpinned `reqwest::Client`. The only rule applied to it was the
+  `https://` prefix, so a stored definition could reach an internal HTTPS host.
+  Key fetches now run on the serving client and are refused when the URL
+  resolves to a private or link-local address, exactly as an `http` connector
+  without `allow_private_urls` is.
+- New setting **`jwt.allow_private_jwks_urls`** (default `false`) turns that
+  check off for an issuer on a private address — an in-cluster Keycloak, a
+  sidecar. It is instance-wide rather than per channel: a per-channel opt-out
+  would let the author of a definition grant themselves the egress it exists
+  to gate. **Deployments whose `jwks_url` points inside the cluster must set
+  it**, or JWT verification against that issuer will fail with
+  `keys_unavailable`.
+
+### Fixed
+
+- **Engine reloads are serialised.** `AppState` gained the `reload_lock` that
+  `engine/runner.rs` already claimed existed. Without it the admin mutation
+  path and the cluster epoch watcher could reload concurrently, each building
+  from the same pre-mutation read of the channel and workflow rows; whichever
+  published last won, and when that was the older build a just-activated
+  channel stayed invisible until the next reload.
+- **The Kafka consumer's shutdown join is bounded** by
+  `kafka.processing_timeout_ms` plus a 5s grace. `recv()` and an offset commit
+  are blocking calls into the C client, so an unresponsive broker could hang
+  SIGTERM handling — and now an engine reload, which shuts a consumer down
+  while holding the reload lock. On timeout the task is left to finish rather
+  than aborted, so no in-flight commit is cancelled.
+
+### Changed
+
+- **All four crates share one version.** `orion-api` and `orion-client` used
+  to carry versions of their own, bumped by hand and policed by a CI step,
+  because the rider publish skips a version already on crates.io. They now
+  inherit `workspace.package.version`, so a release always moves them and the
+  skip can never fire on a rider whose contents changed; the CI step and the
+  bump cascade are gone. `cargo release` performs the bump. The next release
+  publishes `orion-api` and `orion-client` at the server's version — 1.0.4 and
+  1.0.5 are the last under the old scheme, and an existing pin on either keeps
+  resolving.
+- **Kafka ingress writes no trace row**, which is now stated rather than
+  implied: `docs/src/operate/traces.md` names the gap, lists what a Kafka
+  channel does have instead (the message metrics, the `orion_kafka_*` set, the
+  Kafka DLQ topic, the log), and says what to do today if per-message traces
+  are required. No behaviour change.
+
+### Internal
+
+- The database backend is carried on `DbPool` rather than in a process-global
+  `OnceLock`, so one process can hold two stores. `build_sqlx` takes it as a
+  parameter and `set_backend_for_test` is gone.
+
 ## [1.3.1] - 2026-08-27
 
 ### Security
