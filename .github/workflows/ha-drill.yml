@@ -57,6 +57,12 @@ jobs:
 
       # Reads ci.yml's docker-build cache scope; deliberately does NOT write it.
       #
+      # The build-args below must stay equal to that job's, profile overrides
+      # included: they are part of the layer hash, so building with different
+      # codegen settings would miss every cached layer even on the right
+      # scope. The drill measures graceful shutdown under load, which a less
+      # aggressively optimised binary models just as well.
+      #
       # Both workflows fire on the same push event, so they build concurrently
       # rather than in sequence — the older "this usually costs a cache load"
       # claim only held if ci.yml had already finished, which it never has.
@@ -80,7 +86,9 @@ jobs:
           tags: orion:local
           build-args: |
             GIT_HASH=${{ github.sha }}
-          cache-from: type=gha,scope=linux/amd64
+            CARGO_PROFILE_DIST_CODEGEN_UNITS=16
+            CARGO_PROFILE_DIST_LTO=false
+          cache-from: type=gha,scope=linux/amd64-ci
 
       - name: Start the HA stack (local image)
         env:

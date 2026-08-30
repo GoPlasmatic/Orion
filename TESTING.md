@@ -194,9 +194,9 @@ The examples are executable and CI treats them as a gate (`examples` job):
 
 | Gate | Where | What it proves |
 |------|-------|----------------|
-| MSRV | `msrv` CI job | The workspace still builds and tests on Rust 1.88 |
+| MSRV | `msrv` CI job | The workspace still compiles on Rust 1.98 (`cargo check --workspace --all-targets --locked` per push; the full suite on the weekly sweep) |
 | Cross-OS builds | `cross-os-build.yml` | macOS/Windows/musl targets compile (musl promotion criterion: `RELEASING.md`) |
-| Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included) |
+| Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm / Book | `docker-build`, `helm`, `book` jobs | Image builds; chart lints, renders, and rejects misspelled values; book builds |
 | CodeQL | `codeql.yml` | Static security analysis |
 | HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx |
@@ -211,11 +211,19 @@ each release's record is committed under `crates/orion-server/tests/benchmark/re
 
 ## CI at a glance
 
-Push/PR: `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
-`integration-containers`, `coverage`, `deny`, `package`, `book`, `helm`,
-`docker-build` — plus `mutants` on PRs and `ha-drill`/`cross-os-build` when
-their paths change. Release tags gate on a green CI run for the tagged
-commit (`ci-gate.yml`) before any artifact pipeline starts.
+Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
+`integration-containers` (a six-leg matrix, one runner per container suite),
+`coverage`, `deny`, `package`, `book`, `helm`, `docker-build` — plus
+`mutants` on PRs and `ha-drill`/`cross-os-build` when their paths change.
+`changes` is the path gate for `package`; a weekly `schedule` run does the
+whole lot unconditionally, including the two checks trimmed on the push path
+(`msrv`'s full suite, `package`). Release tags gate on a green CI run for the
+tagged commit (`ci-gate.yml`) before any artifact pipeline starts.
+
+Every stable-Linux job restores one shared `linux-stable` cache that `test`
+alone writes. Per-job caches used to total 10.24GB against GitHub's 10GB
+repository limit, so each push evicted what it had just written and most jobs
+recompiled from cold.
 
 ## Known gaps (accepted, with reasons)
 

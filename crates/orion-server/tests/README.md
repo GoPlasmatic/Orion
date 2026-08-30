@@ -107,10 +107,12 @@ Elasticsearch, Redis, Kafka) — nothing to start manually, only Docker. They
 are `#[ignore]`d so the default run stays Docker-free:
 
 ```bash
-# Integration binary: portable-dialect round-trips, raw-SQL backends,
-# Mongo/ES connectors, Redis cache/dedup, column-type matrix, dynamic
-# inputs, Kafka channels
-cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
+# Integration binary, split by the backend each module containerises:
+# raw-SQL backends, the column-type matrix and the portable-dialect
+# round-trips on the first line; Mongo/ES connectors, Redis cache/dedup,
+# dynamic inputs and Vault on the second; Kafka channels on its own.
+cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test
+cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
 cargo test --test integration -- --ignored kafka_test
 
 # Orion's own storage on Postgres / MySQL
@@ -125,10 +127,14 @@ cargo test --test cluster -- --ignored --test-threads=1
 ```
 
 CI runs exactly these invocations in the `integration-containers` job
-(`.github/workflows/ci.yml`); Kafka gets its own step because sharing one
-invocation with the other containers starves the brokers. Every step after
-the first carries `if: !cancelled()`, so a flaky broker cannot hide a real
-Postgres or schema-parity failure until the next push.
+(`.github/workflows/ci.yml`), one runner per invocation: the job is a
+`fail-fast: false` matrix whose `run:` values are the six commands above, in
+this order. Kafka has a leg of its own because sharing one invocation with
+the other containers starves the brokers. Running them as separate legs
+rather than sequential steps is also what keeps a flaky broker from hiding a
+real Postgres or schema-parity failure — the property the old steps got from
+`if: !cancelled()` — and it costs the wall clock of the slowest leg instead
+of the sum of all six (20.6 minutes, measured 2026-08-29).
 
 Because those filters are the only thing that ever selects an `#[ignore]`d
 test, a module missing from them runs **nowhere** — not locally (ignored) and

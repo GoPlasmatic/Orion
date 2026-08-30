@@ -24,7 +24,8 @@ openapi:
 
 # Container-gated suites (need Docker; each starts its own testcontainers).
 test-containers:
-    cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test vault_test
+    cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test
+    cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
     cargo test --test integration -- --ignored kafka_test
     cargo test --test storage_postgres -- --ignored
     cargo test --test storage_mysql -- --ignored

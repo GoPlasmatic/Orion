@@ -22,6 +22,27 @@ FROM chef AS builder
 # perl is required by rdkafka's vendored OpenSSL build (kafka.auth TLS/SASL)
 RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev perl && rm -rf /var/lib/apt/lists/*
 
+# Codegen knobs for the `dist` profile, defaulted to exactly what
+# [profile.dist] in the workspace Cargo.toml already says (release's
+# codegen-units = 1, plus thin LTO). A plain `docker build` is therefore
+# unchanged; overriding them is opt-in.
+#
+# They exist for ci.yml's docker-build, which builds this image on every push
+# only to prove that it *builds* — the system deps, the chef stages, the
+# runtime stage. Proving that does not need the slowest codegen settings Rust
+# offers, and that build was 14.3 minutes (855s, measured 2026-08-29). CI
+# passes CARGO_PROFILE_DIST_CODEGEN_UNITS=16 and CARGO_PROFILE_DIST_LTO=false;
+# release builds pass nothing and get the real thing.
+#
+# Cargo reads these as profile overrides for any invocation, so they must be
+# set before `cook` as well as the build: cooking dependencies under one
+# profile and building under another makes cargo rebuild every dependency and
+# defeats the chef cache entirely.
+ARG CARGO_PROFILE_DIST_CODEGEN_UNITS=1
+ARG CARGO_PROFILE_DIST_LTO=thin
+ENV CARGO_PROFILE_DIST_CODEGEN_UNITS=${CARGO_PROFILE_DIST_CODEGEN_UNITS} \
+    CARGO_PROFILE_DIST_LTO=${CARGO_PROFILE_DIST_LTO}
+
 # Cook dependencies (cached unless Cargo.toml/Cargo.lock change). --locked to
 # match the build below: without it, cook could resolve different dependency
 # versions than the build then verifies — quietly defeating both the cache

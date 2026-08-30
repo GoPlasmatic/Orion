@@ -88,7 +88,15 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Write only from main. These entries — and the musl toolchain cache
+      # below — were being evicted outright: on 2026-08-30 the repository sat
+      # at 10.24GB against GitHub's 10GB limit and the store held no macOS,
+      # Windows or musl entry at all, so both of these runners recompiled the
+      # full dependency graph every time. macOS bills at 10x and Windows at
+      # 2x, which made it the most expensive cache miss in the repo.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build
         run: cargo build --locked --workspace
@@ -112,6 +120,8 @@ jobs:
           targets: x86_64-unknown-linux-musl
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # musl-tools ships only a C compiler, and rdkafka's cmake configure also
       # demands a musl g++ — librdkafka's project() declares CXX even though

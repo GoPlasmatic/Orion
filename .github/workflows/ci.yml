@@ -14,12 +14,21 @@ on:
   # need but not the gate itself; use "Re-run all jobs" on the push run for
   # that.
   workflow_dispatch:
+  schedule:
+    # Weekly full sweep (Sundays 05:23 UTC, off the on-the-hour herd). Two
+    # checks are too slow to earn a slot on every push but must not go
+    # unrun: `msrv` builds AND tests on 1.98 here rather than only checking,
+    # and `package` verify-builds the crates.io tarballs regardless of what
+    # changed. Everything else simply runs again, which also catches
+    # dependency drift that no commit of ours would have triggered.
+    - cron: "23 5 * * 0"
 
 permissions:
   contents: read
 
-# One group per PR: superseded pushes cancel the in-flight run — ten jobs
-# including two full test suites, a Docker build, and a container matrix.
+# One group per PR: superseded pushes cancel the in-flight run — around
+# twenty jobs including a full test suite, a Docker build, and a seven-leg
+# container matrix.
 # Branch pushes (main, release/**, v*) group by COMMIT instead, so no two
 # pushes ever share a group and every pushed SHA runs to completion. This
 # cannot be done by queueing on a shared ref group: GitHub keeps at most
@@ -34,6 +43,65 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Path gate for the jobs too slow to run unconditionally. GitHub has no
+  # per-job path filter (that is why cross-os-build.yml is a separate
+  # workflow), so the filtering is done here and consumed via `needs`.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      packaging: ${{ steps.filter.outputs.packaging }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The diff is taken against the previous commit / the merge base,
+          # neither of which a shallow clone contains.
+          fetch-depth: 0
+
+      # `packaging` answers: could this change have broken a crates.io
+      # tarball? Two ways it can, and only two.
+      #
+      #   1. A manifest moved — the `include` allowlist itself, a dependency,
+      #      or the version.
+      #   2. A file was ADDED or RENAMED under crates/. That is the failure
+      #      T29 describes: `include` is an allowlist, so a newly added file
+      #      that the build needs but the list does not name drops silently
+      #      out of the package and only surfaces mid-release.
+      #
+      # Editing an existing, already-shipped file cannot drop it out of the
+      # tarball, which is why plain modifications under src/ do not qualify —
+      # and they are the overwhelming majority of pushes. Anything unexpected
+      # (a first push, a force-push, a scheduled or dispatched run) falls
+      # through to `true`: this gate may only ever skip work it is certain
+      # about.
+      - name: Filter
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          packaging=true
+          if [ "$EVENT" != "schedule" ] && [ "$EVENT" != "workflow_dispatch" ] \
+             && [ -n "${BASE:-}" ] \
+             && [ "$BASE" != "0000000000000000000000000000000000000000" ] \
+             && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            changed=$(git diff --name-status "$BASE" "$HEAD")
+            manifests=$(printf '%s\n' "$changed" | awk '{print $NF}' \
+              | grep -E '^(Cargo\.(toml|lock)|crates/[^/]+/Cargo\.toml|\.github/workflows/ci\.yml)$' || true)
+            newfiles=$(printf '%s\n' "$changed" \
+              | grep -E '^(A|R[0-9]*)[[:space:]]+crates/' || true)
+            if [ -z "$manifests" ] && [ -z "$newfiles" ]; then
+              packaging=false
+            fi
+          fi
+          echo "packaging=$packaging" >> "$GITHUB_OUTPUT"
+          echo "packaging=$packaging"
+
   fmt:
     name: Format
     runs-on: ubuntu-22.04
@@ -67,7 +135,12 @@ jobs:
           toolchain: "stable"
           components: clippy
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -100,15 +173,31 @@ jobs:
         with:
           toolchain: "1.98"
 
+      # Its own entry, not `linux-stable`: a different rustc hashes every
+      # artifact differently, so there is nothing to share.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Run the suite, not just `cargo check`: the promise is that a
-      # contributor on 1.98 can build AND test, which also keeps
-      # dev-dependencies honest about the MSRV.
-      - name: Test on MSRV
+      # The promise is that a contributor on 1.98 can build AND test, so the
+      # weekly sweep still runs the whole suite. Per push it only *checks* —
+      # `--all-targets` so dev-dependencies stay honest about the MSRV, and
+      # `--locked` so a resolver bump that needs a newer rustc is caught.
+      #
+      # What actually regresses an MSRV is a language feature or an API that
+      # 1.98 does not have, and `cargo check` catches all of it; running the
+      # tests again on a second toolchain re-ran a suite `test` had already
+      # run green, for 8 minutes a push. Codegen- and runtime-level breaks are
+      # what the weekly full run is for.
+      - name: Check on MSRV
+        if: github.event_name != 'schedule'
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Test on MSRV (weekly sweep)
+        if: github.event_name == 'schedule'
         run: cargo test --workspace --no-fail-fast
 
   examples:
@@ -125,7 +214,12 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -196,7 +290,25 @@ jobs:
         with:
           toolchain: "stable"
 
+      # The single writer of the `linux-stable` cache.
+      #
+      # Ten per-job entries at ~0.6-1.3GB each used to sit against GitHub's
+      # 10GB repository limit — measured at 10.24GB over 80 entries on
+      # 2026-08-30 — so every push evicted the entries it had just written.
+      # The macOS, Windows and musl caches were gone from the store entirely,
+      # and jobs here restored in 0-1s (a miss) and then recompiled the whole
+      # dependency graph cold.
+      #
+      # `cargo test --workspace --all-targets` builds a superset of what
+      # `lint`, `examples`, `cli-e2e`, `package`, `mutants` and
+      # `integration-containers` each need, so it owns the write and they
+      # restore it read-only. One writer keeps the save deterministic: with
+      # several, whichever finished first won the key and the rest logged a
+      # 409.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -231,7 +343,12 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -245,8 +362,9 @@ jobs:
 
   # Advisories AND license compatibility / bans / source policy over the
   # whole tree (proposal T12) — deny.toml is the policy, including the one
-  # documented advisory ignore. Prebuilt binary + registry cache keep it
-  # fast; unlike the old `cargo audit` job, warnings-as-configured fail it.
+  # documented advisory ignore. cargo-deny reads manifests and the lockfile
+  # and compiles nothing, so it carries no rust-cache: its entry was 124MB of
+  # pure eviction pressure on a shared 10GB budget for no build to warm.
   deny:
     name: Dependency Check (cargo-deny)
     runs-on: ubuntu-22.04
@@ -260,8 +378,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master (toolchain from `with`)
         with:
           toolchain: "stable"
-
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2 (tool from `with`)
@@ -280,6 +396,11 @@ jobs:
   package:
     name: Package (crates.io tarball)
     runs-on: ubuntu-22.04
+    needs: changes
+    # 6.7 minutes (404s, measured 2026-08-29) on every push, to verify-build
+    # four tarballs that only a manifest edit or a newly added file can break.
+    # See the `changes` job for why those two are the whole list.
+    if: needs.changes.outputs.packaging == 'true'
     permissions:
       contents: read
     steps:
@@ -291,7 +412,12 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -387,8 +513,32 @@ jobs:
   # The image build breaks independently of cargo (system deps like the
   # rdkafka toolchain, base-image drift). Building on every PR keeps that
   # from being discovered mid-release (proposal T10). No push — the release
-  # workflow owns publishing; the shared gha cache scope keeps this cheap
-  # and warms the release build.
+  # workflow owns publishing.
+  #
+  # What an ordinary push needs from this job is proof that the image
+  # *builds* — system deps, the chef stages, the runtime stage — and that
+  # does not need the slowest codegen settings Rust offers. It was 14.3
+  # minutes (855s, measured 2026-08-29) building the `dist` profile: thin LTO
+  # on top of codegen-units = 1. On push and PR it now relaxes both knobs via
+  # the ARG block in the Dockerfile.
+  #
+  # NOTHING THAT SHIPS IS AFFECTED. codegen-units = 1 is deliberate — it is
+  # what stops the binary carrying the same function up to 25 times over —
+  # and it stays the default in [profile.release], in [profile.dist], and in
+  # the Dockerfile's own ARG defaults. docker-release.yml passes no override,
+  # so published images build exactly as before, and cargo-dist reads
+  # [profile.dist] straight from Cargo.toml. This override reaches one image:
+  # the `push: false` one built here and thrown away.
+  #
+  # The weekly sweep still builds the true `dist` shape, so a break that only
+  # appears under thin LTO or single-codegen-unit — a duplicate symbol at
+  # link time, say — cannot hide until a release. It builds into the release
+  # cache scope, since at those settings its layers are exactly what a
+  # release build wants, which also warms that scope weekly rather than
+  # never. Push builds use `linux/amd64-ci` because layers cooked under a
+  # different profile are unusable to a release build and would only poison
+  # it. ha-drill.yml reads the `-ci` scope and passes the same overrides so
+  # it keeps hitting the cache.
   docker-build:
     name: Docker Build
     runs-on: ubuntu-22.04
@@ -408,12 +558,21 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
-          # Same build-arg the release build passes (.dockerignore excludes
-          # .git/), so this job exercises the exact release build shape.
+          # GIT_HASH is the build-arg the release build passes too
+          # (.dockerignore excludes .git/, so build.rs cannot ask git). The
+          # profile args below are this job's own — see the note above the
+          # job for why, and for why nothing that ships sees them.
           build-args: |
             GIT_HASH=${{ github.sha }}
-          cache-from: type=gha,scope=linux/amd64
-          cache-to: type=gha,scope=linux/amd64,mode=max
+            CARGO_PROFILE_DIST_CODEGEN_UNITS=${{ github.event_name == 'schedule' && '1' || '16' }}
+            CARGO_PROFILE_DIST_LTO=${{ github.event_name == 'schedule' && 'thin' || 'false' }}
+          # mode=max, not min: min exports only the final image's layers, and
+          # in this multi-stage build every expensive layer (`cargo chef
+          # cook`, the app build) lives in the builder stage that the runtime
+          # stage merely COPYs the binary out of. Under mode=min this job
+          # would cache nothing and rebuild cold every push.
+          cache-from: type=gha,scope=${{ github.event_name == 'schedule' && 'linux/amd64' || 'linux/amd64-ci' }}
+          cache-to: type=gha,scope=${{ github.event_name == 'schedule' && 'linux/amd64' || 'linux/amd64-ci' }},mode=max
 
   coverage:
     name: Test Coverage
@@ -440,7 +599,12 @@ jobs:
           toolchain: "stable"
           components: llvm-tools-preview
 
+      # Its own entry, not `linux-stable`: instrumented builds carry different
+      # RUSTFLAGS, so these artifacts are not interchangeable with the ones
+      # `test` writes.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -517,7 +681,12 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
@@ -544,11 +713,88 @@ jobs:
           name: mutants-report
           path: mutants.out/
 
+  # The container suites, one job each (they were six sequential steps in one
+  # job: 462s + 258s + 69s + 87s + 75s + 285s = 20.6 minutes, the longest pole
+  # in CI by a factor of two). They were already independent —
+  # the old steps carried `if: !cancelled()` precisely so a flaky Kafka broker
+  # could not hide a Postgres regression — so a matrix with `fail-fast: false`
+  # keeps exactly that property and pays the wall clock of the slowest leg
+  # instead of their sum.
+  #
+  # `run:` is the matrix key on purpose, not `cmd:` or `args:`. The drift
+  # guards in ci_filter_drift_test parse this file as text: they union the
+  # name filters found on every container invocation line, and
+  # just_test_containers_matches_the_ci_invocation compares the first such
+  # line against the justfile after stripping a `run:` prefix. Keeping the key
+  # named `run` means each command still reads as the same `run:` line it was,
+  # and the guards needed no change. Keep `data-sql` first and each command on
+  # one line, and mirror any edit in `just test-containers`.
+  #
+  # Careful when editing the prose here: a comment line that contains both
+  # the binary selector and the ignored flag is picked up as if it were an
+  # invocation, which is why this paragraph names neither together.
   integration-containers:
-    name: Container Integration Tests
+    name: Containers (${{ matrix.name }})
     runs-on: ubuntu-22.04
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins
+          # up ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis /
+          # Kafka containers on demand. Filters are substring matches on the
+          # full module::test path — every module with #[ignore] tests must
+          # appear on one of these lines by module name, or its tests never
+          # run anywhere.
+          #
+          # The first two legs are one suite split in half because it was the
+          # critical path: 462s as one leg,
+          # against 258s for the next longest. Divided by the backend each
+          # module starts a container for, which is what the time is actually
+          # spent on — Postgres/MySQL on one, MongoDB/Elasticsearch/Redis/
+          # Vault on the other. Every test brings up its own container, so the
+          # grouping is free to change; keep the two legs balanced.
+          - name: data-sql
+            run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test
+
+          - name: data-nosql
+            run: cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
+
+          # Kafka gets its own leg: each test starts its own broker container,
+          # and sharing one invocation with the Postgres/MySQL/Mongo/ES
+          # containers starves them — producers fail with MessageTimedOut
+          # while brokers fight for CPU. Measured on the pre-existing suite
+          # (no changes): 4 Kafka failures in the combined run, 13/13 green
+          # when Kafka runs on its own. Scheduling pressure, not a defect.
+          # On its own runner now, which can only help; if it is still flaky,
+          # add `--test-threads=2`.
+          - name: kafka
+            run: cargo test --test integration -- --ignored kafka_test
+
+          # Orion's own storage on Postgres / MySQL. Separate binaries (one
+          # process each) because the storage backend is pinned per process
+          # via the DB_BACKEND OnceLock.
+          - name: storage-postgres
+            run: cargo test --test storage_postgres -- --ignored
+
+          - name: storage-mysql
+            run: cargo test --test storage_mysql -- --ignored
+
+          # D10: migrate all three backends from scratch and assert the
+          # schemas agree — columns and their nullability, normalised types,
+          # and every idx_* index with its ordered column list. Only the
+          # SQLite half runs without Docker, so on a machine with no daemon
+          # this leg is the only place the three are compared.
+          - name: schema-parity
+            run: cargo test --test schema_parity -- --ignored
+
+          # Multi-node cluster-mode tests: two AppStates over one Postgres +
+          # one Redis container per test. Serial — each test runs its own
+          # containers.
+          - name: cluster
+            run: cargo test --test cluster -- --ignored --test-threads=1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -558,59 +804,18 @@ jobs:
         with:
           toolchain: "stable"
 
+      # Restores the shared `linux-stable` entry written by `test`; never
+      # writes, so one cache serves every stable-Linux job instead of ten.
+      # This matters more here than anywhere: seven legs restoring one warm
+      # entry is what makes fanning out cost roughly the same runner minutes
+      # as the single job did.
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
 
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
-      # ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis / Kafka
-      # containers on demand. The name filters run only the container-backed
-      # round-trip + raw-SQL + ES + Redis tests. Filters are substring matches
-      # on the full module::test path — every module with #[ignore] tests must
-      # appear here by module name, or its tests never run anywhere.
-      - name: Run container-backed integration tests
-        run: cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test vault_test
-
-      # Kafka gets its own step: each test starts its own broker container, and
-      # sharing one invocation with the Postgres/MySQL/Mongo/ES containers
-      # starves them — producers fail with MessageTimedOut while brokers fight
-      # for CPU. Measured on the pre-existing suite (no changes): 4 Kafka
-      # failures in the combined run, 13/13 green when Kafka runs on its own.
-      # Scheduling pressure, not a defect. If this step is still flaky on a
-      # smaller runner, add `--test-threads=2`.
-      #
-      # Every container step from here on runs even if an earlier one failed
-      # (`!cancelled()`). They are independent backends, and this is the
-      # slowest feedback loop in the repo — without it a single flaky Kafka
-      # broker hides a real Postgres or schema-parity regression until the
-      # next push. The job still fails if any step does.
-      - name: Kafka container tests
-        if: ${{ !cancelled() }}
-        run: cargo test --test integration -- --ignored kafka_test
-
-      # Orion's own storage on Postgres / MySQL. Separate binaries (one
-      # process each) because the storage backend is pinned per process via
-      # the DB_BACKEND OnceLock.
-      - name: Postgres storage backend tests
-        if: ${{ !cancelled() }}
-        run: cargo test --test storage_postgres -- --ignored
-
-      - name: MySQL storage backend tests
-        if: ${{ !cancelled() }}
-        run: cargo test --test storage_mysql -- --ignored
-
-      # D10: migrate all three backends from scratch and assert the schemas
-      # agree — columns and their nullability, normalised types, and every
-      # idx_* index with its ordered column list. Only the SQLite half runs
-      # without Docker, so on a machine with no daemon this step is the only
-      # place the three are compared.
-      - name: Schema parity across backends
-        if: ${{ !cancelled() }}
-        run: cargo test --test schema_parity -- --ignored
-
-      # Multi-node cluster-mode tests: two AppStates over one Postgres + one
-      # Redis container per test. Serial — each test runs its own containers.
-      - name: Cluster mode multi-node tests
-        if: ${{ !cancelled() }}
-        run: cargo test --test cluster -- --ignored --test-threads=1
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}

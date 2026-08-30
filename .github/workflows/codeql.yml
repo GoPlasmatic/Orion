@@ -44,6 +44,8 @@ jobs:
           toolchain: "stable"
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The Rust extractor is buildless, but it still runs build scripts and
       # compiles proc-macros while resolving the crate graph. The rdkafka
