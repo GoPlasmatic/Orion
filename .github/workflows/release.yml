@@ -155,6 +155,23 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      # Hand-edit (allow-dirty = ["ci"]): the runner images do not track this
+      # workspace's MSRV. macos-latest was still on rustc 1.96 when the MSRV
+      # moved to 1.98, so `dist build` failed for aarch64-apple-darwin alone —
+      # and because the global artifacts, the GitHub Release, the installers and
+      # the Homebrew bump all wait on every local build, one lagging runner
+      # image skipped the entire release while crates.io and GHCR had already
+      # published. Updated rather than pinned: dist builds release artifacts, so
+      # the newest stable is what we want, and it stays correct as the MSRV
+      # moves. Skipped in containers, where the step above installs a fresh
+      # toolchain already.
+      - name: Update the Rust toolchain to stable
+        if: ${{ !matrix.container }}
+        shell: bash
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
