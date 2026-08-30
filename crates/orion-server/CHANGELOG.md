@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The crate descriptions are short enough for the generated Homebrew
+  formula to pass `brew style`.** A formula's `desc` is the crate's
+  `description` verbatim, and RuboCop's `Layout/LineLength` caps a formula
+  line at 118 characters: `orion-server`'s ran to 183 and `orion-cli`'s to
+  151. Neither is auto-correctable — a long string literal has nowhere to
+  wrap — so `brew style` failed on the tap. `orion-server` keeps its opening
+  sentence and loses the trailing feature list; `orion-cli` is now one line.
+  The published tap only picks this up at the next release.
+
 ## [1.4.0] - 2026-08-29
 
 ### Security
