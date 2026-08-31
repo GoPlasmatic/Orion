@@ -176,7 +176,7 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 socket2 = "0.6"
 sha1 = "0.11"
 md-5 = "0.11"
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 bcrypt = "0.19.3"
 # SMTP for `send_email` (#262). mail-send rather than lettre because lettre's
 # `builder` feature pulls quoted_printable, whose bare 0BSD licence is the one
