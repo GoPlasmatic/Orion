@@ -200,7 +200,7 @@ tokio-rustls = { version = "0.26", default-features = false }
 # aws_lc_rs: the same crypto backend the in-tree rustls stack uses — one
 # provider, not two.
 jsonwebtoken = { version = "11.0.0", features = ["aws_lc_rs"] }
-similar = "2"
+similar = "3"
 
 # Windows cannot run librdkafka's configure build, so it keeps cmake-build —
 # features unify additively with the base rdkafka entry above, per target.
