@@ -257,7 +257,7 @@ pub(crate) fn run_lint(
     // one rule instead of reaching for `--deny-warnings` and silencing every
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
-    let warnings: Vec<orion::definitions::Diagnostic> =
+    let mut warnings: Vec<orion::definitions::Diagnostic> =
         orion::validation::unresolvable_logic_warnings(&req.tasks)
             .into_iter()
             .map(|(path, message)| {
@@ -268,6 +268,17 @@ pub(crate) fn run_lint(
                 )
             })
             .collect();
+    warnings.extend(
+        orion::validation::escaped_template_key_warnings(&req.tasks)
+            .into_iter()
+            .map(|(path, message)| {
+                orion::definitions::Diagnostic::warning(
+                    "logic.escaped_template_key",
+                    format!("workflow '{}' {path}", req.name),
+                    message,
+                )
+            }),
+    );
     for finding in &warnings {
         eprintln!("{finding}");
     }

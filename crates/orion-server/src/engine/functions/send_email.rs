@@ -29,6 +29,7 @@ use super::connector_helpers::{
     ConnectorCall, resolve_optional_str, resolve_value, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::smtp_pool::{PooledClient, SmtpPoolCache};
 use crate::connector::{ConnectorRegistry, SmtpConnectorConfig};
 use crate::engine::{ErrorClass, HandlerError};
@@ -72,14 +73,14 @@ pub struct Mail {
     html: Option<String>,
     from_override: Option<String>,
     reply_to: Option<Mailbox>,
-    headers: Option<Value>,
+    headers: Vec<(String, String)>,
 }
 
 #[async_trait]
 impl ConnectorHandler for SendEmailHandler {
     const NAME: &'static str = "send_email";
     type Kind = crate::connector::kind::Smtp;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = Mail;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -89,12 +90,12 @@ impl ConnectorHandler for SendEmailHandler {
     fn parse(
         &self,
         _call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // The literal-field check first: no property of the message can change
         // whether `headers` names a protected header (F58).
-        check_headers_field(input).map_err(named)?;
+        check_headers_field(input.raw()).map_err(named)?;
 
         let to = address_list(input, "to", ctx)
             .map_err(named)?
@@ -124,7 +125,7 @@ impl ConnectorHandler for SendEmailHandler {
             reply_to: resolve_optional_str(input, "reply_to", NAME, ctx)?
                 .map(|s| parse_mailbox("reply_to", &s))
                 .transpose()?,
-            headers: input.get("headers").cloned(),
+            headers: resolve_headers(input, ctx)?,
         })
     }
 
@@ -133,7 +134,7 @@ impl ConnectorHandler for SendEmailHandler {
         mail: Self::Parsed,
         smtp_config: &SmtpConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let from = sender(smtp_config, mail.from_override.as_deref(), call.connector)?;
@@ -145,7 +146,7 @@ impl ConnectorHandler for SendEmailHandler {
             cc: &mail.cc,
             subject: &mail.subject,
             reply_to: mail.reply_to,
-            headers: mail.headers.as_ref(),
+            headers: &mail.headers,
             text: mail.text,
             html: mail.html,
         })?;
@@ -215,7 +216,7 @@ fn named(e: HandlerError) -> HandlerError {
 /// An address field: one address or an array, each `addr@x` or
 /// `Name <addr@x>`. `None` when the field is absent.
 fn address_list(
-    input: &Value,
+    input: &TemplatedInput,
     field: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Option<Vec<Mailbox>>, HandlerError> {
@@ -382,6 +383,12 @@ fn check_headers_field(input: &Value) -> Result<(), HandlerError> {
                         "'headers' may not set '{name}' — use the structured field instead"
                     )));
                 }
+                // A scalar is unambiguously itself in JSONLogic, so it is
+                // judged here; an object or array may be an operator call, and
+                // what it produces is `resolve_headers`'s to check.
+                if value.is_object() || value.is_array() {
+                    continue;
+                }
                 if !value.is_string() {
                     return Err(validation(&format!("'headers.{name}' must be a string")));
                 }
@@ -407,6 +414,46 @@ fn check_headers_field(input: &Value) -> Result<(), HandlerError> {
     }
 }
 
+/// Resolve each header value against the message.
+///
+/// Header *names* stay literal — they are what `check_headers_field` judges
+/// against the protected-header list, and a computed name would move that
+/// judgement past the point where the author can be told about it. Values are
+/// JSONLogic, as `http_call`'s are, so a correlation id or a signed token can
+/// come from the message.
+///
+/// **The injection guard runs here, on the result.** While a value was always a
+/// literal, `check_headers_field` could do it once at authoring; a computed one
+/// is only knowable now, and a CR or LF in it would end the header and begin one
+/// the caller chose.
+fn resolve_headers(
+    input: &TemplatedInput,
+    ctx: &TaskContext<'_>,
+) -> Result<Vec<(String, String)>, HandlerError> {
+    let Some(Value::Object(map)) = input.get("headers") else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(map.len());
+    for name in map.keys() {
+        let Some(value) = input.member_value("headers", name, NAME, ctx) else {
+            continue;
+        };
+        let value = value.map_err(HandlerError::from)?;
+        let Some(text) = value.as_str() else {
+            return Err(validation(&format!(
+                "'headers.{name}' must resolve to a string"
+            )));
+        };
+        if text.contains(['\r', '\n']) {
+            return Err(validation(&format!(
+                "'headers.{name}' may not contain a line break"
+            )));
+        }
+        out.push((name.clone(), text.to_string()));
+    }
+    Ok(out)
+}
+
 /// Everything [`build_message`] assembles, gathered so the call site reads by
 /// name instead of by a nine-argument positional list (two adjacent
 /// `&[Mailbox]`s would make a swapped `to`/`cc` invisible).
@@ -420,7 +467,7 @@ struct MessageParts<'a> {
     cc: &'a [Mailbox],
     subject: &'a str,
     reply_to: Option<Mailbox>,
-    headers: Option<&'a Value>,
+    headers: &'a [(String, String)],
     text: Option<String>,
     html: Option<String>,
 }
@@ -466,14 +513,11 @@ fn build_message(parts: MessageParts<'_>) -> Result<Vec<u8>, DataflowError> {
         (None, None) => unreachable!("checked in the prologue"),
     };
 
-    // Extra headers, already name- and value-checked by `check_headers_field`.
-    if let Some(Value::Object(map)) = headers {
-        for (name, value) in map {
-            builder = builder.header(
-                name.clone(),
-                Raw::new(value.as_str().unwrap_or_default().to_string()),
-            );
-        }
+    // Extra headers: names checked at authoring by `check_headers_field`,
+    // values checked by `resolve_headers` *after* evaluation — which is where
+    // the CRLF guard has to be once a value can be computed.
+    for (name, value) in headers {
+        builder = builder.header(name.clone(), Raw::new(value.clone()));
     }
 
     builder.write_to_vec().map_err(|e| {
@@ -585,21 +629,21 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
                       or 'Name <addr@example.com>'.",
         kind: FieldKind::Any,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "cc",
         description: "Carbon-copy recipients; same forms as 'to'.",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "bcc",
         description: "Blind-carbon-copy recipients; same forms as 'to'.",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -607,7 +651,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         description: "Message subject (UTF-8).",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -615,14 +659,14 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         description: "Plain-text body. At least one of 'text'/'html' is required; both \
                       together send multipart/alternative.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "html",
         description: "HTML body. At least one of 'text'/'html' is required.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -630,14 +674,14 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         description: "Per-send sender override; honored only when the connector sets \
                       allow_from_override. Default: the connector's 'from'.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "reply_to",
         description: "Reply-To address.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -646,6 +690,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
                       Content-Type, ...) are rejected; intended for List-Unsubscribe, \
                       Auto-Submitted, correlation IDs.",
         kind: FieldKind::Object,
+        template_at: &["*"],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -653,6 +698,7 @@ pub(super) const SEND_EMAIL_FIELDS: &[FieldSchema] = &[
         description: "Dotted path where { message_id, response } is stored. Defaults to \
                       \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

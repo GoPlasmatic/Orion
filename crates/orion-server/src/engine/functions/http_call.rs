@@ -13,18 +13,25 @@ use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::engine::HandlerError;
 
-/// The message-independent half of an `http_call` task.
+/// The half of an `http_call` task read before the connector is resolved.
 ///
-/// Everything here is decided by the task text alone, which is why it is read
-/// before the connector is resolved: a refusal no property of the message can
-/// change must not be reported after one that can (F58). The path and body —
-/// the message-dependent half — are resolved in `run`, after the connector's
-/// method allow-list has had its say.
+/// The refusals here — an unknown `body_format`, a `response_format` naming
+/// nothing — must not be reported after one the message can change (F58), so
+/// they are decided in `parse`, which runs before the connector lookup. Since
+/// dataflow-rs 3.9 every one of these parameters is JSONLogic, so "decided
+/// first" no longer means "decided by the task text alone": a statically
+/// authored value folds at engine build and costs nothing, and a computed one
+/// evaluates here, still ahead of the method gate. The path and body stay in
+/// `run`, after the connector's method allow-list has had its say.
 pub struct HttpCall {
     method: reqwest::Method,
     body_format: http_common::BodyFormat,
     response_format: http_common::ResponseFormat,
     timeout: Duration,
+    /// Per-task headers, values resolved against the message. Before 3.9 these
+    /// were `String`s on the config, so a bearer token or a correlation id had
+    /// to be injected by the service layer.
+    headers: std::collections::HashMap<String, String>,
 }
 
 /// Executes HTTP requests against named connectors with retry support.
@@ -48,7 +55,7 @@ impl ConnectorHandler for HttpCallHandler {
         &self,
         _call: &ConnectorCall<'_>,
         input: &HttpCallConfig,
-        _ctx: &TaskContext<'_>,
+        ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // The format axes are values-as-data on dataflow-rs's config; this
         // parse is the value table that interprets them. Workflow validation
@@ -56,11 +63,14 @@ impl ConnectorHandler for HttpCallHandler {
         // for definitions that bypassed it.
         Ok(HttpCall {
             method: super::to_reqwest_method(&input.method),
-            body_format: http_common::BodyFormat::parse(input.body_format.as_deref())
+            body_format: http_common::BodyFormat::parse(input.resolve_body_format(ctx)?.as_deref())
                 .map_err(DataflowError::Validation)?,
-            response_format: http_common::ResponseFormat::parse(input.response_format.as_deref())
-                .map_err(DataflowError::Validation)?,
-            timeout: Duration::from_millis(input.timeout_ms),
+            response_format: http_common::ResponseFormat::parse(
+                input.resolve_response_format(ctx)?.as_deref(),
+            )
+            .map_err(DataflowError::Validation)?,
+            timeout: Duration::from_millis(input.resolve_timeout_ms(ctx)?),
+            headers: input.resolve_headers(ctx)?,
         })
     }
 
@@ -156,7 +166,7 @@ impl ConnectorHandler for HttpCallHandler {
                 http_common::RequestSpec {
                     method: &parsed.method,
                     url: &url,
-                    task_headers: Some(&input.headers),
+                    task_headers: Some(&parsed.headers),
                     body: body.as_ref(),
                     body_format: parsed.body_format,
                     response_format: parsed.response_format,
@@ -214,59 +224,62 @@ impl ConnectorHandler for HttpCallHandler {
 pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
-        description: "Name of the HTTP connector to call.",
+        description: "Name of the HTTP connector to call (JSONLogic; a computed name is \
+                      not yet supported).",
         kind: FieldKind::String,
         required: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "method",
-        description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET.",
+        description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET. \
+                      The one parameter that is not JSONLogic — the connector's method \
+                      allow-list is checked before the message is consulted.",
         kind: FieldKind::String,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "path",
-        description: "Static path appended to the connector's base URL.",
+        description: "Path appended to the connector's base URL (JSONLogic). \
+                      (Was `path_logic`; still accepted, but not alongside `path`.)",
         kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "path_logic",
-        description: "JSONLogic expression evaluated to derive the request path.",
-        kind: FieldKind::Any,
+        template_at: &[""],
+        alias: Some("path_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "headers",
-        description: "Additional request headers.",
+        description: "Additional request headers. Each value is JSONLogic, so a bearer \
+                      token or a correlation id can be computed from the message.",
         kind: FieldKind::Object,
+        template_at: &["*"],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "body",
-        description: "Static request body (any JSON value).",
+        description: "Request body, any JSON value (JSONLogic). \
+                      (Was `body_logic`; still accepted, but not alongside `body`.)",
         kind: FieldKind::Any,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "body_logic",
-        description: "JSONLogic expression evaluated to derive the request body.",
-        kind: FieldKind::Any,
+        template_at: &[""],
+        alias: Some("body_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "body_format",
         description: "How the body becomes request bytes: 'json' (default), 'form' \
                       (URL-encoded key/value pairs), or 'text' (string sent verbatim). \
-                      Sets the content-type unless a header names one explicitly.",
+                      Sets the content-type unless a header names one explicitly. \
+                      (JSONLogic.)",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
-        description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
+        description: "Dotted path where the response body is written (JSONLogic). Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
         kind: FieldKind::String,
+        template_at: &[""],
         // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
         // Orion used to rewrite the key in the storage repository instead.
         alias: Some("response_path"),
@@ -275,14 +288,16 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "response_format",
         description: "How the response bytes are captured at `output`: 'json' \
-                      (default, parsed) or 'text' (a plain string).",
+                      (default, parsed) or 'text' (a plain string). (JSONLogic.)",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "timeout_ms",
-        description: "Request timeout in milliseconds. Defaults to 30000.",
+        description: "Request timeout in milliseconds (JSONLogic). Defaults to 30000.",
         kind: FieldKind::Number,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

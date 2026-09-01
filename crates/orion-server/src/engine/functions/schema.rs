@@ -67,11 +67,23 @@ pub struct FieldSchema {
     pub kind: FieldKind,
     pub required: bool,
     /// Whether the handler folds `{"var": ..}` nodes in this field against the
-    /// message context before use (see
-    /// `connector_helpers::resolve_value`). Resolvable fields accept a
-    /// `{"var": ..}` node in place of a literal of their declared `kind`;
-    /// everything else — connector names, SQL text, output paths — stays
-    /// literal by design.
+    /// message context before use (see `connector_helpers::resolve_value`).
+    /// Resolvable fields accept a `{"var": ..}` node in place of a literal of
+    /// their declared `kind`; everything else — connector names, SQL text,
+    /// output paths — stays literal by design.
+    ///
+    /// **The weaker of the two.** [`Self::template_at`] is the field that says
+    /// dataflow-rs *evaluates* this position, which is what a scalar field
+    /// carries now. What is left here is the document-shaped fields — a MongoDB
+    /// `filter`/`update`/`document`/`pipeline`, a dialect `params`, JWT
+    /// `claims`, a cached `value` — where evaluating would be a breaking
+    /// change rather than a feature: one `$` comes off every key in a template
+    /// position, so `{"$set": …}` would emit `{"set": …}` and every stored
+    /// definition would need its prefixes doubled. A `{"var": ..}` fold has no
+    /// such effect, so those fields keep it.
+    ///
+    /// The two are mutually exclusive on any one field: a field is either
+    /// evaluated or folded, never both.
     pub resolvable: bool,
     /// Where **inside** this field the handler reads key material — a
     /// `{"secret": "name"}` node against the engine store, or an `env://` /
@@ -97,6 +109,31 @@ pub struct FieldSchema {
     /// value — which is why `validation::secret_reference_errors` refuses one
     /// outside these paths rather than letting it reach the backend.
     pub secret_at: &'static [&'static str],
+    /// Where **inside** this field dataflow-rs evaluates JSONLogic — as paths
+    /// relative to the field itself, the same spelling [`Self::secret_at`]
+    /// uses and for the same reason a bool would not do.
+    ///
+    /// `&[]` (the default) means nowhere: the field is read as the literal it
+    /// was authored as. `&[""]` means the field's *own* value is a `Template`
+    /// — `http_call.path`, `publish_kafka.topic`. `&["*"]` means each member's
+    /// value is one and the field itself is not: `http_call.headers` is a map
+    /// of templates, so the map must still be an object while any value in it
+    /// may be an expression.
+    ///
+    /// Distinct from [`Self::resolvable`], which is Orion's own `{"var": …}`
+    /// folding in a *custom* handler's freeform input. This one is the engine's,
+    /// on the typed configs dataflow-rs owns, where since 3.9 every parameter
+    /// is JSONLogic.
+    ///
+    /// Two surfaces read it. `check_fields` stops treating [`Self::kind`] as a
+    /// claim about the *authored* JSON here — the kind describes what the field
+    /// must **evaluate to**, and an object or array may be an operator call, so
+    /// only a scalar is still checked directly (a scalar is unambiguously
+    /// itself in JSONLogic, which is the same line dataflow-rs's own
+    /// `Template::uncompiled_literal` draws). And `analysis::operators::
+    /// input_expressions` reports these positions to clippy, so a
+    /// `{"var": "payload.x"}` in a request path counts as the read it is.
+    pub template_at: &'static [&'static str],
     /// A second accepted spelling for this field, or `None`.
     ///
     /// Two fields have one, both spelled `response_path` (the pre-1.0 name of
@@ -111,7 +148,7 @@ pub struct FieldSchema {
 
 impl FieldSchema {
     /// The neutral row every field table builds on: not required, not
-    /// resolvable, not secret, no alias.
+    /// resolvable, not secret, not templated, no alias.
     ///
     /// The tables are `const` slices, so without this every field on this
     /// struct has to be spelled at all ~137 sites — and adding one costs a
@@ -128,6 +165,7 @@ impl FieldSchema {
         required: false,
         resolvable: false,
         secret_at: &[],
+        template_at: &[],
         alias: None,
     };
 }
@@ -618,6 +656,27 @@ pub fn secret_paths(function_name: &str, field: &str) -> &'static [&'static str]
         .unwrap_or(&[])
 }
 
+/// Where inside `field` dataflow-rs evaluates JSONLogic — see
+/// [`FieldSchema::template_at`]. Driven off the registry for the same reason
+/// [`secret_paths`] is: the handler's own field table is the one declaration.
+pub fn template_paths(function_name: &str, field: &str) -> &'static [&'static str] {
+    find(function_name)
+        .and_then(|schema| {
+            schema
+                .input_fields
+                .iter()
+                .find(|f| f.name == field || f.alias == Some(field))
+        })
+        .map(|f| f.template_at)
+        .unwrap_or(&[])
+}
+
+/// Whether the field's own value is a `Template`, so its authored JSON may be
+/// an expression rather than a literal of its declared kind.
+fn is_template_field(field: &FieldSchema) -> bool {
+    field.template_at.contains(&"")
+}
+
 /// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
 /// place of a literal of its declared kind. Nodes nested deeper are not checked
 /// here: the declared kind still describes the field's own shape, and the
@@ -685,6 +744,11 @@ fn check_fields(
             )),
             (Some(v), _)
                 if !field.kind.matches(v)
+                    // A `Template` field's kind describes the *resolved* value.
+                    // An object or array there may be an operator call, so only
+                    // a scalar — unambiguously itself in JSONLogic — is still
+                    // checked against the kind directly.
+                    && !(is_template_field(field) && (v.is_object() || v.is_array()))
                     && !(field.resolvable && is_var_node(v))
                     && !takes_secret_node(field, v) =>
             {
@@ -810,16 +874,47 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         }
     }
 
-    // Cross-field: channel_call requires either `channel` or `channel_logic`.
-    if function_name == "channel_call"
-        && obj.get("channel").is_none()
-        && obj.get("channel_logic").is_none()
+    // A connector must be named, not computed.
+    //
+    // dataflow-rs 3.9 made `http_call`/`publish_kafka`'s `connector` a
+    // `Template` like every other parameter, so the kind check above no longer
+    // refuses an object there — a template field's kind describes what it
+    // evaluates to. Orion needs this one to fold to a name it can read *without*
+    // a message, and not because the handler is lazy: the connector is looked up
+    // before the message is consulted (F58), and the same static name is what
+    // `GET /workflows/{id}/dependencies` reports, what the activation gate
+    // checks exists, what refuses a rename or delete of a connector still in
+    // use, and what a package's `requires` list is built from. A computed name
+    // is invisible to all five, so admitting one means teaching all five, not
+    // relaxing one check.
+    //
+    // Driven off the schema rather than a function list, so a connector handler
+    // added later inherits the rule with the field table it already fills in.
+    // A string is the test upstream's own `ConnectorName` uses to answer
+    // `Static` vs `Computed`, so the two agree by construction.
+    //
+    // Exactly the complement of what `check_fields` still checks: it reports a
+    // *scalar* of the wrong type itself, so this fires only for the object and
+    // array it now waves through, and one wrong connector is one error.
+    if let Some(field) = schema.input_fields.iter().find(|f| f.name == "connector")
+        && is_template_field(field)
+        && let Some(value) = obj.get(field.name)
+        && (value.is_object() || value.is_array())
     {
-        errors.push(FieldError::new(
-            format!("{task_path}.function.input"),
-            "REQUIRED",
-            "channel_call requires either 'channel' (static) or 'channel_logic' (dynamic)",
-        ));
+        errors.push(
+            FieldError::new(
+                format!("{input_path}.connector"),
+                "TYPE_MISMATCH",
+                format!(
+                    "function '{function_name}' needs a literal connector name — the \
+                     connector is resolved before the message is read, and the same name \
+                     is what the dependency list, the activation gate and the connector \
+                     rename guard are built from"
+                ),
+            )
+            .with_expected(Value::String("string".to_string()))
+            .with_got(value.clone()),
+        );
     }
 
     // Cross-field rules registered on the schema entry — each lives next to
@@ -1083,6 +1178,42 @@ mod tests {
         assert_eq!(errs[0].got.as_ref().expect("test"), &json!(42));
     }
 
+    /// A computed connector is refused, and refused *once*: the ordinary kind
+    /// check no longer sees it (a template field's kind describes what it
+    /// evaluates to), so the rule that needs it literal is the only reporter.
+    #[test]
+    fn a_computed_connector_is_refused_with_the_reason() {
+        let errs = validate_input(
+            "http_call",
+            &json!({"connector": {"var": "data.which"}}),
+            "tasks[0]",
+        );
+        let connector: Vec<_> = errs
+            .iter()
+            .filter(|e| e.path == "tasks[0].function.input.connector")
+            .collect();
+        assert_eq!(connector.len(), 1, "{errs:?}");
+        assert_eq!(connector[0].code, "TYPE_MISMATCH");
+        assert!(connector[0].message.contains("literal connector name"));
+    }
+
+    /// The other parameters of the same function stay computable — the limit is
+    /// the connector, not the config.
+    #[test]
+    fn the_other_http_call_parameters_stay_computable() {
+        let errs = validate_input(
+            "http_call",
+            &json!({
+                "connector": "api",
+                "path": {"cat": ["/o/", {"var": "data.id"}]},
+                "timeout_ms": {"var": "data.t"},
+                "headers": {"X": {"var": "data.h"}}
+            }),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
     #[test]
     fn non_object_input_emits_single_type_error() {
         let errs = validate_input("cache_read", &json!("not an object"), "tasks[0]");
@@ -1099,12 +1230,50 @@ mod tests {
         assert!(paths.contains(&"tasks[0].function.input.collection"));
     }
 
+    /// One field carries both the literal and the computed spelling, so "name a
+    /// target" is the field's own `required` rather than a cross-field rule
+    /// over a pair — and the error points at the field instead of the input.
     #[test]
-    fn channel_call_needs_channel_or_logic() {
+    fn channel_call_needs_a_channel() {
         let errs = validate_input("channel_call", &json!({}), "tasks[0]");
         assert!(errs.iter().any(|e| e.code == "REQUIRED"
-            && e.path == "tasks[0].function.input"
+            && e.path == "tasks[0].function.input.channel"
             && e.message.contains("channel_call")));
+    }
+
+    /// The pre-1.0 spelling is an alias of that field, so it satisfies it.
+    #[test]
+    fn the_pre_1_0_channel_logic_spelling_still_names_a_target() {
+        let errs = validate_input(
+            "channel_call",
+            &json!({"channel_logic": {"var": "data.target"}}),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// A computed channel is an expression, so its kind describes what it must
+    /// evaluate to and the authored object is not checked against it.
+    #[test]
+    fn a_computed_channel_is_not_type_checked_against_string() {
+        let errs = validate_input(
+            "channel_call",
+            &json!({"channel": {"cat": ["orders-", {"var": "data.region"}]}}),
+            "tasks[0]",
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// A non-string scalar still is: it is unambiguously itself in JSONLogic,
+    /// so it is a channel name that is not a string.
+    #[test]
+    fn a_scalar_channel_of_the_wrong_type_is_still_caught() {
+        let errs = validate_input("channel_call", &json!({"channel": 7}), "tasks[0]");
+        assert!(
+            errs.iter()
+                .any(|e| e.code == "TYPE_MISMATCH" && e.path.ends_with(".channel")),
+            "{errs:?}"
+        );
     }
 
     #[test]

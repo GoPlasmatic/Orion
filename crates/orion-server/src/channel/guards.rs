@@ -427,7 +427,15 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         None
     };
     let cache_store = if set.response_cache {
-        match check_response_cache(req.channel, req.data, req.metadata, req.runtime).await {
+        match check_response_cache(
+            req.channel,
+            req.data,
+            req.metadata,
+            req.runtime,
+            req.datalogic,
+        )
+        .await
+        {
             // The request was answered, so the claim stands: a later replay
             // of the same key is a duplicate of a delivery that succeeded.
             CacheLookup::Hit(body) => return Ok(GuardVerdict::CacheHit(body)),
@@ -1166,7 +1174,14 @@ fn compute_cache_key(
     data: &Value,
     metadata: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
+    key_logic: Option<&datalogic_rs::Logic>,
+    datalogic: &datalogic_rs::Engine,
 ) -> Option<String> {
+    // `key_logic` replaces the whole payload-derived half of the key rather
+    // than adding to it: an expression that says what varies the response is a
+    // complete answer, and mixing it with a payload hash would put back the
+    // very fields it was written to exclude. The channel, method, params and
+    // query below still frame it.
     let mut h = Sha256::new();
 
     // Every chunk is length-prefixed, so no arrangement of field names and
@@ -1212,6 +1227,20 @@ fn compute_cache_key(
         if resolved == 0 {
             return None;
         }
+    } else if let Some(compiled) = key_logic {
+        let context = serde_json::json!({ "data": data, "metadata": metadata });
+        // No usable key means bypass, exactly as an unresolvable
+        // `cache_key_fields` does: a key that cannot be computed must not
+        // collapse onto one shared entry and serve one caller's body to the
+        // next.
+        let key = datalogic
+            .session()
+            .eval_into::<Value, _>(compiled, &context)
+            .ok()?;
+        if key.is_null() {
+            return None;
+        }
+        feed(&mut h, &serde_json::to_vec(&key).unwrap_or_default());
     } else {
         feed(&mut h, &serde_json::to_vec(data).unwrap_or_default());
     };
@@ -1263,6 +1292,7 @@ async fn check_response_cache(
     data: &Value,
     metadata: &Value,
     channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    datalogic: &datalogic_rs::Engine,
 ) -> CacheLookup {
     let Some(cfg) = channel_config else {
         return CacheLookup::Miss(None);
@@ -1276,16 +1306,25 @@ async fn check_response_cache(
     let Some(ref cache) = cfg.response_cache else {
         return CacheLookup::Miss(None);
     };
-    let Some(key) = compute_cache_key(channel, data, metadata, cache_cfg) else {
-        // Every declared key field was absent from this payload, so any key we
-        // built would be shared with every other request on the channel. Run
-        // the workflow and store nothing.
+    let Some(key) = compute_cache_key(
+        channel,
+        data,
+        metadata,
+        cache_cfg,
+        cfg.cache_key_logic.as_ref(),
+        datalogic,
+    ) else {
+        // The key could not be computed — every declared field absent from this
+        // payload, or a `key_logic` that produced nothing. Any key built anyway
+        // would be shared with every other request on the channel. Run the
+        // workflow and store nothing.
         tracing::warn!(
             channel = %channel,
             fields = ?cache_cfg.cache_key_fields,
-            "No cache_key_fields resolved against the request payload; bypassing the \
-             response cache. Field names are literal payload keys or dotted paths \
-             (`user.id`, or `data.user_id` for a top-level `user_id`)."
+            has_key_logic = cfg.cache_key_logic.is_some(),
+            "No cache key resolved against the request; bypassing the response cache. \
+             Field names are literal payload keys or dotted paths (`user.id`, or \
+             `data.user_id` for a top-level `user_id`)."
         );
         return CacheLookup::Miss(None);
     };
@@ -1584,6 +1623,7 @@ mod tests {
                 enabled: true,
                 ttl_secs: Some(60),
                 cache_key_fields: None,
+                key_logic: None,
                 connector: None,
             });
             self.response_cache = Some(backend);
@@ -1639,6 +1679,7 @@ mod tests {
                 parsed_config: self.parsed_config,
                 rate_limiter: self.rate_limiter,
                 rate_limit_key_logic: self.rate_limit_key_logic,
+                cache_key_logic: None,
                 rate_limit_key_headers: self.rate_limit_key_headers,
                 validation_logic: self.validation_logic,
                 backpressure_semaphore: self.backpressure_semaphore,
@@ -2886,6 +2927,7 @@ mod tests {
             enabled: true,
             ttl_secs: Some(60),
             cache_key_fields: fields,
+            key_logic: None,
             connector: None,
         }
     }
@@ -2897,8 +2939,15 @@ mod tests {
         metadata: &serde_json::Value,
         cfg: &crate::channel::ChannelCacheConfig,
     ) -> String {
-        super::compute_cache_key(channel, data, metadata, cfg)
-            .expect("this request must have a cache key")
+        super::compute_cache_key(
+            channel,
+            data,
+            metadata,
+            cfg,
+            None,
+            &datalogic_rs::Engine::new(),
+        )
+        .expect("this request must have a cache key")
     }
 
     fn meta(
@@ -3101,7 +3150,9 @@ mod tests {
                 "acct",
                 &serde_json::json!({"unrelated": 1}),
                 &m,
-                &cache_cfg(fields)
+                &cache_cfg(fields),
+                None,
+                &datalogic_rs::Engine::new(),
             )
             .is_none()
         );

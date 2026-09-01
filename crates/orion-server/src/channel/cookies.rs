@@ -85,6 +85,129 @@ pub(crate) fn collect<'a>(
     out
 }
 
+// ---------------------------------------------------------------------------
+// The write side (#298)
+// ---------------------------------------------------------------------------
+
+/// Build one `Set-Cookie` header value from a workflow's declaration.
+///
+/// The counterpart to the parser above, and it exists for the same reason:
+/// a workflow used to hand-assemble the attribute string with `cat`, which is
+/// where a missing `Secure`, a `SameSite` that should have been `Lax`, or an
+/// unescaped value quietly comes from. Declaring the parts lets this module
+/// own the spelling.
+///
+/// `Err` carries a reason for the caller to log — every failure on the shaped
+/// response path is soft, so a malformed cookie is dropped with a warning
+/// rather than failing the request. The refusals are not stylistic: a value
+/// carrying `;`, CR or LF would let a workflow that interpolates user input
+/// into a cookie inject further attributes, or split the header entirely.
+///
+/// Attribute order follows RFC 6265 §4.1.1: the pair first, then attributes.
+pub(crate) fn format_set_cookie(spec: &Value) -> Result<String, String> {
+    let obj = spec.as_object().ok_or("cookie must be an object")?;
+
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("cookie needs a string 'name'")?;
+    if name.is_empty() || !name.bytes().all(is_token_byte) {
+        return Err(format!("cookie name {name:?} is not a valid token"));
+    }
+
+    // An empty value is the *point* when clearing a cookie (`Max-Age=0`), so
+    // it is allowed here even though the parser reads one back as absent.
+    let value = obj
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or("cookie needs a string 'value'")?;
+    if !value.bytes().all(is_value_byte) {
+        return Err(format!("cookie {name:?} has an unencodable value"));
+    }
+
+    let mut out = format!("{name}={value}");
+
+    for (key, attr) in [("path", "Path"), ("domain", "Domain")] {
+        if let Some(v) = obj.get(key) {
+            let v = v
+                .as_str()
+                .ok_or_else(|| format!("cookie {name:?}: '{key}' must be a string"))?;
+            if !is_attribute_safe(v) {
+                return Err(format!("cookie {name:?}: '{key}' has an unsafe value"));
+            }
+            out.push_str(&format!("; {attr}={v}"));
+        }
+    }
+
+    if let Some(v) = obj.get("max_age") {
+        let secs = v
+            .as_i64()
+            .ok_or_else(|| format!("cookie {name:?}: 'max_age' must be an integer"))?;
+        out.push_str(&format!("; Max-Age={secs}"));
+    }
+
+    if let Some(v) = obj.get("expires") {
+        let v = v
+            .as_str()
+            .ok_or_else(|| format!("cookie {name:?}: 'expires' must be a string"))?;
+        if !is_attribute_safe(v) {
+            return Err(format!("cookie {name:?}: 'expires' has an unsafe value"));
+        }
+        out.push_str(&format!("; Expires={v}"));
+    }
+
+    if let Some(v) = obj.get("same_site") {
+        let v = v
+            .as_str()
+            .ok_or_else(|| format!("cookie {name:?}: 'same_site' must be a string"))?;
+        // Spelled back canonically rather than echoed: a browser ignores an
+        // unrecognised `SameSite`, so accepting "lax" and emitting it verbatim
+        // would silently give the cookie the browser's default instead.
+        let canonical = match v.to_ascii_lowercase().as_str() {
+            "strict" => "Strict",
+            "lax" => "Lax",
+            "none" => "None",
+            other => {
+                return Err(format!(
+                    "cookie {name:?}: 'same_site' must be Strict, Lax or None, got {other:?}"
+                ));
+            }
+        };
+        out.push_str(&format!("; SameSite={canonical}"));
+    }
+
+    for (key, attr) in [("http_only", "HttpOnly"), ("secure", "Secure")] {
+        match obj.get(key) {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => out.push_str(&format!("; {attr}")),
+            Some(_) => return Err(format!("cookie {name:?}: '{key}' must be a boolean")),
+        }
+    }
+
+    Ok(out)
+}
+
+/// RFC 6265 §4.1.1 `cookie-name` is an RFC 2616 token: no CTLs, no space, and
+/// none of the separator characters.
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_graphic() && !br#"()<>@,;:\"/[]?={}"#.contains(&b)
+}
+
+/// RFC 6265 §4.1.1 `cookie-value`, minus the optional surrounding quotes:
+/// printable ASCII excluding whitespace, comma, semicolon and backslash. CR
+/// and LF are excluded by `is_ascii_graphic`, which is the half that matters —
+/// a value carrying either could split the response.
+fn is_value_byte(b: u8) -> bool {
+    b.is_ascii_graphic() && !matches!(b, b',' | b';' | b'\\' | b'"')
+}
+
+/// An attribute value may hold characters a cookie value may not (`Expires`
+/// carries commas and spaces), so this refuses only what would end the
+/// attribute or the header.
+fn is_attribute_safe(v: &str) -> bool {
+    !v.bytes().any(|b| matches!(b, b';' | b'\r' | b'\n' | 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +280,108 @@ mod tests {
             !out.contains_key("session"),
             "an unlisted cookie must never be copied"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // The write side (#298)
+    // -----------------------------------------------------------------
+
+    fn fmt(spec: serde_json::Value) -> Result<String, String> {
+        format_set_cookie(&spec)
+    }
+
+    #[test]
+    fn a_full_cookie_renders_its_attributes_in_rfc_order() {
+        let out = fmt(serde_json::json!({
+            "name": "session", "value": "abc.def",
+            "path": "/", "domain": "example.com",
+            "max_age": 2592000, "same_site": "Lax",
+            "http_only": true, "secure": true
+        }))
+        .expect("valid cookie");
+        assert_eq!(
+            out,
+            "session=abc.def; Path=/; Domain=example.com; Max-Age=2592000; \
+SameSite=Lax; HttpOnly; Secure"
+        );
+    }
+
+    /// Clearing a cookie is the case the parser deliberately reads back as
+    /// *absent*, so the writer has to allow what the reader refuses.
+    #[test]
+    fn an_empty_value_is_allowed_because_that_is_how_a_cookie_is_cleared() {
+        assert_eq!(
+            fmt(serde_json::json!({"name": "oauth_state", "value": "", "path": "/", "max_age": 0}))
+                .expect("valid cookie"),
+            "oauth_state=; Path=/; Max-Age=0"
+        );
+    }
+
+    /// A false flag is absent, not `HttpOnly=false` — the attribute has no
+    /// negative form, and emitting one would set it.
+    #[test]
+    fn a_false_flag_emits_nothing() {
+        assert_eq!(
+            fmt(
+                serde_json::json!({"name": "a", "value": "1", "http_only": false, "secure": false})
+            )
+            .expect("valid cookie"),
+            "a=1"
+        );
+    }
+
+    /// The refusals that matter: anything that could end the pair, add an
+    /// attribute the author did not write, or split the response.
+    #[test]
+    fn injection_shaped_values_are_refused() {
+        for bad in [
+            serde_json::json!({"name": "a", "value": "x; Path=/; HttpOnly"}),
+            serde_json::json!({"name": "a", "value": "x\r\nSet-Cookie: b=2"}),
+            serde_json::json!({"name": "a", "value": "x,y"}),
+            serde_json::json!({"name": "a b", "value": "x"}),
+            serde_json::json!({"name": "a=b", "value": "x"}),
+            serde_json::json!({"name": "", "value": "x"}),
+            serde_json::json!({"name": "a", "value": "x", "path": "/; Domain=evil.test"}),
+        ] {
+            assert!(
+                fmt(bad.clone()).is_err(),
+                "must be refused, rendered instead: {bad}"
+            );
+        }
+    }
+
+    /// A browser ignores an unrecognised `SameSite` and falls back to its own
+    /// default, so echoing the author's casing would quietly change the
+    /// cookie's meaning rather than failing.
+    #[test]
+    fn same_site_is_canonicalised_and_otherwise_refused() {
+        assert!(
+            fmt(serde_json::json!({"name": "a", "value": "1", "same_site": "lax"}))
+                .expect("valid")
+                .ends_with("SameSite=Lax")
+        );
+        assert!(
+            fmt(serde_json::json!({"name": "a", "value": "1", "same_site": "sometimes"})).is_err()
+        );
+    }
+
+    /// A JWT is the value this exists to carry: base64url segments and dots,
+    /// none of which may be refused.
+    #[test]
+    fn a_jwt_value_survives_unchanged() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc-_123";
+        let out = fmt(serde_json::json!({"name": "session", "value": jwt})).expect("valid");
+        assert_eq!(out, format!("session={jwt}"));
+    }
+
+    /// The two halves agree: what the writer emits, the parser reads back.
+    #[test]
+    fn what_the_writer_emits_the_parser_reads_back() {
+        let out = fmt(serde_json::json!({
+            "name": "session", "value": "abc.def", "path": "/", "http_only": true
+        }))
+        .expect("valid");
+        let pair = out.split(';').next().expect("the name=value pair");
+        assert_eq!(one(pair, "session").as_deref(), Some("abc.def"));
     }
 }

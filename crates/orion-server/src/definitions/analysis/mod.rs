@@ -103,6 +103,13 @@ pub struct StepFacts {
     /// Context paths this step writes (a task), or all its members write (a
     /// group).
     pub writes: Vec<String>,
+    /// Whether [`Self::writes`] is the complete list. False when a destination
+    /// is authored as an expression, so the step may write somewhere this
+    /// analysis cannot name — a rule reasoning about overwrites must then stay
+    /// silent, exactly as it does for [`Reads::uncertain`].
+    ///
+    /// [`Reads::uncertain`]: dataflow::Reads::uncertain
+    pub writes_uncertain: bool,
 }
 
 impl StepFacts {
@@ -266,9 +273,13 @@ fn walk(
                 .collect(),
             _ => Vec::new(),
         };
-        let writes = match kind {
-            StepKind::Task => dataflow::task_writes(node),
-            StepKind::Group => Vec::new(), // filled in after the members are walked
+        let (writes, writes_uncertain) = match kind {
+            StepKind::Task => {
+                let facts = dataflow::task_write_facts(node);
+                (facts.paths, facts.computed)
+            }
+            // Filled in after the members are walked.
+            StepKind::Group => (Vec::new(), false),
         };
         let me = out.len();
         out.push(StepFacts {
@@ -285,6 +296,7 @@ fn walk(
             function,
             expressions,
             writes,
+            writes_uncertain,
         });
         if kind == StepKind::Group
             && let Some(members) = node.get("tasks")
@@ -302,6 +314,9 @@ fn walk(
                 .flat_map(|s| s.writes.iter().cloned())
                 .collect();
             out[me].writes = member_writes;
+            // A group is as certain as its least certain member — over the
+            // same descendants `member_writes` collects from.
+            out[me].writes_uncertain = out[me + 1..].iter().any(|s| s.writes_uncertain);
         }
     }
 }

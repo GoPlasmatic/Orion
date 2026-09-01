@@ -561,14 +561,23 @@ pub fn with_orion_engine_defaults(
 }
 
 /// As [`with_orion_engine_defaults`], for the datalogic engines Orion builds
-/// directly (channel-guard logic, the loader's compile parity check).
+/// directly.
 ///
-/// The one thing it cannot carry across is `secret`: that operator is
-/// registered by dataflow-rs on the engines *it* builds, and its
-/// implementation is crate-private. So `{"secret": …}` resolves in workflow
-/// expressions and not in a channel's `validation_logic` — where it fails to
-/// compile, and the channel is quarantined rather than the reference passing
-/// through as data.
+/// It cannot carry `secret` across: that operator is registered by dataflow-rs
+/// on the engines *it* builds, and its implementation is crate-private. So an
+/// engine built this way refuses `{"secret": …}` at compile.
+///
+/// **This is no longer how the serving instance builds its channel-guard
+/// engine.** Secrets are start-time config, resolved before any channel loads,
+/// so there was no reason a `validation_logic` should see fewer of them than a
+/// workflow does — and the way to fix it was not to mirror the operator here
+/// but to borrow an engine that already has it: `bootstrap` builds a
+/// dataflow-rs engine over the real store and keeps its
+/// [`datalogic`](dataflow_rs::Engine::datalogic). One implementation, so the
+/// two surfaces cannot disagree about what a secret name resolves to.
+///
+/// What is left for this function is the engines with no store to offer —
+/// the loader's compile parity check, and `operator_names`.
 pub fn add_to_datalogic(mut builder: datalogic::EngineBuilder) -> datalogic::EngineBuilder {
     for (name, op) in all() {
         builder = builder.add_operator(name, op);

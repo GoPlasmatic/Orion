@@ -224,25 +224,54 @@ pub fn run_documents(
 /// A task's authored input with its resolvable fields folded against the
 /// message, per the schema registry.
 ///
-/// Non-resolvable fields (`connector`, `database`, `op`, an output path) are
-/// left exactly as authored, because that is what the real handler reads.
+/// Fields the real handler reads as written (`connector`, `database`, `op`, an
+/// output path) are left exactly as authored, because that is what it reads.
+///
+/// The two kinds of resolution mirror the two the real handlers do, and for the
+/// same reason: an expression field is evaluated, a `resolvable` document field
+/// gets the `{"var": …}` fold. The expression is compiled here, per message,
+/// rather than once at build — `compile_input` is a static method and cannot
+/// see which function this stub instance stands in for, and a dry run has no
+/// throughput to protect. A rule that does not compile records as authored,
+/// since the run's job at that point is to show the author what they wrote.
 fn resolved_input(function: &str, input: &Value, ctx: &TaskContext<'_>) -> Value {
+    use crate::engine::functions::schema;
     let Some(obj) = input.as_object() else {
         return input.clone();
     };
     Value::Object(
         obj.iter()
             .map(|(key, value)| {
-                let value = if crate::engine::functions::schema::is_resolvable_field(function, key)
-                {
+                let resolved = if schema::template_paths(function, key).contains(&"") {
+                    evaluate_here(value, ctx)
+                } else if schema::is_resolvable_field(function, key) {
                     super::connector_helpers::resolve_value(value, ctx)
                 } else {
                     value.clone()
                 };
-                (key.clone(), value)
+                (key.clone(), resolved)
             })
             .collect(),
     )
+}
+
+/// Evaluate one authored expression against the message, compiling it here.
+///
+/// The real handlers compile their expression fields once at engine build, via
+/// `TemplatedInput::compile`. A stub cannot: `compile_input` is a static method
+/// and this one type stands in for every stubbed function, so it has no way to
+/// know which field table applies. A dry run has no throughput to protect, so
+/// the compile happens per message instead — the answer is the same one the
+/// real handler would produce.
+///
+/// A rule that does not compile yields the authored value, since at that point
+/// the run's job is to show the author what they wrote.
+fn evaluate_here(value: &Value, ctx: &TaskContext<'_>) -> Value {
+    ctx.datalogic()
+        .compile(value)
+        .ok()
+        .and_then(|logic| ctx.eval_json(&logic).ok())
+        .unwrap_or_else(|| value.clone())
 }
 
 /// Parse a stub file, rejecting shapes that would silently stub nothing.
@@ -355,29 +384,59 @@ impl StubHandler {
     /// functions' production handlers read it (the pre-1.0 spelling survives
     /// only where the real config declares it as an alias — `http_call` and
     /// `channel_call`, which have their own typed stubs).
-    fn output_path(&self, input: &Value) -> Option<String> {
+    fn output_path(
+        &self,
+        input: &super::templated_input::TemplatedInput,
+        ctx: &TaskContext<'_>,
+    ) -> dataflow_rs::Result<Option<String>> {
         if self.function == "cache_write" {
-            return None;
+            return Ok(None);
         }
-        Some(
-            input
-                .get("output")
-                .and_then(Value::as_str)
-                .unwrap_or("data")
-                .to_string(),
-        )
+        let path = match input.get("output") {
+            None | Some(Value::Null) => "data".to_string(),
+            Some(authored) => match evaluate_here(authored, ctx) {
+                Value::String(path) if !path.is_empty() => path,
+                other => {
+                    return Err(dataflow_rs::DataflowError::Validation(format!(
+                        "{} 'output' must resolve to a non-empty dotted path, got {other}",
+                        self.function
+                    )));
+                }
+            },
+        };
+        Ok(Some(path))
     }
 }
 
 #[async_trait]
 impl AsyncFunctionHandler for StubHandler {
-    type Input = Value;
+    type Input = super::templated_input::TemplatedInput;
+
+    /// The same fields the real handler compiles. `self.function` is what the
+    /// table is keyed by, and it is why this is an instance of one type rather
+    /// than a type per function — so it cannot be an associated const, and the
+    /// compile is done from `execute` instead.
+    fn compile_input(
+        input: &mut Self::Input,
+        _c: &dataflow_rs::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        // Deliberately nothing: `compile_input` is a static method, so it
+        // cannot see which function this instance stands in for, and the
+        // schema lookup is by function name. `resolved_input` reads the
+        // authored expression instead — see there.
+        let _ = input;
+        Ok(())
+    }
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &Value,
+        input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // The destination is resolved before the raw document is taken, since
+        // it can be an expression like any other parameter.
+        let output = self.output_path(input, ctx)?;
+        let input = input.raw();
         let target = input.get("connector").and_then(Value::as_str);
         // Recorded before the stub is resolved, so a call that fails for want
         // of a stub still appears in the log — that is the run you most want to
@@ -389,7 +448,7 @@ impl AsyncFunctionHandler for StubHandler {
             resolved_input(self.function, input, ctx),
         );
         let response = resolve(&self.stubs, self.function, target)?.clone();
-        if let Some(path) = self.output_path(input) {
+        if let Some(path) = output {
             apply_output(ctx, &path, response);
         }
         Ok(TaskOutcome::Success)
@@ -412,22 +471,24 @@ impl AsyncFunctionHandler for HttpCallStub {
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // Upstream's own resolvers, so the record carries the real templated
-        // path and body rather than an Orion-side approximation of them.
+        // Upstream's own resolvers throughout, so the record carries the real
+        // templated connector, path and body rather than an Orion-side
+        // approximation of them.
+        let connector = input.resolve_connector(ctx)?;
         self.log.record(
             ctx,
             "http_call",
-            Some(input.connector.clone()),
+            Some(connector.clone()),
             serde_json::json!({
-                "connector": input.connector,
+                "connector": connector,
                 "method": input.method.as_str(),
                 "path": input.resolve_path(ctx)?,
                 "body": input.resolve_body(ctx)?,
             }),
         );
-        let response = resolve(&self.stubs, "http_call", Some(&input.connector))?.clone();
-        if let Some(ref path) = input.response_path {
-            apply_output(ctx, path, response);
+        let response = resolve(&self.stubs, "http_call", Some(&connector))?.clone();
+        if let Some(path) = input.resolve_response_path(ctx)? {
+            apply_output(ctx, &path, response);
         }
         Ok(TaskOutcome::Success)
     }
@@ -449,18 +510,19 @@ impl AsyncFunctionHandler for PublishKafkaStub {
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        let connector = input.resolve_connector(ctx)?;
         self.log.record(
             ctx,
             "publish_kafka",
-            Some(input.connector.clone()),
+            Some(connector.clone()),
             serde_json::json!({
-                "connector": input.connector,
-                "topic": input.topic,
+                "connector": connector,
+                "topic": input.resolve_topic(ctx)?,
                 "key": input.resolve_key(ctx)?,
                 "value": input.resolve_value(ctx)?,
             }),
         );
-        resolve(&self.stubs, "publish_kafka", Some(&input.connector))?;
+        resolve(&self.stubs, "publish_kafka", Some(&connector))?;
         Ok(TaskOutcome::Success)
     }
 }
@@ -494,11 +556,11 @@ impl AsyncFunctionHandler for ChannelCallStub {
         input: &mut Self::Input,
         c: &dataflow_rs::engine::functions::TemplateCompiler,
     ) -> dataflow_rs::Result<()> {
-        if let Some(t) = input.channel_logic.as_mut() {
-            t.compile(c, "channel_call.channel_logic")?;
+        if let Some(t) = input.channel.as_mut() {
+            t.compile(c, "channel_call.channel")?;
         }
-        if let Some(t) = input.data_logic.as_mut() {
-            t.compile(c, "channel_call.data_logic")?;
+        if let Some(t) = input.data.as_mut() {
+            t.compile(c, "channel_call.data")?;
         }
         Ok(())
     }
@@ -508,24 +570,29 @@ impl AsyncFunctionHandler for ChannelCallStub {
         ctx: &mut TaskContext<'_>,
         input: &Self::Input,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // `channel_logic` computes the target per message and is not resolvable
-        // without running it, so a dynamic call falls back to the `"*"` entry.
-        let target = (!input.channel.is_empty()).then_some(input.channel.as_str());
+        // The real handler's own resolver, so a computed target is recorded as
+        // the channel it actually names rather than as "unknown". It used to
+        // fall back to the `"*"` stub entry for any `channel_logic` call, which
+        // meant a dry run of a workflow that fans out to three channels could
+        // not stub them differently — and showed three unattributed calls.
+        // `"*"` still matches, so a stub table written for the old behaviour
+        // keeps working.
+        let target = super::channel_call::resolve_target(ctx, input)?;
         self.log.record(
             ctx,
             "channel_call",
-            target.map(str::to_string),
+            Some(target.clone()),
             serde_json::json!({
                 "channel": target,
-                "data": match input.data_logic {
-                    Some(ref logic) => Some(logic.eval_into::<Value>(ctx)?),
-                    None => input.data.clone(),
+                "data": match input.data {
+                    Some(ref data) => Some(data.resolve(ctx).map(|v| Value::from(&v))?),
+                    None => None,
                 },
             }),
         );
-        let response = resolve(&self.stubs, "channel_call", target)?.clone();
-        if let Some(ref path) = input.output {
-            apply_output(ctx, path, response);
+        let response = resolve(&self.stubs, "channel_call", Some(&target))?.clone();
+        if let Some(ref t) = input.output {
+            apply_output(ctx, &t.resolve_string(ctx)?, response);
         }
         Ok(TaskOutcome::Success)
     }
@@ -644,21 +711,32 @@ mod tests {
             log: Arc::new(CallLog::new()),
         };
 
+        let datalogic = Arc::new(dataflow_rs::datalogic_rs::Engine::new());
+        let mut message = dataflow_rs::Message::from_value(&json!({}));
+        let ctx = TaskContext::new(&mut message, &datalogic);
+        let path = |h: &StubHandler, input: serde_json::Value| {
+            h.output_path(
+                &crate::engine::functions::templated_input::TemplatedInput::from(input),
+                &ctx,
+            )
+            .expect("the destination resolves")
+        };
+
         let read = stub("db_read");
         assert_eq!(
-            read.output_path(&json!({"output": "data.x"})),
+            path(&read, json!({"output": "data.x"})),
             Some("data.x".to_string())
         );
         // An omitted `output` defaults to the data root, exactly like the
         // real handler (`extract_output_path`) and its published schema —
         // a stub writing nothing here fails workflows that pass in
         // production.
-        assert_eq!(read.output_path(&json!({})), Some("data".to_string()));
+        assert_eq!(path(&read, json!({})), Some("data".to_string()));
         // `response_path` is not a spelling the real connector handlers
         // read; honoring it here passed workflows offline that production
         // does not run that way.
         assert_eq!(
-            read.output_path(&json!({"response_path": "data.y"})),
+            path(&read, json!({"response_path": "data.y"})),
             Some("data".to_string())
         );
 
@@ -670,14 +748,14 @@ mod tests {
             "data_write",
         ] {
             assert_eq!(
-                stub(function).output_path(&json!({})),
+                path(&stub(function), json!({})),
                 Some("data".to_string()),
                 "{function} defaults to the data root"
             );
         }
 
         // The one generic-stubbed function whose real handler writes nothing.
-        assert_eq!(stub("cache_write").output_path(&json!({})), None);
+        assert_eq!(path(&stub("cache_write"), json!({})), None);
     }
 
     /// The path validator and the lookup must agree about what a root is.

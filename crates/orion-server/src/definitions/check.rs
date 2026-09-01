@@ -200,6 +200,15 @@ fn check_workflows(
                 message,
             ));
         }
+        // Likewise for the key escape: a `$`-prefixed key in a template
+        // position loses one `$` when the engine emits it, silently.
+        for (path, message) in crate::validation::escaped_template_key_warnings(&req.tasks) {
+            findings.push(Diagnostic::warning(
+                "logic.escaped_template_key",
+                format!("workflow '{}' {path}", req.name),
+                message,
+            ));
+        }
         match &req.workflow_id {
             Some(id) => {
                 if ids.contains(id) {

@@ -757,7 +757,7 @@ jobs:
           # Vault on the other. Every test brings up its own container, so the
           # grouping is free to change; keep the two legs balanced.
           - name: data-sql
-            run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test
+            run: cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
 
           - name: data-nosql
             run: cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test

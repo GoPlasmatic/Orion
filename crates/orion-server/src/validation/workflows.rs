@@ -584,6 +584,142 @@ use serde_json::Value;
 /// Returns `(field path, message)` pairs — the tuple shape
 /// [`crate::engine::functions::schema::StaticValidator`] already uses, because
 /// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
+/// Every `$`-prefixed key the engine will strip a `$` from, as
+/// `(field path, message)`.
+///
+/// dataflow-rs 3.9 made the template-key escape unconditional: one `$` comes
+/// off *every* key in a template position, whether or not the name collides
+/// with an operator. So `{"$set": …}` — a MongoDB update document composed in a
+/// `map` task, the commonest way this appears — now emits `{"set": …}`, and
+/// `{"$oid": …}` emits `{"oid": …}`. Nothing fails: the write goes out with the
+/// wrong shape. `$ref` and `$schema` in a composed JSON Schema are the same
+/// story.
+///
+/// The fix is mechanical — double the prefix, `$$set` — which is why this is
+/// worth reporting mechanically. It is an **advisory**, matching the engine:
+/// `ESCAPED_TEMPLATE_KEY` is the one code `check_workflow` reports that
+/// `Engine::build` does not refuse, because doubling is also how an author
+/// *deliberately* emits a `$` key, and refusing it would refuse the fix.
+///
+/// Asked of the engine rather than walked here, so "a template position" means
+/// whatever dataflow-rs says it means. A custom handler's `input` is not one —
+/// its fields are Orion's to interpret — which is why a `mongo_write` update
+/// document written literally in the task is untouched, and only one composed
+/// upstream of it in a `map` is at risk.
+pub fn escaped_template_key_warnings(tasks: &Value) -> Vec<(String, String)> {
+    // The synthetic wrapper `validate_workflow_tasks_schema` uses, for the same
+    // reason: this function is given `tasks` alone.
+    let synthetic = serde_json::json!({
+        "id": "__template_key_check__", "name": "__template_key_check__",
+        "condition": true, "tasks": tasks,
+    });
+    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
+        // Unparseable tasks are reported with a better message by the schema
+        // check; there is nothing to say about keys in a document that is not
+        // a workflow.
+        return Vec::new();
+    };
+    // A bare builder: the escape is a property of the template compiler, which
+    // every engine builds the same way, so no handler registry or secret store
+    // changes the answer. Other issues the builder reports — an unregistered
+    // function, an undeclared secret — belong to checks that own them, and are
+    // filtered out here rather than reported twice with worse wording.
+    let builder = dataflow_rs::Engine::builder();
+    let mut out: Vec<(String, String)> = builder
+        .check_workflow(&workflow)
+        .into_iter()
+        .filter(|issue| issue.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+        .filter(|issue| issue.path.as_deref().is_none_or(is_accidental_escape))
+        .map(|issue| {
+            (
+                issue.path.unwrap_or_else(|| "tasks".to_string()),
+                issue.message,
+            )
+        })
+        .collect();
+
+    // The half the engine cannot see. A custom handler's `input` is a config
+    // document to dataflow-rs, not a template — which fields inside it are
+    // `Template`s is the handler's business — so `check_workflow` skips it and
+    // an Orion field like `channel_call.data` gets no report from the walk
+    // above. `schema::template_at` is where that business is declared, so it
+    // is what closes the gap.
+    for_each_input_field(tasks, |function, field, path, value| {
+        // Only for a name the engine treats as custom: a built-in's parameters
+        // were already walked, and reporting them twice would be worse than
+        // not reporting them at all.
+        if dataflow_rs::is_builtin_function(function) {
+            return;
+        }
+        if !crate::engine::functions::schema::template_paths(function, field).contains(&"") {
+            return;
+        }
+        out.extend(
+            escaped_keys_in(value)
+                .into_iter()
+                .map(|(suffix, message)| (format!("{path}{suffix}"), message)),
+        );
+    });
+    out
+}
+
+/// Ask the engine which keys in one arbitrary value it would strip a `$` from,
+/// as `(path suffix relative to the value, message)`.
+///
+/// The walk that answers this is dataflow-rs's and is not public on its own, so
+/// the question is put the only way it can be: as a workflow with a single
+/// `map` mapping whose `logic` *is* the value. That is a real template position,
+/// so the answer is the engine's own — no second implementation of the rule to
+/// drift from it — and the fixed shape of the wrapper is what makes the
+/// reported path mechanically strippable back to a suffix.
+fn escaped_keys_in(value: &Value) -> Vec<(String, String)> {
+    const PREFIX: &str = "function.input.mappings[0].logic";
+    let synthetic = serde_json::json!({
+        "id": "__template_key_check__", "name": "__template_key_check__",
+        "condition": true,
+        "tasks": [{
+            "id": "t", "name": "t",
+            "function": { "name": "map", "input": { "mappings": [
+                { "path": "data.__probe__", "logic": value }
+            ] } }
+        }],
+    });
+    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
+        return Vec::new();
+    };
+    let builder = dataflow_rs::Engine::builder();
+    builder
+        .check_workflow(&workflow)
+        .into_iter()
+        .filter(|issue| issue.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+        .filter_map(|issue| {
+            let path = issue.path?;
+            let suffix = path.strip_prefix(PREFIX)?;
+            is_accidental_escape(&path).then(|| (suffix.to_string(), issue.message))
+        })
+        .collect()
+}
+
+/// Whether the key at the end of an `ESCAPED_TEMPLATE_KEY` path looks like one
+/// the author did not mean to escape.
+///
+/// The engine reports *every* `$`-prefixed key, which is right for an audit and
+/// wrong for a gate: `$$set` is the documented fix, so warning about it leaves
+/// an author who has already fixed the problem with a warning they cannot
+/// clear and a `--deny-warnings` build that can never go green. One leading
+/// `$` is the accident — a MongoDB operator, a JSON Schema keyword, written by
+/// someone who did not know the prefix was load-bearing. Two or more is a
+/// decision, and this codebase would rather stay silent than be wrong.
+///
+/// The key is the path's last segment, in the `{path}.{key}` shape the engine
+/// builds. A key containing a literal `.` makes that ambiguous — for every
+/// path-based consumer, not just this one — and the failure is to stay silent
+/// about a real one, never to invent a warning.
+fn is_accidental_escape(path: &str) -> bool {
+    let key = path.rsplit('.').next().unwrap_or(path);
+    key.starts_with('$') && !key.starts_with("$$")
+}
+
 pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
@@ -652,11 +788,19 @@ pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
         let exempt = crate::engine::functions::schema::secret_paths(function, field);
-        // Whether a `{"secret": ..}` node in this field means anything at all
-        // — see the branch it gates in [`collect_secret_references`]. A field
-        // the handler folds expressions in, or reads key material out of, is
-        // one it looks *inside*; anywhere else the object is opaque data and a
-        // member named `secret` is a member named `secret`.
+        // Whether a `{"secret": ..}` node in this field is a mistake — see the
+        // branch it gates in [`collect_secret_references`]. Three cases, and
+        // only the middle one is reportable:
+        //
+        // * A field the engine **evaluates** (`template_at`) resolves the node,
+        //   because `secret` is a reserved JSONLogic operator registered on
+        //   every engine. Nothing is wrong, so this stays false for those.
+        // * A field the handler **folds** (`resolvable`) looks inside but folds
+        //   `{"var": ..}` only, so the node survives as an object and is sent
+        //   to the backend as one. That is the mistake this reports.
+        // * A field read **literally** is opaque data, where a member named
+        //   `secret` is a member named `secret` — and the engine would not have
+        //   resolved it either, so there is nothing to warn about.
         let inspects_nodes = crate::engine::functions::schema::is_resolvable_field(function, field)
             || !exempt.is_empty();
         collect_secret_references(value, path, "", exempt, function, inspects_nodes, &mut out);
@@ -1087,9 +1231,10 @@ mod tests {
     fn the_array_spelling_of_a_secret_node_is_reported_too() {
         let found = secret_reference_errors(&serde_json::json!([{
             "id": "t1",
-            "function": {"name": "send_email", "input": {
-                "connector": "mail",
-                "subject": {"secret": ["api_key"]},
+            "function": {"name": "db_read", "input": {
+                "connector": "pg",
+                "query": "SELECT 1",
+                "params": [{"secret": ["api_key"]}],
             }},
         }]));
         assert_eq!(
@@ -1097,6 +1242,25 @@ mod tests {
             1,
             "expected exactly one finding, got {found:?}"
         );
+    }
+
+    /// And silent in a field the engine *evaluates*, where the node resolves.
+    ///
+    /// `secret` is a reserved JSONLogic operator registered on every engine, so
+    /// in a `template_at` field — `send_email.subject`, an `http_call` header —
+    /// `{"secret": …}` produces the value rather than surviving as an object.
+    /// This rule exists for the fields that fold `{"var": …}` and nothing else,
+    /// where it would not; firing here would refuse a task that works.
+    #[test]
+    fn a_secret_node_in_an_evaluated_field_is_not_a_finding() {
+        let found = secret_reference_errors(&serde_json::json!([{
+            "id": "t1",
+            "function": {"name": "send_email", "input": {
+                "connector": "mail",
+                "subject": {"cat": ["token=", {"secret": "api_key"}]},
+            }},
+        }]));
+        assert!(found.is_empty(), "{found:?}");
     }
 
     /// And silent where the handler does read key material — the whole point

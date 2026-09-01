@@ -72,7 +72,23 @@ compose channels, or compute locally.
 > [!NOTE]
 > Wherever an input field is described as **JSONLogic**, you pass a JSONLogic
 > expression that is evaluated against the data context. A plain JSON literal
-> (string, number, object) is also valid JSONLogic and evaluates to itself.
+> (string, number, object) is also valid JSONLogic and evaluates to itself, and
+> costs nothing: it is folded once when the engine is built, and only a field
+> that actually reads the message is evaluated per request.
+>
+> That now covers most fields, `output` included — a computed destination fans
+> one task's results out by message content. The exceptions are deliberate and
+> fall into three groups: **target selectors** (`connector`, a Mongo `database`
+> and `collection`, `data_query.database`), because the static name is what the
+> dependency list, the activation gate and the connector rename guard are built
+> from; **validated enums and security switches** (`crypto.op` and its
+> encodings, `jwt_sign.algorithm`, `jwt_verify.algorithms` and `jwks_url`,
+> `http_call.method`, `storage_presign.method`, `mongo_write.op` and `all`,
+> raw-SQL `query`, `data_*.schema`), where computing the value would move the
+> check past the point an author can be told about it; and the
+> **document-shaped fields** listed under
+> [Connector fields](./expressions.md#connector-fields-expressions-and-documents),
+> which fold `{"var": …}` and nothing else.
 
 Every field table on this page uses the same **Required** values:
 
@@ -258,17 +274,39 @@ support. The connector supplies the base URL and auth.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `connector` | string | yes | — | Name of the HTTP connector |
-| `method` | string | no | `"GET"` | `GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE` |
-| `path` | string | no | — | Path appended to the connector's base URL |
-| `path_logic` | JSONLogic | no | — | Compute the path dynamically (use instead of `path`) |
-| `headers` | object | no | `{}` | Extra request headers (string → string) |
-| `body` | any | no | — | Static request body |
-| `body_logic` | JSONLogic | no | — | Compute the body dynamically (use instead of `body`) |
-| `body_format` | string | no | `"json"` | How the body becomes request bytes: `json`, `form`, or `text` — see below |
-| `output` | string | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
-| `response_format` | string | no | `"json"` | How the response is captured at `output`: `json` (parsed) or `text` (a plain string) |
-| `timeout_ms` | number | no | `30000` | Per-request timeout in milliseconds |
+| `connector` | string \| JSONLogic | yes | — | Name of the HTTP connector. A computed name is not yet supported |
+| `method` | string | no | `"GET"` | `GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE`. The one field here that is not JSONLogic |
+| `path` | string \| JSONLogic | no | — | Path appended to the connector's base URL. Accepts the pre-1.0 name `path_logic` |
+| `headers` | object | no | `{}` | Extra request headers. Each **value** is JSONLogic |
+| `body` | any \| JSONLogic | no | — | Request body. Accepts the pre-1.0 name `body_logic` |
+| `body_format` | string \| JSONLogic | no | `"json"` | How the body becomes request bytes: `json`, `form`, or `text` — see below |
+| `output` | string \| JSONLogic | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
+| `response_format` | string \| JSONLogic | no | `"json"` | How the response is captured at `output`: `json` (parsed) or `text` (a plain string) |
+| `timeout_ms` | number \| JSONLogic | no | `30000` | Per-request timeout in milliseconds |
+
+Every field above except `method` is JSONLogic, so it may be written as a plain
+literal — which is what it evaluates to — or as an expression over the message.
+A literal is folded once when the engine is built and costs nothing per request;
+only a field that actually reads the message pays. `headers` is the one that
+changes what is expressible: a value can now be computed, so a bearer token or a
+correlation id no longer has to be injected by the service layer.
+
+```json
+{
+  "name": "http_call",
+  "input": {
+    "connector": "partner-api",
+    "method": "POST",
+    "path": { "cat": ["/orders/", { "var": "data.order_id" }] },
+    "headers": {
+      "Authorization": { "cat": ["Bearer ", { "secret": "partner_token" }] },
+      "X-Correlation-Id": { "var": "metadata.request_id" }
+    },
+    "body": { "var": "data.order" },
+    "output": "data.result"
+  }
+}
+```
 
 ```json
 {
@@ -277,7 +315,7 @@ support. The connector supplies the base URL and auth.
     "connector": "payment-api",
     "method": "POST",
     "path": "/charge",
-    "body_logic": { "var": "data.payment" },
+    "body": { "var": "data.payment" },
     "output": "data.charge_result",
     "timeout_ms": 5000
   }
@@ -301,8 +339,9 @@ connector replaces the stamp — it changes the label, never the bytes.
 is not valid JSON. `text` captures the body as a plain string — for gateways
 that answer `text/plain` — leaving the size cap and the non-2xx error path
 unchanged. Unknown values on either axis are rejected when the workflow is
-created, and a static `body` is shape-checked against `body_format` at the same
-time; a `body_logic` body gets the same check per request.
+created **when both are written as literals**, and a literal `body` is
+shape-checked against a literal `body_format` at the same time; a computed body
+or format gets the same check per request instead.
 
 ```json
 {
@@ -336,7 +375,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
-| `output` | string | no | `"data"` | Dotted path where the row array is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 > [!NOTE]
 > The `schema` requirement is enforced when the query runs, not when the
@@ -393,7 +432,7 @@ for the full envelope, backend mapping, and safety rules.
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside `values`, `set`, and `filter`; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, allowlist, `writable` flags. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones. Enforced at run time, like `data_query`'s |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
-| `output` | string | no | `"data"` | Dotted path where the write result is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the write result is written |
 
 #### Updating array elements
 
@@ -494,7 +533,7 @@ placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `SELECT` statement with bind placeholders |
 | `params` | array | no | — | Values bound to the placeholders, in order |
-| `output` | string | no | `"data"` | Dotted path where the row array is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 ```json
 {
@@ -521,7 +560,7 @@ its [`raw_write` operation gate](./data-dialect.md#connector-operation-gates).
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `INSERT`/`UPDATE`/`DELETE` statement with bind placeholders |
 | `params` | array | no | — | Values bound to the placeholders, in order |
-| `output` | string | no | `"data"` | Dotted path where `{ "rows_affected": N }` is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where `{ "rows_affected": N }` is written |
 
 ```json
 {
@@ -544,7 +583,7 @@ Missing keys yield `null`.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the cache connector |
 | `key` | string | yes | — | Cache key to read |
-| `output` | string | no | `"data"` | Dotted path where the value is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the value is written |
 
 ```json
 { "name": "cache_read", "input": { "connector": "redis", "key": "rate:42", "output": "data.cached" } }
@@ -587,7 +626,7 @@ drive the next task's filter unchanged.
 | `sort` | object | no | natural order | MongoDB sort document, e.g. `{"created_at": -1}` |
 | `limit` | number | no | unlimited* | Maximum documents to return; must not exceed `query.max_limit` |
 | `skip` | number | no | `0` | Documents to skip; must not exceed `query.max_skip` |
-| `output` | string | no | `"data"` | Dotted path where matched documents are written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where matched documents are written |
 
 \* an unlimited read is still bounded: a result larger than `query.max_limit`
 is an error rather than an OOM.
@@ -631,7 +670,7 @@ below, and naming a field the op ignores is an authoring-time error.
 | `upsert` | bool | no | `false` | Insert when nothing matches (update/replace ops). Gated as `upsert` on the connector when true, `update` otherwise |
 | `ordered` | bool | no | `true` | `insert_many` only: stop at the first failure (`true`) or attempt every document (`false`) |
 | `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/replace/delete — also requires `write.allow_unfiltered` in config |
-| `output` | string | no | `"data"` | Dotted path where the write result is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the write result is written |
 
 #### Updating array elements
 
@@ -712,7 +751,7 @@ by name, at authoring time for a literal pipeline and again at runtime after
 | `collection` | string | yes | — | Collection name |
 | `pipeline` | array | yes | — | Aggregation stages, each `{"$stage": …}` (extended JSON) |
 | `allow_disk_use` | bool | no | `false` | Let the server spill large stages to disk |
-| `output` | string | no | `"data"` | Dotted path where result documents are written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where result documents are written |
 
 Results are bounded by `query.max_limit` like `mongo_read`; a `$out`/`$merge`
 pipeline returns an empty array (Mongo's own contract for those stages).
@@ -737,15 +776,14 @@ pipeline returns an empty array (Mongo's own contract for those stages).
 ### `publish_kafka`
 
 Publishes a message to a Kafka topic through a Kafka connector. Requires Kafka to
-be enabled in config. If `value_logic` is omitted, the full data context is
-published.
+be enabled in config. If `value` is omitted, the full data context is published.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `connector` | string | yes | — | Name of the Kafka connector |
-| `topic` | string | yes | — | Target topic |
-| `key_logic` | JSONLogic | no | — | Expression that derives the message key |
-| `value_logic` | JSONLogic | no | full `data` | Expression that derives the message value |
+| `connector` | string \| JSONLogic | yes | — | Name of the Kafka connector. A computed name is not yet supported |
+| `topic` | string \| JSONLogic | yes | — | Target topic. Accepts an expression, so one task can route by message content |
+| `key` | any \| JSONLogic | no | — | The message key. Accepts the pre-1.0 name `key_logic` |
+| `value` | any \| JSONLogic | no | full `data` | The message value. Accepts the pre-1.0 name `value_logic` |
 
 ```json
 {
@@ -753,8 +791,23 @@ published.
   "input": {
     "connector": "events",
     "topic": "order.placed",
-    "key_logic": { "var": "data.order.id" },
-    "value_logic": { "var": "data.order" }
+    "key": { "var": "data.order.id" },
+    "value": { "var": "data.order" }
+  }
+}
+```
+
+A computed `topic` is what lets one task fan a stream out by content — the
+tenant, the region, the event type — where before it took one task per
+destination:
+
+```json
+{
+  "name": "publish_kafka",
+  "input": {
+    "connector": "events",
+    "topic": { "cat": ["orders.", { "var": "data.region" }] },
+    "value": { "var": "data.order" }
   }
 }
 ```
@@ -781,31 +834,24 @@ email. The circuit breaker still applies.
 | `from` | string | no | connector `from` | Honored only when the connector sets `allow_from_override` |
 | `reply_to` | string | no | — | Reply-To address |
 | `headers` | object | no | — | Extra headers (string values). Structured names (`From`, `To`, `Subject`, `Content-Type`, …) are rejected — this is for `List-Unsubscribe`, `Auto-Submitted`, correlation IDs |
-| `output` | string | no | `"data"` | Where `{ "message_id", "response" }` is stored — the generated Message-ID (for correlation/threading) and the server's acceptance line |
+| `output` | string \| JSONLogic | no | `"data"` | Where `{ "message_id", "response" }` is stored — the generated Message-ID (for correlation/threading) and the server's acceptance line |
 
 A wrong address fails at workflow create when static (naming the field and
 index) and at send time when resolved from the message. Rejected recipients
 fail the task with the server's reply — no partial-success reporting.
 
-Like every connector function, resolvable fields fold `{ "var": … }` nodes —
-they do not evaluate arbitrary JSONLogic. Compose a body with a `map` task
-first, then reference it:
+Every field above except `connector`, `headers` and `output` is JSONLogic, so a
+body or a subject can be composed in the task rather than in a `map` task ahead
+of it:
 
 ```json
-{
-  "name": "map",
-  "input": { "mappings": [
-    { "path": "temp_data.mail_body",
-      "logic": { "cat": ["Your OTP is ", { "var": "temp_data.otp" }] } }
-  ] }
-},
 {
   "name": "send_email",
   "input": {
     "connector": "mailer",
     "to": { "var": "data.email" },
-    "subject": "Your verification code",
-    "text": { "var": "temp_data.mail_body" },
+    "subject": { "cat": ["Order ", { "var": "data.order_id" }, " confirmed"] },
+    "text": { "cat": ["Your OTP is ", { "var": "temp_data.otp" }] },
     "output": "temp_data.mail_result"
   }
 }
@@ -829,7 +875,7 @@ uploads. Each method answers to its own connector gate (`presign_get` /
 | `response_content_type` | string | no | — | GET only: forces the answered Content-Type; signed, so the client cannot alter it |
 | `response_content_disposition` | string | no | — | GET only: forces Content-Disposition — the download-filename knob; signed |
 | `content_type` | string | no | — | PUT only: the Content-Type the uploader must send — a signed header, so any other type is refused by the store |
-| `output` | string | no | `"data"` | Where the presigned URL (string) is stored |
+| `output` | string \| JSONLogic | no | `"data"` | Where the presigned URL (string) is stored |
 
 ```json
 {
@@ -855,7 +901,7 @@ workflow can loop if it wants polling.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the storage connector |
 | `key` | string | yes | — | Object key within the connector's bucket |
-| `output` | string | no | `"data"` | Where `{ exists, size, etag, last_modified, content_type }` is stored |
+| `output` | string \| JSONLogic | no | `"data"` | Where `{ exists, size, etag, last_modified, content_type }` is stored |
 
 ```json
 {
@@ -874,25 +920,43 @@ workflow can loop if it wants polling.
 
 Invokes another channel's workflow **in-process** — no network hop. The called
 channel keeps its own versioning and governance. Cycle detection and a max call
-depth prevent runaway recursion. Provide exactly one of `channel`/`channel_logic`
-and at most one of `data`/`data_logic`.
+depth prevent runaway recursion.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `channel` | string | one of `channel`/`channel_logic` | — | Static target channel name |
-| `channel_logic` | JSONLogic | one of `channel`/`channel_logic` | — | Expression that resolves to the target channel name |
-| `data` | any | no | request payload | Static payload passed to the target channel |
-| `data_logic` | JSONLogic | no | — | Expression that derives the payload |
-| `output` | string | no | `"data"` | Dotted path where the called channel's response is stored. Accepts the pre-1.0 name `response_path` |
+| `channel` | string \| JSONLogic | yes | — | Target channel. Accepts the pre-1.0 name `channel_logic` |
+| `data` | any \| JSONLogic | no | request payload | Payload passed to the target channel. Accepts the pre-1.0 name `data_logic` |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where the called channel's response is stored. Accepts the pre-1.0 name `response_path` |
 | `timeout_ms` | number | no | from config | Per-call timeout in milliseconds |
+
+`channel` and `data` are each one field, not the `channel`/`channel_logic` and
+`data`/`data_logic` pairs they were before 1.5. A literal is JSONLogic for
+itself, so the static spelling is unchanged and still folds once when the engine
+is built; an expression in the same field is what makes the target or the
+payload depend on the message. The old names remain accepted as aliases —
+supplying both spellings of one field is an error, not a precedence rule.
 
 ```json
 {
   "name": "channel_call",
   "input": {
     "channel": "customer-lookup",
-    "data_logic": { "var": "data.order.customer_id" },
+    "data": { "var": "data.order.customer_id" },
     "output": "data.customer"
+  }
+}
+```
+
+A computed `channel` routes one task to a channel the message names. The
+dependency endpoint reports `has_dynamic_channel_calls` for a workflow that
+contains one, because the static list of targets cannot be complete:
+
+```json
+{
+  "name": "channel_call",
+  "input": {
+    "channel": { "cat": ["notify-", { "var": "data.region" }] },
+    "output": "data.notified"
   }
 }
 ```
@@ -923,7 +987,7 @@ out-of-bounds cost parameter is an authoring-time error).
 | `hash` | string | for `password_verify` | — | The stored hash; scheme auto-detected from its `$argon2*$`/`$2*$` prefix, which is also the rehash-on-login discriminator |
 | `encoding` | string | no | `"hex"` | Output encoding for `hash`/`hmac`: `hex`, `base64`, `base64url` (unpadded, the JWS form) |
 | `params` | object | no | safe defaults | `password_hash` cost tuning, bounded: argon2id `memory_kib` (8192–131072, default 19456), `iterations` (1–10, default 2), `parallelism` (1–4, default 1); bcrypt `cost` (10–14, default 12) |
-| `output` | string | no | `"data"` | Dotted result path. String for `hash`/`hmac`/`password_hash`; boolean for `hmac_verify`/`password_verify` |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted result path. String for `hash`/`hmac`/`password_hash`; boolean for `hmac_verify`/`password_verify` |
 
 Wrong password or wrong signature → `false`; a *malformed* stored hash or an
 undecodable signature is a task error, so data corruption is never mistaken
@@ -971,12 +1035,12 @@ claim.
 | `algorithm` | string | yes | — | `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384`, `EdDSA` |
 | `key` | string | yes | — | HS secret or RS/ES/Ed **private**-key PEM; `{"secret": "name"}`, a reference, or a literal |
 | `key_encoding` | string | no | `"utf8"` | How an HS secret becomes bytes: `utf8`, `base64`, `hex` |
-| `claims` | object | no | `{}` | Claim values fold `{"var": …}` nodes — compose computed claims with a `map` task first |
+| `claims` | object | no | `{}` | Claim values fold `{"var": …}` nodes and nothing else — compose a computed claim in a `map` task first. (`audience`, `not_before` and `expires_in` below are full JSONLogic) |
 | `expires_in` | number \| string | conditional | — | Lifetime (seconds or `"<n>s\|m\|h\|d"`) → `exp`. Required unless `claims.exp` is explicit |
 | `claims.iat` | number | no | now | Issue time. Supplying one wins — there is no `issued_at` field, so nothing more specific can beat it. Back- or forward-dating is what revocation-pivot schemes need, and it is the only way a minted token can be asserted byte-for-byte offline |
 | `issuer` / `audience` / `not_before` | — | no | — | Conveniences for `iss` / `aud` / `nbf` (offset from now); explicit fields win over same-named claims entries |
 | `kid` | string | no | — | Key id stamped into the header, for rotation-aware verifiers |
-| `output` | string | no | `"data"` | Where the token (string) is stored |
+| `output` | string \| JSONLogic | no | `"data"` | Where the token (string) is stored |
 
 `iat` and `exp` supplied through `claims` must be **numbers** — seconds since
 the Unix epoch (NumericDate, RFC 7519 §2). A string date is refused at sign
@@ -1002,7 +1066,7 @@ is.
 | `issuer` / `audience` | string \| array | no | — | Accepted `iss`/`aud` values; `{"secret": "name"}` and `env://` references resolve (OAuth client ids) |
 | `leeway_secs` | number | no | `30` | Clock-skew allowance, capped at 300 |
 | `require_exp` | boolean | no | `true` | RFC 8725: tokens must expire unless deliberately opted out |
-| `output` | string | no | `"data"` | Where the verified claims object is stored |
+| `output` | string \| JSONLogic | no | `"data"` | Where the verified claims object is stored |
 
 ```json
 {
