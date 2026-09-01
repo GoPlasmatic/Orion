@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-09-01
 
 ### Security
 
@@ -184,6 +184,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   position — so this is about documents composed upstream of one.
 
 ### Changed
+
+- **BREAKING: a `$`-prefixed key in a template position loses one `$`.**
+  dataflow-rs 3.9 strips one `$` from *every* key the engine evaluates, so a
+  MongoDB update composed in a `map` task — `{"$set": {…}}` written into
+  `temp_data` and handed to a later `mongo_write` — is emitted as
+  `{"set": {…}}`. Mongo reads a document with no update operator as a
+  **replacement**, so the write silently replaces the document instead of
+  updating it. Nothing fails at any gate: the workflow validates, the task
+  succeeds, and the damage is in the data.
+
+  The fix is to double the prefix: `$$set`. `orion-server preflight` reports
+  every occurrence in the stored estate (checklist row 14) and `lint` reports
+  it in files, as `[logic.escaped_template_key]`; the doubled spelling is
+  deliberately not reported, so fixing the problem clears the warning.
+
+  **Only affects documents composed upstream of a handler.** A `mongo_write`
+  `update` written literally in the task is not a template position and is
+  unchanged, as are the other document-shaped fields — a dialect or SQL
+  `params`, `jwt_sign.claims`, `cache_write.value` — which keep the old fold
+  precisely because they carry `$set`, `$oid`, `$date` and `$ref`.
 
 - **`channel_call`'s `channel`/`channel_logic` and `data`/`data_logic` pairs
   are each one field.** A literal is JSONLogic for itself, so a second field
@@ -4466,7 +4486,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.0

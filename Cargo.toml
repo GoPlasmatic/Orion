@@ -26,7 +26,7 @@ default-members = ["crates/orion-server"]
 # release always changes their versions too, so the skip can never fire on a
 # rider that changed. Nothing is lost: neither library has ever had a release
 # cycle of its own, and no tag names either.
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
@@ -37,8 +37,8 @@ repository = "https://github.com/GoPlasmatic/Orion"
 # workspace version is written — and `cargo release` rewrites all three
 # together (see RELEASING.md).
 [workspace.dependencies]
-orion-api = { version = "1.4.0", path = "crates/orion-api" }
-orion-client = { version = "1.4.0", path = "crates/orion-client" }
+orion-api = { version = "1.5.0", path = "crates/orion-api" }
+orion-client = { version = "1.5.0", path = "crates/orion-client" }
 
 # `cargo release <level|version>` performs a release commit: it rewrites
 # `workspace.package.version` and both `workspace.dependencies` requirements,
