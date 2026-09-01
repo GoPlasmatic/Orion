@@ -65,7 +65,13 @@ services:
       POSTGRES_PASSWORD: orion
       POSTGRES_DB: orion
     volumes:
-      - orion-pg-data:/var/lib/postgresql/data
+      # PostgreSQL 18+ stores data under a major-version directory
+      # (/var/lib/postgresql/18/docker) so that pg_upgrade has both versions
+      # side by side — docker-library/postgres#1259. The volume therefore
+      # mounts the parent, not .../data: an 18 image finds a mount on the old
+      # path, reports it as unused and refuses to start rather than silently
+      # initialising an empty cluster beside the real one.
+      - orion-pg-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
       interval: 3s
