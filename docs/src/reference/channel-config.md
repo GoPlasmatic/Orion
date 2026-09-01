@@ -321,6 +321,7 @@ Rules:
 | `enabled` | boolean | yes | — | `false` disables the cache without removing the block. |
 | `ttl_secs` | integer | no | `300` | Seconds an entry lives. |
 | `cache_key_fields` | array of strings | no | whole payload | Payload fields that form the cache key. |
+| `key_logic` | JSONLogic | no | — | Computes the cache key. Takes precedence over `cache_key_fields`. |
 | `connector` | string | no | in-memory | Name of a [cache connector](./connectors.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
 
 ```json
@@ -333,7 +334,19 @@ Rules:
 }
 ```
 
-**The cache key** is derived from exactly: the channel name, the HTTP method, the route parameters, the query string (both order-independent), and the request payload — the whole payload, or the subset named by `cache_key_fields`. Each entry resolves as a literal payload key (`user_id`), a dotted path (`user.id`), or the same path with a leading `data.` prefix (`data.user_id`). A request that resolves **none** of the declared fields bypasses the cache entirely: the workflow runs, nothing is stored, and Orion logs a warning naming the channel and fields — it almost always means the names do not match the payload shape.
+**The cache key** is derived from exactly: the channel name, the HTTP method, the route parameters, the query string (both order-independent), and the request payload — the whole payload, the subset named by `cache_key_fields`, or the result of `key_logic`.
+
+`key_logic` is the general form, and the same vocabulary [`rate_limit.key_logic`](#rate-limiting) uses, so one channel does not key two of its guards two different ways. It reads `{"data": …, "metadata": …}` and **replaces** the payload-derived half of the key rather than adding to it — an expression that says what varies the response is a complete answer, and mixing it with a payload hash would put back the fields it was written to exclude:
+
+```json
+"cache": {
+  "enabled": true,
+  "ttl_secs": 60,
+  "key_logic": { "cat": [{ "var": "metadata.auth.subject" }, "|", { "var": "data.report_id" }] }
+}
+```
+
+An expression that does not compile quarantines the channel rather than falling back — a cache key that silently widens serves one caller's body to the next. One that resolves to `null` at request time bypasses the cache for that request, as an unresolvable `cache_key_fields` does. Each entry resolves as a literal payload key (`user_id`), a dotted path (`user.id`), or the same path with a leading `data.` prefix (`data.user_id`). A request that resolves **none** of the declared fields bypasses the cache entirely: the workflow runs, nothing is stored, and Orion logs a warning naming the channel and fields — it almost always means the names do not match the payload shape.
 
 > [!WARNING]
 > Request headers are never part of the cache key. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent. If a response varies by anything a header carries, that value must appear in the payload and in `cache_key_fields` — or the channel must not cache.
@@ -465,6 +478,7 @@ By default every sync channel answers `200` with the fixed envelope `{id, status
 |---|---|---|---|---|
 | `response.mode` | string | no | `"envelope"` | `envelope` or `shaped`. |
 | `response.allowed_headers` | array of strings | no | default allowlist | Headers the workflow may set. **Replaces** the default list, so a channel can narrow it as well as widen it. Case-insensitive. |
+| `response.cookies` | boolean | no | `false` | Whether the workflow may set cookies through `data._orion.response.cookies`. Independent of `allowed_headers` — see [Cookies](#cookies) below. |
 
 ```json
 { "response": { "mode": "shaped", "allowed_headers": ["location"] } }
@@ -489,7 +503,8 @@ The control block's fields:
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `status` | number | no | `200` | HTTP status. Out-of-range values fall back to `200`. |
-| `headers` | object | no | `{}` | Response headers, subject to the allowlist below. |
+| `headers` | object | no | `{}` | Response headers, subject to the allowlist below. A value may be a string, or an **array of strings** to send the header once per element. |
+| `cookies` | array of objects | no | `[]` | Cookies to set. Requires `response.cookies` on the channel — see [Cookies](#cookies). |
 | `body_path` | string | no | whole document | Field to send instead of the entire data document. A leading `data.` is optional. |
 | `raw` | boolean | no | `false` | Send a string field verbatim rather than as a JSON string — how a channel returns CSV, XML, or plain text. |
 
@@ -497,9 +512,42 @@ The control block's fields:
 
 **Header allowlist.** With no `allowed_headers`, a workflow may set `content-type`, `location`, `cache-control`, `etag`, `last-modified`, `retry-after`, `content-language`, and `link`. The hop-by-hop headers (`connection`, `keep-alive`, `proxy-authenticate`, `proxy-authorization`, `te`, `trailer`, `transfer-encoding`, `upgrade`), `content-length`, and `x-request-id` are refused even when listed — response framing belongs to the server, and `x-request-id` correlates a response with its stored trace. A dropped header does not fail the request.
 
+**Repeated headers.** The first value for a name replaces whatever the platform set — so a workflow's `content-type` still wins — and every later value is appended beside it. That is what makes an array meaningful.
+
 **Failures are soft.** A shaped channel whose workflow sets no control block, or an unusable one, falls back to the standard envelope rather than erroring.
 
-**Interactions.** A cached shaped response replays its status and headers, not just its body. Profiling (`?profile=1`) appends `_orion.profile` to the envelope only — a shaped body is the workflow's own — though timings still reach the trace and metrics. Shaping applies to the synchronous path only; [`/async`](./data-api.md#asynchronous-processing) answers `202` with a trace id as always.
+**Interactions.** A cached shaped response replays its status and headers, not just its body — *unless* it sets a cookie, which is never cached. Profiling (`?profile=1`) appends `_orion.profile` to the envelope only — a shaped body is the workflow's own — though timings still reach the trace and metrics. Shaping applies to the synchronous path only; [`/async`](./data-api.md#asynchronous-processing) answers `202` with a trace id as always.
+
+### Cookies
+
+Reading cookies is configured per channel with `request.cookies_to_metadata`. Writing them is the mirror: a shaped channel sets `response.cookies` to `true`, and its workflow declares them rather than assembling the attribute string by hand.
+
+```json
+{ "path": "data._orion.response.cookies", "logic": [
+  { "name": "session", "value": { "var": "temp_data.jwt" },
+    "path": "/", "http_only": true, "secure": true,
+    "same_site": "Lax", "max_age": 2592000 },
+  { "name": "oauth_state", "value": "", "path": "/", "max_age": 0 }
+] }
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Cookie name. Must be an RFC 6265 token — no spaces, `=`, `;` or separators. |
+| `value` | string | yes | Cookie value. May be empty, which with `max_age: 0` is how a cookie is cleared. |
+| `path` | string | no | `Path` attribute. |
+| `domain` | string | no | `Domain` attribute. |
+| `max_age` | number | no | `Max-Age` in seconds. `0` expires the cookie immediately. |
+| `expires` | string | no | `Expires` attribute, as an HTTP date. |
+| `same_site` | string | no | `Strict`, `Lax` or `None`. Case-insensitive, emitted canonically. |
+| `http_only` | boolean | no | Adds `HttpOnly`. A `false` emits nothing — the attribute has no negative form. |
+| `secure` | boolean | no | Adds `Secure`. |
+
+**Why its own switch, not `allowed_headers`.** That list *replaces* the default one, so gating cookies on it would mean a channel setting a session cookie also has to re-list `content-type` to keep serving JSON. The raw escape hatch still works — list `set-cookie` in `allowed_headers` and write the header directly, with an array for more than one — but the declared form is what validates the value and spells the attributes for you.
+
+**A response that sets a cookie is never cached.** The response cache keys on the method, path parameters, query and payload — never on who is calling — so a stored `Set-Cookie` would be replayed to every caller repeating that request for the TTL. Orion suppresses the cache write instead. This applies however the cookie was set, including through `allowed_headers`.
+
+**Values are validated.** A `value` carrying `;`, a comma, a quote, a backslash, CR or LF is refused and the cookie dropped with a warning, because a workflow interpolating user input into a cookie could otherwise inject further attributes or split the response. `path`, `domain` and `expires` refuse `;`, CR and LF for the same reason. As everywhere on this path, the failure is soft: the rest of the response still ships.
 
 ## Validation
 

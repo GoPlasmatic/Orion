@@ -52,8 +52,8 @@ that need the serving instance's config (`-c`) are skipped with a note
 when none is given.
 
 `lint`'s own findings are re-reported unchanged (`logic.unresolvable`,
-`closure.channel_call_dynamic`, the `env.reference` and
-`secrets.reference` notes), so a clippy run is a superset of a lint run;
+`logic.escaped_template_key`, `closure.channel_call_dynamic`, the
+`env.reference` and `secrets.reference` notes), so a clippy run is a superset of a lint run;
 when `lint` reports an *error*, the rules do not run at all — a rule over
 a document the API would refuse produces a second finding about the same
 mistake, and a false one.
@@ -129,9 +129,9 @@ when its span closes whatever its members did.
 
 Static `channel_call` edges, joined to the set's channel → workflow
 binding, restricted to edges whose calling task and workflow are
-unconditional. Any conditional edge, `channel_logic`, or a target outside
-the set keeps the rule silent — bounded recursion with a base case is a
-legal pattern.
+unconditional. Any conditional edge, a computed `channel`, or a target
+outside the set keeps the rule silent — bounded recursion with a base case
+is a legal pattern.
 
 ### `correctness.payload_var`
 

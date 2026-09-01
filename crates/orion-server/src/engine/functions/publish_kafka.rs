@@ -25,10 +25,11 @@ impl ConnectorHandler for PublishKafkaHandler {
     const NAME: &'static str = "publish_kafka";
     type Kind = crate::connector::kind::Kafka;
     type Input = PublishKafkaConfig;
-    /// Nothing: the topic is a literal on the typed config, and the key and
-    /// value are `Template`s the engine evaluates against the message inside
-    /// the call — after the gate, which is where they belong.
-    type Parsed = ();
+    /// The resolved topic. Since dataflow-rs 3.9 it is a `Template` like the
+    /// key and the value, so one task can route by message content; it is
+    /// resolved here rather than in `run` because it names the destination in
+    /// the "Kafka is not enabled" refusal, which precedes the producer.
+    type Parsed = String;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
         &self.registry
@@ -37,10 +38,10 @@ impl ConnectorHandler for PublishKafkaHandler {
     fn parse(
         &self,
         _call: &ConnectorCall<'_>,
-        _input: &PublishKafkaConfig,
-        _ctx: &TaskContext<'_>,
+        input: &PublishKafkaConfig,
+        ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
-        Ok(())
+        Ok(input.resolve_topic(ctx)?)
     }
 
     fn gate(
@@ -56,7 +57,7 @@ impl ConnectorHandler for PublishKafkaHandler {
 
     async fn run(
         &self,
-        _parsed: Self::Parsed,
+        topic: Self::Parsed,
         kafka_config: &crate::connector::KafkaConnectorConfig,
         call: &ConnectorCall<'_>,
         input: &PublishKafkaConfig,
@@ -67,9 +68,8 @@ impl ConnectorHandler for PublishKafkaHandler {
             None => {
                 return Err(DataflowError::FunctionExecution {
                     context: format!(
-                        "Kafka publishing to topic '{}' is not available. Enable Kafka in \
-                         configuration to use publish_kafka.",
-                        input.topic
+                        "Kafka publishing to topic '{topic}' is not available. Enable Kafka in \
+                         configuration to use publish_kafka."
                     ),
                     source: None,
                 }
@@ -127,16 +127,16 @@ impl ConnectorHandler for PublishKafkaHandler {
         })?;
 
         producer
-            .send(&input.topic, key.as_deref(), value.as_bytes())
+            .send(&topic, key.as_deref(), value.as_bytes())
             .await
             .map_err(|e| {
                 DataflowError::function_execution(
-                    format!("Kafka publish to '{}' failed: {e}", input.topic),
+                    format!("Kafka publish to '{topic}' failed: {e}"),
                     None,
                 )
             })?;
 
-        tracing::debug!(topic = %input.topic, "Published message to Kafka");
+        tracing::debug!(topic = %topic, "Published message to Kafka");
 
         // A publish records nothing at `output`; the send is the whole effect.
         Ok(Produced::nothing())
@@ -154,28 +154,38 @@ impl ConnectorHandler for PublishKafkaHandler {
 pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
-        description: "Name of the Kafka connector to publish through.",
+        description: "Name of the Kafka connector to publish through (JSONLogic; a \
+                      computed name is not yet supported).",
         kind: FieldKind::String,
         required: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "topic",
-        description: "Target topic name.",
+        description: "Target topic name (JSONLogic), so one task can route by message \
+                      content.",
         kind: FieldKind::String,
         required: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
-        name: "key_logic",
-        description: "JSONLogic expression to derive the message key.",
+        name: "key",
+        description: "Message key (JSONLogic). \
+                      (Was `key_logic`; still accepted, but not alongside `key`.)",
         kind: FieldKind::Any,
+        template_at: &[""],
+        alias: Some("key_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
-        name: "value_logic",
-        description: "JSONLogic expression to derive the message value.",
+        name: "value",
+        description: "Message value (JSONLogic). Defaults to the message data. \
+                      (Was `value_logic`; still accepted, but not alongside `value`.)",
         kind: FieldKind::Any,
+        template_at: &[""],
+        alias: Some("value_logic"),
         ..FieldSchema::DEFAULT
     },
 ];

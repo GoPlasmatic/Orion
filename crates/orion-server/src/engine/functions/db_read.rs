@@ -13,6 +13,7 @@ use super::connector_helpers::{
     resolve_bind_params, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::engine::HandlerError;
@@ -47,7 +48,7 @@ impl DbRead {
     /// statement, not in what the task says.
     pub(super) fn parse_statement(
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self, HandlerError> {
         Ok(Self {
@@ -69,7 +70,7 @@ impl DbRead {
 impl ConnectorHandler for DbReadHandler {
     const NAME: &'static str = "db_read";
     type Kind = crate::connector::kind::Db;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = DbRead;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -79,7 +80,7 @@ impl ConnectorHandler for DbReadHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         DbRead::parse_statement(call, input, ctx)
@@ -106,7 +107,7 @@ impl ConnectorHandler for DbReadHandler {
         read: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let pool = self
@@ -122,7 +123,11 @@ impl ConnectorHandler for DbReadHandler {
             use futures::TryStreamExt;
             let mut stream = sqlx_query.fetch(&pool);
             let mut rows: Vec<AnyRow> = Vec::new();
-            while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+            // Not `.map_err(|e| e.to_string())`: stringifying here converted
+            // through `From<String>`, which is unconditionally a backend
+            // failure, so a constraint the driver had already classified was
+            // thrown away before `QueryFailure` could see it.
+            while let Some(row) = stream.try_next().await? {
                 if rows.len() >= max_rows {
                     // F42: classified so `timed_query` reports it as a 400 with
                     // the text intact rather than a 500 with the guidance
@@ -284,6 +289,7 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

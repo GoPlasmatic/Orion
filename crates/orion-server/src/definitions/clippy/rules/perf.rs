@@ -69,12 +69,22 @@ impl Rule for ParseResultOverwritten {
                 {
                     continue;
                 }
+                if first.writes_uncertain {
+                    continue;
+                }
                 let Some(target) = first.writes.first() else {
                     continue;
                 };
                 for later in &wf.steps[a + 1..] {
                     let reads = later.reads();
-                    if reads.uncertain() || reads.touches(target) || opaque(later) {
+                    // A computed destination may be this very path, so a step
+                    // holding one ends the scan for the same reason an
+                    // uncertain read does: there is no longer a proof.
+                    if reads.uncertain()
+                        || reads.touches(target)
+                        || opaque(later)
+                        || later.writes_uncertain
+                    {
                         break;
                     }
                     if later.kind == StepKind::Group {
@@ -177,10 +187,11 @@ impl Rule for RedundantStepCondition {
                     }
                     let run = &siblings[i..j];
                     if run.len() >= 2 && stable(c) {
-                        let unchanged = run
-                            .iter()
-                            .flat_map(|s| s.writes.iter())
-                            .all(|w| !c.reads.paths.iter().any(|r| overlaps(r, w)));
+                        let unchanged = !run.iter().any(|s| s.writes_uncertain)
+                            && run
+                                .iter()
+                                .flat_map(|s| s.writes.iter())
+                                .all(|w| !c.reads.paths.iter().any(|r| overlaps(r, w)));
                         if unchanged {
                             let ids: Vec<&str> = run.iter().map(|s| s.id.as_str()).collect();
                             out.push(
@@ -258,14 +269,20 @@ impl Rule for GroupConditionRepeated {
                 }
                 let key = value_key(&gc.value);
                 let mut written: Vec<&str> = Vec::new();
+                // Set once an earlier member's destination is an expression:
+                // `written` is no longer the complete list of what has been
+                // written, so "no earlier member changes it" is no longer a
+                // proof.
+                let mut writes_unknown = false;
                 for member in wf.steps.iter().filter(|s| s.parent == Some(g)) {
                     let repeats = member
                         .condition
                         .as_ref()
                         .is_some_and(|c| value_key(&c.value) == key);
-                    let untouched = !written
-                        .iter()
-                        .any(|w| gc.reads.paths.iter().any(|r| overlaps(r, w)));
+                    let untouched = !writes_unknown
+                        && !written
+                            .iter()
+                            .any(|w| gc.reads.paths.iter().any(|r| overlaps(r, w)));
                     if repeats && untouched {
                         out.push(
                             Diagnostic::on_workflow(
@@ -283,6 +300,7 @@ impl Rule for GroupConditionRepeated {
                         );
                     }
                     written.extend(member.writes.iter().map(String::as_str));
+                    writes_unknown |= member.writes_uncertain;
                 }
             }
         }

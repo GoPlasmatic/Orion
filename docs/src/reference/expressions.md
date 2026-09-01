@@ -236,18 +236,22 @@ belongs inside a function, not in a mapping.
 
 Three limits worth knowing:
 
-- **Five function fields, not every function field.** Those five read
-  `{"secret": …}` themselves, because their handlers do — and inside
-  `jwt_verify.keys` it is each entry's `key`, not the entry: a reference in a
-  sibling `kid` or `key_encoding` is read verbatim and is refused like any
-  other stray one. Everywhere else a task
-  input is taken as written: an `http_call` header holding `{"secret": "k"}` is
-  an object where the field's type says string, so the workflow fails to load
-  and the channel is quarantined. Put a credential a remote system needs on the
+- **`env://` and `vault://` resolve in five function fields, not every one.**
+  Those five read a *reference string* themselves, because their handlers do —
+  and inside `jwt_verify.keys` it is each entry's `key`, not the entry: a
+  reference in a sibling `kid` or `key_encoding` is read verbatim and is refused
+  like any other stray one. The `{"secret": …}` **operator** is separate and
+  wider: it resolves wherever the engine evaluates JSONLogic, which now includes
+  a connector task's expression fields — so
+  `{"cat": ["Bearer ", {"secret": "partner_token"}]}` works in an `http_call`
+  header. It still resolves nothing in a document-shaped field, which folds
+  `{"var": …}` only. A credential a remote system needs generally belongs on the
   **connector**, which is what connectors are for.
-- **Workflow expressions only.** `validation_logic` and `key_logic` compile on
-  a channel-level engine that has no secret store, so `{"secret": …}` there
-  fails to compile and the channel is quarantined.
+- **Channel guards read them too.** `validation_logic`, `authorization_logic`
+  and the rate-limit and cache `key_logic` compile on an engine built over the
+  same store the workflow engines get, so `{"secret": …}` resolves there as
+  well. Secrets are start-time config, resolved before any channel loads, so a
+  guard sees exactly what a workflow sees.
 - **Deployment values are not secrets.** A topic prefix or a partner's base URL
   belongs in `[vars]`, read as `{"var": "metadata.vars.name"}` — which *is*
   recorded, on purpose, because an operator reading a trace needs to see it.
@@ -295,17 +299,26 @@ than an error.
   land on different instants. Compute it once into a field and read that field
   if you need a single consistent stamp.
 
-## Connector payloads fold `{"var": …}` and nothing else
+## Connector fields: expressions, and documents
 
-Everything above is about places JSONLogic is **evaluated**: a workflow or task
-`condition`, a `map` mapping's `logic`, a channel's `body_logic`. A connector
-task's payload fields are not one of those places.
+Most of a connector task's fields are JSONLogic, evaluated against the message
+like anything else on this page — a cache key, a storage key, an email
+subject or recipient, a TTL, a JWT audience, the data going into `crypto`:
 
-A field a handler marks *resolvable* — `mongo_write`'s `document`, `documents`,
-`update`, `filter` and `array_filters`; `mongo_read`'s `filter`, `projection`
-and `sort`; `cache_write`'s `value`; `jwt_sign`'s `claims`; `send_email`'s
-`subject` and `html`; the `params` of the SQL and dialect functions — folds
-`{"var": "some.path"}` nodes against the message, at any depth, and treats
+```json
+{ "connector": "redis",
+  "key": { "cat": ["tenant:", { "var": "data.tenant" }, ":order:", { "var": "data.id" }] } }
+```
+
+A field written as a plain literal is JSONLogic for itself, so the static
+spelling is unchanged and costs nothing: it folds once when the engine is built,
+and only a field that actually reads the message is evaluated per request.
+
+**The document-shaped fields are the exception, and deliberately so.** A MongoDB
+`document`, `documents`, `update`, `filter`, `array_filters`, `projection` or
+`sort`; an aggregation `pipeline`; `cache_write`'s `value`; `jwt_sign`'s
+`claims`; the `params` of the SQL and dialect functions — these fold
+`{"var": "some.path"}` nodes against the message, at any depth, and treat
 **every other node as a literal**.
 
 ```json
@@ -320,6 +333,13 @@ and `sort`; `cache_write`'s `value`; `jwt_sign`'s `claims`; `send_email`'s
 in MongoDB verbatim — and in a `filter`, a node like that matches nothing.
 There is no error at write time. Note that `{"val": …}` is folded no more than
 `cat` is, despite being a documented operator: only `var` is.
+
+The reason is `$`. These are exactly the fields that carry MongoDB operators and
+extended-JSON wrappers — `$set`, `$push`, `$oid`, `$date` — and one `$` is
+stripped from every key in a position the engine evaluates. Making them
+expressions would turn `{"$set": …}` into `{"set": …}` in every stored
+definition that was not hand-corrected, silently. The scalar fields carry no
+such keys, so they carry the capability instead.
 
 Compute the value in a `map` task first and reference the result:
 

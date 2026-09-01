@@ -16,6 +16,7 @@ use super::connector_helpers::{
 };
 use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
@@ -61,7 +62,7 @@ impl ConnectorHandler for DataQueryHandler {
     /// the union rather than a type: a `db` or an `es` connector, dispatched
     /// on the variant below.
     type Kind = crate::connector::DataBackend;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = DataQuery;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -71,7 +72,7 @@ impl ConnectorHandler for DataQueryHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let query = input
@@ -86,7 +87,7 @@ impl ConnectorHandler for DataQueryHandler {
             // Resolved against the message — the only point at which the
             // message touches the query. It produces concrete literals, not
             // SQL, which the pure translation path then folds into the filter.
-            params: resolve_params(input.get("params"), <Self as ConnectorHandler>::NAME, ctx),
+            params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, relation declarations.
             schema: input.get("schema").cloned(),
@@ -115,7 +116,7 @@ impl ConnectorHandler for DataQueryHandler {
         parsed: Self::Parsed,
         conn: &ConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         // F24: with no schema the registry rejects rather than passing every
@@ -392,6 +393,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

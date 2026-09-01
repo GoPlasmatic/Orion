@@ -15,7 +15,7 @@ mod storage;
 mod trace_queue;
 mod unknown_env;
 pub(super) mod validation;
-mod vars;
+pub mod vars;
 mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.

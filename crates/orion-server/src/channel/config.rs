@@ -424,6 +424,18 @@ pub struct ChannelResponseConfig {
     /// the protocol layer owns.
     pub allowed_headers: Option<Vec<String>>,
 
+    /// Whether the workflow may set cookies through
+    /// `data._orion.response.cookies`.
+    ///
+    /// Its own switch rather than an entry in [`Self::allowed_headers`],
+    /// because that list *replaces* the default one: gating cookies on it
+    /// would mean a channel that sets a session cookie also has to re-list
+    /// `content-type` to keep serving JSON. Two settings, two questions.
+    ///
+    /// Off by default. A response carrying a cookie is never stored in the
+    /// response cache whatever this says — see `drain_shaped_response`.
+    pub cookies: bool,
+
     /// Per-channel replacement bodies for ingress guard rejections, keyed by
     /// HTTP status (or `"default"`) — see [`crate::channel::error_body`].
     ///
@@ -582,8 +594,22 @@ pub struct ChannelCacheConfig {
     #[serde(default)]
     pub ttl_secs: Option<u64>,
     /// Fields used to compute the cache key.
+    ///
+    /// A list of payload field names. [`Self::key_logic`] is the general form
+    /// and takes precedence when both are set.
     #[serde(default)]
     pub cache_key_fields: Option<Vec<String>>,
+    /// JSONLogic computing the cache key, over the same context the rate
+    /// limiter's `key_logic` reads.
+    ///
+    /// `cache_key_fields` can only name payload fields, so a key that depends
+    /// on a header, the authenticated subject or a derived value was not
+    /// expressible — and a response cache keyed on less than what varies the
+    /// response is how one caller's body reaches another. This is the same
+    /// vocabulary `rate_limit.key_logic` already uses, so one channel does not
+    /// key two of its guards two different ways.
+    #[serde(default)]
+    pub key_logic: Option<Value>,
     /// Optional cache connector name for the response cache backend.
     #[serde(default)]
     pub connector: Option<String>,

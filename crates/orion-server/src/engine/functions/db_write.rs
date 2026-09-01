@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::task_context::TaskContext;
-use serde_json::Value;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
@@ -11,6 +10,7 @@ use super::connector_helpers::{
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::engine::HandlerError;
@@ -26,7 +26,7 @@ pub struct DbWriteHandler {
 impl ConnectorHandler for DbWriteHandler {
     const NAME: &'static str = "db_write";
     type Kind = crate::connector::kind::Db;
-    type Input = Value;
+    type Input = TemplatedInput;
     /// The same shape `db_read` parses — a literal statement and message-derived
     /// binds — because the two differ in what the database does with it, not in
     /// what the task says.
@@ -39,7 +39,7 @@ impl ConnectorHandler for DbWriteHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         DbRead::parse_statement(call, input, ctx)
@@ -64,7 +64,7 @@ impl ConnectorHandler for DbWriteHandler {
         write: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let pool = self
@@ -122,6 +122,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
         name: "output",
         description: "Dotted path where the rows-affected count is written.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
