@@ -5,6 +5,53 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-01
+
+A maintenance release. No behaviour in the server changes; what moves is the
+base image the published containers are built on, and one dependency.
+
+### Security
+
+- **The container images are rebuilt on a current Debian base.** `1.5.0` was
+  tagged while the server `Dockerfile` still pinned the `debian:trixie-slim`
+  build from 3 August; the CLI image had already moved on, because the
+  dependency update that refreshed it was raised against `crates/orion-cli`
+  alone and the two pins silently diverged. Both now sit on the 24 August
+  build, which carries nine `util-linux` packages at `2.41.5-0+deb13u1` rather
+  than `2.41-5`.
+
+  Orion never invokes `mount` or `blkid`, so nothing here is reachable from the
+  server itself — but an image scanner reports the package version, not its
+  reachability, and re-running the release workflow could not have fixed it:
+  it rebuilds from the tagged commit, which still names the old digest. A
+  version is the only way to ship a base-image refresh.
+
+### Changed
+
+- **`similar` 2 → 3**, the diff renderer behind `package diff` and
+  `fmt --check`. No output change; the crates.io artifact carries the newer
+  dependency.
+- **The reference stacks move to current stable**: PostgreSQL 16 → 18,
+  Redis 7 → 8, and nginx 1.27 → 1.30 (1.30 rather than 1.31 — nginx numbers
+  even minors stable and odd minors mainline). This affects
+  `docker-compose.ha.yml`, the Helm dev stack and the `postgres-orders`
+  example; it does **not** affect the published server or CLI images, whose
+  own base is Debian.
+
+  PostgreSQL 18's image stores data under a major-version directory
+  (`/var/lib/postgresql/18/docker`) so `pg_upgrade` can see both versions at
+  once, so the HA stack's volume now mounts the parent rather than
+  `.../data` — an 18 image finds a mount on the old path, reports it unused
+  and refuses to start. **An existing `orion-pg-data` volume from the 16 stack
+  is not migrated**: its cluster stays at the old path, untouched and unread.
+  The reference stack expects `docker compose down -v`; a volume worth keeping
+  needs `pg_upgrade` with both majors installed.
+
+- **The Rust builder stays on `rust:1.98-slim`.** It is the MSRV, not a stale
+  pin — `rust-version = "1.98"`, the `MSRV (1.98)` CI job and both Dockerfiles
+  are meant to agree, so the shipped binary is built by the oldest toolchain
+  the project supports. Only its base-layer digest moved.
+
 ## [1.5.0] - 2026-09-01
 
 ### Security
@@ -4486,7 +4533,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.3.0...v1.3.1
