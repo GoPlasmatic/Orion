@@ -3,7 +3,7 @@ name = "orion-server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Turn business logic into live REST/Kafka services. Declare workflows as JSON and Orion runs them, with rate limiting, circuit breakers, versioning, and observability built in"
+description = "Turn business logic into live REST/Kafka services, declared as JSON"
 license.workspace = true
 repository.workspace = true
 homepage = "https://goplasmatic.io/orion"
@@ -76,7 +76,7 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.8.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.9.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }

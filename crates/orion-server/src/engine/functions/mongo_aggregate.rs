@@ -26,6 +26,7 @@ use super::connector_helpers::{
 };
 use super::mongo_common::{docs_to_json, drain_capped, require_mongo_backend};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -102,7 +103,7 @@ pub struct Aggregation {
 impl ConnectorHandler for MongoAggregateHandler {
     const NAME: &'static str = "mongo_aggregate";
     type Kind = crate::connector::kind::Db;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = Aggregation;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -112,12 +113,13 @@ impl ConnectorHandler for MongoAggregateHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
         let collection = call.require_str(input, "collection")?.to_string();
         let allow_disk_use = input
+            .raw()
             .get("allow_disk_use")
             .and_then(Value::as_bool)
             .unwrap_or(false);
@@ -173,7 +175,7 @@ impl ConnectorHandler for MongoAggregateHandler {
         aggregation: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let client = self
@@ -343,12 +345,14 @@ pub(super) const MONGO_AGGREGATE_FIELDS: &[FieldSchema] = &[
         name: "allow_disk_use",
         description: "Let the server spill large stages to disk. Defaults to false.",
         kind: FieldKind::Bool,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where result documents are written.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
@@ -390,7 +394,7 @@ mod tests {
             name: MongoAggregateHandler::NAME,
             connector: "analytics",
             channel: "ch".to_string(),
-            output: "data",
+            output: "data".to_string(),
         };
         let input = json!({
             "connector": "analytics",
@@ -398,7 +402,8 @@ mod tests {
             "collection": "events",
             "pipeline": pipeline,
         });
-        ConnectorHandler::parse(&handler, &call, &input, &ctx).expect("the pipeline parses")
+        ConnectorHandler::parse(&handler, &call, &TemplatedInput::from(input), &ctx)
+            .expect("the pipeline parses")
     }
 
     /// The default-deny that had no test: `$out` and `$merge` write to a

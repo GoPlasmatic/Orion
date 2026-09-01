@@ -248,6 +248,25 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
             ).with_remedy("move the value to a connector, or declare it in the config                          file — under [vars] if it belongs in a trace, [secrets] if                          it does not; the next update of this workflow is refused                          until then" .to_string())),
     );
 
+    // Not a refusal at any gate — the engine reports it and builds anyway —
+    // but the sharpest kind of upgrade break this command exists to find: the
+    // workflow keeps loading and keeps serving, and the document it composes
+    // silently changes shape. A `{"$set": …}` update built in a `map` task
+    // emits `{"set": …}` from dataflow-rs 3.9 on, so the write goes to Mongo
+    // with no `$set` operator in it and replaces the document instead of
+    // updating it. Nothing logs, nothing 500s.
+    findings.extend(
+        crate::validation::escaped_template_key_warnings(&tasks)
+            .into_iter()
+            .map(|(path, message)| {
+                Diagnostic::error("14", format!("workflow '{name}' {path}"), message).with_remedy(
+                    "double the prefix — '$set' becomes '$$set' — and PUT the workflow; \
+                     the doubled spelling is what emits the '$' key"
+                        .to_string(),
+                )
+            }),
+    );
+
     findings.extend(check_dialect_schemas(name, &tasks));
     findings
 }

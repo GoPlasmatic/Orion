@@ -14,9 +14,10 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, parse_duration_secs, resolve_duration_secs, resolve_value,
+    apply_output, parse_duration_secs, resolve_duration_secs, resolve_optional_str, resolve_value,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "jwt_sign";
@@ -30,29 +31,40 @@ pub struct JwtSignHandler;
 
 #[async_trait]
 impl AsyncFunctionHandler for JwtSignHandler {
-    type Input = Value;
+    type Input = TemplatedInput;
+
+    /// Compile the expression fields this handler's table declares. The
+    /// `Connector` wrapper does this for the connector handlers; these three
+    /// are self-contained — no connector, no egress — so they implement
+    /// `AsyncFunctionHandler` directly and say it themselves.
+    fn compile_input(
+        input: &mut Self::Input,
+        c: &dataflow_rs::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        input.compile("jwt_sign", c)
+    }
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &Value,
+        input: &TemplatedInput,
     ) -> dataflow_rs::Result<TaskOutcome> {
         // Literal prologue (F58): the message-independent refusals first.
         let algorithm = match input.get("algorithm").and_then(Value::as_str) {
             Some(name) => crate::jwt::parse_algorithm(name).map_err(|e| validation(&e))?,
             None => return Err(validation("requires 'algorithm'")),
         };
-        let key_ref = match input.get("key") {
-            None | Some(Value::Null) => {
-                return Err(validation(
-                    "requires 'key' ({\"secret\": \"name\"}, a secret reference like \
-                     env://NAME, or a literal)",
-                ));
-            }
-            Some(key) => key,
-        };
+        // Presence only — the value is read last, after everything the message
+        // cannot change (F58). `key` is JSONLogic now, so what it resolves to is
+        // not knowable here, but *whether the task named one* is.
+        if matches!(input.get("key"), None | Some(Value::Null)) {
+            return Err(validation(
+                "requires 'key' ({\"secret\": \"name\"}, a secret reference like \
+                 env://NAME, an expression, or a literal)",
+            ));
+        }
         let key_encoding = input.get("key_encoding").and_then(Value::as_str);
-        let kid = input.get("kid").and_then(Value::as_str).map(str::to_string);
+        let kid = resolve_optional_str(input, "kid", NAME, ctx)?;
         let output = input
             .get("output")
             .and_then(Value::as_str)
@@ -71,7 +83,7 @@ impl AsyncFunctionHandler for JwtSignHandler {
         let now = chrono::Utc::now().timestamp();
         // Registered-claim conveniences; an explicit field wins over a claims
         // entry of the same name — it is the more specific statement.
-        if let Some(iss) = input.get("issuer").and_then(Value::as_str) {
+        if let Some(iss) = resolve_optional_str(input, "issuer", NAME, ctx)?.as_deref() {
             claims.insert("iss".to_string(), Value::String(iss.to_string()));
         }
         if let Some(aud) = input.get("audience")
@@ -79,8 +91,7 @@ impl AsyncFunctionHandler for JwtSignHandler {
         {
             claims.insert("aud".to_string(), resolve_value(aud, ctx));
         }
-        if let Some(nbf) = input.get("not_before") {
-            let offset = resolve_duration_secs(nbf, ctx, NAME, "not_before")?;
+        if let Some(offset) = resolve_duration_secs(input, ctx, NAME, "not_before")? {
             claims.insert("nbf".to_string(), Value::from(now + offset as i64));
         }
         // `iat` is stamped only when the claims object does not supply one.
@@ -102,9 +113,8 @@ impl AsyncFunctionHandler for JwtSignHandler {
         } else {
             claims.insert("iat".to_string(), Value::from(now));
         }
-        match input.get("expires_in") {
-            Some(raw) if !raw.is_null() => {
-                let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
+        match resolve_duration_secs(input, ctx, NAME, "expires_in")? {
+            Some(secs) => {
                 if secs == 0 || secs > MAX_EXPIRES_SECS {
                     return Err(validation(&format!(
                         "'expires_in' must be between 1 second and {MAX_EXPIRES_SECS} \
@@ -130,7 +140,7 @@ impl AsyncFunctionHandler for JwtSignHandler {
         }
 
         // The key resolves last and lives only inside this call.
-        let material = super::secret_ref::key_material(key_ref, "jwt_sign.key", ctx).await?;
+        let material = super::secret_ref::key_material_field(input, "key", NAME, ctx).await?;
         let key = crate::jwt::encoding_key(algorithm, &material, key_encoding)
             .map_err(|e| validation(&e))?;
         let token = crate::jwt::sign(algorithm, &key, kid, &Value::Object(claims))
@@ -215,6 +225,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         secret_at: &[""],
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -237,20 +248,21 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         description: "Token lifetime: integer seconds or \"<n>s|m|h|d\"; sets exp from \
                       now. Required unless claims carries an explicit exp.",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "issuer",
         description: "Convenience for the iss claim.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "audience",
         description: "Convenience for the aud claim (string or array; resolvable).",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -258,7 +270,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         description: "Offset from now for the nbf claim: integer seconds or \
                       \"<n>s|m|h|d\".",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -266,6 +278,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         description: "Key id stamped into the token header, for rotation-aware \
                       verifiers.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -273,6 +286,7 @@ pub(super) const JWT_SIGN_FIELDS: &[FieldSchema] = &[
         description: "Dotted path where the compact JWS (string) is stored. Defaults \
                       to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

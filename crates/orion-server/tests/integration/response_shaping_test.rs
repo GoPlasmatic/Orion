@@ -426,3 +426,232 @@ async fn an_invalid_status_falls_back_to_200() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ---------------------------------------------------------------------------
+// Cookies (#298)
+// ---------------------------------------------------------------------------
+
+/// Collect every value of a repeated header, in order.
+fn all_headers(resp: &axum::response::Response, name: &str) -> Vec<String> {
+    resp.headers()
+        .get_all(name)
+        .iter()
+        .map(|v| v.to_str().expect("header is ASCII").to_string())
+        .collect()
+}
+
+/// A channel that shapes its response *and* may set cookies.
+fn shaped_cookie_config() -> Value {
+    json!({ "response": { "mode": "shaped", "cookies": true } })
+}
+
+/// The case the issue was filed for: finishing an OAuth login sets the session
+/// cookie **and** clears the spent state cookie in the same `302`.
+///
+/// Before this, one response could carry one `Set-Cookie`: the control block is
+/// a JSON object, and `HeaderMap::insert` collapsed a repeated name to the last
+/// value even once an array produced two.
+#[tokio::test]
+async fn a_shaped_response_can_set_and_clear_a_cookie_at_once() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "oauth-callback",
+        json!({
+            "status": 302,
+            "headers": {"Location": "/welcome"},
+            "cookies": [
+                {"name": "session", "value": {"var": "data.in.token"},
+                 "path": "/", "http_only": true, "secure": true,
+                 "same_site": "Lax", "max_age": 2592000},
+                {"name": "oauth_state", "value": "", "path": "/", "max_age": 0}
+            ]
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "oauth-cb-ch",
+        workflow,
+        shaped_cookie_config(),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/oauth-cb-ch",
+            Some(json!({"data": {"token": "jwt-abc"}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let cookies = all_headers(&resp, "set-cookie");
+    assert_eq!(
+        cookies,
+        vec![
+            "session=jwt-abc; Path=/; Max-Age=2592000; SameSite=Lax; HttpOnly; Secure",
+            "oauth_state=; Path=/; Max-Age=0",
+        ],
+        "both cookies must reach the wire, in the order the workflow wrote them"
+    );
+}
+
+/// The raw escape hatch: an array under a `set-cookie` header key. Nothing in
+/// the mechanism is cookie-specific, so a repeated `link` works the same way.
+#[tokio::test]
+async fn an_array_header_value_sets_the_header_once_per_element() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "multi-link",
+        json!({
+            "status": 200,
+            "headers": {"Link": ["</a>; rel=next", "</b>; rel=prev"]},
+            "body_path": "data.order"
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "multi-link-ch",
+        workflow,
+        json!({ "response": { "mode": "shaped", "allowed_headers": ["link", "content-type"] } }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/multi-link-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        all_headers(&resp, "link"),
+        vec!["</a>; rel=next", "</b>; rel=prev"]
+    );
+}
+
+/// The half of the `insert`/`append` split that guards the *old* behaviour:
+/// a workflow's `content-type` still replaces the JSON default rather than
+/// appearing beside it.
+#[tokio::test]
+async fn a_single_valued_header_still_replaces_the_default() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "csv",
+        json!({
+            "status": 200,
+            "headers": {"Content-Type": "text/csv"},
+            "body_path": "data.order.rows",
+            "raw": true
+        }),
+    );
+    common::create_and_activate_channel_with_config(&app, "csv-ch", workflow, shaped_config())
+        .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/csv-ch",
+            Some(json!({"data": {"rows": "a,b\n1,2"}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        all_headers(&resp, "content-type"),
+        vec!["text/csv"],
+        "a replaced header must not be duplicated"
+    );
+}
+
+/// Cookies are off unless the channel says so, and the switch is independent
+/// of `allowed_headers` — this channel never lists `set-cookie` and still
+/// serves JSON, which is the ergonomic point of the separate gate.
+#[tokio::test]
+async fn cookies_need_the_channel_to_enable_them() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "no-cookies",
+        json!({
+            "status": 200,
+            "cookies": [{"name": "session", "value": "leaked"}],
+            "body_path": "data.order"
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "no-cookies-ch",
+        workflow,
+        shaped_config(),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/no-cookies-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        all_headers(&resp, "set-cookie").is_empty(),
+        "a channel that did not enable cookies must not set one"
+    );
+    assert_eq!(
+        all_headers(&resp, "content-type"),
+        vec!["application/json"],
+        "and it still serves JSON without re-listing content-type"
+    );
+}
+
+/// A value carrying `;` would let a workflow that interpolates user input into
+/// a cookie inject further attributes — `HttpOnly` off, a wider `Path`. The
+/// cookie is dropped rather than emitted, and the rest of the response stands.
+#[tokio::test]
+async fn a_cookie_value_that_could_inject_attributes_is_refused() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "inject",
+        json!({
+            "status": 200,
+            "cookies": [
+                {"name": "evil", "value": "x; Path=/; HttpOnly"},
+                {"name": "good", "value": "ok"}
+            ],
+            "body_path": "data.order"
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "inject-ch",
+        workflow,
+        shaped_cookie_config(),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/inject-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        all_headers(&resp, "set-cookie"),
+        vec!["good=ok"],
+        "the injecting cookie is dropped and the valid one still ships"
+    );
+}

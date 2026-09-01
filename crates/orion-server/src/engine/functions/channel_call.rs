@@ -19,25 +19,24 @@ const META_CALL_CHAIN: &str = "_orion_call_chain";
 /// Input configuration for the channel_call function.
 #[derive(Debug, Deserialize)]
 pub struct ChannelCallInput {
-    /// Static target channel. Defaulted rather than required because the schema
-    /// (and the docs) declare it optional when `channel_logic` is given — a
-    /// `channel_logic`-only task passed admin validation and then failed engine
-    /// construction with `missing field 'channel'`, taking every channel down
-    /// with it (proposal F23). The empty default is rejected at call time by the
-    /// existing target check below.
-    #[serde(default)]
-    pub channel: String,
-    /// JSONLogic naming the target channel, compiled once at engine build.
+    /// The target channel (JSONLogic), compiled once at engine build.
     ///
-    /// A [`Template`] rather than a raw `Value`: this and `data_logic` were the
-    /// only two `ctx.datalogic().compile(..)` calls left in the handler surface,
-    /// so `channel_call` re-parsed and re-compiled both expressions **on every
-    /// message** while `http_call` and `publish_kafka` got an `Arc<Logic>` for
-    /// free from dataflow-rs's own typed configs. `Template` closes that
-    /// asymmetry and evaluates on the worker's pooled arena instead of
-    /// constructing a fresh one per call.
-    #[serde(default)]
-    pub channel_logic: Option<Template>,
+    /// One field, not the `channel` / `channel_logic` pair it used to be.
+    /// dataflow-rs 3.9 collapsed exactly this shape on its own configs, for the
+    /// reason that applies here too: a static spelling *is* JSONLogic for
+    /// itself, folded once at build and free per message, so a second field to
+    /// say "this one is an expression" was only ever describing the type of a
+    /// value the compiler can see for itself. `channel_logic` stays as a serde
+    /// alias, so a workflow written against the pair keeps loading — supplying
+    /// both is a duplicate-field error rather than a precedence rule.
+    ///
+    /// `Option`, and defaulted, rather than required: a task naming no channel
+    /// must fail at *call* time with the message below, not at engine
+    /// construction, which for Orion is a whole-instance failure that takes
+    /// every channel down over one stored row (proposal F23). The authoring-time
+    /// refusal is the schema's `required: true`.
+    #[serde(default, alias = "channel_logic")]
+    pub channel: Option<Template>,
     /// Dotted path where the called channel's response is written. Named
     /// `output` to match the other nine handlers (proposal F43);
     /// `response_path` stays accepted so 0.3.x workflows keep loading — an
@@ -47,15 +46,15 @@ pub struct ChannelCallInput {
     /// functions must not drift apart. See "accepted alternate spellings" in
     /// `docs/src/reference/support.md`.
     #[serde(default, alias = "response_path")]
-    pub output: Option<String>,
+    pub output: Option<Template>,
+    /// The payload to send (JSONLogic). Omitted, the caller's own payload is
+    /// forwarded. `data_logic` stays as a serde alias, as `channel` keeps
+    /// `channel_logic`.
+    #[serde(default, alias = "data_logic")]
+    pub data: Option<Template>,
+    /// Per-call timeout (JSONLogic), as `http_call`'s is.
     #[serde(default)]
-    pub data: Option<Value>,
-    /// JSONLogic producing the payload to send. Same `Template` treatment as
-    /// [`ChannelCallInput::channel_logic`].
-    #[serde(default)]
-    pub data_logic: Option<Template>,
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
+    pub timeout_ms: Option<Template>,
 }
 
 /// Invokes another channel's workflow in-process (no HTTP round-trip).
@@ -81,11 +80,18 @@ impl AsyncFunctionHandler for ChannelCallHandler {
     /// compiles the same two fields ahead of `Engine::new` so a bad expression
     /// stays a per-channel `ChannelLoadIssue` (F33/F41) instead.
     fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
-        if let Some(t) = input.channel_logic.as_mut() {
-            t.compile(c, "channel_call.channel_logic")?;
+        if let Some(t) = input.channel.as_mut() {
+            check_channel_shape(t)?;
+            t.compile(c, "channel_call.channel")?;
         }
-        if let Some(t) = input.data_logic.as_mut() {
-            t.compile(c, "channel_call.data_logic")?;
+        if let Some(t) = input.data.as_mut() {
+            t.compile(c, "channel_call.data")?;
+        }
+        if let Some(t) = input.timeout_ms.as_mut() {
+            t.compile(c, "channel_call.timeout_ms")?;
+        }
+        if let Some(t) = input.output.as_mut() {
+            t.compile(c, "channel_call.output")?;
         }
         Ok(())
     }
@@ -144,10 +150,8 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             }
 
             // Resolve data to send.
-            let call_data: Value = if let Some(ref logic) = input.data_logic {
-                logic.eval_into(ctx)?
-            } else if let Some(ref data) = input.data {
-                data.clone()
+            let call_data: Value = if let Some(ref data) = input.data {
+                input_json(data, ctx)?
             } else {
                 // Forward the original payload (not context.data which may be empty).
                 // Bridge OwnedDataValue → serde_json::Value once.
@@ -258,8 +262,11 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // Timeout precedence: explicit input > target channel's
             // timeout_ms > engine default (the last two resolved by the
             // guard chain, so every transport agrees on them).
-            let timeout_ms = input
-                .timeout_ms
+            let task_timeout_ms = match input.timeout_ms.as_ref() {
+                Some(t) => Some(t.resolve_u64(ctx, "channel_call 'timeout_ms'")?),
+                None => None,
+            };
+            let timeout_ms = task_timeout_ms
                 .or(admission.timeout_ms)
                 .unwrap_or(self.default_timeout_ms);
 
@@ -311,8 +318,11 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // to filter; we then convert the parts we care about back.
             let result_data_json: Value = child.message.data().into();
 
-            let output = input.output.as_deref().unwrap_or("data");
-            ctx.set_json(output, &result_data_json);
+            let output = match input.output.as_ref() {
+                Some(t) => t.resolve_string(ctx)?,
+                None => "data".to_string(),
+            };
+            ctx.set_json(&output, &result_data_json);
 
             Ok(TaskOutcome::Success)
         })
@@ -320,26 +330,61 @@ impl AsyncFunctionHandler for ChannelCallHandler {
     }
 }
 
-/// Resolve the target channel name, static or dynamic via JSONLogic.
-fn resolve_target(ctx: &TaskContext<'_>, input: &ChannelCallInput) -> dataflow_rs::Result<String> {
-    let target = if let Some(ref logic) = input.channel_logic {
-        // Deliberately not `eval_to_plain_string`: a non-string result here is
-        // an authoring mistake worth reporting, not something to coerce into a
-        // channel name that cannot exist.
-        let result: Value = logic.eval_into(ctx)?;
-        result.as_str().map(|s| s.to_string()).ok_or_else(|| {
-            DataflowError::Validation("channel_logic must evaluate to a string".to_string())
-        })?
-    } else {
-        input.channel.clone()
+/// Resolve the target channel name.
+pub(super) fn resolve_target(
+    ctx: &TaskContext<'_>,
+    input: &ChannelCallInput,
+) -> dataflow_rs::Result<String> {
+    let Some(channel) = input.channel.as_ref() else {
+        return Err(DataflowError::Validation(
+            "channel_call requires 'channel'".into(),
+        ));
     };
+    // Deliberately not `resolve_string`: a non-string result here is an
+    // authoring mistake worth reporting, not something to coerce into a channel
+    // name that cannot exist. A statically authored name is a constant on the
+    // compiled template, so this costs no evaluation for the ordinary case.
+    let result: Value = input_json(channel, ctx)?;
+    let target = result.as_str().ok_or_else(|| {
+        DataflowError::Validation("channel_call 'channel' must evaluate to a string".to_string())
+    })?;
 
     if target.is_empty() {
         return Err(DataflowError::Validation(
             "channel_call: target channel name must not be empty".into(),
         ));
     }
-    Ok(target)
+    Ok(target.to_string())
+}
+
+/// Refuse a `channel` that cannot name a channel whatever the message says.
+///
+/// While `channel` was a `String`, serde caught `"channel": 7` when the input
+/// was parsed, and the load-time screen quarantined that one row rather than
+/// letting it serve — which is the whole of F33/F41. A `Template` accepts any
+/// JSON, so that check has to be made here or the row loads clean and fails on
+/// every request instead.
+///
+/// The line is the authored shape: a non-string *scalar* is unambiguously
+/// itself in JSONLogic, so it is a channel name that is not a string and never
+/// will be. An object or an array may be an operator call, and what it
+/// evaluates to is not knowable until a message arrives — `resolve_target`
+/// reports those.
+fn check_channel_shape(channel: &Template) -> dataflow_rs::Result<()> {
+    match channel.as_json() {
+        Value::Object(_) | Value::Array(_) | Value::String(_) => Ok(()),
+        other => Err(DataflowError::Validation(format!(
+            "channel_call 'channel' must be a channel name or an expression \
+             producing one, not {other}"
+        ))),
+    }
+}
+
+/// A template's value for this message as `serde_json::Value`, through
+/// `resolve` so a folded constant is served from the cache rather than
+/// re-evaluated.
+fn input_json(template: &Template, ctx: &TaskContext<'_>) -> dataflow_rs::Result<Value> {
+    Ok((&template.resolve(ctx)?).into())
 }
 
 /// Map a target channel's guard refusal onto the error the calling workflow
@@ -380,38 +425,37 @@ fn format_chain(chain: &[String], target: &str) -> String {
 pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "channel",
-        description: "Target channel name to invoke. Mutually exclusive with channel_logic.",
+        description: "Target channel to invoke (JSONLogic), so one task can route by \
+                      message content. (Was `channel_logic`; still accepted, but not \
+                      alongside `channel`.)",
         kind: FieldKind::String,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "channel_logic",
-        description: "JSONLogic expression evaluating to the target channel name.",
-        kind: FieldKind::Any,
+        required: true,
+        template_at: &[""],
+        alias: Some("channel_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "data",
-        description: "Static payload to pass to the target channel.",
+        description: "Payload to pass to the target channel (JSONLogic). Omit to forward \
+                      the caller's own payload. (Was `data_logic`; still accepted, but not \
+                      alongside `data`.)",
         kind: FieldKind::Any,
-        ..FieldSchema::DEFAULT
-    },
-    FieldSchema {
-        name: "data_logic",
-        description: "JSONLogic expression evaluating to the payload to pass.",
-        kind: FieldKind::Any,
+        template_at: &[""],
+        alias: Some("data_logic"),
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the called channel's response is stored. Defaults to \"data\". (Was `response_path` before 1.0; still accepted.)",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "timeout_ms",
         description: "Per-call timeout in milliseconds.",
         kind: FieldKind::Number,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

@@ -104,8 +104,13 @@ pub fn is_scoping(op: &str) -> bool {
 
 /// The JSONLogic expressions the engine evaluates in a task's `input`, as
 /// `(path relative to the input, expression)`. Covers the built-ins' logic
-/// fields and every registry field marked `resolvable` (a `{"var": …}`
-/// fold is a read too).
+/// fields, every registry field whose `template_at` says dataflow-rs evaluates
+/// it, and every field marked `resolvable` (a `{"var": …}` fold is a read too).
+///
+/// `template_at` is why an `http_call` path or header value counts. Before
+/// dataflow-rs 3.9 those were static strings, so a `{"var": "payload.x"}` in
+/// one was inert text and reporting it as a read would have been wrong; now it
+/// is evaluated, and a rule that could not see it was under-reporting.
 pub fn input_expressions<'a>(function: &str, input: &'a Value) -> Vec<(String, &'a Value)> {
     let mut out = Vec::new();
     let Some(map) = input.as_object() else {
@@ -137,16 +142,29 @@ pub fn input_expressions<'a>(function: &str, input: &'a Value) -> Vec<(String, &
                 }
             }
         }
-        "channel_call" => {
-            one("data_logic", &mut out);
-            one("channel_logic", &mut out);
-        }
+        // `channel_call`'s `channel` and `data` are not listed here: they are
+        // ordinary `template_at` fields now, found by the sweep below along
+        // with every other one, and their pre-1.0 `*_logic` spellings resolve
+        // through the same registry aliases.
         _ => {}
     }
+    use crate::engine::functions::schema;
     for (field, value) in map {
-        if crate::engine::functions::schema::is_resolvable_field(function, field)
-            && !out.iter().any(|(p, _)| p == field)
-        {
+        if out.iter().any(|(p, _)| p == field) {
+            continue;
+        }
+        let template_at = schema::template_paths(function, field);
+        // `""` — the field's own value is the expression. `"*"` — the field is
+        // a map whose *values* are, so the map itself is not one.
+        if template_at.contains(&"") {
+            out.push((field.clone(), value));
+        } else if template_at.contains(&"*") {
+            if let Some(members) = value.as_object() {
+                for (name, expr) in members {
+                    out.push((format!("{field}.{name}"), expr));
+                }
+            }
+        } else if schema::is_resolvable_field(function, field) {
             out.push((field.clone(), value));
         }
     }

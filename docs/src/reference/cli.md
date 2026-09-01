@@ -74,7 +74,10 @@ warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call 
 
 Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `[env.unresolved]` is an error rather than an advisory: it fires when a workflow field that resolves no secret reference contains one, which the admin API refuses on the same terms. `note:` findings are exit-neutral inventory, not defects — `[env.reference]` lists each environment variable the set references via `env://`, `[secrets.reference]` each name it reads with `{"secret": …}` and so needs declared in the serving instance's `[secrets]` section, both with the files that reference them; neither the exit code nor `--deny-warnings` counts them.
 
-Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. Today there is one: JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
+Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. There are two:
+
+- `[logic.unresolvable]` — JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
+- `[logic.escaped_template_key]` — a `$`-prefixed key in a position the engine evaluates as a template. One `$` is stripped from every such key, so a `{"$set": …}` update document composed in a `map` task is emitted as `{"set": …}` and the write replaces the document instead of updating it. Nothing fails at any gate; the fix is to double the prefix (`$$set`), and the doubled spelling is not reported.
 
 Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 

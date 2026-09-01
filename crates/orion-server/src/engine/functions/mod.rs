@@ -7,6 +7,7 @@ pub mod publish_kafka;
 pub mod schema;
 pub mod secret_ref;
 pub mod stub;
+pub mod templated_input;
 
 pub mod cache_read;
 pub mod cache_write;

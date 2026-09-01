@@ -34,7 +34,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/customer-lookup \
 
 Two things the example is built to show, both easy to get wrong: the sub-request
 is assembled in `temp_data` with `map` first, because `channel_call`'s
-`data_logic` is a single expression and JSONLogic has no object constructor; and
+`data` is a single expression and JSONLogic has no object constructor; and
 `output` receives the callee's whole **data context**, not its HTTP envelope —
 so the caller reads `data.customer.lookup.tier`, not `data.customer.data.…`.
 

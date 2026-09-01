@@ -876,13 +876,16 @@ async fn a_derived_secret_and_a_log_field_are_refused_too() {
     }
 }
 
-/// The documented limit: `{"secret": …}` is registered by dataflow-rs on the
-/// engines *it* builds, so a channel's `validation_logic` — compiled on Orion's
-/// own datalogic engine — cannot resolve one. It must fail to compile and
-/// quarantine the channel, not pass the reference through as a data object that
-/// silently evaluates truthy.
+/// A channel guard reads `{"secret": …}` like a workflow does.
+///
+/// It used not to: the guard engine was built directly by Orion, and the
+/// `secret` operator belongs to dataflow-rs. But secrets are *start-time*
+/// config — resolved before any channel loads — so there was no ordering reason
+/// a guard should see fewer of them than a workflow. `bootstrap` now borrows the
+/// datalogic engine out of a dataflow-rs engine built over the same store,
+/// which is one implementation rather than a mirror of one.
 #[tokio::test]
-async fn a_secret_in_validation_logic_quarantines_the_channel() {
+async fn a_channel_guard_reads_a_secret() {
     let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
     common::create_and_activate_channel_with_config(
         &app,
@@ -892,15 +895,65 @@ async fn a_secret_in_validation_logic_quarantines_the_channel() {
     )
     .await;
 
+    // The predicate holds — the secret resolved to the value the config
+    // declares — so the request is admitted.
     let (status, body) = post(&app, "guard-ch", json!({ "data": {} })).await;
-    assert_ne!(
+    assert_eq!(
         status,
         StatusCode::OK,
-        "a channel guard that cannot compile must be quarantined, not served: {body}"
+        "a guard reading a declared secret must serve: {body}"
     );
     assert!(
         !body.to_string().contains(GATE_VALUE),
-        "the refusal must not quote the value: {body}"
+        "and must not put the value in the response: {body}"
+    );
+}
+
+/// A stored channel config reads a `[vars]` value with `var://`.
+///
+/// A channel lives in the database, so `${VAR}` never reaches it and a package
+/// promoted from staging would otherwise carry staging's numbers. The var keeps
+/// its *type* — `ttl_secs` is a `u64`, and a string would not parse.
+#[tokio::test]
+async fn a_channel_config_reads_a_var() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "var-ch",
+        common::simple_log_workflow("var wf"),
+        json!({ "cache": { "enabled": true, "ttl_secs": "var://max_retries" } }),
+    )
+    .await;
+
+    // Loading is the assertion: an unresolved reference, or one substituted as
+    // the string "300", fails to parse into `ttl_secs: Option<u64>` and
+    // quarantines the channel.
+    let (status, body) = post(&app, "var-ch", json!({ "data": {} })).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a channel whose config resolves a var must serve: {body}"
+    );
+}
+
+/// An undeclared name refuses the channel rather than passing the reference
+/// through as its own text.
+#[tokio::test]
+async fn an_undeclared_var_quarantines_the_channel() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "bad-var-ch",
+        common::simple_log_workflow("bad var wf"),
+        json!({ "cache": { "enabled": true, "ttl_secs": "var://nope" } }),
+    )
+    .await;
+
+    let (status, body) = post(&app, "bad-var-ch", json!({ "data": {} })).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "an undeclared var must not serve: {body}"
     );
 }
 

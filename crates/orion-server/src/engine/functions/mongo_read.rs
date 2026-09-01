@@ -14,6 +14,7 @@ use super::mongo_common::{
     docs_to_json, drain_capped, require_mongo_backend, resolve_document, resolve_u64,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::config::QueryConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -51,7 +52,7 @@ pub struct MongoFind {
 impl ConnectorHandler for MongoReadHandler {
     const NAME: &'static str = "mongo_read";
     type Kind = crate::connector::kind::Db;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = MongoFind;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -61,7 +62,7 @@ impl ConnectorHandler for MongoReadHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
@@ -105,8 +106,8 @@ impl ConnectorHandler for MongoReadHandler {
             database,
             collection,
             filter,
-            projection: resolve_document(input, "projection", call.name, ctx)?,
-            sort: resolve_document(input, "sort", call.name, ctx)?,
+            projection: resolve_document(input.raw(), "projection", call.name, ctx)?,
+            sort: resolve_document(input.raw(), "sort", call.name, ctx)?,
             limit,
             skip,
         })
@@ -130,7 +131,7 @@ impl ConnectorHandler for MongoReadHandler {
         find: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let client = self
@@ -221,22 +222,23 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "limit",
-        description: "Maximum documents to return; must not exceed query.max_limit. Accepts {\"var\": \"path\"}.",
+        description: "Maximum documents to return; must not exceed query.max_limit. JSONLogic: a literal, or an expression over the message.",
         kind: FieldKind::Number,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "skip",
-        description: "Documents to skip before returning; must not exceed query.max_skip. Accepts {\"var\": \"path\"}.",
+        description: "Documents to skip before returning; must not exceed query.max_skip. JSONLogic: a literal, or an expression over the message.",
         kind: FieldKind::Number,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where matched documents are written.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
