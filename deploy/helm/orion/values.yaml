@@ -297,9 +297,9 @@ tests:
 devStack:
   enabled: false
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     user: orion
     password: orion
     database: orion
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
