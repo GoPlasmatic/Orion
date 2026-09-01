@@ -29,7 +29,7 @@
 #   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
 
 x-orion-common: &orion-common
-  image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.5.0}
+  image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.5.1}
   restart: unless-stopped
   stop_grace_period: 45s
   depends_on:
@@ -89,7 +89,7 @@ services:
   # One-shot migration job (the compose equivalent of the Helm pre-upgrade
   # hook): replicas never race migrations at boot.
   migrate:
-    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.5.0}
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.5.1}
     command: ["migrate"]
     environment:
       ORION_STORAGE__URL: "postgres://orion:orion@postgres:5432/orion"
