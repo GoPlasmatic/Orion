@@ -1,4 +1,4 @@
-<!-- description: The five ways Orion reads the environment — ORION_* overrides, ${VAR} substitution, env:// and vault:// references, var:// references, and declared vars and secrets — and where each resolves. -->
+<!-- description: The five ways Orion reads the environment — ORION_* overrides, ${VAR} substitution, env://, vault:// and var:// references, and declared vars and secrets. -->
 # Environment Variables
 
 Orion reads the process environment five ways, and which one applies is decided by *where the value sits*, not by what the value is. The same value written into a config file, a connector and a workflow is not read the same way in all three.
