@@ -15,6 +15,7 @@ use super::connector_helpers::{
 };
 use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
@@ -71,7 +72,7 @@ impl ConnectorHandler for DataWriteHandler {
     /// Like `data_query`: a `db` or an `es` connector, dispatched on the
     /// variant.
     type Kind = crate::connector::DataBackend;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = DataWrite;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -81,7 +82,7 @@ impl ConnectorHandler for DataWriteHandler {
     fn parse(
         &self,
         _call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         // W7: the mutation envelope is nested under `write`, mirroring
@@ -110,7 +111,7 @@ impl ConnectorHandler for DataWriteHandler {
         Ok(DataWrite {
             // Resolved against the message context (the only point the message
             // touches the mutation); it produces literals, not SQL.
-            params: resolve_params(input.get("params"), <Self as ConnectorHandler>::NAME, ctx),
+            params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
             // Optional inline schema (privileged config): renames, allowlist,
             // and the per-column `writable` flag.
             schema: input.get("schema").cloned(),
@@ -135,7 +136,7 @@ impl ConnectorHandler for DataWriteHandler {
         parsed: Self::Parsed,
         conn: &ConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         // F24: with no schema the registry rejects rather than passing every
@@ -634,6 +635,7 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         name: "output",
         description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

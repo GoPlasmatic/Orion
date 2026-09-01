@@ -221,7 +221,7 @@ Orion reserves these keys and no others:
 
 | Key | Where | Meaning |
 |-----|-------|---------|
-| `data._orion.response` | context | Shaped channels write the response `status`, `headers`, and `body` here; Orion drains it before replying. See [Channel Configuration](./channel-config.md) |
+| `data._orion.response` | context | Shaped channels write the response `status`, `headers`, `cookies` and `body` here; Orion drains it before replying. See [Channel Configuration](./channel-config.md#response-shaping) |
 | `_orion.profile` | response envelope | Per-task timings when profiling is requested. Never in the context. See the [Data API](./data-api.md) |
 | `metadata._orion_call_depth` | context | `channel_call` nesting depth |
 | `metadata._orion_call_chain` | context | Channel names traversed by nested `channel_call`s |
@@ -247,7 +247,10 @@ differently depending on **why** the step failed:
 `code` is a closed vocabulary — `VALIDATION_ERROR`, `WORKFLOW_ERROR`,
 `TASK_ERROR`, `FUNCTION_NOT_FOUND`, `FUNCTION_ERROR`, `LOGIC_ERROR`,
 `HTTP_ERROR`, `TIMEOUT_ERROR`, `IO_ERROR`, `DESERIALIZATION_ERROR`,
-`UNKNOWN_ERROR`, plus service kinds Orion mints such as `circuit_open`.
+`UNKNOWN_ERROR`, plus service kinds Orion mints: `circuit_open`,
+`connector_detail`, `channel_rate_limited`, `channel_forbidden`,
+`channel_conflict`, `channel_unavailable`, and the four
+[integrity codes](#integrity-violations) below.
 `status` separates a handler that returned an error (always `500`) from a task
 that returned a 5xx *outcome*.
 
@@ -256,6 +259,49 @@ that returned a 5xx *outcome*.
   "condition": { "in": [ { "var": "metadata._orion_errors.0.code" },
                          ["TIMEOUT_ERROR", "IO_ERROR"] ] } }
 ```
+
+#### Integrity violations
+
+A rule the schema declares — a unique index, a foreign key, a `NOT NULL`, a
+`CHECK` — is its own kind of failure: the caller can fix it, retrying will not,
+and it is not a fault of the operator's. Each gets a code of its own, so an
+endpoint can answer a duplicate submission differently from a dangling
+reference:
+
+| Code | Constraint | Status if uncaught |
+|---|---|---|
+| `integrity_unique` | Unique index or primary key | 409 `CONFLICT` |
+| `integrity_foreign_key` | Foreign key | 409 `CONFLICT` |
+| `integrity_not_null` | `NOT NULL` | 400 `VALIDATION_ERROR` |
+| `integrity_check` | `CHECK` | 400 `VALIDATION_ERROR` |
+
+These come from `db_read`, `db_write`, `data_query` and `data_write` on all
+three SQL backends — the classification is the driver's own, so it means the
+same thing on SQLite, PostgreSQL and MySQL. Everything else a reached database
+refuses stays `FUNCTION_ERROR`: a syntax error, a missing column, a deadlock.
+
+```json
+{ "id": "already_submitted",
+  "condition": { "==": [ { "var": "metadata._orion_errors.0.code" },
+                         "integrity_unique" ] },
+  "function": { "name": "map", "input": { "mappings": [
+    { "path": "data._orion.response.status", "logic": 409 },
+    { "path": "data.error", "logic": "A submission for that release already exists" }
+  ] } } }
+```
+
+> **Branch on `code`, not `status`.** `status` is the *task's* status, which is
+> `500` whenever a handler returned an error — including these. The `409` in
+> the table above is what the edge sends when no task catches the failure; it
+> never appears in the record.
+
+The driver's own message is not exposed anywhere on this path. It names tables,
+columns, index names and often the value that conflicted, so it stays in the
+operator-only detail kept on the trace — which means a workflow can tell *what
+kind* of rule was violated but not *which* rule. Where an endpoint has to
+distinguish two unique indexes on one table, query for the expected case
+explicitly before the write and leave the constraint as the backstop for the
+race.
 
 Three properties to rely on:
 

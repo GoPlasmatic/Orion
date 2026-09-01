@@ -9,6 +9,7 @@ use super::connector_helpers::{
     ConnectorCall, require_op, resolve_required_str, to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 
@@ -22,7 +23,7 @@ pub struct CacheReadHandler {
 impl ConnectorHandler for CacheReadHandler {
     const NAME: &'static str = "cache_read";
     type Kind = crate::connector::kind::Cache;
-    type Input = Value;
+    type Input = TemplatedInput;
     /// The key, resolved against the message. `{"var": "data.id"}` is the
     /// whole point of a per-request cache lookup, so it has to be folded
     /// before the body takes `ctx` mutably.
@@ -35,7 +36,7 @@ impl ConnectorHandler for CacheReadHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, crate::engine::HandlerError> {
         Ok(resolve_required_str(input, "key", call.name, ctx)?)
@@ -55,7 +56,7 @@ impl ConnectorHandler for CacheReadHandler {
         key: String,
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<super::connector_handler::Produced, crate::engine::HandlerError> {
         // Workflow-purpose namespace (S19) — the mirror of `cache_write`, so a
@@ -100,16 +101,17 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "key",
-        description: "Cache key to look up. Accepts {\"var\": \"path\"} to read the value from the message.",
+        description: "Cache key to look up. JSONLogic: a literal, or an expression over the message.",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where the result is stored. Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
@@ -152,7 +154,7 @@ mod tests {
             name: CacheReadHandler::NAME,
             connector: "c",
             channel: "ch".to_string(),
-            output: "data",
+            output: "data".to_string(),
         };
 
         let value = h
@@ -160,7 +162,7 @@ mod tests {
                 "absent-key".to_string(),
                 &memory_connector(true),
                 &call,
-                &serde_json::json!({"connector": "c", "key": "absent-key"}),
+                &TemplatedInput::from(serde_json::json!({"connector": "c", "key": "absent-key"})),
                 &mut ctx,
             )
             .await

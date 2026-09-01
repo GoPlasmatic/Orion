@@ -10,8 +10,9 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
-use super::connector_helpers::{apply_output, resolve_required_str};
+use super::connector_helpers::{apply_output, resolve_optional_u64, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "jwt_verify";
@@ -27,15 +28,26 @@ pub struct JwtVerifyHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for JwtVerifyHandler {
-    type Input = Value;
+    type Input = TemplatedInput;
+
+    /// Compile the expression fields this handler's table declares. The
+    /// `Connector` wrapper does this for the connector handlers; these three
+    /// are self-contained — no connector, no egress — so they implement
+    /// `AsyncFunctionHandler` directly and say it themselves.
+    fn compile_input(
+        input: &mut Self::Input,
+        c: &dataflow_rs::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        input.compile("jwt_verify", c)
+    }
 
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &Value,
+        input: &TemplatedInput,
     ) -> dataflow_rs::Result<TaskOutcome> {
         // Literal prologue (F58).
-        let algorithms = algorithms(input)?;
+        let algorithms = algorithms(input.raw())?;
         let output = input
             .get("output")
             .and_then(Value::as_str)
@@ -95,9 +107,7 @@ impl AsyncFunctionHandler for JwtVerifyHandler {
             algorithms,
             issuer: string_or_vec(input, "issuer", ctx).await?,
             audience: string_or_vec(input, "audience", ctx).await?,
-            leeway_secs: input
-                .get("leeway_secs")
-                .and_then(Value::as_u64)
+            leeway_secs: resolve_optional_u64(input, "leeway_secs", NAME, ctx)?
                 .unwrap_or(crate::jwt::DEFAULT_LEEWAY_SECS)
                 .min(crate::jwt::MAX_LEEWAY_SECS),
             require_exp: input
@@ -145,7 +155,7 @@ fn algorithms(input: &Value) -> Result<Vec<jsonwebtoken::Algorithm>, DataflowErr
 /// the secret resolver so client ids can live as `env://` references (they
 /// round-trip masked exports even though they are not secrets).
 async fn string_or_vec(
-    input: &Value,
+    input: &TemplatedInput,
     field: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Vec<String>, DataflowError> {
@@ -235,7 +245,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         description: "The compact JWS to verify.",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -270,7 +280,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         description: "Accepted iss value(s); string or array. {\"secret\": \"name\"} \
                       and env:// references resolve.",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
@@ -279,7 +289,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         description: "Accepted aud value(s); string or array. {\"secret\": \"name\"} \
                       and env:// references resolve (OAuth client ids).",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         secret_at: &[""],
         ..FieldSchema::DEFAULT
     },
@@ -287,6 +297,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
         name: "leeway_secs",
         description: "Clock-skew allowance for exp/nbf. Default 30, capped at 300.",
         kind: FieldKind::Number,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -301,6 +312,7 @@ pub(super) const JWT_VERIFY_FIELDS: &[FieldSchema] = &[
                       Defaults to \"data\". Rejections are typed task errors \
                       (continue_on_error branches on them).",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

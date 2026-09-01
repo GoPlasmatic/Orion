@@ -326,6 +326,32 @@ mod round_trip_tests {
         }
     }
 
+    /// The same property for an integrity refusal, which arrives the same way
+    /// — built as a `Service` error inside `QueryBudget::run`, converted to a
+    /// `HandlerError` so the two other arms of that match still typecheck, and
+    /// converted straight back.
+    ///
+    /// Worth its own case rather than trusting the one above: this is the
+    /// error whose `kind` decides between a `409` and a `500`, and the whole
+    /// point of #297 is that the two used to be indistinguishable.
+    #[test]
+    fn an_integrity_error_survives_the_round_trip() {
+        let original = crate::errors::integrity_dataflow_error(
+            crate::errors::IntegrityKind::ForeignKey,
+            "data_write query failed: FOREIGN KEY constraint failed",
+        );
+        let back: DataflowError = HandlerError::from(original).into();
+        match back {
+            DataflowError::Service {
+                kind, retryable, ..
+            } => {
+                assert_eq!(kind, crate::errors::kind::INTEGRITY_FOREIGN_KEY);
+                assert!(!retryable, "an integrity failure is never retried");
+            }
+            other => unreachable!("a Service error must return as one, got {other:?}"),
+        }
+    }
+
     /// Rewriting the message drops the original, because it is no longer the
     /// error that message came from.
     #[test]

@@ -48,6 +48,11 @@ pub struct ConnectorRegistry {
     load_issues: RwLock<Vec<ConnectorLoadIssue>>,
     /// See [`ConnectorRegistry::config_generation`].
     generation: AtomicU64,
+    /// The instance's `[vars]`, for `var://` references in a stored config.
+    /// `None` on a registry built without them — every reference then fails to
+    /// resolve and names the connector, which is the right answer for a
+    /// deployment value nobody declared.
+    vars: Option<Arc<serde_json::Value>>,
     /// Managed OAuth2 token lifecycle (#268) — per-connector runtime state
     /// living beside the circuit breakers, keyed off the same identity.
     oauth: super::oauth::OAuthTokenManager,
@@ -78,6 +83,14 @@ impl Default for ConnectorRegistry {
 }
 
 impl ConnectorRegistry {
+    /// The instance's `[vars]`, so a stored config can reference one with
+    /// `var://name`. Builder-style because every test constructs a registry and
+    /// almost none of them declares a var.
+    pub fn with_vars(mut self, vars: Option<Arc<serde_json::Value>>) -> Self {
+        self.vars = vars;
+        self
+    }
+
     pub fn new(cb_config: CircuitBreakerConfig) -> Self {
         Self {
             configs: RwLock::new(HashMap::new()),
@@ -86,6 +99,7 @@ impl ConnectorRegistry {
             load_issues: RwLock::new(Vec::new()),
             generation: AtomicU64::new(CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed)),
             oauth: super::oauth::OAuthTokenManager::new(),
+            vars: None,
         }
     }
 
@@ -321,6 +335,23 @@ impl ConnectorRegistry {
                     continue;
                 }
             };
+            // `var://` first, and typed: a var keeps the type it was declared
+            // with, so a numeric knob stays a number. Nothing walks into an
+            // expression here — a connector config has none.
+            if let Err(e) = crate::config::vars::resolve_var_references(
+                &mut value,
+                self.vars.as_deref(),
+                &|_| false,
+            ) {
+                tracing::error!(
+                    connector_id = %connector.id,
+                    connector_name = %connector.name,
+                    error = %e,
+                    "Refusing to load connector: unresolved var reference"
+                );
+                issues.push(issue("var_reference", e));
+                continue;
+            }
             if let Err(e) =
                 super::secrets::resolve_in_place(&mut value, resolvers, &source_label).await
             {

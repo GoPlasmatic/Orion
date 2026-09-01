@@ -119,6 +119,7 @@ pub async fn reload_engine_with_opts(
             .reload(
                 &channels,
                 crate::channel::ReloadDeps {
+                    vars: state.vars.as_ref(),
                     connector_registry: &state.connector_registry,
                     cache_pool: &state.caches.cache_pool,
                     datalogic: &state.datalogic,

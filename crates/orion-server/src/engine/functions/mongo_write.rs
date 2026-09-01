@@ -27,13 +27,15 @@ use serde_json::{Map, Value, json};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, require_op_allowed, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, require_op_allowed, resolve_bool, resolve_bool_or, timed_query,
+    to_connect_error, to_exec_error,
 };
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{
     require_document, require_mongo_backend, resolve_document, resolve_document_array,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::config::WriteConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -160,7 +162,7 @@ pub struct MongoWrite {
 impl ConnectorHandler for MongoWriteHandler {
     const NAME: &'static str = "mongo_write";
     type Kind = crate::connector::kind::Db;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = MongoWrite;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -170,7 +172,7 @@ impl ConnectorHandler for MongoWriteHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let database = call.require_str(input, "database")?.to_string();
@@ -182,16 +184,24 @@ impl ConnectorHandler for MongoWriteHandler {
                 MongoOp::VALUES
             ))
         })?;
-        let upsert = literal_bool(input, "upsert");
-        let ordered = input
-            .get("ordered")
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
+        let upsert = resolve_bool(input, "upsert", <Self as ConnectorHandler>::NAME, ctx)?;
+        let ordered = resolve_bool_or(
+            input,
+            "ordered",
+            <Self as ConnectorHandler>::NAME,
+            ctx,
+            true,
+        )?;
 
         // Resolve the op's documents against the message, then apply the shared
         // write guards before anything touches the network.
-        let write = prepare(op, input, upsert, ordered, ctx)?;
-        guard_unfiltered(op, &write, literal_bool(input, "all"), &self.write_config)?;
+        let write = prepare(op, input.raw(), upsert, ordered, ctx)?;
+        guard_unfiltered(
+            op,
+            &write,
+            literal_bool(input.raw(), "all"),
+            &self.write_config,
+        )?;
         if let Prepared::InsertMany { docs, .. } = &write
             && docs.len() as u64 > self.write_config.max_rows
         {
@@ -231,7 +241,7 @@ impl ConnectorHandler for MongoWriteHandler {
         parsed: Self::Parsed,
         db_config: &crate::connector::DbConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let client = self
@@ -923,12 +933,14 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
         name: "upsert",
         description: "Insert when no document matches (update_one/update_many/replace_one). Gated as 'upsert' on the connector when true. Defaults to false.",
         kind: FieldKind::Bool,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "ordered",
         description: "insert_many only: stop at the first failure (true, default) or attempt every document (false).",
         kind: FieldKind::Bool,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -941,6 +953,7 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
         name: "output",
         description: "Dotted path where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
@@ -982,9 +995,10 @@ mod tests {
             name: MongoWriteHandler::NAME,
             connector: "orders",
             channel: "ch".to_string(),
-            output: "data",
+            output: "data".to_string(),
         };
-        ConnectorHandler::parse(&handler, &call, &input, &ctx).expect("the task parses")
+        ConnectorHandler::parse(&handler, &call, &TemplatedInput::from(input), &ctx)
+            .expect("the task parses")
     }
 
     /// The gate `mongo_write` picks is not fixed: an update that upserts is

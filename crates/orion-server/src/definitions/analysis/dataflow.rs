@@ -160,42 +160,87 @@ pub fn data_reads(value: &Value) -> Vec<String> {
 /// function contributed a phantom write to the analysis — a function that does
 /// not exist is already a lint error, and guessing on top of it only made the
 /// clippy rules reason about a pipeline that cannot run.
+/// Where a task writes, and whether that list is complete.
+///
+/// The mirror of [`Reads`], and for the same reason: a destination can be an
+/// expression now — `{"output": {"cat": ["data.by_tenant.", {"var": …}]}}` —
+/// and a path this walk cannot name is not the same as no path at all. A rule
+/// that reasons about overwrites has to know the difference, or it concludes
+/// "nothing later writes this" from a step that might write anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Writes {
+    /// Literal destinations, as written.
+    pub paths: Vec<String>,
+    /// A destination authored as an expression, so it names nothing until a
+    /// message arrives. When true, `paths` is not the complete list.
+    pub computed: bool,
+}
+
+impl Writes {
+    /// Whether `paths` is the complete list. When it is not, a rule that
+    /// depends on knowing every write has no proof and must not fire.
+    pub fn uncertain(&self) -> bool {
+        self.computed
+    }
+}
+
+/// The literal destinations only — [`task_write_facts`] without the certainty.
 pub fn task_writes(task: &Value) -> Vec<String> {
+    task_write_facts(task).paths
+}
+
+/// Where a task writes, with the certainty flag.
+pub fn task_write_facts(task: &Value) -> Writes {
     let Some(function) = task.get("function") else {
-        return Vec::new();
+        return Writes::default();
     };
     let name = function.get("name").and_then(Value::as_str).unwrap_or("");
     let Some(input) = function.get("input") else {
-        return Vec::new();
+        return Writes::default();
     };
     let Some(shape) = crate::engine::functions::schema::write_shape(name) else {
-        return Vec::new();
+        return Writes::default();
     };
 
-    let mut out = Vec::new();
+    // A destination authored as a string is that path; authored as anything
+    // else it is an expression naming nothing until a message arrives. The same
+    // line `ConnectorName` draws between a static and a computed connector.
+    fn destination(value: Option<&Value>, out: &mut Writes) -> Option<String> {
+        match value {
+            None => None,
+            Some(Value::String(path)) => Some(path.clone()),
+            Some(_) => {
+                out.computed = true;
+                None
+            }
+        }
+    }
+
+    let mut out = Writes::default();
     match shape {
         WriteShape::Target => {
-            if let Some(target) = input.get("target").and_then(Value::as_str) {
-                out.push(format!("data.{target}"));
+            if let Some(target) = destination(input.get("target"), &mut out) {
+                out.paths.push(format!("data.{target}"));
             }
         }
         WriteShape::Mappings => {
             if let Some(mappings) = input.get("mappings").and_then(Value::as_array) {
                 for mapping in mappings {
-                    if let Some(path) = mapping.get("path").and_then(Value::as_str) {
-                        out.push(path.to_string());
+                    if let Some(path) = destination(mapping.get("path"), &mut out) {
+                        out.paths.push(path);
                     }
                 }
             }
         }
         WriteShape::OutputPath { default_root } => {
-            match input
-                .get("output")
-                .or_else(|| input.get("response_path"))
-                .and_then(Value::as_str)
-            {
-                Some(path) => out.push(path.to_string()),
-                None => out.extend(default_root.map(str::to_string)),
+            let authored = input.get("output").or_else(|| input.get("response_path"));
+            let is_absent = authored.is_none();
+            match destination(authored, &mut out) {
+                Some(path) => out.paths.push(path),
+                // Absent means the default; computed means unknown, and the
+                // default must not stand in for it.
+                None if is_absent => out.paths.extend(default_root.map(str::to_string)),
+                None => {}
             }
         }
         WriteShape::Nothing => {}
@@ -267,6 +312,47 @@ mod tests {
         assert_eq!(task_writes(&call), ["data.resp"]);
         let query = json!({"function": {"name": "data_query", "input": {"connector": "c"}}});
         assert_eq!(task_writes(&query), ["data"]);
+    }
+
+    /// A computed destination is an *unknown* write, not the absence of one.
+    ///
+    /// The distinction is what keeps the overwrite rules honest: a step whose
+    /// destination is an expression might write anything, so a rule that
+    /// concludes "nothing later writes this path" from an empty list would be
+    /// reasoning from a gap it cannot see.
+    #[test]
+    fn a_computed_destination_is_uncertain_rather_than_absent() {
+        let computed = serde_json::json!({
+            "function": {"name": "cache_read", "input": {
+                "connector": "c", "key": "k",
+                "output": {"cat": ["data.by.", {"var": "data.t"}]}}}
+        });
+        let facts = task_write_facts(&computed);
+        assert!(facts.paths.is_empty(), "{facts:?}");
+        assert!(facts.uncertain(), "{facts:?}");
+
+        // An *omitted* destination is certain — `cache_read` declares no
+        // default root, so it contributes no write and the analysis knows that
+        // for a fact. Absence and computation must not collapse into one answer.
+        let omitted = serde_json::json!({
+            "function": {"name": "cache_read", "input": {"connector": "c", "key": "k"}}
+        });
+        let facts = task_write_facts(&omitted);
+        assert!(facts.paths.is_empty());
+        assert!(
+            !facts.uncertain(),
+            "an omitted destination is not an unknown one"
+        );
+
+        // A computed `map` mapping path is the same story.
+        let mapping = serde_json::json!({
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": {"var": "data.where"}, "logic": 1},
+                {"path": "data.known", "logic": 2}]}}
+        });
+        let facts = task_write_facts(&mapping);
+        assert_eq!(facts.paths, ["data.known"]);
+        assert!(facts.uncertain(), "{facts:?}");
     }
 
     #[test]

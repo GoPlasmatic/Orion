@@ -28,8 +28,9 @@ use serde_json::Value;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
-use super::connector_helpers::{apply_output, resolve_required_str, resolve_value};
+use super::connector_helpers::{apply_output, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::crypto::{Codec, decode_bytes, encode_bytes, mac_compute, mac_verify};
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -73,7 +74,18 @@ pub struct CryptoHandler;
 
 #[async_trait]
 impl AsyncFunctionHandler for CryptoHandler {
-    type Input = Value;
+    type Input = TemplatedInput;
+
+    /// Compile the expression fields this handler's table declares. The
+    /// `Connector` wrapper does this for the connector handlers; these three
+    /// are self-contained — no connector, no egress — so they implement
+    /// `AsyncFunctionHandler` directly and say it themselves.
+    fn compile_input(
+        input: &mut Self::Input,
+        c: &dataflow_rs::engine::functions::TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        input.compile("crypto", c)
+    }
 
     /// The shell: run the body, then name the handler exactly once.
     ///
@@ -88,13 +100,16 @@ impl AsyncFunctionHandler for CryptoHandler {
     async fn execute(
         &self,
         ctx: &mut TaskContext<'_>,
-        input: &Value,
+        input: &TemplatedInput,
     ) -> dataflow_rs::Result<TaskOutcome> {
         run(ctx, input).await.map_err(|e| e.prefixed(NAME).into())
     }
 }
 
-async fn run(ctx: &mut TaskContext<'_>, input: &Value) -> Result<TaskOutcome, HandlerError> {
+async fn run(
+    ctx: &mut TaskContext<'_>,
+    input: &TemplatedInput,
+) -> Result<TaskOutcome, HandlerError> {
     let op = match input.get("op").and_then(Value::as_str) {
         Some(op) => op,
         None => return Err(validation("requires 'op' (string)")),
@@ -181,12 +196,12 @@ fn byte_codec(input: &Value, field: &str) -> Result<Option<Codec>, HandlerError>
 /// The byte model of #259, applied to `data`: strings per `input_encoding`
 /// (UTF-8 default), any other JSON value as its compact serialization — key
 /// order preserved — so "sign this payload" is first-class and deterministic.
-fn data_bytes(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
-    let Some(raw) = input.get("data") else {
+fn data_bytes(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
+    let Some(data) = input.value_of("data", NAME, ctx) else {
         return Err(validation("this op requires 'data'"));
     };
-    let codec = byte_codec(input, "input_encoding")?;
-    match resolve_value(raw, ctx) {
+    let codec = byte_codec(input.raw(), "input_encoding")?;
+    match data? {
         Value::String(s) => match codec {
             None => Ok(s.into_bytes()),
             Some(c) => {
@@ -221,9 +236,9 @@ fn digest_bytes(algorithm: &str, data: &[u8]) -> Vec<u8> {
     }
 }
 
-fn hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
-    let algorithm = algorithm(input, HASH_ALGORITHMS, "sha256")?;
-    let codec = output_codec(input)?;
+fn hash_op(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
+    let algorithm = algorithm(input.raw(), HASH_ALGORITHMS, "sha256")?;
+    let codec = output_codec(input.raw())?;
     let data = data_bytes(input, ctx)?;
     Ok(Value::String(encode_bytes(
         codec,
@@ -238,21 +253,12 @@ enum HmacMode {
 
 /// The op's `key`, resolved (literal or secret reference) and decoded per
 /// `key_encoding`. The resolved bytes never leave this call chain.
-async fn hmac_key(input: &Value, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
-    let key = match input.get("key") {
-        None | Some(Value::Null) => {
-            return Err(validation(
-                "this op requires 'key' ({\"secret\": \"name\"}, a secret reference \
-                 like env://NAME, or a literal)",
-            ));
-        }
-        Some(key) => key,
-    };
-    let resolved = super::secret_ref::key_material(key, "crypto.key", ctx).await?;
+async fn hmac_key(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<Vec<u8>, HandlerError> {
+    let resolved = super::secret_ref::key_material_field(input, "key", NAME, ctx).await?;
     if resolved.is_empty() {
         return Err(validation("'key' resolved to an empty value"));
     }
-    match byte_codec(input, "key_encoding")? {
+    match byte_codec(input.raw(), "key_encoding")? {
         None => Ok(resolved.into_bytes()),
         Some(c) => decode_bytes(c, &resolved)
             .map_err(|e| validation(&format!("'key' does not decode per key_encoding: {e}"))),
@@ -271,19 +277,19 @@ fn decode_presented_signature(s: &str) -> Result<Vec<u8>, HandlerError> {
 }
 
 async fn hmac_op(
-    input: &Value,
+    input: &TemplatedInput,
     ctx: &TaskContext<'_>,
     mode: HmacMode,
 ) -> Result<Value, HandlerError> {
     // F58 ordering: the message-independent refusals (algorithm, key) come
     // before anything the message can change (data, signature).
-    let algorithm = algorithm(input, HMAC_ALGORITHMS, "sha256")?;
+    let algorithm = algorithm(input.raw(), HMAC_ALGORITHMS, "sha256")?;
     let key = hmac_key(input, ctx).await?;
     let data = data_bytes(input, ctx)?;
 
     match mode {
         HmacMode::Compute => {
-            let codec = output_codec(input)?;
+            let codec = output_codec(input.raw())?;
             let mac = match algorithm {
                 "sha256" => mac_compute::<Hmac<Sha256>>(&key, &data),
                 "sha512" => mac_compute::<Hmac<Sha512>>(&key, &data),
@@ -402,8 +408,11 @@ fn password_params(
     }
 }
 
-async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
-    let algorithm = algorithm(input, PASSWORD_ALGORITHMS, "argon2id")?;
+async fn password_hash_op(
+    input: &TemplatedInput,
+    ctx: &TaskContext<'_>,
+) -> Result<Value, HandlerError> {
+    let algorithm = algorithm(input.raw(), PASSWORD_ALGORITHMS, "argon2id")?;
     let password = resolve_required_str(input, "password", NAME, ctx)?;
 
     match password_params(algorithm, input.get("params"))? {
@@ -438,7 +447,10 @@ async fn password_hash_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value,
     }
 }
 
-async fn password_verify_op(input: &Value, ctx: &TaskContext<'_>) -> Result<Value, HandlerError> {
+async fn password_verify_op(
+    input: &TemplatedInput,
+    ctx: &TaskContext<'_>,
+) -> Result<Value, HandlerError> {
     let password = resolve_required_str(input, "password", NAME, ctx)?;
     let hash = resolve_required_str(input, "hash", NAME, ctx)?;
 
@@ -657,7 +669,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       (see input_encoding); any other JSON value is hashed as its compact \
                       serialization.",
         kind: FieldKind::Any,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -673,6 +685,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       like env://NAME. Never appears in traces or errors.",
         kind: FieldKind::String,
         secret_at: &[""],
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -687,14 +700,14 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         description: "The presented MAC to check (hmac_verify); hex, base64, or \
                       base64url, auto-detected. Compared in constant time.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
         name: "password",
         description: "The submitted password (password_hash/password_verify).",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -702,7 +715,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
         description: "The stored password hash to verify against (password_verify); \
                       scheme auto-detected from its $argon2*$/$2*$ prefix.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -725,6 +738,7 @@ pub(super) const CRYPTO_FIELDS: &[FieldSchema] = &[
                       String for hash/hmac/password_hash; boolean for \
                       hmac_verify/password_verify.",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

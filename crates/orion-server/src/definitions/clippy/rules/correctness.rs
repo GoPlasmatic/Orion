@@ -281,8 +281,9 @@ impl Rule for UnconditionalCallCycle {
          group, and its workflow's condition is absent or `true`. `channel_call.rs` fails the \
          call once the parent depth reaches the limit.\n\n\
          Silent when: any edge on the cycle is conditional (bounded recursion with a base \
-         case is a legal pattern — the depth cap exists for it); a target is resolved by \
-         `channel_logic`; a target channel or its workflow is not in the set."
+         case is a legal pattern — the depth cap exists for it); the target is computed \
+         rather than written as a literal channel name, so no edge is known; a target \
+         channel or its workflow is not in the set."
     }
 
     fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {

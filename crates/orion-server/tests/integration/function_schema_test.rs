@@ -365,7 +365,7 @@ async fn channel_call_without_channel_or_logic_is_rejected() {
     assert!(
         details
             .iter()
-            .any(|d| d["path"] == "tasks[0].function.input" && d["code"] == "REQUIRED"),
-        "should report channel_call needs channel/channel_logic, got {body:?}"
+            .any(|d| d["path"] == "tasks[0].function.input.channel" && d["code"] == "REQUIRED"),
+        "should report channel_call needs a channel, got {body:?}"
     );
 }

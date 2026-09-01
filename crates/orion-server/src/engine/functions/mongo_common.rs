@@ -15,6 +15,7 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{is_mongo, resolve_value};
+use super::templated_input::TemplatedInput;
 use crate::connector::DbConnectorConfig;
 
 /// The MongoDB half of a `db` connector's identity.
@@ -134,7 +135,7 @@ pub(super) fn require_document(
 
 /// Resolve an optional non-negative integer field (`limit`, `skip`).
 pub(super) fn resolve_u64(
-    input: &Value,
+    input: &TemplatedInput,
     field: &str,
     handler_name: &str,
     ctx: &TaskContext<'_>,

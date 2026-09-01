@@ -19,6 +19,7 @@ use super::connector_helpers::{
     resolve_required_str,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::{ConnectorRegistry, sigv4};
 use crate::engine::{ErrorClass, HandlerError};
 
@@ -51,7 +52,7 @@ pub struct Presign {
 impl ConnectorHandler for StoragePresignHandler {
     const NAME: &'static str = "storage_presign";
     type Kind = crate::connector::kind::Storage;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = Presign;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -61,11 +62,13 @@ impl ConnectorHandler for StoragePresignHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
-        let method = presign_method(input).map_err(named)?;
-        check_method_fields(input, method).map_err(named)?;
+        // Both read literal fields, and both are shared with the
+        // authoring-time validator, which has only the authored JSON.
+        let method = presign_method(input.raw()).map_err(named)?;
+        check_method_fields(input.raw(), method).map_err(named)?;
         Ok(Presign {
             method,
             key: resolve_required_str(input, "key", call.name, ctx)?,
@@ -105,7 +108,7 @@ impl ConnectorHandler for StoragePresignHandler {
         presign: Self::Parsed,
         storage: &crate::connector::StorageConnectorConfig,
         _call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let (scheme, host, path) = storage
@@ -213,13 +216,12 @@ fn check_method_fields(input: &Value, method: PresignMethod) -> Result<(), Handl
 
 /// The TTL: integer seconds or a single-unit duration string, bounded by
 /// S3's own 7-day cap.
-fn expires_in(input: &Value, ctx: &TaskContext<'_>) -> Result<u64, DataflowError> {
-    let Some(raw) = input.get("expires_in") else {
+fn expires_in(input: &TemplatedInput, ctx: &TaskContext<'_>) -> Result<u64, DataflowError> {
+    let Some(secs) = resolve_duration_secs(input, ctx, NAME, "expires_in")? else {
         return Err(named(validation(
             "requires 'expires_in' (seconds, or \"<n>s|m|h|d\")",
         )));
     };
-    let secs = resolve_duration_secs(raw, ctx, NAME, "expires_in")?;
     if secs == 0 || secs > MAX_EXPIRES_SECS {
         return Err(named(validation(&format!(
             "'expires_in' must be between 1 second and {MAX_EXPIRES_SECS} (7 days — \
@@ -311,7 +313,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "Object key within the connector's bucket.",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -320,7 +322,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
                       (S3's own ceiling).",
         kind: FieldKind::Any,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -328,7 +330,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "GET only: forces the Content-Type the store answers with; signed, \
                       so the client cannot alter it.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -336,7 +338,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "GET only: forces Content-Disposition (e.g. a download filename); \
                       signed.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -344,7 +346,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "PUT only: the Content-Type the uploader must send — a signed \
                       header, so an upload with any other type is refused by the store.",
         kind: FieldKind::String,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -352,6 +354,7 @@ pub(super) const STORAGE_PRESIGN_FIELDS: &[FieldSchema] = &[
         description: "Dotted path where the presigned URL (string) is stored. Defaults \
                       to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
