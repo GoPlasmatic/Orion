@@ -14,6 +14,27 @@ description: rdkafka-sys system deps (librdkafka native configure; vendored Open
 runs:
   using: composite
   steps:
+    # The runner image ships Microsoft's apt repositories (azure-cli and the
+    # `prod` feed) preconfigured. `apt-get update` fails the whole step when one
+    # of them answers 403 — "The repository is no longer signed" — which
+    # packages.microsoft.com does intermittently, per CDN node. It took
+    # `Containers (storage-mysql)` down on an otherwise green run while every
+    # other job on the same commit fetched fine.
+    #
+    # None of the packages below come from those feeds; they are all in
+    # Ubuntu's own archives. So the repositories are removed rather than
+    # tolerated: ignoring the error would also hide a genuine failure to reach
+    # the archives we do need, and `apt-get update || true` would let the
+    # install below fail later with a worse message.
+    #
+    # Matched by content, not by filename: the image has used both
+    # `microsoft-prod.list` and the deb822 `.sources` spelling, and this keeps
+    # working across that rename.
+    - name: Drop the preconfigured Microsoft apt repositories
+      shell: bash
+      run: |
+        sudo grep -rlE 'packages\.microsoft\.com' /etc/apt/sources.list.d/ 2>/dev/null \
+          | sudo xargs -r rm -f
     - name: Install system dependencies
       shell: bash
       run: sudo apt-get update && sudo apt-get install -y pkg-config cmake g++ libcurl4-openssl-dev perl
