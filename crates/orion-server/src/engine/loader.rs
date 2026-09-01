@@ -168,11 +168,40 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
 /// Issues are joined into one message: the caller reports per workflow, and a
 /// workflow that cannot run is quarantined whole regardless of how many of its
 /// tasks are the reason.
+///
+/// **Not every issue `check_workflow` reports makes a workflow unusable.**
+/// Until dataflow-rs 3.9 every code it returned was one `Engine::build` also
+/// refused, so "any issue" and "cannot run" were the same set and this screen
+/// could take the whole list. `ESCAPED_TEMPLATE_KEY` broke that: it is
+/// informational by construction — `refusing_template_key_issues` keeps only
+/// `DUPLICATE_TEMPLATE_KEY` — and it fires on *correct* code, including the
+/// `$$set` spelling that is the documented fix for it. Treating it as fatal
+/// quarantines a channel whose workflow runs perfectly, which is the opposite
+/// of what F41 asks of this function. It is filtered here rather than at each
+/// caller because all four surfaces — boot, reload, `dry-run` and the test
+/// endpoint — must agree on what "unusable" means.
 fn screen_workflow(
     workflow: &dataflow_rs::Workflow,
     screen: &dyn HandlerScreen,
 ) -> Result<(), String> {
     let issues = screen.check_workflow(workflow);
+    let (advisories, issues): (Vec<_>, Vec<_>) = issues
+        .into_iter()
+        .partition(|i| i.code == dataflow_rs::IssueCode::EscapedTemplateKey);
+    // Dropped from the fatal set but not dropped: a stripped `$` changes the
+    // shape of a composed document without failing anything, so the one place
+    // that sees every workflow on every load says so once per workflow. `lint`
+    // and `preflight` report the same thing against a document the author can
+    // still edit; this is the last chance to notice it before it serves.
+    for advisory in &advisories {
+        tracing::warn!(
+            workflow = %workflow.id,
+            task = advisory.task_id.as_deref().unwrap_or("-"),
+            path = advisory.path.as_deref().unwrap_or("-"),
+            "{}",
+            advisory.message
+        );
+    }
     if issues.is_empty() {
         return Ok(());
     }
@@ -389,6 +418,37 @@ mod tests {
     /// dispatches.
     fn screen() -> dataflow_rs::engine::EngineBuilder {
         dataflow_rs::Engine::builder()
+    }
+
+    /// `ESCAPED_TEMPLATE_KEY` must not quarantine a workflow.
+    ///
+    /// It is the one code `check_workflow` reports that `Engine::build` does
+    /// not refuse, and this screen used to take the whole list — correct while
+    /// every code was also a build refusal, wrong from dataflow-rs 3.9 on. It
+    /// fires on *correct* code too: `$$set` is the documented fix, so treating
+    /// it as fatal took down the channel of an author who had done the right
+    /// thing.
+    #[test]
+    fn an_escaped_template_key_is_an_advisory_not_a_quarantine() {
+        let workflow = dataflow_rs::Workflow::from_json(
+            r#"{"id":"w","name":"w","condition":true,"tasks":[
+                {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
+                  {"path":"data.a","logic":{"$set":{"x":1}}},
+                  {"path":"data.b","logic":{"$$oid":"abc"}}]}}}]}"#,
+        )
+        .expect("the fixture is a valid workflow");
+
+        // The engine does report both keys — this is not a claim that they are
+        // invisible, only that they are not a reason to refuse to serve.
+        assert_eq!(
+            screen()
+                .check_workflow(&workflow)
+                .iter()
+                .filter(|i| i.code == dataflow_rs::IssueCode::EscapedTemplateKey)
+                .count(),
+            2
+        );
+        assert!(screen_workflow(&workflow, &screen()).is_ok());
     }
 
     #[test]

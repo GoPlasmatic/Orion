@@ -530,6 +530,37 @@ pub mod kind {
     pub const CHANNEL_FORBIDDEN: &str = "channel_forbidden";
     pub const CHANNEL_CONFLICT: &str = "channel_conflict";
     pub const CHANNEL_UNAVAILABLE: &str = "channel_unavailable";
+    /// The backend was reached and refused a statement against a rule its own
+    /// schema declares. One kind per rule, so a workflow can answer a
+    /// duplicate differently from a dangling reference — a single
+    /// "integrity" code would only move the problem one level down.
+    ///
+    /// These are the four constraint kinds `sqlx::error::ErrorKind` names,
+    /// which is what makes them portable: every driver maps its own SQLSTATE
+    /// or errno table onto that enum, so the classification is the same
+    /// sentence on SQLite, MySQL and Postgres.
+    pub const INTEGRITY_UNIQUE: &str = "integrity_unique";
+    pub const INTEGRITY_FOREIGN_KEY: &str = "integrity_foreign_key";
+    pub const INTEGRITY_NOT_NULL: &str = "integrity_not_null";
+    pub const INTEGRITY_CHECK: &str = "integrity_check";
+}
+
+/// Which declared rule a backend refused a statement against.
+///
+/// Lives here rather than beside the SQL handlers that produce it because
+/// `engine_error_response` has to map it to a status, and `errors` may not
+/// name `crate::engine::` — the dependency runs the other way (see
+/// `module_layering_test`).
+///
+/// Deliberately not the driver's own code: a per-backend SQLSTATE table in
+/// Orion would duplicate the one sqlx already maintains, and would have to be
+/// extended for every backend added later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrityKind {
+    Unique,
+    ForeignKey,
+    NotNull,
+    Check,
 }
 
 /// Build the error a `channel_call` returns when the target channel's guards
@@ -581,6 +612,45 @@ pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs::Da
         .build()
 }
 
+/// Build the error a SQL handler returns when the backend refused a statement
+/// against a constraint the schema declares.
+///
+/// The caller-facing message is generic per kind and the driver's text rides
+/// in `detail`, for the same reason [`connector_detail_error`] exists: a
+/// driver message names tables, columns, index names and often the value that
+/// conflicted, and `engine_error_response` hands a `Service` error's
+/// `Display` straight to the caller.
+///
+/// Not retryable — the conflicting row will still be there next time. That is
+/// also what keeps an integrity failure off a connector's circuit breaker,
+/// since `guarded_handler` only counts failures that declare themselves
+/// retryable: a stream of duplicate submissions must not shed a healthy
+/// database.
+pub fn integrity_dataflow_error(
+    integrity: IntegrityKind,
+    detail: impl std::fmt::Display,
+) -> dataflow_rs::DataflowError {
+    let (kind, message) = match integrity {
+        IntegrityKind::Unique => (
+            kind::INTEGRITY_UNIQUE,
+            "The request conflicts with an existing record",
+        ),
+        IntegrityKind::ForeignKey => (
+            kind::INTEGRITY_FOREIGN_KEY,
+            "The request references a record that does not exist",
+        ),
+        IntegrityKind::NotNull => (kind::INTEGRITY_NOT_NULL, "A required value is missing"),
+        IntegrityKind::Check => (
+            kind::INTEGRITY_CHECK,
+            "A value in the request is not allowed",
+        ),
+    };
+    dataflow_rs::DataflowError::service(kind, message)
+        .detail(detail.to_string())
+        .retryable(false)
+        .build()
+}
+
 /// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
 fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
     use dataflow_rs::DataflowError;
@@ -600,6 +670,17 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
             kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, codes::CONFLICT),
             kind::CHANNEL_UNAVAILABLE => {
                 (StatusCode::SERVICE_UNAVAILABLE, codes::SERVICE_UNAVAILABLE)
+            }
+            // A duplicate or a dangling reference is a conflict of state: the
+            // request was well-formed and the caller retries it differently.
+            kind::INTEGRITY_UNIQUE | kind::INTEGRITY_FOREIGN_KEY => {
+                (StatusCode::CONFLICT, codes::CONFLICT)
+            }
+            // A missing required value or a failed CHECK is a value the caller
+            // sent wrong — the same shape as a failed field rule, so the same
+            // answer.
+            kind::INTEGRITY_NOT_NULL | kind::INTEGRITY_CHECK => {
+                (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR)
             }
             _ => {
                 tracing::error!(kind = %k, "unhandled service error kind; mapped to 500");

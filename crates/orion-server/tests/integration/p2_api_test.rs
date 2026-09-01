@@ -23,10 +23,14 @@ async fn dependencies_reports_connectors_and_channel_calls() {
                 {"id": "t2", "name": "call",
                  "function": {"name": "channel_call",
                               "input": {"channel": "notify", "payload": {}}}},
-                {"id": "t3", "name": "dynamic",
+                {"id": "t3", "name": "literal-second",
                  "function": {"name": "channel_call",
-                              "input": {"channel": "fallback",
-                                        "channel_logic": {"var": "data.target"},
+                              "input": {"channel": "fallback", "payload": {}}}},
+                // One field carries both spellings, so what makes a target
+                // dynamic is the *shape* of `channel`, not a second key.
+                {"id": "t4", "name": "dynamic",
+                 "function": {"name": "channel_call",
+                              "input": {"channel": {"var": "data.target"},
                                         "payload": {}}}},
             ],
         }),
@@ -57,7 +61,7 @@ async fn dependencies_reports_connectors_and_channel_calls() {
     );
     assert_eq!(
         body["data"]["has_dynamic_channel_calls"], true,
-        "channel_logic must flag the list as incomplete: {body}"
+        "a computed channel must flag the list as incomplete: {body}"
     );
 
     let resp = app

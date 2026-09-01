@@ -7,6 +7,250 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A shaped response that sets a cookie is no longer stored in the response
+  cache** ([#298]). A shaped hit replays its status and headers, and the cache
+  key is built from the method, path parameters, query and payload — never from
+  who is calling. So a channel that both set a `Set-Cookie` and enabled the
+  response cache handed the first caller's session cookie to every caller who
+  repeated that request for the TTL. The cache write is now suppressed
+  entirely, however the cookie was set. Reachable before this only by naming
+  `set-cookie` in `allowed_headers`, which is why it went unnoticed; making
+  cookies a first-class feature is what would have made it ordinary.
+
+### Added
+
+- **A shaped response can set more than one cookie** ([#298]). The control
+  block is a JSON object and a header name holds one value, so a response could
+  carry at most one `Set-Cookie` — and the obvious workaround, an array, hit a
+  bare `continue` with no warning and no error. Any flow that sets one cookie
+  and clears another in the same response was unreachable: finishing an OAuth
+  login, issuing an access/refresh pair, rotating a session, logging out.
+
+  A header value may now be an **array of strings**, sending the header once per
+  element, and a shaped channel that sets `response.cookies` gets a declarative
+  `data._orion.response.cookies` block — `name`, `value`, `path`, `domain`,
+  `max_age`, `expires`, `same_site`, `http_only`, `secure` — mirroring the
+  RFC 6265 parser already on the read side. Declaring the parts is what removes
+  the hand-built attribute string, which is where a missing `Secure` or a
+  `SameSite` that should have been `Lax` quietly comes from. A value carrying
+  `;`, a comma, CR or LF is refused rather than emitted, so a workflow
+  interpolating user input into a cookie cannot inject attributes or split the
+  header.
+
+  `response.cookies` is its own switch rather than an entry in
+  `allowed_headers`, because that list *replaces* the default one: gating
+  cookies on it would mean a channel setting a session cookie also has to
+  re-list `content-type` to keep serving JSON. The raw form still works for
+  anyone who wants it.
+
+- **A database constraint violation is its own failure, not a 500** ([#297]).
+  A unique index, a foreign key, a `NOT NULL` and a `CHECK` are rules an author
+  wrote deliberately, and a workflow could not tell any of them from a syntax
+  error, a deadlock or a dropped column: every failure from a database that was
+  successfully reached became `FUNCTION_ERROR` with status `500`. So an
+  endpoint whose whole job was to answer `409` when a submission is already in
+  flight answered `500` instead, and no spelling of a condition could fix it —
+  the error record carries a code and no message by design.
+
+  `metadata._orion_errors[0].code` now carries `integrity_unique`,
+  `integrity_foreign_key`, `integrity_not_null` or `integrity_check`, and a run
+  that does not catch one answers `409 CONFLICT` for the first two and
+  `400 VALIDATION_ERROR` for the other two. `db_read`, `db_write`, `data_query`
+  and `data_write` all report them.
+
+  The classification is the driver's own — sqlx maps each backend's SQLSTATE or
+  errno table onto one enum — so it means the same thing on SQLite, PostgreSQL
+  and MySQL rather than being a table Orion has to extend per backend. The
+  driver's *message* is not exposed: it names tables, columns, index names and
+  often the conflicting value, so it stays in the operator-only detail kept on
+  the trace. That means a workflow can tell what kind of rule was violated but
+  not which one; the constraint name is deliberately not surfaced, because
+  sqlx only populates it on PostgreSQL and a branch that silently stops
+  matching after a backend migration is worse than no branch.
+
+  Integrity failures declare themselves non-retryable, so a stream of duplicate
+  submissions cannot trip a connector's circuit breaker or fill the DLQ.
+
+
+- **Every `http_call` and `publish_kafka` parameter accepts JSONLogic**, from
+  dataflow-rs 3.9. The one that changes what is expressible is
+  `http_call.headers`: a header *value* was a `String` on the config, so a
+  bearer token or a correlation id had to be injected by the service layer, and
+  it can now be computed —
+  `{"Authorization": {"cat": ["Bearer ", {"secret": "partner_token"}]}}`.
+  `publish_kafka.topic` follows, so one task can route a stream by message
+  content instead of needing one task per destination. `path`, `body`,
+  `body_format`, `response_format`, `output` and `timeout_ms` are expressions
+  too. A literal is JSONLogic for itself and folds once when the engine is
+  built, so the static spelling is unchanged and costs nothing per message.
+  A computed `connector` is refused for now, and says so: the name is read
+  before the connector is looked up, and it is also what the dependency
+  endpoint, the activation gate and the connector rename guard report.
+- **`var://name` — a stored connector or channel config reads a `[vars]`
+  value.** Both live in the database, so `${VAR}` never reached them and only
+  four channel `auth` fields resolved anything at all; promoting a package from
+  staging carried staging's TTLs, rate limits and hostnames with it. `var://`
+  is a fourth resolver alongside `env://` and `vault://`, with one difference
+  that is the point of it: **a var keeps its type**, so
+  `"ttl_secs": "var://cache_ttl"` arrives as the number `300` rather than the
+  string `"300"` — the config knobs worth varying per instance are mostly
+  numbers, and a string where a number belongs simply will not parse.
+
+  A channel's `*_logic` fields are skipped: those are evaluated per message,
+  where a literal `"var://x"` is a string the author wrote to compare against.
+  An undeclared name refuses the row and lists what *is* declared, rather than
+  passing the reference through as its own text. Authoring-time validation does
+  not shape-check a referenced field, for the same reason it does not resolve a
+  secret reference — `lint` and `package lint` must pass on a CI runner that
+  holds neither.
+- **A channel guard can read `{"secret": …}`.** `validation_logic`,
+  `authorization_logic` and the rate-limit and cache `key_logic` compiled on an
+  engine Orion built directly, which carries Orion's operators but not
+  dataflow-rs's `secret` — so a guard was quarantined for naming a secret a
+  workflow on the same instance could read. Secrets are start-time config,
+  resolved before any channel loads, so the limit was an accident of
+  construction order rather than a constraint. `bootstrap` now takes the
+  datalogic engine out of a dataflow-rs engine built over the same store: one
+  implementation, so the two surfaces cannot disagree about what a name
+  resolves to.
+
+  That engine also runs in **templating mode**, where a multi-key object is a
+  legal template rather than a compile error — so the N4 refusal that used to
+  fall out of the compiler is now stated explicitly. A typo'd
+  `{"==": [1,1], "!=": [1,2]}` would otherwise compile to a truthy object and
+  admit every request, which is exactly what N4 exists to prevent.
+- **A task's write destination is JSONLogic.** `output` (and `http_call`'s
+  `response_path`) can be computed, so one task fans its results out by message
+  content — `{"output": {"cat": ["data.by_tenant.", {"var": "data.tenant"}]}}` —
+  instead of needing a branch per destination. The clippy analysis was taught
+  the difference between a destination it cannot name and no destination at
+  all: `Writes::uncertain` mirrors `Reads::uncertain`, and the three rules that
+  reason about overwrites stay silent rather than concluding "nothing later
+  writes this" from a step that might write anything.
+- **`send_email` header values, `jwt_sign.issuer`/`kid`,
+  `jwt_verify.leeway_secs`, `channel_call.timeout_ms`, `mongo_write.upsert`/
+  `ordered` and `mongo_aggregate.allow_disk_use` are JSONLogic**, closing
+  inconsistencies where the same concept was computable in one function and
+  literal in its twin — an `http_call` header could carry a computed
+  correlation id and an email header could not; a verified issuer could be
+  computed and a signed one could not.
+- **Key material is JSONLogic.** `crypto.key` and `jwt_sign.key` evaluate like
+  any other parameter, so `{"secret": "name"}` resolves through the engine's
+  own reserved operator and can be *composed*:
+  `{"cat": [{"secret": "prefix"}, "-", {"var": "metadata.vars.suffix"}]}`. A
+  key authored as a plain string keeps the legacy meaning exactly — a literal,
+  or an `env://` / `vault://` reference resolved at execution — because the two
+  are told apart by what the author wrote, not by what it produces: otherwise a
+  secret whose value began with `env://` would be resolved twice.
+- **A channel's response cache can key on JSONLogic.** `cache.key_logic` is the
+  general form of `cache_key_fields`, over the same context
+  `rate_limit.key_logic` already reads, so one channel no longer keys two of
+  its guards two different ways. A key that depended on a header or the
+  authenticated subject was not expressible before, and a response cache keyed
+  on less than what varies the response is how one caller's body reaches
+  another. An expression that does not compile quarantines the channel rather
+  than falling back to the whole-payload hash.
+- **A connector task's scalar fields are JSONLogic.** A cache or storage key, an
+  email address, subject or body, a TTL, a MongoDB `limit`/`skip`, a JWT
+  audience or lifetime, the data going into `crypto` — 29 fields across 15
+  functions — are now compiled once when the engine is built and evaluated
+  against the message, instead of being walked per message by a fold that
+  recognised `{"var": …}` and nothing else. A per-tenant cache key is now one
+  task rather than a `map` task and a reference:
+  `{"cat": ["tenant:", {"var": "data.tenant"}, ":order:", {"var": "data.id"}]}`.
+  `{"secret": "name"}` resolves in these fields too, so a credential can be
+  composed into a subject line or a signed value without a connector.
+- **The document-shaped fields deliberately do not change.** A MongoDB
+  `filter`/`update`/`document`/`documents`/`pipeline`/`projection`/`sort`, a
+  dialect or SQL `params`, `jwt_sign.claims` and `cache_write.value` keep the
+  `{"var": …}` fold. Those are exactly the fields that carry `$set`, `$oid`,
+  `$date` and `$ref`, and one `$` is stripped from every key in a position the
+  engine evaluates — so making them expressions would silently rewrite every
+  stored definition that was not hand-corrected. Which fields are which is one
+  declaration, `FieldSchema::template_at`, read by the runtime, the offline
+  stub, authoring validation and the clippy analysis alike.
+- **`lint` and `preflight` report a `$`-prefixed key that the engine will
+  silently rewrite** — `[logic.escaped_template_key]`, and preflight checklist
+  row 14. dataflow-rs 3.9 strips one `$` from *every* key in a template
+  position, so a `{"$set": …}` MongoDB update composed in a `map` task is
+  emitted as `{"set": …}` and the write replaces the document instead of
+  updating it. Nothing fails at any gate, which is why it is worth reporting
+  mechanically. The fix is to double the prefix (`$$set`); the doubled spelling
+  is deliberately *not* reported, so fixing the problem clears the warning and
+  a `--deny-warnings` gate can go green. Custom-handler inputs are unaffected —
+  a `mongo_write` update written literally in the task is not a template
+  position — so this is about documents composed upstream of one.
+
+### Changed
+
+- **`channel_call`'s `channel`/`channel_logic` and `data`/`data_logic` pairs
+  are each one field.** A literal is JSONLogic for itself, so a second field
+  saying "this one is an expression" only ever described the type of a value
+  the compiler can see for itself — which is why dataflow-rs collapsed the same
+  shape on its own configs in 3.9. `channel_logic` and `data_logic` remain
+  accepted as aliases, so existing workflows load unchanged; supplying both
+  spellings of one field is a duplicate-field error rather than a precedence
+  rule. What made a target dynamic is now the *shape* of `channel` rather than
+  which key was used, and `/dependencies` reports `has_dynamic_channel_calls`
+  on that basis. A dry run now records the channel a computed call actually
+  names, so a workflow that fans out to three channels can stub them separately
+  instead of falling back to one `"*"` entry.
+- **An input field the engine evaluates is no longer type-checked against its
+  authored JSON.** A `Template` field's declared kind describes what it must
+  *evaluate to*, and an object or array there may be an operator call — so only
+  a scalar, which is unambiguously itself in JSONLogic, is still checked
+  directly. Without this the runtime would resolve a computed `timeout_ms` that
+  workflow validation refused.
+- **A computed connector is refused at authoring time, not just at runtime.**
+  `connector` became a `Template` upstream like every other parameter, so the
+  ordinary kind check no longer refuses an expression there. Orion needs a name
+  it can read without a message: the connector is resolved before the message is
+  consulted, and the same static name is what the dependency endpoint reports,
+  what the activation gate checks, what refuses a rename of a connector still in
+  use, and what a package's `requires` list is built from. Admitting one means
+  teaching all five, so the refusal is now explicit and says why.
+- **A `{"secret": …}` node is no longer an authoring error in a field the engine
+  evaluates.** The rule exists because a folded field would send the node on as
+  an object; in an evaluated field it resolves, so firing there refused a task
+  that works.
+- **dataflow-rs 3.9.0** (datalogic-rs 5.4).
+
+### Fixed
+
+- **An informational engine finding no longer quarantines a channel.** The
+  load-time screen took every issue `check_workflow` reported as a reason the
+  workflow could not run — correct while every code it returned was also a
+  build refusal, and wrong as of dataflow-rs 3.9's `ESCAPED_TEMPLATE_KEY`,
+  which `Engine::build` never refuses. It fires on *correct* code too: `$$set`
+  is the documented fix, so a workflow whose author had done the right thing
+  was refused at load and took its channel down with it.
+
+- **The crate descriptions are short enough for the generated Homebrew
+  formula to pass `brew style`.** A formula's `desc` is the crate's
+  `description` verbatim, and RuboCop's `Layout/LineLength` caps a formula
+  line at 118 characters: `orion-server`'s ran to 183 and `orion-cli`'s to
+  151. Neither is auto-correctable — a long string literal has nowhere to
+  wrap — so `brew style` failed on the tap. `orion-server` keeps its opening
+  sentence and loses the trailing feature list; `orion-cli` is now one line.
+  The published tap only picks this up at the next release.
+
+- **A repeated response header is no longer collapsed to its last value.**
+  `HeaderMap::insert` replaces, so even a correctly produced pair of
+  `set-cookie` values arrived as one. The first value for a name still replaces
+  what the platform set — a workflow's `content-type` wins, as documented — and
+  every later one is appended beside it.
+
+- **`db_read` no longer discards its driver error's classification.** The row
+  stream stringified each error before the failure type saw it, so every
+  `db_read` failure converted through the string path and was reported as a
+  backend failure whatever the driver had said. Invisible before [#297], since
+  every classification landed on that path anyway.
+
+[#297]: https://github.com/GoPlasmatic/Orion/issues/297
+[#298]: https://github.com/GoPlasmatic/Orion/issues/298
+
 ## [1.4.0] - 2026-08-29
 
 ### Security

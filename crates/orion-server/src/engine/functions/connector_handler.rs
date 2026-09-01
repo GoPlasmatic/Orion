@@ -48,8 +48,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, extract_output_path, require_connector, require_str_field,
+    ConnectorCall, apply_output, require_connector, require_str_field, resolve_output_path,
 };
+use super::templated_input::TemplatedInput;
 use crate::connector::{ConnectorRegistry, ConnectorTarget};
 use crate::engine::HandlerError;
 
@@ -70,43 +71,110 @@ pub trait ConnectorInput: DeserializeOwned + Send + Sync + 'static {
     fn connector(&self, handler: &'static str) -> Result<&str, DataflowError>;
 
     /// Where the handler's result is written, defaulting to `data`.
-    fn output(&self) -> &str;
+    ///
+    /// Takes the context because a destination is JSONLogic like every other
+    /// parameter: `{"output": {"cat": ["data.by_tenant.", {"var": …}]}}` fans
+    /// one task's results out by message content. A statically authored path
+    /// folds at engine build and costs nothing here.
+    ///
+    /// # Errors
+    ///
+    /// [`DataflowError`] when the expression fails to evaluate.
+    fn output(&self, handler: &'static str, ctx: &TaskContext<'_>)
+    -> Result<String, DataflowError>;
+
+    /// Compile this input's expression fields, once at engine build.
+    ///
+    /// On the trait rather than on each handler's `compile_input` because
+    /// [`TemplatedInput`] needs the handler's *name* to know which fields its
+    /// table declares, and the wrapper is the only thing that has both the
+    /// input and `H::NAME`. A handler cannot forget it: the wrapper calls it
+    /// for every input it parses.
+    ///
+    /// # Errors
+    ///
+    /// [`DataflowError`] when a declared expression field does not compile.
+    fn compile(
+        &mut self,
+        _handler: &'static str,
+        _c: &TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        Ok(())
+    }
 }
 
-impl ConnectorInput for Value {
+impl ConnectorInput for TemplatedInput {
     fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
-        require_str_field(self, "connector", handler)
+        require_str_field(self.raw(), "connector", handler)
     }
 
-    fn output(&self) -> &str {
-        extract_output_path(self)
+    fn output(
+        &self,
+        handler: &'static str,
+        ctx: &TaskContext<'_>,
+    ) -> Result<String, DataflowError> {
+        resolve_output_path(self, handler, ctx)
+    }
+
+    fn compile(&mut self, handler: &'static str, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+        TemplatedInput::compile(self, handler, c)
     }
 }
 
 impl ConnectorInput for dataflow_rs::engine::functions::HttpCallConfig {
-    fn connector(&self, _handler: &'static str) -> Result<&str, DataflowError> {
-        // Typed: serde already refused a task without it, so there is no
-        // "requires 'connector'" to report.
-        Ok(&self.connector)
+    fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
+        // Typed: serde already refused a task without it, so the only refusal
+        // left is the computed spelling dataflow-rs 3.9 made expressible.
+        literal_connector(&self.connector, handler)
     }
 
-    fn output(&self) -> &str {
+    fn output(
+        &self,
+        _handler: &'static str,
+        ctx: &TaskContext<'_>,
+    ) -> Result<String, DataflowError> {
         // `response_path` is optional — omitting it discards the body — so the
         // default here is only ever consulted for a call that records nothing,
         // and the handler returns `Produced::nothing()` for those.
-        self.response_path.as_deref().unwrap_or("data")
+        Ok(self
+            .resolve_response_path(ctx)?
+            .unwrap_or_else(|| "data".to_string()))
     }
 }
 
 impl ConnectorInput for dataflow_rs::engine::functions::PublishKafkaConfig {
-    fn connector(&self, _handler: &'static str) -> Result<&str, DataflowError> {
-        Ok(&self.connector)
+    fn connector(&self, handler: &'static str) -> Result<&str, DataflowError> {
+        literal_connector(&self.connector, handler)
     }
 
-    fn output(&self) -> &str {
+    fn output(
+        &self,
+        _handler: &'static str,
+        _ctx: &TaskContext<'_>,
+    ) -> Result<String, DataflowError> {
         // A publish records nothing; this is never read.
-        "data"
+        Ok("data".to_string())
     }
+}
+
+/// The literal spelling of a `Template` that names a connector.
+///
+/// dataflow-rs 3.9 made every built-in parameter JSONLogic, so `connector` can
+/// now be an expression. Orion does not resolve one yet, and the refusal is
+/// explicit rather than silent: the connector name is read in the literal
+/// prologue, *before* the message is consulted (F58), and it is also what
+/// `Workflow::connector_refs` reports to the dependency endpoint, the package
+/// linter and the pool pre-warmer. Admitting a computed name means teaching all
+/// four, not just this line.
+fn literal_connector<'t>(
+    template: &'t dataflow_rs::Template,
+    handler: &'static str,
+) -> Result<&'t str, DataflowError> {
+    template.as_json().as_str().ok_or_else(|| {
+        DataflowError::Validation(format!(
+            "{handler} 'connector' must be a literal connector name — a computed connector              is not resolvable before the connector is looked up"
+        ))
+    })
 }
 
 /// What a handler's call produced.
@@ -178,8 +246,9 @@ pub trait ConnectorHandler: Send + Sync + 'static {
     /// and get the same wrong-type refusal as everything else.
     type Kind: ConnectorTarget;
 
-    /// The task input's shape. `Value` for the twelve handlers taking freeform
-    /// JSON; a typed config for `http_call` and `publish_kafka`.
+    /// The task input's shape. [`TemplatedInput`] for the twelve handlers
+    /// taking freeform JSON; a typed config for `http_call` and
+    /// `publish_kafka`.
     type Input: ConnectorInput;
 
     /// Everything read from the task input and the message before the
@@ -278,6 +347,10 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
     }
 
     fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+        // The input's own expression fields first — the wrapper is the only
+        // place holding both the input and `H::NAME` — then anything the
+        // handler compiles for itself.
+        input.compile(H::NAME, c)?;
         H::compile_input(input, c)
     }
 
@@ -309,7 +382,7 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
                 .map_err(dataflow_rs::DataflowError::from)?;
 
             if let Some(value) = produced.value {
-                apply_output(ctx, call.output, value);
+                apply_output(ctx, &call.output, value);
             }
             Ok(produced.outcome)
         })
@@ -331,7 +404,7 @@ mod tests {
     impl ConnectorHandler for Probe {
         const NAME: &'static str = "probe";
         type Kind = crate::connector::kind::Cache;
-        type Input = Value;
+        type Input = TemplatedInput;
         type Parsed = String;
 
         fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -341,7 +414,7 @@ mod tests {
         fn parse(
             &self,
             call: &ConnectorCall<'_>,
-            input: &Value,
+            input: &TemplatedInput,
             _ctx: &TaskContext<'_>,
         ) -> Result<Self::Parsed, HandlerError> {
             Ok(call.require_str(input, "key")?.to_string())
@@ -352,7 +425,7 @@ mod tests {
             _parsed: Self::Parsed,
             _conn: &crate::connector::CacheConnectorConfig,
             _call: &ConnectorCall<'_>,
-            _input: &Value,
+            _input: &TemplatedInput,
             _ctx: &mut TaskContext<'_>,
         ) -> Result<Produced, HandlerError> {
             Ok(Produced::nothing())
@@ -377,7 +450,7 @@ mod tests {
         let mut ctx = TaskContext::new(&mut message, &datalogic);
 
         let err = handler
-            .execute(&mut ctx, &serde_json::json!({}))
+            .execute(&mut ctx, &TemplatedInput::from(serde_json::json!({})))
             .await
             .expect_err("a task naming no connector cannot run");
         let msg = err.to_string();

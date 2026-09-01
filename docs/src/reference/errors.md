@@ -100,7 +100,7 @@ Every `error.code` the server emits, on both the admin and data planes:
 | `FORBIDDEN` | 403 | Access denied — a read-only admin key on a mutating method, an `Origin` outside a channel's `origin_allow_list`, or a `channel_call` relaying a target channel's 403. A channel **auth** failure is `UNAUTHORIZED` above |
 | `NOT_FOUND` | 404 | Resource not found |
 | `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
-| `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, an import collision, or an idempotency-key replay |
+| `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, an import collision, an idempotency-key replay, or a database unique/foreign-key constraint a workflow did not catch (see [integrity violations](./workflows.md#integrity-violations)) |
 | `PAYLOAD_TOO_LARGE` | 413 | The request body exceeded `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` (admin plane) — the caller's to fix, unlike `RESPONSE_TOO_LARGE` |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
 | `RATE_LIMITED` | 429 | Too many requests. The response carries a `Retry-After` header |

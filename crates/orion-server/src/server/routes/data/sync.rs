@@ -209,9 +209,6 @@ fn drain_shaped_response(
     if let Some(map) = control.get("headers").and_then(Value::as_object) {
         for (name, value) in map {
             let lower = name.to_ascii_lowercase();
-            let Some(value) = value.as_str() else {
-                continue;
-            };
             if !cfg.allows_header(&lower) {
                 tracing::warn!(
                     header = %lower,
@@ -219,8 +216,56 @@ fn drain_shaped_response(
                 );
                 continue;
             }
-            headers.push((lower, value.to_string()));
+            // An array sets the header once per element. `set-cookie` is the
+            // header that needs it — one response routinely issues a session
+            // cookie and clears a spent one — but nothing here is specific to
+            // it, and a repeated `link` or `vary` is equally legal.
+            match value {
+                Value::String(s) => headers.push((lower, s.clone())),
+                Value::Array(items) => {
+                    for item in items {
+                        match item.as_str() {
+                            Some(s) => headers.push((lower.clone(), s.to_string())),
+                            // Logged, not skipped silently: the bare `continue`
+                            // this replaces is why an array of cookies used to
+                            // vanish with no warning and no error (#298).
+                            None => tracing::warn!(
+                                header = %lower,
+                                "workflow response header array holds a non-string \
+                                 value; dropping that entry"
+                            ),
+                        }
+                    }
+                }
+                _ => tracing::warn!(
+                    header = %lower,
+                    "workflow response header value is neither a string nor an \
+                     array of strings; dropping it"
+                ),
+            }
         }
+    }
+
+    // The declarative cookie form, gated on its own switch rather than on the
+    // header allowlist. Appended after `headers` so a channel using both gets
+    // the raw `set-cookie` values first, in the order it wrote them.
+    if cfg.cookies {
+        if let Some(list) = control.get("cookies").and_then(Value::as_array) {
+            for spec in list {
+                match crate::channel::cookies::format_set_cookie(spec) {
+                    Ok(value) => headers.push(("set-cookie".to_string(), value)),
+                    Err(reason) => tracing::warn!(
+                        reason = %reason,
+                        "workflow set an invalid response cookie; dropping it"
+                    ),
+                }
+            }
+        }
+    } else if control.get("cookies").is_some() {
+        tracing::warn!(
+            "workflow set response cookies but the channel does not enable \
+             them (response.cookies); dropping them"
+        );
     }
 
     // `body_path` names a field of the (already drained) data document to send
@@ -260,18 +305,28 @@ fn drain_shaped_response(
 
 /// Build the HTTP response for a shaped channel.
 fn shaped_response(shaped: ShapedResponse) -> Response {
-    // JSON first, then the workflow's headers over the top: `HeaderMap::insert`
-    // replaces, so a workflow-set `content-type` wins without a pre-scan to
-    // find out whether it set one.
+    // JSON first, then the workflow's headers over the top.
+    //
+    // The first occurrence of a name `insert`s and every later one `append`s.
+    // Both halves matter: `insert` is what lets a workflow-set `content-type`
+    // replace the JSON default without a pre-scan, and `append` is what lets a
+    // name repeat. Using `insert` throughout — as this did — silently collapsed
+    // two `set-cookie` values into the last one (#298), so a response could
+    // never both issue a session cookie and clear a spent one.
     let mut response = json_response(shaped.status, shaped.body);
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (name, value) in &shaped.headers {
-        if let (Ok(name), Ok(value)) = (
+        let (Ok(header_name), Ok(header_value)) = (
             axum::http::HeaderName::try_from(name.as_str()),
             axum::http::HeaderValue::try_from(value.as_str()),
-        ) {
-            response.headers_mut().insert(name, value);
-        } else {
+        ) else {
             tracing::warn!(header = %name, "workflow response header is not valid HTTP; dropping it");
+            continue;
+        };
+        if seen.insert(name.as_str()) {
+            response.headers_mut().insert(header_name, header_value);
+        } else {
+            response.headers_mut().append(header_name, header_value);
         }
     }
     response
@@ -553,6 +608,28 @@ pub(super) async fn process_sync_for_channel(
             // so doing this unconditionally spent a full copy of the body plus a
             // serialize pass, per request, on nothing. Serialized from borrows so
             // the copy is the one the cache needs rather than a second one.
+            // A response that sets a cookie is never cached (#298). The cache
+            // key is built from the method, path params, query and payload —
+            // never from who is calling — so replaying a stored `set-cookie`
+            // hands the first caller's session to everyone who repeats their
+            // request for the TTL. The cookie is *output*, so folding it into
+            // the key would not help either.
+            //
+            // The whole store is suppressed rather than just the shaped
+            // serialization: falling through to the envelope body would cache
+            // a document a shaped channel cannot replay, quietly answering the
+            // second request with a different contract.
+            let sets_cookie = shaped
+                .as_ref()
+                .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
+            if sets_cookie {
+                tracing::debug!(
+                    channel = channel,
+                    "Response sets a cookie; not caching (it is per-caller)"
+                );
+            }
+            let cache_context = if sets_cookie { None } else { cache_context };
+
             let will_cache = cache_context.is_some() && !has_errors;
             let shaped_cache_json = shaped.as_ref().filter(|_| will_cache).and_then(|s| {
                 serde_json::to_string(&CachedShapedRef {

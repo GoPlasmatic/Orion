@@ -134,8 +134,15 @@ where
 }
 
 /// Channel names a workflow's `channel_call` tasks target statically, plus
-/// whether any call resolves its target dynamically (`channel_logic`), in
-/// which case the static list is incomplete by construction.
+/// whether any call computes its target, in which case the static list is
+/// incomplete by construction.
+///
+/// `channel` is one JSONLogic field carrying both cases, so the *shape* decides
+/// rather than which of two field names was used: a string is a literal channel
+/// name — a string is unambiguously itself in JSONLogic — and anything else is
+/// an expression that names nothing until a message is in hand. `channel_logic`
+/// is the pre-1.0 spelling of the same field and is read here for the same
+/// reason serde still accepts it.
 pub fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
     let mut targets = Vec::new();
     let mut dynamic = false;
@@ -147,14 +154,21 @@ pub fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
         else {
             continue;
         };
-        if let Some(target) = input.get("channel").and_then(|c| c.as_str())
-            && !target.is_empty()
-            && !targets.contains(&target)
-        {
-            targets.push(target);
-        }
-        if input.get("channel_logic").is_some_and(|l| !l.is_null()) {
-            dynamic = true;
+        let Some(channel) = input
+            .get("channel")
+            .or_else(|| input.get("channel_logic"))
+            .filter(|c| !c.is_null())
+        else {
+            continue;
+        };
+        match channel.as_str() {
+            Some(target) if !target.is_empty() => {
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+            Some(_) => {}
+            None => dynamic = true,
         }
     }
     (targets, dynamic)

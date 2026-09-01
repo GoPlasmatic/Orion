@@ -32,7 +32,7 @@
         "name": "channel_call",
         "input": {
           "channel": "customer-lookup",
-          "data_logic": { "var": "temp_data.lookup_request" },
+          "data": { "var": "temp_data.lookup_request" },
           "output": "data.customer"
         }
       }

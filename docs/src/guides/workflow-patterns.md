@@ -132,7 +132,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/order-enrichment \
 
 Four things this shows that are easy to get wrong:
 
-- **The payload is built first.** `channel_call`'s `data_logic` is a single
+- **The payload is built first.** `channel_call`'s `data` is a single
   expression, and JSONLogic has no object constructor — so the caller assembles
   the sub-request in `temp_data` with `map`, then passes it by reference.
 - **`output` receives the callee's whole data context**, not its HTTP envelope.
