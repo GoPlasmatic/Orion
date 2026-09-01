@@ -78,7 +78,7 @@ harness = true
 # the only lever, and it arrived in dataflow-rs 3.2.
 dataflow-rs = { version = "3.9.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 # `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.8.x is the
 # line that keeps sqlx 0.8 and MSRV 1.88; 0.9 moves to sqlx 0.9 / Rust 1.94.
