@@ -424,6 +424,18 @@ pub struct ChannelResponseConfig {
     /// the protocol layer owns.
     pub allowed_headers: Option<Vec<String>>,
 
+    /// Whether the workflow may set cookies through
+    /// `data._orion.response.cookies`.
+    ///
+    /// Its own switch rather than an entry in [`Self::allowed_headers`],
+    /// because that list *replaces* the default one: gating cookies on it
+    /// would mean a channel that sets a session cookie also has to re-list
+    /// `content-type` to keep serving JSON. Two settings, two questions.
+    ///
+    /// Off by default. A response carrying a cookie is never stored in the
+    /// response cache whatever this says — see `drain_shaped_response`.
+    pub cookies: bool,
+
     /// Per-channel replacement bodies for ingress guard rejections, keyed by
     /// HTTP status (or `"default"`) — see [`crate::channel::error_body`].
     ///

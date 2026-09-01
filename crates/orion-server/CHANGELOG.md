@@ -7,7 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A shaped response that sets a cookie is no longer stored in the response
+  cache** ([#298]). A shaped hit replays its status and headers, and the cache
+  key is built from the method, path parameters, query and payload — never from
+  who is calling. So a channel that both set a `Set-Cookie` and enabled the
+  response cache handed the first caller's session cookie to every caller who
+  repeated that request for the TTL. The cache write is now suppressed
+  entirely, however the cookie was set. Reachable before this only by naming
+  `set-cookie` in `allowed_headers`, which is why it went unnoticed; making
+  cookies a first-class feature is what would have made it ordinary.
+
 ### Added
+
+- **A shaped response can set more than one cookie** ([#298]). The control
+  block is a JSON object and a header name holds one value, so a response could
+  carry at most one `Set-Cookie` — and the obvious workaround, an array, hit a
+  bare `continue` with no warning and no error. Any flow that sets one cookie
+  and clears another in the same response was unreachable: finishing an OAuth
+  login, issuing an access/refresh pair, rotating a session, logging out.
+
+  A header value may now be an **array of strings**, sending the header once per
+  element, and a shaped channel that sets `response.cookies` gets a declarative
+  `data._orion.response.cookies` block — `name`, `value`, `path`, `domain`,
+  `max_age`, `expires`, `same_site`, `http_only`, `secure` — mirroring the
+  RFC 6265 parser already on the read side. Declaring the parts is what removes
+  the hand-built attribute string, which is where a missing `Secure` or a
+  `SameSite` that should have been `Lax` quietly comes from. A value carrying
+  `;`, a comma, CR or LF is refused rather than emitted, so a workflow
+  interpolating user input into a cookie cannot inject attributes or split the
+  header.
+
+  `response.cookies` is its own switch rather than an entry in
+  `allowed_headers`, because that list *replaces* the default one: gating
+  cookies on it would mean a channel setting a session cookie also has to
+  re-list `content-type` to keep serving JSON. The raw form still works for
+  anyone who wants it.
+
+- **A database constraint violation is its own failure, not a 500** ([#297]).
+  A unique index, a foreign key, a `NOT NULL` and a `CHECK` are rules an author
+  wrote deliberately, and a workflow could not tell any of them from a syntax
+  error, a deadlock or a dropped column: every failure from a database that was
+  successfully reached became `FUNCTION_ERROR` with status `500`. So an
+  endpoint whose whole job was to answer `409` when a submission is already in
+  flight answered `500` instead, and no spelling of a condition could fix it —
+  the error record carries a code and no message by design.
+
+  `metadata._orion_errors[0].code` now carries `integrity_unique`,
+  `integrity_foreign_key`, `integrity_not_null` or `integrity_check`, and a run
+  that does not catch one answers `409 CONFLICT` for the first two and
+  `400 VALIDATION_ERROR` for the other two. `db_read`, `db_write`, `data_query`
+  and `data_write` all report them.
+
+  The classification is the driver's own — sqlx maps each backend's SQLSTATE or
+  errno table onto one enum — so it means the same thing on SQLite, PostgreSQL
+  and MySQL rather than being a table Orion has to extend per backend. The
+  driver's *message* is not exposed: it names tables, columns, index names and
+  often the conflicting value, so it stays in the operator-only detail kept on
+  the trace. That means a workflow can tell what kind of rule was violated but
+  not which one; the constraint name is deliberately not surfaced, because
+  sqlx only populates it on PostgreSQL and a branch that silently stops
+  matching after a backend migration is worse than no branch.
+
+  Integrity failures declare themselves non-retryable, so a stream of duplicate
+  submissions cannot trip a connector's circuit breaker or fill the DLQ.
+
 
 - **Every `http_call` and `publish_kafka` parameter accepts JSONLogic**, from
   dataflow-rs 3.9. The one that changes what is expressible is
@@ -170,6 +235,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrap — so `brew style` failed on the tap. `orion-server` keeps its opening
   sentence and loses the trailing feature list; `orion-cli` is now one line.
   The published tap only picks this up at the next release.
+
+- **A repeated response header is no longer collapsed to its last value.**
+  `HeaderMap::insert` replaces, so even a correctly produced pair of
+  `set-cookie` values arrived as one. The first value for a name still replaces
+  what the platform set — a workflow's `content-type` wins, as documented — and
+  every later one is appended beside it.
+
+- **`db_read` no longer discards its driver error's classification.** The row
+  stream stringified each error before the failure type saw it, so every
+  `db_read` failure converted through the string path and was reported as a
+  backend failure whatever the driver had said. Invisible before [#297], since
+  every classification landed on that path anyway.
+
+[#297]: https://github.com/GoPlasmatic/Orion/issues/297
+[#298]: https://github.com/GoPlasmatic/Orion/issues/298
 
 ## [1.4.0] - 2026-08-29
 

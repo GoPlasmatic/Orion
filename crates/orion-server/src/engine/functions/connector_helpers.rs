@@ -465,6 +465,15 @@ pub enum QueryFailure {
     /// *"add a LIMIT to the query or raise the cap"* is useless once
     /// sanitised.
     Limit(String),
+    /// The backend was reached and refused the statement against a rule the
+    /// schema declares — a unique index, a foreign key, a NOT NULL, a CHECK.
+    ///
+    /// Its own variant because it is none of the others: not the operator's
+    /// problem (unlike [`Self::Backend`]), not transient (unlike a connect
+    /// failure), and fixable by the caller — a duplicate submission is a
+    /// routine 409, not a 500. The `String` is the driver's text and reaches
+    /// the operator-only `detail` alone, never a caller.
+    Integrity(crate::errors::IntegrityKind, String),
 }
 
 impl From<String> for QueryFailure {
@@ -473,11 +482,38 @@ impl From<String> for QueryFailure {
     }
 }
 
-/// A driver error is always a backend failure — the query reached the server
-/// and the server refused it. Spelled out so `?` keeps working inside an
-/// operation, which is the idiom every one of them uses.
+/// A driver error is a backend failure unless the driver says the server
+/// refused it against a declared constraint. Spelled out so `?` keeps working
+/// inside an operation, which is the idiom every one of them uses.
 impl From<sqlx::Error> for QueryFailure {
     fn from(e: sqlx::Error) -> Self {
+        // `kind()` is implemented by all three drivers over their own SQLSTATE
+        // / errno tables, so this stays one match rather than becoming a
+        // per-backend table here. It also survives `sqlx::Any`, which
+        // `data_query` and `data_write` run on: `Error::Database` carries the
+        // *concrete* driver's `DatabaseError` and the `any` module never
+        // re-boxes it.
+        //
+        // Matched rather than asked through `is_unique_violation()` and
+        // friends: those are thin wrappers over `kind()` and there is no
+        // predicate for a NOT NULL violation, which every driver reports and
+        // which is as caller-fixable as the other three.
+        if let Some(db) = e.as_database_error() {
+            use crate::errors::IntegrityKind as K;
+            let integrity = match db.kind() {
+                sqlx::error::ErrorKind::UniqueViolation => Some(K::Unique),
+                sqlx::error::ErrorKind::ForeignKeyViolation => Some(K::ForeignKey),
+                sqlx::error::ErrorKind::NotNullViolation => Some(K::NotNull),
+                sqlx::error::ErrorKind::CheckViolation => Some(K::Check),
+                // `ErrorKind` is `#[non_exhaustive]`. A kind this build does
+                // not know stays a backend failure — the conservative reading
+                // of a classification whose meaning it cannot see.
+                _ => None,
+            };
+            if let Some(integrity) = integrity {
+                return Self::Integrity(integrity, e.to_string());
+            }
+        }
         Self::Backend(e.to_string())
     }
 }
@@ -485,7 +521,7 @@ impl From<sqlx::Error> for QueryFailure {
 impl std::fmt::Display for QueryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Backend(m) | Self::Limit(m) => f.write_str(m),
+            Self::Backend(m) | Self::Limit(m) | Self::Integrity(_, m) => f.write_str(m),
         }
     }
 }
@@ -961,6 +997,22 @@ impl QueryBudget {
                 // a class; which `DataflowError` that becomes is decided once.
                 match e.into() {
                     QueryFailure::Limit(detail) => to_limit_error(detail),
+                    // Built as a `Service` error rather than through an
+                    // `ErrorClass`, like the breaker and channel refusals: the
+                    // class picks a `DataflowError` *variant*, and no variant
+                    // carries a code of its own. `HandlerError::from` keeps it
+                    // as `original`, so the `DataflowError::from` below hands
+                    // back exactly this error — the documented identity.
+                    //
+                    // The handler name goes on the operator-only side; what
+                    // the caller sees is the generic sentence the builder
+                    // picks by kind.
+                    QueryFailure::Integrity(integrity, text) => {
+                        HandlerError::from(crate::errors::integrity_dataflow_error(
+                            integrity,
+                            format!("{handler_name} query failed: {text}"),
+                        ))
+                    }
                     QueryFailure::Backend(text) => {
                         to_exec_error(format!("{handler_name} query failed: {text}"))
                     }
@@ -1124,6 +1176,51 @@ mod error_taxonomy_tests {
         assert!(
             matches!(err, DataflowError::FunctionExecution { .. }),
             "expected FunctionExecution, got {err:?}"
+        );
+    }
+
+    /// An `sqlx::Error` that never reached a database has no classification to
+    /// read, so it stays a backend failure.
+    ///
+    /// The arm this guards is the one an integrity check could most easily
+    /// break: `as_database_error()` returning `None` must fall through, not
+    /// panic and not guess.
+    #[test]
+    fn a_driver_error_with_no_database_error_stays_backend() {
+        let failure = QueryFailure::from(sqlx::Error::RowNotFound);
+        assert!(
+            matches!(failure, QueryFailure::Backend(_)),
+            "expected Backend, got {failure:?}"
+        );
+    }
+
+    /// The classification survives the trip to a `DataflowError` and back —
+    /// the property `QueryBudget::run` depends on, since it converts through
+    /// `HandlerError` on the way out.
+    #[test]
+    fn an_integrity_failure_keeps_its_kind_through_the_conversion() {
+        use crate::errors::IntegrityKind;
+
+        let err: DataflowError = crate::errors::integrity_dataflow_error(
+            IntegrityKind::Unique,
+            "db_write query failed: UNIQUE constraint failed: models.id",
+        );
+        let back: DataflowError = HandlerError::from(err).into();
+
+        assert_eq!(
+            back.kind(),
+            Some(crate::errors::kind::INTEGRITY_UNIQUE),
+            "the service kind is what a workflow branches on: {back:?}"
+        );
+        assert!(
+            !back.retryable(),
+            "an integrity failure must not be retried, or the circuit breaker \
+             counts it: {back:?}"
+        );
+        assert_eq!(
+            back.to_string(),
+            "The request conflicts with an existing record",
+            "Display is the caller-safe half and must not carry the driver text"
         );
     }
 }

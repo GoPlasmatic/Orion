@@ -144,6 +144,8 @@ response by opting in with `response.mode: "shaped"` in its `config_json`.
 The full contract — the `data._orion.response` control block, the header
 allowlist, soft-failure and caching semantics — is specified in
 [Channel Configuration › Response shaping](./channel-config.md#response-shaping).
+Setting cookies is part of it and needs its own opt-in; see
+[Cookies](./channel-config.md#cookies).
 
 ## Asynchronous Processing
 

@@ -405,3 +405,80 @@ async fn test_error_response_is_not_cached() {
         "error response was cached and replayed after recovery (N2): {after}"
     );
 }
+
+// ============================================================
+// A response that sets a cookie is per-caller and never cached (#298)
+// ============================================================
+
+/// The cache key is built from the method, path params, query and payload —
+/// never from who is calling. So a stored `Set-Cookie` would be replayed to
+/// every caller who repeats the request for the TTL, handing them the first
+/// caller's session.
+///
+/// The workflow stamps a counter into the cookie, so a replay is visible: two
+/// requests with identical payloads must produce two *different* cookies, which
+/// they can only do if the second one re-ran rather than being served from the
+/// cache.
+#[tokio::test]
+async fn a_shaped_response_that_sets_a_cookie_is_not_cached() {
+    let app = common::test_app().await;
+    create_connector(&app, cache_connector_memory("cookie-cache")).await;
+
+    let workflow = workflow_with_tasks(
+        "cookie-session",
+        json!([
+            {"id": "mint", "name": "Mint", "function": {"name": "map", "input": {"mappings": [
+                // `random` is Orion's own operator: a fresh value per run, so
+                // a cached replay is detectable rather than merely suspected.
+                {"path": "data.sid", "logic": {"random": ["uuid"]}}
+            ]}}},
+            {"id": "shape", "name": "Shape", "function": {"name": "map", "input": {"mappings": [
+                {"path": "data._orion.response.status", "logic": 200},
+                {"path": "data._orion.response.cookies", "logic": [
+                    {"name": "session", "value": {"var": "data.sid"},
+                     "path": "/", "http_only": true}
+                ]}
+            ]}}}
+        ]),
+    );
+
+    create_and_activate_channel_with_config(
+        &app,
+        "cookie-cache-ch",
+        workflow,
+        json!({
+            "response": { "mode": "shaped", "cookies": true },
+            "cache": { "enabled": true, "ttl_secs": 300, "connector": "cookie-cache" }
+        }),
+    )
+    .await;
+
+    let payload = json!({"data": {"same": "every time"}});
+    let mut cookies = Vec::new();
+    for _ in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/cookie-cache-ch",
+                Some(payload.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let set = resp
+            .headers()
+            .get("set-cookie")
+            .expect("the response sets a cookie")
+            .to_str()
+            .unwrap()
+            .to_string();
+        cookies.push(set);
+    }
+
+    assert_ne!(
+        cookies[0], cookies[1],
+        "the second identical request replayed the first caller's session \
+         cookie from the response cache: {cookies:?}"
+    );
+}

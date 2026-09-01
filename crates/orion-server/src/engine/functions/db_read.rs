@@ -123,7 +123,11 @@ impl ConnectorHandler for DbReadHandler {
             use futures::TryStreamExt;
             let mut stream = sqlx_query.fetch(&pool);
             let mut rows: Vec<AnyRow> = Vec::new();
-            while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+            // Not `.map_err(|e| e.to_string())`: stringifying here converted
+            // through `From<String>`, which is unconditionally a backend
+            // failure, so a constraint the driver had already classified was
+            // thrown away before `QueryFailure` could see it.
+            while let Some(row) = stream.try_next().await? {
                 if rows.len() >= max_rows {
                     // F42: classified so `timed_query` reports it as a 400 with
                     // the text intact rather than a 500 with the guidance
