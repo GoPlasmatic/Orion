@@ -1,18 +1,21 @@
-<!-- description: The four ways Orion reads the environment — ORION_* overrides, ${VAR} substitution, env:// references and declared vars and secrets — and where each resolves. -->
+<!-- description: The five ways Orion reads the environment — ORION_* overrides, ${VAR} substitution, env:// and vault:// references, var:// references, and declared vars and secrets — and where each resolves. -->
 # Environment Variables
 
-Orion reads the process environment four ways, and which one applies is decided by *where the value sits*, not by what the value is. The same value written into a config file, a connector and a workflow is not read the same way in all three.
+Orion reads the process environment five ways, and which one applies is decided by *where the value sits*, not by what the value is. The same value written into a config file, a connector and a workflow is not read the same way in all three.
 
 | Mechanism | Syntax | Where you write it | Read |
 |---|---|---|---|
 | Setting override | `ORION_SECTION__KEY` | the environment itself | once, at startup |
 | Text substitution | `${VAR}`, `${VAR:-default}`, `$$` | the config file, a connector `config` *(deprecated)* | before the text is parsed |
 | Secret reference | `env://VAR`, `vault://…` | selected parsed string fields | at every load and reload |
+| Var reference | `var://name` | a stored connector or channel config | at every load and reload |
 | Declared value | `[vars]` / `[secrets]` | the config file, read by name from a workflow | once, at startup |
 
 The first belongs to [Configuration Reference](./configuration.md): every setting has an override, and that page names them all. The rest are this page's subject. They are not interchangeable — `${VAR}` rewrites *text* before it is parsed, `env://` rewrites a *parsed value* after — which is why both reach a connector and only one reaches a config file.
 
-The fourth is different in kind: it does not rewrite anything. The operator declares a name in the config file, and a workflow reads that name. Which is why it is the one to reach for when a *workflow* needs a value that varies by environment — see [Values a workflow reads by name](#values-a-workflow-reads-by-name).
+The last is different in kind: it does not rewrite anything. The operator declares a name in the config file, and a workflow reads that name. Which is why it is the one to reach for when a *workflow* needs a value that varies by environment — see [Values a workflow reads by name](#values-a-workflow-reads-by-name).
+
+`var://name` is the same declaration reaching a *stored config* instead of a message. `[vars]` is one section listing everything that differs per instance; `var://` is how a connector or a channel — neither of which the config file can see — reads one. See [Parameterising a stored config](#parameterising-a-stored-config).
 
 ## `${VAR}` in a connector is deprecated
 
@@ -30,15 +33,19 @@ Rewriting is mechanical — `"${DB_URL}"` becomes `"env://DB_URL"` — with one 
 
 `env://` is not a template pass over your JSON. Each reference is resolved by the code that reads one particular field, so it works where a resolver is wired in and nowhere else:
 
-| Surface | `${VAR}` | `env://VAR` |
-|---|---|---|
-| Config file passed with `-c` | yes | no |
-| Connector `config` — any string field, at any depth | yes, deprecated | yes |
-| Channel `auth` — `keys`, `secret`, `secrets`, `jwt_keys[].key` | no | yes |
-| Workflow task `crypto` — `key` | no | yes |
-| Workflow task `jwt_sign` — `key` | no | yes |
-| Workflow task `jwt_verify` — `keys[].key`, `issuer`, `audience` | no | yes |
-| Everything else in a workflow | no | no |
+| Surface | `${VAR}` | `env://VAR`, `vault://…` | `var://name` |
+|---|---|---|---|
+| Config file passed with `-c` | yes | `[secrets]` values only | no — it *is* the declaration |
+| Connector `config` — any string field, at any depth | yes, deprecated | yes | yes |
+| Channel config — any field except `*_logic` | no | no¹ | yes |
+| Channel `auth` — `keys`, `secret`, `secrets`, `jwt_keys[].key` | no | yes | yes |
+| Workflow task `crypto` — `key` | no | yes | no² |
+| Workflow task `jwt_sign` — `key` | no | yes | no² |
+| Workflow task `jwt_verify` — `keys[].key`, `issuer`, `audience` | no | yes | no² |
+| Everything else in a workflow | no | no | no² |
+
+¹ Only the four `auth` fields on the row below resolve a secret reference; the rest of a channel config takes `var://` for the non-secret values it needs.
+² A workflow reads a declared value *by name* instead — `{"var": "metadata.vars.name"}` for a var, `{"secret": "name"}` for a secret. A stored config has no message to read from, which is why it needs a reference form and a workflow does not.
 
 A workflow carrying one anywhere else is **refused**: `POST /workflows`, `POST /workflows/validate` and `orion-server lint` all report `UNRESOLVED_SECRET_REF` naming the field, because `env://` at the head of a string has no reading in which it is data. Before that check existed the reference was simply a string — a task with `"path": "env://API_BASE"` requested a URL spelled `env://API_BASE` and failed with whatever the backend made of it.
 
@@ -48,6 +55,35 @@ A workflow carrying one anywhere else is **refused**: `POST /workflows`, `POST /
 The three workflow entries are exceptions with a reason: a signing key has nowhere else to live. Everything else that varies between environments belongs in a **connector**, or — since 1.3 — in `[secrets]`, which those same three fields also read. The workflow names the connector or the secret, the value lives outside the definition, and the workflow document is then byte-identical in dev, staging and production, which is what makes a package promotable at all.
 
 `vault://<api-path>#<field>` resolves wherever `env://` does, reading HashiCorp Vault when `VAULT_ADDR` and `VAULT_TOKEN` are set. The cloud schemes `aws-sm://`, `gcp-sm://` and `azure-kv://` are reserved: a reference using one is refused rather than handed to the backend as a literal credential. The forms are in [Connector Types › Secrets by reference](./connectors.md#secrets-by-reference).
+
+## Parameterising a stored config
+
+A connector and a channel live in the **database**, not in the config file — so `${VAR}` never reaches them, and promoting a package from staging to production would otherwise carry staging's TTLs, rate limits and hostnames with it. `var://name` is how one stored config reads a value the instance declares:
+
+```toml
+[vars]
+cache_ttl = 300
+rate_limit_rps = 50
+idp_issuer = "https://login.${ENVIRONMENT}.example.com"
+```
+
+```json
+{
+  "cache":      { "enabled": true, "ttl_secs": "var://cache_ttl" },
+  "rate_limit": { "requests_per_second": "var://rate_limit_rps", "burst": 10 }
+}
+```
+
+Three things follow from `var://` resolving *before* the config is typed:
+
+- **A var keeps its type.** `"ttl_secs": "var://cache_ttl"` becomes the number `300`, not the string `"300"` — which matters because the fields worth varying per instance are mostly numbers, and a string where a number belongs simply fails to parse. This is the one respect in which `var://` differs from `env://`, whose values are always strings.
+- **A reference is the whole string.** `"var://cache_ttl"` resolves; `"ttl is var://cache_ttl"` is that text.
+- **An undeclared name refuses the row.** The connector or channel does not load, and the error names the reference and lists what `[vars]` does declare. Passing `var://cache_ttl` through as its own text is how a TTL silently stops being a number.
+
+**A channel's `*_logic` fields are skipped** — `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic`. Those are JSONLogic evaluated per *message*, so a literal `"var://x"` inside one is a string the author wrote to compare against, not a value to substitute. Read a var there the way a workflow does, with `{"var": "metadata.vars.x"}`.
+
+> [!NOTE]
+> `var://` is for values that are **not** secret — a TTL, a limit, a hostname, a topic prefix. Vars are stamped into every message's metadata and appear in traces, which is the point. A credential belongs in `[secrets]` or on a connector; see [Which section a value belongs in](#values-a-workflow-reads-by-name).
 
 ## Values a workflow reads by name
 
@@ -77,7 +113,9 @@ The two are the same declaration model with opposite trace contracts, and that i
 | Where it lives at runtime | stamped into every message's `metadata` | held by the engine, never in a message |
 | In traces | **yes**, deliberately | **no**, structurally |
 | Values must be | literals | `env://` / `vault://` references |
-| Resolves in | any workflow expression | any workflow expression, plus the five secret-bearing function fields above |
+| A workflow expression reads it | yes | yes |
+| A channel guard reads it | yes | yes |
+| A stored connector or channel config reads it | yes, as `var://<name>` | no — put the credential on a connector, or in `auth` |
 
 **Vars are recorded on purpose.** An operator asking "which topic did this run publish to?" is asking to see them, and a deployment constant hidden from the trace makes that question unanswerable. They are stamped at every ingress — HTTP and Kafka alike — over whatever the caller sent, so an envelope-mode request cannot name its own topic prefix, and they keep the type they were written as.
 
@@ -86,7 +124,9 @@ The two are the same declaration model with opposite trace contracts, and that i
 Each section refuses the other's value shape, because either mistake is silent. A literal in `[secrets]` is a key in the deployment's file tree; a reference in `[vars]` reaches the workflow as the characters `env://PARTNER_HMAC_KEY`, because nothing resolves one on the way into metadata.
 
 > [!NOTE]
-> `{"secret": …}` resolves in workflow expressions only. A channel's `validation_logic` and `key_logic` compile on an engine with no secret store, so a reference there fails to compile and the channel is quarantined. Channel authentication takes `env://` instead.
+> `{"secret": …}` resolves in a **channel guard** too — `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic` — because secrets are start-time config, resolved before any channel loads, and the guard engine is built over the same store the workflow engines get. Channel authentication additionally takes `env://` in its four key-bearing fields.
+>
+> A stored *config value* is the one place a secret does not reach: `var://` resolves there and `{"secret": …}` does not. That is deliberate — a config value is not evaluated, so there is nothing to hold the result, and a credential a backend needs belongs on the connector that dials it.
 
 Offline, there is no config file to read either section from. `orion-server dry-run --secrets` and a `*.case.json` `secrets` block supply stand-in values; `metadata.vars` is written directly into the case's `metadata`. See [Test Workflows Offline](../build/testing.md).
 

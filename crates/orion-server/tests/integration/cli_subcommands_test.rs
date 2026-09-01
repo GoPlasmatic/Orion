@@ -73,6 +73,73 @@ fn lint_invalid_workflow_exits_nonzero_with_field_path() {
     let _ = std::fs::remove_file(&wf);
 }
 
+/// A connector task's scalar fields are JSONLogic, and its document-shaped
+/// fields are not — the two-tier split, asserted in one run.
+///
+/// `cache_read.key` composed with `cat` was impossible before dataflow-rs 3.9:
+/// the field folded `{"var": …}` and stored every other node as the literal
+/// object it was, so a per-tenant key had to be built in a `map` task first.
+/// `mongo_read.filter` still folds, and must, because one `$` comes off every
+/// key in a position the engine evaluates and a filter is where `$oid` lives.
+#[test]
+fn scalar_connector_fields_evaluate_and_documents_still_fold() {
+    let wf = write_temp(
+        r#"{
+        "name": "two-tier",
+        "tasks": [
+            {"id":"seed","name":"seed","function":{"name":"map","input":{"mappings":[
+                {"path":"data.tenant","logic":"acme"},
+                {"path":"data.id","logic":42}]}}},
+            {"id":"c","name":"c","function":{"name":"cache_read","input":{
+                "connector":"redis",
+                "key":{"cat":["tenant:",{"var":"data.tenant"},":order:",{"var":"data.id"}]},
+                "output":"data.hit"}}},
+            {"id":"m","name":"m","function":{"name":"mongo_read","input":{
+                "connector":"mongo","database":"d","collection":"orders",
+                "filter":{"tenant":{"var":"data.tenant"}},
+                "limit":{"+":[1,4]},
+                "output":"data.orders"}}}
+        ]
+    }"#,
+        "two-tier-wf",
+    );
+    let input = write_temp(r#"{}"#, "two-tier-input");
+    let stubs = write_temp(
+        r#"{"cache_read":{"*":{"cached":true}},"mongo_read":{"*":[]}}"#,
+        "two-tier-stubs",
+    );
+    let out = Command::new(orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input, "--stubs", &stubs])
+        .output()
+        .expect("invoke orion-server dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout={stdout}, stderr={stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+
+    // The expression field: evaluated, not stored as the operator node.
+    assert_eq!(
+        parsed["calls"]["cache_read"][0]["input"]["key"],
+        serde_json::json!("tenant:acme:order:42"),
+        "{stdout}"
+    );
+    // A scalar bound is an expression too.
+    assert_eq!(
+        parsed["calls"]["mongo_read"][0]["input"]["limit"], 5,
+        "{stdout}"
+    );
+    // The document field: `{"var": …}` folded, everything else left alone.
+    assert_eq!(
+        parsed["calls"]["mongo_read"][0]["input"]["filter"],
+        serde_json::json!({"tenant": "acme"}),
+        "{stdout}"
+    );
+
+    for f in [&wf, &input, &stubs] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
 #[test]
 fn dry_run_executes_workflow_and_prints_trace() {
     let wf = write_temp(
@@ -1418,6 +1485,91 @@ fn set_mode_warnings_gate_only_under_deny_warnings() {
         !ok,
         "--deny-warnings must gate the same way it does per-file"
     );
+}
+
+/// A `$`-prefixed key in a template position loses one `$` when the engine
+/// emits it, so a MongoDB update document composed in a `map` task turns from
+/// `{"$set": …}` into `{"set": …}` and the write replaces the document instead
+/// of updating it. Nothing fails — which is exactly why `lint` has to say so.
+#[test]
+fn set_mode_warns_about_a_silently_escaped_template_key() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
+              {"path":"data.update","logic":{"$set":{"seen":true}}}]}}}]}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "an advisory must not fail set mode: {report}");
+    assert!(report.contains("logic.escaped_template_key"), "{report}");
+}
+
+/// The doubled spelling is the documented fix, so warning about it would leave
+/// an author who has already fixed the problem with a warning they cannot clear
+/// and a `--deny-warnings` build that can never go green. The engine reports
+/// every `$`-prefixed key — right for an audit, wrong for a gate.
+#[test]
+fn the_deliberate_doubled_spelling_is_not_warned_about() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"w","name":"w","tasks":[
+            {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
+              {"path":"data.update","logic":{"$$set":{"seen":true}}}]}}}]}"#,
+    )
+    .unwrap();
+
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(
+        ok,
+        "doubling the prefix is the fix, and must clear the warning: {report}"
+    );
+}
+
+/// A destination is JSONLogic too, so one task can fan its results out by
+/// message content instead of writing every branch to a fixed path.
+///
+/// The clippy analysis has to stay honest about this: a computed destination is
+/// an *unknown* write, not the absence of one, or every overwrite rule
+/// concludes "nothing later writes this" from a step that might write anything.
+#[test]
+fn a_computed_output_destination_writes_where_the_message_says() {
+    let wf = write_temp(
+        r#"{
+        "name": "fan-out",
+        "tasks": [
+            {"id":"seed","name":"seed","function":{"name":"map","input":{"mappings":[
+                {"path":"data.tenant","logic":"acme"}]}}},
+            {"id":"r","name":"r","function":{"name":"cache_read","input":{
+                "connector":"redis","key":"k",
+                "output":{"cat":["data.by_tenant.",{"var":"data.tenant"}]}}}}
+        ]
+    }"#,
+        "fan-out-wf",
+    );
+    let input = write_temp(r#"{}"#, "fan-out-input");
+    let stubs = write_temp(r#"{"cache_read":{"*":{"hit":1}}}"#, "fan-out-stubs");
+    let out = Command::new(orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input, "--stubs", &stubs])
+        .output()
+        .expect("invoke orion-server dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(
+        parsed["data"]["by_tenant"]["acme"],
+        serde_json::json!({"hit": 1}),
+        "{stdout}"
+    );
+
+    for f in [&wf, &input, &stubs] {
+        let _ = std::fs::remove_file(f);
+    }
 }
 
 /// The repository's own packages are a real definition set and must lint

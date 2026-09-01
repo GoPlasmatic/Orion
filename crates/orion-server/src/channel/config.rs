@@ -582,8 +582,22 @@ pub struct ChannelCacheConfig {
     #[serde(default)]
     pub ttl_secs: Option<u64>,
     /// Fields used to compute the cache key.
+    ///
+    /// A list of payload field names. [`Self::key_logic`] is the general form
+    /// and takes precedence when both are set.
     #[serde(default)]
     pub cache_key_fields: Option<Vec<String>>,
+    /// JSONLogic computing the cache key, over the same context the rate
+    /// limiter's `key_logic` reads.
+    ///
+    /// `cache_key_fields` can only name payload fields, so a key that depends
+    /// on a header, the authenticated subject or a derived value was not
+    /// expressible — and a response cache keyed on less than what varies the
+    /// response is how one caller's body reaches another. This is the same
+    /// vocabulary `rate_limit.key_logic` already uses, so one channel does not
+    /// key two of its guards two different ways.
+    #[serde(default)]
+    pub key_logic: Option<Value>,
     /// Optional cache connector name for the response cache backend.
     #[serde(default)]
     pub connector: Option<String>,

@@ -141,6 +141,8 @@ pub struct ChannelRuntimeConfig {
     pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
     pub rate_limit_key_logic: Option<Logic>,
+    /// Compiled `cache.key_logic`, when the channel sets one.
+    pub cache_key_logic: Option<Logic>,
     /// Extra header names `rate_limit.key_logic` may read, lowercased once at
     /// load so the request path never allocates to normalize them. `None` means
     /// the built-in set only.
@@ -325,6 +327,10 @@ impl RegistrySnapshot {
 /// compiler cannot see, and the two production callers (boot and reload) build
 /// the identical set from `ServingComponents` and `AppState` respectively.
 pub struct ReloadDeps<'a> {
+    /// The instance's `[vars]`, for `var://` references in a stored channel
+    /// config. `None` declares nothing, so every reference fails and names the
+    /// channel.
+    pub vars: Option<&'a std::sync::Arc<serde_json::Value>>,
     pub connector_registry: &'a ConnectorRegistry,
     pub cache_pool: &'a CachePool,
     pub datalogic: &'a DatalogicEngine,
@@ -335,6 +341,7 @@ pub struct ReloadDeps<'a> {
 
 /// Everything [`ChannelRegistry::build_runtime`] needs beyond the channel row.
 struct RuntimeDeps<'a> {
+    vars: Option<&'a std::sync::Arc<serde_json::Value>>,
     connector_registry: &'a ConnectorRegistry,
     cache_pool: &'a CachePool,
     datalogic: &'a DatalogicEngine,
@@ -345,6 +352,57 @@ struct RuntimeDeps<'a> {
     jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
+}
+
+/// Refuse an object with more than one key anywhere inside a channel
+/// expression.
+///
+/// N3/N4 refuse a channel whose guard config stopped compiling rather than
+/// serve it with a weaker control than the one configured, and a multi-key
+/// object used to be caught by that: the datalogic engine Orion built directly
+/// rejected one outright.
+///
+/// The serving engine is now dataflow-rs's, so channel expressions speak the
+/// same dialect workflow expressions do — which is what lets them read
+/// `{"secret": …}`, and which also runs in **templating mode**, where a
+/// multi-key object is a legal template emitting a structured object. A typo'd
+/// `{"==": [1, 1], "!=": [1, 2]}` would compile to a truthy object and
+/// `validate_input` would then admit everything, silently — precisely the
+/// outcome N4 exists to prevent.
+///
+/// So the refusal is stated here rather than inherited from a compiler mode.
+/// Nothing is lost by it: every channel expression is a predicate or a key, and
+/// none has a reason to emit a structured object.
+/// Whether a channel-config key holds a JSONLogic expression.
+///
+/// Deployment references resolve at *load*; an expression is evaluated per
+/// *message*, against the message. Substituting into one would mix the two — a
+/// literal `"var://x"` inside a predicate is a string the author wrote to
+/// compare against, not a value to replace — so the walk stops here.
+///
+/// By suffix rather than by a list of four names: `_logic` is the convention
+/// every channel expression already follows (`validation_logic`,
+/// `authorization_logic`, and the rate-limit and cache `key_logic`), so one
+/// added later is covered without anyone remembering to add it.
+fn is_expression_field(key: &str) -> bool {
+    key.ends_with("_logic")
+}
+
+fn refuse_multi_key_object(logic: &serde_json::Value, field: &str) -> Result<(), String> {
+    match logic {
+        serde_json::Value::Object(map) if map.len() > 1 => Err(format!(
+            "{field} does not compile: an object with more than one key ({}) is not an \
+             expression — an operator call has exactly one",
+            map.keys().cloned().collect::<Vec<_>>().join(", ")
+        )),
+        serde_json::Value::Object(map) => map
+            .values()
+            .try_for_each(|v| refuse_multi_key_object(v, field)),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .try_for_each(|v| refuse_multi_key_object(v, field)),
+        _ => Ok(()),
+    }
 }
 
 /// In-memory registry of active channels, rebuilt on engine reload.
@@ -563,10 +621,12 @@ impl ChannelRegistry {
             reason,
         };
 
-        // N3: `unwrap_or_default()` here used to turn one typo in the
-        // stored config into a channel with no rate limit, validation,
-        // dedup, backpressure, timeout, or cache — and no log line.
-        let parsed_config: ChannelConfig =
+        // Deployment references resolve *before* the config is typed, because
+        // what they stand in for is often not a string: a `var://` TTL has to
+        // arrive as a number or `ttl_secs: Option<u64>` refuses it. Resolving
+        // into the JSON and parsing afterwards means every field is
+        // parameterisable, not just the string ones.
+        let mut raw: serde_json::Value =
             serde_json::from_str(&channel.config_json).map_err(|e| {
                 tracing::error!(
                     channel = %channel.name,
@@ -575,6 +635,31 @@ impl ChannelRegistry {
                 );
                 issue(format!("config_json does not parse: {e}"))
             })?;
+        crate::config::vars::resolve_var_references(
+            &mut raw,
+            deps.vars.map(|v| v.as_ref()),
+            &is_expression_field,
+        )
+        .map_err(|e| {
+            tracing::error!(
+                channel = %channel.name,
+                error = %e,
+                "Refusing to load channel: unresolved var reference"
+            );
+            issue(e)
+        })?;
+
+        // N3: `unwrap_or_default()` here used to turn one typo in the
+        // stored config into a channel with no rate limit, validation,
+        // dedup, backpressure, timeout, or cache — and no log line.
+        let parsed_config: ChannelConfig = serde_json::from_value(raw).map_err(|e| {
+            tracing::error!(
+                channel = %channel.name,
+                error = %e,
+                "Refusing to load channel: config_json does not parse"
+            );
+            issue(format!("config_json does not parse: {e}"))
+        })?;
 
         let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
             parsed_config.rate_limit.as_ref().map(|rl| {
@@ -625,6 +710,8 @@ impl ChannelRegistry {
             .as_ref()
             .and_then(|rl| rl.key_logic.as_ref())
             .map(|logic| {
+                refuse_multi_key_object(logic, "rate_limit.key_logic")
+                    .map_err(|e| issue(e.clone()))?;
                 deps.datalogic.compile(logic).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
@@ -632,6 +719,26 @@ impl ChannelRegistry {
                         "Refusing to load channel: rate_limit.key_logic does not compile"
                     );
                     issue(format!("rate_limit.key_logic does not compile: {e}"))
+                })
+            })
+            .transpose()?;
+
+        // Same call as N5 above: a response-cache key that silently fell back
+        // to the whole-payload hash would serve one caller's body to another
+        // whenever the key was meant to narrow on something else.
+        let cache_key_logic = parsed_config
+            .cache
+            .as_ref()
+            .and_then(|c| c.key_logic.as_ref())
+            .map(|logic| {
+                refuse_multi_key_object(logic, "cache.key_logic").map_err(|e| issue(e.clone()))?;
+                deps.datalogic.compile(logic).map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: cache.key_logic does not compile"
+                    );
+                    issue(format!("cache.key_logic does not compile: {e}"))
                 })
             })
             .transpose()?;
@@ -692,6 +799,7 @@ impl ChannelRegistry {
             .validation_logic
             .as_ref()
             .map(|logic| {
+                refuse_multi_key_object(logic, "validation_logic").map_err(|e| issue(e.clone()))?;
                 deps.datalogic.compile(logic).map_err(|e| {
                     tracing::error!(
                         channel = %channel.name,
@@ -783,6 +891,7 @@ impl ChannelRegistry {
             rate_limiter,
             rate_limit_key_logic,
             rate_limit_key_headers,
+            cache_key_logic,
             validation_logic,
             backpressure_semaphore,
             dedup_store,
@@ -826,6 +935,7 @@ impl ChannelRegistry {
         engine_issues: Vec<ChannelLoadIssue>,
     ) {
         let ReloadDeps {
+            vars,
             connector_registry,
             cache_pool,
             datalogic,
@@ -837,6 +947,7 @@ impl ChannelRegistry {
         let _reload_guard = self.reload_lock.lock().await;
 
         let deps = RuntimeDeps {
+            vars,
             connector_registry,
             cache_pool,
             datalogic,
@@ -1049,6 +1160,7 @@ mod tests {
                 .reload(
                     channels,
                     ReloadDeps {
+                        vars: None,
                         connector_registry: &self.connectors,
                         cache_pool: &self.cache_pool,
                         datalogic: &self.datalogic,
@@ -1135,6 +1247,7 @@ mod tests {
             .reload(
                 &[channel],
                 ReloadDeps {
+                    vars: None,
                     connector_registry: &registry_with_cache("ro-cache", false).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),
@@ -1168,6 +1281,7 @@ mod tests {
             .reload(
                 &[channel],
                 ReloadDeps {
+                    vars: None,
                     connector_registry: &registry_with_cache("rw-cache", true).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),
@@ -1199,6 +1313,7 @@ mod tests {
             .reload(
                 &[channel],
                 ReloadDeps {
+                    vars: None,
                     connector_registry: &registry_with_cache("ro-cache", false).await,
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),

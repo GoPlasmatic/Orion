@@ -11,6 +11,7 @@ use super::connector_helpers::{
     to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CachePool, CachePurpose};
 use crate::engine::HandlerError;
@@ -34,7 +35,7 @@ pub struct CacheWrite {
 impl ConnectorHandler for CacheWriteHandler {
     const NAME: &'static str = "cache_write";
     type Kind = crate::connector::kind::Cache;
-    type Input = Value;
+    type Input = TemplatedInput;
     type Parsed = CacheWrite;
 
     fn registry(&self) -> &Arc<ConnectorRegistry> {
@@ -44,7 +45,7 @@ impl ConnectorHandler for CacheWriteHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let key = resolve_required_str(input, "key", call.name, ctx)?;
@@ -77,7 +78,7 @@ impl ConnectorHandler for CacheWriteHandler {
         write: Self::Parsed,
         conn: &crate::connector::CacheConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         // Workflow-purpose namespace (S19): a memory backend here can never
@@ -120,7 +121,7 @@ impl ConnectorHandler for CacheWriteHandler {
 /// value that resolves to something uninterpretable is an error rather than a
 /// silent fall-through to a key that never expires.
 fn resolve_ttl_secs(
-    input: &Value,
+    input: &TemplatedInput,
     name: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Option<u64>, DataflowError> {
@@ -168,10 +169,10 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "key",
-        description: "Cache key to set. Accepts {\"var\": \"path\"} to read the value from the message.",
+        description: "Cache key to set. JSONLogic: a literal, or an expression over the message.",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -184,9 +185,9 @@ pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "ttl_secs",
-        description: "Time-to-live in seconds. Omit for no expiry. Accepts {\"var\": \"path\"} to read the value from the message.",
+        description: "Time-to-live in seconds. Omit for no expiry. JSONLogic: a literal, or an expression over the message.",
         kind: FieldKind::Number,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];

@@ -181,10 +181,16 @@ pub async fn build_engine_components(
     repos: &Repositories,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
 ) -> Result<EngineComponents, Box<dyn std::error::Error>> {
+    // `[vars]` before the connectors that may reference them. Pure config —
+    // no resolution, no I/O — so it costs nothing to have it early, and the
+    // registry then carries it into every reload rather than being handed it
+    // per call.
+    let vars = config.vars.to_json().map(Arc::new);
+
     // Load connectors
-    let connector_registry = Arc::new(ConnectorRegistry::new(
-        config.engine.circuit_breaker.clone(),
-    ));
+    let connector_registry = Arc::new(
+        ConnectorRegistry::new(config.engine.circuit_breaker.clone()).with_vars(vars.clone()),
+    );
     let connector_count = connector_registry
         .load_from_repo(repos.connectors.as_ref())
         .await?;
@@ -234,14 +240,6 @@ pub async fn build_engine_components(
         config.jwt.allow_private_jwks_urls,
     ));
 
-    // Shared datalogic engine — used by handlers for template evaluation and
-    // by the channel registry to pre-compile per-channel JSONLogic. Carries
-    // Orion's custom operators so channel-level expressions speak the same
-    // vocabulary as workflow logic.
-    let datalogic_engine = Arc::new(
-        crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build(),
-    );
-
     // Resolve `[secrets]` before anything builds an engine. A reference that
     // cannot be resolved stops the boot: handing one onward as its own literal
     // text is the failure the reference syntax exists to prevent, and an
@@ -249,7 +247,36 @@ pub async fn build_engine_components(
     // `env://PARTNER_HMAC_KEY` fails at the remote system with nothing
     // pointing back here.
     let secrets = Arc::new(crate::engine::ResolvedSecrets::resolve(&config.secrets).await?);
-    let vars = config.vars.to_json().map(Arc::new);
+
+    // Shared datalogic engine — used by handlers for template evaluation and
+    // by the channel registry to pre-compile per-channel JSONLogic
+    // (`validation_logic`, `authorization_logic`, the rate-limit and cache
+    // `key_logic`).
+    //
+    // Borrowed from a dataflow-rs engine rather than built directly, which is
+    // what lets a channel expression read `{"secret": …}`. The operator is
+    // dataflow-rs's and its implementation is crate-private — but an *engine*
+    // carrying it is not, so Orion takes one built over the same store the
+    // workflow engines get instead of mirroring the operator and risking two
+    // implementations that disagree. The engine has no workflows and no
+    // handlers; only its datalogic engine is kept.
+    //
+    // Secrets are start-time config, resolved above, so there is no ordering
+    // reason a channel guard should see fewer of them than a workflow does.
+    let datalogic_engine = Arc::clone(
+        crate::engine::operators::with_orion_engine_defaults(
+            dataflow_rs::Engine::builder(),
+            &secrets,
+        )
+        .build()
+        .map_err(|e| {
+            crate::errors::OrionError::internal_from(
+                "Failed to build the shared expression engine",
+                e,
+            )
+        })?
+        .datalogic(),
+    );
     if !secrets.is_empty() {
         tracing::info!(
             names = ?secrets.names().collect::<Vec<_>>(),
@@ -391,6 +418,7 @@ impl EngineComponents {
             .reload(
                 &channels,
                 crate::channel::ReloadDeps {
+                    vars: serving.vars.as_ref(),
                     connector_registry: &serving.connector_registry,
                     cache_pool: &serving.cache_pool,
                     datalogic: &serving.datalogic,

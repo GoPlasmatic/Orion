@@ -7,7 +7,160 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Every `http_call` and `publish_kafka` parameter accepts JSONLogic**, from
+  dataflow-rs 3.9. The one that changes what is expressible is
+  `http_call.headers`: a header *value* was a `String` on the config, so a
+  bearer token or a correlation id had to be injected by the service layer, and
+  it can now be computed —
+  `{"Authorization": {"cat": ["Bearer ", {"secret": "partner_token"}]}}`.
+  `publish_kafka.topic` follows, so one task can route a stream by message
+  content instead of needing one task per destination. `path`, `body`,
+  `body_format`, `response_format`, `output` and `timeout_ms` are expressions
+  too. A literal is JSONLogic for itself and folds once when the engine is
+  built, so the static spelling is unchanged and costs nothing per message.
+  A computed `connector` is refused for now, and says so: the name is read
+  before the connector is looked up, and it is also what the dependency
+  endpoint, the activation gate and the connector rename guard report.
+- **`var://name` — a stored connector or channel config reads a `[vars]`
+  value.** Both live in the database, so `${VAR}` never reached them and only
+  four channel `auth` fields resolved anything at all; promoting a package from
+  staging carried staging's TTLs, rate limits and hostnames with it. `var://`
+  is a fourth resolver alongside `env://` and `vault://`, with one difference
+  that is the point of it: **a var keeps its type**, so
+  `"ttl_secs": "var://cache_ttl"` arrives as the number `300` rather than the
+  string `"300"` — the config knobs worth varying per instance are mostly
+  numbers, and a string where a number belongs simply will not parse.
+
+  A channel's `*_logic` fields are skipped: those are evaluated per message,
+  where a literal `"var://x"` is a string the author wrote to compare against.
+  An undeclared name refuses the row and lists what *is* declared, rather than
+  passing the reference through as its own text. Authoring-time validation does
+  not shape-check a referenced field, for the same reason it does not resolve a
+  secret reference — `lint` and `package lint` must pass on a CI runner that
+  holds neither.
+- **A channel guard can read `{"secret": …}`.** `validation_logic`,
+  `authorization_logic` and the rate-limit and cache `key_logic` compiled on an
+  engine Orion built directly, which carries Orion's operators but not
+  dataflow-rs's `secret` — so a guard was quarantined for naming a secret a
+  workflow on the same instance could read. Secrets are start-time config,
+  resolved before any channel loads, so the limit was an accident of
+  construction order rather than a constraint. `bootstrap` now takes the
+  datalogic engine out of a dataflow-rs engine built over the same store: one
+  implementation, so the two surfaces cannot disagree about what a name
+  resolves to.
+
+  That engine also runs in **templating mode**, where a multi-key object is a
+  legal template rather than a compile error — so the N4 refusal that used to
+  fall out of the compiler is now stated explicitly. A typo'd
+  `{"==": [1,1], "!=": [1,2]}` would otherwise compile to a truthy object and
+  admit every request, which is exactly what N4 exists to prevent.
+- **A task's write destination is JSONLogic.** `output` (and `http_call`'s
+  `response_path`) can be computed, so one task fans its results out by message
+  content — `{"output": {"cat": ["data.by_tenant.", {"var": "data.tenant"}]}}` —
+  instead of needing a branch per destination. The clippy analysis was taught
+  the difference between a destination it cannot name and no destination at
+  all: `Writes::uncertain` mirrors `Reads::uncertain`, and the three rules that
+  reason about overwrites stay silent rather than concluding "nothing later
+  writes this" from a step that might write anything.
+- **`send_email` header values, `jwt_sign.issuer`/`kid`,
+  `jwt_verify.leeway_secs`, `channel_call.timeout_ms`, `mongo_write.upsert`/
+  `ordered` and `mongo_aggregate.allow_disk_use` are JSONLogic**, closing
+  inconsistencies where the same concept was computable in one function and
+  literal in its twin — an `http_call` header could carry a computed
+  correlation id and an email header could not; a verified issuer could be
+  computed and a signed one could not.
+- **Key material is JSONLogic.** `crypto.key` and `jwt_sign.key` evaluate like
+  any other parameter, so `{"secret": "name"}` resolves through the engine's
+  own reserved operator and can be *composed*:
+  `{"cat": [{"secret": "prefix"}, "-", {"var": "metadata.vars.suffix"}]}`. A
+  key authored as a plain string keeps the legacy meaning exactly — a literal,
+  or an `env://` / `vault://` reference resolved at execution — because the two
+  are told apart by what the author wrote, not by what it produces: otherwise a
+  secret whose value began with `env://` would be resolved twice.
+- **A channel's response cache can key on JSONLogic.** `cache.key_logic` is the
+  general form of `cache_key_fields`, over the same context
+  `rate_limit.key_logic` already reads, so one channel no longer keys two of
+  its guards two different ways. A key that depended on a header or the
+  authenticated subject was not expressible before, and a response cache keyed
+  on less than what varies the response is how one caller's body reaches
+  another. An expression that does not compile quarantines the channel rather
+  than falling back to the whole-payload hash.
+- **A connector task's scalar fields are JSONLogic.** A cache or storage key, an
+  email address, subject or body, a TTL, a MongoDB `limit`/`skip`, a JWT
+  audience or lifetime, the data going into `crypto` — 29 fields across 15
+  functions — are now compiled once when the engine is built and evaluated
+  against the message, instead of being walked per message by a fold that
+  recognised `{"var": …}` and nothing else. A per-tenant cache key is now one
+  task rather than a `map` task and a reference:
+  `{"cat": ["tenant:", {"var": "data.tenant"}, ":order:", {"var": "data.id"}]}`.
+  `{"secret": "name"}` resolves in these fields too, so a credential can be
+  composed into a subject line or a signed value without a connector.
+- **The document-shaped fields deliberately do not change.** A MongoDB
+  `filter`/`update`/`document`/`documents`/`pipeline`/`projection`/`sort`, a
+  dialect or SQL `params`, `jwt_sign.claims` and `cache_write.value` keep the
+  `{"var": …}` fold. Those are exactly the fields that carry `$set`, `$oid`,
+  `$date` and `$ref`, and one `$` is stripped from every key in a position the
+  engine evaluates — so making them expressions would silently rewrite every
+  stored definition that was not hand-corrected. Which fields are which is one
+  declaration, `FieldSchema::template_at`, read by the runtime, the offline
+  stub, authoring validation and the clippy analysis alike.
+- **`lint` and `preflight` report a `$`-prefixed key that the engine will
+  silently rewrite** — `[logic.escaped_template_key]`, and preflight checklist
+  row 14. dataflow-rs 3.9 strips one `$` from *every* key in a template
+  position, so a `{"$set": …}` MongoDB update composed in a `map` task is
+  emitted as `{"set": …}` and the write replaces the document instead of
+  updating it. Nothing fails at any gate, which is why it is worth reporting
+  mechanically. The fix is to double the prefix (`$$set`); the doubled spelling
+  is deliberately *not* reported, so fixing the problem clears the warning and
+  a `--deny-warnings` gate can go green. Custom-handler inputs are unaffected —
+  a `mongo_write` update written literally in the task is not a template
+  position — so this is about documents composed upstream of one.
+
 ### Changed
+
+- **`channel_call`'s `channel`/`channel_logic` and `data`/`data_logic` pairs
+  are each one field.** A literal is JSONLogic for itself, so a second field
+  saying "this one is an expression" only ever described the type of a value
+  the compiler can see for itself — which is why dataflow-rs collapsed the same
+  shape on its own configs in 3.9. `channel_logic` and `data_logic` remain
+  accepted as aliases, so existing workflows load unchanged; supplying both
+  spellings of one field is a duplicate-field error rather than a precedence
+  rule. What made a target dynamic is now the *shape* of `channel` rather than
+  which key was used, and `/dependencies` reports `has_dynamic_channel_calls`
+  on that basis. A dry run now records the channel a computed call actually
+  names, so a workflow that fans out to three channels can stub them separately
+  instead of falling back to one `"*"` entry.
+- **An input field the engine evaluates is no longer type-checked against its
+  authored JSON.** A `Template` field's declared kind describes what it must
+  *evaluate to*, and an object or array there may be an operator call — so only
+  a scalar, which is unambiguously itself in JSONLogic, is still checked
+  directly. Without this the runtime would resolve a computed `timeout_ms` that
+  workflow validation refused.
+- **A computed connector is refused at authoring time, not just at runtime.**
+  `connector` became a `Template` upstream like every other parameter, so the
+  ordinary kind check no longer refuses an expression there. Orion needs a name
+  it can read without a message: the connector is resolved before the message is
+  consulted, and the same static name is what the dependency endpoint reports,
+  what the activation gate checks, what refuses a rename of a connector still in
+  use, and what a package's `requires` list is built from. Admitting one means
+  teaching all five, so the refusal is now explicit and says why.
+- **A `{"secret": …}` node is no longer an authoring error in a field the engine
+  evaluates.** The rule exists because a folded field would send the node on as
+  an object; in an evaluated field it resolves, so firing there refused a task
+  that works.
+- **dataflow-rs 3.9.0** (datalogic-rs 5.4).
+
+### Fixed
+
+- **An informational engine finding no longer quarantines a channel.** The
+  load-time screen took every issue `check_workflow` reported as a reason the
+  workflow could not run — correct while every code it returned was also a
+  build refusal, and wrong as of dataflow-rs 3.9's `ESCAPED_TEMPLATE_KEY`,
+  which `Engine::build` never refuses. It fires on *correct* code too: `$$set`
+  is the documented fix, so a workflow whose author had done the right thing
+  was refused at load and took its channel down with it.
 
 - **The crate descriptions are short enough for the generated Homebrew
   formula to pass `brew style`.** A formula's `desc` is the crate's

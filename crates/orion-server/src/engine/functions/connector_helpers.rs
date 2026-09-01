@@ -6,6 +6,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
+use super::templated_input::TemplatedInput;
 use crate::connector::ConnectorTarget;
 use crate::connector::{
     ConnectorConfig, ConnectorRegistry, EsConnectorConfig, HttpOperationGates, OperationGates,
@@ -194,8 +195,9 @@ pub struct ConnectorCall<'a> {
     /// The channel the message arrived on — read before the body takes `ctx`
     /// mutably, which is why it is owned.
     pub channel: String,
-    /// Where the handler's result is written, defaulting to `data`.
-    pub output: &'a str,
+    /// Where the handler's result is written, defaulting to `data`. Owned
+    /// because a computed destination is produced, not borrowed.
+    pub output: String,
 }
 
 impl<'a> ConnectorCall<'a> {
@@ -221,13 +223,17 @@ impl<'a> ConnectorCall<'a> {
             name,
             connector: input.connector(name)?,
             channel: super::extract_channel(ctx.message()).to_string(),
-            output: input.output(),
+            output: input.output(name, ctx)?,
         })
     }
 
     /// [`require_str_field`] with the handler name already filled in.
-    pub fn require_str<'i>(&self, input: &'i Value, field: &str) -> Result<&'i str, DataflowError> {
-        require_str_field(input, field, self.name)
+    pub fn require_str<'i>(
+        &self,
+        input: &'i TemplatedInput,
+        field: &str,
+    ) -> Result<&'i str, DataflowError> {
+        require_str_field(input.raw(), field, self.name)
     }
 
     /// Resolve the target connector and apply its operation gate, if it has
@@ -368,6 +374,36 @@ pub fn extract_output_path(input: &Value) -> &str {
         .get("output")
         .and_then(|v| v.as_str())
         .unwrap_or("data")
+}
+
+/// Where a handler's result is written, resolved against the message.
+///
+/// The `output` field is JSONLogic like the rest, so a task can fan its results
+/// out by message content. A destination is a *path*, so the result is coerced
+/// with the same plain-string rule a path gets everywhere else: a string yields
+/// its contents, anything else its compact JSON form — which is nonsense as a
+/// path and is refused rather than written to.
+///
+/// # Errors
+///
+/// [`DataflowError`] when the expression fails, or resolves to something that
+/// cannot be a path.
+pub fn resolve_output_path(
+    input: &TemplatedInput,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<String, DataflowError> {
+    match input.value_of("output", handler_name, ctx) {
+        None => Ok("data".to_string()),
+        Some(value) => match value? {
+            Value::Null => Ok("data".to_string()),
+            Value::String(path) if !path.is_empty() => Ok(path),
+            other => Err(DataflowError::Validation(format!(
+                "'output' must resolve to a non-empty dotted path, got {}",
+                json_type_name(&other)
+            ))),
+        },
+    }
 }
 
 /// The backend was reached and the operation failed.
@@ -540,6 +576,13 @@ pub fn apply_output(ctx: &mut TaskContext<'_>, output_path: &str, new_value: Val
 /// message. Handlers that need message data must therefore resolve it
 /// themselves.
 ///
+/// **This is now the minority path.** A field the registry marks
+/// `template_at` is a real compiled expression — see
+/// [`TemplatedInput`] — and this fold
+/// is what the document-shaped fields keep, because evaluating them would
+/// strip a `$` from every key of a MongoDB operator or an extended-JSON
+/// wrapper.
+///
 /// * `{"var": "data.id"}` → the value at that dot-path over the unified
 ///   `{data, metadata, temp_data}` context, or `null` when it does not resolve.
 /// * `{"var": ["data.id", <default>]}` → the same, falling back to `<default>`
@@ -619,12 +662,12 @@ pub fn resolve_declared_field(
 /// object. Shared by `data_query` and `data_write`, which fold the returned map
 /// into the `{"param": ..}` nodes of a filter before translation.
 pub fn resolve_params(
-    params: Option<&Value>,
+    input: &TemplatedInput,
     handler_name: &str,
     ctx: &TaskContext<'_>,
 ) -> Map<String, Value> {
-    match params.map(|p| resolve_declared_field(handler_name, "params", p, ctx)) {
-        Some(Value::Object(map)) => map,
+    match input.value_of("params", handler_name, ctx) {
+        Some(Ok(Value::Object(map))) => map,
         _ => Map::new(),
     }
 }
@@ -635,17 +678,17 @@ pub fn resolve_params(
 /// unresolvable `{"var": ..}` surfaces as an error instead of silently becoming
 /// the literal key `"null"`.
 pub fn resolve_required_str(
-    input: &Value,
+    input: &TemplatedInput,
     field: &str,
     handler_name: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<String, DataflowError> {
-    let Some(raw) = input.get(field) else {
+    let Some(value) = input.value_of(field, handler_name, ctx) else {
         return Err(DataflowError::Validation(format!(
             "{handler_name} requires '{field}' field"
         )));
     };
-    match resolve_declared_field(handler_name, field, raw, ctx) {
+    match value? {
         Value::String(s) => Ok(s),
         Value::Number(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
@@ -678,23 +721,37 @@ pub fn parse_duration_secs(s: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("'{s}' overflows"))
 }
 
-/// Seconds from an already-fetched duration value: integer seconds or a
-/// [`parse_duration_secs`] string, either possibly a `{"var": ..}` node.
+/// Seconds from a duration field: integer seconds or a
+/// [`parse_duration_secs`] string, either possibly computed.
 /// Bounds stay with the caller — they differ per field.
+///
+/// `None` when the task does not set the field, so a caller with a default
+/// applies it rather than being handed one.
 pub fn resolve_duration_secs(
-    raw: &Value,
+    input: &TemplatedInput,
     ctx: &TaskContext<'_>,
     handler_name: &str,
     field: &str,
-) -> Result<u64, DataflowError> {
-    match resolve_declared_field(handler_name, field, raw, ctx) {
-        Value::Number(n) => n.as_u64().ok_or_else(|| {
-            DataflowError::Validation(format!(
-                "{handler_name}: '{field}' must be a positive integer"
-            ))
-        }),
+) -> Result<Option<u64>, DataflowError> {
+    let Some(value) = input.value_of(field, handler_name, ctx) else {
+        return Ok(None);
+    };
+    match value? {
+        // An expression whose path is absent resolves to null, which is the
+        // same statement as "the task did not set this" — so the caller's
+        // default applies rather than a type error about a field nobody wrote.
+        Value::Null => Ok(None),
+        Value::Number(n) => n
+            .as_u64()
+            .ok_or_else(|| {
+                DataflowError::Validation(format!(
+                    "{handler_name}: '{field}' must be a positive integer"
+                ))
+            })
+            .map(Some),
         Value::String(s) => parse_duration_secs(&s)
-            .map_err(|e| DataflowError::Validation(format!("{handler_name}: '{field}': {e}"))),
+            .map_err(|e| DataflowError::Validation(format!("{handler_name}: '{field}': {e}")))
+            .map(Some),
         _ => Err(DataflowError::Validation(format!(
             "{handler_name}: '{field}' must be seconds (integer) or a duration like \"24h\""
         ))),
@@ -704,18 +761,89 @@ pub fn resolve_duration_secs(
 /// Resolve an optional input field to a string: absent, null, or resolving to
 /// null → `None`; a resolved non-string is an error naming the field.
 pub fn resolve_optional_str(
-    input: &Value,
+    input: &TemplatedInput,
     field: &str,
     handler_name: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Option<String>, DataflowError> {
-    match input.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(raw) => match resolve_declared_field(handler_name, field, raw, ctx) {
+    match input.value_of(field, handler_name, ctx) {
+        None => Ok(None),
+        Some(value) => match value? {
             Value::String(s) => Ok(Some(s)),
             Value::Null => Ok(None),
             _ => Err(DataflowError::Validation(format!(
                 "{handler_name}: '{field}' must resolve to a string"
+            ))),
+        },
+    }
+}
+
+/// Resolve a boolean field, defaulting to `default` when the task omits it or
+/// it resolves to null.
+///
+/// # Errors
+///
+/// [`DataflowError`] when the field resolves to anything but a boolean. A
+/// switch that silently reads `false` because its expression produced a string
+/// is the kind of default worth refusing.
+pub fn resolve_bool_or(
+    input: &TemplatedInput,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+    default: bool,
+) -> Result<bool, DataflowError> {
+    match input.value_of(field, handler_name, ctx) {
+        None => Ok(default),
+        Some(value) => match value? {
+            Value::Null => Ok(default),
+            Value::Bool(b) => Ok(b),
+            other => Err(DataflowError::Validation(format!(
+                "{handler_name} '{field}' must resolve to a boolean, got {}",
+                json_type_name(&other)
+            ))),
+        },
+    }
+}
+
+/// [`resolve_bool_or`] with `false` as the default.
+///
+/// # Errors
+///
+/// As [`resolve_bool_or`].
+pub fn resolve_bool(
+    input: &TemplatedInput,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<bool, DataflowError> {
+    resolve_bool_or(input, field, handler_name, ctx, false)
+}
+
+/// Resolve an optional unsigned-integer field. Absent or null yields `None`;
+/// anything that is not a non-negative integer is an error naming the field.
+///
+/// # Errors
+///
+/// [`DataflowError`] when the field resolves to a non-integer.
+pub fn resolve_optional_u64(
+    input: &TemplatedInput,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<u64>, DataflowError> {
+    match input.value_of(field, handler_name, ctx) {
+        None => Ok(None),
+        Some(value) => match value? {
+            Value::Null => Ok(None),
+            Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
+                DataflowError::Validation(format!(
+                    "{handler_name} '{field}' must resolve to a non-negative integer"
+                ))
+            }),
+            other => Err(DataflowError::Validation(format!(
+                "{handler_name} '{field}' must resolve to a number, got {}",
+                json_type_name(&other)
             ))),
         },
     }
@@ -727,13 +855,14 @@ pub fn resolve_optional_str(
 /// error rather than being dropped, which would leave the statement's
 /// placeholders unbound.
 pub fn resolve_bind_params(
-    input: &Value,
+    input: &TemplatedInput,
     handler_name: &str,
     ctx: &TaskContext<'_>,
 ) -> Result<Vec<Value>, DataflowError> {
-    match input.get("params") {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(raw) => match resolve_declared_field(handler_name, "params", raw, ctx) {
+    match input.value_of("params", handler_name, ctx) {
+        None => Ok(Vec::new()),
+        Some(value) => match value? {
+            Value::Null => Ok(Vec::new()),
             Value::Array(a) => Ok(a),
             other => Err(DataflowError::Validation(format!(
                 "{handler_name} 'params' must resolve to an array of bind values, got {}",

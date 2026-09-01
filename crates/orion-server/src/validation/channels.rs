@@ -407,14 +407,19 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
              the stored one.",
         ));
     }
-    let parsed: crate::channel::ChannelConfig =
-        serde_json::from_value(config.clone()).map_err(|e| {
-            OrionError::invalid_field(
-                "channel.config",
-                "INVALID",
-                format!("channel.config does not match the ChannelConfig shape: {e}"),
-            )
-        })?;
+    // A `var://` field is checked against the instance that declares it, at
+    // load — not here, where the value is not knowable. Same call as leaving a
+    // secret reference unresolved below, and for the same reason: a bundle has
+    // to validate on a host that holds neither.
+    let mut shape = config.clone();
+    crate::config::vars::strip_var_references(&mut shape, &|key| key.ends_with("_logic"));
+    let parsed: crate::channel::ChannelConfig = serde_json::from_value(shape).map_err(|e| {
+        OrionError::invalid_field(
+            "channel.config",
+            "INVALID",
+            format!("channel.config does not match the ChannelConfig shape: {e}"),
+        )
+    })?;
 
     // #264: the structural half of auth compilation runs here, so a broken
     // auth config — missing keys/secret, bad template, unknown preset, half a

@@ -83,10 +83,61 @@ async fn resolve_key_material(
     }
 }
 
-/// Resolve one key-material field to its value, as a `DataflowError`.
+/// Resolve a key-material *field*, expression form included.
 ///
-/// The only entry point: the `String`-error form behind it is private, so no
-/// handler can reach it and skip this mapping.
+/// The two spellings answer different questions and are told apart by what the
+/// author wrote, not by what it produces:
+///
+/// * A **string** is the legacy form — a literal, or an `env://` / `vault://`
+///   reference resolved here at execution. Post-processing it is what makes
+///   `env://NAME` mean the variable rather than the text.
+/// * **Anything else** is JSONLogic, evaluated like every other parameter, and
+///   its result *is* the material. `{"secret": "name"}` reaches the engine's
+///   store through the reserved operator, so it needs no special case here —
+///   and because it is an ordinary expression, it can be composed:
+///   `{"cat": [{"secret": "prefix"}, "-", {"var": "metadata.vars.suffix"}]}`.
+///
+/// Not post-processing the expression result is deliberate: a secret whose
+/// stored value happened to begin with `env://` would otherwise be resolved a
+/// second time against this host's environment.
+///
+/// # Errors
+///
+/// [`DataflowError`] when the field is absent, the expression fails, or the
+/// result is not a string.
+pub async fn key_material_field(
+    input: &super::templated_input::TemplatedInput,
+    field: &str,
+    handler: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<String, DataflowError> {
+    let Some(authored) = input.get(field) else {
+        return Err(DataflowError::Validation(format!(
+            "{handler} requires '{field}' ({{\"secret\": \"name\"}}, a secret reference \
+             like env://NAME, an expression, or a literal)"
+        )));
+    };
+    let label = format!("{handler}.{field}");
+    if authored.is_string() {
+        return key_material(authored, &label, ctx).await;
+    }
+    let Some(value) = input.value_of(field, handler, ctx) else {
+        return Err(DataflowError::Validation(format!(
+            "{handler} requires '{field}'"
+        )));
+    };
+    match value? {
+        Value::String(material) => Ok(material),
+        other => Err(DataflowError::Validation(format!(
+            "'{label}' must resolve to a string, got {other}"
+        ))),
+    }
+}
+
+/// Resolve one key-material value to its value, as a `DataflowError`.
+///
+/// The entry point for a value already in hand — an element of `jwt_verify`'s
+/// `keys` array, which is nested rather than a field of its own.
 pub async fn key_material(
     value: &Value,
     field: &str,

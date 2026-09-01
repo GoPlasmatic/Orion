@@ -321,6 +321,7 @@ Rules:
 | `enabled` | boolean | yes | — | `false` disables the cache without removing the block. |
 | `ttl_secs` | integer | no | `300` | Seconds an entry lives. |
 | `cache_key_fields` | array of strings | no | whole payload | Payload fields that form the cache key. |
+| `key_logic` | JSONLogic | no | — | Computes the cache key. Takes precedence over `cache_key_fields`. |
 | `connector` | string | no | in-memory | Name of a [cache connector](./connectors.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
 
 ```json
@@ -333,7 +334,19 @@ Rules:
 }
 ```
 
-**The cache key** is derived from exactly: the channel name, the HTTP method, the route parameters, the query string (both order-independent), and the request payload — the whole payload, or the subset named by `cache_key_fields`. Each entry resolves as a literal payload key (`user_id`), a dotted path (`user.id`), or the same path with a leading `data.` prefix (`data.user_id`). A request that resolves **none** of the declared fields bypasses the cache entirely: the workflow runs, nothing is stored, and Orion logs a warning naming the channel and fields — it almost always means the names do not match the payload shape.
+**The cache key** is derived from exactly: the channel name, the HTTP method, the route parameters, the query string (both order-independent), and the request payload — the whole payload, the subset named by `cache_key_fields`, or the result of `key_logic`.
+
+`key_logic` is the general form, and the same vocabulary [`rate_limit.key_logic`](#rate-limiting) uses, so one channel does not key two of its guards two different ways. It reads `{"data": …, "metadata": …}` and **replaces** the payload-derived half of the key rather than adding to it — an expression that says what varies the response is a complete answer, and mixing it with a payload hash would put back the fields it was written to exclude:
+
+```json
+"cache": {
+  "enabled": true,
+  "ttl_secs": 60,
+  "key_logic": { "cat": [{ "var": "metadata.auth.subject" }, "|", { "var": "data.report_id" }] }
+}
+```
+
+An expression that does not compile quarantines the channel rather than falling back — a cache key that silently widens serves one caller's body to the next. One that resolves to `null` at request time bypasses the cache for that request, as an unresolvable `cache_key_fields` does. Each entry resolves as a literal payload key (`user_id`), a dotted path (`user.id`), or the same path with a leading `data.` prefix (`data.user_id`). A request that resolves **none** of the declared fields bypasses the cache entirely: the workflow runs, nothing is stored, and Orion logs a warning naming the channel and fields — it almost always means the names do not match the payload shape.
 
 > [!WARNING]
 > Request headers are never part of the cache key. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent. If a response varies by anything a header carries, that value must appear in the payload and in `cache_key_fields` — or the channel must not cache.

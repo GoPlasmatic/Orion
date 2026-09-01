@@ -13,11 +13,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{ConnectorCall, require_op, resolve_required_str};
 use super::schema::{FieldKind, FieldSchema};
+use super::templated_input::TemplatedInput;
 use crate::connector::{ConnectorRegistry, sigv4};
 use crate::engine::HandlerError;
 
@@ -31,7 +32,7 @@ pub struct StorageHeadHandler {
 impl ConnectorHandler for StorageHeadHandler {
     const NAME: &'static str = "storage_head";
     type Kind = crate::connector::kind::Storage;
-    type Input = Value;
+    type Input = TemplatedInput;
     /// The object key, resolved against the message — asking about one fixed
     /// object is not what this function is for.
     type Parsed = String;
@@ -43,7 +44,7 @@ impl ConnectorHandler for StorageHeadHandler {
     fn parse(
         &self,
         call: &ConnectorCall<'_>,
-        input: &Value,
+        input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         Ok(resolve_required_str(input, "key", call.name, ctx)?)
@@ -62,7 +63,7 @@ impl ConnectorHandler for StorageHeadHandler {
         key: Self::Parsed,
         storage: &crate::connector::StorageConnectorConfig,
         call: &ConnectorCall<'_>,
-        _input: &Value,
+        _input: &TemplatedInput,
         _ctx: &mut TaskContext<'_>,
     ) -> Result<Produced, HandlerError> {
         let (scheme, host, path) = storage
@@ -154,7 +155,7 @@ pub(super) const STORAGE_HEAD_FIELDS: &[FieldSchema] = &[
         description: "Object key within the connector's bucket.",
         kind: FieldKind::String,
         required: true,
-        resolvable: true,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -163,12 +164,15 @@ pub(super) const STORAGE_HEAD_FIELDS: &[FieldSchema] = &[
                       content_type } is stored (404 means { exists: false }, not an \
                       error). Defaults to \"data\".",
         kind: FieldKind::String,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
 ];
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
     use crate::connector::{ConnectorConfig, StorageConnectorConfig};
     use serde_json::json;
