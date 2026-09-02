@@ -88,9 +88,9 @@ observes for itself; resetting is a decision, and you make it once.
 
 ## Decide what a failing task does to the request
 
-By default a workflow **halts** on the first task that errors, and the error
-goes back to the caller. Set `continue_on_error` on the workflow to collect
-errors and keep going:
+By default a workflow **halts** on the first task that errors — a handler error
+or a `5xx` — and the error goes back to the caller. Set `continue_on_error` on
+the workflow to collect errors and keep going:
 
 ```json
 {
@@ -107,6 +107,17 @@ that only checks the HTTP code will read that as success. Anything relying on
 `continue_on_error` must inspect `errors`. The `filter` function offers finer
 control — `on_reject: "halt"` stops the workflow, `on_reject: "skip"` skips only
 the current task.
+
+**`continue_on_error` is not the whole axis.** It governs handler errors and
+`5xx`; a task that records a `4xx` warns and the pipeline carries on either
+way. That is the default a failing
+[`validation`](../reference/functions.md#validation--validate) rule lands in,
+so an assertion written as a gate records its `400` and lets the next task run
+as if it had passed. [`"halt_on": "failure"`](../reference/workflows.md#halting-on-failure)
+on the task is the key that stops it, and `orion-server lint` and
+`orion-server preflight` both report the unguarded shape as
+`engine.unguarded_validation` — worth running over a stored estate, since
+nothing about it fails at any gate.
 
 **Reacting to the failure inside the workflow.** A run that continues records
 each failure's code at

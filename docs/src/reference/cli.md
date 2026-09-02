@@ -74,10 +74,17 @@ warning: [closure.channel_call_dynamic] workflow 'route': resolves channel_call 
 
 Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `[env.unresolved]` is an error rather than an advisory: it fires when a workflow field that resolves no secret reference contains one, which the admin API refuses on the same terms. `note:` findings are exit-neutral inventory, not defects — `[env.reference]` lists each environment variable the set references via `env://`, `[secrets.reference]` each name it reads with `{"secret": …}` and so needs declared in the serving instance's `[secrets]` section, both with the files that reference them; neither the exit code nor `--deny-warnings` counts them.
 
-Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. There are two:
+Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. There are four. The first two are Orion's own:
 
 - `[logic.unresolvable]` — JSONLogic in a connector field that folds `{"var": …}` and nothing else, so the expression is stored or sent verbatim.
 - `[logic.escaped_template_key]` — a `$`-prefixed key in a position the engine evaluates as a template. One `$` is stripped from every such key, so a `{"$set": …}` update document composed in a `map` task is emitted as `{"set": …}` and the write replaces the document instead of updating it. Nothing fails at any gate; the fix is to double the prefix (`$$set`), and the doubled spelling is not reported.
+
+The other two are the engine's, reported here because `Engine::build` does not refuse them — a workflow carrying one loads, serves, and does less than its author wrote:
+
+- `[engine.unguarded_validation]` — a [`validation`](./functions.md#validation--validate) whose failure changes nothing: a failed rule records `400`, the engine warns on `4xx` and carries on, and every task after it is unguarded. Silenced by [`"halt_on": "failure"`](./workflows.md#halting-on-failure) on the task, or by a condition on what follows. Collecting failures and carrying on is a legitimate shape, so this says the assertion is not acting as a gate — not that it is wrong.
+- `[engine.group_continue_on_error]` — `continue_on_error` on a task *group*, which the engine parses and drops. Error handling is per task and per workflow; the key belongs on the tasks inside the group, or on the workflow.
+
+A fifth id, `[engine.advisory]`, is the catch-all: an engine newer than this Orion may report an advisory it has no specific id for, and it is printed with the engine's own message rather than dropped. Seeing one means the server binary is older than the definitions it is checking.
 
 Example: `orion-server lint examples/packages/high-value-order/workflow.json`
 
@@ -250,7 +257,9 @@ Example: `orion-server -c config.toml test-connectivity`
 
 ### `preflight`
 
-Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema`. Read-only; exits non-zero on findings. Config-file problems are `validate-config`'s job — this reads what only the database knows.
+Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema`. Read-only. Config-file problems are `validate-config`'s job — this reads what only the database knows.
+
+The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../operate/upgrading-to-1.0.md) and are what make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. **Advisories** carry the same ids `lint` uses — `[engine.unguarded_validation]`, `[engine.group_continue_on_error]` — and name a stored workflow that serves correctly and says less than its author meant it to; they never change the exit code.
 
 Example: `orion-server -c config.toml preflight`
 

@@ -268,20 +268,9 @@ pub(crate) fn run_lint(
                 )
             })
             .collect();
-    warnings.extend(
-        orion::validation::escaped_template_key_warnings(&req.tasks)
-            .into_iter()
-            .map(|(path, message)| {
-                orion::definitions::Diagnostic::warning(
-                    "logic.escaped_template_key",
-                    format!("workflow '{}' {path}", req.name),
-                    message,
-                )
-            }),
-    );
-    // The engine's own informational findings — a control-flow key that does
-    // nothing. `check_workflow` reports them and `build` does not refuse them,
-    // so this is the surface where an author still can act on one.
+    // The informational findings: a stripped `$`, and the two control-flow keys
+    // that do nothing. `check_workflow` reports all three and `build` refuses
+    // none, so this is the surface where an author still can act on one.
     warnings.extend(
         orion::validation::engine_advisories(&req.tasks)
             .into_iter()
@@ -1344,26 +1333,55 @@ pub(crate) async fn run_preflight(
     let workflows = SqlWorkflowRepository::new(pool);
     let findings = orion::preflight::scan(&channels, &workflows).await?;
 
-    if findings.is_empty() {
+    // Split by severity, not merged into one count. A break is a row the
+    // upgrade refuses; an advisory is a shape that keeps serving whatever the
+    // operator does about it, and dataflow-rs 3.10 made two of those reachable
+    // from a scan. Reported together they would be indistinguishable — the
+    // three-line form prints no level, by design — and counted together they
+    // would fail the gate below over a workflow that is fine.
+    let (breaks, advisories): (Vec<_>, Vec<_>) = findings
+        .into_iter()
+        .partition(orion::definitions::Diagnostic::is_error);
+
+    if breaks.is_empty() {
         println!("Stored channels and workflows: OK — nothing to migrate.");
+    } else {
+        println!(
+            "\n{} item(s) need attention before upgrading. Numbers in brackets are \
+             checklist rows at https://docs.goplasmatic.io/operate/upgrading-to-1.0.html.\n",
+            breaks.len()
+        );
+        for finding in &breaks {
+            // The three-line form, not `Display`: a preflight report is read
+            // alongside the upgrade guide, and every line of this section is a
+            // break, so the severity `Display` prefixes would be the same word
+            // on every line.
+            println!("{}\n", finding.render_preflight());
+        }
+    }
+
+    if !advisories.is_empty() {
+        // Its own heading, and the heading is what says these do not block —
+        // it is the only thing that can, since the lines themselves carry no
+        // level. Printed after the breaks so the section that gates the
+        // upgrade is the one an operator reads first.
+        println!(
+            "\n{} advisory finding(s). None of these blocks the upgrade or the exit code — \
+             each names a workflow that serves correctly and says less than its author \
+             meant it to. `orion-server lint` reports the same ids.\n",
+            advisories.len()
+        );
+        for finding in &advisories {
+            println!("{}\n", finding.render_preflight());
+        }
+    }
+
+    if breaks.is_empty() {
         return Ok(());
     }
-
-    println!(
-        "\n{} item(s) need attention before upgrading. Numbers in brackets are \
-         checklist rows at https://docs.goplasmatic.io/operate/upgrading-to-1.0.html.\n",
-        findings.len()
-    );
-    for finding in &findings {
-        // The three-line form, not `Display`: a preflight report is read
-        // alongside the upgrade guide, and every line of it is a break, so the
-        // severity `Display` prefixes would be the same word on every line.
-        println!("{}\n", finding.render_preflight());
-    }
-
     // Non-zero so this can gate a deploy (`orion-server preflight || exit 1`),
     // the same way `validate-config` and `lint` already do.
-    Err(format!("preflight found {} item(s) to fix", findings.len()).into())
+    Err(format!("preflight found {} item(s) to fix", breaks.len()).into())
 }
 
 /// Probe the configured backends: open the database pool and run the

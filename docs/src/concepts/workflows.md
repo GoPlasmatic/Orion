@@ -110,10 +110,14 @@ offers, on purpose.
 
 ## Errors
 
-By default the pipeline halts on the first task that errors, and the error
-reaches the caller in the response envelope. Set `continue_on_error` on the
-workflow to collect errors and keep going instead. For an async channel, a task
-failure routes the trace to the dead letter queue for retry.
+By default the pipeline halts on the first task that **errors** — a handler
+error or a `5xx` — and the error reaches the caller in the response envelope.
+Set `continue_on_error` on the workflow to collect errors and keep going
+instead. A task that records a `4xx`, as a failing
+[`validation`](../reference/functions.md#validation--validate) rule does, halts
+nothing on its own: it is recorded and the pipeline proceeds, unless the task
+carries [`halt_on`](../reference/workflows.md#halting-on-failure). For an async
+channel, a task failure routes the trace to the dead letter queue for retry.
 
 ## Next steps
 

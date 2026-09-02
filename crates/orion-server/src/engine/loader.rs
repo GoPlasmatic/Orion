@@ -140,41 +140,6 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
     }
 }
 
-/// The codes `check_workflow` reports that do **not** make a workflow unusable.
-///
-/// Each fires on a definition the engine will build and run, so treating one as
-/// fatal quarantines a channel whose workflow is fine — the opposite of what
-/// F41 asks of `screen_workflow`:
-///
-/// - `ESCAPED_TEMPLATE_KEY` (3.9) fires on *correct* code, including the `$$set`
-///   spelling that is the documented fix for it.
-/// - `UNGUARDED_VALIDATION` (3.10) says a `validation` is not acting as a gate.
-///   Collecting every rule failure and carrying on is a legitimate shape and is
-///   what the built-in is documented to do; the engine calls this one
-///   informational for exactly that reason.
-/// - `GROUP_CONTINUE_ON_ERROR` (3.10) says a key on a task group is dropped.
-///   The engine deliberately refuses to make it fatal, because the key is real
-///   at the other two levels and may already sit on a host's stored group nodes
-///   — refusing it would abort every workflow in the build.
-///
-/// **This list is a maintenance hazard and there is no way to derive it.**
-/// `IssueCode` is `#[non_exhaustive]` and carries no severity, and what
-/// `Engine::build` refuses is not one predicate either — it is
-/// `check_secrets` plus `refusing_template_key_issues` plus whatever
-/// `precompile_custom_inputs` rejects. So a release that adds an informational
-/// code makes this screen quarantine working channels until the code is added
-/// here, which is what 3.10 did.
-///
-/// `informational_issues_are_not_refused_by_build` pins every entry against a
-/// live engine, so a code that *becomes* fatal is caught. Nothing can catch a
-/// code that is added and not listed; that needs an `IssueCode::is_informational`
-/// upstream, which is filed.
-pub const INFORMATIONAL_ISSUES: &[dataflow_rs::IssueCode] = &[
-    dataflow_rs::IssueCode::EscapedTemplateKey,
-    dataflow_rs::IssueCode::UnguardedValidation,
-    dataflow_rs::IssueCode::GroupContinueOnError,
-];
-
 /// Screen one converted workflow against the handlers that will run it.
 ///
 /// Without this, a task naming an unregistered function or carrying an input
@@ -204,13 +169,25 @@ pub const INFORMATIONAL_ISSUES: &[dataflow_rs::IssueCode] = &[
 /// workflow that cannot run is quarantined whole regardless of how many of its
 /// tasks are the reason.
 ///
-/// **Not every issue `check_workflow` reports makes a workflow unusable.**
-/// Until dataflow-rs 3.9 every code it returned was one `Engine::build` also
-/// refused, so "any issue" and "cannot run" were the same set and this screen
-/// could take the whole list. `ESCAPED_TEMPLATE_KEY` broke that, and 3.10 added
-/// two more; see [`INFORMATIONAL_ISSUES`]. They are filtered here rather than at
-/// each caller because all four surfaces — boot, reload, `dry-run` and the test
-/// endpoint — must agree on what "unusable" means.
+/// **Not every issue `check_workflow` reports makes a workflow unusable**, and
+/// the engine is what says which. Until dataflow-rs 3.9 every code it returned
+/// was one `Engine::build` also refused, so "any issue" and "cannot run" were
+/// the same set and this screen could take the whole list. `ESCAPED_TEMPLATE_KEY`
+/// broke that and 3.10 added two more, which Orion tracked in a hand-kept list
+/// that could only ever be wrong in one direction — silently, on upgrade,
+/// quarantining channels that were fine. 3.11's `Severity` replaced it:
+/// `severity()` is a match with no wildcard arm, so a code added in a later
+/// minor is classified upstream before it can reach here.
+///
+/// `Advisory` is the only class this may pass. **`Defect` must still
+/// quarantine**: `MISSING_HANDLER` is a config-only integration whose typed
+/// variant parses, so `build` accepts it and every message then fails — F54,
+/// the `enrich` case that made this function exist. Screening on "would this
+/// build" would call that healthy.
+///
+/// Filtered here rather than at each caller because all four surfaces — boot,
+/// reload, `dry-run` and the test endpoint — must agree on what "unusable"
+/// means.
 fn screen_workflow(
     workflow: &dataflow_rs::Workflow,
     screen: &dyn HandlerScreen,
@@ -218,12 +195,14 @@ fn screen_workflow(
     let issues = screen.check_workflow(workflow);
     let (advisories, issues): (Vec<_>, Vec<_>) = issues
         .into_iter()
-        .partition(|i| INFORMATIONAL_ISSUES.contains(&i.code));
-    // Dropped from the fatal set but not dropped: a stripped `$` changes the
-    // shape of a composed document without failing anything, so the one place
-    // that sees every workflow on every load says so once per workflow. `lint`
-    // and `preflight` report the same thing against a document the author can
-    // still edit; this is the last chance to notice it before it serves.
+        .partition(|i| i.severity() == dataflow_rs::Severity::Advisory);
+    // Dropped from the fatal set but not dropped. Each of the three says
+    // something a load is the last chance to notice: a stripped `$` changes the
+    // shape of a composed document without failing anything, a `validation`
+    // asserts nothing, a group's `continue_on_error` is discarded. None of them
+    // stops the workflow running, which is why they are logged here rather than
+    // returned. `lint` and `preflight` report the same findings against a
+    // document the author can still edit.
     for advisory in &advisories {
         tracing::warn!(
             workflow = %workflow.id,
@@ -439,11 +418,6 @@ pub fn build_engine_workflows(
 
 #[cfg(test)]
 mod tests {
-    // A code listed as informational with no fixture cannot be proved
-    // informational, and silently skipping it would make the test a no-op —
-    // the one outcome worse than the drift it exists to catch.
-    #![allow(clippy::panic)]
-
     use super::*;
 
     /// The screen these tests convert against.
@@ -487,19 +461,21 @@ mod tests {
         assert!(screen_workflow(&workflow, &screen()).is_ok());
     }
 
-    /// The 3.10 pair, and the regression the upgrade would otherwise have been.
+    /// The 3.10 pair, and the regression that upgrade would otherwise have been.
     ///
-    /// Both are informational by the engine's own classification — reported by
-    /// `check_workflow`, never refused by `build` — and both fire on shapes
-    /// that are common in a real estate: a `validation` that collects errors
-    /// and carries on is what the built-in is documented to do, and
-    /// `continue_on_error` on a group is old enough that stored definitions
-    /// carry it. Treating either as fatal quarantines working channels on
-    /// upgrade, which is what happened before `INFORMATIONAL_ISSUES` grew to
-    /// three: `dry-run` answered "workflow has an unusable task" for a
+    /// Both are `Severity::Advisory` — reported by `check_workflow`, never
+    /// refused by `build` — and both fire on shapes that are common in a real
+    /// estate: a `validation` that collects errors and carries on is what the
+    /// built-in is documented to do, and `continue_on_error` on a group is old
+    /// enough that stored definitions carry it. Treating either as fatal
+    /// quarantines working channels, which is what a hand-kept list did until
+    /// it was edited: `dry-run` answered "workflow has an unusable task" for a
     /// workflow that runs perfectly.
+    ///
+    /// The severity table itself is upstream's to pin. What this asserts is
+    /// Orion's half — that `screen_workflow` acts on it.
     #[test]
-    fn the_informational_issues_do_not_quarantine() {
+    fn the_advisory_issues_do_not_quarantine() {
         let cases = [
             (
                 dataflow_rs::IssueCode::UnguardedValidation,
@@ -530,56 +506,14 @@ mod tests {
                     .any(|i| i.code == code),
                 "{code:?} must be reported by check_workflow"
             );
-            assert!(
-                INFORMATIONAL_ISSUES.contains(&code),
-                "{code:?} must be listed as informational"
+            assert_eq!(
+                code.severity(),
+                dataflow_rs::Severity::Advisory,
+                "{code:?} must be advisory"
             );
             assert!(
                 screen_workflow(&workflow, &screen()).is_ok(),
                 "{code:?} must not quarantine"
-            );
-        }
-    }
-
-    /// Every entry is genuinely informational: the engine builds a workflow
-    /// carrying it. A code that *becomes* a build refusal upstream shows up
-    /// here rather than as a channel that will not serve.
-    ///
-    /// Nothing can catch the other direction — a new informational code that
-    /// is not listed — because `IssueCode` is `#[non_exhaustive]` and carries
-    /// no severity. That is the gap filed upstream.
-    #[test]
-    fn every_informational_issue_still_builds() {
-        for code in INFORMATIONAL_ISSUES {
-            let json = match code {
-                dataflow_rs::IssueCode::EscapedTemplateKey => {
-                    r#"{"id":"w","name":"w","condition":true,"tasks":[
-                        {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
-                          {"path":"data.a","logic":{"$set":{"x":1}}}]}}}]}"#
-                }
-                dataflow_rs::IssueCode::UnguardedValidation => {
-                    r#"{"id":"w","name":"w","condition":true,"tasks":[
-                        {"id":"check","name":"check","function":{"name":"validation","input":{
-                          "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
-                        {"id":"after","name":"after","function":{"name":"map","input":{
-                          "mappings":[{"path":"data.x","logic":true}]}}}]}"#
-                }
-                dataflow_rs::IssueCode::GroupContinueOnError => {
-                    r#"{"id":"w","name":"w","condition":true,"tasks":[
-                        {"id":"g","name":"g","continue_on_error":true,"tasks":[
-                          {"id":"t","name":"t","function":{"name":"log","input":{
-                            "message":"x"}}}]}]}"#
-                }
-                other => panic!("{other:?} is listed as informational with no fixture to prove it"),
-            };
-            let workflow =
-                dataflow_rs::Workflow::from_json(json).expect("the fixture is a valid workflow");
-            assert!(
-                dataflow_rs::Engine::builder()
-                    .with_workflow(workflow)
-                    .build()
-                    .is_ok(),
-                "{code:?} is listed as informational but the engine refuses to build it"
             );
         }
     }
@@ -954,14 +888,39 @@ mod tests {
     /// and every request fails with `FunctionNotFound` — which is why
     /// `dry-run` and `POST /workflows/{id}/test` calling `.build()` by hand
     /// gave a green answer for a workflow boot would quarantine.
+    ///
+    /// It is also the trap in screening by severity: this is
+    /// `Severity::Defect`, the class between "refused" and "advisory", and the
+    /// only one where `build` and the first message disagree. A screen written
+    /// as "pass anything `build` would accept" lets it through. Both halves of
+    /// that are asserted below, so the prose above is checked rather than
+    /// trusted.
     #[test]
     fn build_single_refuses_a_built_in_with_no_handler_behind_it() {
-        // `dataflow_rs::Engine` is not `Debug`, so unwrap the arms by hand.
-        let Err(err) = build_single(
+        let task = || {
             one_task_workflow(
                 "enrich",
                 serde_json::json!({ "connector": "c", "merge_path": "data" }),
-            ),
+            )
+        };
+        assert!(
+            screen()
+                .check_workflow(&task())
+                .iter()
+                .any(|i| i.severity() == dataflow_rs::Severity::Defect),
+            "`enrich` with no handler is the Defect class"
+        );
+        assert!(
+            dataflow_rs::Engine::builder()
+                .with_workflow(task())
+                .build()
+                .is_ok(),
+            "`build` accepts it — the premise that makes this screen necessary"
+        );
+
+        // `dataflow_rs::Engine` is not `Debug`, so unwrap the arms by hand.
+        let Err(err) = build_single(
+            task(),
             std::collections::HashMap::new(),
             &crate::engine::ResolvedSecrets::empty(),
         ) else {

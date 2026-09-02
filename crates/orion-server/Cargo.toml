@@ -76,7 +76,7 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.10.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.11.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went

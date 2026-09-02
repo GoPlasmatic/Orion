@@ -7,6 +7,7 @@
       "description": "d",
       "condition": true,
       "terminal": false,
+      "halt_on": "failure",
       "continue_on_error": true,
       "function": { "name": "log", "input": { "message": "hi" } }
     },

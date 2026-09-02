@@ -53,7 +53,9 @@ that need the serving instance's config (`-c`) are skipped with a note
 when none is given.
 
 `lint`'s own findings are re-reported unchanged (`logic.unresolvable`,
-`logic.escaped_template_key`, `closure.channel_call_dynamic`, the
+`logic.escaped_template_key`, `engine.unguarded_validation`,
+`engine.group_continue_on_error`, `engine.advisory`,
+`closure.channel_call_dynamic`, the
 `env.reference` and `secrets.reference` notes), so a clippy run is a superset of a lint run;
 when `lint` reports an *error*, the rules do not run at all — a rule over
 a document the API would refuse produces a second finding about the same

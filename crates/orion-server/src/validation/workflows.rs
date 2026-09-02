@@ -420,14 +420,15 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
         errors.extend(
             dataflow_rs::Workflow::validate_authored(&synthetic)
                 .into_iter()
-                // An informational code must never become a create-time
-                // refusal. `validate_authored` emits none today — the three
-                // live on `check_workflow`, and `engine_advisories` reports two
-                // of them as warnings — but `IssueCode` is `#[non_exhaustive]`
-                // and this maps anything it does not recognise onto `INVALID`,
-                // so one arriving here would start rejecting workflows that
-                // build and run. The same list the serving screen reads.
-                .filter(|issue| !crate::engine::INFORMATIONAL_ISSUES.contains(&issue.code))
+                // An advisory must never become a create-time refusal.
+                // `validate_authored` emits none today — the three live on
+                // `check_workflow` — but `IssueCode` is `#[non_exhaustive]`
+                // and `engine_issue_to_field_error` maps anything it does not
+                // recognise onto `INVALID`, so one arriving here would start
+                // rejecting workflows that build and run. `Rejected` and
+                // `Defect` stay errors: the second builds and then fails every
+                // message, which is not something to accept at create.
+                .filter(|issue| issue.severity() != dataflow_rs::Severity::Advisory)
                 .map(engine_issue_to_field_error),
         );
     }
@@ -569,167 +570,85 @@ fn check_terminal(step: &serde_json::Value, path: &str, errors: &mut Vec<FieldEr
 
 use serde_json::Value;
 
-/// The engine's own informational findings about a workflow's shape.
+/// Every informational finding about a task array: what the engine reports and
+/// does not refuse, plus the half of the escape story only Orion can see.
 ///
-/// `check_workflow` reports three codes `Engine::build` does not refuse.
-/// `ESCAPED_TEMPLATE_KEY` has [`escaped_template_key_warnings`] to itself,
-/// because half of that one is Orion's to walk. The other two are pure shape,
-/// and both say the same kind of thing: *you wrote a control-flow key that does
-/// nothing.*
+/// One pass. `check_workflow` answers all three codes at once, and the three
+/// surfaces that ask — `lint`, the definition-set check, `preflight` — each
+/// want the whole set, so asking twice built two engines and walked the
+/// workflow twice to split one answer in half.
 ///
-/// - `UNGUARDED_VALIDATION` — a `validation` task whose failure changes
+/// - `logic.escaped_template_key` — a `$`-prefixed key in a template position.
+///   dataflow-rs 3.9 made the escape unconditional: one `$` comes off *every*
+///   key in such a position, whether or not the name collides with an
+///   operator. So `{"$set": …}` composed in a `map` — a MongoDB update
+///   document, the commonest way this appears — goes out as `{"set": …}` and
+///   the write replaces the document instead of updating it; `$ref` and
+///   `$schema` in a composed JSON Schema are the same story. Nothing fails at
+///   any gate. The fix is mechanical — double the prefix, `$$set` — which is
+///   why it is worth reporting mechanically, and why the doubled spelling is
+///   kept silent here: doubling is also how an author
+///   *deliberately* emits a `$` key, and an author who has done the right
+///   thing must not be left with a warning they cannot clear. This one has a
+///   second half: a custom handler's `input` is a config document to
+///   dataflow-rs, not a template — which of its fields are templates is the
+///   handler's business — so `check_workflow` skips it, and
+///   [`crate::engine::functions::schema::template_paths`], where that business
+///   is declared, is what closes the gap.
+/// - `engine.unguarded_validation` — a `validation` task whose failure changes
 ///   nothing, because a failing rule records `400` and the executor's 4xx
 ///   branch carries on; `continue_on_error` governs `5xx` and `Err` only. This
 ///   is the shape that shipped a decorative CSRF check
 ///   ([#308](https://github.com/GoPlasmatic/Orion/issues/308)): the check read
 ///   correct, did nothing, and nothing said so. dataflow-rs 3.10 added
 ///   `"halt_on": "failure"` as the fix and this code as the warning.
-/// - `GROUP_CONTINUE_ON_ERROR` — `continue_on_error` on a task *group*, which
-///   parses and is then dropped. The key is real on a task and on a workflow,
-///   which is what makes a group the one place it looks like it should work.
+/// - `engine.group_continue_on_error` — `continue_on_error` on a task *group*,
+///   which parses and is then dropped. The key is real on a task and on a
+///   workflow, which is what makes a group the one place it looks like it
+///   should work.
 ///
-/// Advisories, not errors, and that is the engine's classification rather than
-/// a choice made here — both fire on definitions that build and run. Reported
-/// where an author can still act: `lint`, the definition-set check and
-/// `preflight`. `engine::loader::INFORMATIONAL_ISSUES` is the same list on the
+/// Every one fires on a definition that builds and runs — that is the engine's
+/// classification, not a choice made here — so what a caller does with the
+/// severity is the caller's. Two of them are advisories everywhere;
+/// `preflight` raises the escaped key to a break, because a stored workflow
+/// carrying one changes the shape of what it writes the moment the instance is
+/// upgraded. `engine::loader::screen_workflow` asks the same question on the
 /// serving side, where the job is the opposite one — not to quarantine a
-/// channel over them.
+/// channel over any of them.
 ///
-/// A bare builder, for the reason [`escaped_template_key_warnings`] gives: both
-/// findings are structural, so no handler registry or secret store changes the
-/// answer.
+/// A bare builder: every finding here is structural, so no handler registry
+/// and no secret store changes the answer, and the other issues such a builder
+/// reports — an unregistered function, an undeclared secret — belong to checks
+/// that own them and would be reported twice with worse wording.
 pub fn engine_advisories(tasks: &Value) -> Vec<EngineAdvisory> {
+    // The synthetic wrapper `validate_workflow_tasks_schema` uses, for the same
+    // reason: this function is given `tasks` alone.
     let synthetic = serde_json::json!({
         "id": "__shape_check__", "name": "__shape_check__",
         "condition": true, "tasks": tasks,
     });
     let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
-        return Vec::new();
-    };
-    dataflow_rs::Engine::builder()
-        .check_workflow(&workflow)
-        .into_iter()
-        .filter_map(|issue| {
-            let check = match issue.code {
-                dataflow_rs::IssueCode::UnguardedValidation => "engine.unguarded_validation",
-                dataflow_rs::IssueCode::GroupContinueOnError => "engine.group_continue_on_error",
-                _ => return None,
-            };
-            // The engine's `path` for these two is the offending *field*
-            // (`halt_on`, `continue_on_error`), not an authored coordinate —
-            // the step is named by `task_id` instead. Joined here so one line
-            // says which step and which key, which is what the other warning
-            // reporters give and what a pipeline greps.
-            let path = match (&issue.task_id, &issue.path) {
-                (Some(id), Some(field)) => format!("task '{id}'.{field}"),
-                (Some(id), None) => format!("task '{id}'"),
-                (None, Some(field)) => field.clone(),
-                (None, None) => "tasks".to_string(),
-            };
-            Some(EngineAdvisory {
-                check,
-                path,
-                message: issue.message,
-            })
-        })
-        .collect()
-}
-
-/// One informational finding from [`engine_advisories`].
-///
-/// Carries its own `check` id rather than sharing one, for the reason
-/// `definitions::check` gives every finding one: a pipeline grandfathering a
-/// single rule should not have to reach for `--deny-warnings` and silence the
-/// rest.
-pub struct EngineAdvisory {
-    pub check: &'static str,
-    pub path: String,
-    pub message: String,
-}
-
-/// Warn about JSONLogic nodes in connector-payload fields that nothing will
-/// evaluate.
-///
-/// A `resolvable` field folds `{"var": ..}` nodes and **nothing else** — the
-/// house rule for every connector handler. Any other operator node is a literal
-/// from the handler's point of view: `mongo_write` stores `{"if": […]}` in the
-/// document as a BSON object, a `filter` carrying one matches no rows, and a
-/// stubbed test of either stays green. There is no error at write time and,
-/// until the call log, nothing a test could assert on.
-///
-/// **A warning, never an error, and deliberately so.** The operator vocabulary
-/// includes `length`, `type`, `in`, `keys`, `sort`, `map` and `join`, which are
-/// ordinary field names in ordinary documents; and Orion is a rules engine, so
-/// a document that legitimately *contains* a stored JSONLogic rule is a real
-/// use case rather than a hypothetical. The array-argument test below removes
-/// most of the noise (`{"length": 120}` is data, `{"cat": […]}` is not), but
-/// not all of it — and a hard error would additionally refuse updates to
-/// workflows that have been serving for months. `warn_on_unwritten_reads` is
-/// the same shape for the same kind of reason.
-///
-/// Returns `(field path, message)` pairs — the tuple shape
-/// [`crate::engine::functions::schema::StaticValidator`] already uses, because
-/// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
-/// Every `$`-prefixed key the engine will strip a `$` from, as
-/// `(field path, message)`.
-///
-/// dataflow-rs 3.9 made the template-key escape unconditional: one `$` comes
-/// off *every* key in a template position, whether or not the name collides
-/// with an operator. So `{"$set": …}` — a MongoDB update document composed in a
-/// `map` task, the commonest way this appears — now emits `{"set": …}`, and
-/// `{"$oid": …}` emits `{"oid": …}`. Nothing fails: the write goes out with the
-/// wrong shape. `$ref` and `$schema` in a composed JSON Schema are the same
-/// story.
-///
-/// The fix is mechanical — double the prefix, `$$set` — which is why this is
-/// worth reporting mechanically. It is an **advisory**, matching the engine:
-/// `ESCAPED_TEMPLATE_KEY` is the one code `check_workflow` reports that
-/// `Engine::build` does not refuse, because doubling is also how an author
-/// *deliberately* emits a `$` key, and refusing it would refuse the fix.
-///
-/// Asked of the engine rather than walked here, so "a template position" means
-/// whatever dataflow-rs says it means. A custom handler's `input` is not one —
-/// its fields are Orion's to interpret — which is why a `mongo_write` update
-/// document written literally in the task is untouched, and only one composed
-/// upstream of it in a `map` is at risk.
-pub fn escaped_template_key_warnings(tasks: &Value) -> Vec<(String, String)> {
-    // The synthetic wrapper `validate_workflow_tasks_schema` uses, for the same
-    // reason: this function is given `tasks` alone.
-    let synthetic = serde_json::json!({
-        "id": "__template_key_check__", "name": "__template_key_check__",
-        "condition": true, "tasks": tasks,
-    });
-    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
         // Unparseable tasks are reported with a better message by the schema
-        // check; there is nothing to say about keys in a document that is not
-        // a workflow.
+        // check; there is nothing to say about the shape of a document that is
+        // not a workflow.
         return Vec::new();
     };
-    // A bare builder: the escape is a property of the template compiler, which
-    // every engine builds the same way, so no handler registry or secret store
-    // changes the answer. Other issues the builder reports — an unregistered
-    // function, an undeclared secret — belong to checks that own them, and are
-    // filtered out here rather than reported twice with worse wording.
-    let builder = dataflow_rs::Engine::builder();
-    let mut out: Vec<(String, String)> = builder
-        .check_workflow(&workflow)
-        .into_iter()
+    let issues = dataflow_rs::Engine::builder().check_workflow(&workflow);
+
+    // Escaped keys first, then the walk that finds the ones the engine cannot,
+    // then the shape findings — the order the three callers reported these in
+    // when they were two functions called one after the other.
+    let mut out: Vec<EngineAdvisory> = issues
+        .iter()
         .filter(|issue| issue.code == dataflow_rs::IssueCode::EscapedTemplateKey)
         .filter(|issue| issue.path.as_deref().is_none_or(is_accidental_escape))
-        .map(|issue| {
-            (
-                issue.path.unwrap_or_else(|| "tasks".to_string()),
-                issue.message,
-            )
+        .map(|issue| EngineAdvisory {
+            check: EngineAdvisory::ESCAPED_TEMPLATE_KEY,
+            path: issue.path.clone().unwrap_or_else(|| "tasks".to_string()),
+            message: issue.message.clone(),
         })
         .collect();
 
-    // The half the engine cannot see. A custom handler's `input` is a config
-    // document to dataflow-rs, not a template — which fields inside it are
-    // `Template`s is the handler's business — so `check_workflow` skips it and
-    // an Orion field like `channel_call.data` gets no report from the walk
-    // above. `schema::template_at` is where that business is declared, so it
-    // is what closes the gap.
     for_each_input_field(tasks, |function, field, path, value| {
         // Only for a name the engine treats as custom: a built-in's parameters
         // were already walked, and reporting them twice would be worse than
@@ -743,10 +662,91 @@ pub fn escaped_template_key_warnings(tasks: &Value) -> Vec<(String, String)> {
         out.extend(
             escaped_keys_in(value)
                 .into_iter()
-                .map(|(suffix, message)| (format!("{path}{suffix}"), message)),
+                .map(|(suffix, message)| EngineAdvisory {
+                    check: EngineAdvisory::ESCAPED_TEMPLATE_KEY,
+                    path: format!("{path}{suffix}"),
+                    message,
+                }),
         );
     });
+
+    out.extend(issues.into_iter().filter_map(|issue| {
+        // Everything else the engine calls advisory. Selected by severity
+        // rather than by naming the codes, so this asks the same question
+        // `screen_workflow` asks and cannot answer it differently. The escape
+        // is already reported above, with a path of its own.
+        if issue.severity() != dataflow_rs::Severity::Advisory
+            || issue.code == dataflow_rs::IssueCode::EscapedTemplateKey
+        {
+            return None;
+        }
+        // The noun rides with the code because `task_id` carries a group's
+        // id for `GROUP_CONTINUE_ON_ERROR` — the engine records a group on
+        // the same field, having nowhere else to put it. Calling that step
+        // a task contradicts the message beside it, which names the group.
+        //
+        // The catch-all is the point of selecting by severity: an advisory
+        // code a later dataflow-rs adds is reported under a generic id rather
+        // than dropped for want of a specific one. `task` is the safe noun —
+        // every code but `GROUP_CONTINUE_ON_ERROR` records a task in
+        // `task_id`. Unreachable until such a code exists, so there is nothing
+        // to write a fixture against; the arm is the fixture.
+        let (check, noun) = match issue.code {
+            dataflow_rs::IssueCode::UnguardedValidation => {
+                (EngineAdvisory::UNGUARDED_VALIDATION, "task")
+            }
+            dataflow_rs::IssueCode::GroupContinueOnError => {
+                (EngineAdvisory::GROUP_CONTINUE_ON_ERROR, "group")
+            }
+            _ => (EngineAdvisory::UNCLASSIFIED, "task"),
+        };
+        // The engine's `path` for these two is the offending *field*
+        // (`halt_on`, `continue_on_error`), not an authored coordinate —
+        // the step is named by `task_id` instead. Joined here so one line
+        // says which step and which key, which is what the other warning
+        // reporters give and what a pipeline greps.
+        let path = match (&issue.task_id, &issue.path) {
+            (Some(id), Some(field)) => format!("{noun} '{id}'.{field}"),
+            (Some(id), None) => format!("{noun} '{id}'"),
+            (None, Some(field)) => field.clone(),
+            (None, None) => "tasks".to_string(),
+        };
+        Some(EngineAdvisory {
+            check,
+            path,
+            message: issue.message,
+        })
+    }));
+
     out
+}
+
+/// One informational finding from [`engine_advisories`].
+///
+/// Carries its own `check` id rather than sharing one, for the reason
+/// `definitions::check` gives every finding one: a pipeline grandfathering a
+/// single rule should not have to reach for `--deny-warnings` and silence the
+/// rest. The ids are consts because a caller has to branch on one —
+/// `preflight` treats the escaped key differently from the other two — and a
+/// string literal repeated at a call site is how that stops matching.
+pub struct EngineAdvisory {
+    pub check: &'static str,
+    pub path: String,
+    pub message: String,
+}
+
+impl EngineAdvisory {
+    /// A `$`-prefixed key the engine emits with one `$` stripped.
+    pub const ESCAPED_TEMPLATE_KEY: &'static str = "logic.escaped_template_key";
+    /// A `validation` whose failure stops nothing.
+    pub const UNGUARDED_VALIDATION: &'static str = "engine.unguarded_validation";
+    /// `continue_on_error` on a group, which the engine drops.
+    pub const GROUP_CONTINUE_ON_ERROR: &'static str = "engine.group_continue_on_error";
+    /// An advisory this version of Orion has no specific id for — a code a
+    /// later dataflow-rs added. Reported rather than dropped: the serving
+    /// screen already knows not to quarantine it, and an author should still
+    /// hear what the engine said.
+    pub const UNCLASSIFIED: &'static str = "engine.advisory";
 }
 
 /// Ask the engine which keys in one arbitrary value it would strip a `$` from,
@@ -806,6 +806,29 @@ fn is_accidental_escape(path: &str) -> bool {
     key.starts_with('$') && !key.starts_with("$$")
 }
 
+/// Warn about JSONLogic nodes in connector-payload fields that nothing will
+/// evaluate.
+///
+/// A `resolvable` field folds `{"var": ..}` nodes and **nothing else** — the
+/// house rule for every connector handler. Any other operator node is a literal
+/// from the handler's point of view: `mongo_write` stores `{"if": […]}` in the
+/// document as a BSON object, a `filter` carrying one matches no rows, and a
+/// stubbed test of either stays green. There is no error at write time and,
+/// until the call log, nothing a test could assert on.
+///
+/// **A warning, never an error, and deliberately so.** The operator vocabulary
+/// includes `length`, `type`, `in`, `keys`, `sort`, `map` and `join`, which are
+/// ordinary field names in ordinary documents; and Orion is a rules engine, so
+/// a document that legitimately *contains* a stored JSONLogic rule is a real
+/// use case rather than a hypothetical. The array-argument test below removes
+/// most of the noise (`{"length": 120}` is data, `{"cat": […]}` is not), but
+/// not all of it — and a hard error would additionally refuse updates to
+/// workflows that have been serving for months. `warn_on_unwritten_reads` is
+/// the same shape for the same kind of reason.
+///
+/// Returns `(field path, message)` pairs — the tuple shape
+/// [`crate::engine::functions::schema::StaticValidator`] already uses, because
+/// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
 pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
@@ -1602,7 +1625,9 @@ mod engine_advisory_tests {
         let found = engine_advisories(&tasks);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].check, "engine.group_continue_on_error");
-        assert_eq!(found[0].path, "task 'g'.continue_on_error");
+        // A group, named as one: the engine records it in `task_id` for want
+        // of another field, and the message beside this calls it a group.
+        assert_eq!(found[0].path, "group 'g'.continue_on_error");
     }
 
     /// A workflow with neither shape reports nothing, so the two above are not

@@ -39,7 +39,7 @@ use crate::storage::repositories::workflows::{WorkflowFilter, WorkflowRepository
 /// same reason.
 const PAGE_SIZE: i64 = 500;
 
-/// One thing that will break on upgrade, and what to do about it.
+/// One thing the upgrade will trip over, and what to do about it.
 ///
 /// The shared [`Diagnostic`]: `check` is the `upgrading.md` checklist row this
 /// belongs to, so the report and the guide can be read side by side; `entity`
@@ -48,8 +48,13 @@ const PAGE_SIZE: i64 = 500;
 /// `file`/`path`/`line` stay `None` — which is why the location is optional on
 /// the shared type rather than a second type carrying it.
 ///
-/// Every finding here is a break, so all of them are `Severity::Error` and
-/// [`Diagnostic::render_preflight`] does not print a level.
+/// **Severity carries the difference between a break and an advisory**, and it
+/// is the whole difference: an `Error` is a row the upgrade refuses and is what
+/// makes the command exit non-zero, a `Warning` is a shape that keeps serving
+/// either way. Nothing here prints a level per line — `run_preflight` reports
+/// the two under separate headings instead, so an operator reading a break
+/// never has to check whether this one counts. An advisory carries the engine's
+/// own `check` id rather than a checklist row, because it belongs to no row.
 pub use crate::definitions::Diagnostic;
 
 /// Scan every stored channel and workflow. Returns findings in a stable order:
@@ -248,39 +253,39 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
             ).with_remedy("move the value to a connector, or declare it in the config                          file — under [vars] if it belongs in a trace, [secrets] if                          it does not; the next update of this workflow is refused                          until then" .to_string())),
     );
 
-    // Not a refusal at any gate — the engine reports it and builds anyway —
-    // but the sharpest kind of upgrade break this command exists to find: the
-    // workflow keeps loading and keeps serving, and the document it composes
-    // silently changes shape. A `{"$set": …}` update built in a `map` task
-    // emits `{"set": …}` from dataflow-rs 3.9 on, so the write goes to Mongo
-    // with no `$set` operator in it and replaces the document instead of
-    // updating it. Nothing logs, nothing 500s.
-    findings.extend(
-        crate::validation::escaped_template_key_warnings(&tasks)
-            .into_iter()
-            .map(|(path, message)| {
-                Diagnostic::error("14", format!("workflow '{name}' {path}"), message).with_remedy(
-                    "double the prefix — '$set' becomes '$$set' — and PUT the workflow; \
-                     the doubled spelling is what emits the '$' key"
-                        .to_string(),
-                )
-            }),
-    );
-
-    // dataflow-rs 3.10's two informational findings, over the *stored* estate.
-    // Neither stops a workflow loading, which is what makes them preflight's
-    // business rather than a load-time refusal: a `validation` that asserts
-    // nothing and a `continue_on_error` the engine drops both keep serving,
-    // and an operator upgrading is the person who can still fix them.
+    // What the engine reports and does not refuse. All three keep a workflow
+    // loading and serving, which is what makes them preflight's business
+    // rather than a load-time refusal — and it is also why they are not one
+    // severity.
+    //
+    // The escaped key is a break: the workflow keeps serving and the document
+    // it composes silently changes shape. A `{"$set": …}` update built in a
+    // `map` task emits `{"set": …}` from dataflow-rs 3.9 on, so the write goes
+    // to Mongo with no `$set` operator in it and replaces the document instead
+    // of updating it. Nothing logs, nothing 500s — the sharpest kind of
+    // upgrade break this command exists to find.
+    //
+    // The other two are advisories, and that is load-bearing rather than a
+    // label: they belong to no checklist row, they refuse no upgrade, and this
+    // command is wired into deploys as `preflight || exit 1`. Counting one as
+    // a break would fail the gate over the shape dataflow-rs 3.10 went out of
+    // its way not to quarantine. They keep the engine's own `check` id for the
+    // same reason `lint` gives them one — `[14]` would send an operator to the
+    // data-dialect row, which has nothing to do with either finding.
     findings.extend(
         crate::validation::engine_advisories(&tasks)
             .into_iter()
             .map(|advisory| {
-                Diagnostic::warning(
-                    "14",
-                    format!("workflow '{name}' {}", advisory.path),
-                    advisory.message,
-                )
+                let entity = format!("workflow '{name}' {}", advisory.path);
+                if advisory.check == crate::validation::EngineAdvisory::ESCAPED_TEMPLATE_KEY {
+                    Diagnostic::error("14", entity, advisory.message).with_remedy(
+                        "double the prefix — '$set' becomes '$$set' — and PUT the workflow; \
+                         the doubled spelling is what emits the '$' key"
+                            .to_string(),
+                    )
+                } else {
+                    Diagnostic::warning(advisory.check, entity, advisory.message)
+                }
             }),
     );
 

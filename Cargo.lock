@@ -1160,9 +1160,9 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dataflow-rs"
-version = "3.10.0"
+version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ec94a431b3b4190f52a48cb738e2b44d00080cdfda12bd1817070d6058eaa78"
+checksum = "9ce7e1d9f3f3612890694d1ce719718f99eeb82268b7755c88e230db2b93208b"
 dependencies = [
  "async-trait",
  "bumpalo",

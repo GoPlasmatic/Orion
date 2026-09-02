@@ -281,8 +281,8 @@ impl Rule for RepeatedTaskSequence {
         "A run of at least two consecutive steps that is byte-identical — ids and names \
          aside — in at least three places. Reported once per distinct run, for the longest \
          run at those places, with every location.\n\n\
-         Proof: structural identity of the steps' `function`, `condition`, `terminal` and \
-         `continue_on_error` after `id` and `name` are stripped, recursively through groups.\n\n\
+         Proof: structural identity of the whole step — every key it carries but `id` and \
+         `name`, which are stripped recursively through groups.\n\n\
          Silent when: fewer than three occurrences, or a run shorter than two steps; any \
          run that includes a `use` step. The fact is certain; whether it should be a \
          fragment is the author's call — the message says what it found, and no more."

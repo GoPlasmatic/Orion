@@ -1023,6 +1023,55 @@ async fn validate_warns_about_a_path_no_task_writes() {
     );
 }
 
+/// The engine's own findings reach the endpoint an author calls.
+///
+/// `check_workflow` reports three codes `Engine::build` does not refuse, so a
+/// workflow carrying one is created, activated and served — and says less than
+/// its author wrote. `lint` and `preflight` reported them from the start; this
+/// endpoint is what the API and the UI call, and it was the one surface that
+/// stayed quiet. Warnings, not errors: `valid` still means "`POST /workflows`
+/// would accept this", and it would.
+#[tokio::test]
+async fn validate_warns_about_the_engines_own_shape_findings() {
+    let app = common::test_app().await;
+    let data = validate(
+        &app,
+        json!({
+            "name": "Decorative Check",
+            "condition": true,
+            "tasks": [
+                // #308's shape: a failing rule records 400, the 4xx branch
+                // carries on, and `respond` runs as if it had passed.
+                {"id": "check", "name": "Check", "function": {
+                    "name": "validation", "input": {"rules": [
+                        {"logic": {"==": [{"var": "data.a"}, 1]}, "message": "a must be 1"}
+                    ]}}},
+                {"id": "respond", "name": "Respond", "function": {
+                    "name": "map", "input": {"mappings": [
+                        {"path": "data.ok", "logic": true}
+                    ]}}}
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        data["valid"], true,
+        "the engine builds this workflow, so create accepts it: {data}"
+    );
+    let warnings = data["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| {
+            w["field"].as_str().unwrap_or_default() == "task 'check'.halt_on"
+                && w["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("halt_on")
+        }),
+        "expected the unguarded-validation advisory, got: {warnings:?}"
+    );
+}
+
 /// The correctly spelled version of the same workflow is silent.
 #[tokio::test]
 async fn validate_is_quiet_when_every_read_is_written() {

@@ -852,6 +852,27 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
             .map(|(field, message)| ValidationIssue { field, message }),
     );
 
+    // And what the engine reports about the same document and does not refuse:
+    // a `$`-prefixed key it will emit with one `$` stripped, a `validation`
+    // whose failure stops nothing, `continue_on_error` on a group. `lint`, the
+    // set check and `preflight` all report these; this endpoint is the surface
+    // an author reaches through the API and the UI, and it was the one that
+    // did not. Warnings, because `Engine::build` refuses none of them — `valid`
+    // must keep meaning "`POST /workflows` would accept this".
+    //
+    // `field` carries the advisory's own locator, which for the two shape
+    // findings names the step rather than a JSON path (`task 'check'.halt_on`):
+    // the engine reports the offending *key* and the step id, and inventing a
+    // coordinate from those would be a second walk that could disagree with it.
+    warnings.extend(
+        crate::validation::engine_advisories(&req.tasks)
+            .into_iter()
+            .map(|advisory| ValidationIssue {
+                field: advisory.path,
+                message: advisory.message,
+            }),
+    );
+
     ValidationEnvelope::new(errors, warnings)
 }
 

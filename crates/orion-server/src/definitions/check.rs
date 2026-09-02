@@ -200,17 +200,9 @@ fn check_workflows(
                 message,
             ));
         }
-        // Likewise for the key escape: a `$`-prefixed key in a template
-        // position loses one `$` when the engine emits it, silently.
-        for (path, message) in crate::validation::escaped_template_key_warnings(&req.tasks) {
-            findings.push(Diagnostic::warning(
-                "logic.escaped_template_key",
-                format!("workflow '{}' {path}", req.name),
-                message,
-            ));
-        }
-        // And the engine's own: a control-flow key that does nothing —
-        // a `validation` whose failure changes nothing, or `continue_on_error`
+        // Likewise for what the engine reports and does not refuse: a
+        // `$`-prefixed key that loses one `$` when it is emitted, a
+        // `validation` whose failure changes nothing, and `continue_on_error`
         // on a group, which parses and is dropped.
         for advisory in crate::validation::engine_advisories(&req.tasks) {
             findings.push(Diagnostic::warning(

@@ -151,13 +151,15 @@ Put working state in `temp_data` and keep the response clean:
 
 ## Decide what a failure does
 
-By default the first failing task stops the workflow and the caller gets an error envelope. To collect errors and keep going instead, set `continue_on_error`:
+By default a task that **errors** stops the workflow and the caller gets an error envelope. To collect errors and keep going instead, set `continue_on_error`:
 
 ```json
 { "workflow_id": "order-processing", "continue_on_error": true, "tasks": [ "..." ] }
 ```
 
 Note the envelope this produces: `"status": "ok"` with a non-empty `errors` array. A client that only checks the HTTP code will read that as success, so anything relying on `continue_on_error` must inspect `errors`.
+
+**"Errors" here means a handler error or a `5xx`.** A task that records a `4xx` — which is what a failing [`validation`](../reference/functions.md#validation--validate) rule does — is a warning to the engine: it is written to the `errors` array and the next task runs anyway, whatever `continue_on_error` says. To stop on that, put [`"halt_on": "failure"`](../reference/workflows.md#halting-on-failure) on the task. Without it a check reads correct and gates nothing, which `orion-server lint` reports as `engine.unguarded_validation`.
 
 For finer control, `filter` takes `on_reject: "halt"` to stop the whole workflow, or `on_reject: "skip"` to skip only that task.
 

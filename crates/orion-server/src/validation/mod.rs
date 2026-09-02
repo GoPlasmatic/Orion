@@ -15,7 +15,7 @@ pub use endpoints::{
 };
 pub use ssrf::{PinnedDnsResolver, validate_hostport_not_private, validate_url_not_private};
 pub use workflows::{
-    EngineAdvisory, engine_advisories, escaped_template_key_warnings, secret_reference_errors,
-    unresolvable_logic_warnings, validate_create_workflow, validate_update_workflow,
-    validate_workflow_id, validate_workflow_loop_schema, validate_workflow_tasks_schema,
+    EngineAdvisory, engine_advisories, secret_reference_errors, unresolvable_logic_warnings,
+    validate_create_workflow, validate_update_workflow, validate_workflow_id,
+    validate_workflow_loop_schema, validate_workflow_tasks_schema,
 };

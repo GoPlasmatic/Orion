@@ -229,8 +229,9 @@ impl Diagnostic {
 
     /// The three-line form `preflight` reports in.
     ///
-    /// Severity is not printed: every preflight finding is a break, so a
-    /// per-line level would be the same word on every line. The remedy is,
+    /// Severity is not printed: `run_preflight` groups its findings by it and
+    /// heads each group, so a per-line level would be the same word for every
+    /// line under a heading that already said it. The remedy is printed,
     /// because the whole point of the scan is that each break has one.
     pub fn render_preflight(&self) -> String {
         let mut out = format!("[{}] {}\n      {}", self.check, self.entity, self.message);
