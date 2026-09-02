@@ -920,31 +920,43 @@ pub fn json_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Bind a slice of JSON values to a sqlx query, matching each value type to
-/// the appropriate sqlx bind call.  Consolidates the identical loop found in
-/// `db_read` and `db_write`.
-pub fn bind_json_params<'q>(
-    mut query: sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>>,
-    params: &'q [Value],
-) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
-    for param in params {
-        query = match param {
-            Value::String(s) => query.bind(s.as_str()),
-            Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    query.bind(i)
-                } else if let Some(f) = n.as_f64() {
-                    query.bind(f)
-                } else {
-                    query.bind(n.to_string())
-                }
-            }
-            Value::Bool(b) => query.bind(*b),
-            Value::Null => query.bind(None::<String>),
-            _ => query.bind(param.to_string()),
-        };
+/// Turn a decode failure into a task error the author can act on (#309).
+///
+/// Classified as a *client* error, because it is one: the query asked for a
+/// column whose type has no JSON form here, and no amount of retrying changes
+/// that. Before native decoding this surfaced as an internal `500` plus an
+/// `unhandled DataflowError variant` log line, which told the caller nothing
+/// and the author less.
+pub fn decode_failure(
+    function: &str,
+    e: crate::connector::sql_decode::DecodeError,
+) -> dataflow_rs::DataflowError {
+    dataflow_rs::DataflowError::Validation(e.message(function))
+}
+
+/// Read the `numeric_as` input: how an arbitrary-precision decimal is rendered.
+///
+/// Absent is [`crate::connector::sql_decode::NumericAs::Number`], which is what an
+/// author reaching for
+/// `SELECT price` expects and is lossy beyond 2^53 or on most decimal
+/// fractions. `"string"` is the deliberate opt-out for money and identifier
+/// columns, where the rounding would be a correctness bug the caller cannot
+/// see.
+pub fn resolve_numeric_as(
+    input: &TemplatedInput,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<crate::connector::sql_decode::NumericAs, DataflowError> {
+    use crate::connector::sql_decode::NumericAs;
+    match resolve_optional_str(input, "numeric_as", handler_name, ctx)? {
+        None => Ok(NumericAs::default()),
+        Some(s) => NumericAs::parse(&s).ok_or_else(|| {
+            DataflowError::Validation(format!(
+                "{handler_name}: 'numeric_as' must be one of {} (got '{s}')",
+                NumericAs::VALUES
+            ))
+        }),
     }
-    query
 }
 
 /// The query timeout a connector that declares no `query_timeout_ms` gets.

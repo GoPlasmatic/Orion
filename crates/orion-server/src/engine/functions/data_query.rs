@@ -7,14 +7,12 @@ use dataflow_rs::engine::task_context::TaskContext;
 use futures::TryStreamExt;
 use mongodb::bson::Document;
 use serde_json::{Map, Value};
-use sqlx::any::AnyRow;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, build_entity_registry, es_request, is_mongo, require_op_allowed, resolve_params,
-    timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, build_entity_registry, decode_failure, es_request, is_mongo, require_op_allowed,
+    resolve_numeric_as, resolve_params, timed_query, to_connect_error, to_exec_error,
 };
-use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -52,6 +50,9 @@ pub struct DataQuery {
     query: Value,
     params: Map<String, Value>,
     schema: Option<Value>,
+    /// How an arbitrary-precision decimal is rendered (#309). SQL backends
+    /// only; Elasticsearch and MongoDB carry their own JSON types.
+    numeric_as: crate::connector::sql_decode::NumericAs,
     database: Option<String>,
 }
 
@@ -88,6 +89,7 @@ impl ConnectorHandler for DataQueryHandler {
             // message touches the query. It produces concrete literals, not
             // SQL, which the pure translation path then folds into the filter.
             params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
+            numeric_as: resolve_numeric_as(input, call.name, ctx)?,
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, relation declarations.
             schema: input.get("schema").cloned(),
@@ -175,8 +177,9 @@ impl ConnectorHandler for DataQueryHandler {
                 )
             }
             ConnectorConfig::Db(db) => {
-                // SQL: dialect from the connection-string scheme (the same
-                // source `AnyPool` uses), so the rendered SQL matches the pool.
+                // SQL: dialect from the connection-string scheme, the same
+                // source the pool is built from, so the rendered SQL always
+                // matches the driver that runs it.
                 let dialect: SqlDialect = detect_backend(&db.connection_string)
                     .map_err(to_exec_error)?
                     .into();
@@ -187,7 +190,14 @@ impl ConnectorHandler for DataQueryHandler {
                     .get_pool(call.connector, db)
                     .await
                     .map_err(to_connect_error)?;
-                run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
+                run_sql_with_includes(
+                    &pool,
+                    &plan,
+                    dialect,
+                    db.query_timeout_ms,
+                    parsed.numeric_as,
+                )
+                .await?
             }
             // `DataBackend` admits `db` and `es` and nothing else, and it
             // produced the "is not a db or es connector" refusal — the one this
@@ -251,19 +261,27 @@ async fn run_es_search(
 /// key and a child foreign key that the driver rendered differently (`"7"` vs
 /// `7`) still join (W14).
 async fn run_sql_with_includes(
-    pool: &sqlx::AnyPool,
+    pool: &crate::connector::pool_cache::SqlPool,
     plan: &query::SqlPlan,
     dialect: SqlDialect,
     timeout_ms: Option<u64>,
+    numeric: crate::connector::sql_decode::NumericAs,
 ) -> Result<Value, DataflowError> {
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
-    let rows: Vec<AnyRow> = timed_query(
-        timeout_ms,
-        NAME,
-        sqlx::query_with(&sql, values).fetch_all(pool),
-    )
-    .await?;
-    let mut parents: Vec<Value> = rows_to_json(&rows)?;
+    // `SqlxValues` implements `IntoArguments` for all three drivers as well as
+    // `Any`, so the builder above needs no change — only the execute site
+    // dispatches (#309).
+    let mut parents: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
+        pool, p, rows_to_json, _bind => {
+            let rows = timed_query(
+                timeout_ms,
+                NAME,
+                sqlx::query_with(&sql, values).fetch_all(p),
+            )
+            .await?;
+            rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?
+        }
+    );
 
     for inc in &plan.includes {
         // Distinct, non-null parent keys to fetch children for.
@@ -287,13 +305,17 @@ async fn run_sql_with_includes(
         let mut groups: HashMap<GroupKey, Vec<Value>> = HashMap::new();
         if !keys.is_empty() {
             let (csql, cvalues) = query::backend::sql::build_include_select(inc, &keys, dialect);
-            let crows: Vec<AnyRow> = timed_query(
-                timeout_ms,
-                NAME,
-                sqlx::query_with(&csql, cvalues).fetch_all(pool),
-            )
-            .await?;
-            let children = rows_to_json(&crows)?;
+            let children: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
+                pool, p, rows_to_json, _bind => {
+                    let crows = timed_query(
+                        timeout_ms,
+                        NAME,
+                        sqlx::query_with(&csql, cvalues).fetch_all(p),
+                    )
+                    .await?;
+                    rows_to_json(&crows, numeric).map_err(|e| decode_failure(NAME, e))?
+                }
+            );
             for mut child in children {
                 let Some(fk) = child.get(&inc.foreign).and_then(GroupKey::from_json) else {
                     continue;
@@ -387,6 +409,13 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       required — and checked at workflow activation — once the referenced \
                       connector is a MongoDB one (F52).",
         kind: FieldKind::String,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "numeric_as",
+        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs. SQL backends only.",
+        kind: FieldKind::String,
+        resolvable: true,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

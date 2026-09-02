@@ -78,7 +78,19 @@ harness = true
 # the only lever, and it arrived in dataflow-rs 3.2.
 dataflow-rs = { version = "3.9.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
+# `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
+# real Postgres row (#309). Before native decoding, connector queries went
+# through `sqlx::Any`, whose `AnyTypeInfoKind` has nine variants and no way to
+# spell `uuid`, `jsonb`, `numeric` or an array — so a `SELECT *` over any
+# ordinary schema failed the task with a 500, and only when a row existed.
+# `chrono` was already on for the server's own store and covers the date/time
+# family. `any` stays: `sea-query-sqlx` still lists it, and dropping it is a
+# separate cleanup.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "any", "sqlite", "postgres", "mysql"] }
+# Postgres NUMERIC is arbitrary precision and JSON has no equivalent. Decoding
+# through f64 would silently round a money column, so the value is read exactly
+# here and the lossy step is the one the author asks for (`numeric_as`).
+bigdecimal = "0.4"
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 # `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.8.x is the
 # line that keeps sqlx 0.8 and MSRV 1.88; 0.9 moves to sqlx 0.9 / Rust 1.94.

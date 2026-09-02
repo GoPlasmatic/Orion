@@ -229,7 +229,7 @@ impl FieldRef {
 }
 
 /// A literal operand value — always a scalar. Only these variants ever become
-/// bound parameters. The first five map to an `AnyPool`-safe
+/// bound parameters. The first five map to a driver-portable
 /// `sea_query::Value` (never Decimal/Json/Uuid, which panic under the
 /// `sqlx-any` binder); the two tagged variants (#263) are validated during
 /// lowering, render natively on MongoDB, and are a

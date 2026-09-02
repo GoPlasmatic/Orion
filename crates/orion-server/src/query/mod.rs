@@ -6,7 +6,8 @@
 //!
 //! Pipeline: [`spec::parse`] (envelope) → [`lower::lower_with`] (filter →
 //! [`ir::Cond`]) → [`backend::sql::render`] (`Cond` → `sea_query::SelectStatement`)
-//! → [`backend::sql::build_for`] (dialect-specific `(sql, values)` for `AnyPool`).
+//! → [`backend::sql::build_for`] (dialect-specific `(sql, values)` for the
+//!   connector's pool).
 
 pub mod backend;
 pub mod bulk;

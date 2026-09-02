@@ -406,6 +406,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
+| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns). SQL backends only |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 > [!NOTE]
@@ -463,6 +464,7 @@ for the full envelope, backend mapping, and safety rules.
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside `values`, `set`, and `filter`; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, allowlist, `writable` flags. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones. Enforced at run time, like `data_query`'s |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
+| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns). SQL backends only |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the write result is written |
 
 #### Updating array elements
@@ -564,6 +566,7 @@ placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `SELECT` statement with bind placeholders |
 | `params` | array | no | — | Values bound to the placeholders, in order |
+| `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns) |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 ```json
@@ -577,6 +580,52 @@ placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
   }
 }
 ```
+
+#### Decimal columns
+
+`numeric` (PostgreSQL) and `decimal` (MySQL) are arbitrary precision, and JSON
+has no equivalent. `numeric_as` decides which way the mismatch resolves:
+
+| Value | Result |
+|---|---|
+| `"number"` (default) | A JSON number — computable in JSONLogic, and **rounded** beyond 2^53 or on most decimal fractions |
+| `"string"` | The exact decimal as a string; arithmetic needs an explicit cast in the workflow |
+
+The default is the convenient one, not the safe one. For a money column use
+`"string"`: a silently rounded total is a correctness bug the caller cannot
+see, and the cast the string forces is the point — it makes the loss a
+decision rather than an accident. `bigint` is unaffected either way, because a
+64-bit integer is exact in JSON.
+
+SQLite has no static column types — a `NUMERIC` column stores whichever storage
+class the value fits — so the setting has nothing to act on there and is
+ignored.
+
+#### Column types
+
+Rows are decoded on the connector's real driver, so a `SELECT *` over an
+ordinary schema works: `uuid`, `json`/`jsonb` (as the value, not a string to
+re-parse), `numeric`, the date/time family (as RFC 3339 / ISO 8601 strings),
+arrays, enums and domains all have JSON forms. A `json`/`jsonb` column comes
+back as the document itself, so `parse_json` is not needed after a read.
+
+A type with no JSON form here — `inet`, `interval`, a composite, a range — is a
+**`400` naming the column and its SQL type**, not a `500`. The remedy is in the
+message: cast it in the query (`SELECT extra::text`) and use
+[`parse_json`](#parse_json) if it holds a document.
+
+**Parameters are the other direction, and they still need a cast.** A `params`
+entry is bound by its JSON type, so a string goes out as `text`. PostgreSQL
+types its parameters and has no `text = uuid` operator, so a comparison against
+a `uuid`, `numeric` or `timestamptz` column is written `WHERE id = ($1)::uuid`.
+Orion does not infer the SQL type from the shape of the value — a string that
+looked like a UUID would then bind as one and fail against a `text` column.
+SQLite and MySQL coerce, so this affects PostgreSQL only.
+
+> Before 1.6 these queries ran through a driver-agnostic layer that could
+> decode nine PostgreSQL types. Everything else failed the task with a `500` —
+> and only when a row existed, so a query passed every test against an empty
+> table and failed the first time production had data.
 
 ### `db_write`
 

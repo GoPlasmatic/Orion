@@ -6,14 +6,13 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
 use serde_json::{Map, Value, json};
-use sqlx::any::AnyRow;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, build_entity_registry, es_request, es_write_error, is_mongo,
-    require_op_allowed, resolve_params, send_es, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, QueryBudget, build_entity_registry, decode_failure, es_request, es_write_error,
+    is_mongo, require_op_allowed, resolve_numeric_as, resolve_params, send_es, timed_query,
+    to_connect_error, to_exec_error,
 };
-use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -61,6 +60,9 @@ pub struct DataWriteHandler {
 /// there is nothing to resolve until the connector is in hand.
 pub struct DataWrite {
     params: Map<String, Value>,
+    /// How an arbitrary-precision decimal in a `returning` row is rendered
+    /// (#309). SQL backends only.
+    numeric_as: crate::connector::sql_decode::NumericAs,
     schema: Option<Value>,
     envelope: Value,
     database: Option<String>,
@@ -112,6 +114,7 @@ impl ConnectorHandler for DataWriteHandler {
             // Resolved against the message context (the only point the message
             // touches the mutation); it produces literals, not SQL.
             params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
+            numeric_as: resolve_numeric_as(input, <Self as ConnectorHandler>::NAME, ctx)?,
             // Optional inline schema (privileged config): renames, allowlist,
             // and the per-column `writable` flag.
             schema: input.get("schema").cloned(),
@@ -193,7 +196,15 @@ impl ConnectorHandler for DataWriteHandler {
                     .get_pool(call.connector, db)
                     .await
                     .map_err(to_connect_error)?;
-                execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
+                execute_sql(
+                    &pool,
+                    &sql,
+                    values,
+                    &resolved,
+                    db.query_timeout_ms,
+                    parsed.numeric_as,
+                )
+                .await?
             }
             ConnectorConfig::Es(es) => {
                 let ew =
@@ -233,21 +244,36 @@ impl ConnectorHandler for DataWriteHandler {
 /// each its own `query_timeout_ms` would triple the bound the connector's owner
 /// configured.
 async fn execute_sql(
-    pool: &sqlx::AnyPool,
+    pool: &crate::connector::pool_cache::SqlPool,
     sql: &str,
     values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
     timeout_ms: Option<u64>,
+    numeric: crate::connector::sql_decode::NumericAs,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     let budget = QueryBudget::start(timeout_ms);
-    let mut out = if w.is_multi_row() {
-        let mut tx = budget.run(NAME, pool.begin()).await?;
-        let out = run_write_statement(&mut *tx, sql, values, w, &budget).await?;
-        budget.run(NAME, tx.commit()).await?;
-        out
-    } else {
-        run_write_statement(pool, sql, values, w, &budget).await?
-    };
+    // The transaction is per driver, so the whole statement runs inside the
+    // dispatch rather than behind an `Executor` bound — `sqlx::Any` was the
+    // only thing that made one generic body possible, and it is what capped
+    // the type vocabulary (#309).
+    let mut out = crate::connector::pool_cache::dispatch_sql_pool!(
+        pool, p, rows_to_json, _bind, write_result => {
+            if w.is_multi_row() {
+                let mut tx = budget.run(NAME, p.begin()).await?;
+                let out = run_write_statement(
+                    &mut *tx, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                )
+                .await?;
+                budget.run(NAME, tx.commit()).await?;
+                out
+            } else {
+                run_write_statement(
+                    p, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                )
+                .await?
+            }
+        }
+    );
     // SQL is the atomic member of the three write models, so its status is
     // never `partial`; it carries the key so one check works on every backend.
     out["status"] = json!("ok");
@@ -258,32 +284,48 @@ async fn execute_sql(
 /// connection). When `returning` is requested the statement returns rows
 /// (`fetch_all`); otherwise it is a plain `execute` returning the affected-row
 /// count (and `last_insert_id` where the driver reports one).
-async fn run_write_statement<'e, E>(
+#[allow(clippy::too_many_arguments)]
+async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
-    sql: &str,
+    sql: &'e str,
     values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
     budget: &QueryBudget,
+    rows_to_json: F,
+    write_result: G,
+    numeric: crate::connector::sql_decode::NumericAs,
 ) -> Result<Value, DataflowError>
 where
-    E: sqlx::Executor<'e, Database = sqlx::Any>,
+    E: sqlx::Executor<'e, Database = R>,
+    R: sqlx::Database,
+    sea_query_sqlx::SqlxValues: sqlx::IntoArguments<'e, R>,
+    F: Fn(
+        &[R::Row],
+        crate::connector::sql_decode::NumericAs,
+    ) -> Result<Vec<Value>, crate::connector::sql_decode::DecodeError>,
+    G: Fn(&R::QueryResult) -> (u64, Option<i64>),
 {
     if w.returning().is_empty() {
         let res = budget
             .run(NAME, sqlx::query_with(sql, values).execute(executor))
             .await?;
-        let mut out = json!({ "rows_affected": res.rows_affected() });
+        let (rows_affected, last_insert_id) = write_result(&res);
+        let mut out = json!({ "rows_affected": rows_affected });
+        // MySQL and SQLite report an auto-increment id; PostgreSQL does not,
+        // and never did — `AnyQueryResult` reported `0` there, so the key was
+        // present and meaningless. Postgres uses `RETURNING`, which this
+        // dialect already supports.
         if matches!(w.op(), WriteOp::Insert | WriteOp::Upsert)
-            && let Some(id) = res.last_insert_id()
+            && let Some(id) = last_insert_id
         {
             out["last_insert_id"] = json!(id);
         }
         Ok(out)
     } else {
-        let rows: Vec<AnyRow> = budget
+        let rows = budget
             .run(NAME, sqlx::query_with(sql, values).fetch_all(executor))
             .await?;
-        let returning = rows_to_json(&rows)?;
+        let returning = rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?;
         let count = returning.len();
         Ok(json!({ "rows_affected": count, "returning": returning }))
     }
@@ -629,6 +671,13 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       required — and checked at workflow activation — once the referenced \
                       connector is a MongoDB one (F52).",
         kind: FieldKind::String,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "numeric_as",
+        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs. SQL backends only.",
+        kind: FieldKind::String,
+        resolvable: true,
         ..FieldSchema::DEFAULT
     },
     FieldSchema {

@@ -1,16 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
-use sqlx::any::{AnyRow, AnyTypeInfoKind};
-use sqlx::{Column, Row, ValueRef};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, bind_json_params, reject_mongo_connector, require_op_allowed,
-    resolve_bind_params, timed_query, to_connect_error,
+    ConnectorCall, decode_failure, reject_mongo_connector, require_op_allowed, resolve_bind_params,
+    resolve_numeric_as, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -40,6 +37,7 @@ pub struct DbReadHandler {
 pub struct DbRead {
     query: String,
     params: Vec<Value>,
+    numeric_as: crate::connector::sql_decode::NumericAs,
 }
 
 impl DbRead {
@@ -54,6 +52,7 @@ impl DbRead {
         Ok(Self {
             query: call.require_str(input, "query")?.to_string(),
             params: resolve_bind_params(input, call.name, ctx)?,
+            numeric_as: resolve_numeric_as(input, call.name, ctx)?,
         })
     }
 
@@ -63,6 +62,10 @@ impl DbRead {
 
     pub(super) fn params(&self) -> &[Value] {
         &self.params
+    }
+
+    pub(super) fn numeric_as(&self) -> crate::connector::sql_decode::NumericAs {
+        self.numeric_as
     }
 }
 
@@ -116,142 +119,51 @@ impl ConnectorHandler for DbReadHandler {
             .await
             .map_err(to_connect_error)?;
 
-        let sqlx_query = bind_json_params(sqlx::query(read.query()), read.params());
-
         let max_rows = self.max_rows;
-        let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, call.name, async {
-            use futures::TryStreamExt;
-            let mut stream = sqlx_query.fetch(&pool);
-            let mut rows: Vec<AnyRow> = Vec::new();
-            // Not `.map_err(|e| e.to_string())`: stringifying here converted
-            // through `From<String>`, which is unconditionally a backend
-            // failure, so a constraint the driver had already classified was
-            // thrown away before `QueryFailure` could see it.
-            while let Some(row) = stream.try_next().await? {
-                if rows.len() >= max_rows {
-                    // F42: classified so `timed_query` reports it as a 400 with
-                    // the text intact rather than a 500 with the guidance
-                    // sanitised away. The guidance *is* the message, so losing
-                    // it loses the point.
-                    return Err(
-                        crate::engine::functions::connector_helpers::QueryFailure::Limit(format!(
-                            "{} result exceeds query.max_limit ({max_rows} rows) — add a \
-                             LIMIT to the query or raise the cap",
-                            call.name
-                        )),
-                    );
-                }
-                rows.push(row);
+        let params = read.params();
+        let numeric = read.numeric_as();
+        let query = read.query();
+
+        // One body, three drivers: the macro binds the concrete pool, its
+        // decoder and its binder, and each arm is type-checked on its own.
+        let json = crate::connector::pool_cache::dispatch_sql_pool!(
+            &pool, p, rows_to_json, bind => {
+                let rows = timed_query(db_config.query_timeout_ms, call.name, async {
+                    use futures::TryStreamExt;
+                    let sqlx_query = bind(sqlx::query(query), params);
+                    let mut stream = sqlx_query.fetch(p);
+                    let mut rows = Vec::new();
+                    // Not `.map_err(|e| e.to_string())`: stringifying here
+                    // converted through `From<String>`, which is
+                    // unconditionally a backend failure, so a constraint the
+                    // driver had already classified was thrown away before
+                    // `QueryFailure` could see it.
+                    while let Some(row) = stream.try_next().await? {
+                        if rows.len() >= max_rows {
+                            // F42: classified so `timed_query` reports it as a
+                            // 400 with the text intact rather than a 500 with
+                            // the guidance sanitised away. The guidance *is*
+                            // the message, so losing it loses the point.
+                            return Err(
+                                crate::engine::functions::connector_helpers::QueryFailure::Limit(
+                                    format!(
+                                        "{} result exceeds query.max_limit ({max_rows} rows) \
+                                         — add a LIMIT to the query or raise the cap",
+                                        call.name
+                                    ),
+                                ),
+                            );
+                        }
+                        rows.push(row);
+                    }
+                    Ok(rows)
+                })
+                .await?;
+                rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?
             }
-            Ok(rows)
-        })
-        .await?;
+        );
 
-        Ok(Value::Array(rows_to_json(&rows)?).into())
-    }
-}
-
-/// Convert AnyRow results to a JSON array of objects.
-///
-/// Column names are collected once from the first row and reused for all
-/// subsequent rows, eliminating O(rows × columns) string allocations.
-///
-/// Only a genuine SQL `NULL` becomes `Value::Null`. A value the driver cannot
-/// represent is an error, never a silent null — the two must stay
-/// distinguishable to the workflow reading the result.
-pub fn rows_to_json(rows: &[AnyRow]) -> Result<Vec<Value>, DataflowError> {
-    if rows.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let col_names: Vec<String> = rows[0]
-        .columns()
-        .iter()
-        .map(|col| col.name().to_string())
-        .collect();
-
-    let mut result = Vec::with_capacity(rows.len());
-    for row in rows {
-        let mut obj = serde_json::Map::with_capacity(col_names.len());
-        for (i, name) in col_names.iter().enumerate() {
-            obj.insert(name.clone(), column_to_json(row, i, name)?);
-        }
-        result.push(Value::Object(obj));
-    }
-    Ok(result)
-}
-
-/// Decode one column of one row into JSON, dispatching on the value's own type
-/// rather than probing candidate Rust types in turn.
-///
-/// The probe-cascade this replaced fell through to `Value::Null` for anything
-/// it did not recognise, so `REAL` and `BLOB` columns — and any future
-/// [`AnyTypeInfoKind`] — read back as null even though the query succeeded.
-/// Matching the kind exhaustively means a new kind is a compile error instead.
-fn column_to_json(row: &AnyRow, index: usize, name: &str) -> Result<Value, DataflowError> {
-    let raw = row.try_get_raw(index).map_err(|e| {
-        DataflowError::function_execution(
-            format!("{NAME}: column '{name}' is unreadable: {e}"),
-            None,
-        )
-    })?;
-    if raw.is_null() {
-        return Ok(Value::Null);
-    }
-    let kind = raw.type_info().kind();
-
-    let decode_err = |e: sqlx::Error| {
-        DataflowError::function_execution(
-            format!("{NAME}: column '{name}' ({kind:?}) failed to decode: {e}"),
-            None,
-        )
-    };
-
-    let value = match kind {
-        // Already handled above; a value whose own type info is NULL carries
-        // nothing to decode.
-        AnyTypeInfoKind::Null => Value::Null,
-        AnyTypeInfoKind::Bool => Value::Bool(row.try_get::<bool, _>(index).map_err(decode_err)?),
-        AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
-            Value::Number(row.try_get::<i64, _>(index).map_err(decode_err)?.into())
-        }
-        AnyTypeInfoKind::Real => float_to_json(
-            f64::from(row.try_get::<f32, _>(index).map_err(decode_err)?),
-            name,
-        )?,
-        AnyTypeInfoKind::Double => {
-            float_to_json(row.try_get::<f64, _>(index).map_err(decode_err)?, name)?
-        }
-        AnyTypeInfoKind::Text => {
-            Value::String(row.try_get::<String, _>(index).map_err(decode_err)?)
-        }
-        AnyTypeInfoKind::Blob => {
-            blob_to_json(row.try_get::<Vec<u8>, _>(index).map_err(decode_err)?)
-        }
-    };
-    Ok(value)
-}
-
-/// JSON has no NaN or infinity. Rather than emit null — indistinguishable from
-/// a SQL NULL — say so.
-fn float_to_json(v: f64, name: &str) -> Result<Value, DataflowError> {
-    serde_json::Number::from_f64(v)
-        .map(Value::Number)
-        .ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("{NAME}: column '{name}' holds {v}, which JSON cannot represent"),
-                None,
-            )
-        })
-}
-
-/// Binary columns become a string: the UTF-8 text when the bytes are valid
-/// UTF-8 (MySQL reports `TEXT`/`JSON` columns as `BLOB`, so this is the common
-/// case), otherwise lowercase hex.
-fn blob_to_json(bytes: Vec<u8>) -> Value {
-    match String::from_utf8(bytes) {
-        Ok(s) => Value::String(s),
-        Err(e) => Value::String(hex::encode(e.into_bytes())),
+        Ok(Value::Array(json).into())
     }
 }
 
@@ -282,6 +194,13 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
         name: "params",
         description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Array,
+        resolvable: true,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "numeric_as",
+        description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs.",
+        kind: FieldKind::String,
         resolvable: true,
         ..FieldSchema::DEFAULT
     },

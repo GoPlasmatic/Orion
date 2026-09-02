@@ -2,7 +2,7 @@
 //!
 //! Walks a [`Cond`] + [`QuerySpec`] into a `sea_query::SelectStatement`, then
 //! [`build_for`] produces the dialect-specific `(sql, values)` bound to the
-//! external connector's `sqlx::AnyPool`. Identifiers are dynamic
+//! external connector's pool. Identifiers are dynamic
 //! (`sea_query::Alias`) and every literal is a bound value, so the output is
 //! injection-safe and quoted per dialect.
 
@@ -69,7 +69,7 @@ pub fn render(
 }
 
 /// Produce the dialect-specific SQL string + bound values for execution on an
-/// `AnyPool`. The dialect must match the connector's real driver (see
+/// its pool. The dialect must match the connector's real driver (see
 /// [`SqlDialect`]).
 pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxValues) {
     match dialect {
@@ -451,7 +451,7 @@ fn sql_unsupported(feature: &str) -> QueryError {
 // ---- Write rendering (INSERT / UPDATE / DELETE / upsert) ----
 
 /// Render a resolved mutation into `(sql, values)` for `dialect`, bound to the
-/// external connector's `AnyPool`. The `filter` of an update/delete reuses the
+/// external connector's pool. The `filter` of an update/delete reuses the
 /// query dialect's [`render_expr`]; every value is a bound parameter.
 pub fn render_write(
     w: &ResolvedWrite,

@@ -899,29 +899,25 @@ async fn probe_db(
         .get_pool(name, db)
         .await
         .map_err(|e| e.client_message())?;
-    sqlx::query("SELECT 1")
-        .execute(&pool)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            // S21: a raw sqlx error names databases, roles and host:port —
-            // the same detail the pool arm above redacts. Log it, don't
-            // serve it.
-            tracing::warn!(connector = %name, error = %e, "connectivity probe query failed");
-            // The pool may be cached from an earlier probe, so an `execute`
-            // failure is not proof a connection existed — only an error the
-            // database itself reported is. Claiming "connected" on a
-            // connection-level failure would steer the operator away from
-            // the network/DNS/down-host diagnosis this endpoint exists for.
-            if matches!(e, sqlx::Error::Database(_)) {
-                "connected, but the probe query failed; the driver error is in the server log"
-                    .to_string()
-            } else {
-                "the probe could not complete against the database — it may be \
+    pool.ping().await.map_err(|e| {
+        // S21: a raw sqlx error names databases, roles and host:port —
+        // the same detail the pool arm above redacts. Log it, don't
+        // serve it.
+        tracing::warn!(connector = %name, error = %e, "connectivity probe query failed");
+        // The pool may be cached from an earlier probe, so an `execute`
+        // failure is not proof a connection existed — only an error the
+        // database itself reported is. Claiming "connected" on a
+        // connection-level failure would steer the operator away from
+        // the network/DNS/down-host diagnosis this endpoint exists for.
+        if matches!(e, sqlx::Error::Database(_)) {
+            "connected, but the probe query failed; the driver error is in the server log"
+                .to_string()
+        } else {
+            "the probe could not complete against the database — it may be \
                  unreachable; the driver error is in the server log"
-                    .to_string()
-            }
-        })
+                .to_string()
+        }
+    })
 }
 
 /// A read, not a write: the probe must not leave anything behind in a store a

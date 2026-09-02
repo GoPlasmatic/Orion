@@ -600,9 +600,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Init metrics (gated by config)
     let metrics_handle = bootstrap::init_metrics_handle(&config);
 
-    // Install sqlx Any drivers for external connector pools (must be before any pool creation)
-    sqlx::any::install_default_drivers();
-
     // Init database. With auto_migrate = false (multi-replica deploys) a
     // stale schema is a hard startup error — a replica must never serve
     // against pending migrations; `orion-server migrate` is the deploy step.

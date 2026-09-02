@@ -5,8 +5,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, bind_json_params, reject_mongo_connector, require_op_allowed, timed_query,
-    to_connect_error,
+    ConnectorCall, reject_mongo_connector, require_op_allowed, timed_query, to_connect_error,
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
@@ -73,18 +72,21 @@ impl ConnectorHandler for DbWriteHandler {
             .await
             .map_err(to_connect_error)?;
 
-        let sqlx_query = bind_json_params(sqlx::query(write.query()), write.params());
-        let result = timed_query(
-            db_config.query_timeout_ms,
-            call.name,
-            sqlx_query.execute(&pool),
-        )
-        .await?;
+        let query = write.query();
+        let params = write.params();
+        let rows_affected = crate::connector::pool_cache::dispatch_sql_pool!(
+            &pool, p, _decode, bind => {
+                timed_query(
+                    db_config.query_timeout_ms,
+                    call.name,
+                    bind(sqlx::query(query), params).execute(p),
+                )
+                .await?
+                .rows_affected()
+            }
+        );
 
-        Ok(serde_json::json!({
-            "rows_affected": result.rows_affected(),
-        })
-        .into())
+        Ok(serde_json::json!({ "rows_affected": rows_affected }).into())
     }
 }
 

@@ -591,7 +591,7 @@ fn resolve_value_node(node: &Json, params: &Params, at: &str) -> Result<ir::Valu
     json_to_value(node, params, at)
 }
 
-/// Convert a JSON scalar to the IR value, restricted to the `AnyPool`-safe set
+/// Convert a JSON scalar to the IR value, restricted to the driver-portable set
 /// (Null/Bool/Int/Float/Str) plus the extended-JSON wrappers (#263 — `$oid`,
 /// `$date`; native on MongoDB, a capability error on SQL/ES). Other arrays and
 /// objects are not bindable column values.
