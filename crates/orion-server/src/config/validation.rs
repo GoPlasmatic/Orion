@@ -47,6 +47,8 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.secrets.validate()?;
     // Cross-section: cluster mode is meaningless on SQLite (single-host by
     // construction) — refuse at startup rather than corrupt silently.
+    // `storage.validate()` above has already established that the URL names a
+    // real backend, so this is only the cluster question.
     if config.cluster.enabled
         && crate::storage::detect_backend(&config.storage.url)? == crate::storage::DbBackend::Sqlite
     {

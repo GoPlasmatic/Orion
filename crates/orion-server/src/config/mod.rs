@@ -10,6 +10,7 @@ mod oauth2_login;
 mod observability;
 mod query;
 mod rate_limit;
+mod references;
 mod retired_env;
 mod server;
 mod storage;
@@ -230,8 +231,14 @@ impl AuditConfig {
 /// to be redeclared as an `ORION_*` env var. See `env_substitute` for
 /// the full grammar (including the `$$` literal-dollar escape).
 ///
-/// The names those placeholders resolve are carried into the override step:
-/// they are variables Orion reads on the file's behalf, so the
+/// A string *value* may instead be an `env://NAME` reference, resolved after
+/// parsing — the spelling a connector's `connection_string` already uses (#311).
+/// `${VAR}` is textual and runs before the parse, so it can build a value out of
+/// parts; `env://` replaces a whole value and therefore keeps its type. See
+/// the `references` module for why the file accepts `env://` and not `vault://`.
+///
+/// The names both forms resolve are carried into the override step: they are
+/// variables Orion reads on the file's behalf, so the
 /// unknown-`ORION_*`-variable guard (C4d) must not refuse them.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut referenced_by_config_file = std::collections::BTreeSet::new();
@@ -242,10 +249,19 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
         })?;
         referenced_by_config_file = env_substitute::referenced_vars(&raw);
         let content = env_substitute::substitute(&raw, p)?;
-        toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::Internal {
+        // Parsed to a value tree first so references resolve against *values*
+        // rather than text: `url = "env://DB"` is one whole value, and a
+        // textual pass could not tell it from a substring.
+        let mut doc: toml::Value = toml::from_str(&content).map_err(|e| OrionError::Internal {
             context: format!("Failed to parse config file '{p}'"),
             source: Some(Box::new(e)),
-        })?
+        })?;
+        references::resolve_env_references(&mut doc, &mut referenced_by_config_file)?;
+        doc.try_into::<AppConfig>()
+            .map_err(|e| OrionError::Internal {
+                context: format!("Failed to parse config file '{p}'"),
+                source: Some(Box::new(e)),
+            })?
     } else {
         AppConfig::default()
     };

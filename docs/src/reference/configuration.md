@@ -17,7 +17,14 @@ documented in the [CLI Reference](./cli.md). All subcommands honor `${VAR}` /
 Three layers, in increasing precedence:
 
 1. **Struct defaults** — everything on this page.
-2. **The config file**, passed with `-c`. Values may reference process environment variables with `${VAR}` (required — startup fails if unset) or `${VAR:-default}` (optional). `$$` escapes a literal `$`. The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database. The complementary `env://VAR_NAME` resolver runs **after** JSON parsing on connector string fields: `${VAR}` rewrites text, `env://` rewrites parsed values.
+2. **The config file**, passed with `-c`. Values may reference process environment variables two ways:
+
+   - `${VAR}` (required — startup fails if unset) or `${VAR:-default}` (optional), substituted **before** parsing, so it can build a value out of parts. `$$` escapes a literal `$`. The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database.
+   - `env://VAR_NAME` as a whole value, resolved **after** parsing — the spelling a connector's `connection_string` already uses. `[storage] url = "env://ORION_STATE_DB_URL"` names its source the way a connector does, instead of leaving the file either silent about `[storage]` or repeating a credential.
+
+   Both are strict: an unset variable is a startup error naming the variable, and `orion-server validate-config` reports it the same way. `vault://` and the reserved cloud schemes are **not** available in the config file — resolving them is a network call, and the config is what tells the process how to make one. Declare those under [`[secrets]`](#vars-and-secrets), which resolves at startup through every scheme.
+
+   `[vars]` and `[secrets]` are skipped by the `env://` pass because each owns its own reference semantics: a var must be a literal (nothing resolves one on its way into metadata), and a secret must be a reference.
 3. **Environment variables**, named `ORION_SECTION__KEY` with a double underscore between levels — `ORION_SERVER__PORT`, `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED`. These win over the file. Every setting's variable is in the tables below; list-valued settings take a comma-separated string.
 
 The two substitution syntaxes reach different surfaces — connectors and channels live in the database, not in this file — and [Environment Variables](./environment-variables.md) is the one table of which resolves where.

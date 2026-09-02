@@ -20,6 +20,14 @@
 #      so secrets stay out of the database:
 #         [storage]
 #         url = "${ORION_DB_URL:-sqlite:orion.db}"
+#         url = "env://ORION_STATE_DB_URL"
+#      Two ways to keep a credential out of this file. `$${VAR}` is textual and
+#      runs before parsing, so it can build a value out of parts; `env://NAME`
+#      replaces a whole value after parsing, which is the spelling a
+#      connector's `connection_string` already uses. Both are strict: an unset
+#      variable stops the boot and is reported by `validate-config`. `vault://`
+#      is not available here — the config is what tells the process how to
+#      reach a network — so declare those under [secrets].
 #      A placeholder in *this* file may name any variable — Orion sees the
 #      file and knows it reads it. A placeholder in a connector `config_json`
 #      cannot be seen while the config loads, so if you point one at a name
