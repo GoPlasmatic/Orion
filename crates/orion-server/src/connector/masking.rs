@@ -244,11 +244,22 @@ fn mask_connector_in_place(value: &mut Value, key: Option<&str>, forced: bool) {
 
 /// Mask a channel config in place (H3): the credential fields of the closed
 /// `ChannelConfig` schema — `auth.keys[*]`, `auth.secret`, the `auth.secrets`
-/// rotation list (#264), and `auth.jwt_keys[*].key` (#267). Resolvable
-/// references (`env://NAME`) survive for the same reason they do on
+/// rotation list (#264), `auth.jwt_keys[*].key` (#267), and
+/// `oauth2_login.client_secret` / `oauth2_login.state_secret` (#307).
+/// Resolvable references (`env://NAME`) survive for the same reason they do on
 /// connectors: the stored config never held the value, and masking the
 /// pointer breaks export → import.
 pub fn mask_channel_config(config: &mut Value) {
+    if let Some(login) = config.get_mut("oauth2_login") {
+        // `client_id` is deliberately not masked: it travels in the authorize
+        // URL in every user's address bar, so it is not a secret and masking it
+        // would only make a channel read useless for reviewing the flow.
+        for field in ["client_secret", "state_secret"] {
+            if let Some(value) = login.get_mut(field) {
+                mask_channel_secret_leaf(value);
+            }
+        }
+    }
     let Some(auth) = config.get_mut("auth") else {
         return;
     };

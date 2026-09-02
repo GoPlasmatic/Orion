@@ -97,6 +97,26 @@ pub fn mac_verify<M: Mac + KeyInit>(key: &[u8], data: &[u8], signature: &[u8]) -
     mac.verify_slice(signature).is_ok()
 }
 
+/// `n` bytes from the operating-system CSPRNG.
+///
+/// Lives here rather than at each call site because the alternatives are all
+/// wrong in the same quiet way: `rand::random::<u64>()` gives 8 bytes when the
+/// caller asked for 32, and a `Uuid` gives 122 bits of entropy inside a
+/// structure whose version and variant nibbles are fixed. Both look like a
+/// nonce and neither is one at the width a CSRF `state` or a PKCE verifier
+/// needs (RFC 7636 §4.1 asks for 32 octets).
+///
+/// `rand::rng()` is the thread-local generator seeded from the OS and
+/// periodically reseeded — the same source `engine::operators`'s `random`
+/// operator draws from, so a nonce minted here and one minted in JSONLogic
+/// have the same provenance.
+pub fn random_bytes(n: usize) -> Vec<u8> {
+    use rand::Rng as _;
+    let mut buf = vec![0u8; n];
+    rand::rng().fill_bytes(&mut buf);
+    buf
+}
+
 /// Install the process-wide rustls crypto provider if nothing has yet.
 ///
 /// rustls refuses to build a config until one is installed, and the choice is
@@ -164,5 +184,16 @@ mod tests {
         assert!(!mac_verify::<H>(key, data, &good[..16]));
         assert!(!mac_verify::<H>(key, data, &[]));
         assert!(!mac_verify::<H>(b"wrong-secret", data, &good));
+    }
+
+    /// Width and freshness, the two properties a nonce is used for. A
+    /// generator that returned a constant would satisfy the length assertion
+    /// alone, which is exactly the failure mode #307 hit with a `jwt_sign`
+    /// state whose claims were identical for two sign-ins in one second.
+    #[test]
+    fn random_bytes_are_the_requested_width_and_do_not_repeat() {
+        assert_eq!(random_bytes(32).len(), 32);
+        assert_eq!(random_bytes(0).len(), 0);
+        assert_ne!(random_bytes(32), random_bytes(32));
     }
 }

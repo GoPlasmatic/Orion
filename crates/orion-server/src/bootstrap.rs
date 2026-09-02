@@ -423,6 +423,8 @@ impl EngineComponents {
                     cache_pool: &serving.cache_pool,
                     datalogic: &serving.datalogic,
                     jwks: &serving.jwks,
+                    http_client: &serving.http_client,
+                    allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
                     global_trace_storage: &config.trace_storage,
                 },
                 engine_issues,

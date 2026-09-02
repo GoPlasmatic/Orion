@@ -124,6 +124,8 @@ pub async fn reload_engine_with_opts(
                     cache_pool: &state.caches.cache_pool,
                     datalogic: &state.datalogic,
                     jwks: &state.jwks,
+                    http_client: &state.http_client,
+                    allow_private_token_urls: state.config.oauth2_login.allow_private_token_urls,
                     global_trace_storage: &state.config.trace_storage,
                 },
                 engine_issues,

@@ -309,10 +309,19 @@ fn check_channels(
         // rather than with nothing; and only at equal priority, because a
         // deliberate higher-priority override is how a route is meant to be
         // taken over and must not fail the gate.
-        if let Some((route, route_methods)) = crate::channel::routing::declared_route_parts(
+        //
+        // A channel carrying `config.oauth2_login` claims two routes — its own
+        // pattern and the IdP callback — and the projection returns both, so a
+        // callback that collides is caught here rather than at activation on
+        // the target instance.
+        for (route, route_methods) in crate::channel::routing::declared_route_parts(
             req.protocol.as_str(),
             req.route_pattern.as_deref(),
             req.methods.as_deref().unwrap_or_default(),
+            req.config
+                .get("oauth2_login")
+                .and_then(|o| o.get("callback_path"))
+                .and_then(|p| p.as_str()),
         ) {
             let clash = routes
                 .iter()

@@ -711,3 +711,128 @@ impl Rule for SecretUndeclared {
         }
     }
 }
+
+/// #312: a response cookie whose attribute types cannot be right.
+///
+/// The runtime half of that issue makes a dropped cookie visible in the
+/// response envelope and the trace. This is the half that stops it being
+/// authored at all, for the values that are decidable from the source: a
+/// literal is either the type `format_set_cookie` requires or it is not, and no
+/// input can change that.
+pub struct ResponseCookieType;
+
+/// The three attributes whose literal type is checkable, with the type each
+/// requires. `same_site` and the string fields are deliberately absent: a wrong
+/// `same_site` is a bounded-vocabulary mistake rather than a type one, and
+/// `value` is an expression in almost every real cookie.
+const COOKIE_BOOL_FIELDS: &[&str] = &["secure", "http_only"];
+
+impl Rule for ResponseCookieType {
+    fn id(&self) -> &'static str {
+        "correctness.response_cookie_type"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Warn
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn summary(&self) -> &'static str {
+        "a response cookie attribute is a literal of the wrong type, so the cookie is \
+         always dropped"
+    }
+    fn explain(&self) -> &'static str {
+        "`secure` and `http_only` must be booleans and `max_age` an integer. A value of \
+         another type is refused when the response is built — deliberately, because \
+         coercing the string \"false\" to `true` would be worse — and the cookie is \
+         dropped. The request still answers with its declared status, so a dropped \
+         session cookie presents to a browser exactly like the browser having refused \
+         it.\n\n\
+         Proof: structural identity — the value is a JSON literal of the wrong type in \
+         the source, so no input can make it the right one.\n\n\
+         Silent when: the value is an expression (an object or array), which is \
+         evaluated per request and can be either. Those are reported at runtime instead, \
+         in the response envelope's `errors` and `orion_response_drops_total`."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                if step.function.as_deref() != Some("map") {
+                    continue;
+                }
+                let Some(mappings) = step
+                    .node
+                    .pointer("/function/input/mappings")
+                    .and_then(Value::as_array)
+                else {
+                    continue;
+                };
+                for (m, mapping) in mappings.iter().enumerate() {
+                    let is_cookie_list = mapping
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .is_some_and(|p| p.ends_with("_orion.response.cookies"));
+                    if !is_cookie_list {
+                        continue;
+                    }
+                    let Some(cookies) = mapping.get("logic").and_then(Value::as_array) else {
+                        continue;
+                    };
+                    for (c, cookie) in cookies.iter().enumerate() {
+                        let Some(obj) = cookie.as_object() else {
+                            continue;
+                        };
+                        for (field, value) in obj {
+                            let Some(wrong) = wrong_literal(field, value) else {
+                                continue;
+                            };
+                            let path = format!(
+                                "{}.function.input.mappings[{m}].logic[{c}].{field}",
+                                step.path
+                            );
+                            out.push(
+                                Diagnostic::on_workflow(
+                                    self,
+                                    cx,
+                                    wf,
+                                    Some(&path),
+                                    format!(
+                                        "cookie attribute `{field}` is {wrong}; the cookie \
+                                         is dropped and the response ships without it"
+                                    ),
+                                )
+                                .with_remedy(
+                                    match field.as_str() {
+                                        "max_age" => "use an integer number of seconds",
+                                        _ => "use `true` or `false`, or an expression yielding one",
+                                    },
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What is wrong with `value` for `field`, or `None` when it is fine or is an
+/// expression this rule must not judge.
+fn wrong_literal(field: &str, value: &Value) -> Option<&'static str> {
+    // An object is an operator call and an array is a template; both are
+    // evaluated per request, so neither is decidable here.
+    if value.is_object() || value.is_array() {
+        return None;
+    }
+    if COOKIE_BOOL_FIELDS.contains(&field) {
+        return (!value.is_boolean()).then_some("not a boolean");
+    }
+    if field == "max_age" {
+        return (!value.is_i64() && !value.is_u64()).then_some("not an integer");
+    }
+    None
+}

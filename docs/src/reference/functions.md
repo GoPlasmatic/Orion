@@ -193,6 +193,37 @@ an accepted alias for `validation`.
 | `rules[].logic` | JSONLogic | yes | — | Must evaluate to `true` to pass |
 | `rules[].message` | string | yes | — | Error message recorded when the rule fails |
 
+> [!WARNING]
+> **A failed rule records an error; it does not stop the workflow.** The task
+> returns a `400`, the message lands in the response's `errors` array, and the
+> *next task still runs* — including under `continue_on_error: false`, which the
+> engine consults for `5xx` only. That is deliberate (collecting every problem
+> in one pass is what `validation` is for), but it means `validation` is the
+> wrong tool for a gate, and a check written as one reads correct while doing
+> nothing.
+>
+> To reject, use one of these instead:
+>
+> - [`filter`](#filter) — `on_reject: "halt"` (the default) stops the workflow
+>   on a falsy condition. It writes no status or body, so the caller gets the
+>   default envelope.
+> - **A task with a `condition` and `terminal: true`** — write the predicate for
+>   the *bad* case and shape the rejection yourself. More verbose, and the only
+>   form that picks its own status code:
+>
+> ```json
+> { "id": "deny", "name": "Reject", "condition": { "!": { "var": "temp_data.ok" } },
+>   "terminal": true,
+>   "function": { "name": "map", "input": { "mappings": [
+>     { "path": "data.body", "logic": { "error": "forbidden" } },
+>     { "path": "data._orion.response", "logic": { "status": 403, "body_path": "data.body" } } ] } } }
+> ```
+>
+> `terminal: true` on the `validation` task itself does not help: it is about
+> [position, not outcome](./workflows.md) — it halts whether the rules passed or
+> failed.
+
+
 ```json
 {
   "name": "validation",

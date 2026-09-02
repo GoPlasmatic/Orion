@@ -40,6 +40,7 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     // silently absent; `orion-server preflight` names affected channels
     // before an upgrade.
     validate_channel_config_blob(&req.config)?;
+    validate_oauth2_login_routing(&req.config, req.protocol, req.route_pattern.as_deref())?;
     Ok(())
 }
 
@@ -84,6 +85,72 @@ pub fn validate_update_channel(
     }
     if let Some(ref config) = req.config {
         validate_channel_config_blob(config)?;
+        if let Some(protocol) = stored_protocol {
+            validate_oauth2_login_routing(
+                config,
+                protocol,
+                req.route_pattern
+                    .as_deref()
+                    .or(stored.route_pattern.as_deref()),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The two things an `oauth2_login` block needs from the channel *around* it
+/// (#307), which [`validate_channel_config_blob`] cannot see because it holds
+/// the config alone.
+///
+/// Both legs of the flow are routes, so a channel with no route has no flow:
+/// reachable only by name, it would answer a redirect at
+/// `/api/v1/data/{name}` and have nowhere for the identity provider to send
+/// the browser back to.
+fn validate_oauth2_login_routing(
+    config: &serde_json::Value,
+    protocol: ChannelProtocol,
+    route_pattern: Option<&str>,
+) -> Result<(), OrionError> {
+    let Some(login) = config.get("oauth2_login").filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    if protocol != ChannelProtocol::Rest {
+        return Err(OrionError::invalid_field(
+            "channel.config.oauth2_login",
+            "REQUIRED_FOR_PROTOCOL",
+            format!(
+                "oauth2_login needs protocol 'rest' — both legs are browser redirects to \
+                 registered paths, and '{}' registers none",
+                protocol.as_str()
+            ),
+        ));
+    }
+    let Some(pattern) = route_pattern.map(str::trim).filter(|p| !p.is_empty()) else {
+        return Err(OrionError::invalid_field(
+            "channel.route_pattern",
+            "REQUIRED_FOR_PROTOCOL",
+            "a channel with oauth2_login must declare a route_pattern: it is the \
+             authorize leg, the path a user is sent to in order to begin signing in",
+        ));
+    };
+    // The two legs are two routes on one channel; the same path for both would
+    // make the callback shadow the authorize leg (or the reverse, by priority),
+    // and a sign-in would loop.
+    if let Some(callback) = login
+        .get("callback_path")
+        .and_then(serde_json::Value::as_str)
+        && crate::channel::routing::canonical_route(callback)
+            == crate::channel::routing::canonical_route(pattern)
+    {
+        return Err(OrionError::invalid_field(
+            "channel.config.oauth2_login.callback_path",
+            "INVALID",
+            format!(
+                "callback_path '{callback}' is the channel's own route_pattern \
+                 '{pattern}'. They are two different requests — one begins a sign-in, \
+                 the other completes it — and must be two different paths"
+            ),
+        ));
     }
     Ok(())
 }
@@ -474,6 +541,31 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
                     e,
                 )
             })?;
+        }
+    }
+
+    // #307. Everything judgeable without resolving a secret, so a broken
+    // sign-in block is a `400` naming the field rather than a channel that
+    // activates and then quarantines on the next reload. Shared with the
+    // compile path, so the two cannot come to disagree about what is valid.
+    if let Some(ref login) = parsed.oauth2_login {
+        crate::channel::oauth2_login::validate_shape(login)
+            .map_err(|e| OrionError::invalid_field("channel.config.oauth2_login", "INVALID", e))?;
+
+        // The response cache is keyed on the request, never on who is making
+        // it. A stored authorize `302` would replay one browser's state cookie
+        // to the next visitor, and a stored callback would replay one user's
+        // session — so this is not a preference, it is two ways to hand a
+        // session to the wrong person.
+        if parsed.cache.as_ref().is_some_and(|c| c.enabled) {
+            return Err(OrionError::invalid_field(
+                "channel.config.cache",
+                "INVALID",
+                "a channel with oauth2_login cannot also enable the response cache: both \
+                 of its responses are per-user (a one-time state cookie, then a session), \
+                 and the cache key carries no caller identity, so a hit would serve one \
+                 visitor's sign-in to the next",
+            ));
         }
     }
     Ok(())

@@ -146,11 +146,11 @@ pub(crate) async fn dynamic_handler(
     // Resolve channel: try REST route table first, then direct name lookup.
     // N10: `?` answers 400 for invalid percent-sequences before any
     // resolution; matched params arrive percent-decoded exactly once.
-    let (channel, route_params) = if let Some(rm) = state
+    let (channel, route_params, route_role) = if let Some(rm) = state
         .channel_registry
         .match_route(method.as_str(), route_path)?
     {
-        (rm.channel_name, rm.params)
+        (rm.channel_name, rm.params, rm.role)
     } else if !route_path.contains('/') {
         // Single segment — treat as simple channel name (backward compat),
         // decoded once like a captured param so the encoded spelling of a
@@ -165,12 +165,30 @@ pub(crate) async fn dynamic_handler(
         if name.is_empty() {
             return Err(OrionError::validation("Channel name must not be empty"));
         }
-        (name, std::collections::HashMap::new())
+        (
+            name,
+            std::collections::HashMap::new(),
+            crate::channel::routing::RouteRole::Primary,
+        )
     } else {
         return Err(OrionError::NotFound(format!(
             "No channel matches {method} /{route_path}"
         )));
     };
+
+    // #307: `/async` is stripped before matching, so `…/callback/async` would
+    // otherwise resolve to the callback route with `Transport::HttpAsync` —
+    // where the sign-in guard is off. The workflow would run with no grant at
+    // `metadata.oauth` and answer `202`: a sign-in that appears to have been
+    // accepted and established nothing. Refuse it instead of admitting the
+    // half-request.
+    if is_async && route_role == crate::channel::routing::RouteRole::OAuthCallback {
+        return Err(OrionError::MethodNotAllowed(
+            "an OAuth2 callback cannot be submitted asynchronously: the redirect that \
+             follows it is the response"
+                .to_string(),
+        ));
+    }
 
     // Content-Type enforcement: non-empty bodies must declare a JSON media type
     if !body.is_empty() {
@@ -214,7 +232,7 @@ pub(crate) async fn dynamic_handler(
     let body_mode = request_config.map(|r| r.body_mode).unwrap_or_default();
     let req = ProcessRequest::classify(parsed_body, body_mode);
 
-    let metadata = build_request_metadata(RequestMetadataParts {
+    let mut metadata = build_request_metadata(RequestMetadataParts {
         req_metadata: &req.metadata,
         channel: &channel,
         method: &method,
@@ -257,6 +275,16 @@ pub(crate) async fn dynamic_handler(
     } else {
         guards::Transport::HttpSync
     };
+    // Which sign-in leg this is, decided from the route table's answer rather
+    // than by re-comparing the path against the config — one answer to "which
+    // leg?", in the place that already knows.
+    let oauth_ingress = channel_runtime
+        .as_ref()
+        .filter(|rt| rt.oauth2_login.is_some())
+        .map(|_| match route_role {
+            crate::channel::routing::RouteRole::OAuthCallback => crate::channel::OAuthLeg::Callback,
+            crate::channel::routing::RouteRole::Primary => crate::channel::OAuthLeg::Authorize,
+        });
     let guard_verdict = match guards::apply_guards(guards::GuardRequest {
         transport,
         channel: &channel,
@@ -287,6 +315,15 @@ pub(crate) async fn dynamic_handler(
         // Neither HTTP path has a ceiling to protect: the deadline is the
         // caller's patience, not a shared resource.
         max_timeout_ms: None,
+        oauth: oauth_ingress.as_ref().map(|leg| guards::OAuthIngress {
+            leg: *leg,
+            query: &query_params,
+            jar: headers
+                .get_all(axum::http::header::COOKIE)
+                .iter()
+                .filter_map(|v| v.to_str().ok())
+                .collect(),
+        }),
     })
     .await
     {
@@ -309,12 +346,25 @@ pub(crate) async fn dynamic_handler(
             return Ok(sync::cached_response(body, shaped));
         }
         guards::GuardVerdict::Admitted(admission) => admission,
+        // A guard answered the request itself — today, the OAuth2 authorize
+        // leg's `302`. The workflow is not entered and the engine is never
+        // reached.
+        guards::GuardVerdict::Respond(response) => return Ok(guard_response(response)),
     };
 
     // #267: verified claims join the message metadata at `auth.claims` — the
     // one merge point both the sync path and the async queue flow through.
     // The token itself never gets here; guards discarded it after verifying.
     let mut admission = admission;
+    // #307: the verified grant joins the message at `metadata.oauth`, the same
+    // way and in the same place. Platform-reserved: `build_request_metadata`
+    // has already stripped any `oauth` key the caller supplied, so what a
+    // workflow reads here was minted by the guard or is absent.
+    if let Some(grant) = admission.oauth.as_mut().and_then(|o| o.grant.take())
+        && let Some(map) = metadata_mut_object(&mut metadata)
+    {
+        map.insert("oauth".to_string(), grant);
+    }
     let metadata = match admission.auth_claims.take() {
         Some(claims) => guards::merge_auth_claims(metadata, claims),
         None => metadata,
@@ -343,6 +393,45 @@ pub(crate) async fn dynamic_handler(
         admission,
     )
     .await
+}
+
+/// Render a response a guard built itself.
+///
+/// The header rule is `sync.rs`'s: the first occurrence of a name `insert`s and
+/// every later one `append`s, so a redirect that sets a cookie keeps both, and
+/// a repeated `set-cookie` is not collapsed into the last one.
+fn guard_response(response: guards::GuardResponse) -> Response {
+    let status = axum::http::StatusCode::from_u16(response.status)
+        .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let mut out = Response::new(axum::body::Body::from(response.body));
+    *out.status_mut() = status;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (name, value) in response.headers {
+        let Ok(header_name) = axum::http::HeaderName::try_from(name.as_str()) else {
+            continue;
+        };
+        let Ok(header_value) = axum::http::HeaderValue::from_str(&value) else {
+            continue;
+        };
+        if seen.insert(name) {
+            out.headers_mut().insert(header_name, header_value);
+        } else {
+            out.headers_mut().append(header_name, header_value);
+        }
+    }
+    out
+}
+
+/// `metadata` as an object, replacing a non-object with one.
+///
+/// Every ingress builds metadata differently and the caller's own value is the
+/// base, so `null` is reachable here — and a platform-reserved key that
+/// silently did not get stamped because of it would be a guard quietly absent.
+fn metadata_mut_object(metadata: &mut Value) -> Option<&mut serde_json::Map<String, Value>> {
+    if !metadata.is_object() {
+        *metadata = Value::Object(serde_json::Map::new());
+    }
+    metadata.as_object_mut()
 }
 
 /// Turn a guard rejection into a response, letting the channel replace the
@@ -478,6 +567,13 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
         if !cookies.is_empty() {
             map.insert("cookies".to_string(), Value::Object(cookies));
         }
+        // #307: `metadata.oauth` is platform-reserved for exactly the reason
+        // `cookies` is, and with more at stake. It is stamped by the sign-in
+        // guard *after* this, once the state has been verified and the code
+        // exchanged; cleared here unconditionally so a caller cannot pre-seed
+        // an access token, an `id_token`'s verified claims or a `return_to`
+        // into an envelope and have a workflow trust them as Orion's.
+        map.remove("oauth");
     }
     // F4: stamp the resolved channel name (overriding any caller-supplied
     // value) so circuit-breaker keys and connector metrics are labelled

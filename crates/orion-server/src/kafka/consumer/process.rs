@@ -280,6 +280,9 @@ async fn process_one_kafka_message(
         // this deadline but never lengthen it — see `process_until_committed`
         // for what the poll gap has to stay under.
         max_timeout_ms: Some(ctx.processing_timeout_ms),
+        // A Kafka record is not a browser redirect; the guard is off for
+        // this transport.
+        oauth: None,
     })
     .await;
 

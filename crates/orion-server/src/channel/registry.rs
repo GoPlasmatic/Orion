@@ -165,6 +165,9 @@ pub struct ChannelRuntimeConfig {
     /// load, so the request path never resolves an `env://` reference or
     /// hashes a stored key. `None` means the channel is unauthenticated.
     pub auth: Option<crate::channel::auth::CompiledAuth>,
+    /// The compiled inbound sign-in flow (#307), secrets resolved and both key
+    /// sets built. `None` for every channel that declares no `oauth2_login`.
+    pub oauth2_login: Option<Arc<crate::channel::CompiledOAuth2Login>>,
 }
 
 /// A channel the registry refused to load, and why.
@@ -336,6 +339,11 @@ pub struct ReloadDeps<'a> {
     pub datalogic: &'a DatalogicEngine,
     /// The instance's JWKS cache, for `auth.mode = "jwt"` channels.
     pub jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
+    /// The shared outbound client, for a channel's `oauth2_login` code
+    /// exchange (#307).
+    pub http_client: &'a reqwest::Client,
+    /// `[oauth2_login] allow_private_token_urls`.
+    pub allow_private_token_urls: bool,
     pub global_trace_storage: &'a TraceStorageConfig,
 }
 
@@ -350,6 +358,11 @@ struct RuntimeDeps<'a> {
     /// `ChannelRuntimeConfig` holding a compiled verifier built from it stays
     /// valid — see [`DepsFingerprint`].
     jwks: &'a std::sync::Arc<crate::jwt::jwks::JwksCache>,
+    /// The shared outbound client (#307). A `reqwest::Client` is an `Arc`
+    /// internally, so a compiled sign-in block holding a clone holds a handle
+    /// to the one pool, not a second one.
+    http_client: &'a reqwest::Client,
+    allow_private_token_urls: bool,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
 }
@@ -885,6 +898,34 @@ impl ChannelRegistry {
             None => None,
         };
 
+        // Same posture as `auth` above, and for a sharper reason: a channel
+        // whose sign-in flow did not compile and was served anyway would
+        // complete callbacks with the CSRF binding absent, which is the exact
+        // failure the block exists to prevent.
+        let oauth2_login = match parsed_config.oauth2_login.as_ref() {
+            Some(cfg) => Some(Arc::new(
+                crate::channel::CompiledOAuth2Login::compile(
+                    cfg,
+                    &channel.name,
+                    &crate::channel::oauth2_login::LoginDeps {
+                        http_client: deps.http_client,
+                        jwks: deps.jwks,
+                        allow_private_token_urls: deps.allow_private_token_urls,
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: oauth2_login cannot be compiled"
+                    );
+                    issue(format!("oauth2_login: {e}"))
+                })?,
+            )),
+            None => None,
+        };
+
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
             parsed_config,
@@ -898,6 +939,7 @@ impl ChannelRegistry {
             response_cache,
             trace_storage,
             auth,
+            oauth2_login,
         }))
     }
 
@@ -940,6 +982,8 @@ impl ChannelRegistry {
             cache_pool,
             datalogic,
             jwks,
+            http_client,
+            allow_private_token_urls,
             global_trace_storage,
         } = deps;
         // Read-modify-write on the snapshot: serialise it so two reloads
@@ -952,6 +996,8 @@ impl ChannelRegistry {
             cache_pool,
             datalogic,
             jwks,
+            http_client,
+            allow_private_token_urls,
             global_trace_storage,
             cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
         };
@@ -1126,6 +1172,7 @@ mod tests {
         cache_pool: CachePool,
         datalogic: DatalogicEngine,
         jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
+        http_client: reqwest::Client,
         trace_storage: TraceStorageConfig,
     }
 
@@ -1138,6 +1185,7 @@ mod tests {
                 cache_pool: CachePool::new(4, 60, 1000),
                 datalogic: DatalogicEngine::new(),
                 jwks: test_jwks(),
+                http_client: reqwest::Client::new(),
                 trace_storage: TraceStorageConfig::default(),
             }
         }
@@ -1165,6 +1213,8 @@ mod tests {
                         cache_pool: &self.cache_pool,
                         datalogic: &self.datalogic,
                         jwks: &self.jwks,
+                        http_client: &self.http_client,
+                        allow_private_token_urls: false,
                         global_trace_storage: &self.trace_storage,
                     },
                     engine_issues,
@@ -1252,6 +1302,8 @@ mod tests {
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),
                     jwks: &test_jwks(),
+                    http_client: &reqwest::Client::new(),
+                    allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
                 },
                 Vec::new(),
@@ -1286,6 +1338,8 @@ mod tests {
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),
                     jwks: &test_jwks(),
+                    http_client: &reqwest::Client::new(),
+                    allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
                 },
                 Vec::new(),
@@ -1318,6 +1372,8 @@ mod tests {
                     cache_pool: &CachePool::new(4, 60, 1000),
                     datalogic: &DatalogicEngine::new(),
                     jwks: &test_jwks(),
+                    http_client: &reqwest::Client::new(),
+                    allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
                 },
                 Vec::new(),

@@ -94,6 +94,9 @@ pub struct GuardSet {
     pub response_cache: bool,
     /// Per-channel concurrency permit.
     pub backpressure: bool,
+    /// The inbound OAuth2 sign-in flow (#307): answer the authorize leg with a
+    /// `302`, or verify and exchange a callback.
+    pub oauth2_login: bool,
 }
 
 impl Transport {
@@ -134,6 +137,15 @@ impl Transport {
     ///   deduplication off that transport. A channel that is reachable both
     ///   over HTTP and from a Kafka topic is therefore authenticated on the
     ///   HTTP path and broker-authenticated on the Kafka one.
+    /// * **`oauth2_login` on `HttpSync` alone.** Both legs are browser
+    ///   redirects. The first *is* a `302`, which `/async` (which answers
+    ///   `202` with a trace id), Kafka (which answers nothing) and
+    ///   `channel_call` (whose caller is a workflow, not a user agent) have no
+    ///   way to express. The callback leg is off those three for the stronger
+    ///   reason that admitting it there would run the channel's workflow with
+    ///   no grant at `metadata.oauth` — a sign-in that appears to succeed and
+    ///   established nothing. The data route refuses `…/callback/async`
+    ///   outright rather than letting it through as a grant-less run.
     pub const fn guards(self) -> GuardSet {
         match self {
             Transport::HttpSync => GuardSet {
@@ -144,6 +156,7 @@ impl Transport {
                 deduplication: true,
                 response_cache: true,
                 backpressure: true,
+                oauth2_login: true,
             },
             Transport::HttpAsync => GuardSet {
                 auth: true,
@@ -153,6 +166,7 @@ impl Transport {
                 deduplication: true,
                 response_cache: false,
                 backpressure: true,
+                oauth2_login: false,
             },
             Transport::Kafka => GuardSet {
                 auth: false,
@@ -162,6 +176,7 @@ impl Transport {
                 deduplication: true,
                 response_cache: false,
                 backpressure: true,
+                oauth2_login: false,
             },
             Transport::ChannelCall => GuardSet {
                 auth: false,
@@ -171,6 +186,7 @@ impl Transport {
                 deduplication: false,
                 response_cache: false,
                 backpressure: true,
+                oauth2_login: false,
             },
         }
     }
@@ -252,6 +268,18 @@ pub struct GuardRequest<'a> {
     /// `None` — neither has a ceiling to protect, and a `channel_call` task's
     /// own `timeout_ms` outranks everything anyway.
     pub max_timeout_ms: Option<u64>,
+
+    /// The inbound OAuth2 sign-in leg this request arrived on, when the
+    /// channel declares one and the transport can carry it (#307). `None`
+    /// everywhere else, which is every request to every channel that does not.
+    ///
+    /// The query parameters travel here rather than being read back out of
+    /// `metadata["query"]`: that key is stamped only when the real query string
+    /// is non-empty, so on a query-less request a caller-supplied envelope
+    /// `metadata` survives in its place. Everywhere else that would be a
+    /// curiosity; here it is `state` and `code`, and a security check must not
+    /// read a value the caller could have written.
+    pub oauth: Option<OAuthIngress<'a>>,
 }
 
 /// What the caller must carry for the rest of the request once every guard
@@ -278,6 +306,13 @@ pub struct Admission {
     /// delivery) may simply drop it — the claim then stands for the rest of
     /// the window, which is exactly the `409` a replay of that key should get.
     pub dedup_claim: Option<DedupClaim>,
+
+    /// What the `oauth2_login` guard decided, when it ran at all (#307).
+    ///
+    /// One boxed option rather than three fields, because the three are set
+    /// together or not at all and every request to every other channel — which
+    /// is nearly all of them — would otherwise pay their width on the stack.
+    pub oauth: Option<Box<OAuthAdmission>>,
 }
 
 /// A held deduplication key, from admission until the delivery is settled.
@@ -337,6 +372,58 @@ impl DedupClaim {
     }
 }
 
+/// What an HTTP ingress knows about a request to an `oauth2_login` channel
+/// that the transport-neutral guard layer otherwise could not.
+pub struct OAuthIngress<'a> {
+    /// Which of the channel's two routes matched.
+    pub leg: crate::channel::OAuthLeg,
+    /// The request's query string, parsed. The authorize leg reads a
+    /// `return_to`; the callback reads `state`, `code` and `error`.
+    pub query: &'a std::collections::HashMap<String, String>,
+    /// Every `Cookie` header value, for the state cookie. HTTP/2 clients may
+    /// split a jar across several headers (RFC 9113 §8.2.3).
+    pub jar: Vec<&'a str>,
+}
+
+/// The `oauth2_login` guard's contribution to an admitted request.
+pub struct OAuthAdmission {
+    /// `Set-Cookie` values the platform appends to whatever response the
+    /// workflow produces. Today the one entry is the callback retiring the
+    /// state cookie it just verified — which has to happen whatever the
+    /// workflow answers, including when the workflow fails.
+    pub response_cookies: Vec<String>,
+
+    /// The compiled sign-in block, carried only on an authorize leg that runs
+    /// its workflow first (`run_workflow_on_authorize`). The redirect is built
+    /// after the workflow, so the sync path needs the block.
+    pub authorize: Option<std::sync::Arc<crate::channel::CompiledOAuth2Login>>,
+
+    /// The caller's `return_to`, already checked against the channel's
+    /// allow-list. Travels with [`Self::authorize`] because the check needs the
+    /// request's own query string, which is gone by the time the workflow has
+    /// finished.
+    pub return_to: Option<String>,
+
+    /// The verified grant from a callback leg, stamped at `metadata.oauth` by
+    /// the ingress. Carried here rather than merged in the guard for the same
+    /// reason `auth_claims` is: the metadata object belongs to the transport,
+    /// so there is one merge point rather than one per ingress.
+    pub grant: Option<Value>,
+}
+
+/// A complete response a guard built itself.
+///
+/// Plain strings rather than an `axum::response::Response`, for the reason
+/// stated at the top of this module: header-derived inputs are lowered so a
+/// non-HTTP caller never needs a `HeaderMap`, and the same has to hold in the
+/// other direction. Shaped like `sync.rs`'s `ShapedResponse`, `Vec` and all —
+/// a redirect that sets a cookie has two headers whose names may repeat.
+pub struct GuardResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
 /// Outcome of [`apply_guards`].
 pub enum GuardVerdict {
     /// Every guard the transport applies passed.
@@ -344,6 +431,11 @@ pub enum GuardVerdict {
     /// The response cache answered — carries the pre-serialized body. Only
     /// [`Transport::HttpSync`] can produce this.
     CacheHit(String),
+    /// A guard answered the request itself. Today that is the `oauth2_login`
+    /// authorize leg, whose whole job is to redirect the browser to the
+    /// identity provider — the workflow is not entered, and the engine is
+    /// never reached. Only [`Transport::HttpSync`] can produce this.
+    Respond(GuardResponse),
 }
 
 /// Apply the target channel's ingress guards for one transport.
@@ -462,30 +554,110 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         None
     };
 
+    // Last, and after the backpressure permit rather than before it. The
+    // callback leg makes a round trip to the identity provider, and that is the
+    // only I/O in this chain: run before the permit, a burst of callbacks would
+    // open one outbound request each with nothing bounding the concurrency. The
+    // cost is that `validation_logic` (step 4) has already run, so it sees the
+    // request and not the grant — which is the right split anyway, because the
+    // grant is what the workflow is for.
+    //
+    // A channel that declares `oauth2_login` may not also declare `cache`
+    // (refused at create time): the lookup at step 6 would otherwise serve a
+    // stored `302` carrying a spent state cookie, or replay one user's
+    // callback to the next caller.
+    let mut oauth_authorize = None;
+    let mut oauth_return_to = None;
+    let mut response_cookies = Vec::new();
+    let mut oauth_metadata = None;
+    if set.oauth2_login
+        && let Some(ingress) = req.oauth.as_ref()
+        && let Some(login) = req.runtime.as_ref().and_then(|rt| rt.oauth2_login.as_ref())
+    {
+        match ingress.leg {
+            crate::channel::OAuthLeg::Authorize if !login.runs_workflow_on_authorize() => {
+                let return_to = login.accepted_return_to(ingress.query);
+                let redirect = login.begin(None, return_to.as_deref()).map_err(|e| {
+                    tracing::error!(
+                        channel = %req.channel,
+                        error = %e,
+                        "Could not build the OAuth2 authorize redirect"
+                    );
+                    OrionError::internal("could not begin the sign-in")
+                })?;
+                crate::metrics::record_oauth_login(
+                    req.channel,
+                    crate::channel::OAuthLeg::Authorize,
+                    "ok",
+                );
+                // The permit and the claim both drop here. The claim standing
+                // is correct and matches `CacheHit`: the request *was*
+                // answered, so a replay of the key is a duplicate of a
+                // delivery that succeeded.
+                return Ok(GuardVerdict::Respond(GuardResponse {
+                    status: 302,
+                    headers: vec![
+                        ("location".to_string(), redirect.location),
+                        ("set-cookie".to_string(), redirect.set_cookie),
+                        // A redirect that mints a per-user nonce must not sit
+                        // in any cache between here and the browser.
+                        ("cache-control".to_string(), "no-store".to_string()),
+                    ],
+                    body: String::new(),
+                }));
+            }
+            crate::channel::OAuthLeg::Authorize => {
+                // Checked here, where the request's own query string is, and
+                // carried to the redirect that is built after the workflow.
+                oauth_return_to = login.accepted_return_to(ingress.query);
+                oauth_authorize = Some(std::sync::Arc::clone(login));
+            }
+            crate::channel::OAuthLeg::Callback => {
+                let grant = login.complete(ingress.query, &ingress.jar).await?;
+                response_cookies.push(grant.clear_cookie);
+                oauth_metadata = Some(grant.metadata);
+            }
+        }
+    }
+
+    let oauth = (oauth_authorize.is_some() || oauth_metadata.is_some()).then(|| {
+        Box::new(OAuthAdmission {
+            response_cookies,
+            authorize: oauth_authorize,
+            return_to: oauth_return_to,
+            grant: oauth_metadata,
+        })
+    });
+
     Ok(GuardVerdict::Admitted(Admission {
         backpressure_permit,
         cache_store,
         timeout_ms: effective_timeout_ms(req.runtime, req.default_timeout_ms, req.max_timeout_ms),
         dedup_claim,
         auth_claims,
+        oauth,
     }))
 }
 
 /// [`apply_guards`] for a transport whose row leaves `response_cache` off —
 /// every ingress but [`Transport::HttpSync`].
 ///
-/// [`GuardVerdict`] spans the whole matrix, so its `CacheHit` variant is
-/// statically unreachable for those transports. Resolving that impossibility
-/// here is the same principle as the matrix itself: the exclusion is read
-/// from [`Transport::guards`] once instead of each call site hand-writing its
-/// own handling of a branch it can never take. A transport that does cache
-/// calls [`apply_guards`] and matches both variants.
+/// [`GuardVerdict`] spans the whole matrix, so its `CacheHit` and `Respond`
+/// variants are statically unreachable for those transports. Resolving that
+/// impossibility here is the same principle as the matrix itself: the exclusion
+/// is read from [`Transport::guards`] once instead of each call site
+/// hand-writing its own handling of a branch it can never take. A transport
+/// that does cache, or that can carry a redirect, calls [`apply_guards`] and
+/// matches every variant.
 pub async fn admit(req: GuardRequest<'_>) -> Result<Admission, OrionError> {
     let transport = req.transport;
     match apply_guards(req).await? {
         GuardVerdict::Admitted(admission) => Ok(admission),
         GuardVerdict::CacheHit(_) => Err(OrionError::internal(format!(
             "{transport:?} does not enable the response cache"
+        ))),
+        GuardVerdict::Respond(_) => Err(OrionError::internal(format!(
+            "{transport:?} cannot answer a request from a guard"
         ))),
     }
 }
@@ -1687,6 +1859,7 @@ mod tests {
                 response_cache: self.response_cache,
                 trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
                 auth: self.auth,
+                oauth2_login: None,
             }))
         }
     }
@@ -1746,15 +1919,17 @@ mod tests {
             dedup_owner: None,
             default_timeout_ms: None,
             max_timeout_ms: None,
+            oauth: None,
         }
     }
 
-    /// `Some` when the guards admitted the message; `None` when the response
-    /// cache answered instead. Call sites `.expect(...)` the arm they mean.
+    /// `Some` when the guards admitted the message; `None` when a guard
+    /// answered instead — the response cache, or an OAuth2 authorize leg. Call
+    /// sites `.expect(...)` the arm they mean.
     fn admitted(verdict: GuardVerdict) -> Option<Admission> {
         match verdict {
             GuardVerdict::Admitted(a) => Some(a),
-            GuardVerdict::CacheHit(_) => None,
+            GuardVerdict::CacheHit(_) | GuardVerdict::Respond(_) => None,
         }
     }
 

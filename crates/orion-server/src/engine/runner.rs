@@ -137,7 +137,8 @@ where
 ///   is covered only by being named here — which is why `metadata.cookies`
 ///   (#270) had to be added when the cookie allowlist landed, or an
 ///   allowlisted value would be cloned into every step snapshot and persisted
-///   for any channel with `tracing.task_details = true`.
+///   for any channel with `tracing.task_details = true` — and why
+///   `metadata.oauth` (#307) joined it when inbound sign-in landed.
 ///
 ///   Note what this defends: the row **at rest**. The trace read already
 ///   strips `context.metadata` whole-message and per-step, so a missing entry
@@ -151,6 +152,12 @@ fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::TraceOptions {
         redact_paths: vec![
             "metadata.headers".to_string(),
             "metadata.cookies".to_string(),
+            // #307. The sign-in guard stamps the grant here — an access token,
+            // often a refresh token, and the raw `id_token`. Without this entry
+            // every one of them is cloned into every step snapshot and written
+            // to disk for any channel with `tracing.task_details = true`,
+            // which is the whole hazard the list above exists for.
+            "metadata.oauth".to_string(),
         ],
         ..Default::default()
     }

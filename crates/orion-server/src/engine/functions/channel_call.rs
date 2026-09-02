@@ -254,6 +254,9 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 // caller, and the task's explicit `timeout_ms` outranks
                 // both anyway.
                 max_timeout_ms: None,
+                // The caller is a workflow, not a user agent: there is no
+                // browser to redirect and no callback to complete.
+                oauth: None,
             })
             .await
             .map_err(|e| guard_refusal(&target_channel, e))?;

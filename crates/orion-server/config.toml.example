@@ -347,6 +347,17 @@
                                 # http connector without allow_private_urls. Turn it on for an
                                 # in-cluster issuer (a Keycloak on a service address).
 
+[oauth2_login]
+# Egress policy for the inbound OAuth2 sign-in flow — a channel's
+# config.oauth2_login block (the endpoints, the client credentials, the scopes,
+# PKCE, the state cookie) travels with the definition and lives there, not here.
+# allow_private_token_urls = false  # Allow a channel's oauth2_login.token_url to resolve to a
+                                # private or link-local address. Off by default: Orion POSTs
+                                # the client secret and the authorization code to that URL, so
+                                # it is address-checked on every exchange. Turn it on for an
+                                # in-cluster issuer, or for a mock identity provider in a test
+                                # harness.
+
 [cors]
 # allowed_origins = ["*"]       # Exactly ["*"] is permissive CORS. Rejected at startup when
                                 # environment starts with "prod" — list explicit origins

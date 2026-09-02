@@ -25,6 +25,7 @@ mod channel_cookies_test;
 mod channel_dedup_test;
 mod channel_error_bodies_test;
 mod channel_load_refusal_test;
+mod channel_oauth2_login_test;
 mod channel_response_cache_test;
 mod ci_filter_drift_test;
 mod circuit_breaker_test;

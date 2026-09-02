@@ -103,6 +103,59 @@ pub fn record_oauth_token_request(connector: &str, outcome: &'static str) {
     .increment(1);
 }
 
+/// One leg of an inbound OAuth2 sign-in (#307).
+///
+/// Separate from `orion_oauth_token_requests_total`, which counts Orion acting
+/// as an OAuth2 *client* against a connector's IdP. This one counts Orion
+/// acting as the relying party for a browser, and its `channel` label is a
+/// channel rather than a connector.
+///
+/// `outcome` carries what the wire deliberately does not. Every callback
+/// refusal is the same uniform `401` — naming the failing half would tell a
+/// prober which one to work on — so this counter is where an operator sees the
+/// difference between "users are abandoning the consent screen"
+/// (`provider_error`), "someone is replaying callbacks" (`state_mismatch`) and
+/// "our client secret is wrong" (`exchange_rejected`). Bounded set:
+/// `ok`, `provider_error`, `state_missing`, `code_missing`, `state_invalid`,
+/// `state_mismatch`, `nonce_mismatch`, `exchange_rejected`, `exchange_error`,
+/// `id_token_rejected`.
+pub fn record_oauth_login(channel: &str, leg: crate::channel::OAuthLeg, outcome: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_oauth_login_total",
+        "channel" => channel.to_owned(),
+        "leg" => leg.as_str(),
+        "outcome" => outcome
+    )
+    .increment(1);
+}
+
+/// One response declaration a shaped channel made and did not get (#312).
+///
+/// The shaped-response path is deliberately soft — an authoring slip should not
+/// become an outage — but soft used to mean invisible: a `200` with the cookie
+/// simply absent, a trace recording a clean success, and one line on stdout.
+/// That presents to a browser exactly like the browser having refused the
+/// cookie, which is a long way to look for a type error.
+///
+/// `kind` is the entry's code, a bounded set: `RESPONSE_COOKIE_DROPPED`,
+/// `RESPONSE_HEADER_DROPPED`, `RESPONSE_HEADER_NOT_ALLOWED`,
+/// `RESPONSE_COOKIES_DISABLED`. Any non-zero rate is an authoring bug, so this
+/// is a counter worth alerting on rather than dashboarding.
+pub fn record_response_drop(channel: &str, kind: String) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_response_drops_total",
+        "channel" => channel.to_owned(),
+        "kind" => kind
+    )
+    .increment(1);
+}
+
 /// Count one message through a channel, whatever its outcome.
 ///
 /// O14: this is now the *only* per-channel invocation counter.

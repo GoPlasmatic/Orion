@@ -604,10 +604,72 @@ fn epoch_ms_now() -> u64 {
 
 /// The RFC 6749 §5.1 fields this build reads.
 #[derive(Debug, Clone)]
-struct TokenResponse {
-    access_token: String,
-    expires_in: Option<u64>,
-    refresh_token: Option<String>,
+pub(crate) struct TokenResponse {
+    pub access_token: String,
+    pub token_type: Option<String>,
+    pub expires_in: Option<u64>,
+    pub refresh_token: Option<String>,
+    /// OIDC (#307). The connector grants never see one; the inbound
+    /// authorization-code grant is the whole reason it is read.
+    pub id_token: Option<String>,
+    /// The scopes actually granted, which an IdP may narrow from what was
+    /// asked for.
+    pub scope: Option<String>,
+}
+
+/// The four things a token request needs, independent of which grant asked for
+/// it and of whether the caller is a connector at all.
+///
+/// [`request_token_inner`] used to take `&OAuth2Config` whole, which made the
+/// exchange unreachable from the inbound sign-in flow (#307) without adding
+/// authorization-code fields to that struct. That would not have been free:
+/// [`fingerprint`] hashes the serialized `OAuth2Config`, and a persisted
+/// `connector_oauth_state` row is adopted only on a fingerprint match, so a new
+/// field would orphan every stored rotation state on upgrade. Narrowing the
+/// parameter instead leaves the fingerprint untouched.
+#[derive(Clone, Copy)]
+pub(crate) struct TokenEndpoint<'a> {
+    pub token_url: &'a str,
+    pub client_id: &'a str,
+    pub client_secret: &'a str,
+    /// `basic` or `body`; anything else is a config error, named.
+    pub client_auth: &'a str,
+}
+
+impl<'a> TokenEndpoint<'a> {
+    fn from_config(cfg: &'a OAuth2Config) -> Self {
+        Self {
+            token_url: &cfg.token_url,
+            client_id: &cfg.client_id,
+            client_secret: &cfg.client_secret,
+            client_auth: &cfg.client_auth,
+        }
+    }
+}
+
+/// Exchange an authorization code for tokens (RFC 6749 §4.1.3) — the inbound
+/// half of OAuth2, where Orion is the relying party rather than the client.
+///
+/// Shares every safety property of the connector grants because it is the same
+/// function underneath: the SSRF check on the token URL, the response size
+/// caps, the RFC 6749 §5.2 error classification and the Bearer-only check.
+/// `connector` is the metric label — the channel name, here — so one dashboard
+/// covers outbound and inbound token traffic.
+pub(crate) async fn exchange_code(
+    http_client: &reqwest::Client,
+    label: &str,
+    endpoint: TokenEndpoint<'_>,
+    allow_private_urls: bool,
+    params: Vec<(&str, String)>,
+) -> Result<TokenResponse, OAuthError> {
+    let result = request_token_inner(http_client, endpoint, allow_private_urls, params).await;
+    let outcome = match &result {
+        Ok(_) => "ok",
+        Err(OAuthError::Rejected(_)) => "rejected",
+        Err(_) => "transport_error",
+    };
+    crate::metrics::record_oauth_token_request(label, outcome);
+    result
 }
 
 /// One form-encoded token request (RFC 6749 §4.4.2 / §6), classified per the
@@ -619,7 +681,13 @@ async fn request_token(
     allow_private_urls: bool,
     params: Vec<(&str, String)>,
 ) -> Result<TokenResponse, OAuthError> {
-    let result = request_token_inner(deps, cfg, allow_private_urls, params).await;
+    let result = request_token_inner(
+        &deps.http_client,
+        TokenEndpoint::from_config(cfg),
+        allow_private_urls,
+        params,
+    )
+    .await;
     let outcome = match &result {
         Ok(_) => "ok",
         Err(OAuthError::Rejected(_)) => "rejected",
@@ -641,8 +709,8 @@ fn prefix_connector(connector: &str, e: OAuthError) -> OAuthError {
 }
 
 async fn request_token_inner(
-    deps: &OAuthRuntimeDeps,
-    cfg: &OAuth2Config,
+    http_client: &reqwest::Client,
+    endpoint: TokenEndpoint<'_>,
     allow_private_urls: bool,
     mut params: Vec<(&str, String)>,
 ) -> Result<TokenResponse, OAuthError> {
@@ -650,26 +718,26 @@ async fn request_token_inner(
     // endpoint — it is admin-authored config, but the check is cheap and the
     // opt-out is the connector's existing one.
     if !allow_private_urls
-        && let Err(msg) = crate::validation::validate_url_not_private(&cfg.token_url).await
+        && let Err(msg) = crate::validation::validate_url_not_private(endpoint.token_url).await
     {
         return Err(OAuthError::Config(format!("SSRF protection: {msg}")));
     }
 
-    let client_auth = OAuth2ClientAuth::parse(&cfg.client_auth).ok_or_else(|| {
+    let client_auth = OAuth2ClientAuth::parse(endpoint.client_auth).ok_or_else(|| {
         OAuthError::Config(format!(
             "unknown client_auth '{}' (expected {})",
-            cfg.client_auth,
+            endpoint.client_auth,
             OAuth2ClientAuth::VALUES
         ))
     })?;
-    let mut req = deps.http_client.post(&cfg.token_url).timeout(TOKEN_TIMEOUT);
+    let mut req = http_client.post(endpoint.token_url).timeout(TOKEN_TIMEOUT);
     match client_auth {
         OAuth2ClientAuth::Basic => {
-            req = req.basic_auth(&cfg.client_id, Some(&cfg.client_secret));
+            req = req.basic_auth(endpoint.client_id, Some(endpoint.client_secret));
         }
         OAuth2ClientAuth::Body => {
-            params.push(("client_id", cfg.client_id.clone()));
-            params.push(("client_secret", cfg.client_secret.clone()));
+            params.push(("client_id", endpoint.client_id.to_string()));
+            params.push(("client_secret", endpoint.client_secret.to_string()));
         }
     }
 
@@ -686,6 +754,12 @@ async fn request_token_inner(
     };
     let response = req
         .header("content-type", "application/x-www-form-urlencoded")
+        // RFC 6749 §5.1 says the response is JSON, and every IdP that follows
+        // it ignores this header. GitHub does not: without an explicit
+        // `Accept` its token endpoint answers `application/x-www-form-urlencoded`,
+        // which parses to `null` below and surfaces as the wrong error
+        // entirely ("carried no access_token", classified retryable).
+        .header("accept", "application/json")
         .body(form_body)
         .send()
         .await
@@ -710,7 +784,16 @@ async fn request_token_inner(
     }
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
 
-    if !status.is_success() {
+    // RFC 6749 §5.2 pairs the error body with a 400, and most IdPs comply.
+    // GitHub answers `200` with `{"error": "bad_verification_code"}` for a
+    // spent or forged authorization code. Classified by status alone that
+    // falls through to "carried no access_token" — an `OAuthError::Transport`,
+    // which `retryable()` reports as **true**, so a permanently dead code
+    // would be retried. The body is the authority on whether the request was
+    // rejected; the status only says how politely.
+    let rejected_with_200 = status.is_success() && json.get("error").is_some();
+
+    if !status.is_success() || rejected_with_200 {
         // RFC 6749 §5.2: the error code is bounded vocabulary and safe to
         // surface; the free-text description is logged, not returned.
         let code = json
@@ -725,7 +808,7 @@ async fn request_token_inner(
                 "OAuth2 token request rejected"
             );
         }
-        if status.is_client_error() {
+        if status.is_client_error() || rejected_with_200 {
             return Err(OAuthError::Rejected(format!(
                 "token endpoint rejected the request ({status}, {code}) — check the \
                  credentials, grant, and (for refresh_token) whether the seed is \
@@ -744,20 +827,27 @@ async fn request_token_inner(
         .ok_or_else(|| {
             OAuthError::Transport("token response carried no access_token".to_string())
         })?;
-    if let Some(token_type) = json.get("token_type").and_then(|t| t.as_str())
+    let token_type = json.get("token_type").and_then(|t| t.as_str());
+    if let Some(token_type) = token_type
         && !token_type.eq_ignore_ascii_case("bearer")
     {
         return Err(OAuthError::Config(format!(
             "token endpoint issued a '{token_type}' token; only Bearer is supported"
         )));
     }
+    let string_field = |name: &str| {
+        json.get(name)
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+    };
     Ok(TokenResponse {
         access_token: access_token.to_string(),
+        token_type: token_type.map(str::to_string),
         expires_in: json.get("expires_in").and_then(|e| e.as_u64()),
-        refresh_token: json
-            .get("refresh_token")
-            .and_then(|t| t.as_str())
-            .map(str::to_string),
+        refresh_token: string_field("refresh_token"),
+        id_token: string_field("id_token"),
+        scope: string_field("scope"),
     })
 }
 

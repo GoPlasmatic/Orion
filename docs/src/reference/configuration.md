@@ -509,6 +509,18 @@ Instance-wide policy for JWT verification. The per-issuer settings — algorithm
 
 Setting this to `true` disables the address check for every JWKS fetch on the instance. It is instance-wide rather than per channel because a per-channel opt-out would let the author of a definition grant themselves the egress the setting exists to gate.
 
+## Inbound OAuth2 Sign-In
+
+Egress policy for a channel that completes a browser authorization-code grant. Everything describing one identity-provider relationship — the endpoints, the client credentials, the scopes, PKCE, the state cookie — belongs to the channel's [`oauth2_login` block](channel-config.md#inbound-oauth2-sign-in), because it is part of the definition and is promoted with it.
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `oauth2_login.allow_private_token_urls` | `false` | `ORION_OAUTH2_LOGIN__ALLOW_PRIVATE_TOKEN_URLS` | Turn on for an identity provider on a private address, or a mock one in a test harness. |
+
+`token_url` is authored input that Orion sends the client secret and the authorization code to, so it gets the same treatment `jwks_url` does: `https://` where it is authored, and the resolved address checked on every exchange. Instance-wide for the same reason, too — a per-channel opt-out would let a definition grant itself the egress the setting gates.
+
+`authorize_url` is not covered by this: Orion never fetches it, it only redirects the browser there. What guards that one is the `https://` requirement and the `return_to` allow-list.
+
 ## CORS
 
 | Setting | Default | Env var | When to change |

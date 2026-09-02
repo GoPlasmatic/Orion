@@ -655,3 +655,272 @@ async fn a_cookie_value_that_could_inject_attributes_is_refused() {
         "the injecting cookie is dropped and the valid one still ships"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Soft is not silent (#312)
+// ---------------------------------------------------------------------------
+
+/// A shaped channel's body belongs to its workflow, so a dropped declaration
+/// cannot be added to it on the wire. The trace is where it goes, and the
+/// trace's envelope is what this reads.
+async fn drops_in_trace(app: &axum::Router, channel: &str) -> Vec<Value> {
+    let body = common::wait_for_body(app, "/api/v1/admin/traces", |b| {
+        b["data"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|r| r["channel"] == channel))
+    })
+    .await;
+    let trace_id = body["data"]
+        .as_array()
+        .and_then(|a| a.iter().find(|r| r["channel"] == channel))
+        .and_then(|r| r["id"].as_str())
+        .expect("a trace row")
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .expect("trace detail");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let detail = body_json(resp).await;
+    detail["data"]["message"]["errors"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The incident from #312, end to end.
+///
+/// `secure` accepts JSONLogic like every other field, and requiring a real
+/// boolean is right — coercing `"1"` to `true` would be worse. What was wrong
+/// is what happened next: the cookie was dropped, the request answered `302`
+/// with the right status and no `Set-Cookie`, and the only record was a line on
+/// stdout. To a browser that is indistinguishable from the browser having
+/// refused the cookie, which is where the reporter spent their time looking.
+#[tokio::test]
+async fn an_invalid_cookie_is_dropped_and_the_response_says_so() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "signin",
+        json!({
+            "status": 302,
+            "headers": {"Location": "/welcome"},
+            // `secure` resolves to the *string* "1" — the exact shape reported.
+            "cookies": [
+                {"name": "session", "value": "jwt-abc", "path": "/", "secure": {"var": "data.in.flag"}}
+            ]
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "signin-ch",
+        workflow,
+        shaped_cookie_config(),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/signin-ch",
+            Some(json!({"data": {"flag": "1"}})),
+        ))
+        .await
+        .unwrap();
+
+    // The request still ships — softness is the right default — with the
+    // status the workflow asked for and no cookie.
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert!(
+        all_headers(&resp, "set-cookie").is_empty(),
+        "a cookie whose attributes do not type-check must not reach the wire"
+    );
+
+    let drops = drops_in_trace(&app, "signin-ch").await;
+    let cookie_drop = drops
+        .iter()
+        .find(|e| e["code"] == "RESPONSE_COOKIE_DROPPED")
+        .unwrap_or_else(|| panic!("the drop must be recorded: {drops:?}"));
+    assert_eq!(cookie_drop["path"], "_orion.response.cookies[0]");
+    assert!(
+        cookie_drop["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("'secure' must be a boolean")),
+        "the reason must name the field and the expected type: {cookie_drop}"
+    );
+}
+
+/// The other four members of the class. Each was its own `warn!`-and-continue,
+/// and none of them reached the caller or the trace either.
+#[tokio::test]
+async fn every_dropped_response_declaration_is_recorded() {
+    let cases: Vec<(&str, Value, Value, &str, &str)> = vec![
+        (
+            "notallowed",
+            // `x-custom` is not in DEFAULT_ALLOWED_RESPONSE_HEADERS.
+            json!({"status": 200, "headers": {"X-Custom": "v"}}),
+            shaped_config(),
+            "RESPONSE_HEADER_NOT_ALLOWED",
+            "_orion.response.headers.x-custom",
+        ),
+        (
+            "notstring",
+            json!({"status": 200, "headers": {"Location": 42}}),
+            shaped_config(),
+            "RESPONSE_HEADER_DROPPED",
+            "_orion.response.headers.location",
+        ),
+        (
+            "badarray",
+            json!({"status": 200, "headers": {"Link": ["</a>", 7]}}),
+            shaped_config(),
+            "RESPONSE_HEADER_DROPPED",
+            "_orion.response.headers.link",
+        ),
+        (
+            "cookiesoff",
+            json!({"status": 200, "cookies": [{"name": "s", "value": "v"}]}),
+            // `response.cookies` deliberately left off.
+            shaped_config(),
+            "RESPONSE_COOKIES_DISABLED",
+            "_orion.response.cookies",
+        ),
+    ];
+
+    for (name, control, config, code, path) in cases {
+        let app = common::test_app().await;
+        let channel = format!("{name}-ch");
+        common::create_and_activate_channel_with_config(
+            &app,
+            &channel,
+            shaping_workflow(name, control),
+            config,
+        )
+        .await;
+
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/data/{channel}"),
+                Some(json!({"data": {"id": 1}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "{name}: the request still ships"
+        );
+
+        let drops = drops_in_trace(&app, &channel).await;
+        let entry = drops
+            .iter()
+            .find(|e| e["code"] == code)
+            .unwrap_or_else(|| panic!("{name}: expected {code} in {drops:?}"));
+        assert_eq!(entry["path"], path, "{name}");
+    }
+}
+
+/// A shaped response that dropped something is not cached.
+///
+/// It would otherwise be replayed for the whole TTL — a second caller served a
+/// response that is missing the same cookie, with no second warning to say so.
+#[tokio::test]
+async fn a_response_that_dropped_a_declaration_is_not_cached() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "cached",
+        json!({
+            "status": 200,
+            "headers": {"X-Custom": "v"},
+            "body_path": "data.order"
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "dropcache-ch",
+        workflow,
+        json!({
+            "response": { "mode": "shaped" },
+            "cache": { "enabled": true, "ttl_secs": 300 }
+        }),
+    )
+    .await;
+
+    for _ in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/dropcache-ch",
+                Some(json!({"data": {"id": 1}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Two traces, not one: a cache hit is answered before the engine runs and
+    // would leave the second request unrecorded.
+    let body = common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
+        b["data"]
+            .as_array()
+            .is_some_and(|a| a.iter().filter(|r| r["channel"] == "dropcache-ch").count() >= 2)
+    })
+    .await;
+    let count = body["data"]
+        .as_array()
+        .map(|a| a.iter().filter(|r| r["channel"] == "dropcache-ch").count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 2,
+        "an incomplete response must not be cached: {body}"
+    );
+}
+
+/// A channel that got everything it asked for records nothing — the half that
+/// keeps this from becoming noise on every healthy response.
+#[tokio::test]
+async fn a_complete_shaped_response_records_no_drops() {
+    let app = common::test_app().await;
+    let workflow = shaping_workflow(
+        "clean",
+        json!({
+            "status": 201,
+            "headers": {"Location": "/orders/1"},
+            "cookies": [{"name": "session", "value": "v", "path": "/", "secure": true}],
+            "body_path": "data.order"
+        }),
+    );
+    common::create_and_activate_channel_with_config(
+        &app,
+        "clean-ch",
+        workflow,
+        shaped_cookie_config(),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/clean-ch",
+            Some(json!({"data": {"id": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(all_headers(&resp, "set-cookie").len(), 1);
+
+    assert!(
+        drops_in_trace(&app, "clean-ch").await.is_empty(),
+        "a response that got what it asked for must record nothing"
+    );
+}

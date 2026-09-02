@@ -76,6 +76,12 @@ pub struct ChannelConfig {
     /// unauthenticated, which is what every channel was before 1.0.
     #[serde(default)]
     pub auth: Option<ChannelAuthConfig>,
+
+    /// Completes a browser OAuth2 authorization-code grant on this channel
+    /// (#307): the redirect out, the callback in, and the code exchange.
+    /// Absent (the default) is every channel that exists today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth2_login: Option<OAuth2LoginConfig>,
 }
 
 impl ChannelConfig {
@@ -651,6 +657,278 @@ pub struct DeduplicationConfig {
     #[serde(default)]
     pub on_backend_error: BackendErrorPolicy,
 }
+
+// ---------------------------------------------------------------------------
+// Inbound OAuth2 sign-in (#307)
+// ---------------------------------------------------------------------------
+
+/// A channel that completes a browser authorization-code grant (RFC 6749 §4.1).
+///
+/// This is *establishment*, not verification, which is why it is a `config`
+/// block and not a fourth [`AuthMode`]. `auth.mode` answers "who is this
+/// caller?" once per request, from a credential the caller already holds;
+/// `oauth2_login` is a two-request dance that mints that credential in the
+/// first place — redirect the browser out, receive the callback, exchange the
+/// code. The two compose: this block establishes a session, `auth.mode = "jwt"`
+/// with a cookie source guards every route the session then reaches.
+///
+/// Orion owns the halves that are identical for every provider and easy to get
+/// silently wrong: the `302`, the state cookie, the CSRF binding, the nonce,
+/// PKCE, the code exchange and (for OIDC) `id_token` verification. The workflow
+/// keeps the application half — identify the user, upsert the row, mint the
+/// app's own session token, redirect home — and receives the grant at
+/// `metadata.oauth`.
+///
+/// Secrets and per-environment values use the channel convention, not
+/// JSONLogic: `var://name` resolves from `[vars]` at registry build and
+/// `env://NAME` / `vault://…` through the same resolver `auth.secret` uses. A
+/// `{"secret": …}` node would not be evaluated here — nothing runs JSONLogic
+/// at load — so it would reach the IdP as its own literal text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuth2LoginConfig {
+    /// The IdP's authorization endpoint. The browser is redirected here; Orion
+    /// never fetches it, so SSRF does not apply — but it is an open-redirect
+    /// surface, so it must be `https`.
+    pub authorize_url: String,
+
+    /// The IdP's token endpoint. Orion POSTs the code here with the client
+    /// secret, so this one *is* server-side egress: `https` only, and checked
+    /// against the private-address ranges unless
+    /// `[oauth2_login] allow_private_token_urls` is set instance-wide.
+    pub token_url: String,
+
+    /// The OAuth2 client identifier. Public by design — it travels in the
+    /// authorize URL — so a literal is fine; `var://` keeps it per-environment.
+    pub client_id: String,
+
+    /// The OAuth2 client secret. `env://NAME` or `vault://…`; a literal is
+    /// accepted but means the secret is in the stored definition.
+    pub client_secret: String,
+
+    /// How the client credentials are presented at the token endpoint:
+    /// `basic` (RFC 6749 §2.3.1, the default and the one the RFC prefers) or
+    /// `body`.
+    #[serde(default = "default_client_auth")]
+    pub client_auth: String,
+
+    /// The absolute redirect URI registered with the IdP. Sent on both legs —
+    /// the authorize request and the token exchange — because RFC 6749 §4.1.3
+    /// requires the two to match.
+    pub redirect_uri: String,
+
+    /// The path the IdP redirects back to, as a second route on this channel.
+    ///
+    /// A channel's `route_pattern` is the authorize leg; this is the callback.
+    /// One channel rather than two is the point: the state cookie, the PKCE
+    /// verifier and the nonce are minted on one leg and consumed on the other,
+    /// and splitting them across channels is what forced the flow to carry its
+    /// state in the query string, where a PKCE verifier cannot go.
+    ///
+    /// Must be a static path — no `{param}` segments — and must differ from
+    /// `route_pattern`. The path component of [`Self::redirect_uri`] should
+    /// resolve here once the server's mount prefix is applied.
+    pub callback_path: String,
+
+    /// Scopes requested at the authorize endpoint, space-joined per RFC 6749
+    /// §3.3. Empty sends no `scope` parameter at all, which is what an IdP
+    /// with a sensible default wants.
+    #[serde(default)]
+    pub scopes: Vec<String>,
+
+    /// Extra query parameters appended to the authorize URL — `allow_signup`,
+    /// `prompt`, `hd`, whatever the provider defines. Parameters Orion owns
+    /// (`client_id`, `redirect_uri`, `response_type`, `scope`, `state`,
+    /// `nonce`, `code_challenge`, `code_challenge_method`) may not be
+    /// overridden here; naming one is a create-time refusal rather than a
+    /// silently-ignored key, because overriding `state` would disable the CSRF
+    /// binding this block exists to provide.
+    #[serde(default)]
+    pub extra_authorize_params: std::collections::BTreeMap<String, String>,
+
+    /// PKCE (RFC 7636). On by default, and S256 only — `plain` is not
+    /// representable, because a downgrade to it is the only thing PKCE has to
+    /// defend against.
+    ///
+    /// Costs nothing against an IdP that ignores it, and is the difference
+    /// between a stolen authorization code being usable and not.
+    #[serde(default = "crate::channel::config::default_true")]
+    pub pkce: bool,
+
+    /// The key the state cookie is signed with (HS256). `env://NAME` or
+    /// `vault://…`; at least 32 bytes, per RFC 7518 §3.2.
+    ///
+    /// It must be the same on every node and across restarts: a sign-in that
+    /// begins on one node and returns to another has to verify, and a rolling
+    /// deploy mid-flow must not invalidate every in-flight login.
+    pub state_secret: String,
+
+    /// The cookie the signed state rides in.
+    #[serde(default)]
+    pub state_cookie: StateCookieConfig,
+
+    /// Whether the channel's workflow runs on the *authorize* leg.
+    ///
+    /// Off by default: the channel answers the `302` itself and the workflow is
+    /// never entered, which is what makes the CSRF binding and the nonce
+    /// unskippable. On, the workflow runs first and may either shape its own
+    /// `_orion.response` (refusing the sign-in outright) or write
+    /// `data._orion.oauth2.authorize` to contribute `extra_params` and
+    /// `scopes` — a `login_hint` read from a cookie, say. Orion still mints the
+    /// state, the nonce and the PKCE challenge either way; the workflow cannot
+    /// reach them and cannot replace them.
+    #[serde(default)]
+    pub run_workflow_on_authorize: bool,
+
+    /// Where the user was going before they were sent to sign in.
+    ///
+    /// Absent (the default) means no `return_to` is carried at all. This is the
+    /// one thing the workflow cannot do for itself — it never sees the
+    /// authorize request — which is why it is here and not left to the
+    /// application half.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_to: Option<ReturnToConfig>,
+
+    /// OIDC `id_token` verification. Absent (the default) is plain OAuth2:
+    /// GitHub issues no `id_token` and there is nothing to verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id_token: Option<IdTokenConfig>,
+}
+
+fn default_client_auth() -> String {
+    "basic".to_string()
+}
+
+/// `true`, for the several `bool` fields above whose safe default is on.
+pub(crate) fn default_true() -> bool {
+    true
+}
+
+/// The `Set-Cookie` attributes of the state cookie.
+///
+/// Defaults are the secure ones. `SameSite=Lax` rather than `Strict` is
+/// load-bearing: the callback is a top-level cross-site GET from the IdP, and
+/// `Strict` would withhold the cookie on exactly that request, so every sign-in
+/// would fail the state check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateCookieConfig {
+    /// Cookie name.
+    #[serde(default = "default_state_cookie_name")]
+    pub name: String,
+    /// `Secure`. On by default; turn it off only for a plain-HTTP localhost
+    /// development host, where a browser would otherwise drop the cookie.
+    #[serde(default = "crate::channel::config::default_true")]
+    pub secure: bool,
+    /// `SameSite`. `lax` by default — see the type doc.
+    #[serde(default = "default_state_cookie_same_site")]
+    pub same_site: String,
+    /// `Path`.
+    #[serde(default = "default_state_cookie_path")]
+    pub path: String,
+    /// `Max-Age`, in seconds, and the state token's own expiry. The window a
+    /// user has to complete the IdP's consent screen.
+    #[serde(default = "default_state_cookie_max_age")]
+    pub max_age: u64,
+}
+
+impl Default for StateCookieConfig {
+    fn default() -> Self {
+        Self {
+            name: default_state_cookie_name(),
+            secure: true,
+            same_site: default_state_cookie_same_site(),
+            path: default_state_cookie_path(),
+            max_age: default_state_cookie_max_age(),
+        }
+    }
+}
+
+fn default_state_cookie_name() -> String {
+    "orion_oauth_state".to_string()
+}
+fn default_state_cookie_same_site() -> String {
+    "lax".to_string()
+}
+fn default_state_cookie_path() -> String {
+    "/".to_string()
+}
+fn default_state_cookie_max_age() -> u64 {
+    600
+}
+
+/// Carrying the pre-login destination through the flow.
+///
+/// The value is read from a query parameter on the authorize leg, checked
+/// against [`Self::allow_list`] there, sealed into the signed state, and handed
+/// back to the workflow at `metadata.oauth.return_to` on the callback. Checking
+/// on the way *in* rather than on the way out is what makes it safe: a value
+/// that reaches the workflow has already been through the allow-list, so a
+/// workflow that redirects to it cannot be turned into an open redirect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReturnToConfig {
+    /// The query parameter carrying the destination, e.g. `next`.
+    pub param: String,
+    /// Permitted destination prefixes, `https` only. A value that is not
+    /// prefixed by one of these is dropped — silently, because a caller
+    /// supplied it and a rejection would only tell a probe which prefixes
+    /// exist.
+    pub allow_list: Vec<String>,
+}
+
+/// OIDC `id_token` verification, on top of the OAuth2 grant.
+///
+/// The access token says the IdP will answer API calls; the `id_token` says who
+/// signed in, and it is the only half that is *signed*. Verifying it here
+/// rather than in the workflow is not a convenience: the `nonce` binding needs
+/// the value Orion minted on the authorize leg, which the workflow never sees.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdTokenConfig {
+    /// Whether a callback without a usable `id_token` is refused. On by
+    /// default: configuring this block at all says the identity matters.
+    #[serde(default = "crate::channel::config::default_true")]
+    pub required: bool,
+    /// Accepted `iss` values.
+    pub issuer: Vec<String>,
+    /// Accepted `aud` values. Defaults to `[client_id]`, which is what OIDC
+    /// Core §2 specifies for the authorization-code flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<Vec<String>>,
+    /// The IdP's JWKS endpoint. `https` only, fetched through the shared
+    /// process-wide cache with the same rotation handling channel `jwt` auth
+    /// gets.
+    pub jwks_url: String,
+    /// The signature algorithm allowlist, checked before anything else about
+    /// the token (RFC 8725). `["RS256"]` by default — what every mainstream
+    /// OIDC provider issues.
+    #[serde(default = "default_id_token_algorithms")]
+    pub algorithms: Vec<String>,
+    /// Whether to mint a `nonce` into the authorize request and require the
+    /// `id_token` to echo it (OIDC Core §3.1.2.1). On by default; it is the
+    /// `id_token`'s own replay defence and is free once the state exists.
+    #[serde(default = "crate::channel::config::default_true")]
+    pub nonce: bool,
+}
+
+fn default_id_token_algorithms() -> Vec<String> {
+    vec!["RS256".to_string()]
+}
+
+/// The authorize-URL parameters Orion owns. `extra_authorize_params` may not
+/// name one: `state`, `nonce` and `code_challenge` are the flow's security
+/// properties, and the other four are what make the request well-formed.
+pub const RESERVED_AUTHORIZE_PARAMS: &[&str] = &[
+    "client_id",
+    "redirect_uri",
+    "response_type",
+    "scope",
+    "state",
+    "nonce",
+    "code_challenge",
+    "code_challenge_method",
+];
 
 #[cfg(test)]
 mod tests {

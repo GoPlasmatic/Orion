@@ -38,6 +38,7 @@ item.
 | `correctness.mapping_overwritten` | warn | workflow | two mappings in one map write the same path with nothing reading it in between |
 | `correctness.metadata_var_undeclared` | deny | workflow | a read of `metadata.vars.<name>` that the config given with -c does not declare |
 | `correctness.secret_undeclared` | deny | set | a {"secret": name} that the config given with -c does not declare |
+| `correctness.response_cookie_type` | warn | workflow | a response cookie attribute is a literal of the wrong type, so the cookie is always dropped |
 | `perf.parse_result_overwritten` | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | `perf.redundant_step_condition` | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |
 | `perf.group_condition_repeated` | warn | workflow | a group member repeats the group's own condition, which was already true on entry |
@@ -156,6 +157,17 @@ so the read is always `null`. Skipped, with a note, without `-c`.
 With `-c`: a `{"secret": "<name>"}` that the config's `[secrets]` does not
 declare. The engine refuses to build the workflow and the channel is
 quarantined at load. Skipped, with a note, without `-c`.
+
+### `correctness.response_cookie_type`
+
+A `secure` or `http_only` that is a literal non-boolean, or a `max_age` that is
+a literal non-integer, in a mapping to `data._orion.response.cookies`. The
+response builder refuses the value — coercing the string `"false"` to `true`
+would be worse — and drops the cookie, while the request still answers with its
+declared status. A dropped session cookie therefore presents to a browser
+exactly like the browser having refused it. Silent when the value is an
+expression, which can be either type per request; those are reported at runtime
+in the response envelope's `errors` and in `orion_response_drops_total`.
 
 ### `perf.parse_result_overwritten`
 

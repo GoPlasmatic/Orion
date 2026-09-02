@@ -4,6 +4,22 @@ use std::collections::HashMap;
 use crate::errors::OrionError;
 use crate::storage::models::{Channel, ChannelProtocol};
 
+/// Which of a channel's routes an entry is.
+///
+/// Almost every channel has exactly one, and it is [`RouteRole::Primary`]. A
+/// channel carrying `config.oauth2_login` (#307) has a second: the IdP's
+/// callback, whose whole purpose is to be a *different* request on the same
+/// channel. The table is where the distinction is decided, once, so the data
+/// route does not re-derive it by comparing the request path against the
+/// config — two answers to "which leg is this?" is one too many.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteRole {
+    /// The channel's own `route_pattern`.
+    Primary,
+    /// `config.oauth2_login.callback_path`.
+    OAuthCallback,
+}
+
 /// A single entry in the route table.
 struct RouteEntry {
     /// Channel name (used as engine channel key).
@@ -15,6 +31,8 @@ struct RouteEntry {
     segments: Vec<RouteSegment>,
     /// Channel priority (higher = checked first).
     priority: i64,
+    /// Which of the channel's routes this is.
+    role: RouteRole,
 }
 
 impl RouteEntry {
@@ -37,6 +55,9 @@ pub struct RouteMatch {
     pub channel_name: String,
     /// Extracted path parameters (e.g. {"id": "123"}).
     pub params: HashMap<String, String>,
+    /// Which of the channel's routes matched. [`RouteRole::Primary`] for every
+    /// channel that declares only one.
+    pub role: RouteRole,
 }
 
 /// The shape a route pattern matches, with parameter *names* erased.
@@ -82,12 +103,30 @@ fn canonical_segments(segments: &[RouteSegment]) -> String {
 /// change to route eligibility — [`RouteTable::build`] has already had one,
 /// F39 below — could land in only one of them, and activation would then be
 /// gated on a different notion of the route than the one being served.
-pub(crate) fn declared_route(ch: &Channel) -> Option<(String, Vec<String>)> {
+pub(crate) fn declared_route(ch: &Channel) -> Vec<(String, Vec<String>)> {
     declared_route_parts(
         &ch.protocol,
         ch.route_pattern.as_deref(),
         &ch.methods().unwrap_or_default(),
+        oauth_callback_path(ch).as_deref(),
     )
+}
+
+/// The callback path a stored channel's config declares, if any.
+///
+/// Read out of the raw `config_json` rather than a parsed [`ChannelConfig`]:
+/// this runs on the activation path and inside `RouteTable::build`, both of
+/// which hold the row and not the compiled runtime, and a config that no longer
+/// parses must not take the whole route table down with it. A channel whose
+/// config is broken is quarantined at load anyway — it simply keeps its primary
+/// route here, which is the same shape it had before this existed.
+pub(crate) fn oauth_callback_path(ch: &Channel) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(&ch.config_json)
+        .ok()?
+        .get("oauth2_login")?
+        .get("callback_path")?
+        .as_str()
+        .map(str::to_string)
 }
 
 /// [`declared_route`] over the fields themselves rather than a stored row.
@@ -104,15 +143,30 @@ pub(crate) fn declared_route_parts(
     protocol: &str,
     route_pattern: Option<&str>,
     methods: &[String],
-) -> Option<(String, Vec<String>)> {
+    oauth_callback_path: Option<&str>,
+) -> Vec<(String, Vec<String>)> {
     if !serves_a_route(protocol) {
-        return None;
+        return Vec::new();
     }
-    let pattern = route_pattern?;
-    Some((
+    let Some(pattern) = route_pattern else {
+        return Vec::new();
+    };
+    let mut out = vec![(
         canonical_segments(&parse_route_pattern(pattern)),
         methods.to_vec(),
-    ))
+    )];
+    // The callback is a second claim on the estate's route space and has to be
+    // gated like the first one: two channels whose callbacks collide would
+    // resolve one of them arbitrarily, and the loser's sign-ins would complete
+    // against the wrong workflow. It is always a `GET` — the IdP redirects a
+    // browser to it — whatever the channel's own `methods` say.
+    if let Some(callback) = oauth_callback_path {
+        out.push((
+            canonical_segments(&parse_route_pattern(callback)),
+            vec!["GET".to_string()],
+        ));
+    }
+    out
 }
 
 /// Whether a channel of this protocol registers an HTTP route at all.
@@ -126,7 +180,7 @@ fn serves_a_route(protocol: &str) -> bool {
 /// Methods come back **raw**. `build` uppercases them for matching, while the
 /// activation error prints them back to the operator in the spelling they
 /// wrote — folding the uppercase in here would change that message.
-fn declared_segments(ch: &Channel) -> Option<(Vec<RouteSegment>, Vec<String>)> {
+fn declared_segments(ch: &Channel) -> Vec<(Vec<RouteSegment>, Vec<String>, RouteRole)> {
     // F39: REST/HTTP channels register their route whatever their
     // channel_type. Filtering to `sync` here meant an async REST channel —
     // which validation *requires* to declare a `route_pattern` — had that
@@ -135,13 +189,24 @@ fn declared_segments(ch: &Channel) -> Option<(Vec<RouteSegment>, Vec<String>)> {
     // `/async` before matching, so an async channel's pattern works at
     // `/{pattern}/async` with no further change.
     if !serves_a_route(&ch.protocol) {
-        return None;
+        return Vec::new();
     }
-    let pattern = ch.route_pattern.as_deref()?;
-    Some((
+    let Some(pattern) = ch.route_pattern.as_deref() else {
+        return Vec::new();
+    };
+    let mut out = vec![(
         parse_route_pattern(pattern),
         ch.methods().unwrap_or_default(),
-    ))
+        RouteRole::Primary,
+    )];
+    if let Some(callback) = oauth_callback_path(ch) {
+        out.push((
+            parse_route_pattern(&callback),
+            vec!["GET".to_string()],
+            RouteRole::OAuthCallback,
+        ));
+    }
+    out
 }
 
 /// Whether two declared method sets can be matched by one request.
@@ -272,17 +337,20 @@ impl RouteTable {
     pub(super) fn build<'a>(channels: impl IntoIterator<Item = &'a Channel>) -> Self {
         let mut entries: Vec<RouteEntry> = channels
             .into_iter()
-            .filter_map(|ch| {
-                let (segments, methods) = declared_segments(ch)?;
-                // `RouteEntry::methods` is uppercase by contract; only the
-                // activation error wants the operator's own spelling back.
-                let methods: Vec<String> = methods.into_iter().map(|m| m.to_uppercase()).collect();
-                Some(RouteEntry {
-                    channel_name: ch.name.clone(),
-                    methods,
-                    segments,
-                    priority: ch.priority,
-                })
+            .flat_map(|ch| {
+                declared_segments(ch)
+                    .into_iter()
+                    .map(|(segments, methods, role)| RouteEntry {
+                        channel_name: ch.name.clone(),
+                        // `RouteEntry::methods` is uppercase by contract; only
+                        // the activation error wants the operator's own
+                        // spelling back.
+                        methods: methods.into_iter().map(|m| m.to_uppercase()).collect(),
+                        segments,
+                        priority: ch.priority,
+                        role,
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect();
 
@@ -426,6 +494,7 @@ impl RouteTable {
                 return Ok(Some(RouteMatch {
                     channel_name: entry.channel_name.clone(),
                     params,
+                    role: entry.role,
                 }));
             }
         }
@@ -455,6 +524,7 @@ impl RouteTable {
                 return Ok(Some(RouteMatch {
                     channel_name: entry.channel_name.clone(),
                     params,
+                    role: entry.role,
                 }));
             }
         }
@@ -522,6 +592,7 @@ mod tests {
             methods: vec!["GET".to_string()],
             segments: parse_route_pattern("/orders/{id}"),
             priority: 0,
+            role: RouteRole::Primary,
         }]);
         let result = table.match_route("GET", "orders/42").expect("valid path");
         assert!(result.is_some());
@@ -537,6 +608,7 @@ mod tests {
             methods: vec!["GET".to_string()],
             segments: parse_route_pattern("/orders/{id}"),
             priority: 0,
+            role: RouteRole::Primary,
         }]);
         assert!(
             table
@@ -552,6 +624,7 @@ mod tests {
             methods: vec!["GET".to_string()],
             segments: parse_route_pattern("/orders/{id}"),
             priority: 0,
+            role: RouteRole::Primary,
         }])
     }
 
@@ -613,12 +686,14 @@ mod tests {
                 methods: vec![],
                 segments: parse_route_pattern("/items/{id}"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "high".to_string(),
                 methods: vec![],
                 segments: parse_route_pattern("/items/{id}"),
                 priority: 10,
+                role: RouteRole::Primary,
             },
         ]);
         // After sorting by priority desc, "high" should be first
@@ -647,12 +722,14 @@ mod prop_tests {
                 methods: vec!["GET".to_string()],
                 segments: parse_route_pattern("/users/{id}/orders/{oid}"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "static.post".to_string(),
                 methods: vec!["POST".to_string()],
                 segments: parse_route_pattern("/a/b/c"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
         ])
     }
@@ -670,30 +747,35 @@ mod prop_tests {
                 methods: vec!["GET".to_string()],
                 segments: parse_route_pattern("/orders/{id}"),
                 priority: 10,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "orders.low".to_string(),
                 methods: vec![],
                 segments: parse_route_pattern("/orders/{id}"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "param.first".to_string(),
                 methods: vec!["GET".to_string()],
                 segments: parse_route_pattern("/{tenant}/orders"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "deep".to_string(),
                 methods: vec!["POST".to_string()],
                 segments: parse_route_pattern("/a/b/c"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
             RouteEntry {
                 channel_name: "single".to_string(),
                 methods: vec!["GET".to_string()],
                 segments: parse_route_pattern("/orders"),
                 priority: 0,
+                role: RouteRole::Primary,
             },
         ])
     }

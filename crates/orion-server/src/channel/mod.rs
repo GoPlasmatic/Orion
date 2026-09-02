@@ -3,6 +3,7 @@ pub mod config;
 pub mod cookies;
 pub mod error_body;
 pub mod guards;
+pub mod oauth2_login;
 pub mod rate_limit_backend;
 pub mod registry;
 pub mod routing;
@@ -16,8 +17,10 @@ use governor::{Quota, RateLimiter};
 // Re-export all public types so that `crate::channel::*` paths continue working.
 pub use config::{
     BackendErrorPolicy, BackpressureConfig, BodyMode, ChannelCacheConfig, ChannelConfig,
-    ChannelRateLimitConfig, ChannelRequestConfig, DeduplicationConfig,
+    ChannelRateLimitConfig, ChannelRequestConfig, DeduplicationConfig, IdTokenConfig,
+    OAuth2LoginConfig, ReturnToConfig, StateCookieConfig,
 };
+pub use oauth2_login::{CompiledOAuth2Login, Leg as OAuthLeg};
 pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 pub use registry::{
     ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig, ClusterBackends, ReloadDeps,

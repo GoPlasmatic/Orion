@@ -6,6 +6,7 @@ pub(crate) mod env_substitute;
 mod jwt;
 mod kafka;
 mod logging;
+mod oauth2_login;
 mod observability;
 mod query;
 mod rate_limit;
@@ -26,6 +27,7 @@ pub use env_overrides::known_env_override_keys;
 pub use jwt::JwtConfig;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
+pub use oauth2_login::OAuth2LoginConfig;
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };
@@ -79,6 +81,9 @@ pub struct AppConfig {
     pub admin_auth: AdminAuthConfig,
     /// Instance-wide JWT verification policy (the JWKS egress rule).
     pub jwt: JwtConfig,
+    /// Instance-wide policy for inbound OAuth2 sign-in (the token-endpoint
+    /// egress rule).
+    pub oauth2_login: OAuth2LoginConfig,
     pub cluster: ClusterConfig,
     /// Deployment values stamped into `metadata.vars` on every message, and
     /// therefore visible in traces. Free-form, so no env override — `${VAR}`
@@ -116,6 +121,7 @@ impl Default for AppConfig {
             audit: AuditConfig::default(),
             admin_auth: AdminAuthConfig::default(),
             jwt: JwtConfig::default(),
+            oauth2_login: OAuth2LoginConfig::default(),
             cluster: ClusterConfig::default(),
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),

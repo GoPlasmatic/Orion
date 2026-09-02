@@ -23,6 +23,7 @@ All `config` keys are optional. An empty `{}` is valid: the channel then runs wi
 | [`timeout_ms`](#timeouts) | Deadline on workflow execution. |
 | [`origin_allow_list`](#cors--origins) | Server-side `Origin` header check. |
 | [`tracing`](#tracing-override) | Per-channel override of the global trace-storage policy. |
+| [`oauth2_login`](#inbound-oauth2-sign-in) | Complete a browser OAuth2 authorization-code grant on this channel. |
 
 **Field-table legend.** In the Required column, `yes`/`no` are absolute; a protocol or mode name (`rest`, `hmac`, …) means the field is required exactly when that protocol or mode applies. `—` in Default means the field has no value until you set one. The Guards-by-ingress matrix above answers a different question and answers it in prose — `Yes`/`No`, not a field value.
 
@@ -39,17 +40,19 @@ A channel is reachable on up to four ingresses. Each guard runs on the ingresses
 | `deduplication` | Yes | Yes | Yes | No |
 | `cache` | Yes | No | No | No |
 | `backpressure` | Yes | Yes | Yes | Yes |
+| `oauth2_login` | Yes | No | No | No |
 | `timeout_ms` | Yes | Yes | Yes¹ | Yes |
 
 ¹ Clamped to a transport ceiling — see [Timeouts](#timeouts). Every No cell is deliberate; the owning section below states why.
 
 <details><summary>Order of application</summary>
 
-Guards run in a fixed order: rate limit → auth → origin allow-list → validation → deduplication → cache lookup → backpressure. Three consequences:
+Guards run in a fixed order: rate limit → auth → origin allow-list → validation → deduplication → cache lookup → backpressure → `oauth2_login`. Four consequences:
 
 - A rejected request (bad origin, failed validation) still consumes a rate-limit token.
 - A replayed idempotency key answers `409` before the cache is consulted.
 - A cache hit never consumes a backpressure permit, and a request shed by backpressure releases its idempotency claim.
+- `oauth2_login` runs last, *after* the backpressure permit, because its callback leg makes a round trip to the identity provider and that call must be bounded by the channel's concurrency cap. The consequence is that `validation_logic` sees the request and not the grant — the grant is what the workflow is for.
 
 </details>
 
@@ -547,7 +550,139 @@ Reading cookies is configured per channel with `request.cookies_to_metadata`. Wr
 
 **A response that sets a cookie is never cached.** The response cache keys on the method, path parameters, query and payload — never on who is calling — so a stored `Set-Cookie` would be replayed to every caller repeating that request for the TTL. Orion suppresses the cache write instead. This applies however the cookie was set, including through `allowed_headers`.
 
-**Values are validated.** A `value` carrying `;`, a comma, a quote, a backslash, CR or LF is refused and the cookie dropped with a warning, because a workflow interpolating user input into a cookie could otherwise inject further attributes or split the response. `path`, `domain` and `expires` refuse `;`, CR and LF for the same reason. As everywhere on this path, the failure is soft: the rest of the response still ships.
+**Values are validated, and a refusal is reported.** A `value` carrying `;`, a comma, a quote, a backslash, CR or LF is refused, because a workflow interpolating user input into a cookie could otherwise inject further attributes or split the response. `path`, `domain` and `expires` refuse `;`, CR and LF for the same reason, and `secure`/`http_only` must be real booleans — coercing the string `"false"` to `true` would be worse than refusing it.
+
+As everywhere on this path the failure is **soft**: the cookie is dropped and the rest of the response still ships with its declared status. It is not **silent**. Every dropped declaration — an invalid cookie, a header the channel does not allow, a header value that is not a string, cookies declared with the switch off — appends a `{code, message, path}` entry to the response envelope's `errors` and increments [`orion_response_drops_total`](./metrics.md). A shaped channel's body belongs to its workflow, so the entries do not reach the caller there; they reach the **trace**, which is where a `302` that quietly did not set a session cookie is otherwise indistinguishable from a browser having refused it. `orion-server clippy` catches the statically decidable half ([`correctness.response_cookie_type`](./clippy.md)).
+
+## Inbound OAuth2 Sign-In
+
+`oauth2_login` makes a channel the relying party in a browser OAuth2 authorization-code grant (RFC 6749 §4.1) — "Sign in with GitHub", "Continue with Google". Orion owns the redirect, the state cookie, the CSRF binding, PKCE, the code exchange and, for OIDC, `id_token` verification. The workflow keeps the application half and receives the grant at `metadata.oauth`.
+
+This is *establishment*, not verification, which is why it is a `config` block rather than a fourth [`auth.mode`](#authentication). The two compose: `oauth2_login` mints a session, and `auth.mode = "jwt"` with `source: {"cookie": …}` guards every route the session then reaches.
+
+**The channel serves two routes.** Its `route_pattern` is the authorize leg — where you send a user to begin — and `callback_path` is where the identity provider sends the browser back. Both are gated for collisions at activation, like any other route.
+
+| Field | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `authorize_url` | string | yes | — | The provider's authorization endpoint. `https` only. |
+| `token_url` | string | yes | — | The provider's token endpoint. `https` only, and address-checked on every exchange unless [`oauth2_login.allow_private_token_urls`](./configuration.md#inbound-oauth2-sign-in) is set. |
+| `client_id` | string | yes | — | The OAuth2 client identifier. Literal, or `var://name` for a per-environment value. |
+| `client_secret` | string | yes | — | The client secret. `env://NAME` or `vault://…`; a literal works but puts the secret in the stored definition. |
+| `client_auth` | string | no | `basic` | How credentials are presented at the token endpoint: `basic` (RFC 6749 §2.3.1) or `body`. |
+| `redirect_uri` | string | yes | — | The absolute redirect URI registered with the provider. Sent on both legs, because RFC 6749 §4.1.3 requires them to match. |
+| `callback_path` | string | yes | — | The callback route, as a second path on this channel. Static — no `{param}` segments — and must differ from `route_pattern`. |
+| `scopes` | array of strings | no | `[]` | Requested scopes, space-joined. Empty sends no `scope` parameter. |
+| `extra_authorize_params` | object | no | `{}` | Extra query parameters on the authorize URL (`prompt`, `hd`, `allow_signup`). Naming a reserved parameter is a create-time error — see below. |
+| `pkce` | boolean | no | `true` | PKCE (RFC 7636), S256 only. `plain` is not representable. |
+| `state_secret` | string | yes | — | HS256 key for the state cookie. `env://NAME` or `vault://…`, at least 32 bytes. Must be identical on every node. |
+| `state_cookie` | object | no | see below | The state cookie's attributes. |
+| `run_workflow_on_authorize` | boolean | no | `false` | Run the workflow on the authorize leg before the redirect is built. |
+| `return_to` | object | no | — | `{param, allow_list}` — carry a pre-login destination through the flow. |
+| `id_token` | object | no | — | OIDC `id_token` verification. Absent is plain OAuth2. |
+
+`state_cookie` fields: `name` (default `orion_oauth_state`), `secure` (default `true`), `same_site` (default `lax`), `path` (default `/`), and `max_age` in seconds (default `600`), which is also the state token's expiry — the window a user has to finish the consent screen.
+
+`id_token` fields: `issuer` (required, accepted `iss` values), `jwks_url` (required, `https`), `audience` (defaults to `[client_id]`, per OIDC Core §3.1.3.7), `algorithms` (default `["RS256"]`), `required` (default `true`), and `nonce` (default `true`).
+
+### A complete channel
+
+```json
+{
+  "channel_id": "github-signin",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/v1/auth/github",
+  "workflow_id": "github-signin",
+  "config": {
+    "response": { "mode": "shaped", "cookies": true },
+    "oauth2_login": {
+      "authorize_url": "https://github.com/login/oauth/authorize",
+      "token_url": "https://github.com/login/oauth/access_token",
+      "client_id": "var://github_client_id",
+      "client_secret": "env://GITHUB_CLIENT_SECRET",
+      "redirect_uri": "var://github_redirect_uri",
+      "callback_path": "/v1/auth/github/callback",
+      "scopes": ["read:user"],
+      "state_secret": "env://ORION_SECRET_OAUTH_STATE"
+    }
+  }
+}
+```
+
+`GET /api/v1/data/v1/auth/github` answers `302` to GitHub with a signed state cookie. GitHub redirects back to the callback, Orion verifies the state and exchanges the code, and the workflow runs with the grant in hand:
+
+```json
+[
+  { "id": "identify", "function": { "name": "http_call", "input": {
+      "connector": "github-api", "method": "GET", "path": "/user",
+      "headers": { "authorization": { "cat": ["Bearer ", { "var": "metadata.oauth.access_token" }] } },
+      "output": "temp_data.gh" } } },
+  { "id": "upsert",  "function": { "name": "db_write",  "input": { "…": "upsert the user" } } },
+  { "id": "session", "function": { "name": "jwt_sign",  "input": { "…": "mint the app's own token" } } },
+  { "id": "respond", "function": { "name": "map", "input": { "mappings": [
+      { "path": "data._orion.response", "logic": { "status": 302, "headers": { "location": "/" } } },
+      { "path": "data._orion.response.cookies", "logic": [
+        { "name": "session", "value": { "var": "temp_data.token" }, "path": "/",
+          "http_only": true, "secure": true, "same_site": "Lax", "max_age": 2592000 } ] } ] } } }
+]
+```
+
+### What the workflow receives
+
+| Path | Present when |
+|---|---|
+| `metadata.oauth.access_token` | always |
+| `metadata.oauth.token_type` | always (`Bearer`) |
+| `metadata.oauth.expires_in` | the provider returned one |
+| `metadata.oauth.scope` | the provider returned one |
+| `metadata.oauth.refresh_token` | the provider returned one |
+| `metadata.oauth.id_token` | the provider returned one |
+| `metadata.oauth.claims` | `id_token` verification is configured and a token was verified |
+| `metadata.oauth.return_to` | `return_to` is configured and the caller supplied a permitted value |
+
+`metadata.oauth` is platform-reserved: it is stripped from every caller-supplied envelope and written only by Orion, so a workflow reading it is reading a verified grant. It is also excluded from persisted task-detail snapshots, so the tokens in it are not written to disk.
+
+### Reserved authorize parameters
+
+`extra_authorize_params` may not set `client_id`, `redirect_uri`, `response_type`, `scope`, `state`, `nonce`, `code_challenge` or `code_challenge_method`. Naming one is a create-time `400`; a workflow contributing one under `run_workflow_on_authorize` has it ignored with a warning. Overriding `state` would disable the CSRF binding the block exists to provide.
+
+### `run_workflow_on_authorize`
+
+Off by default, the channel answers the redirect itself and the workflow is never entered — which is what makes the CSRF binding and the nonce unskippable.
+
+Turn it on and the workflow runs first. It can refuse the sign-in by shaping its own `data._orion.response` (an unknown tenant, a maintenance window), or contribute to the redirect:
+
+```json
+{ "path": "data._orion.oauth2.authorize", "logic": {
+    "extra_params": { "login_hint": { "var": "metadata.query.email" } },
+    "scopes": ["read:user", "user:email"] } }
+```
+
+Orion still mints the state, the nonce and the PKCE challenge. The workflow cannot reach them and cannot replace them.
+
+### `return_to`
+
+```json
+"return_to": { "param": "next", "allow_list": ["https://app.example.com/"] }
+```
+
+The value is read from that query parameter on the authorize leg, checked against the allow-list **there**, sealed into the signed state, and handed back at `metadata.oauth.return_to`. Checking on the way in is what makes it safe to redirect to: a value that reaches the workflow has already passed. A value that has not is dropped silently. This is the one part of the flow a workflow cannot do for itself, because it never sees the authorize request.
+
+### What is refused, and why
+
+- **`cache` alongside `oauth2_login`.** The response cache keys on the request and never on the caller, so a stored authorize `302` would replay one browser's state cookie to the next visitor and a stored callback would replay one user's session.
+- **`same_site: "strict"` on the state cookie.** The callback is a top-level cross-site `GET` from the provider, so a `Strict` cookie is withheld on exactly that request and every sign-in fails the state check.
+- **A non-`rest` protocol, or no `route_pattern`.** Both legs are routes; a channel reachable only by name has nowhere for the provider to send the browser back to.
+- **`callback_path` equal to `route_pattern`.** They are two different requests and must be two different paths.
+- **A `.../callback/async` submission.** `202` with a trace id is not a response a browser redirect can follow, and admitting it would run the workflow with no grant — a sign-in that appears to succeed and established nothing.
+
+### Failures
+
+Every callback refusal — a missing, expired, forged or mismatched state, a failed nonce check, a rejected `id_token`, a spent code, a user who pressed Cancel — answers the same `401` with the same body. Naming the failing half would tell a prober which one to work on. The distinction lives in the log and in [`orion_oauth_login_total{outcome}`](./metrics.md), and the body is replaceable per channel with [`response.error_bodies`](#error-bodies). An unreachable identity provider answers `503` with `Retry-After`.
+
+### Limits
+
+Single use is enforced by clearing the state cookie on the callback, not by a stored row, so two concurrent replays of one callback inside the window would both pass Orion's check. The authorization code itself is single-use at the provider, which is where that defence lives. Implicit and hybrid flows, the device-code grant, RP-initiated logout and end-user refresh-token rotation are all out of scope.
 
 ## Validation
 

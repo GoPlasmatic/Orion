@@ -183,10 +183,120 @@ struct CachedShapedInnerRef<'a> {
 /// disallowed field falls back to the platform's own answer rather than 500ing.
 /// A shaped channel whose workflow forgot to set a status should serve the
 /// workflow's data with a `200`, not fail the request; the alternative turns a
+/// Append the platform's own `Set-Cookie` values to a finished response.
+///
+/// `append`, never `insert`: the workflow may already have set cookies of its
+/// own, and a session cookie replaced by the state-clearing one would be a
+/// sign-in that completes and immediately signs the user out.
+fn append_cookies(mut response: Response, cookies: &[String]) -> Response {
+    for value in cookies {
+        match axum::http::HeaderValue::from_str(value) {
+            Ok(header) => {
+                response
+                    .headers_mut()
+                    .append(axum::http::header::SET_COOKIE, header);
+            }
+            // Soft, like every other failure on the response path — but this
+            // one is worth a warning rather than a debug line, because the
+            // cookie it drops is the one retiring a spent OAuth2 state.
+            Err(e) => tracing::warn!(error = %e, "Dropping an unencodable platform cookie"),
+        }
+    }
+    response
+}
+
+/// The `302` that begins a sign-in, when the workflow ran first.
+///
+/// Built here as well as in the guard because the two legs answer from
+/// different places; the shape is one function's worth of duplication and the
+/// alternative is threading a `Response` back through the guard layer, which
+/// is deliberately axum-free.
+fn oauth_redirect_response(redirect: crate::channel::oauth2_login::Redirect) -> Response {
+    let mut response = Response::new(axum::body::Body::empty());
+    *response.status_mut() = StatusCode::FOUND;
+    for (name, value) in [
+        (axum::http::header::LOCATION, redirect.location),
+        (axum::http::header::SET_COOKIE, redirect.set_cookie),
+        (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+    ] {
+        if let Ok(header) = axum::http::HeaderValue::from_str(&value) {
+            response.headers_mut().insert(name, header);
+        }
+    }
+    response
+}
+
+/// Take `data._orion.oauth2.authorize` out of the workflow's output.
+///
+/// Drained rather than read, and for the same reason `_orion.response` is: it
+/// is control, not content, and leaving it in the body would put it in the
+/// caller's response and the persisted trace. The empty-namespace cleanup
+/// mirrors [`drain_shaped_response`] so a channel using both does not end up
+/// with a hollow `_orion`.
+fn drain_authorize_contribution(data: &mut Value) -> Option<Value> {
+    let obj = data.as_object_mut()?;
+    let namespace = obj.get_mut(RESPONSE_CONTROL_KEY)?.as_object_mut()?;
+    let oauth2 = namespace.get_mut("oauth2")?.as_object_mut()?;
+    let contributed = oauth2.remove("authorize");
+    if oauth2.is_empty() {
+        namespace.remove("oauth2");
+    }
+    if namespace.is_empty() {
+        obj.remove(RESPONSE_CONTROL_KEY);
+    }
+    contributed
+}
+
+/// One dropped response declaration, in the same `{code, message}` shape a task
+/// error takes so a caller reading `errors[]` needs no second vocabulary.
+///
+/// `path` points at the declaration inside `data._orion.response` rather than
+/// at a `task_id`: the workflow succeeded, and what failed is a *statement it
+/// made about the response*, which belongs to no single task.
+fn drop_entry(code: &str, message: impl Into<String>, path: &str) -> Value {
+    json!({ "code": code, "message": message.into(), "path": path })
+}
+
+/// Push one header after checking it is representable on the wire.
+///
+/// Checked here rather than in [`shaped_response`] so that everything a
+/// shaped response can refuse is refused in one place, while the envelope that
+/// reports the refusal is still being built. A name or value rejected at send
+/// time would have nowhere to be recorded.
+fn push_header(
+    headers: &mut Vec<(String, String)>,
+    name: &str,
+    value: &str,
+    path: &str,
+    drops: &mut Vec<Value>,
+) {
+    if axum::http::HeaderName::try_from(name).is_err()
+        || axum::http::HeaderValue::try_from(value).is_err()
+    {
+        drops.push(drop_entry(
+            "RESPONSE_HEADER_DROPPED",
+            format!("response header '{name}' is not valid HTTP; it was not set"),
+            path,
+        ));
+        return;
+    }
+    headers.push((name.to_string(), value.to_string()));
+}
+
 /// cosmetic authoring slip into an outage.
+///
+/// **Soft is not the same as silent** (#312). Every drop below appends an entry
+/// to `drops`, which the caller folds into the response envelope's `errors` and
+/// counts in `orion_response_drops_total`. Before that, a workflow that
+/// declared a session cookie whose `secure` evaluated to a string got a `200`
+/// with no `Set-Cookie`, a trace that recorded a clean success, and one line on
+/// the server's stdout — which reads to a browser exactly like the browser
+/// having refused the cookie. The request still ships, because that part of the
+/// posture is right; it just no longer ships claiming nothing happened.
 fn drain_shaped_response(
     data: &mut Value,
     cfg: &crate::channel::config::ChannelResponseConfig,
+    drops: &mut Vec<Value>,
 ) -> Option<ShapedResponse> {
     let obj = data.as_object_mut()?;
     let namespace = obj.get_mut(RESPONSE_CONTROL_KEY)?.as_object_mut()?;
@@ -209,11 +319,16 @@ fn drain_shaped_response(
     if let Some(map) = control.get("headers").and_then(Value::as_object) {
         for (name, value) in map {
             let lower = name.to_ascii_lowercase();
+            let path = format!("_orion.response.headers.{lower}");
             if !cfg.allows_header(&lower) {
-                tracing::warn!(
-                    header = %lower,
-                    "workflow set a response header the channel does not allow; dropping it"
-                );
+                drops.push(drop_entry(
+                    "RESPONSE_HEADER_NOT_ALLOWED",
+                    format!(
+                        "response header '{lower}' is not in this channel's \
+                         response.allowed_headers; it was not set"
+                    ),
+                    &path,
+                ));
                 continue;
             }
             // An array sets the header once per element. `set-cookie` is the
@@ -221,27 +336,34 @@ fn drain_shaped_response(
             // cookie and clears a spent one — but nothing here is specific to
             // it, and a repeated `link` or `vary` is equally legal.
             match value {
-                Value::String(s) => headers.push((lower, s.clone())),
+                Value::String(s) => push_header(&mut headers, &lower, s, &path, drops),
                 Value::Array(items) => {
                     for item in items {
                         match item.as_str() {
-                            Some(s) => headers.push((lower.clone(), s.to_string())),
-                            // Logged, not skipped silently: the bare `continue`
-                            // this replaces is why an array of cookies used to
-                            // vanish with no warning and no error (#298).
-                            None => tracing::warn!(
-                                header = %lower,
-                                "workflow response header array holds a non-string \
-                                 value; dropping that entry"
-                            ),
+                            Some(s) => push_header(&mut headers, &lower, s, &path, drops),
+                            // Reported, not skipped silently: the bare
+                            // `continue` this replaces is why an array of
+                            // cookies used to vanish with no warning and no
+                            // error (#298).
+                            None => drops.push(drop_entry(
+                                "RESPONSE_HEADER_DROPPED",
+                                format!(
+                                    "an entry of response header '{lower}' is not a \
+                                     string; that entry was not set"
+                                ),
+                                &path,
+                            )),
                         }
                     }
                 }
-                _ => tracing::warn!(
-                    header = %lower,
-                    "workflow response header value is neither a string nor an \
-                     array of strings; dropping it"
-                ),
+                _ => drops.push(drop_entry(
+                    "RESPONSE_HEADER_DROPPED",
+                    format!(
+                        "response header '{lower}' is neither a string nor an array \
+                         of strings; it was not set"
+                    ),
+                    &path,
+                )),
             }
         }
     }
@@ -251,17 +373,30 @@ fn drain_shaped_response(
     // the raw `set-cookie` values first, in the order it wrote them.
     if cfg.cookies {
         if let Some(list) = control.get("cookies").and_then(Value::as_array) {
-            for spec in list {
+            for (i, spec) in list.iter().enumerate() {
+                let path = format!("_orion.response.cookies[{i}]");
                 match crate::channel::cookies::format_set_cookie(spec) {
-                    Ok(value) => headers.push(("set-cookie".to_string(), value)),
-                    Err(reason) => tracing::warn!(
-                        reason = %reason,
-                        "workflow set an invalid response cookie; dropping it"
-                    ),
+                    Ok(value) => push_header(&mut headers, "set-cookie", &value, &path, drops),
+                    // The cookie is still dropped — a malformed `Set-Cookie` is
+                    // worse than none — but the response now says so. For an
+                    // auth cookie the difference between set and not set is the
+                    // whole request, and this failure presents to a browser
+                    // exactly like the browser having refused the cookie.
+                    Err(reason) => drops.push(drop_entry(
+                        "RESPONSE_COOKIE_DROPPED",
+                        format!("{reason}; the cookie was not set"),
+                        &path,
+                    )),
                 }
             }
         }
     } else if control.get("cookies").is_some() {
+        drops.push(drop_entry(
+            "RESPONSE_COOKIES_DISABLED",
+            "the workflow declared response cookies but the channel does not enable them \
+             (response.cookies); none were set",
+            "_orion.response.cookies",
+        ));
         tracing::warn!(
             "workflow set response cookies but the channel does not enable \
              them (response.cookies); dropping them"
@@ -426,7 +561,15 @@ pub(super) async fn process_sync_for_channel(
         dedup_claim: _dedup_claim,
         // Already merged into `metadata` by the caller (data/mod.rs).
         auth_claims: _,
+        oauth,
     } = admission;
+    // `response_cookies` is appended to whatever the workflow answers,
+    // including a failure: the OAuth2 state cookie has been spent by the time
+    // the workflow runs and must not survive the response that spent it.
+    let (response_cookies, oauth_authorize, oauth_return_to) = match oauth {
+        Some(o) => (o.response_cookies, o.authorize, o.return_to),
+        None => (Vec::new(), None, None),
+    };
 
     // O1: `channel` is safe to use as a metric label below because the caller
     // has already resolved it against the registry — an unknown name is a 404
@@ -522,12 +665,71 @@ pub(super) async fn process_sync_for_channel(
             // looks, which is what keeps an incidental `_orion` key in some
             // workflow's data inert.
             let mut data_out: Value = message.data().into();
+            // #312: what the workflow declared and did not get. Empty for
+            // every channel on the default `envelope` mode, which never looks
+            // at `_orion.response` at all.
+            let mut response_drops: Vec<Value> = Vec::new();
             let shaped = channel_config
                 .parsed_config
                 .response
                 .as_ref()
                 .filter(|cfg| cfg.is_shaped())
-                .and_then(|cfg| drain_shaped_response(&mut data_out, cfg));
+                .and_then(|cfg| drain_shaped_response(&mut data_out, cfg, &mut response_drops));
+            for entry in &response_drops {
+                let field = |k: &str| {
+                    entry
+                        .get(k)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                let (kind, path, message) = (field("code"), field("path"), field("message"));
+                tracing::warn!(
+                    channel = channel,
+                    code = %kind,
+                    path = %path,
+                    reason = %message,
+                    "response declaration dropped"
+                );
+                metrics::record_response_drop(channel, kind);
+            }
+
+            // #307, `run_workflow_on_authorize`: the redirect is built after
+            // the workflow so the workflow can contribute to it, and the
+            // contribution is drained here the way `_orion.response` is —
+            // out of the body, before the envelope and the trace are built.
+            //
+            // A workflow that shaped its own response wins: that is how it
+            // refuses a sign-in (an unknown tenant, a maintenance window)
+            // without Orion needing a vocabulary for refusal. Only when it
+            // shaped nothing does the sign-in proceed.
+            if let Some(login) = oauth_authorize {
+                if shaped.is_none() {
+                    let contributed = drain_authorize_contribution(&mut data_out);
+                    return match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
+                        Ok(redirect) => {
+                            crate::metrics::record_oauth_login(
+                                channel,
+                                crate::channel::OAuthLeg::Authorize,
+                                "ok",
+                            );
+                            Ok(oauth_redirect_response(redirect))
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                channel = channel,
+                                error = %e,
+                                "Could not build the OAuth2 authorize redirect"
+                            );
+                            Err(OrionError::internal("could not begin the sign-in"))
+                        }
+                    };
+                }
+                tracing::debug!(
+                    channel = channel,
+                    "Workflow shaped its own response on the authorize leg; not redirecting"
+                );
+            }
 
             let mut response = response_envelope(
                 message.id(),
@@ -536,6 +738,7 @@ pub(super) async fn process_sync_for_channel(
                     .errors()
                     .iter()
                     .filter_map(|e| serde_json::to_value(e).ok())
+                    .chain(response_drops.iter().cloned())
                     .collect(),
                 None,
             );
@@ -553,7 +756,14 @@ pub(super) async fn process_sync_for_channel(
             // the public one is made by overwriting those two keys in place —
             // rebuilding it would deep-convert the whole workflow output a
             // second time.
-            let has_errors = message.has_errors();
+            // A dropped declaration counts. Not for the message metric —
+            // `record_message` above reads the engine outcome, and the workflow
+            // did succeed — but for the three things this flag actually gates:
+            // the trace is *stored* under an errors-only policy (otherwise the
+            // one trace carrying the evidence is the one sampled away), the
+            // trace row is findable by an operator searching for failures, and
+            // an incomplete response is not written to the response cache.
+            let has_errors = message.has_errors() || !response_drops.is_empty();
             let public_json = if has_errors {
                 response["errors"] = Value::Array(sanitize_errors(
                     message.errors(),
@@ -619,9 +829,15 @@ pub(super) async fn process_sync_for_channel(
             // serialization: falling through to the envelope body would cache
             // a document a shaped channel cannot replay, quietly answering the
             // second request with a different contract.
-            let sets_cookie = shaped
-                .as_ref()
-                .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
+            // `response_cookies` counts for the same reason the workflow's own
+            // do, and it is the sharper case: the OAuth2 callback's cookie
+            // retires a spent state, so replaying it would hand the next
+            // caller a cleared cookie for a sign-in that was not theirs — and
+            // the body it rides on is one user's session.
+            let sets_cookie = !response_cookies.is_empty()
+                || shaped
+                    .as_ref()
+                    .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
             if sets_cookie {
                 tracing::debug!(
                     channel = channel,
@@ -671,7 +887,7 @@ pub(super) async fn process_sync_for_channel(
             // records its timings (they reach the trace and the metrics); only
             // the response-body copy is envelope-only.
             if let Some(shaped) = shaped {
-                return Ok(shaped_response(shaped));
+                return Ok(append_cookies(shaped_response(shaped), &response_cookies));
             }
 
             // Profile mode: rebuild the response with `_orion.profile`
@@ -684,15 +900,15 @@ pub(super) async fn process_sync_for_channel(
             if let Some(ref p) = profile {
                 let mut response_with_profile = response;
                 response_with_profile["_orion"] = json!({ "profile": p.to_json() });
-                return Ok(json_response(
-                    StatusCode::OK,
-                    serialize_envelope(&response_with_profile)?,
+                return Ok(append_cookies(
+                    json_response(StatusCode::OK, serialize_envelope(&response_with_profile)?),
+                    &response_cookies,
                 ));
             }
 
-            Ok(json_response(
-                StatusCode::OK,
-                public_json.unwrap_or(response_json),
+            Ok(append_cookies(
+                json_response(StatusCode::OK, public_json.unwrap_or(response_json)),
+                &response_cookies,
             ))
         }
     }

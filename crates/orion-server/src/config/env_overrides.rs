@@ -374,6 +374,9 @@ where
     // JWT verification (JWKS egress policy)
     ov!(jwt.allow_private_jwks_urls: bool);
 
+    // Inbound OAuth2 sign-in (token-endpoint egress policy)
+    ov!(oauth2_login.allow_private_token_urls: bool);
+
     // Admin auth
     ov!(admin_auth.enabled: bool);
     ov!(admin_auth.header: String);

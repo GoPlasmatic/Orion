@@ -1,0 +1,29 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "respond",
+      "name": "Respond",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data._orion.response.cookies",
+              "logic": [
+                {
+                  "name": "session",
+                  "value": "abc",
+                  "path": "/",
+                  "secure": "true",
+                  "max_age": "2592000"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
