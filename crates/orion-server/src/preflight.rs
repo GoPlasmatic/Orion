@@ -267,6 +267,23 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
             }),
     );
 
+    // dataflow-rs 3.10's two informational findings, over the *stored* estate.
+    // Neither stops a workflow loading, which is what makes them preflight's
+    // business rather than a load-time refusal: a `validation` that asserts
+    // nothing and a `continue_on_error` the engine drops both keep serving,
+    // and an operator upgrading is the person who can still fix them.
+    findings.extend(
+        crate::validation::engine_advisories(&tasks)
+            .into_iter()
+            .map(|advisory| {
+                Diagnostic::warning(
+                    "14",
+                    format!("workflow '{name}' {}", advisory.path),
+                    advisory.message,
+                )
+            }),
+    );
+
     findings.extend(check_dialect_schemas(name, &tasks));
     findings
 }

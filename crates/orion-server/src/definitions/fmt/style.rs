@@ -47,12 +47,17 @@ pub const WORKFLOW_KEYS: &[&str] = &[
 
 /// A leaf task: dataflow-rs's `Task` fields plus Orion's step-level
 /// `terminal`.
+///
+/// `halt_on` sits beside `terminal` because they are the two halves of one
+/// question — position and outcome — and an author reading a task wants to see
+/// them together rather than with the error-handling key between them.
 pub const TASK_KEYS: &[&str] = &[
     "id",
     "name",
     "description",
     "condition",
     "terminal",
+    "halt_on",
     "continue_on_error",
     "function",
 ];

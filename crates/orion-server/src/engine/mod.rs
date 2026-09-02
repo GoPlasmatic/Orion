@@ -125,7 +125,8 @@ pub use handlers::{
     suggest_known_function,
 };
 pub use loader::{
-    CUSTOM_HANDLER_FUNCTIONS, HandlerScreen, build_engine_workflows, build_single, filter_channels,
+    CUSTOM_HANDLER_FUNCTIONS, HandlerScreen, INFORMATIONAL_ISSUES, build_engine_workflows,
+    build_single, filter_channels,
 };
 pub use observer::MetricsObserver;
 pub use refs::{

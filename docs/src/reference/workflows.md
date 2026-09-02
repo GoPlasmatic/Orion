@@ -26,7 +26,7 @@ responses — you do not send them on create.
 | `tasks` | array | **yes** | — | Ordered, non-empty list of [task objects](#tasks) |
 | `tags` | string[] | no | `[]` | Free-form labels for filtering |
 | `loop` | object | no | — | Run the task list once per sweep instead of once in total (see [Loop](#loop)) |
-| `continue_on_error` | bool | no | `false` | If `true`, a failing task does not halt the pipeline (see [Error handling](#error-handling)) |
+| `continue_on_error` | bool | no | `false` | If `true`, a task that errors or records `5xx` does not halt the pipeline. A `4xx` never halts either way — see [Error handling](#error-handling) |
 | `version` | integer | server-managed | `1` | Increments per saved version of a `workflow_id` |
 | `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
 | `rollout_percentage` | integer | server-managed | `100` | Share of traffic when activated (see [Rollout](#rollout)) |
@@ -51,8 +51,9 @@ Each entry in `tasks` is a single step in the pipeline:
 | `name` | string | **yes** | — | Human-readable label |
 | `function` | object | **yes** | — | The function to run — see below |
 | `condition` | JSONLogic | no | — | If present and falsy, this task is skipped |
-| `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's failure |
+| `continue_on_error` | bool | no | inherits the workflow | Per-task override: `true` lets the pipeline continue past **this** task's error or `5xx`. To stop on a `4xx`, use `halt_on` |
 | `terminal` | bool | no | `false` | End the workflow after this step runs. About **position, not outcome** — see [Terminal steps](#terminal-steps) |
+| `halt_on` | string | no | `"never"` | `"failure"` ends the workflow when *this task* failed. About **outcome, not position** — see [Halting on failure](#halting-on-failure). Tasks only; a group carrying it is refused |
 
 The `function` object names a [built-in function](./functions.md) and supplies
 its `input`:
@@ -133,6 +134,51 @@ It is about **position, not outcome**:
 > definition using a group **fails to load** on an older engine, loudly; a bare
 > `terminal: true` is silently ignored there and every later task runs. Gate on
 > the server version if you deploy definitions to instances you do not control.
+
+### Halting on failure
+
+`halt_on: "failure"` ends the workflow when the task **failed** — a recorded
+status of `400` or above, which covers a `validation` rule that did not pass,
+any task returning that range, and a handler error. A success falls through.
+
+It is the other axis from `terminal`: position versus outcome. The two compose
+by *or*, so `terminal` stays strictly stronger and no combination contradicts.
+
+```json
+{ "id": "check_state", "name": "Check the state token", "halt_on": "failure",
+  "function": { "name": "validation", "input": { "rules": [
+    { "logic": { "==": [{ "var": "metadata.query.state" },
+                        { "var": "metadata.cookies.oauth_state" }] },
+      "message": "state mismatch" } ] } } }
+```
+
+**Without it, a failing `validation` does not stop anything.** A failed rule
+records status `400`, and the engine's rule is that `4xx` warns and carries on;
+`continue_on_error` governs `5xx` and handler errors only. So a `validation`
+followed by unguarded tasks records an error and proceeds exactly as if it had
+passed — which is how a check that reads correct ships doing nothing.
+
+Collecting every rule failure and carrying on is a legitimate shape, and the
+default keeps it. When you meant a gate, say so:
+
+| You want | Write |
+|---|---|
+| Stop, keeping the task's own status | `"halt_on": "failure"` on the task |
+| Stop, and answer with a chosen status and body | a later task with a `condition` on the failure and `terminal: true` |
+| Stop, with no body | a [`filter`](./functions.md#filter) task (records `299`) |
+
+`orion-server lint` reports a `validation` that is not acting as a gate and has
+nothing guarded after it (`engine.unguarded_validation`), so the silent version
+does not have to be found in production.
+
+`halt_on` belongs to a **task**. A group has no outcome of its own, so one
+carrying `halt_on` is refused at parse — loudly, rather than as a guard that
+never fires. `continue_on_error` on a group is the same mistake resolved the
+other way: it parses, the engine drops it, and `lint` reports
+`engine.group_continue_on_error`.
+
+> [!NOTE]
+> `halt_on` needs dataflow-rs 3.10, which Orion 1.6.0 ships.
 
 ## The data context
 
@@ -434,10 +480,21 @@ is returned to the caller. Set `continue_on_error: true` on the workflow to
 keep running subsequent tasks and collect errors instead, or on a single task
 to make just that step non-fatal. A run that continues records each failure's
 code at [`metadata._orion_errors`](#branching-on-a-failure), so a later task
-can branch on *why* the step failed rather than only on whether it did. The
-[`filter`](./functions.md#filter) function offers finer control: `on_reject:
-"halt"` stops the workflow, while `on_reject: "skip"` skips only the current
-task.
+can branch on *why* the step failed rather than only on whether it did.
+
+**"Errors" here means a handler failure or a status of `500` or above.** A task
+that records a `4xx` — which is what a failing `validation` rule does — logs a
+warning and the pipeline carries on, whatever `continue_on_error` says. That is
+deliberate: a `4xx` is the task reporting on its input, not the engine failing
+to run it. It is also the one thing about this field worth knowing before you
+reach for it after a `validation`, so:
+
+| To stop on | Use |
+|---|---|
+| A handler failure or `5xx` | `continue_on_error: false` (the default) |
+| This task's own failure, `4xx` included | [`halt_on: "failure"`](#halting-on-failure) |
+| A condition you write yourself | [`filter`](./functions.md#filter) — `on_reject: "halt"` stops the workflow, `"skip"` skips only that task |
+| Reaching this point at all | [`terminal: true`](#terminal-steps) |
 
 For async channels, a task failure routes the trace to the dead letter queue
 for automatic retry.

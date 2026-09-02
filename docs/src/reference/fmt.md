@@ -88,7 +88,7 @@ overrides.
 | Shape | Order |
 |---|---|
 | Workflow | `workflow_id`, `name`, `description`, `tags`, `priority`, `condition`, `loop`, `continue_on_error`, `activate`, `tasks` |
-| Task | `id`, `name`, `description`, `condition`, `terminal`, `continue_on_error`, `function` |
+| Task | `id`, `name`, `description`, `condition`, `terminal`, `halt_on`, `continue_on_error`, `function` |
 | Task group | `id`, `name`, `description`, `condition`, `terminal`, `tasks` |
 | Fragment call site | `id`, `use`, `with` |
 | `function` | `name`, `input` |

@@ -194,35 +194,32 @@ an accepted alias for `validation`.
 | `rules[].message` | string | yes | — | Error message recorded when the rule fails |
 
 > [!WARNING]
-> **A failed rule records an error; it does not stop the workflow.** The task
-> returns a `400`, the message lands in the response's `errors` array, and the
-> *next task still runs* — including under `continue_on_error: false`, which the
-> engine consults for `5xx` only. That is deliberate (collecting every problem
-> in one pass is what `validation` is for), but it means `validation` is the
-> wrong tool for a gate, and a check written as one reads correct while doing
-> nothing.
+> **A failed rule records an error; it does not stop the workflow — unless you
+> say so.** The task returns a `400`, the message lands in the response's
+> `errors` array, and the engine's rule is that `4xx` warns and carries on;
+> `continue_on_error` governs `5xx` and handler errors only. So a `validation`
+> followed by unguarded tasks proceeds exactly as if it had passed.
 >
-> To reject, use one of these instead:
->
-> - [`filter`](#filter) — `on_reject: "halt"` (the default) stops the workflow
->   on a falsy condition. It writes no status or body, so the caller gets the
->   default envelope.
-> - **A task with a `condition` and `terminal: true`** — write the predicate for
->   the *bad* case and shape the rejection yourself. More verbose, and the only
->   form that picks its own status code:
+> Collecting every failure and carrying on is a legitimate shape, which is why
+> it is the default. When you meant a gate, add
+> [`halt_on`](./workflows.md#halting-on-failure):
 >
 > ```json
-> { "id": "deny", "name": "Reject", "condition": { "!": { "var": "temp_data.ok" } },
->   "terminal": true,
->   "function": { "name": "map", "input": { "mappings": [
->     { "path": "data.body", "logic": { "error": "forbidden" } },
->     { "path": "data._orion.response", "logic": { "status": 403, "body_path": "data.body" } } ] } } }
+> { "id": "check", "name": "Check", "halt_on": "failure",
+>   "function": { "name": "validation", "input": { "rules": [
+>     { "logic": { "==": [1, 1] }, "message": "…" } ] } } }
 > ```
 >
-> `terminal: true` on the `validation` task itself does not help: it is about
-> [position, not outcome](./workflows.md) — it halts whether the rules passed or
-> failed.
-
+> The task keeps its own `400` on the audit trail and in `metadata.progress`.
+> Two older spellings still work and are better when you need something else:
+> [`filter`](#filter) halts with no body and records `299`, and a later task
+> with a `condition` on the failure plus `terminal: true` is the only form that
+> can answer with a status of its own.
+>
+> `terminal: true` on the `validation` itself does not help — it is about
+> [position, not outcome](./workflows.md#terminal-steps), so it halts whether
+> the rules passed or failed. `orion-server lint` reports the unguarded shape
+> as `engine.unguarded_validation`.
 
 ```json
 {

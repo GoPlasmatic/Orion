@@ -209,6 +209,16 @@ fn check_workflows(
                 message,
             ));
         }
+        // And the engine's own: a control-flow key that does nothing —
+        // a `validation` whose failure changes nothing, or `continue_on_error`
+        // on a group, which parses and is dropped.
+        for advisory in crate::validation::engine_advisories(&req.tasks) {
+            findings.push(Diagnostic::warning(
+                advisory.check,
+                format!("workflow '{}' {}", req.name, advisory.path),
+                advisory.message,
+            ));
+        }
         match &req.workflow_id {
             Some(id) => {
                 if ids.contains(id) {

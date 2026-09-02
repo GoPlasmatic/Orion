@@ -279,6 +279,20 @@ pub(crate) fn run_lint(
                 )
             }),
     );
+    // The engine's own informational findings — a control-flow key that does
+    // nothing. `check_workflow` reports them and `build` does not refuse them,
+    // so this is the surface where an author still can act on one.
+    warnings.extend(
+        orion::validation::engine_advisories(&req.tasks)
+            .into_iter()
+            .map(|advisory| {
+                orion::definitions::Diagnostic::warning(
+                    advisory.check,
+                    format!("workflow '{}' {}", req.name, advisory.path),
+                    advisory.message,
+                )
+            }),
+    );
     for finding in &warnings {
         eprintln!("{finding}");
     }

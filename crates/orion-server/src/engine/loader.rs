@@ -140,6 +140,41 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
     }
 }
 
+/// The codes `check_workflow` reports that do **not** make a workflow unusable.
+///
+/// Each fires on a definition the engine will build and run, so treating one as
+/// fatal quarantines a channel whose workflow is fine — the opposite of what
+/// F41 asks of `screen_workflow`:
+///
+/// - `ESCAPED_TEMPLATE_KEY` (3.9) fires on *correct* code, including the `$$set`
+///   spelling that is the documented fix for it.
+/// - `UNGUARDED_VALIDATION` (3.10) says a `validation` is not acting as a gate.
+///   Collecting every rule failure and carrying on is a legitimate shape and is
+///   what the built-in is documented to do; the engine calls this one
+///   informational for exactly that reason.
+/// - `GROUP_CONTINUE_ON_ERROR` (3.10) says a key on a task group is dropped.
+///   The engine deliberately refuses to make it fatal, because the key is real
+///   at the other two levels and may already sit on a host's stored group nodes
+///   — refusing it would abort every workflow in the build.
+///
+/// **This list is a maintenance hazard and there is no way to derive it.**
+/// `IssueCode` is `#[non_exhaustive]` and carries no severity, and what
+/// `Engine::build` refuses is not one predicate either — it is
+/// `check_secrets` plus `refusing_template_key_issues` plus whatever
+/// `precompile_custom_inputs` rejects. So a release that adds an informational
+/// code makes this screen quarantine working channels until the code is added
+/// here, which is what 3.10 did.
+///
+/// `informational_issues_are_not_refused_by_build` pins every entry against a
+/// live engine, so a code that *becomes* fatal is caught. Nothing can catch a
+/// code that is added and not listed; that needs an `IssueCode::is_informational`
+/// upstream, which is filed.
+pub const INFORMATIONAL_ISSUES: &[dataflow_rs::IssueCode] = &[
+    dataflow_rs::IssueCode::EscapedTemplateKey,
+    dataflow_rs::IssueCode::UnguardedValidation,
+    dataflow_rs::IssueCode::GroupContinueOnError,
+];
+
 /// Screen one converted workflow against the handlers that will run it.
 ///
 /// Without this, a task naming an unregistered function or carrying an input
@@ -172,13 +207,9 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
 /// **Not every issue `check_workflow` reports makes a workflow unusable.**
 /// Until dataflow-rs 3.9 every code it returned was one `Engine::build` also
 /// refused, so "any issue" and "cannot run" were the same set and this screen
-/// could take the whole list. `ESCAPED_TEMPLATE_KEY` broke that: it is
-/// informational by construction — `refusing_template_key_issues` keeps only
-/// `DUPLICATE_TEMPLATE_KEY` — and it fires on *correct* code, including the
-/// `$$set` spelling that is the documented fix for it. Treating it as fatal
-/// quarantines a channel whose workflow runs perfectly, which is the opposite
-/// of what F41 asks of this function. It is filtered here rather than at each
-/// caller because all four surfaces — boot, reload, `dry-run` and the test
+/// could take the whole list. `ESCAPED_TEMPLATE_KEY` broke that, and 3.10 added
+/// two more; see [`INFORMATIONAL_ISSUES`]. They are filtered here rather than at
+/// each caller because all four surfaces — boot, reload, `dry-run` and the test
 /// endpoint — must agree on what "unusable" means.
 fn screen_workflow(
     workflow: &dataflow_rs::Workflow,
@@ -187,7 +218,7 @@ fn screen_workflow(
     let issues = screen.check_workflow(workflow);
     let (advisories, issues): (Vec<_>, Vec<_>) = issues
         .into_iter()
-        .partition(|i| i.code == dataflow_rs::IssueCode::EscapedTemplateKey);
+        .partition(|i| INFORMATIONAL_ISSUES.contains(&i.code));
     // Dropped from the fatal set but not dropped: a stripped `$` changes the
     // shape of a composed document without failing anything, so the one place
     // that sees every workflow on every load says so once per workflow. `lint`
@@ -408,6 +439,11 @@ pub fn build_engine_workflows(
 
 #[cfg(test)]
 mod tests {
+    // A code listed as informational with no fixture cannot be proved
+    // informational, and silently skipping it would make the test a no-op —
+    // the one outcome worse than the drift it exists to catch.
+    #![allow(clippy::panic)]
+
     use super::*;
 
     /// The screen these tests convert against.
@@ -449,6 +485,103 @@ mod tests {
             2
         );
         assert!(screen_workflow(&workflow, &screen()).is_ok());
+    }
+
+    /// The 3.10 pair, and the regression the upgrade would otherwise have been.
+    ///
+    /// Both are informational by the engine's own classification — reported by
+    /// `check_workflow`, never refused by `build` — and both fire on shapes
+    /// that are common in a real estate: a `validation` that collects errors
+    /// and carries on is what the built-in is documented to do, and
+    /// `continue_on_error` on a group is old enough that stored definitions
+    /// carry it. Treating either as fatal quarantines working channels on
+    /// upgrade, which is what happened before `INFORMATIONAL_ISSUES` grew to
+    /// three: `dry-run` answered "workflow has an unusable task" for a
+    /// workflow that runs perfectly.
+    #[test]
+    fn the_informational_issues_do_not_quarantine() {
+        let cases = [
+            (
+                dataflow_rs::IssueCode::UnguardedValidation,
+                r#"{"id":"w","name":"w","condition":true,"tasks":[
+                    {"id":"check","name":"check","function":{"name":"validation","input":{
+                      "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
+                    {"id":"after","name":"after","function":{"name":"map","input":{
+                      "mappings":[{"path":"data.x","logic":true}]}}}]}"#,
+            ),
+            (
+                dataflow_rs::IssueCode::GroupContinueOnError,
+                r#"{"id":"w","name":"w","condition":true,"tasks":[
+                    {"id":"g","name":"g","continue_on_error":true,"tasks":[
+                      {"id":"t","name":"t","function":{"name":"log","input":{
+                        "message":"x"}}}]}]}"#,
+            ),
+        ];
+
+        for (code, json) in cases {
+            let workflow =
+                dataflow_rs::Workflow::from_json(json).expect("the fixture is a valid workflow");
+            // The engine reports it — so this is a claim about severity, not
+            // about the finding being absent.
+            assert!(
+                screen()
+                    .check_workflow(&workflow)
+                    .iter()
+                    .any(|i| i.code == code),
+                "{code:?} must be reported by check_workflow"
+            );
+            assert!(
+                INFORMATIONAL_ISSUES.contains(&code),
+                "{code:?} must be listed as informational"
+            );
+            assert!(
+                screen_workflow(&workflow, &screen()).is_ok(),
+                "{code:?} must not quarantine"
+            );
+        }
+    }
+
+    /// Every entry is genuinely informational: the engine builds a workflow
+    /// carrying it. A code that *becomes* a build refusal upstream shows up
+    /// here rather than as a channel that will not serve.
+    ///
+    /// Nothing can catch the other direction — a new informational code that
+    /// is not listed — because `IssueCode` is `#[non_exhaustive]` and carries
+    /// no severity. That is the gap filed upstream.
+    #[test]
+    fn every_informational_issue_still_builds() {
+        for code in INFORMATIONAL_ISSUES {
+            let json = match code {
+                dataflow_rs::IssueCode::EscapedTemplateKey => {
+                    r#"{"id":"w","name":"w","condition":true,"tasks":[
+                        {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[
+                          {"path":"data.a","logic":{"$set":{"x":1}}}]}}}]}"#
+                }
+                dataflow_rs::IssueCode::UnguardedValidation => {
+                    r#"{"id":"w","name":"w","condition":true,"tasks":[
+                        {"id":"check","name":"check","function":{"name":"validation","input":{
+                          "rules":[{"logic":{"==":[1,2]},"message":"no"}]}}},
+                        {"id":"after","name":"after","function":{"name":"map","input":{
+                          "mappings":[{"path":"data.x","logic":true}]}}}]}"#
+                }
+                dataflow_rs::IssueCode::GroupContinueOnError => {
+                    r#"{"id":"w","name":"w","condition":true,"tasks":[
+                        {"id":"g","name":"g","continue_on_error":true,"tasks":[
+                          {"id":"t","name":"t","function":{"name":"log","input":{
+                            "message":"x"}}}]}]}"#
+                }
+                other => panic!("{other:?} is listed as informational with no fixture to prove it"),
+            };
+            let workflow =
+                dataflow_rs::Workflow::from_json(json).expect("the fixture is a valid workflow");
+            assert!(
+                dataflow_rs::Engine::builder()
+                    .with_workflow(workflow)
+                    .build()
+                    .is_ok(),
+                "{code:?} is listed as informational but the engine refuses to build it"
+            );
+        }
     }
 
     #[test]

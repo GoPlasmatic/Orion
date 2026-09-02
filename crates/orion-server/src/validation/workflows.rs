@@ -420,6 +420,14 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
         errors.extend(
             dataflow_rs::Workflow::validate_authored(&synthetic)
                 .into_iter()
+                // An informational code must never become a create-time
+                // refusal. `validate_authored` emits none today — the three
+                // live on `check_workflow`, and `engine_advisories` reports two
+                // of them as warnings — but `IssueCode` is `#[non_exhaustive]`
+                // and this maps anything it does not recognise onto `INVALID`,
+                // so one arriving here would start rejecting workflows that
+                // build and run. The same list the serving screen reads.
+                .filter(|issue| !crate::engine::INFORMATIONAL_ISSUES.contains(&issue.code))
                 .map(engine_issue_to_field_error),
         );
     }
@@ -560,6 +568,84 @@ fn check_terminal(step: &serde_json::Value, path: &str, errors: &mut Vec<FieldEr
 // ============================================================
 
 use serde_json::Value;
+
+/// The engine's own informational findings about a workflow's shape.
+///
+/// `check_workflow` reports three codes `Engine::build` does not refuse.
+/// `ESCAPED_TEMPLATE_KEY` has [`escaped_template_key_warnings`] to itself,
+/// because half of that one is Orion's to walk. The other two are pure shape,
+/// and both say the same kind of thing: *you wrote a control-flow key that does
+/// nothing.*
+///
+/// - `UNGUARDED_VALIDATION` — a `validation` task whose failure changes
+///   nothing, because a failing rule records `400` and the executor's 4xx
+///   branch carries on; `continue_on_error` governs `5xx` and `Err` only. This
+///   is the shape that shipped a decorative CSRF check
+///   ([#308](https://github.com/GoPlasmatic/Orion/issues/308)): the check read
+///   correct, did nothing, and nothing said so. dataflow-rs 3.10 added
+///   `"halt_on": "failure"` as the fix and this code as the warning.
+/// - `GROUP_CONTINUE_ON_ERROR` — `continue_on_error` on a task *group*, which
+///   parses and is then dropped. The key is real on a task and on a workflow,
+///   which is what makes a group the one place it looks like it should work.
+///
+/// Advisories, not errors, and that is the engine's classification rather than
+/// a choice made here — both fire on definitions that build and run. Reported
+/// where an author can still act: `lint`, the definition-set check and
+/// `preflight`. `engine::loader::INFORMATIONAL_ISSUES` is the same list on the
+/// serving side, where the job is the opposite one — not to quarantine a
+/// channel over them.
+///
+/// A bare builder, for the reason [`escaped_template_key_warnings`] gives: both
+/// findings are structural, so no handler registry or secret store changes the
+/// answer.
+pub fn engine_advisories(tasks: &Value) -> Vec<EngineAdvisory> {
+    let synthetic = serde_json::json!({
+        "id": "__shape_check__", "name": "__shape_check__",
+        "condition": true, "tasks": tasks,
+    });
+    let Ok(workflow) = dataflow_rs::Workflow::from_json(&synthetic.to_string()) else {
+        return Vec::new();
+    };
+    dataflow_rs::Engine::builder()
+        .check_workflow(&workflow)
+        .into_iter()
+        .filter_map(|issue| {
+            let check = match issue.code {
+                dataflow_rs::IssueCode::UnguardedValidation => "engine.unguarded_validation",
+                dataflow_rs::IssueCode::GroupContinueOnError => "engine.group_continue_on_error",
+                _ => return None,
+            };
+            // The engine's `path` for these two is the offending *field*
+            // (`halt_on`, `continue_on_error`), not an authored coordinate —
+            // the step is named by `task_id` instead. Joined here so one line
+            // says which step and which key, which is what the other warning
+            // reporters give and what a pipeline greps.
+            let path = match (&issue.task_id, &issue.path) {
+                (Some(id), Some(field)) => format!("task '{id}'.{field}"),
+                (Some(id), None) => format!("task '{id}'"),
+                (None, Some(field)) => field.clone(),
+                (None, None) => "tasks".to_string(),
+            };
+            Some(EngineAdvisory {
+                check,
+                path,
+                message: issue.message,
+            })
+        })
+        .collect()
+}
+
+/// One informational finding from [`engine_advisories`].
+///
+/// Carries its own `check` id rather than sharing one, for the reason
+/// `definitions::check` gives every finding one: a pipeline grandfathering a
+/// single rule should not have to reach for `--deny-warnings` and silence the
+/// rest.
+pub struct EngineAdvisory {
+    pub check: &'static str,
+    pub path: String,
+    pub message: String,
+}
 
 /// Warn about JSONLogic nodes in connector-payload fields that nothing will
 /// evaluate.
@@ -1446,5 +1532,87 @@ mod tests {
             }}
         }]));
         assert!(clean.is_empty(), "got {clean:?}");
+    }
+}
+
+#[cfg(test)]
+mod engine_advisory_tests {
+    use super::engine_advisories;
+    use serde_json::json;
+
+    /// #308's shape. A failing rule records 400, the executor's 4xx branch
+    /// carries on, and `continue_on_error` governs 5xx and Err only — so the
+    /// check reads correct and changes nothing. The engine says so from 3.10;
+    /// this asserts the warning reaches an Orion surface rather than only a
+    /// server log.
+    #[test]
+    fn an_unguarded_validation_is_reported() {
+        let tasks = json!([
+            { "id": "check", "name": "Check", "function": { "name": "validation", "input": {
+                "rules": [{ "logic": { "==": [1, 2] }, "message": "no" }] } } },
+            { "id": "respond", "name": "Respond", "function": { "name": "map", "input": {
+                "mappings": [{ "path": "data.x", "logic": true }] } } }
+        ]);
+        let found = engine_advisories(&tasks);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].check, "engine.unguarded_validation");
+        assert!(found[0].message.contains("halt_on"), "{}", found[0].message);
+        assert_eq!(found[0].path, "task 'check'.halt_on");
+    }
+
+    /// The fix silences it, which is the half that keeps the advisory from
+    /// being noise on every workflow that validates anything.
+    #[test]
+    fn halt_on_silences_it() {
+        let tasks = json!([
+            { "id": "check", "name": "Check", "halt_on": "failure",
+              "function": { "name": "validation", "input": {
+                "rules": [{ "logic": { "==": [1, 2] }, "message": "no" }] } } },
+            { "id": "respond", "name": "Respond", "function": { "name": "map", "input": {
+                "mappings": [{ "path": "data.x", "logic": true }] } } }
+        ]);
+        assert!(engine_advisories(&tasks).is_empty());
+    }
+
+    /// So does gating what follows, which is the older spelling and still
+    /// correct — the advisory is about the *shape*, not about the keyword.
+    #[test]
+    fn a_guarded_successor_silences_it() {
+        let tasks = json!([
+            { "id": "check", "name": "Check", "function": { "name": "validation", "input": {
+                "rules": [{ "logic": { "==": [1, 2] }, "message": "no" }] } } },
+            { "id": "respond", "name": "Respond",
+              "condition": { "==": [{ "var": "metadata.progress.status_code" }, 200] },
+              "function": { "name": "map", "input": {
+                "mappings": [{ "path": "data.x", "logic": true }] } } }
+        ]);
+        assert!(engine_advisories(&tasks).is_empty());
+    }
+
+    /// `continue_on_error` is real on a task and on a workflow, which is what
+    /// makes a group the one place it looks like it should work. The engine
+    /// parses it and drops it.
+    #[test]
+    fn continue_on_error_on_a_group_is_reported() {
+        let tasks = json!([
+            { "id": "g", "name": "G", "continue_on_error": true, "tasks": [
+                { "id": "t", "name": "T", "function": { "name": "log", "input": {
+                    "message": "x" } } } ] }
+        ]);
+        let found = engine_advisories(&tasks);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].check, "engine.group_continue_on_error");
+        assert_eq!(found[0].path, "task 'g'.continue_on_error");
+    }
+
+    /// A workflow with neither shape reports nothing, so the two above are not
+    /// simply reporting everything.
+    #[test]
+    fn an_ordinary_workflow_is_quiet() {
+        let tasks = json!([
+            { "id": "t", "name": "T", "function": { "name": "log", "input": {
+                "message": "x" } } }
+        ]);
+        assert!(engine_advisories(&tasks).is_empty());
     }
 }
