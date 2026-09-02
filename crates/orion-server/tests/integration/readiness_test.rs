@@ -91,6 +91,56 @@ async fn a_dead_required_task_makes_the_node_not_ready() {
     assert!(named, "the failed task must be named: {body}");
 }
 
+/// #310: the throughput trace modes must not report their own workers dead.
+///
+/// The persistence pool builds one `TaskGuard` and clones it per worker, so a
+/// template guard is always left over. While `Drop` lived on `TaskGuard` that
+/// leftover recorded the pool as `Failed` the moment `start()` returned —
+/// microseconds *before* the workers logged that they had started — and since
+/// the task is `Required`, `/health` was pinned to `degraded` and `/readyz` to
+/// `not_ready` for the life of the process. Traces persisted correctly
+/// throughout, so the only symptom was a node that never became ready.
+///
+/// Both modes, because both take the pooled path; `sync` spawns no worker and
+/// was never affected, which is why it was the only mode that reported honestly.
+#[tokio::test]
+async fn the_async_trace_modes_report_their_workers_as_running() {
+    for mode in [
+        orion::config::TraceStorageMode::Async,
+        orion::config::TraceStorageMode::Batch,
+    ] {
+        let mut config = orion::config::AppConfig::default();
+        config.trace_storage.mode = mode;
+        let state = common::test_state_with_config(config).await;
+        let app = orion::server::build_router(state);
+
+        let resp = app
+            .clone()
+            .oneshot(json_request("GET", "/readyz", None))
+            .await
+            .expect("readyz");
+        assert_eq!(resp.status(), StatusCode::OK, "{mode:?}");
+        assert_eq!(body_json(resp).await["status"], "ready", "{mode:?}");
+
+        let resp = app
+            .oneshot(json_request("GET", "/health", None))
+            .await
+            .expect("health");
+        let body = body_json(resp).await;
+        assert_eq!(body["status"], "ok", "{mode:?}: {body}");
+        assert_eq!(body["components"]["background_tasks"], "ok", "{mode:?}");
+
+        let persistence = body["background_tasks"]
+            .as_array()
+            .expect("the per-task breakdown")
+            .iter()
+            .find(|t| t["name"] == "trace_persistence")
+            .cloned()
+            .unwrap_or_else(|| panic!("{mode:?}: trace_persistence must be registered: {body}"));
+        assert_eq!(persistence["state"], "running", "{mode:?}: {body}");
+    }
+}
+
 /// The complement: an optional task's death is visible on `/health` but must
 /// not pull the node out of its load balancer.
 #[tokio::test]

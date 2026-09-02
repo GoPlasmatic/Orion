@@ -376,17 +376,32 @@ impl TaskRegistry {
 
 /// Liveness reporting for a task the registry does not own.
 ///
-/// Wrap the task's future in [`Self::run`] and spawn *that*. The state is
-/// settled in `Drop`, which is what makes a panic visible: a panicking future
-/// unwinds past any code after the `.await`, but its locals — this guard among
-/// them — are still dropped, so the task is recorded as failed rather than
-/// vanishing into a `JoinHandle` nobody inspects.
+/// Wrap the task's future in [`Self::run`] and spawn *that*. `run` arms an
+/// an inner armed guard, and the state is settled when *that* drops — which is what
+/// makes a panic visible: a panicking future unwinds past any code after the
+/// `.await`, but its locals are still dropped, so the task is recorded as
+/// failed rather than vanishing into a `JoinHandle` nobody inspects.
 ///
 /// `Clone` covers a *pool*: the persistence queue runs N workers over one
 /// channel each, and one dead worker means that worker's share of traces is
 /// silently dropped. Every clone settles the same slot, so the pool is one
 /// entry in the report and any member's death fails it — which is the state
 /// the probes should act on.
+///
+/// # Why this type has no `Drop`
+///
+/// It used to, and that made "created and never run" indistinguishable from
+/// "started and stopped" (#310). The pool call site builds one guard as a
+/// template and clones it per worker; the template itself is never moved into
+/// a `run`, so returning from `start()` dropped a guard that had never run —
+/// and because the slot is shared by construction, that one drop recorded the
+/// whole pool as `Failed`. `/health` then reported `degraded` for the life of
+/// the process, microseconds before the workers logged that they had started,
+/// while traces persisted normally throughout.
+///
+/// A `bool` armed-flag would fix that case; splitting the type fixes the
+/// class. Only a guard that has actually been armed can report a stop, so the
+/// next caller that builds a guard without running it inherits nothing.
 #[derive(Clone)]
 pub struct TaskGuard {
     slot: Arc<Slot>,
@@ -397,11 +412,27 @@ impl TaskGuard {
     /// Run `body` under this guard. The returned future is what the caller
     /// spawns; the caller keeps its `JoinHandle`.
     pub async fn run<Fut: Future<Output = ()>>(self, body: Fut) {
+        // Armed for exactly as long as the body runs. Held in a binding rather
+        // than dropped immediately — `let _ = …` would settle the slot before
+        // the first poll.
+        let _armed = ArmedGuard {
+            slot: self.slot,
+            shutdown: self.shutdown,
+        };
         body.await;
     }
 }
 
-impl Drop for TaskGuard {
+/// A [`TaskGuard`] that is actually running, and the half that reports.
+///
+/// Not constructible outside [`TaskGuard::run`], which is the whole point:
+/// the only way to get one is to have started the work it stands for.
+struct ArmedGuard {
+    slot: Arc<Slot>,
+    shutdown: Shutdown,
+}
+
+impl Drop for ArmedGuard {
     fn drop(&mut self) {
         if self.shutdown.is_signalled() {
             self.slot.set(TaskState::ShutDown);
@@ -435,6 +466,21 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    /// A second guard over an already-registered slot, standing in for the
+    /// `guard.clone()` a pool call site makes. Re-registering by name would
+    /// create a *new* slot, which is not the shape under test.
+    fn guard_from(registry: &TaskRegistry, name: &str) -> TaskGuard {
+        let slot = lock(&registry.slots)
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+            .expect("the task is registered");
+        TaskGuard {
+            slot,
+            shutdown: registry.shutdown_signal(),
+        }
+    }
+
     fn state_of(registry: &TaskRegistry, name: &str) -> TaskState {
         registry
             .report()
@@ -460,6 +506,53 @@ mod tests {
 
         assert_eq!(state_of(&registry, "persistence"), TaskState::Failed);
         assert_eq!(registry.blocking_readiness(), vec!["persistence"]);
+    }
+
+    /// #310: a guard that was created and never run has not stopped — it never
+    /// started. The pool call site builds one guard as a template and clones it
+    /// per worker, so the template is always left over; when `Drop` lived on
+    /// `TaskGuard` that leftover recorded the whole pool as `Failed`
+    /// microseconds before the workers logged that they had started, and
+    /// `/health` reported `degraded` for the life of the process while traces
+    /// persisted normally.
+    #[tokio::test]
+    async fn a_guard_that_is_never_run_does_not_report_a_stop() {
+        let registry = TaskRegistry::new();
+        {
+            let _template = registry.guard("persistence", Criticality::Required);
+        } // dropped here, un-run
+
+        assert_eq!(state_of(&registry, "persistence"), TaskState::Running);
+        assert!(registry.blocking_readiness().is_empty());
+    }
+
+    /// The pool shape itself, end to end: a template cloned into N workers
+    /// reports `Running` while they run, and `Failed` as soon as one dies —
+    /// the two halves that have to hold together.
+    #[tokio::test]
+    async fn a_cloned_pool_reports_running_until_a_member_dies() {
+        let registry = TaskRegistry::new();
+        let guard = registry.guard("persistence", Criticality::Required);
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        let alive = tokio::spawn(guard.clone().run(async move {
+            let _ = rx.await;
+        }));
+        drop(guard); // the leftover template, exactly as the call site leaves it
+
+        // The worker is parked on `rx`, so it cannot have finished however the
+        // runtime scheduled it — no ordering assumption in this assertion.
+        assert_eq!(state_of(&registry, "persistence"), TaskState::Running);
+
+        // A second member returning is a dead worker, and one dead worker
+        // fails the pool: its share of the queue is silently dropped.
+        tokio::spawn(guard_from(&registry, "persistence").run(async {}))
+            .await
+            .expect("clean return");
+        assert_eq!(state_of(&registry, "persistence"), TaskState::Failed);
+
+        let _ = tx.send(());
+        let _ = alive.await;
     }
 
     /// An `Optional` task's death is reported but must not take the node out
