@@ -606,10 +606,28 @@ re-parse), `numeric`, the date/time family (as RFC 3339 / ISO 8601 strings),
 arrays, enums and domains all have JSON forms. A `json`/`jsonb` column comes
 back as the document itself, so `parse_json` is not needed after a read.
 
-A type with no JSON form here — `inet`, `interval`, a composite, a range — is a
+`char(n)` and PostgreSQL's `citext` decode as strings, scalar and array alike.
+
+A type with no JSON form here — `inet`, `interval`, a composite, a range, and
+PostgreSQL's internal one-byte `"char"` (which is not `char(n)`) — is a
 **`400` naming the column and its SQL type**, not a `500`. The remedy is in the
 message: cast it in the query (`SELECT extra::text`) and use
 [`parse_json`](#parse_json) if it holds a document.
+
+#### Boolean columns
+
+A MySQL `BOOLEAN` / `BOOL` / `TINYINT(1)` column reads back as a JSON
+**boolean**, the same as a PostgreSQL `bool`. MySQL has no boolean type — all
+three spellings are `TINYINT(1)` — but the width-1 declaration is the
+convention every framework writes and the only one MySQL 8 still preserves, so
+it is treated as the boolean it is meant to be. A `TINYINT` *without* the width
+is a different column and stays a number; if you are genuinely storing a small
+integer in a `TINYINT(1)`, select it as `flags + 0` to get one back.
+
+SQLite is the exception, and it cannot be otherwise: a value there carries a
+storage class rather than a declared type, so a column declared `BOOLEAN` is
+indistinguishable from an integer by the time the row is read and comes back as
+`1` / `0`. This is the same reason `numeric_as` has nothing to act on there.
 
 **Parameters are the other direction, and they still need a cast.** A `params`
 entry is bound by its JSON type, so a string goes out as `text`. PostgreSQL

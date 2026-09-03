@@ -181,6 +181,15 @@ fn pg_column(
     // A domain is a constrained alias — `CREATE DOMAIN email AS text` — and
     // decodes exactly as the type it wraps. Unwrapped first so every rule
     // below applies through it.
+    //
+    // In practice a domain column never reaches here: PostgreSQL reports the
+    // *base* type's OID in the row description, so `CREATE DOMAIN email AS
+    // text` arrives already spelled `TEXT`. This branch is the belt to that
+    // brace, and it has to stay a branch rather than become an assumption —
+    // but note it cannot be reached through `try_get` either, because that
+    // re-reads the value's own type info and compares by OID, and no Rust type
+    // can claim an OID the database invented. If a path ever does arrive here,
+    // it needs `try_get_unchecked`, not a new arm.
     let kind = info.kind().clone();
     if let PgTypeKind::Domain(inner) = &kind {
         return pg_by_name(row, i, name, inner.name(), numeric, &fail);
@@ -232,9 +241,15 @@ fn pg_by_name(
             column,
             sql_type,
         )?,
-        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "\"CHAR\"" | "CITEXT" | "UNKNOWN" => {
-            Value::String(get!(String))
-        }
+        // `CHAR` here is `bpchar` — `char(n)` — because that is the display
+        // name sqlx reports for it. Postgres' internal one-byte type is a
+        // different type whose display name carries its own quotes, and `str`
+        // is not compatible with it, so it belongs in the catch-all's named
+        // error rather than in this arm. `citext` is lowercase because an
+        // extension type reports `oid::regtype::text` verbatim; that is also
+        // how sqlx spells it in its own compatibility check, so matching any
+        // other case would claim more than the driver will decode.
+        "TEXT" | "VARCHAR" | "CHAR" | "NAME" | "citext" | "UNKNOWN" => Value::String(get!(String)),
         "UUID" => Value::String(get!(uuid::Uuid).to_string()),
         // The value itself, not a re-parsed string: the whole reason a workflow
         // stores a document is to read it back as one.
@@ -289,9 +304,18 @@ fn pg_array(
         "NUMERIC" => arr!(bigdecimal::BigDecimal, |v: bigdecimal::BigDecimal| {
             decimal_to_json(v.to_string(), numeric, column, elem)
         }),
-        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CITEXT" => {
+        // The same spellings as the scalar table above: `pg_column` hands this
+        // function `elem.name()`, so `char(n)[]` arrives as `CHAR` and
+        // `citext[]` as `citext`. Keeping the two lists in step is the point —
+        // an element type the scalar table decodes and this one does not is an
+        // asymmetry no author can predict from the docs.
+        "TEXT" | "VARCHAR" | "CHAR" | "NAME" | "citext" => {
             arr!(String, |v: String| Ok(Value::String(v)))
         }
+        "OID" => arr!(
+            sqlx::postgres::types::Oid,
+            |v: sqlx::postgres::types::Oid| Ok(Value::Number(u64::from(v.0).into()))
+        ),
         "UUID" => arr!(uuid::Uuid, |v: uuid::Uuid| Ok(Value::String(v.to_string()))),
         "JSON" | "JSONB" => arr!(Value, Ok::<Value, DecodeError>),
         "BYTEA" => arr!(Vec<u8>, |v: Vec<u8>| Ok(blob_to_json(v))),
@@ -306,6 +330,9 @@ fn pg_array(
             Value::String(v.to_string())
         )),
         "DATE" => arr!(chrono::NaiveDate, |v: chrono::NaiveDate| Ok(Value::String(
+            v.to_string()
+        ))),
+        "TIME" => arr!(chrono::NaiveTime, |v: chrono::NaiveTime| Ok(Value::String(
             v.to_string()
         ))),
         other => {
@@ -368,12 +395,28 @@ fn mysql_column(
     }
 
     let value = match sql_type.as_str() {
-        // MySQL has no boolean: `BOOLEAN` is `TINYINT(1)`, and sqlx reports the
-        // storage type. Reading it as an integer is therefore the honest
-        // answer — a workflow comparing to `1` works on every MySQL, while a
-        // guess at `true` would depend on a column width sqlx does not expose.
+        // MySQL has no boolean type: `BOOLEAN` and `BOOL` are aliases for
+        // `TINYINT(1)`. sqlx does not report the storage type for one — it
+        // names any `Tiny` column whose display width is 1 `BOOLEAN`, and that
+        // width is the one MySQL 8 still preserves after deprecating the rest,
+        // precisely because it is the boolean convention. So a `BOOLEAN` column
+        // reads back as a JSON boolean, agreeing with Postgres `bool`.
+        //
+        // `bool` rather than `i8` is also the only choice that decodes at all
+        // for `TINYINT(1) UNSIGNED`: sqlx reports that as `BOOLEAN` too (the
+        // width guard precedes the unsigned guard) but refuses `i8` for any
+        // unsigned column, and the flag that would let us tell the two apart is
+        // private. A `TINYINT(1)` genuinely holding a small integer therefore
+        // reads back as `true`; `SELECT flags + 0` returns `BIGINT` and a
+        // number.
+        "BOOLEAN" => Value::Bool(get!(bool)),
         "TINYINT" => Value::Number(i64::from(get!(i8)).into()),
-        "SMALLINT" | "YEAR" => Value::Number(i64::from(get!(i16)).into()),
+        "SMALLINT" => Value::Number(i64::from(get!(i16)).into()),
+        // `YEAR` is unsigned, and sqlx keeps it out of the *signed* integer
+        // compatibility set entirely — `i16` is refused on both counts, so this
+        // shared an arm with `SMALLINT` and decoded nothing. `u16` is the type
+        // sqlx accepts for it.
+        "YEAR" => Value::Number(u64::from(get!(u16)).into()),
         "INT" | "MEDIUMINT" => Value::Number(i64::from(get!(i32)).into()),
         "BIGINT" => Value::Number(get!(i64).into()),
         "TINYINT UNSIGNED" => Value::Number(u64::from(get!(u8)).into()),
@@ -388,8 +431,11 @@ fn mysql_column(
             name,
             &sql_type,
         )?,
-        // `ENUM` and `SET` are string types on the wire.
-        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
+        // `ENUM` and `SET` are string types on the wire. There is no `SET` arm
+        // because there is no `SET` name to match: MySQL sends a `SET` column
+        // as a `String` carrying the SET flag, and sqlx's naming never consults
+        // that flag — so such a column arrives here spelled `CHAR`.
+        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" => {
             Value::String(get!(String))
         }
         "JSON" => get!(Value),
@@ -459,13 +505,18 @@ fn sqlite_column(row: &sqlx::sqlite::SqliteRow, i: usize, name: &str) -> Decoded
         };
     }
 
+    // These four are the whole vocabulary — SQLite's fifth storage class is
+    // NULL, which the early return above already took. The list is exhaustive
+    // rather than optimistic: for a non-null value sqlx reports the *storage
+    // class*, never the declared column type (the declared type is only its
+    // fallback for a NULL). So a column declared `BOOLEAN` or `DATETIME`
+    // arrives here as `INTEGER` or `TEXT`, an arm spelled for a declared type
+    // would be unreachable, and the catch-all below cannot fire at all.
     let value = match sql_type.as_str() {
-        "BOOLEAN" => Value::Bool(get!(bool)),
-        "INTEGER" | "INT8" | "BIGINT" => Value::Number(get!(i64).into()),
-        "REAL" | "DOUBLE" | "FLOAT" => float_to_json(get!(f64), name, &sql_type)?,
-        "TEXT" | "VARCHAR" | "DATETIME" | "DATE" | "TIME" => Value::String(get!(String)),
+        "INTEGER" => Value::Number(get!(i64).into()),
+        "REAL" => float_to_json(get!(f64), name, &sql_type)?,
+        "TEXT" => Value::String(get!(String)),
         "BLOB" => blob_to_json(get!(Vec<u8>)),
-        "NULL" => Value::Null,
         other => {
             return Err(fail(format!(
                 "no JSON representation for {other} is defined"
