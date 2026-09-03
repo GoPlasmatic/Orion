@@ -223,22 +223,34 @@ impl SqlConnectorRepository {
             .and_then(|row| self.open_row(row))
     }
 
-    /// Undo [`Self::store_form`] on a fetched row. An encrypted row with no
-    /// key configured is a loud error — serving the literal `enc:v1:…` string
-    /// as a config would fail everywhere downstream with worse messages.
-    fn open_row(&self, mut row: Connector) -> Result<Connector, OrionError> {
+    /// Undo [`Self::store_form`] on one stored field.
+    ///
+    /// The read-side half of the at-rest contract, and the only place it is
+    /// written: decrypt when the key is set, pass plaintext through when it is
+    /// not, and refuse loudly when a row is encrypted and no key is configured
+    /// — serving the literal `enc:v1:…` envelope would fail everywhere
+    /// downstream with worse messages.
+    ///
+    /// `subject` names what is being opened, for that refusal. Two tables are
+    /// written by [`Self::store_form`] — a connector's `config_json` and its
+    /// OAuth2 `state_json` — and the read side used to mirror this contract
+    /// inline for the second one, which is how a shared write half ended up
+    /// with two read halves.
+    fn open_field(&self, value: String, subject: &str) -> Result<String, OrionError> {
         use crate::storage::config_encryption::ConfigCipher;
-        row.config_json = match &self.cipher {
-            Some(cipher) => cipher.decrypt(&row.config_json)?,
-            None if ConfigCipher::is_encrypted(&row.config_json) => {
-                return Err(OrionError::internal(format!(
-                    "connector '{}' is encrypted at rest but \
-                     storage.connector_encryption_key is not set",
-                    row.id
-                )));
-            }
-            None => row.config_json,
-        };
+        match &self.cipher {
+            Some(cipher) => cipher.decrypt(&value),
+            None if ConfigCipher::is_encrypted(&value) => Err(OrionError::internal(format!(
+                "{subject} is encrypted at rest but \
+                 storage.connector_encryption_key is not set"
+            ))),
+            None => Ok(value),
+        }
+    }
+
+    /// [`Self::open_field`] over a fetched connector row's `config_json`.
+    fn open_row(&self, mut row: Connector) -> Result<Connector, OrionError> {
+        row.config_json = self.open_field(row.config_json, &format!("connector '{}'", row.id))?;
         Ok(row)
     }
 }
@@ -595,20 +607,13 @@ impl ConnectorRepository for SqlConnectorRepository {
             match row {
                 None => Ok(None),
                 Some(mut row) => {
-                    // The same at-rest contract as `config_json`: decrypt when
-                    // the key is set; an encrypted row with no key is a loud
-                    // error, never the literal envelope served as state.
-                    use crate::storage::config_encryption::ConfigCipher;
-                    row.state_json = match &self.cipher {
-                        Some(cipher) => cipher.decrypt(&row.state_json)?,
-                        None if ConfigCipher::is_encrypted(&row.state_json) => {
-                            return Err(OrionError::internal(format!(
-                                "oauth state for connector '{connector_name}' is encrypted \
-                                 at rest but storage.connector_encryption_key is not set"
-                            )));
-                        }
-                        None => row.state_json,
-                    };
+                    // The same at-rest contract as `config_json`, through the
+                    // same function — `store_form` was already shared by both
+                    // write paths, and this is the read half catching up.
+                    row.state_json = self.open_field(
+                        row.state_json,
+                        &format!("oauth state for connector '{connector_name}'"),
+                    )?;
                     Ok(Some(row))
                 }
             }
@@ -807,6 +812,69 @@ mod tests {
         assert!(
             message.contains("connector_encryption_key"),
             "the error must name the missing setting: {message}"
+        );
+    }
+
+    /// The same refusal for the OAuth2 token state, which is the second table
+    /// `store_form` writes and had no test of its own.
+    ///
+    /// It matters more here than for `config_json`, not less: the state is a
+    /// live access token, and serving the literal `enc:v1:…` envelope as one
+    /// would send that string to the upstream as a bearer credential.
+    #[tokio::test]
+    async fn encrypted_oauth_state_without_a_key_is_a_loud_error() {
+        let (pool, plain) = plain_repo().await;
+        let enciphering = encrypting(&pool);
+        enciphering
+            .create(&request("oauth-holder", json!({"token": "hunter2"})))
+            .await
+            .expect("create with a key");
+        enciphering
+            .put_oauth_state("oauth-holder", "fp1", r#"{"access_token":"secret"}"#)
+            .await
+            .expect("store state with a key");
+
+        let err = plain
+            .get_oauth_state("oauth-holder")
+            .await
+            .expect_err("encrypted oauth state with no key must not be served as-is");
+        let message = err.to_string();
+        assert!(
+            message.contains("connector_encryption_key"),
+            "the error must name the missing setting: {message}"
+        );
+        assert!(
+            !message.contains("secret"),
+            "and must not quote the state it refused to open: {message}"
+        );
+    }
+
+    /// The round trip the refusal above is the failure mode of: with the key
+    /// set, the state comes back as it went in.
+    #[tokio::test]
+    async fn oauth_state_round_trips_through_the_cipher() {
+        let (pool, plain) = plain_repo().await;
+        let repo = encrypting(&pool);
+        repo.create(&request("oauth-rt", json!({"token": "t"})))
+            .await
+            .expect("create");
+        repo.put_oauth_state("oauth-rt", "fp1", r#"{"access_token":"abc"}"#)
+            .await
+            .expect("put");
+
+        let opened = repo
+            .get_oauth_state("oauth-rt")
+            .await
+            .expect("read")
+            .expect("state is present");
+        assert_eq!(opened.state_json, r#"{"access_token":"abc"}"#);
+        assert_eq!(opened.fingerprint, "fp1");
+
+        // And it really is encrypted underneath — a repository with no cipher
+        // reads the same row and refuses it.
+        assert!(
+            plain.get_oauth_state("oauth-rt").await.is_err(),
+            "the stored state must be an envelope, not plaintext"
         );
     }
 
