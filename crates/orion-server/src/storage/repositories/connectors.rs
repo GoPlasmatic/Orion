@@ -6,7 +6,7 @@ use serde::Deserialize;
 use super::helpers::{Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
-use crate::storage::{build_sqlx, schema::Connectors};
+use crate::storage::{DbTransaction, build_sqlx, schema::Connectors};
 
 // -- DTOs --
 
@@ -83,6 +83,27 @@ pub trait ConnectorRepository: Send + Sync {
     async fn update(&self, id: &str, req: &UpdateConnectorRequest)
     -> Result<Connector, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
+
+    // The three mutations, inside a caller-owned transaction, so the audit row
+    // for the change commits with it (§2.6). Each is the body its pooled twin
+    // above runs; the twin is that body plus a transaction of its own, so the
+    // two cannot drift.
+    //
+    // Connectors need all three, where channels and workflows need only their
+    // active-set mutations: a connector has no draft lifecycle, so every write
+    // here is live the moment it commits.
+    async fn create_tx(
+        &self,
+        tx: &mut DbTransaction,
+        req: &CreateConnectorRequest,
+    ) -> Result<Connector, OrionError>;
+    async fn update_tx(
+        &self,
+        tx: &mut DbTransaction,
+        id: &str,
+        req: &UpdateConnectorRequest,
+    ) -> Result<Connector, OrionError>;
+    async fn delete_tx(&self, tx: &mut DbTransaction, id: &str) -> Result<(), OrionError>;
     async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError>;
     /// Whether a connector with this name is already stored.
     ///
@@ -144,6 +165,17 @@ fn connector_not_found(id: &str) -> OrionError {
     OrionError::NotFound(format!("Connector '{id}' not found"))
 }
 
+/// `DELETE FROM connector_oauth_state WHERE connector_name = ?` — one
+/// statement, shared by the pooled `delete_oauth_state` and the `delete_tx`
+/// that has to clear the state inside the transaction dropping the connector.
+fn oauth_state_delete(connector_name: &str) -> sea_query::DeleteStatement {
+    use crate::storage::schema::ConnectorOauthState as S;
+    Query::delete()
+        .from_table(S::Table)
+        .and_where(Expr::col(S::ConnectorName).eq(connector_name))
+        .to_owned()
+}
+
 pub struct SqlConnectorRepository {
     pool: DbPool,
     /// H3: present when `storage.connector_encryption_key` is set. Writes
@@ -173,6 +205,24 @@ impl SqlConnectorRepository {
         }
     }
 
+    /// [`ConnectorRepository::get_by_id`] inside a caller's transaction.
+    ///
+    /// The update path reads the stored row before it writes, and both halves
+    /// have to see one snapshot — on the pooled twin that is what
+    /// `begin_write_tx` buys (D30), and it is lost if the read runs on the
+    /// pool while the write runs on the transaction.
+    async fn get_by_id_tx(
+        &self,
+        tx: &mut DbTransaction,
+        id: &str,
+    ) -> Result<Connector, OrionError> {
+        let (sql, values) = build_sqlx(tx.backend(), &mut connector_select(id));
+        tx.fetch_optional_as::<Connector>(&sql, values)
+            .await?
+            .ok_or_else(|| connector_not_found(id))
+            .and_then(|row| self.open_row(row))
+    }
+
     /// Undo [`Self::store_form`] on a fetched row. An encrypted row with no
     /// key configured is a loud error — serving the literal `enc:v1:…` string
     /// as a config would fail everywhere downstream with worse messages.
@@ -196,6 +246,20 @@ impl SqlConnectorRepository {
 #[async_trait]
 impl ConnectorRepository for SqlConnectorRepository {
     async fn create(&self, req: &CreateConnectorRequest) -> Result<Connector, OrionError> {
+        crate::metrics::timed_db_op("connectors.create", async {
+            let mut tx = self.pool.begin_tx().await?;
+            let created = self.create_tx(&mut tx, req).await?;
+            tx.commit().await?;
+            Ok(created)
+        })
+        .await
+    }
+
+    async fn create_tx(
+        &self,
+        tx: &mut DbTransaction,
+        req: &CreateConnectorRequest,
+    ) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.create", async {
             let id = req
                 .id
@@ -227,8 +291,8 @@ impl ConnectorRepository for SqlConnectorRepository {
             // D23: the INSERT and the row it wrote travel together. The row
             // carries the stored (possibly encrypted) form of `config_json`,
             // so it goes through `open_row` like every other read.
-            let row = super::helpers::write_returning_row(
-                &self.pool,
+            let row = super::helpers::write_returning_row_tx(
+                tx,
                 super::helpers::WriteStatement::Insert(&mut insert),
                 &mut connector_select(&id),
                 |e| {
@@ -313,7 +377,24 @@ impl ConnectorRepository for SqlConnectorRepository {
         req: &UpdateConnectorRequest,
     ) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.update", async {
-            let existing = self.get_by_id(id).await?;
+            // `begin_write_tx`, not `begin_tx`: the body reads the stored row
+            // before it writes it back (D30).
+            let mut tx = self.pool.begin_write_tx().await?;
+            let updated = self.update_tx(&mut tx, id, req).await?;
+            tx.commit().await?;
+            Ok(updated)
+        })
+        .await
+    }
+
+    async fn update_tx(
+        &self,
+        tx: &mut DbTransaction,
+        id: &str,
+        req: &UpdateConnectorRequest,
+    ) -> Result<Connector, OrionError> {
+        crate::metrics::timed_db_op("connectors.update", async {
+            let existing = self.get_by_id_tx(tx, id).await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let connector_type: &str = req
@@ -343,8 +424,8 @@ impl ConnectorRepository for SqlConnectorRepository {
 
             // D23: the UPDATE and the row it wrote travel together; stored
             // form decrypted through `open_row`, like `create`.
-            let row = super::helpers::write_returning_row(
-                &self.pool,
+            let row = super::helpers::write_returning_row_tx(
+                tx,
                 super::helpers::WriteStatement::Update(&mut update),
                 &mut connector_select(id),
                 OrionError::Storage,
@@ -358,37 +439,58 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn delete(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("connectors.delete", async {
+            // `begin_write_tx`, not `begin_tx`: the body reads the connector's
+            // name before it deletes the row (D30).
+            let mut tx = self.pool.begin_write_tx().await?;
+            self.delete_tx(&mut tx, id).await?;
+            tx.commit().await?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_tx(&self, tx: &mut DbTransaction, id: &str) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("connectors.delete", async {
+            let backend = tx.backend();
             // Read the name first: the OAuth2 runtime state (#268) keys on it,
             // and a deleted connector must not leave token state behind. A raw
             // scalar read, not `get_by_id` — decrypting the config has no
             // business gating a delete.
+            //
+            // All three statements run in the caller's transaction, which is
+            // what makes that promise good: they used to be three round trips
+            // on the pool, so a failure clearing the token state left it
+            // orphaned behind a connector that was already gone.
             let (sql, values) = build_sqlx(
-                self.pool.backend(),
+                backend,
                 Query::select()
                     .column(Connectors::Name)
                     .from(Connectors::Table)
                     .and_where(Expr::col(Connectors::Id).eq(id)),
             );
-            let name: String = self
-                .pool
-                .fetch_scalar(&sql, values)
-                .await
-                .map_err(|_| OrionError::NotFound(format!("Connector '{id}' not found")))?;
+            // `fetch_optional_as`, not `fetch_scalar`: the pooled read this
+            // replaces mapped *every* driver error to `NotFound`, so a
+            // connection failure mid-delete was reported as a missing row.
+            let (name,) = tx
+                .fetch_optional_as::<(String,)>(&sql, values)
+                .await?
+                .ok_or_else(|| connector_not_found(id))?;
 
             let (sql, values) = build_sqlx(
-                self.pool.backend(),
+                backend,
                 Query::delete()
                     .from_table(Connectors::Table)
                     .and_where(Expr::col(Connectors::Id).eq(id)),
             );
 
-            let rows_affected = self.pool.execute_query(&sql, values).await?;
+            let rows_affected = tx.execute_query(&sql, values).await?;
 
             if rows_affected == 0 {
-                return Err(OrionError::NotFound(format!("Connector '{id}' not found")));
+                return Err(connector_not_found(id));
             }
 
-            self.delete_oauth_state(&name).await?;
+            let (sql, values) = build_sqlx(backend, &mut oauth_state_delete(&name));
+            tx.execute_query(&sql, values).await?;
             Ok(())
         })
         .await
@@ -547,14 +649,9 @@ impl ConnectorRepository for SqlConnectorRepository {
     }
 
     async fn delete_oauth_state(&self, connector_name: &str) -> Result<(), OrionError> {
-        use crate::storage::schema::ConnectorOauthState as S;
         crate::metrics::timed_db_op("connectors.delete_oauth_state", async {
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
-                Query::delete()
-                    .from_table(S::Table)
-                    .and_where(Expr::col(S::ConnectorName).eq(connector_name)),
-            );
+            let (sql, values) =
+                build_sqlx(self.pool.backend(), &mut oauth_state_delete(connector_name));
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })

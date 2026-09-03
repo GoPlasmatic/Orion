@@ -467,14 +467,41 @@ pub async fn write_returning_row<T: DbRow>(
             .ok_or_else(missing)
     } else {
         let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+        let row = write_returning_row_tx(&mut tx, write, read_back, map_write_err, missing).await?;
+        tx.commit().await.map_err(OrionError::Storage)?;
+        Ok(row)
+    }
+}
+
+/// Transaction-scoped variant of [`write_returning_row`].
+///
+/// Same contract; the difference is who owns the transaction. The pooled twin
+/// above opens one only where the backend cannot reflect the stored row from
+/// the write itself, because there the read-back must not see a later writer's
+/// row. Here the caller already holds a transaction, so the write and its
+/// read-back join whatever else is in it — for the audited mutations (§2.6),
+/// the audit row that has to commit with the change.
+pub async fn write_returning_row_tx<T: DbRow>(
+    tx: &mut DbTransaction,
+    mut write: WriteStatement<'_>,
+    read_back: &mut sea_query::SelectStatement,
+    map_write_err: impl FnOnce(sqlx::Error) -> OrionError,
+    missing: impl FnOnce() -> OrionError,
+) -> Result<T, OrionError> {
+    let backend = tx.backend();
+    if write.supports_returning(backend) {
+        let (sql, values) = write.build_returning_all(backend);
+        tx.fetch_optional_as::<T>(&sql, values)
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(missing)
+    } else {
         let (sql, values) = write.build(backend);
         tx.execute_query(&sql, values)
             .await
             .map_err(map_write_err)?;
         let (sql, values) = crate::storage::build_sqlx(backend, read_back);
-        let row = fetch_required_tx(&mut tx, &sql, values, missing).await?;
-        tx.commit().await.map_err(OrionError::Storage)?;
-        Ok(row)
+        fetch_required_tx(tx, &sql, values, missing).await
     }
 }
 

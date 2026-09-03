@@ -84,8 +84,14 @@ impl Repositories {
     ///
     /// The queue is still there and still drained; it is the sink for audit
     /// events that have **no** entity write to join — `test`, `reload`,
-    /// `backup`, and the bulk imports that span many rows. Those cannot lose a
-    /// record of a live change, because they do not make one.
+    /// `backup` — and for the two that have one this cannot cover: a draft
+    /// create or update, which writes a row that is not live until something
+    /// activates it, and the bulk imports, which span many rows and report
+    /// per-item outcomes rather than committing as one.
+    ///
+    /// Connector mutations are **not** in that set, though they were until the
+    /// audit hole was closed. A connector has no draft state, so every write
+    /// to one is live the moment it commits.
     ///
     /// [`crate::storage::DbPool::begin_write_tx`] rather than `begin_tx`: the
     /// lifecycle writes read before they write (D30).
@@ -116,6 +122,16 @@ impl AuditedWrite<'_> {
     /// anywhere else is not covered by this guard.
     pub fn tx(&mut self) -> &mut crate::storage::DbTransaction {
         &mut self.tx
+    }
+
+    /// Address the event at the row the write actually produced.
+    ///
+    /// The event is built when the transaction opens, which on a create path
+    /// is before the INSERT that generates the id. Calling this with the
+    /// written row's id keeps the audit trail naming the row that exists
+    /// rather than the request that asked for it.
+    pub fn addressed_to(&mut self, resource_id: &str) {
+        self.event.resource_id = resource_id.to_string();
     }
 
     /// Write the audit row and commit both.
@@ -245,5 +261,95 @@ mod tests {
             0,
             "and must leave no audit row behind either"
         );
+    }
+
+    /// The same guarantee for connectors, which reach it by a different route.
+    ///
+    /// A channel or workflow create writes a *draft* — not live, so its audit
+    /// row may ride the queue. A connector has no draft state, so all three of
+    /// its mutations are live on commit and all three are audited writes. This
+    /// is the one that would otherwise be worst: a connector holds credentials,
+    /// and a delete with no audit row is a credential removed with no record.
+    #[tokio::test]
+    async fn dropping_an_audited_connector_delete_rolls_it_back() {
+        let (_pool, repos) = repos().await;
+        let req = serde_json::from_value(serde_json::json!({
+            "name": "conn-rollback",
+            "connector_type": "http",
+            "config": { "base_url": "https://example.test" },
+        }))
+        .expect("request");
+        let created = repos.connectors.create(&req).await.expect("create");
+
+        {
+            let mut write = repos
+                .audited(AuditEvent {
+                    resource_type: "connector".to_string(),
+                    ..event("delete", &created.id)
+                })
+                .await
+                .expect("begin");
+            repos
+                .connectors
+                .delete_tx(write.tx(), &created.id)
+                .await
+                .expect("delete");
+            // No `commit` — the guard drops, as it would on any early return.
+        }
+
+        assert!(
+            repos.connectors.get_by_id(&created.id).await.is_ok(),
+            "an audited connector delete that was never committed must leave \
+             the connector in place"
+        );
+        assert_eq!(
+            audit_rows(&repos).await,
+            0,
+            "and must leave no audit row behind either"
+        );
+    }
+
+    /// A connector delete also clears the OAuth2 token state keyed on its name,
+    /// and the two are one commit — the promise `delete_tx`'s comment makes.
+    #[tokio::test]
+    async fn a_committed_connector_delete_takes_its_oauth_state_with_it() {
+        let (_pool, repos) = repos().await;
+        let req = serde_json::from_value(serde_json::json!({
+            "name": "conn-oauth",
+            "connector_type": "http",
+            "config": { "base_url": "https://example.test" },
+        }))
+        .expect("request");
+        let created = repos.connectors.create(&req).await.expect("create");
+        repos
+            .connectors
+            .put_oauth_state("conn-oauth", "fp1", r#"{"access_token":"t"}"#)
+            .await
+            .expect("put state");
+
+        let mut write = repos
+            .audited(AuditEvent {
+                resource_type: "connector".to_string(),
+                ..event("delete", &created.id)
+            })
+            .await
+            .expect("begin");
+        repos
+            .connectors
+            .delete_tx(write.tx(), &created.id)
+            .await
+            .expect("delete");
+        write.commit().await.expect("commit");
+
+        assert!(
+            repos
+                .connectors
+                .get_oauth_state("conn-oauth")
+                .await
+                .expect("read state")
+                .is_none(),
+            "the token state must go with the connector, in the same commit"
+        );
+        assert_eq!(audit_rows(&repos).await, 1);
     }
 }

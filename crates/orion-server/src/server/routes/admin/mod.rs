@@ -798,14 +798,15 @@ fn audit_log_draft_only(
 
 /// Queue an audit-log event and trigger an engine reload.
 ///
-/// **For events with no entity write to join.** Since §2.6 the active-set
-/// mutations — activate, archive, delete, update-rollout — carry their audit
-/// row into the transaction that makes the change ([`audited_write`]) and then
-/// call [`reload_after_commit`], because an audit row written after its
-/// mutation has committed can be lost for a change that is already live. What
-/// is left here is `POST /engine/reload`, which republishes the engine without
-/// writing a row of its own: there is no transaction to join, and nothing for
-/// a lost audit row to misrepresent. Drafts do NOT reload — use
+/// **For events with no entity write to join.** Since §2.6 every mutation that
+/// puts a change live — activate, archive, delete, update-rollout, and all
+/// three connector writes — carries its audit row into the transaction that
+/// makes the change ([`audited_write`]) and then calls
+/// [`reload_after_commit`], because an audit row written after its mutation
+/// has committed can be lost for a change that is already live. What is left
+/// here is `POST /engine/reload`, which republishes the engine without writing
+/// a row of its own: there is no transaction to join, and nothing for a lost
+/// audit row to misrepresent. Drafts do NOT reload — use
 /// [`audit_log_draft_only`] in those code paths.
 ///
 /// K4: `reload` is [`ReloadMode::Defer`] only where the caller opted in via

@@ -547,6 +547,28 @@ pub(crate) mod test_support {
         async fn delete(&self, _id: &str) -> Result<(), OrionError> {
             unreachable!("not used by load_from_repo")
         }
+        async fn create_tx(
+            &self,
+            _tx: &mut crate::storage::DbTransaction,
+            _req: &CreateConnectorRequest,
+        ) -> Result<Connector, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn update_tx(
+            &self,
+            _tx: &mut crate::storage::DbTransaction,
+            _id: &str,
+            _req: &UpdateConnectorRequest,
+        ) -> Result<Connector, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn delete_tx(
+            &self,
+            _tx: &mut crate::storage::DbTransaction,
+            _id: &str,
+        ) -> Result<(), OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
         async fn exists_by_name(&self, _name: &str) -> Result<bool, OrionError> {
             unreachable!("not used by load_from_repo")
         }
