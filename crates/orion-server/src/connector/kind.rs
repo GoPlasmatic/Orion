@@ -181,20 +181,16 @@ mod tests {
     /// the connector updates and every node keeps serving from a pool built for
     /// the old config, with no error anywhere. Adding a `Caches` field and
     /// forgetting to claim it from a kind is exactly the mistake this catches.
+    ///
+    /// Read through `ConnectorType::ALL`, not a list written out here: a guard
+    /// that hand-lists the vocabulary it guards stops covering the next variant
+    /// added, and passes while doing it.
     #[test]
     fn every_pool_slot_is_reachable_from_some_kind() {
-        let claimed: std::collections::BTreeSet<PoolSlot> = [
-            ConnectorType::Http,
-            ConnectorType::Kafka,
-            ConnectorType::Db,
-            ConnectorType::Cache,
-            ConnectorType::Es,
-            ConnectorType::Smtp,
-            ConnectorType::Storage,
-        ]
-        .iter()
-        .flat_map(|t| t.pool_slots().iter().copied())
-        .collect();
+        let claimed: std::collections::BTreeSet<PoolSlot> = ConnectorType::ALL
+            .iter()
+            .flat_map(|t| t.pool_slots().iter().copied())
+            .collect();
 
         let all: std::collections::BTreeSet<PoolSlot> = PoolSlot::ALL.iter().copied().collect();
         assert_eq!(

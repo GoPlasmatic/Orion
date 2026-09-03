@@ -784,8 +784,10 @@ pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 /// deserialization is case-insensitive so "HTTP" or "Kafka" also parse.
 ///
 /// `"storage"` was accepted through the whole 0.x line with no handler behind
-/// it and was removed in 1.0 (proposal F15); `load_from_repo` reports stored
-/// rows as a load issue naming the removal.
+/// it and was removed in 1.0 (proposal F15). It came back in #265 with
+/// `storage_presign` and `storage_head` behind it — presign and metadata only,
+/// no data path — so the variant is live again and the removal note applies
+/// only to rows stored by a 0.x server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectorType {
@@ -799,6 +801,26 @@ pub enum ConnectorType {
 }
 
 impl ConnectorType {
+    /// Every connector type, for the callers that must answer a question for
+    /// all of them. [`PoolSlot::ALL`](super::kind::PoolSlot::ALL) exists next
+    /// door for the same reason: the per-kind vocabulary was written out by
+    /// hand in four places, and `StorageOperationGates` had already fallen out
+    /// of one of them — the gate-key drift guard, which enumerated five types
+    /// and so could not see the sixth.
+    ///
+    /// A `match` over this with no wildcard arm is the pattern to reach for:
+    /// it turns a new variant into a compile error rather than a check that
+    /// silently stops covering it.
+    pub const ALL: &'static [ConnectorType] = &[
+        ConnectorType::Http,
+        ConnectorType::Kafka,
+        ConnectorType::Db,
+        ConnectorType::Cache,
+        ConnectorType::Es,
+        ConnectorType::Smtp,
+        ConnectorType::Storage,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
@@ -846,20 +868,15 @@ impl std::fmt::Display for ConnectorType {
 
 impl<'de> serde::Deserialize<'de> for ConnectorType {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        match s.to_ascii_lowercase().as_str() {
-            "http" => Ok(Self::Http),
-            "kafka" => Ok(Self::Kafka),
-            "db" => Ok(Self::Db),
-            "cache" => Ok(Self::Cache),
-            "es" => Ok(Self::Es),
-            "smtp" => Ok(Self::Smtp),
-            "storage" => Ok(Self::Storage),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                VALID_CONNECTOR_TYPES,
-            )),
-        }
+        let s = String::deserialize(deserializer)?.to_ascii_lowercase();
+        // Matched against `ALL` rather than a second hand-written arm list:
+        // the spelling each variant answers to is `as_str`'s to decide, and a
+        // new variant should not need a line here to become parseable.
+        Self::ALL
+            .iter()
+            .find(|t| t.as_str() == s)
+            .copied()
+            .ok_or_else(|| serde::de::Error::unknown_variant(&s, VALID_CONNECTOR_TYPES))
     }
 }
 
@@ -890,25 +907,59 @@ mod tests {
                 .collect()
         }
 
-        for connector_type in [ConnectorType::Db, ConnectorType::Es] {
+        // The `match` is the point, and it has no wildcard arm: a new
+        // connector type does not compile until someone says which gate
+        // struct backs it. The hand-written list this replaces enumerated
+        // five types and stopped, so `Storage` — a seventh type with a fourth
+        // gate struct behind it (#265) — was never checked at all.
+        for &connector_type in ConnectorType::ALL {
+            let struct_fields = match connector_type {
+                ConnectorType::Db | ConnectorType::Es => fields(&OperationGates::default()),
+                ConnectorType::Cache => fields(&CacheOperationGates::default()),
+                ConnectorType::Kafka => fields(&KafkaOperationGates::default()),
+                ConnectorType::Http => fields(&HttpOperationGates::default()),
+                ConnectorType::Storage => fields(&StorageOperationGates::default()),
+                // Send-only: one operation, so no gate struct and no keys.
+                // Asserted rather than skipped — a gate key added for SMTP
+                // without a struct to read it would be accepted and ignored,
+                // which is the failure this test exists to catch.
+                ConnectorType::Smtp => std::collections::BTreeSet::new(),
+            };
             assert_eq!(
-                fields(&OperationGates::default()),
+                struct_fields,
                 declared(connector_type),
-                "{connector_type}"
+                "{connector_type}: the gate keys the admin door validates \
+                 against must be exactly the fields the gate struct carries"
             );
         }
-        assert_eq!(
-            fields(&CacheOperationGates::default()),
-            declared(ConnectorType::Cache)
-        );
-        assert_eq!(
-            fields(&KafkaOperationGates::default()),
-            declared(ConnectorType::Kafka)
-        );
-        assert_eq!(
-            fields(&HttpOperationGates::default()),
-            declared(ConnectorType::Http)
-        );
+    }
+
+    /// `VALID_CONNECTOR_TYPES` is what a rejected `type` value is reported
+    /// against, and it is spelled out by hand because `unknown_variant` needs
+    /// a `&'static` list. This is what keeps that hand-written copy honest.
+    #[test]
+    fn the_valid_type_list_is_the_enum() {
+        let from_enum: Vec<&str> = ConnectorType::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(from_enum, VALID_CONNECTOR_TYPES);
+    }
+
+    /// Every type parses back from the spelling it serializes to, including
+    /// the case-insensitivity the wire contract promises.
+    #[test]
+    fn every_type_round_trips_through_its_wire_spelling() {
+        for &connector_type in ConnectorType::ALL {
+            let wire = connector_type.as_str();
+            for spelling in [wire.to_string(), wire.to_ascii_uppercase()] {
+                let parsed = serde_json::from_value::<ConnectorType>(serde_json::Value::String(
+                    spelling.clone(),
+                ));
+                assert_eq!(
+                    parsed.ok(),
+                    Some(connector_type),
+                    "'{spelling}' must parse back to {connector_type}"
+                );
+            }
+        }
     }
 
     #[test]

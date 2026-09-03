@@ -5205,7 +5205,7 @@
       },
       "ConnectorType": {
         "type": "string",
-        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"es\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15); `load_from_repo` reports stored\nrows as a load issue naming the removal.",
+        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"es\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15). It came back in #265 with\n`storage_presign` and `storage_head` behind it — presign and metadata only,\nno data path — so the variant is live again and the removal note applies\nonly to rows stored by a 0.x server.",
         "enum": [
           "http",
           "kafka",
