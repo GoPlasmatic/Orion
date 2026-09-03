@@ -74,9 +74,11 @@ pub(crate) async fn ensure_name_is_unclaimed(
 /// construction here, which is why this is an activation gate rather than a
 /// reload-time quarantine — adding a channel must never take a running one down.
 ///
-/// What counts as a declared route is `routing::declared_route` — the same
-/// projection `RouteTable::build` uses, so this gate cannot come to disagree
-/// with the table that serves the route.
+/// What counts as a declared route is `routing::declared_route`, which is
+/// `declared_route_segments` — the walk `RouteTable::build` runs — rendered to
+/// canonical strings. One body, two views, so this gate cannot come to
+/// disagree with the table that serves the route. It said as much while the
+/// walk was written out twice and the two agreed only by coincidence.
 pub(crate) async fn ensure_route_is_unclaimed(
     channels: &dyn crate::storage::repositories::channels::ChannelRepository,
     data_mounts: &[String],

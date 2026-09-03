@@ -94,15 +94,13 @@ fn canonical_segments(segments: &[RouteSegment]) -> String {
 }
 
 /// A channel's declared route, as the route table would see it: the canonical
-/// match shape plus the methods it claims. `None` for channels that register
+/// match shape plus the methods it claims. Empty for channels that register
 /// no route (Kafka, or no `route_pattern`).
 ///
-/// R7: the activation gate (`ensure_route_is_unclaimed`, in the admin channel
-/// routes) and the table that actually serves the route must agree on what
-/// "claims a route" means. The projection was written out in both, so the next
-/// change to route eligibility — [`RouteTable::build`] has already had one,
-/// F39 below — could land in only one of them, and activation would then be
-/// gated on a different notion of the route than the one being served.
+/// [`declared_route_parts`] over a stored row — so the activation gate
+/// (`ensure_route_is_unclaimed`, in the admin channel routes) and
+/// [`RouteTable::build`] read one projection, which is the R7 argument on
+/// [`declared_route_segments`].
 pub(crate) fn declared_route(ch: &Channel) -> Vec<(String, Vec<String>)> {
     declared_route_parts(
         &ch.protocol,
@@ -129,22 +127,44 @@ pub(crate) fn oauth_callback_path(ch: &Channel) -> Option<String> {
         .map(str::to_string)
 }
 
-/// [`declared_route`] over the fields themselves rather than a stored row.
+/// **The** route projection: every route a channel claims, as parsed segments
+/// tagged with the role each one plays.
 ///
-/// For the callers that hold a channel *definition* and not a `Channel` — the
-/// definition-set lint, which gates promotion on the same question activation
-/// asks. It had projected routes itself, comparing pattern strings and folding
-/// methods into an "ANY" sentinel, and so disagreed with the runtime in both
-/// directions: `/o/{id}` and `/o/{orderId}` are one route to the table and were
-/// two to the lint, while `methods: []` means *every* method here and matched
-/// nothing there. R7 again — one projection, or the gate is gating on a
-/// different notion of the route than the one being served.
-pub(crate) fn declared_route_parts(
+/// R7 in one function. The activation gate and the table that actually serves
+/// the route must agree on what "claims a route" means, and for a while they
+/// agreed only by coincidence — this walk was written out twice, once here in
+/// segment form for [`RouteTable::build`] and once in canonical-string form
+/// for the gate, so the next change to route eligibility could land in one and
+/// not the other. It has happened before in both directions: F39 below, and
+/// the lint that compared raw pattern strings and folded methods into an "ANY"
+/// sentinel, so `/o/{id}` and `/o/{orderId}` were one route to the table and
+/// two to the lint while `methods: []` meant *every* method here and matched
+/// nothing there.
+///
+/// The callers that want the canonical string take
+/// [`declared_route_parts`], which is this projection with
+/// [`canonical_segments`] applied — a view of one answer, not a second answer.
+///
+/// Methods come back **raw**. `build` uppercases them for matching, while the
+/// activation error prints them back to the operator in the spelling they
+/// wrote — folding the uppercase in here would change that message.
+///
+/// Takes loose fields rather than a `&Channel` because the definition-set
+/// lint holds a channel *definition* and not a stored row, and gates promotion
+/// on the same question activation asks.
+fn declared_route_segments(
     protocol: &str,
     route_pattern: Option<&str>,
     methods: &[String],
     oauth_callback_path: Option<&str>,
-) -> Vec<(String, Vec<String>)> {
+) -> Vec<(Vec<RouteSegment>, Vec<String>, RouteRole)> {
+    // F39: REST/HTTP channels register their route whatever their
+    // channel_type. Filtering to `sync` here meant an async REST channel —
+    // which validation *requires* to declare a `route_pattern` — had that
+    // pattern silently ignored: the channel was reachable by name and its
+    // declared route 404'd forever. `dynamic_handler` strips a trailing
+    // `/async` before matching, so an async channel's pattern works at
+    // `/{pattern}/async` with no further change.
     if !serves_a_route(protocol) {
         return Vec::new();
     }
@@ -152,8 +172,9 @@ pub(crate) fn declared_route_parts(
         return Vec::new();
     };
     let mut out = vec![(
-        canonical_segments(&parse_route_pattern(pattern)),
+        parse_route_pattern(pattern),
         methods.to_vec(),
+        RouteRole::Primary,
     )];
     // The callback is a second claim on the estate's route space and has to be
     // gated like the first one: two channels whose callbacks collide would
@@ -162,11 +183,28 @@ pub(crate) fn declared_route_parts(
     // browser to it — whatever the channel's own `methods` say.
     if let Some(callback) = oauth_callback_path {
         out.push((
-            canonical_segments(&parse_route_pattern(callback)),
+            parse_route_pattern(callback),
             vec!["GET".to_string()],
+            RouteRole::OAuthCallback,
         ));
     }
     out
+}
+
+/// [`declared_route_segments`] in canonical-string form, for the callers
+/// deciding whether two routes collide rather than which one matches.
+///
+/// The role is dropped: a collision is a collision whichever leg claimed it.
+pub(crate) fn declared_route_parts(
+    protocol: &str,
+    route_pattern: Option<&str>,
+    methods: &[String],
+    oauth_callback_path: Option<&str>,
+) -> Vec<(String, Vec<String>)> {
+    declared_route_segments(protocol, route_pattern, methods, oauth_callback_path)
+        .into_iter()
+        .map(|(segments, methods, _role)| (canonical_segments(&segments), methods))
+        .collect()
 }
 
 /// Whether a channel of this protocol registers an HTTP route at all.
@@ -174,39 +212,14 @@ fn serves_a_route(protocol: &str) -> bool {
     protocol == ChannelProtocol::Rest.as_str() || protocol == ChannelProtocol::Http.as_str()
 }
 
-/// The same projection in the form [`RouteTable::build`] needs: parsed
-/// segments rather than the canonical string.
-///
-/// Methods come back **raw**. `build` uppercases them for matching, while the
-/// activation error prints them back to the operator in the spelling they
-/// wrote — folding the uppercase in here would change that message.
+/// [`declared_route_segments`] over a stored row.
 fn declared_segments(ch: &Channel) -> Vec<(Vec<RouteSegment>, Vec<String>, RouteRole)> {
-    // F39: REST/HTTP channels register their route whatever their
-    // channel_type. Filtering to `sync` here meant an async REST channel —
-    // which validation *requires* to declare a `route_pattern` — had that
-    // pattern silently ignored: the channel was reachable by name and its
-    // declared route 404'd forever. `dynamic_handler` strips a trailing
-    // `/async` before matching, so an async channel's pattern works at
-    // `/{pattern}/async` with no further change.
-    if !serves_a_route(&ch.protocol) {
-        return Vec::new();
-    }
-    let Some(pattern) = ch.route_pattern.as_deref() else {
-        return Vec::new();
-    };
-    let mut out = vec![(
-        parse_route_pattern(pattern),
-        ch.methods().unwrap_or_default(),
-        RouteRole::Primary,
-    )];
-    if let Some(callback) = oauth_callback_path(ch) {
-        out.push((
-            parse_route_pattern(&callback),
-            vec!["GET".to_string()],
-            RouteRole::OAuthCallback,
-        ));
-    }
-    out
+    declared_route_segments(
+        &ch.protocol,
+        ch.route_pattern.as_deref(),
+        &ch.methods().unwrap_or_default(),
+        oauth_callback_path(ch).as_deref(),
+    )
 }
 
 /// Whether two declared method sets can be matched by one request.
@@ -562,6 +575,58 @@ mod tests {
 
     fn parts(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// What the one projection produces, read through both of its views.
+    ///
+    /// The two used to be separate walks that agreed by coincidence. Sharing a
+    /// body makes "they agree" untestable — it is now true by construction —
+    /// so what is worth pinning is the answer itself: a sign-in channel claims
+    /// two routes, the callback is a `GET` whatever the channel's own methods
+    /// say, the primary's methods come back in the spelling the operator
+    /// wrote, and the roles are not interchangeable.
+    #[test]
+    fn a_sign_in_channel_claims_its_route_and_its_callback_in_both_views() {
+        let methods = parts(&["post"]);
+        let segments =
+            declared_route_segments("rest", Some("/orders/{id}"), &methods, Some("/cb/{tenant}"));
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].2, RouteRole::Primary);
+        assert_eq!(segments[1].2, RouteRole::OAuthCallback);
+        assert_eq!(
+            segments[0].1,
+            parts(&["post"]),
+            "methods stay in the spelling the operator wrote — `build` uppercases \
+             for matching, the activation error prints them back"
+        );
+        assert_eq!(segments[1].1, parts(&["GET"]));
+
+        let canonical =
+            declared_route_parts("rest", Some("/orders/{id}"), &methods, Some("/cb/{tenant}"));
+        assert_eq!(
+            canonical,
+            vec![
+                ("/orders/{}".to_string(), parts(&["post"])),
+                ("/cb/{}".to_string(), parts(&["GET"])),
+            ],
+            "the canonical view is the same routes with parameter names erased"
+        );
+    }
+
+    /// Route eligibility is one decision, so both views answer it the same.
+    #[test]
+    fn a_channel_that_serves_no_route_declares_none_in_either_view() {
+        let methods = parts(&["POST"]);
+        for (protocol, pattern) in [
+            // Kafka registers no HTTP route at all.
+            ("kafka", Some("/orders")),
+            // REST with no pattern claims nothing, callback or not.
+            ("rest", None),
+        ] {
+            assert!(declared_route_segments(protocol, pattern, &methods, Some("/cb")).is_empty());
+            assert!(declared_route_parts(protocol, pattern, &methods, Some("/cb")).is_empty());
+        }
     }
 
     #[test]
