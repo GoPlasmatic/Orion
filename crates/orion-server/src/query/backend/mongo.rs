@@ -310,6 +310,7 @@ pub fn insert_outcome(sent: usize, failed: &[(usize, Json)]) -> BulkOutcome {
 /// schema resolved them — declare `{"columns": {"id": {"name": "_id"}}}` to
 /// write the document key (W10).
 pub fn render_write(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
+    super::reject_returning(w, "mongodb")?;
     Ok(match w {
         ResolvedWrite::Insert {
             table,
@@ -730,6 +731,55 @@ mod tests {
             },
         )
         .expect("resolve_write should succeed")
+    }
+
+    /// `returning` is a capability error, not a silent omission.
+    ///
+    /// `render_write` destructured every variant with `..` and never looked at
+    /// `returning`, so a write asking for it answered `200` with no `returning`
+    /// key and no error — the caller had no way to tell the field had been
+    /// ignored. That is the failure `reject_include` and `reject_many_to_many`
+    /// were written to end for their own features; `returning` never joined
+    /// them.
+    #[test]
+    fn test_returning_is_a_capability_error() {
+        for op in ["insert", "update", "delete", "upsert"] {
+            let mut envelope = json!({
+                "op": op,
+                "target": "users",
+                "returning": ["email"]
+            });
+            match op {
+                "insert" => envelope["values"] = json!([{ "id": "u1", "email": "a@b.test" }]),
+                "update" => {
+                    envelope["set"] = json!({ "email": "a@b.test" });
+                    envelope["all"] = json!(true);
+                }
+                "delete" => envelope["all"] = json!(true),
+                _ => {
+                    envelope["values"] = json!([{ "id": "u1", "email": "a@b.test" }]);
+                    envelope["on_conflict"] = json!({ "target": ["id"], "action": "update" });
+                }
+            }
+            let err = render_write(&resolve(envelope)).expect_err("returning must be refused");
+            let rendered = err.to_string();
+            assert!(rendered.contains("returning"), "{op}: {rendered}");
+            assert!(rendered.contains("mongodb"), "{op}: {rendered}");
+        }
+    }
+
+    /// The refusal is about the feature being *asked for*, so an ordinary write
+    /// with no `returning` is unaffected.
+    #[test]
+    fn test_a_write_without_returning_is_unaffected() {
+        assert!(
+            render_write(&resolve(json!({
+                "op": "insert",
+                "target": "users",
+                "values": [{ "id": "u1" }]
+            })))
+            .is_ok()
+        );
     }
 
     #[test]

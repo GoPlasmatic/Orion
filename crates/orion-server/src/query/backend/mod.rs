@@ -12,7 +12,7 @@ use crate::config::QueryConfig;
 use crate::query::error::QueryError;
 use crate::query::ir::{self, RelRef};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
-use crate::query::write::{ConflictAction, ResolvedConflict, WriteError};
+use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 use crate::storage::DbBackend;
 
 /// Resolve the effective page size: an explicit `limit` above `max_limit` is
@@ -212,6 +212,25 @@ pub(crate) fn reject_many_to_many(rel: &RelRef, target: &str) -> Result<(), Quer
         });
     }
     Ok(())
+}
+
+/// Refuse `returning` on a target that cannot read rows back from a write.
+///
+/// The third member of a family whose other two exist for exactly this reason.
+/// Mongo's `render_write` destructured every `ResolvedWrite` with `..` and never
+/// looked at `returning`, so `data_write` with `"returning": ["email"]` answered
+/// a **successful write with no `returning` key and no error** — the caller
+/// could not tell the field had been ignored. ES and SQL each refused it with
+/// their own hand-written copy of this check, and nothing made a backend answer
+/// the capability question, so a fourth would have repeated the silence.
+pub(crate) fn reject_returning(w: &ResolvedWrite, target: &str) -> Result<(), QueryError> {
+    if w.returning().is_empty() {
+        return Ok(());
+    }
+    Err(QueryError::FeatureUnsupportedByTarget {
+        feature: "returning".to_string(),
+        target: target.to_string(),
+    })
 }
 
 /// The SQL dialect to render for. Chosen from the *connector's* connection-string

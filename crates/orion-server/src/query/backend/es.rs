@@ -304,12 +304,7 @@ pub enum EsWrite {
 /// rename is an explicit schema decision (`{"columns": {"id": {"name": "_id"}}}`).
 /// A physical `_id` column is lifted out of the source into the action/path.
 pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
-    if !w.returning().is_empty() {
-        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
-            feature: "returning".to_string(),
-            target: "elasticsearch".to_string(),
-        }));
-    }
+    super::reject_returning(w, "elasticsearch")?;
     Ok(match w {
         ResolvedWrite::Insert {
             table,

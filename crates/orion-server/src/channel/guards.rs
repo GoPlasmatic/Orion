@@ -577,14 +577,24 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         match ingress.leg {
             crate::channel::OAuthLeg::Authorize if !login.runs_workflow_on_authorize() => {
                 let return_to = login.accepted_return_to(ingress.query);
-                let redirect = login.begin(None, return_to.as_deref()).map_err(|e| {
-                    tracing::error!(
-                        channel = %req.channel,
-                        error = %e,
-                        "Could not build the OAuth2 authorize redirect"
-                    );
-                    OrionError::internal("could not begin the sign-in")
-                })?;
+                let redirect = match login.begin(None, return_to.as_deref()) {
+                    Ok(redirect) => redirect,
+                    Err(e) => {
+                        tracing::error!(
+                            channel = %req.channel,
+                            error = %e,
+                            "Could not build the OAuth2 authorize redirect"
+                        );
+                        // Nothing ran, so hand the key back — the same rule the
+                        // backpressure branch above states and for the same
+                        // reason. A sign-in that could not even be started must
+                        // not make the user's retry a duplicate of it.
+                        if let Some(claim) = dedup_claim {
+                            claim.release().await;
+                        }
+                        return Err(OrionError::internal("could not begin the sign-in"));
+                    }
+                };
                 crate::metrics::record_oauth_login(
                     req.channel,
                     crate::channel::OAuthLeg::Authorize,
@@ -613,7 +623,22 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
                 oauth_authorize = Some(std::sync::Arc::clone(login));
             }
             crate::channel::OAuthLeg::Callback => {
-                let grant = login.complete(ingress.query, &ingress.jar).await?;
+                let grant = match login.complete(ingress.query, &ingress.jar).await {
+                    Ok(grant) => grant,
+                    Err(e) => {
+                        // Every failure here — a missing or mismatched state, a
+                        // bad nonce, a rejected exchange — happens *before* the
+                        // workflow, so nothing ran and the key goes back. Held,
+                        // it would answer the user's retry `409` for the rest of
+                        // the dedup window rather than judging it on its merits:
+                        // a sign-in that failed its CSRF check would become a
+                        // sign-in that cannot be attempted again.
+                        if let Some(claim) = dedup_claim {
+                            claim.release().await;
+                        }
+                        return Err(e);
+                    }
+                };
                 response_cookies.push(grant.clear_cookie);
                 oauth_metadata = Some(grant.metadata);
             }

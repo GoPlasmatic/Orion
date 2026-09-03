@@ -457,12 +457,12 @@ pub fn render_write(
     w: &ResolvedWrite,
     dialect: SqlDialect,
 ) -> Result<(String, SqlxValues), WriteError> {
-    // MySQL cannot express RETURNING; surface it rather than emitting invalid SQL.
-    if !w.returning().is_empty() && dialect == SqlDialect::Mysql {
-        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
-            feature: "returning".to_string(),
-            target: "mysql".to_string(),
-        }));
+    // MySQL cannot express RETURNING; surface it rather than emitting invalid
+    // SQL. SQLite and PostgreSQL can, so this is the one backend-conditional
+    // member of the family — hence the dialect test around the shared check
+    // rather than an unconditional call.
+    if dialect == SqlDialect::Mysql {
+        super::reject_returning(w, "mysql")?;
     }
     match w {
         ResolvedWrite::Insert {

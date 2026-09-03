@@ -270,7 +270,7 @@ Elasticsearch. The table below is the complete list of divergences.
 
 | Feature | Behaviour |
 |---------|----------|
-| `returning` | Native on PostgreSQL/SQLite. On MySQL it is rejected (`FeatureUnsupportedByTarget`); single-row inserts report `last_insert_id` instead. On MongoDB inserts report generated `ids`. On Elasticsearch it is rejected; inserts report `ids` |
+| `returning` | Native on PostgreSQL/SQLite. Rejected (`FeatureUnsupportedByTarget`) on MySQL, MongoDB and Elasticsearch — asking for it there is an error, never a write that quietly answers without it. What each does report instead: MySQL single-row inserts carry `last_insert_id`; MongoDB and Elasticsearch inserts carry the generated `ids` |
 | `include` | SQL connectors only. Rejected on MongoDB and Elasticsearch (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some`. On SQL it requires a `sort` and is bounded per parent (see [Relations](#relations-and-includes)) |
 | `some`/`all`/`none` over a `many_to_many` relation | SQL only (junction join). Rejected on MongoDB and Elasticsearch, whose filter languages cannot express the junction |
 | `all` over an ES relation | Rejected (not set-equivalent on nested documents) |

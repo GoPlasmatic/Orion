@@ -166,6 +166,13 @@ fn echo_grant_workflow() -> Value {
 
 /// Create and activate a `rest`/`GET` channel carrying an `oauth2_login` block.
 async fn deploy(app: &axum::Router, login: Value, workflow: Value) -> Value {
+    deploy_with_config(app, json!({ "oauth2_login": login }), workflow).await
+}
+
+/// The same, for a channel that declares other guards alongside the sign-in —
+/// `deduplication`, say, which create-time validation permits and which shares
+/// the callback's admission path.
+async fn deploy_with_config(app: &axum::Router, config: Value, workflow: Value) -> Value {
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -206,7 +213,7 @@ async fn deploy(app: &axum::Router, login: Value, workflow: Value) -> Value {
                 "methods": ["GET"],
                 "route_pattern": "/v1/auth/idp",
                 "workflow_id": workflow_id,
-                "config": { "oauth2_login": login }
+                "config": config
             })),
         ))
         .await
@@ -1377,5 +1384,123 @@ async fn the_authorize_leg_traces_nothing_when_no_workflow_runs() {
         body["data"].as_array().map(Vec::len),
         Some(0),
         "no workflow ran, so there is nothing to trace: {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A failed callback must not burn the idempotency key
+// ---------------------------------------------------------------------------
+
+/// The dedup claim is taken *before* the sign-in is completed, and every
+/// failure in `login.complete` — a missing or mismatched state, a bad nonce, a
+/// rejected exchange — happens before the workflow. Nothing ran, so the key has
+/// to go back; held, it turns the user's retry into a `409` for the rest of the
+/// window, so a sign-in that failed its CSRF check becomes a sign-in that
+/// cannot be attempted again.
+///
+/// The backpressure branch fifteen lines above in `guards.rs` already said the
+/// rule out loud ("Nothing ran. Hand the key back."); this path did the
+/// opposite. Note that create-time validation refuses `oauth2_login` alongside
+/// `cache` but says nothing about `deduplication`, so this combination is
+/// deployable and was reachable.
+#[tokio::test]
+async fn a_failed_callback_does_not_burn_the_idempotency_key() {
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let app = common::test_app_with_config(app_config()).await;
+    let mut login = login_config(&url);
+    login["run_workflow_on_authorize"] = json!(false);
+    deploy_with_config(
+        &app,
+        json!({
+            "oauth2_login": login,
+            "deduplication": { "header": "Idempotency-Key", "window_secs": 300 }
+        }),
+        echo_grant_workflow(),
+    )
+    .await;
+
+    let (state, cookie) = begin(&app).await;
+
+    // A callback carrying the right key but *no* state cookie: refused by the
+    // CSRF check, before the exchange and before the workflow.
+    let refused = |with_cookie: Option<&str>| {
+        let mut b = Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+            ))
+            .header("Idempotency-Key", "retry-me");
+        if let Some(c) = with_cookie {
+            b = b.header("cookie", c);
+        }
+        b.body(Body::empty()).expect("request")
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(refused(None))
+        .await
+        .expect("first callback");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "no state cookie is a refusal, not a duplicate"
+    );
+
+    // The retry — this time with the cookie — must be judged on its merits.
+    // While the key was burned this answered `409`, so a user whose first
+    // attempt lost its cookie could not sign in again for the whole window.
+    let resp = app
+        .clone()
+        .oneshot(refused(Some(&cookie)))
+        .await
+        .expect("retry");
+    assert_ne!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "the retry of a callback that never ran must not be a duplicate"
+    );
+    assert_eq!(resp.status(), StatusCode::OK, "and it should now succeed");
+}
+
+/// The other side of the same rule: a callback that *succeeds* keeps its claim,
+/// so a genuine replay of one delivery is still refused.
+#[tokio::test]
+async fn a_successful_callback_still_holds_the_idempotency_key() {
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy_with_config(
+        &app,
+        json!({
+            "oauth2_login": login_config(&url),
+            "deduplication": { "header": "Idempotency-Key", "window_secs": 300 }
+        }),
+        echo_grant_workflow(),
+    )
+    .await;
+
+    let (state, cookie) = begin(&app).await;
+    let call = || {
+        Request::builder()
+            .method("GET")
+            .uri(format!(
+                "/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"
+            ))
+            .header("Idempotency-Key", "once-only")
+            .header("cookie", cookie.clone())
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    let resp = app.clone().oneshot(call()).await.expect("first");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app.clone().oneshot(call()).await.expect("replay");
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "a replay of a delivery that succeeded is still a duplicate"
     );
 }
