@@ -23,7 +23,7 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use mongodb::bson::Document;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
@@ -32,7 +32,8 @@ use super::connector_helpers::{
 };
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{
-    require_document, require_mongo_backend, resolve_document, resolve_document_array,
+    delete_envelope, empty_insert_envelope, require_document, require_mongo_backend,
+    resolve_document, resolve_document_array, update_envelope as build_update_envelope,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -605,10 +606,7 @@ async fn execute_write(
         },
         Prepared::InsertMany { docs, ordered } => {
             if docs.is_empty() {
-                return Ok((
-                    json!({ "status": "ok", "inserted": 0, "ids": [] }),
-                    TaskOutcome::Success,
-                ));
+                return Ok((empty_insert_envelope(), TaskOutcome::Success));
             }
             let sent = docs.len();
             match coll.insert_many(docs).ordered(ordered).await {
@@ -670,32 +668,20 @@ async fn execute_write(
                 coll.delete_one(filter).await
             };
             match res {
-                Ok(r) => Ok((
-                    json!({ "status": "ok", "deleted": r.deleted_count }),
-                    TaskOutcome::Success,
-                )),
+                Ok(r) => Ok((delete_envelope(r.deleted_count), TaskOutcome::Success)),
                 Err(e) => Err(to_exec_error(e).into()),
             }
         }
     }
 }
 
-/// The shared update/replace result envelope.
+/// The update/replace result, with the driver error mapped. The envelope
+/// itself is `mongo_common`'s, shared with `data_write`'s Mongo branch.
 fn update_envelope(
     res: mongodb::error::Result<mongodb::results::UpdateResult>,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     match res {
-        Ok(r) => {
-            let mut out = json!({
-                "status": "ok",
-                "matched": r.matched_count,
-                "modified": r.modified_count,
-            });
-            if let Some(id) = r.upserted_id {
-                out["upserted_id"] = serde_json::to_value(id).unwrap_or(Value::Null);
-            }
-            Ok((out, TaskOutcome::Success))
-        }
+        Ok(r) => Ok((build_update_envelope(&r), TaskOutcome::Success)),
         Err(e) => Err(to_exec_error(e).into()),
     }
 }
@@ -961,6 +947,7 @@ pub(super) const MONGO_WRITE_FIELDS: &[FieldSchema] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn obj(v: Value) -> Map<String, Value> {
         v.as_object().expect("test input is an object").clone()

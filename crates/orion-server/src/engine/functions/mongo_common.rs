@@ -1,5 +1,9 @@
 //! Shared plumbing for the raw-native MongoDB handlers (`mongo_read`,
-//! `mongo_write`, `mongo_aggregate`) — #263.
+//! `mongo_write`, `mongo_aggregate`) — #263 — and, for the result envelopes
+//! at the bottom of this file, `data_write`'s Mongo branch as well. The two
+//! write paths reach MongoDB differently but must answer in the same shape,
+//! and `mongo_write` says so in its own doc; sharing the builders is what
+//! makes that true rather than asserted.
 //!
 //! The design rule for this trio: **documents are extended JSON**. Every
 //! workflow-authored document (filter, update, pipeline stage, projection,
@@ -187,4 +191,38 @@ pub(super) fn docs_to_json(docs: &[Document]) -> Value {
             .filter_map(|doc| serde_json::to_value(doc).ok())
             .collect(),
     )
+}
+
+// ============================================================
+// Result envelopes
+// ============================================================
+//
+// The shapes a Mongo write answers in. Both write paths — `mongo_write`'s
+// raw-native handler and `data_write`'s Mongo branch — produce these, and a
+// workflow that switches between the two must not see the keys move.
+
+/// An `insert_many` with nothing to insert. Not an error, and not a bulk
+/// outcome either: there are no per-item results to report.
+pub(super) fn empty_insert_envelope() -> Value {
+    serde_json::json!({ "status": "ok", "inserted": 0, "ids": [] })
+}
+
+/// The update/replace envelope. `upserted_id` appears only when the write
+/// actually inserted, which is how a caller tells an upsert that matched from
+/// one that created.
+pub(super) fn update_envelope(res: &mongodb::results::UpdateResult) -> Value {
+    let mut out = serde_json::json!({
+        "status": "ok",
+        "matched": res.matched_count,
+        "modified": res.modified_count,
+    });
+    if let Some(id) = &res.upserted_id {
+        out["upserted_id"] = serde_json::to_value(id).unwrap_or(Value::Null);
+    }
+    out
+}
+
+/// The delete envelope.
+pub(super) fn delete_envelope(deleted_count: u64) -> Value {
+    serde_json::json!({ "status": "ok", "deleted": deleted_count })
 }

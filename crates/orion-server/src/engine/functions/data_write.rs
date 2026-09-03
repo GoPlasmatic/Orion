@@ -13,6 +13,7 @@ use super::connector_helpers::{
     is_mongo, require_op_allowed, resolve_numeric_as, resolve_params, send_es, timed_query,
     to_connect_error, to_exec_error,
 };
+use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -341,10 +342,7 @@ async fn execute_mongo(
     match mw {
         MongoWrite::Insert { collection, docs } => {
             if docs.is_empty() {
-                return Ok((
-                    json!({ "status": "ok", "inserted": 0, "ids": [] }),
-                    TaskOutcome::Success,
-                ));
+                return Ok((empty_insert_envelope(), TaskOutcome::Success));
             }
             let sent = docs.len();
             let coll = db.collection::<Document>(&collection);
@@ -358,10 +356,10 @@ async fn execute_mongo(
                         .into_iter()
                         .map(|(_, b)| serde_json::to_value(b).ok())
                         .collect();
-                    Ok((
-                        query::bulk::BulkOutcome::all_ok(ids).to_json(),
-                        TaskOutcome::Success,
-                    ))
+                    // Through `bulk_result` like every other bulk answer —
+                    // the all-ok case produced the same JSON either way, but
+                    // by a second path.
+                    bulk_result(query::bulk::BulkOutcome::all_ok(ids), "MongoDB insert")
                 }
                 // F28: the ordered default means a mid-array failure has
                 // already committed everything before it. Recover the indices
@@ -394,23 +392,12 @@ async fn execute_mongo(
                     .await
                     .map_err(to_exec_error)?
             };
-            let mut out = json!({
-                "status": "ok",
-                "matched": res.matched_count,
-                "modified": res.modified_count,
-            });
-            if let Some(id) = res.upserted_id {
-                out["upserted_id"] = serde_json::to_value(id).unwrap_or(Value::Null);
-            }
-            Ok((out, TaskOutcome::Success))
+            Ok((update_envelope(&res), TaskOutcome::Success))
         }
         MongoWrite::Delete { collection, filter } => {
             let coll = db.collection::<Document>(&collection);
             let res = coll.delete_many(filter).await.map_err(to_exec_error)?;
-            Ok((
-                json!({ "status": "ok", "deleted": res.deleted_count }),
-                TaskOutcome::Success,
-            ))
+            Ok((delete_envelope(res.deleted_count), TaskOutcome::Success))
         }
     }
 }
