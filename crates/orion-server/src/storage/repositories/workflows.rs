@@ -235,6 +235,49 @@ fn loop_json_for_storage(
     }
 }
 
+/// The content columns of a draft, resolved to the values that will be
+/// written — used by [`build_workflow_update`] for the same reason
+/// [`WorkflowInsertRow`] exists on the INSERT side.
+///
+/// `update_draft` and `replace_draft` differ in how they *derive* these (the
+/// first merges each field against the stored row, the second reads them
+/// straight off a create request) and not at all in which columns they write.
+/// Only the derivation belongs to the callers.
+struct WorkflowUpdateRow<'a> {
+    name: &'a str,
+    description: sea_query::Value,
+    priority: i64,
+    condition_json: &'a str,
+    tasks_json: &'a str,
+    tags_json: &'a str,
+    loop_json: Option<&'a str>,
+    continue_on_error: bool,
+}
+
+/// Build the UPDATE that rewrites a draft's content.
+///
+/// The `status = 'draft'` predicate is part of the statement, not the caller's
+/// to remember: it is what keeps either path from rewriting an active version
+/// if the draft is promoted between the check and the write.
+fn build_workflow_update(
+    workflow_id: &str,
+    row: WorkflowUpdateRow<'_>,
+) -> sea_query::UpdateStatement {
+    Query::update()
+        .table(Workflows::Table)
+        .value(Workflows::Name, row.name)
+        .value(Workflows::Description, row.description)
+        .value(Workflows::Priority, row.priority)
+        .value(Workflows::ConditionJson, row.condition_json)
+        .value(Workflows::TasksJson, row.tasks_json)
+        .value(Workflows::TagsJson, row.tags_json)
+        .value(Workflows::LoopJson, optional_string_value(row.loop_json))
+        .value(Workflows::ContinueOnError, row.continue_on_error)
+        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+        .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
+        .to_owned()
+}
+
 /// Build the INSERT statement for a workflow row.
 fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> sea_query::InsertStatement {
     let mut q = Query::insert();
@@ -568,24 +611,19 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 Some(v) => loop_json_for_storage(Some(v))?,
             };
 
-            let description_val = optional_string_value(description);
-
-            let mut update = Query::update()
-                .table(Workflows::Table)
-                .value(Workflows::Name, name)
-                .value(Workflows::Description, description_val)
-                .value(Workflows::Priority, priority)
-                .value(Workflows::ConditionJson, condition_json.as_str())
-                .value(Workflows::TasksJson, tasks_json.as_str())
-                .value(Workflows::TagsJson, tags_json.as_str())
-                .value(
-                    Workflows::LoopJson,
-                    optional_string_value(loop_json.as_deref()),
-                )
-                .value(Workflows::ContinueOnError, continue_on_error)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
-                .to_owned();
+            let mut update = build_workflow_update(
+                workflow_id,
+                WorkflowUpdateRow {
+                    name,
+                    description: optional_string_value(description),
+                    priority,
+                    condition_json: &condition_json,
+                    tasks_json: &tasks_json,
+                    tags_json: &tags_json,
+                    loop_json: loop_json.as_deref(),
+                    continue_on_error,
+                },
+            );
 
             // D23: the UPDATE and the row it wrote travel together.
             versioned::write_returning_version(
@@ -614,24 +652,20 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
             let loop_json = loop_json_for_storage(req.loop_config.as_ref())?;
-            let description_val = optional_string_value(req.description.as_deref());
 
-            let mut update = Query::update()
-                .table(Workflows::Table)
-                .value(Workflows::Name, req.name.as_str())
-                .value(Workflows::Description, description_val)
-                .value(Workflows::Priority, req.priority)
-                .value(Workflows::ConditionJson, condition_json.as_str())
-                .value(Workflows::TasksJson, tasks_json.as_str())
-                .value(Workflows::TagsJson, tags_json.as_str())
-                .value(
-                    Workflows::LoopJson,
-                    optional_string_value(loop_json.as_deref()),
-                )
-                .value(Workflows::ContinueOnError, req.continue_on_error)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
-                .to_owned();
+            let mut update = build_workflow_update(
+                workflow_id,
+                WorkflowUpdateRow {
+                    name: req.name.as_str(),
+                    description: optional_string_value(req.description.as_deref()),
+                    priority: req.priority,
+                    condition_json: &condition_json,
+                    tasks_json: &tasks_json,
+                    tags_json: &tags_json,
+                    loop_json: loop_json.as_deref(),
+                    continue_on_error: req.continue_on_error,
+                },
+            );
 
             versioned::write_returning_version(
                 &self.pool,

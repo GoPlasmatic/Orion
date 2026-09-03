@@ -253,6 +253,58 @@ struct ChannelInsertRow<'a> {
     tags_json: &'a str,
 }
 
+/// The content columns of a draft, resolved to the values that will be
+/// written — used by [`build_channel_update`] for the same reason
+/// [`ChannelInsertRow`] exists on the INSERT side.
+///
+/// `kind` is the one asymmetry between the two callers, and it is the whole
+/// reason `replace_draft` exists: a partial update cannot change a channel's
+/// `channel_type` or `protocol`, while a full replace must, or an imported
+/// draft could never converge on its artifact. `None` leaves both columns
+/// alone.
+struct ChannelUpdateRow<'a> {
+    name: &'a str,
+    description: sea_query::Value,
+    kind: Option<(&'a str, &'a str)>,
+    methods_json: sea_query::Value,
+    route_pattern: sea_query::Value,
+    topic: sea_query::Value,
+    consumer_group: sea_query::Value,
+    transport_config_json: &'a str,
+    workflow_id: sea_query::Value,
+    config_json: &'a str,
+    priority: i64,
+    tags_json: &'a str,
+}
+
+/// Build the UPDATE that rewrites a draft's content.
+///
+/// The `status = 'draft'` predicate is part of the statement, not the caller's
+/// to remember: it is what keeps either path from rewriting an active version
+/// if the draft is promoted between the check and the write.
+fn build_channel_update(channel_id: &str, row: ChannelUpdateRow<'_>) -> sea_query::UpdateStatement {
+    let mut q = Query::update();
+    q.table(Channels::Table)
+        .value(Channels::Name, row.name)
+        .value(Channels::Description, row.description);
+    if let Some((channel_type, protocol)) = row.kind {
+        q.value(Channels::ChannelType, channel_type)
+            .value(Channels::Protocol, protocol);
+    }
+    q.value(Channels::MethodsJson, row.methods_json)
+        .value(Channels::RoutePattern, row.route_pattern)
+        .value(Channels::Topic, row.topic)
+        .value(Channels::ConsumerGroup, row.consumer_group)
+        .value(Channels::TransportConfigJson, row.transport_config_json)
+        .value(Channels::WorkflowId, row.workflow_id)
+        .value(Channels::ConfigJson, row.config_json)
+        .value(Channels::Priority, row.priority)
+        .value(Channels::TagsJson, row.tags_json)
+        .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+        .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()));
+    q.to_owned()
+}
+
 /// Build the INSERT statement for a channel row.
 fn build_channel_insert(row: ChannelInsertRow<'_>) -> sea_query::InsertStatement {
     let mut q = Query::insert();
@@ -496,32 +548,24 @@ impl ChannelRepository for SqlChannelRepository {
                 None => existing.tags_json.clone(),
             };
 
-            let description_val = optional_string_value(description);
-            let methods_val = optional_string_value(methods_json.as_deref());
-            let route_pattern_val = optional_string_value(route_pattern);
-            let topic_val = optional_string_value(topic);
-            let consumer_group_val = optional_string_value(consumer_group);
-            let workflow_id_val = optional_string_value(workflow_id);
-
-            let mut update = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Name, name)
-                .value(Channels::Description, description_val)
-                .value(Channels::MethodsJson, methods_val)
-                .value(Channels::RoutePattern, route_pattern_val)
-                .value(Channels::Topic, topic_val)
-                .value(Channels::ConsumerGroup, consumer_group_val)
-                .value(
-                    Channels::TransportConfigJson,
-                    transport_config_json.as_str(),
-                )
-                .value(Channels::WorkflowId, workflow_id_val)
-                .value(Channels::ConfigJson, config_json.as_str())
-                .value(Channels::Priority, priority)
-                .value(Channels::TagsJson, tags_json.as_str())
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .to_owned();
+            let mut update = build_channel_update(
+                channel_id,
+                ChannelUpdateRow {
+                    name,
+                    description: optional_string_value(description),
+                    // A partial update cannot change either.
+                    kind: None,
+                    methods_json: optional_string_value(methods_json.as_deref()),
+                    route_pattern: optional_string_value(route_pattern),
+                    topic: optional_string_value(topic),
+                    consumer_group: optional_string_value(consumer_group),
+                    transport_config_json: &transport_config_json,
+                    workflow_id: optional_string_value(workflow_id),
+                    config_json: &config_json,
+                    priority,
+                    tags_json: &tags_json,
+                },
+            );
 
             // D23: the UPDATE and the row it wrote travel together.
             versioned::write_returning_version(
@@ -559,42 +603,24 @@ impl ChannelRepository for SqlChannelRepository {
             let config_json = serde_json::to_string(&req.config)?;
             let tags_json = serde_json::to_string(&req.tags)?;
 
-            let mut update = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Name, req.name.as_str())
-                .value(
-                    Channels::Description,
-                    optional_string_value(req.description.as_deref()),
-                )
-                .value(Channels::ChannelType, req.channel_type.as_str())
-                .value(Channels::Protocol, req.protocol.as_str())
-                .value(
-                    Channels::MethodsJson,
-                    optional_string_value(methods_json.as_deref()),
-                )
-                .value(
-                    Channels::RoutePattern,
-                    optional_string_value(req.route_pattern.as_deref()),
-                )
-                .value(Channels::Topic, optional_string_value(req.topic.as_deref()))
-                .value(
-                    Channels::ConsumerGroup,
-                    optional_string_value(req.consumer_group.as_deref()),
-                )
-                .value(
-                    Channels::TransportConfigJson,
-                    transport_config_json.as_str(),
-                )
-                .value(
-                    Channels::WorkflowId,
-                    optional_string_value(req.workflow_id.as_deref()),
-                )
-                .value(Channels::ConfigJson, config_json.as_str())
-                .value(Channels::Priority, req.priority)
-                .value(Channels::TagsJson, tags_json.as_str())
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .to_owned();
+            let mut update = build_channel_update(
+                channel_id,
+                ChannelUpdateRow {
+                    name: req.name.as_str(),
+                    description: optional_string_value(req.description.as_deref()),
+                    // The half a partial update cannot reach.
+                    kind: Some((req.channel_type.as_str(), req.protocol.as_str())),
+                    methods_json: optional_string_value(methods_json.as_deref()),
+                    route_pattern: optional_string_value(req.route_pattern.as_deref()),
+                    topic: optional_string_value(req.topic.as_deref()),
+                    consumer_group: optional_string_value(req.consumer_group.as_deref()),
+                    transport_config_json: &transport_config_json,
+                    workflow_id: optional_string_value(req.workflow_id.as_deref()),
+                    config_json: &config_json,
+                    priority: req.priority,
+                    tags_json: &tags_json,
+                },
+            );
 
             versioned::write_returning_version(
                 &self.pool,
