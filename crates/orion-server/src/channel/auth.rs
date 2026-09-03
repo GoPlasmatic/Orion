@@ -596,15 +596,26 @@ impl CompiledHmac {
     /// Decode one presented signature: the pinned encoding when configured,
     /// else the pre-#264 auto-detection (hex first — unambiguous at MAC
     /// lengths — then standard base64).
+    ///
+    /// Both arms go through [`decode_bytes`], which is the point. The fallback
+    /// used to hand-roll `general_purpose::STANDARD`, which requires canonical
+    /// padding, while the pinned arm decodes through `B64_STD_LENIENT`
+    /// (`DecodePaddingMode::Indifferent`). So an **unpadded** standard-base64
+    /// signature verified with `auth.encoding = "base64"` set and was refused
+    /// as malformed without it — the same webhook, two answers, turning on a
+    /// field an operator may reasonably leave unset. `crypto.rs`'s header names
+    /// `channel::auth` as one of its four consumers precisely so there is one
+    /// spelling of each primitive; this was the call site that half-opted-in.
+    ///
+    /// Widening the decode cannot weaken anything: the bytes still have to
+    /// match the HMAC, and a signature that decodes differently simply fails
+    /// that comparison instead of this one.
     fn decode(&self, presented: &str) -> Option<Vec<u8>> {
         match self.encoding {
             Some(codec) => decode_bytes(codec, presented).ok(),
-            None => hex::decode(presented).ok().or_else(|| {
-                use base64::Engine;
-                base64::engine::general_purpose::STANDARD
-                    .decode(presented)
-                    .ok()
-            }),
+            None => hex::decode(presented)
+                .ok()
+                .or_else(|| decode_bytes(Codec::Base64, presented).ok()),
         }
     }
 }
@@ -1219,6 +1230,67 @@ mod tests {
             auth.authenticate(&lookup(&pairs), Some(body), &dl())
                 .await
                 .is_ok()
+        );
+    }
+
+    /// The same webhook must not get two answers depending on whether
+    /// `encoding` happens to be set.
+    ///
+    /// A SHA-256 MAC is 32 bytes, which base64 encodes to 44 characters with
+    /// one `=` of padding — so an unpadded sender is a real shape. The pinned
+    /// arm decodes through `B64_STD_LENIENT` (padding `Indifferent`) while the
+    /// auto-detect arm hand-rolled `general_purpose::STANDARD`, which requires
+    /// canonical padding: the unpadded signature verified with
+    /// `encoding = "base64"` configured and was refused as malformed without
+    /// it, on a field an operator may reasonably leave unset.
+    #[tokio::test]
+    async fn hmac_auto_detection_accepts_unpadded_base64_like_the_pinned_path() {
+        use base64::Engine;
+        let body = br#"{"order":1}"#;
+        let padded =
+            base64::engine::general_purpose::STANDARD.encode(sign::<Hmac<Sha256>>(b"whsec", body));
+        let unpadded = padded.trim_end_matches('=').to_string();
+        assert_ne!(padded, unpadded, "a SHA-256 MAC does carry padding");
+
+        for (label, encoding) in [("auto-detected", None), ("pinned", Some("base64"))] {
+            let mut cfg = hmac_config("whsec", None);
+            cfg.encoding = encoding.map(str::to_string);
+            let auth = CompiledAuth::compile(&cfg, None, None)
+                .await
+                .expect("compiles");
+
+            for (shape, sig) in [("padded", &padded), ("unpadded", &unpadded)] {
+                let headers = [("X-Signature", sig.clone())];
+                let pairs: Vec<(&str, &str)> =
+                    headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                assert!(
+                    auth.authenticate(&lookup(&pairs), Some(body), &dl())
+                        .await
+                        .is_ok(),
+                    "{label} / {shape} must verify"
+                );
+            }
+        }
+    }
+
+    /// Widening the decode cannot widen what verifies: the bytes still have to
+    /// match the MAC.
+    #[tokio::test]
+    async fn a_well_formed_but_wrong_base64_signature_is_still_refused() {
+        use base64::Engine;
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None), None, None)
+            .await
+            .expect("compiles");
+        let body = br#"{"order":1}"#;
+        let wrong = base64::engine::general_purpose::STANDARD
+            .encode(sign::<Hmac<Sha256>>(b"not-the-secret", body));
+        let unpadded = wrong.trim_end_matches('=').to_string();
+        let headers = [("X-Signature", unpadded)];
+        let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        assert!(
+            auth.authenticate(&lookup(&pairs), Some(body), &dl())
+                .await
+                .is_err()
         );
     }
 

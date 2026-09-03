@@ -442,9 +442,9 @@ fn drain_shaped_response(
 ///
 /// JSON first, then the workflow's headers over the top, through the shared
 /// `apply_headers` — which owns the insert-then-append rule (#298).
-fn shaped_response(shaped: ShapedResponse) -> Response {
+fn shaped_response(shaped: ShapedResponse, channel: &str) -> Response {
     let mut response = json_response(shaped.status, shaped.body);
-    super::apply_headers(&mut response, &shaped.headers);
+    super::apply_headers(&mut response, &shaped.headers, channel);
     response
 }
 
@@ -503,13 +503,16 @@ fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo], verbose: bool) -> Vec<Valu
 /// `200` would let the cache silently rewrite the channel's contract on the
 /// second identical request. An entry left over from before the channel was
 /// switched to `shaped` does not parse, and is served as a plain body.
-pub(super) fn cached_response(body: String, shaped: bool) -> Response {
+pub(super) fn cached_response(body: String, shaped: bool, channel: &str) -> Response {
     if shaped && let Ok(cached) = serde_json::from_str::<CachedShaped>(&body) {
-        return shaped_response(ShapedResponse {
-            status: StatusCode::from_u16(cached.shaped.status).unwrap_or(StatusCode::OK),
-            headers: cached.shaped.headers,
-            body: cached.shaped.body,
-        });
+        return shaped_response(
+            ShapedResponse {
+                status: StatusCode::from_u16(cached.shaped.status).unwrap_or(StatusCode::OK),
+                headers: cached.shaped.headers,
+                body: cached.shaped.body,
+            },
+            channel,
+        );
     }
     json_response(StatusCode::OK, body)
 }
@@ -908,7 +911,7 @@ pub(super) async fn process_sync_for_channel(
                 // records its timings (they reach the trace and the metrics); only
                 // the response-body copy is envelope-only.
                 if let Some(shaped) = shaped {
-                    return Ok(shaped_response(shaped));
+                    return Ok(shaped_response(shaped, channel));
                 }
 
                 // Profile mode: rebuild the response with `_orion.profile`

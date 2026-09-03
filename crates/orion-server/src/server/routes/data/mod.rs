@@ -343,13 +343,15 @@ pub(crate) async fn dynamic_handler(
                 .response
                 .as_ref()
                 .is_some_and(|cfg| cfg.is_shaped());
-            return Ok(sync::cached_response(body, shaped));
+            return Ok(sync::cached_response(body, shaped, &channel));
         }
         guards::GuardVerdict::Admitted(admission) => admission,
         // A guard answered the request itself — today, the OAuth2 authorize
         // leg's `302`. The workflow is not entered and the engine is never
         // reached.
-        guards::GuardVerdict::Respond(response) => return Ok(guard_response(response)),
+        guards::GuardVerdict::Respond(response) => {
+            return Ok(guard_response(response, &channel));
+        }
     };
 
     // #267: verified claims join the message metadata at `auth.claims` — the
@@ -402,12 +404,12 @@ pub(crate) async fn dynamic_handler(
 /// The header rule is `sync.rs`'s: the first occurrence of a name `insert`s and
 /// every later one `append`s, so a redirect that sets a cookie keeps both, and
 /// a repeated `set-cookie` is not collapsed into the last one.
-fn guard_response(response: guards::GuardResponse) -> Response {
+fn guard_response(response: guards::GuardResponse, channel: &str) -> Response {
     let status = axum::http::StatusCode::from_u16(response.status)
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let mut out = Response::new(axum::body::Body::from(response.body));
     *out.status_mut() = status;
-    apply_headers(&mut out, &response.headers);
+    apply_headers(&mut out, &response.headers, channel);
     out
 }
 
@@ -423,14 +425,30 @@ fn guard_response(response: guards::GuardResponse) -> Response {
 /// One copy, shared by `guard_response` here and `sync::shaped_response`:
 /// `GuardResponse` is documented as shaped like `ShapedResponse`, "`Vec` and
 /// all", and the two had already drifted on what a rejected header does.
-pub(super) fn apply_headers(response: &mut Response, headers: &[(String, String)]) {
+///
+/// **A refusal here is counted, not just logged** (#312). For a freshly built
+/// shaped response this check is unreachable — `push_header` has already
+/// refused anything invalid, while the envelope reporting the refusal was
+/// still being written, which is exactly why the check lives there. What
+/// reaches here is the paths with no envelope left to write into: a response
+/// replayed from the cache, and a guard-built one. Those cannot carry a
+/// `RESPONSE_HEADER_DROPPED` entry — the cached body was serialized on an
+/// earlier request and a guard rejection has no envelope at all — but they can
+/// and now do move `orion_response_drops_total`, so the drop is visible to an
+/// operator rather than being one line on stdout.
+pub(super) fn apply_headers(response: &mut Response, headers: &[(String, String)], channel: &str) {
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (name, value) in headers {
         let (Ok(header_name), Ok(header_value)) = (
             axum::http::HeaderName::try_from(name.as_str()),
             axum::http::HeaderValue::try_from(value.as_str()),
         ) else {
-            tracing::warn!(header = %name, "response header is not valid HTTP; dropping it");
+            tracing::warn!(
+                channel = channel,
+                header = %name,
+                "response header is not valid HTTP; dropping it"
+            );
+            crate::metrics::record_response_drop(channel, "RESPONSE_HEADER_DROPPED".to_string());
             continue;
         };
         if seen.insert(name.as_str()) {
@@ -963,4 +981,68 @@ pub(crate) struct AsyncSubmitResponse {
     /// it via the `x-trace-token` header or `?token=` query parameter.
     /// Shown once, here — only its hash is stored.
     trace_token: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_of(response: &Response, name: &str) -> Vec<String> {
+        response
+            .headers()
+            .get_all(name)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect()
+    }
+
+    /// #298: the first occurrence of a name `insert`s and every later one
+    /// `append`s. `insert` throughout collapsed two `set-cookie` values into
+    /// the last one, so a response could never both issue a session cookie and
+    /// clear a spent one — which is exactly what an OAuth2 callback does.
+    #[test]
+    fn a_repeated_header_is_appended_not_collapsed() {
+        let mut response = Response::new(axum::body::Body::empty());
+        apply_headers(
+            &mut response,
+            &[
+                ("set-cookie".to_string(), "a=1".to_string()),
+                ("set-cookie".to_string(), "b=2".to_string()),
+                ("content-type".to_string(), "text/plain".to_string()),
+            ],
+            "test-channel",
+        );
+        assert_eq!(headers_of(&response, "set-cookie"), ["a=1", "b=2"]);
+        assert_eq!(headers_of(&response, "content-type"), ["text/plain"]);
+    }
+
+    /// A header the wire cannot carry is dropped rather than panicking, and
+    /// the rest of the list still lands.
+    ///
+    /// #312: for a freshly built shaped response this is unreachable —
+    /// `push_header` refuses first, while the envelope that reports the
+    /// refusal is still being written. It is here for the paths with no
+    /// envelope left to write into (a cached replay, a guard-built response),
+    /// where the drop is counted on `orion_response_drops_total` instead of
+    /// being one line on stdout.
+    #[test]
+    fn an_unrepresentable_header_is_dropped_and_the_others_survive() {
+        let mut response = Response::new(axum::body::Body::empty());
+        apply_headers(
+            &mut response,
+            &[
+                ("x-good".to_string(), "fine".to_string()),
+                // A space is not legal in a header name.
+                ("bad name".to_string(), "v".to_string()),
+                // A newline in a value would be header injection.
+                ("x-inject".to_string(), "a\r\nX-Evil: 1".to_string()),
+                ("x-also-good".to_string(), "fine too".to_string()),
+            ],
+            "test-channel",
+        );
+        assert_eq!(headers_of(&response, "x-good"), ["fine"]);
+        assert_eq!(headers_of(&response, "x-also-good"), ["fine too"]);
+        assert!(headers_of(&response, "x-inject").is_empty());
+        assert!(response.headers().get("x-evil").is_none());
+    }
 }

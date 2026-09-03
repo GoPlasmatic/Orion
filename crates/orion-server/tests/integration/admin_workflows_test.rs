@@ -974,6 +974,132 @@ async fn test_workflow_test_with_metadata() {
     assert!(body["data"].get("errors").is_some());
 }
 
+/// `POST /workflows/{id}/test` must judge a workflow on state an ingress can
+/// actually produce.
+///
+/// It stamped `vars` and nothing else, so the endpoint a human reaches for
+/// first accepted caller-supplied `oauth`, `cookies` and `_orion_errors`, and
+/// unlowercased, unmasked `headers` — and a workflow could pass its test on
+/// state no request can create. The two *offline* surfaces (`dry-run`, the
+/// CLI's `test`) already went through `prepare_offline_metadata`, whose stated
+/// purpose is that "an offline pass must mean the same thing as a production
+/// pass"; this is the third surface joining them.
+#[tokio::test]
+async fn workflow_test_normalizes_metadata_the_way_an_ingress_does() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "test-meta-norm",
+                "name": "Echo Metadata",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Echo",
+                    "function": { "name": "map", "input": { "mappings": [
+                        { "path": "data.hdr", "logic": { "var": "metadata.headers.deviceid" } },
+                        { "path": "data.auth_hdr", "logic": { "var": "metadata.headers.authorization" } },
+                        { "path": "data.errs", "logic": { "var": "metadata._orion_errors" } }
+                    ] } }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/test-meta-norm/test",
+            Some(json!({
+                "data": {},
+                "metadata": {
+                    // axum yields lowercase header names, so a case writing
+                    // this would match here and miss in production.
+                    "headers": { "DeviceId": "abc", "Authorization": "Bearer sk-live-xyz" },
+                    // Engine-owned; the ingress clears it unconditionally, so a
+                    // caller cannot pre-seed failures a workflow branches on.
+                    "_orion_errors": [{ "message": "pre-seeded" }]
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let out = &body["data"]["output"];
+
+    assert_eq!(out["hdr"], "abc", "header keys are lowercased: {body}");
+    assert_ne!(
+        out["auth_hdr"], "Bearer sk-live-xyz",
+        "a credential header must be masked, as it is at ingress: {body}"
+    );
+    assert!(
+        out["errs"].is_null(),
+        "_orion_errors is engine-owned and cleared: {body}"
+    );
+}
+
+/// The shape checks come with the normalization, so this surface refuses the
+/// same impossible metadata the offline ones do rather than running on it.
+#[tokio::test]
+async fn workflow_test_refuses_metadata_no_ingress_could_produce() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "test-meta-refuse",
+                "name": "Refuse",
+                "condition": true,
+                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "x"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    for (label, metadata) in [
+        (
+            "headers not an object of strings",
+            json!({ "headers": { "a": 1 } }),
+        ),
+        ("vars not an object", json!({ "vars": "nope" })),
+        ("channel not a string", json!({ "channel": 7 })),
+        // The ingress builds `auth` as `{"claims": …}` and nothing else.
+        (
+            "auth carrying more than claims",
+            json!({ "auth": { "sub": "u1" } }),
+        ),
+        // #307: stamped by the sign-in guard once the grant is verified.
+        ("oauth not an object", json!({ "oauth": "token" })),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows/test-meta-refuse/test",
+                Some(json!({ "data": {}, "metadata": metadata })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{label} must be refused"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_workflow_test_with_non_object_data() {
     let app = common::test_app().await;

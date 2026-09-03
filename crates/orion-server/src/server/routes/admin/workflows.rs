@@ -571,9 +571,24 @@ pub(crate) async fn test_workflow(
         payload = req.data;
     }
 
-    // Stamped the way every other ingress stamps it, so "test this workflow"
-    // and a real request agree about what `metadata.vars` holds.
-    let mut metadata = req.metadata;
+    // Through the same normalization the two *offline* surfaces use —
+    // `dry-run` and the CLI's `test` — because this endpoint is a third one
+    // and was the only one that skipped it.
+    //
+    // It used to stamp `vars` and nothing else, so the endpoint a human
+    // reaches for first accepted caller-supplied `oauth`, `cookies` and
+    // `_orion_errors`, and unlowercased, unmasked `headers`. A workflow could
+    // pass its test on state no ingress can produce: `axum` yields lowercase
+    // header names, `build_request_metadata` clears `_orion_errors`
+    // unconditionally, and a bearer token read out of `metadata.headers` is
+    // already broken in production. The comment here named the goal — "so
+    // 'test this workflow' and a real request agree" — and applied it to one
+    // key.
+    let mut metadata = crate::engine::utils::prepare_offline_metadata(req.metadata)
+        .map_err(OrionError::validation)?;
+    // `vars` is the one key this surface stamps rather than accepts: unlike
+    // `dry-run`, there *is* a running instance with a `[vars]` section, so the
+    // real values are the honest ones.
     crate::engine::stamp_vars(&mut metadata, state.vars.as_deref());
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&payload)

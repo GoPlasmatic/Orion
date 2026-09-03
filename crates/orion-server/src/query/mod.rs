@@ -141,7 +141,15 @@ impl GroupKey {
     }
 
     fn from_f64(f: f64) -> Self {
-        if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+        // The upper bound is exclusive, and `2^63` rather than `i64::MAX`,
+        // because `i64::MAX as f64` rounds *up* to 2^63 — so `f <= i64::MAX as
+        // f64` was true for `9223372036854775808.0`, which then saturated on
+        // `as i64` and grouped together with a genuine `i64::MAX` key. Two
+        // distinct values joining as one key is a wrong answer rather than a
+        // missed one. `i64::MIN as f64` is exact (a power of two), so the lower
+        // bound stays inclusive.
+        const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f < TWO_POW_63 {
             GroupKey::Int(f as i64)
         } else {
             GroupKey::Float(f.to_bits())
@@ -325,6 +333,42 @@ mod group_key_tests {
         for v in [json!(null), json!([1]), json!({ "a": 1 })] {
             assert_eq!(GroupKey::from_json(&v), None, "{v}");
         }
+    }
+
+    /// `2^63` must not collapse onto `i64::MAX`.
+    ///
+    /// `i64::MAX as f64` rounds *up* to 2^63, so the old `f <= i64::MAX as f64`
+    /// admitted `9223372036854775808.0`, and `f as i64` then saturated — giving
+    /// that value the same group key as a genuine `i64::MAX`. Two distinct keys
+    /// joining as one is a wrong answer, not a missing one: an `include` would
+    /// attach one parent's children to another.
+    #[test]
+    fn two_pow_63_does_not_group_with_i64_max() {
+        let two_pow_63 = GroupKey::from_json(&json!(9_223_372_036_854_775_808.0_f64))
+            .expect("a finite number has a key");
+        let max = GroupKey::from_json(&json!(i64::MAX)).expect("i64::MAX has a key");
+        assert_eq!(max, GroupKey::Int(i64::MAX));
+        assert_ne!(two_pow_63, max, "2^63 is not i64::MAX");
+        assert!(
+            matches!(two_pow_63, GroupKey::Float(_)),
+            "a value outside i64 keeps its own identity: {two_pow_63:?}"
+        );
+
+        // The boundary still admits everything that genuinely fits, including
+        // `i64::MIN`, whose f64 conversion is exact (it is a power of two).
+        assert_eq!(
+            GroupKey::from_json(&json!(i64::MIN)),
+            Some(GroupKey::Int(i64::MIN))
+        );
+        assert_eq!(
+            GroupKey::from_json(&json!(-9_223_372_036_854_775_808.0_f64)),
+            Some(GroupKey::Int(i64::MIN))
+        );
+        // And a whole float well inside the range still joins its integer twin.
+        assert_eq!(
+            GroupKey::from_json(&json!(7.0_f64)),
+            GroupKey::from_json(&json!(7))
+        );
     }
 
     #[test]

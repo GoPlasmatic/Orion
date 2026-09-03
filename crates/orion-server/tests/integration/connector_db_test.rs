@@ -568,3 +568,87 @@ async fn test_db_read_row_cap_enforced() {
     let body = common::body_json(resp).await;
     assert_eq!(body["data"]["rows"].as_array().map(|a| a.len()), Some(2));
 }
+
+/// `db_write` no longer reads `numeric_as`, so the runtime and the schema agree.
+///
+/// `db_write` reused `DbRead::parse_statement`, which resolved `numeric_as` — a
+/// field `DB_WRITE_FIELDS` does not declare, `functions.md` never mentions, and
+/// `db_write` cannot act on because it decodes no rows. So a *wrong* value
+/// failed the task with `db_write: 'numeric_as' must be one of number/string`,
+/// an error naming a field the function's own schema does not have, while a
+/// correct one did nothing.
+///
+/// `db_write` is `deny_unknown: false` — Orion's own handlers take freeform
+/// inputs and ignore extra keys — so the right answer is that the key is
+/// ignored like any other stray, not that it is validated. The write proceeds.
+#[tokio::test]
+async fn db_write_ignores_a_numeric_as_it_cannot_act_on() {
+    let app = common::test_app().await;
+
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(
+            "na-db",
+            "sqlite:file:db_write_numeric_as?mode=memory&cache=shared",
+        ),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "na-ch",
+        common::workflow_with_tasks(
+            "WriteNumericAs",
+            json!([
+                {
+                    "id": "ddl",
+                    "name": "Create",
+                    "function": { "name": "db_write", "input": {
+                        "connector": "na-db",
+                        "query": "CREATE TABLE IF NOT EXISTS na_rows (id INTEGER PRIMARY KEY)",
+                        "output": "data.created"
+                    }}
+                },
+                {
+                    "id": "ins",
+                    "name": "Insert",
+                    "function": { "name": "db_write", "input": {
+                        "connector": "na-db",
+                        "query": "INSERT INTO na_rows (id) VALUES (1)",
+                        // The value that used to fail the task outright.
+                        "numeric_as": "not-a-mode",
+                        "output": "data.inserted"
+                    }}
+                }
+            ]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/na-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("numeric_as"),
+        "a field db_write does not have must not appear in an error: {body}"
+    );
+    assert!(
+        body["errors"].as_array().is_some_and(|a| a.is_empty()),
+        "the write must proceed: {body}"
+    );
+    assert_eq!(
+        body["data"]["inserted"]["rows_affected"],
+        json!(1),
+        "{body}"
+    );
+}

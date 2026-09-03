@@ -168,9 +168,14 @@ const STRING_MAP_KEYS: [&str; 4] = ["headers", "params", "query", "cookies"];
 ///
 /// Returns a human-readable error for a shape the ingress could never produce:
 /// a non-object root, a `headers`/`params`/`query`/`cookies` that is not an
-/// object of strings, a non-object `vars`, a non-string `channel`/`http_method`,
-/// or an `auth` carrying anything but `claims` (the ingress replaces `auth`
-/// wholesale with `{"claims": …}`, so nothing else is reachable at runtime).
+/// object of strings, a non-object `vars` or `oauth`, a non-string
+/// `channel`/`http_method`, or an `auth` carrying anything but `claims` (the
+/// ingress replaces `auth` wholesale with `{"claims": …}`, so nothing else is
+/// reachable at runtime).
+///
+/// This is one of the owners of the platform-reserved metadata namespace, and
+/// the namespace has no drift guard — a new reserved key is covered only by
+/// being named in each owner by hand.
 pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
     let mut metadata = match metadata {
         Value::Null => return Ok(serde_json::json!({})),
@@ -219,6 +224,23 @@ pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
             "'metadata.vars' must be an object — it is stamped from the [vars] config \
              section, got {}",
             json_kind(vars)
+        ));
+    }
+
+    // #307's `oauth`, named here so this owner knows about it. Like `cookies`
+    // it is platform-stamped at runtime — the sign-in guard writes it after the
+    // state is verified and the code exchanged — and like `cookies` an offline
+    // case has to be able to supply it, because there is no provider to get it
+    // from and testing the workflow *behind* a sign-in is the point. So the
+    // shape is checked and the value passes through; what is refused is the
+    // shape no guard would produce.
+    if let Some(oauth) = metadata.get("oauth")
+        && !oauth.is_object()
+    {
+        return Err(format!(
+            "'metadata.oauth' must be an object — the sign-in guard stamps it as one \
+             after the grant is verified, got {}",
+            json_kind(oauth)
         ));
     }
 

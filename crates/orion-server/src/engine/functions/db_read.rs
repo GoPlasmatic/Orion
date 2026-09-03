@@ -44,6 +44,15 @@ impl DbRead {
     /// The parse both raw-SQL handlers do. Shared rather than copied because
     /// `db_read` and `db_write` differ in what the database does with the
     /// statement, not in what the task says.
+    /// The half `db_read` and `db_write` genuinely share: a literal statement
+    /// and message-derived binds.
+    ///
+    /// `numeric_as` is **not** read here. It governs how a decoded row renders,
+    /// and `db_write` decodes no rows — it answers `rows_affected`. Reading it
+    /// on both paths meant a wrong value produced `db_write: 'numeric_as' must
+    /// be one of number/string`, an error naming a field `DB_WRITE_FIELDS` does
+    /// not declare and the schema validator already reports as `UNKNOWN_FIELD`.
+    /// One of the two had to go, and the runtime is the one that was wrong.
     pub(super) fn parse_statement(
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
@@ -52,7 +61,20 @@ impl DbRead {
         Ok(Self {
             query: call.require_str(input, "query")?.to_string(),
             params: resolve_bind_params(input, call.name, ctx)?,
+            numeric_as: crate::connector::sql_decode::NumericAs::default(),
+        })
+    }
+
+    /// [`parse_statement`](Self::parse_statement) plus the read-only rendering
+    /// choice.
+    pub(super) fn parse_read(
+        call: &ConnectorCall<'_>,
+        input: &TemplatedInput,
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self, HandlerError> {
+        Ok(Self {
             numeric_as: resolve_numeric_as(input, call.name, ctx)?,
+            ..Self::parse_statement(call, input, ctx)?
         })
     }
 
@@ -86,7 +108,7 @@ impl ConnectorHandler for DbReadHandler {
         input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
-        DbRead::parse_statement(call, input, ctx)
+        DbRead::parse_read(call, input, ctx)
     }
 
     fn gate(
