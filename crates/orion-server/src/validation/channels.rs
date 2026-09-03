@@ -85,7 +85,24 @@ pub fn validate_update_channel(
     }
     if let Some(ref config) = req.config {
         validate_channel_config_blob(config)?;
-        if let Some(protocol) = stored_protocol {
+    }
+    // Against the merged view, the way `check_protocol_required_fields` above
+    // already is — *not* nested inside `req.config`. Nested, a request carrying
+    // only `{"route_pattern": "…"}` skipped this entirely and could set the
+    // channel's route equal to its own stored `oauth2_login.callback_path`,
+    // which is the exact collision the check exists to refuse.
+    //
+    // Nothing downstream catches that: `ensure_route_is_unclaimed` compares a
+    // draft against *other* channels and never a channel's two routes against
+    // each other, so activation succeeds and the `RouteTable` gets two entries
+    // for one channel on one path. Whichever wins decides the leg, and sign-ins
+    // either loop or complete against the wrong one.
+    if let Some(protocol) = stored_protocol {
+        // A stored blob that will not parse contributes no `oauth2_login`, so
+        // the check no-ops rather than blocking an unrelated update — the same
+        // rule `Channel::methods` applies to a corrupt `methods_json`.
+        let stored_config = serde_json::from_str::<serde_json::Value>(&stored.config_json).ok();
+        if let Some(config) = req.config.as_ref().or(stored_config.as_ref()) {
             validate_oauth2_login_routing(
                 config,
                 protocol,
@@ -1166,6 +1183,84 @@ mod tests {
             config: None,
             priority: None,
         }
+    }
+
+    /// A complete `oauth2_login` block with the given `callback_path`. The
+    /// request side of an update goes through `validate_channel_config_blob`
+    /// first, so a partial block would be refused for the wrong reason.
+    fn login_block(callback_path: &str) -> serde_json::Value {
+        serde_json::json!({
+            "oauth2_login": {
+                "authorize_url": "https://idp.example.com/authorize",
+                "token_url": "https://idp.example.com/token",
+                "client_id": "client-123",
+                "client_secret": "the-client-secret",
+                "redirect_uri": "https://app.example.com/v1/auth/idp/callback",
+                "state_secret": "0123456789abcdef0123456789abcdef",
+                "callback_path": callback_path
+            }
+        })
+    }
+
+    /// A request carrying only a `route_pattern` must still be judged against
+    /// the channel's *stored* `oauth2_login`. Nested inside `req.config`, this
+    /// check never ran on such an update, and the route could be set equal to
+    /// the stored `callback_path` — the collision it exists to refuse.
+    /// `ensure_route_is_unclaimed` does not catch it either: it compares a
+    /// draft against other channels, never a channel's two routes against each
+    /// other.
+    #[test]
+    fn test_update_routing_is_checked_against_the_stored_oauth2_login() {
+        let mut stored = stored_rest_channel();
+        stored.config_json = login_block("/v1/auth/idp/callback").to_string();
+
+        // The collision, arriving with no `config` of its own.
+        let req = UpdateChannelRequest {
+            route_pattern: Some("/v1/auth/idp/callback".to_string()),
+            ..empty_update()
+        };
+        let err = validate_update_channel(&stored, &req).expect_err("must refuse the collision");
+        assert!(
+            err.to_string().contains("callback_path"),
+            "the error must name the field: {err}"
+        );
+
+        // A different route on the same stored block is still fine.
+        let req = UpdateChannelRequest {
+            route_pattern: Some("/v1/auth/idp".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_ok());
+    }
+
+    /// The merge runs the other way too: a request supplying the `config`
+    /// keeps being judged against the stored `route_pattern`.
+    #[test]
+    fn test_update_routing_uses_the_request_config_over_the_stored_one() {
+        let mut stored = stored_rest_channel();
+        stored.route_pattern = Some("/v1/auth/idp".to_string());
+        stored.config_json = login_block("/other").to_string();
+
+        let req = UpdateChannelRequest {
+            config: Some(login_block("/v1/auth/idp")),
+            ..empty_update()
+        };
+        let err = validate_update_channel(&stored, &req).expect_err("must refuse");
+        assert!(err.to_string().contains("callback_path"), "{err}");
+    }
+
+    /// A stored blob that will not parse must not block an unrelated update —
+    /// the same leniency `Channel::methods` applies to a corrupt column.
+    #[test]
+    fn test_update_with_an_unparseable_stored_config_is_not_blocked() {
+        let mut stored = stored_rest_channel();
+        stored.config_json = "{not json".to_string();
+
+        let req = UpdateChannelRequest {
+            route_pattern: Some("/somewhere".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_ok());
     }
 
     #[test]

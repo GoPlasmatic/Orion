@@ -695,32 +695,47 @@ pub(super) async fn process_sync_for_channel(
                 // refuses a sign-in (an unknown tenant, a maintenance window)
                 // without Orion needing a vocabulary for refusal. Only when it
                 // shaped nothing does the sign-in proceed.
+                //
+                // Decided here, where the workflow's contribution is, but
+                // *returned* below with the shaped response — because this block
+                // used to `return`, and everything that writes the trace is below
+                // it. A channel with `run_workflow_on_authorize` therefore wrote
+                // no trace row under any `trace_storage.mode`, `sync` included,
+                // even though the workflow really ran: it can write rows, call
+                // connectors and emit task errors, and a failing sign-in was
+                // invisible to `GET /api/v1/data/traces`. The `record_response_drop`
+                // entries logged just above went with it, having no envelope to
+                // ride on.
+                let mut authorize_outcome: Option<Result<Response, OrionError>> = None;
                 if let Some(login) = oauth_authorize {
                     if shaped.is_none() {
                         let contributed = drain_authorize_contribution(&mut data_out);
-                        return match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
-                            Ok(redirect) => {
-                                crate::metrics::record_oauth_login(
-                                    channel,
-                                    crate::channel::OAuthLeg::Authorize,
-                                    "ok",
-                                );
-                                Ok(oauth_redirect_response(redirect))
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    channel = channel,
-                                    error = %e,
-                                    "Could not build the OAuth2 authorize redirect"
-                                );
-                                Err(OrionError::internal("could not begin the sign-in"))
-                            }
-                        };
+                        authorize_outcome = Some(
+                            match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
+                                Ok(redirect) => {
+                                    crate::metrics::record_oauth_login(
+                                        channel,
+                                        crate::channel::OAuthLeg::Authorize,
+                                        "ok",
+                                    );
+                                    Ok(oauth_redirect_response(redirect))
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        channel = channel,
+                                        error = %e,
+                                        "Could not build the OAuth2 authorize redirect"
+                                    );
+                                    Err(OrionError::internal("could not begin the sign-in"))
+                                }
+                            },
+                        );
+                    } else {
+                        tracing::debug!(
+                            channel = channel,
+                            "Workflow shaped its own response on the authorize leg; not redirecting"
+                        );
                     }
-                    tracing::debug!(
-                        channel = channel,
-                        "Workflow shaped its own response on the authorize leg; not redirecting"
-                    );
                 }
 
                 let mut response = response_envelope(
@@ -826,7 +841,13 @@ pub(super) async fn process_sync_for_channel(
                 // retires a spent state, so replaying it would hand the next
                 // caller a cleared cookie for a sign-in that was not theirs — and
                 // the body it rides on is one user's session.
+                // The authorize redirect carries the freshly minted state cookie in
+                // its own `Set-Cookie`, so it counts here too — belt to the brace
+                // of the create-time refusal of `cache` alongside `oauth2_login`.
+                // Routing the redirect through this tail is what first made it
+                // reachable by the caching branch at all.
                 let sets_cookie = !response_cookies.is_empty()
+                    || authorize_outcome.is_some()
                     || shaped
                         .as_ref()
                         .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
@@ -873,6 +894,14 @@ pub(super) async fn process_sync_for_channel(
                     profile.as_ref(),
                 )
                 .await;
+
+                // The authorize-leg redirect, now that the trace is persisted.
+                // Mutually exclusive with `shaped` — it is built only when the
+                // workflow shaped nothing — so the order of these two is a
+                // reading preference, not a rule.
+                if let Some(outcome) = authorize_outcome {
+                    return outcome;
+                }
 
                 // A shaped channel's body is whatever the workflow chose, so there
                 // is no envelope to append `_orion.profile` to. Profiling still

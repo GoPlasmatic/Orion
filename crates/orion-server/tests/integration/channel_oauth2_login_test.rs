@@ -1292,3 +1292,90 @@ async fn a_failure_on_an_ordinary_channel_carries_no_platform_cookie() {
         "a channel with no oauth2_login has no platform cookie to append"
     );
 }
+
+/// The authorize leg writes a trace when it runs a workflow.
+///
+/// With `run_workflow_on_authorize` the workflow really runs before the
+/// redirect — it can write rows, call connectors and emit task errors — but the
+/// redirect used to `return` from a block sitting *above* `persist_trace_and_cache`,
+/// so no trace row was ever written under any `trace_storage.mode`, `sync`
+/// included. A failing sign-in workflow was invisible to the trace API, which
+/// is the one place an operator would look for it.
+#[tokio::test]
+async fn the_authorize_leg_persists_a_trace_when_it_runs_a_workflow() {
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let app = common::test_app_with_config(app_config()).await;
+    let mut login = login_config(&url);
+    login["run_workflow_on_authorize"] = json!(true);
+    deploy(&app, login, echo_grant_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .await
+        .expect("authorize");
+    // Still a redirect: routing it through the trace tail must not change what
+    // the browser gets, cookie included.
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    assert!(resp.headers().get("location").is_some(), "a Location");
+    assert!(
+        resp.headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .any(|v| v.starts_with("orion_oauth_state=")),
+        "the state cookie must still be minted"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v1/admin/traces?limit=50",
+            None,
+        ))
+        .await
+        .expect("traces");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    let rows = body["data"].as_array().expect("rows");
+    assert!(
+        rows.iter().any(|r| r["channel"] == "signin"),
+        "the authorize leg must leave a trace row: {body}"
+    );
+}
+
+/// The counterpart: without `run_workflow_on_authorize` no workflow runs on the
+/// authorize leg, so there is nothing to trace and the redirect is still built
+/// before any of this.
+#[tokio::test]
+async fn the_authorize_leg_traces_nothing_when_no_workflow_runs() {
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let app = common::test_app_with_config(app_config()).await;
+    deploy(&app, login_config(&url), echo_grant_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .await
+        .expect("authorize");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v1/admin/traces?limit=50",
+            None,
+        ))
+        .await
+        .expect("traces");
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["data"].as_array().map(Vec::len),
+        Some(0),
+        "no workflow ran, so there is nothing to trace: {body}"
+    );
+}
