@@ -101,12 +101,12 @@ impl OrionClient {
     // -- Full-body verbs: parse the response body as `T`, envelope and all --
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::GET, path, None).await?;
+        let bytes = self.execute(Method::GET, path, None).await?;
         decode(&bytes)
     }
 
     pub async fn get_text(&self, path: &str) -> Result<String, ClientError> {
-        let (_, bytes) = self.execute(Method::GET, path, None).await?;
+        let bytes = self.execute(Method::GET, path, None).await?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -115,12 +115,12 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::POST, path, Some(body)).await?;
+        let bytes = self.execute(Method::POST, path, Some(body)).await?;
         decode(&bytes)
     }
 
     pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::POST, path, None).await?;
+        let bytes = self.execute(Method::POST, path, None).await?;
         decode(&bytes)
     }
 
@@ -129,7 +129,7 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::PUT, path, Some(body)).await?;
+        let bytes = self.execute(Method::PUT, path, Some(body)).await?;
         decode(&bytes)
     }
 
@@ -138,7 +138,7 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::PATCH, path, Some(body)).await?;
+        let bytes = self.execute(Method::PATCH, path, Some(body)).await?;
         decode(&bytes)
     }
 
@@ -151,7 +151,7 @@ impl OrionClient {
     //    tolerating the bare pre-1.0 shape --
 
     pub async fn get_data<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::GET, path, None).await?;
+        let bytes = self.execute(Method::GET, path, None).await?;
         decode_data(&bytes)
     }
 
@@ -161,7 +161,7 @@ impl OrionClient {
         path: &str,
     ) -> Result<Option<T>, ClientError> {
         match self.execute(Method::GET, path, None).await {
-            Ok((_, bytes)) => decode_data(&bytes).map(Some),
+            Ok(bytes) => decode_data(&bytes).map(Some),
             Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => Ok(None),
             Err(e) => Err(e),
         }
@@ -172,12 +172,12 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::POST, path, Some(body)).await?;
+        let bytes = self.execute(Method::POST, path, Some(body)).await?;
         decode_data(&bytes)
     }
 
     pub async fn post_data_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::POST, path, None).await?;
+        let bytes = self.execute(Method::POST, path, None).await?;
         decode_data(&bytes)
     }
 
@@ -186,7 +186,7 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::PUT, path, Some(body)).await?;
+        let bytes = self.execute(Method::PUT, path, Some(body)).await?;
         decode_data(&bytes)
     }
 
@@ -195,7 +195,7 @@ impl OrionClient {
         path: &str,
         body: &Value,
     ) -> Result<T, ClientError> {
-        let (_, bytes) = self.execute(Method::PATCH, path, Some(body)).await?;
+        let bytes = self.execute(Method::PATCH, path, Some(body)).await?;
         decode_data(&bytes)
     }
 
@@ -206,7 +206,7 @@ impl OrionClient {
         method: Method,
         path: &str,
         body: Option<&Value>,
-    ) -> Result<(StatusCode, Vec<u8>), ClientError> {
+    ) -> Result<bytes::Bytes, ClientError> {
         let url = format!("{}{path}", self.base_url);
         let mut req = self.http.request(method, &url);
         req = match (&self.api_key, &self.api_key_header) {
@@ -234,7 +234,10 @@ impl OrionClient {
         if !status.is_success() {
             return Err(ClientError::from_response(status, &bytes));
         }
-        Ok((status, bytes.to_vec()))
+        // `Bytes`, not `Vec<u8>`: the status is resolved here (no caller ever
+        // read it back out of the tuple), and `to_vec` copied every response
+        // body on the heap purely to fit the return shape.
+        Ok(bytes)
     }
 }
 

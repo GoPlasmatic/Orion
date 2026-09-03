@@ -336,7 +336,7 @@ pub(crate) async fn dynamic_handler(
         Ok(verdict) => verdict,
     };
 
-    let admission = match guard_verdict {
+    let mut admission = match guard_verdict {
         guards::GuardVerdict::CacheHit(body) => {
             let shaped = runtime
                 .parsed_config
@@ -355,13 +355,15 @@ pub(crate) async fn dynamic_handler(
     // #267: verified claims join the message metadata at `auth.claims` — the
     // one merge point both the sync path and the async queue flow through.
     // The token itself never gets here; guards discarded it after verifying.
-    let mut admission = admission;
     // #307: the verified grant joins the message at `metadata.oauth`, the same
     // way and in the same place. Platform-reserved: `build_request_metadata`
     // has already stripped any `oauth` key the caller supplied, so what a
     // workflow reads here was minted by the guard or is absent.
+    // `build_request_metadata` always returns an object — it starts from
+    // `json!({})` for a non-object base and then stamps `channel`, which would
+    // itself panic otherwise — so `as_object_mut` here is total.
     if let Some(grant) = admission.oauth.as_mut().and_then(|o| o.grant.take())
-        && let Some(map) = metadata_mut_object(&mut metadata)
+        && let Some(map) = metadata.as_object_mut()
     {
         map.insert("oauth".to_string(), grant);
     }
@@ -405,33 +407,38 @@ fn guard_response(response: guards::GuardResponse) -> Response {
         .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     let mut out = Response::new(axum::body::Body::from(response.body));
     *out.status_mut() = status;
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (name, value) in response.headers {
-        let Ok(header_name) = axum::http::HeaderName::try_from(name.as_str()) else {
-            continue;
-        };
-        let Ok(header_value) = axum::http::HeaderValue::from_str(&value) else {
-            continue;
-        };
-        if seen.insert(name) {
-            out.headers_mut().insert(header_name, header_value);
-        } else {
-            out.headers_mut().append(header_name, header_value);
-        }
-    }
+    apply_headers(&mut out, &response.headers);
     out
 }
 
-/// `metadata` as an object, replacing a non-object with one.
+/// Set workflow- or guard-declared headers on a built response.
 ///
-/// Every ingress builds metadata differently and the caller's own value is the
-/// base, so `null` is reachable here — and a platform-reserved key that
-/// silently did not get stamped because of it would be a guard quietly absent.
-fn metadata_mut_object(metadata: &mut Value) -> Option<&mut serde_json::Map<String, Value>> {
-    if !metadata.is_object() {
-        *metadata = Value::Object(serde_json::Map::new());
+/// The first occurrence of a name `insert`s and every later one `append`s.
+/// Both halves matter: `insert` is what lets a declared `content-type` replace
+/// the default without a pre-scan, and `append` is what lets a name repeat.
+/// Using `insert` throughout — as this did — silently collapsed two
+/// `set-cookie` values into the last one (#298), so a response could never both
+/// issue a session cookie and clear a spent one.
+///
+/// One copy, shared by `guard_response` here and `sync::shaped_response`:
+/// `GuardResponse` is documented as shaped like `ShapedResponse`, "`Vec` and
+/// all", and the two had already drifted on what a rejected header does.
+pub(super) fn apply_headers(response: &mut Response, headers: &[(String, String)]) {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (name, value) in headers {
+        let (Ok(header_name), Ok(header_value)) = (
+            axum::http::HeaderName::try_from(name.as_str()),
+            axum::http::HeaderValue::try_from(value.as_str()),
+        ) else {
+            tracing::warn!(header = %name, "response header is not valid HTTP; dropping it");
+            continue;
+        };
+        if seen.insert(name.as_str()) {
+            response.headers_mut().insert(header_name, header_value);
+        } else {
+            response.headers_mut().append(header_name, header_value);
+        }
     }
-    metadata.as_object_mut()
 }
 
 /// Turn a guard rejection into a response, letting the channel replace the

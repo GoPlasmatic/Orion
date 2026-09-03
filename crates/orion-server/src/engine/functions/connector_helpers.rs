@@ -236,25 +236,19 @@ impl<'a> ConnectorCall<'a> {
         require_str_field(input.raw(), field, self.name)
     }
 
-    /// Resolve the target connector and apply its operation gate, if it has
-    /// one and the call names an operation.
+    /// Resolve the target connector.
     ///
-    /// `op` is `None` for the handlers with nothing to gate (`http_call`,
-    /// `publish_kafka`, the cache pair) and `Some(_)` for the data handlers,
-    /// where `data_write` only knows its op after parsing the envelope and so
-    /// passes `None` here and gates separately.
+    /// Gating is *not* here: every handler applies its own through
+    /// `ConnectorHandler::gate`, because the op a call performs is often
+    /// known only after its envelope is parsed (`data_write`). This used to
+    /// take an `op` and gate for the callers that had one; nothing passed one
+    /// once `gate` existed, so the branch was dead and the doc beside it
+    /// described a split that no longer applied.
     pub async fn resolve(
         &self,
         registry: &ConnectorRegistry,
-        op: Option<&str>,
     ) -> Result<Arc<ConnectorConfig>, DataflowError> {
-        let config = resolve_connector(registry, self.connector).await?;
-        if let Some(op) = op
-            && let Some(gates) = config.operation_gates()
-        {
-            require_op_allowed(gates, op, self.connector)?;
-        }
-        Ok(config)
+        resolve_connector(registry, self.connector).await
     }
 
     /// Run the handler body inside the shared observability + circuit-breaker
@@ -366,14 +360,6 @@ where
     crate::metrics::record_connector_request(connector, channel, status);
     crate::metrics::record_connector_duration(connector, channel, start.elapsed().as_secs_f64());
     result
-}
-
-/// Extracts the `output` field from the input JSON, defaulting to `"data"`.
-pub fn extract_output_path(input: &Value) -> &str {
-    input
-        .get("output")
-        .and_then(|v| v.as_str())
-        .unwrap_or("data")
 }
 
 /// Where a handler's result is written, resolved against the message.

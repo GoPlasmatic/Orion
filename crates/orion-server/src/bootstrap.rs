@@ -263,7 +263,12 @@ pub async fn build_engine_components(
     //
     // Secrets are start-time config, resolved above, so there is no ordering
     // reason a channel guard should see fewer of them than a workflow does.
-    let datalogic_engine = Arc::clone(
+    //
+    // One engine, not two: this is also the placeholder the `EngineHandle`
+    // below is created around, until the real workflow engine replaces it.
+    // Building a second identical empty engine for that repeated nine operator
+    // registrations and the secret store at every boot.
+    let boot_engine = Arc::new(
         crate::engine::operators::with_orion_engine_defaults(
             dataflow_rs::Engine::builder(),
             &secrets,
@@ -274,9 +279,9 @@ pub async fn build_engine_components(
                 "Failed to build the shared expression engine",
                 e,
             )
-        })?
-        .datalogic(),
+        })?,
     );
+    let datalogic_engine = Arc::clone(boot_engine.datalogic());
     if !secrets.is_empty() {
         tracing::info!(
             names = ?secrets.names().collect::<Vec<_>>(),
@@ -287,13 +292,7 @@ pub async fn build_engine_components(
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
     let engine: Arc<crate::engine::EngineHandle> =
-        Arc::new(crate::engine::EngineHandle::new(Arc::new(
-            crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs::Engine::builder(),
-                &secrets,
-            )
-            .build()?,
-        )));
+        Arc::new(crate::engine::EngineHandle::new(boot_engine));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(crate::connector::cache_backend::CachePool::new(

@@ -19,10 +19,16 @@ fn serialize_result_with_profile(
     message: &dataflow_rs::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
 ) -> Result<String, serde_json::Error> {
+    // No profile is the overwhelmingly common case — it needs both
+    // `tracing.debug_profile_enabled` and a per-request opt-in — so serialize
+    // straight to the string. Going through an intermediate `Value` builds a
+    // full tree copy of every workflow result to satisfy a branch that is
+    // almost never taken.
+    let Some(p) = profile else {
+        return serde_json::to_string(message);
+    };
     let mut v = serde_json::to_value(message)?;
-    if let Some(p) = profile
-        && let Some(obj) = v.as_object_mut()
-    {
+    if let Some(obj) = v.as_object_mut() {
         obj.insert(
             "_orion".to_string(),
             serde_json::json!({ "profile": p.to_json() }),
@@ -503,19 +509,16 @@ async fn persist_success(
         return;
     }
 
-    // Apply filters via the shared `EffectiveTraceConfig::should_drop`.
+    // Through the shared `TracePlan::decide`, which owns the drop decision and
+    // the `orion_traces_dropped_total` reason label for every transport — the
+    // async path spelled the same match out for itself, so a new drop reason
+    // would have reached two transports of three.
     // This branch handles the success path → no errors. The sampling draw is
     // deterministic here: `for_async_submission` pins `sample_rate` to 1.0
     // (N22), so only `errors_only` can drop an async result — a sampled-out
     // trace with a live status row cannot happen on this path.
     let should_persist_result =
-        match effective_trace.should_drop(false, effective_trace.draw_sample()) {
-            Some(reason) => {
-                metrics::record_trace_dropped(reason);
-                false
-            }
-            None => true,
-        };
+        super::trace_record::TracePlan::decide(effective_trace, false).persists();
 
     let result_saved = if !should_persist_result {
         // Treat as saved for state-machine purposes — we won't write,

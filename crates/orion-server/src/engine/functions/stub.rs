@@ -377,7 +377,7 @@ impl StubHandler {
     /// place than production reports the wrong verdict in both directions.
     ///
     /// Every function this generic stub serves resolves its destination via
-    /// `extract_output_path`: the `output` field, defaulting to `"data"` (as
+    /// `resolve_output_path`: the `output` field, defaulting to `"data"` (as
     /// their published schemas document). `cache_write` is the one that
     /// writes nothing — its stub exists only to keep the task from failing.
     /// `response_path` is deliberately not consulted: none of these
@@ -728,7 +728,7 @@ mod tests {
             Some("data.x".to_string())
         );
         // An omitted `output` defaults to the data root, exactly like the
-        // real handler (`extract_output_path`) and its published schema —
+        // real handler (`resolve_output_path`) and its published schema —
         // a stub writing nothing here fails workflows that pass in
         // production.
         assert_eq!(path(&read, json!({})), Some("data".to_string()));

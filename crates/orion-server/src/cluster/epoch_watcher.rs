@@ -31,71 +31,69 @@ pub fn start_cluster_tasks(state: &AppState) {
 }
 
 async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdown) {
-    {
-        let mut interval = tokio::time::interval(Duration::from_millis(
-            state.config.cluster.epoch_poll_interval_ms,
-        ));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Skip the immediate first tick.
-        interval.tick().await;
-        tracing::info!(
-            poll_interval_ms = state.config.cluster.epoch_poll_interval_ms,
-            "Epoch watcher started"
-        );
+    let mut interval = tokio::time::interval(Duration::from_millis(
+        state.config.cluster.epoch_poll_interval_ms,
+    ));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Skip the immediate first tick.
+    interval.tick().await;
+    tracing::info!(
+        poll_interval_ms = state.config.cluster.epoch_poll_interval_ms,
+        "Epoch watcher started"
+    );
 
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {}
-                _ = shutdown.signalled() => return,
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = shutdown.signalled() => return,
+        }
+        let row = match state.cluster.repo.get_epoch().await {
+            Ok(row) => row,
+            Err(e) => {
+                crate::metrics::record_error("epoch_watcher");
+                tracing::warn!(error = %e, "Epoch watcher: failed to read config epoch");
+                continue;
             }
-            let row = match state.cluster.repo.get_epoch().await {
-                Ok(row) => row,
-                Err(e) => {
-                    crate::metrics::record_error("epoch_watcher");
-                    tracing::warn!(error = %e, "Epoch watcher: failed to read config epoch");
-                    continue;
-                }
-            };
+        };
 
-            // A tick succeeds when the epoch was read and, if it had
-            // advanced, the resync applied. A failed resync leaves the
-            // gauge stale alongside the retry warning (O3).
-            //
-            // The scope the resync is sized to is decided in there rather than
-            // here, because it is a property of the *advance* — this node's
-            // watermark and the row together — not of the row alone.
-            let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, &row, |scope| {
-                crate::runtime::resync_from_db(&state, scope)
-            })
-            .await;
+        // A tick succeeds when the epoch was read and, if it had
+        // advanced, the resync applied. A failed resync leaves the
+        // gauge stale alongside the retry warning (O3).
+        //
+        // The scope the resync is sized to is decided in there rather than
+        // here, because it is a property of the *advance* — this node's
+        // watermark and the row together — not of the row alone.
+        let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, &row, |scope| {
+            crate::runtime::resync_from_db(&state, scope)
+        })
+        .await;
 
-            let last_breaker = state
+        let last_breaker = state
+            .cluster
+            .last_seen_breaker_epoch
+            .load(Ordering::Acquire);
+        if row.breaker_epoch > last_breaker {
+            if !row.breaker_key.is_empty() {
+                // A missing key on this node is fine — breakers are
+                // created lazily per node (D3).
+                let found = state
+                    .connector_registry
+                    .reset_circuit_breaker(&row.breaker_key)
+                    .await;
+                tracing::info!(
+                    key = %row.breaker_key,
+                    found,
+                    "Applied cluster-wide circuit breaker reset"
+                );
+            }
+            state
                 .cluster
                 .last_seen_breaker_epoch
-                .load(Ordering::Acquire);
-            if row.breaker_epoch > last_breaker {
-                if !row.breaker_key.is_empty() {
-                    // A missing key on this node is fine — breakers are
-                    // created lazily per node (D3).
-                    let found = state
-                        .connector_registry
-                        .reset_circuit_breaker(&row.breaker_key)
-                        .await;
-                    tracing::info!(
-                        key = %row.breaker_key,
-                        found,
-                        "Applied cluster-wide circuit breaker reset"
-                    );
-                }
-                state
-                    .cluster
-                    .last_seen_breaker_epoch
-                    .fetch_max(row.breaker_epoch, Ordering::AcqRel);
-            }
+                .fetch_max(row.breaker_epoch, Ordering::AcqRel);
+        }
 
-            if tick_ok {
-                crate::metrics::record_job_success("epoch_watcher");
-            }
+        if tick_ok {
+            crate::metrics::record_job_success("epoch_watcher");
         }
     }
 }

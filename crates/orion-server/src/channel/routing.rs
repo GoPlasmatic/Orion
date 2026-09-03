@@ -326,8 +326,12 @@ fn match_segments<S: AsRef<str>>(
 #[derive(Default)]
 pub struct RouteTable {
     entries: Vec<RouteEntry>,
-    /// `(segment_count, first static segment)` → entry indices, ascending.
-    by_first_static: HashMap<(usize, String), Vec<usize>>,
+    /// `segment_count` → first static segment → entry indices, ascending.
+    ///
+    /// Nested rather than keyed on `(usize, String)`: a tuple key cannot be
+    /// borrowed as `(usize, &str)`, so every request allocated a `String` copy
+    /// of its first path segment just to probe the map and dropped it again.
+    by_first_static: HashMap<usize, HashMap<String, Vec<usize>>>,
     /// `segment_count` → indices of entries whose first segment is a
     /// parameter, ascending.
     by_param_first: HashMap<usize, Vec<usize>>,
@@ -381,12 +385,14 @@ impl RouteTable {
     /// construct a table from hand-written entries without skipping the index
     /// the production path relies on.
     fn from_sorted_entries(entries: Vec<RouteEntry>) -> Self {
-        let mut by_first_static: HashMap<(usize, String), Vec<usize>> = HashMap::new();
+        let mut by_first_static: HashMap<usize, HashMap<String, Vec<usize>>> = HashMap::new();
         let mut by_param_first: HashMap<usize, Vec<usize>> = HashMap::new();
         for (i, entry) in entries.iter().enumerate() {
             match entry.segments.first() {
                 Some(RouteSegment::Static(s)) => by_first_static
-                    .entry((entry.segments.len(), s.clone()))
+                    .entry(entry.segments.len())
+                    .or_default()
+                    .entry(s.clone())
                     .or_default()
                     .push(i),
                 // A leading parameter — or a zero-segment route, which cannot
@@ -457,7 +463,8 @@ impl RouteTable {
             .first()
             .and_then(|first| {
                 self.by_first_static
-                    .get(&(path_parts.len(), first.as_ref().to_string()))
+                    .get(&path_parts.len())?
+                    .get(first.as_ref())
             })
             .unwrap_or(&empty);
         let param_bucket = self.by_param_first.get(&path_parts.len()).unwrap_or(&empty);

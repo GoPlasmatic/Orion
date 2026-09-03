@@ -16,6 +16,9 @@ categories = ["api-bindings", "web-programming::http-client"]
 
 [dependencies]
 orion-api.workspace = true
+# Already in the tree via reqwest — direct so `execute` can hand back the
+# response body without copying it out of reqwest's own buffer.
+bytes = "1"
 # Already in the tree via reqwest/url — direct so `query_string` can encode.
 percent-encoding = "2"
 # Same spec as the binaries so the shared lockfile carries one reqwest tree.

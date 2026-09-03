@@ -371,7 +371,7 @@ impl<H: ConnectorHandler> AsyncFunctionHandler for Connector<H> {
 
         let registry = self.0.registry();
         call.run(registry, async {
-            let config = call.resolve(registry, None).await?;
+            let config = call.resolve(registry).await?;
             let conn = require_connector::<H::Kind>(&config, call.connector)?;
             H::gate(&parsed, conn, call.connector).map_err(dataflow_rs::DataflowError::from)?;
 

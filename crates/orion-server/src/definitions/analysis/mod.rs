@@ -63,7 +63,6 @@ pub struct WorkflowFacts {
     pub origin: String,
     pub name: String,
     pub workflow_id: Option<String>,
-    pub doc: Value,
     /// The workflow-level condition; `true` when absent, as the engine reads it.
     pub condition: Expr,
     pub has_loop: bool,
@@ -85,7 +84,6 @@ pub struct StepFacts {
     pub path: String,
     /// The list it sits in: `tasks`, `tasks[1].tasks`.
     pub list: String,
-    pub index: usize,
     /// Index into `steps` of the enclosing group, if any.
     pub parent: Option<usize>,
     pub kind: StepKind,
@@ -189,14 +187,6 @@ impl<'a> Analysis<'a> {
         let span = doc.locate(path)?;
         Some(doc.line_col(span.start))
     }
-
-    /// The workflow a channel name is bound to, by `workflow_id`.
-    pub fn workflow_for_channel(&self, channel: &str) -> Option<&WorkflowFacts> {
-        let id = self.channels.get(channel)?;
-        self.workflows
-            .iter()
-            .find(|w| w.workflow_id.as_deref() == Some(id))
-    }
 }
 
 fn workflow_facts(origin: &str, doc: &Value, evaluator: &Evaluator) -> WorkflowFacts {
@@ -221,7 +211,6 @@ fn workflow_facts(origin: &str, doc: &Value, evaluator: &Evaluator) -> WorkflowF
             .get("workflow_id")
             .and_then(Value::as_str)
             .map(str::to_string),
-        doc: doc.clone(),
         condition,
         has_loop: loop_config.is_some(),
         loop_counter,
@@ -285,7 +274,6 @@ fn walk(
         out.push(StepFacts {
             path: path.clone(),
             list: list.to_string(),
-            index,
             parent,
             kind,
             id,

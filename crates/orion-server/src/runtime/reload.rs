@@ -83,9 +83,14 @@ pub async fn reload_engine_with_opts(
     let _reload_guard = state.reload_lock.lock().await;
 
     let result = async {
-        let channels = state.repos.channels.list_active().await?;
+        // Two independent reads, overlapped: this runs on every admin mutation
+        // and, in cluster mode, on every node whose epoch watcher sees a bump,
+        // so the sequential form paid two round trips where one suffices.
+        let (channels, active_workflows) = tokio::try_join!(
+            state.repos.channels.list_active(),
+            state.repos.workflows.list_active(),
+        )?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        let active_workflows = state.repos.workflows.list_active().await?;
         // The running engine is the screen: `with_new_workflows` carries the
         // handler registry across, so the handlers that will run these
         // workflows are exactly the ones already registered here. A workflow

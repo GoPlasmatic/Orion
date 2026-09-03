@@ -439,31 +439,12 @@ fn drain_shaped_response(
 }
 
 /// Build the HTTP response for a shaped channel.
+///
+/// JSON first, then the workflow's headers over the top, through the shared
+/// `apply_headers` — which owns the insert-then-append rule (#298).
 fn shaped_response(shaped: ShapedResponse) -> Response {
-    // JSON first, then the workflow's headers over the top.
-    //
-    // The first occurrence of a name `insert`s and every later one `append`s.
-    // Both halves matter: `insert` is what lets a workflow-set `content-type`
-    // replace the JSON default without a pre-scan, and `append` is what lets a
-    // name repeat. Using `insert` throughout — as this did — silently collapsed
-    // two `set-cookie` values into the last one (#298), so a response could
-    // never both issue a session cookie and clear a spent one.
     let mut response = json_response(shaped.status, shaped.body);
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for (name, value) in &shaped.headers {
-        let (Ok(header_name), Ok(header_value)) = (
-            axum::http::HeaderName::try_from(name.as_str()),
-            axum::http::HeaderValue::try_from(value.as_str()),
-        ) else {
-            tracing::warn!(header = %name, "workflow response header is not valid HTTP; dropping it");
-            continue;
-        };
-        if seen.insert(name.as_str()) {
-            response.headers_mut().insert(header_name, header_value);
-        } else {
-            response.headers_mut().append(header_name, header_value);
-        }
-    }
+    super::apply_headers(&mut response, &shaped.headers);
     response
 }
 

@@ -982,9 +982,9 @@ async fn probe_storage(
         req = req.header(name, value);
     }
     match req.send().await {
-        Ok(response) if response.status().is_success() || response.status().as_u16() < 500 => {
-            Ok(())
-        }
+        // Anything under 500 is "reachable and answering" — a 403 from the
+        // store still proves the endpoint and the signature path work.
+        Ok(response) if response.status().as_u16() < 500 => Ok(()),
         Ok(response) => Err(format!("the store answered HTTP {}", response.status())),
         // S21: transport errors can carry the endpoint; that is the
         // diagnostic, credentials never appear in it.

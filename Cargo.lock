@@ -3248,6 +3248,7 @@ dependencies = [
 name = "orion-client"
 version = "1.5.1"
 dependencies = [
+ "bytes",
  "orion-api",
  "percent-encoding",
  "reqwest",

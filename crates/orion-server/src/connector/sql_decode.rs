@@ -178,8 +178,6 @@ fn pg_column(
         sql_type: sql_type.clone(),
         detail,
     };
-    let get = |v: Result<Value, sqlx::Error>| v.map_err(|e| fail(e.to_string()));
-
     // A domain is a constrained alias — `CREATE DOMAIN email AS text` — and
     // decodes exactly as the type it wraps. Unwrapped first so every rule
     // below applies through it.
@@ -200,7 +198,6 @@ fn pg_column(
         return pg_array(row, i, name, elem.name(), numeric, &fail);
     }
 
-    let _ = get; // used by the by-name arm below
     pg_by_name(row, i, name, &sql_type, numeric, &fail)
 }
 

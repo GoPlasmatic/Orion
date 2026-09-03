@@ -654,27 +654,31 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
     }
     // Canonicalised by the formatter, which refuses anything else — but a
     // create-time message naming the field beats a reload-time quarantine.
-    if !matches!(
-        cfg.state_cookie.same_site.to_ascii_lowercase().as_str(),
-        "strict" | "lax" | "none"
-    ) {
-        return Err(format!(
-            "oauth2_login.state_cookie.same_site '{}' is not valid — Strict, Lax or None",
-            cfg.state_cookie.same_site
-        ));
-    }
-    // Not merely unusual: the callback is a top-level cross-site GET from the
-    // IdP, and a `Strict` cookie is withheld on exactly that request, so every
-    // sign-in would fail the state check with nothing to see in the logs but a
-    // missing cookie.
-    if cfg.state_cookie.same_site.eq_ignore_ascii_case("strict") {
-        return Err(
-            "oauth2_login.state_cookie.same_site = \"strict\" would withhold the \
+    //
+    // One match, so the set this field actually accepts — `lax` or `none` — is
+    // stated once. Spelling `strict` as a valid value and then refusing it in a
+    // second `if` advertised a setting no configuration can hold.
+    match cfg.state_cookie.same_site.to_ascii_lowercase().as_str() {
+        "lax" | "none" => {}
+        // Not merely unusual: the callback is a top-level cross-site GET from
+        // the IdP, and a `Strict` cookie is withheld on exactly that request,
+        // so every sign-in would fail the state check with nothing to see in
+        // the logs but a missing cookie.
+        "strict" => {
+            return Err(
+                "oauth2_login.state_cookie.same_site = \"strict\" would withhold the \
                     cookie on the callback, which is a top-level cross-site GET from the \
                     identity provider — every sign-in would fail the state check. Use \
                     \"lax\"."
-                .to_string(),
-        );
+                    .to_string(),
+            );
+        }
+        _ => {
+            return Err(format!(
+                "oauth2_login.state_cookie.same_site '{}' is not valid — Lax or None",
+                cfg.state_cookie.same_site
+            ));
+        }
     }
 
     if let Some(ref rt) = cfg.return_to {

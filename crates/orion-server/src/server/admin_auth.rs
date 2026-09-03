@@ -132,7 +132,7 @@ pub(crate) fn is_guarded_path(path: &str, metrics_on_this_listener: bool) -> boo
 /// says what the caller actually asked for, so both this middleware and the
 /// rate-limit classifier resolve against it instead.
 pub(crate) fn is_data_catch_all(matched: &str) -> bool {
-    matched == "/{*path}" || matched.ends_with("/{*path}")
+    matched.ends_with("/{*path}")
 }
 
 /// The one admin-plane path that authenticates itself rather than through the

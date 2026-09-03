@@ -37,18 +37,14 @@ impl OrionConfig {
             .with_context(|| format!("Failed to parse config from {}", path.display()))
     }
 
-    /// Resolve API key: env var > config file. Returns (key, optional header).
+    /// The API key from `~/.orion/config.toml`, with its header.
     ///
-    /// The server URL needs no twin of this: `--server` carries
-    /// `env = "ORION_SERVER_URL"`, so clap has already applied the env var by
-    /// the time `build_client` reads the flag.
+    /// Only the config file: `--api-key` and `--api-key-header` carry
+    /// `env = "ORION_API_KEY"` / `env = "ORION_API_KEY_HEADER"`, so clap has
+    /// already applied those by the time the caller falls through to here —
+    /// the same reason the server URL needs no env twin. Reading them again
+    /// here was a second, unreachable precedence rule for one credential.
     pub fn resolve_api_key() -> Option<(String, Option<String>)> {
-        if let Ok(key) = std::env::var("ORION_API_KEY")
-            && !key.is_empty()
-        {
-            let header = std::env::var("ORION_API_KEY_HEADER").ok();
-            return Some((key, header));
-        }
         let config = Self::load().ok()?;
         config.api_key.map(|k| (k, config.api_key_header))
     }
