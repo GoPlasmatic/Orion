@@ -12,6 +12,12 @@ pass --raw to send the payload verbatim instead. Such a channel stamps its own
 metadata and accepts none from the caller, so --raw and --metadata are refused
 together.
 
+Exit codes with --wait:
+  0 = trace completed, 1 = trace failed, 2 = timed out
+
+Under --output json or yaml the trace is printed on every one of those,
+including the timeout, so a caller can always parse the result.
+
 Input Methods:
   -f <file>    Read payload from a JSON file
   -d '<json>'  Provide payload as an inline JSON string
@@ -23,5 +29,6 @@ Examples:
   cat payload.json | orion-cli send my-channel --stdin
   orion-cli send my-channel -d '...' --async-mode
   orion-cli send my-channel -d '...' --async-mode --wait --timeout 30
+  orion-cli send my-channel -d '...' --async-mode --wait --interval 5
   orion-cli send my-channel -d '...' --metadata '{"source": "cli-test"}'
   orion-cli send my-channel -d '...' --raw   # body_mode = "payload" channel

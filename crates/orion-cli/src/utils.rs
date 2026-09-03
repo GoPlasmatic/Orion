@@ -260,6 +260,129 @@ pub fn print_validation_envelope(
     Ok(code)
 }
 
+/// Which trace to wait on, and how long to keep asking.
+///
+/// Grouped so `interval` and `timeout` — both bare `u64` seconds — cannot be
+/// swapped at the call site without the compiler noticing.
+pub struct WaitOptions<'a> {
+    pub id: &'a str,
+    pub token: Option<&'a str>,
+    pub interval: u64,
+    pub timeout: u64,
+}
+
+/// Poll a trace to a terminal state and render it. **Exit 0 completed,
+/// 1 failed, 2 timed out.**
+///
+/// One implementation for `traces wait` and `data send --wait`, which polled
+/// the same endpoint through the same states and rendered the same three
+/// outcomes — and had drifted on all three of the things that distinguish
+/// them:
+///
+/// - **the timeout code.** `traces wait` documented and returned 2; `send`
+///   returned 2 from its human branch and 1 from its JSON branch, where the
+///   early return ran before the status was examined. Under `--output json` a
+///   timeout was indistinguishable from a failed trace.
+/// - **what `--output json` prints.** `traces wait` gated its terminal branch
+///   on the format but not its timeout branch, so a timeout wrote a human
+///   `TIMEOUT` line to *stdout* and no JSON at all — a caller piping to `jq`
+///   got a parse error rather than a document.
+/// - **the token.** `send` interpolated it into the query string raw where
+///   `traces wait` percent-encoded it.
+///
+/// So: the machine-readable formats always emit the trace and never the
+/// human line, on every exit including the timeout; the token always goes
+/// through `query_string`; and the timeout is always 2.
+///
+/// Progress goes to stderr, so `--output json` piped to a parser stays clean
+/// while a human watching the terminal still sees it.
+pub async fn wait_for_trace(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    opts: WaitOptions<'_>,
+) -> Result<i32> {
+    let WaitOptions {
+        id,
+        token,
+        interval,
+        timeout,
+    } = opts;
+    let qs = build_query_string(&[("token", token.map(str::to_string))]);
+    let path = format!("{}{qs}", orion_client::paths::trace(id));
+    let start = std::time::Instant::now();
+    let timeout_dur = std::time::Duration::from_secs(timeout);
+    let interval_dur = std::time::Duration::from_secs(interval);
+
+    if !quiet {
+        eprint!("Waiting for trace {id}...");
+    }
+
+    let (resp, timed_out) = loop {
+        let resp: Value = client.get(&path).await?;
+        // v1.0 wraps the trace in the `{"data": …}` admin envelope; tolerate
+        // the bare pre-1.0 shape.
+        let resp = resp.get("data").cloned().unwrap_or(resp);
+        let status = resp["status"].as_str().unwrap_or("unknown");
+
+        if status == "completed" || status == "failed" {
+            break (resp, false);
+        }
+        if start.elapsed() >= timeout_dur {
+            break (resp, true);
+        }
+        tokio::time::sleep(interval_dur).await;
+    };
+
+    if !quiet {
+        eprintln!();
+    }
+
+    let status = resp["status"].as_str().unwrap_or("unknown");
+    let code = if timed_out {
+        2
+    } else if status == "failed" {
+        1
+    } else {
+        0
+    };
+
+    // Every exit, including the timeout: a machine-readable format emits the
+    // trace and nothing else.
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(code);
+    }
+
+    if quiet {
+        return Ok(code);
+    }
+
+    if timed_out {
+        println!(
+            "{} Timed out after {timeout}s (status: {status})",
+            "TIMEOUT".yellow().bold()
+        );
+    } else if status == "failed" {
+        let err = resp["error_message"]
+            .as_str()
+            .or(resp["error"].as_str())
+            .unwrap_or("Unknown error");
+        println!("{} Trace failed: {err}", "ERR".red().bold());
+    } else {
+        println!("{} Trace completed", "OK".green().bold());
+        if let Some(msg) = resp.get("message") {
+            println!("{}", serde_json::to_string_pretty(msg)?);
+        } else if let Some(result) = resp.get("result_json").and_then(|r| r.as_str())
+            && let Ok(parsed) = serde_json::from_str::<Value>(result)
+        {
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
+        }
+    }
+
+    Ok(code)
+}
+
 /// Print the count line under a table, from an admin list envelope. `noun` is
 /// the already-pluralised label, e.g. `"workflow(s)"`.
 ///

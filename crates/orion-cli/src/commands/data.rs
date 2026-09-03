@@ -45,6 +45,10 @@ pub struct SendCmd {
     #[arg(long, default_value = "60")]
     timeout: u64,
 
+    /// Seconds between polls while --wait is waiting
+    #[arg(long, default_value = "1")]
+    interval: u64,
+
     /// Optional metadata JSON string attached to the request
     #[arg(long)]
     metadata: Option<String>,
@@ -225,54 +229,21 @@ impl SendCmd {
         }
 
         if self.wait {
-            if !quiet {
-                eprint!("Waiting for trace {trace_id}...");
-            }
-            let result = poll_trace(client, trace_id, trace_token, self.timeout).await?;
-
-            if !quiet {
-                eprintln!();
-            }
-
-            let status = result["status"].as_str().unwrap_or("unknown");
-
-            if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-                output::print_value(format, &result)?;
-                return Ok(if status == "completed" { 0 } else { 1 });
-            }
-
-            match status {
-                "completed" => {
-                    if !quiet {
-                        println!("{} Trace completed", "OK".green().bold());
-                        if let Some(msg) = result.get("message") {
-                            println!("{}", serde_json::to_string_pretty(msg)?);
-                        } else if let Some(result_json) =
-                            result.get("result_json").and_then(|r| r.as_str())
-                            && let Ok(parsed) = serde_json::from_str::<Value>(result_json)
-                        {
-                            println!("{}", serde_json::to_string_pretty(&parsed)?);
-                        }
-                    }
-                    Ok(0)
-                }
-                "failed" => {
-                    if !quiet {
-                        let err = result["error_message"]
-                            .as_str()
-                            .or(result["error"].as_str())
-                            .unwrap_or("Unknown error");
-                        println!("{} Trace failed: {err}", "ERR".red().bold());
-                    }
-                    Ok(1)
-                }
-                _ => {
-                    if !quiet {
-                        println!("{} Timed out (status: {status})", "TIMEOUT".yellow().bold());
-                    }
-                    Ok(2)
-                }
-            }
+            // The same wait `traces wait` runs — same polling, same rendering,
+            // same exit codes. They were two implementations that had drifted
+            // on the timeout code and on what `--output json` prints.
+            utils::wait_for_trace(
+                client,
+                format,
+                quiet,
+                utils::WaitOptions {
+                    id: trace_id,
+                    token: (!trace_token.is_empty()).then_some(trace_token),
+                    interval: self.interval,
+                    timeout: self.timeout,
+                },
+            )
+            .await
         } else {
             Ok(0)
         }
@@ -316,38 +287,6 @@ fn render_profile(profile: &Value) {
             };
             println!("    {target:<32} {ms:>8.3} ms");
         }
-    }
-}
-
-async fn poll_trace(
-    client: &OrionClient,
-    trace_id: &str,
-    trace_token: &str,
-    timeout_secs: u64,
-) -> Result<Value> {
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(timeout_secs);
-    let path = if trace_token.is_empty() {
-        paths::trace(trace_id)
-    } else {
-        format!("{}?token={trace_token}", paths::trace(trace_id))
-    };
-
-    loop {
-        let resp: Value = client.get(&path).await?;
-        // v1.0 wraps the TraceDetail in the {"data": …} admin envelope.
-        let resp = resp.get("data").cloned().unwrap_or(resp);
-
-        let status = resp["status"].as_str().unwrap_or("");
-        if status == "completed" || status == "failed" {
-            return Ok(resp);
-        }
-
-        if start.elapsed() >= timeout {
-            return Ok(resp);
-        }
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 

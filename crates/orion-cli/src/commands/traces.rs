@@ -142,11 +142,11 @@ impl TracesCmd {
                 interval,
                 timeout,
             } => {
-                wait(
+                utils::wait_for_trace(
                     client,
                     format,
                     quiet,
-                    WaitOptions {
+                    utils::WaitOptions {
                         id,
                         token: token.as_deref(),
                         interval: *interval,
@@ -290,93 +290,6 @@ async fn get(
     }
 
     Ok(status_exit_code(status))
-}
-
-/// Which trace to poll for, and how long to keep asking.
-///
-/// Grouped so `interval` and `timeout` — both bare `u64` seconds — cannot be
-/// swapped at the call site without the compiler noticing.
-struct WaitOptions<'a> {
-    id: &'a str,
-    token: Option<&'a str>,
-    interval: u64,
-    timeout: u64,
-}
-
-async fn wait(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    opts: WaitOptions<'_>,
-) -> Result<i32> {
-    let WaitOptions {
-        id,
-        token,
-        interval,
-        timeout,
-    } = opts;
-    let qs = utils::build_query_string(&[("token", token.map(str::to_string))]);
-    let start = std::time::Instant::now();
-    let timeout_dur = std::time::Duration::from_secs(timeout);
-    let interval_dur = std::time::Duration::from_secs(interval);
-
-    if !quiet {
-        eprint!("Waiting for trace {id}...");
-    }
-
-    loop {
-        let resp: Value = client.get(&format!("{}{qs}", paths::trace(id))).await?;
-        let resp = resp.get("data").cloned().unwrap_or(resp);
-
-        let status = resp["status"].as_str().unwrap_or("unknown");
-
-        if status == "completed" || status == "failed" {
-            if !quiet {
-                eprintln!();
-            }
-
-            if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-                output::print_value(format, &resp)?;
-            } else if !quiet {
-                match status {
-                    "completed" => {
-                        println!("{} Trace completed", "OK".green().bold());
-                        if let Some(msg) = resp.get("message") {
-                            println!("{}", serde_json::to_string_pretty(msg)?);
-                        } else if let Some(result) =
-                            resp.get("result_json").and_then(|r| r.as_str())
-                            && let Ok(parsed) = serde_json::from_str::<Value>(result)
-                        {
-                            println!("{}", serde_json::to_string_pretty(&parsed)?);
-                        }
-                    }
-                    "failed" => {
-                        let err = resp["error_message"]
-                            .as_str()
-                            .or(resp["error"].as_str())
-                            .unwrap_or("Unknown error");
-                        println!("{} Trace failed: {err}", "ERR".red().bold());
-                    }
-                    _ => {}
-                }
-            }
-
-            return Ok(status_exit_code(status));
-        }
-
-        if start.elapsed() >= timeout_dur {
-            if !quiet {
-                eprintln!();
-                println!(
-                    "{} Timed out after {timeout}s (status: {status})",
-                    "TIMEOUT".yellow().bold()
-                );
-            }
-            return Ok(2);
-        }
-
-        tokio::time::sleep(interval_dur).await;
-    }
 }
 
 fn status_exit_code(status: &str) -> i32 {

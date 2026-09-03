@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`traces wait` now emits JSON on a timeout.** Its timeout branch was gated
+  on `--quiet` but never on `--output`, so a timed-out wait printed a human
+  `TIMEOUT` line to stdout and no document at all — a caller piping to `jq` got
+  a parse error rather than a trace. Under `--output json` or `yaml` the trace
+  is now printed on every outcome, the timeout included.
+
+- **`send --async-mode --wait` exits 2 on a timeout under `--output json`.** It
+  returned 2 from its human branch but 1 from its JSON branch, which made a
+  timeout indistinguishable from a failed trace for exactly the callers most
+  likely to be checking. The documented contract — 0 completed, 1 failed,
+  2 timed out — now holds in every output format, and `send --help` states it.
+
+  Scripts that treated a JSON-mode `1` as "timed out or failed" will now see 2
+  for the timeout half.
+
+### Added
+
+- **`send --wait` accepts `--interval`**, the poll spacing `traces wait` has
+  always had; it was hard-coded to one second. Default unchanged.
+
 ## [1.4.0] - 2026-08-29
 
 `orion-cli` and `orion-server` release in lockstep. 1.4.0 is server-side

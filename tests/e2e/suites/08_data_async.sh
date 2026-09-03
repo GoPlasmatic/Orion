@@ -75,9 +75,70 @@ test_async_quiet_returns_trace_id() {
     assert_matches "$CLI_OUTPUT" '^[0-9a-f-]{36}$'
 }
 
+# `traces wait` had no e2e coverage at all, and it shares its implementation
+# with `send --wait` since the two were unified — so these cover both.
+
+test_traces_wait_emits_json_on_success() {
+    reset_server_state
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    local wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$wf"
+    create_channel orders "$wf" async
+    cli_quiet engine reload
+
+    cli send orders --async-mode -d '{"order_id":"WAIT-JSON"}'
+    assert_exit_code 0 "$CLI_EXIT"
+    local trace_id trace_token
+    trace_id=$(echo "$CLI_OUTPUT" | jq -r '.trace_id')
+    trace_token=$(echo "$CLI_OUTPUT" | jq -r '.trace_token')
+
+    cli traces wait "$trace_id" --token "$trace_token" --timeout 15
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_json_eq "$CLI_OUTPUT" '.status' 'completed'
+}
+
+# The contract a caller parses: under --output json the trace is printed on
+# every outcome, and a timeout is exit 2 rather than 1.
+#
+# `--timeout 0` breaks out on the first poll unless the trace is already
+# terminal, so this asserts what holds either way: stdout is a parseable trace
+# document, and the exit code is never 1 (which would mean the trace failed).
+# Before the fix a timed-out `traces wait` wrote a human TIMEOUT line to stdout
+# and no JSON, and a timed-out `send --wait` exited 1.
+assert_wait_output_is_parseable_json() {
+    local label="$1"
+    if ! echo "$CLI_OUTPUT" | jq -e '.' >/dev/null 2>&1; then
+        echo "ASSERTION FAILED: $label: stdout must be parseable JSON, got: $CLI_OUTPUT" >&2
+        return 1
+    fi
+    assert_ne "$CLI_EXIT" "1" "$label: a timeout must not report as a failed trace" || return 1
+}
+
+test_wait_timeout_still_emits_json_and_never_exits_one() {
+    reset_server_state
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    local wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$wf"
+    create_channel orders "$wf" async
+    cli_quiet engine reload
+
+    cli send orders --async-mode -d '{"order_id":"WAIT-TO"}'
+    local trace_id trace_token
+    trace_id=$(echo "$CLI_OUTPUT" | jq -r '.trace_id')
+    trace_token=$(echo "$CLI_OUTPUT" | jq -r '.trace_token')
+
+    cli traces wait "$trace_id" --token "$trace_token" --timeout 0
+    assert_wait_output_is_parseable_json "traces wait --timeout 0" || return 1
+
+    cli send orders --async-mode --wait --timeout 0 -d '{"order_id":"WAIT-TO-2"}'
+    assert_wait_output_is_parseable_json "send --wait --timeout 0" || return 1
+}
+
 run_test "async submit and poll trace"   test_async_submit_and_poll
 run_test "async with --wait flag"        test_async_with_wait_flag
 run_test "async trace get"               test_async_trace_get
 run_test "async quiet returns trace ID"  test_async_quiet_returns_trace_id
+run_test "traces wait emits JSON on success" test_traces_wait_emits_json_on_success
+run_test "wait timeout emits JSON, never exit 1" test_wait_timeout_still_emits_json_and_never_exits_one
 
 end_suite
