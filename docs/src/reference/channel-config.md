@@ -580,7 +580,7 @@ This is *establishment*, not verification, which is why it is a `config` block r
 | `return_to` | object | no | — | `{param, allow_list}` — carry a pre-login destination through the flow. |
 | `id_token` | object | no | — | OIDC `id_token` verification. Absent is plain OAuth2. |
 
-`state_cookie` fields: `name` (default `orion_oauth_state`), `secure` (default `true`), `same_site` (default `lax`), `path` (default `/`), and `max_age` in seconds (default `600`), which is also the state token's expiry — the window a user has to finish the consent screen.
+`state_cookie` fields: `name` (default `orion_oauth_state`), `secure` (default `true`), `same_site` (default `lax`), `path` (default `/`), and `max_age` in seconds (default `600`), which is also the state token's expiry — the window a user has to finish the consent screen. `max_age` must be between `1` and `86400` (24 hours); it sizes one consent screen, not a session, and a long one keeps a replayable state token valid for as long as it lasts.
 
 `id_token` fields: `issuer` (required, accepted `iss` values), `jwks_url` (required, `https`), `audience` (defaults to `[client_id]`, per OIDC Core §3.1.3.7), `algorithms` (default `["RS256"]`), `required` (default `true`), and `nonce` (default `true`).
 

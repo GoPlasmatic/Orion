@@ -613,3 +613,117 @@ async fn a_new_version_of_the_same_channel_does_not_collide() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "{:?}", resp.status());
 }
+
+/// A channel name is free-form, and the encoded spelling of one has to reach it.
+///
+/// `validate_name` checks only emptiness and length, so `orders/v2` is an
+/// accepted, activatable channel name — and the name is the channel's address
+/// on the data plane. The single-segment branch of route resolution decodes
+/// exactly once for this reason, which is the contract `orion-client`'s path
+/// encoding now depends on: it sends `orders%2Fv2`, and that must land here
+/// rather than 404 as a two-segment path matching no route.
+#[tokio::test]
+async fn a_channel_named_with_reserved_characters_is_reachable_encoded() {
+    let app = common::test_app().await;
+
+    // Built inline rather than through `create_and_activate_channel`, which
+    // derives `route_pattern` from the name — `/orders/v2` and `/q?x=1` are not
+    // valid route patterns, and the point here is the *name*, which is a
+    // separate address.
+    for (i, (name, encoded)) in [
+        ("orders/v2", "orders%2Fv2"),
+        ("q?x=1", "q%3Fx%3D1"),
+        ("a b", "a%20b"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(common::workflow_with_tasks(
+                    "Echo",
+                    json!([{
+                        "id": "echo",
+                        "name": "Echo",
+                        "function": { "name": "map", "input": { "mappings": [
+                            { "path": "data.ok", "logic": true }
+                        ] } }
+                    }]),
+                )),
+            ))
+            .await
+            .expect("create workflow");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let wf = common::body_json(resp).await;
+        let workflow_id = wf["data"]["workflow_id"].as_str().expect("id").to_string();
+
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "PATCH",
+                &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+                Some(json!({"status": "active"})),
+            ))
+            .await
+            .expect("activate workflow");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/channels",
+                Some(json!({
+                    "name": name,
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "methods": ["POST"],
+                    "route_pattern": format!("/named-{i}"),
+                    "workflow_id": workflow_id,
+                    "config": {}
+                })),
+            ))
+            .await
+            .expect("create channel");
+        let status = resp.status();
+        let created = common::body_json(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "'{name}' is an accepted channel name: {created}"
+        );
+        let channel_id = created["data"]["channel_id"].as_str().expect("id");
+
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "PATCH",
+                &format!("/api/v1/admin/channels/{channel_id}/status"),
+                Some(json!({"status": "active"})),
+            ))
+            .await
+            .expect("activate channel");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                &format!("/api/v1/data/{encoded}"),
+                Some(json!({"data": {}})),
+            ))
+            .await
+            .expect("request");
+        let status = resp.status();
+        let body = common::body_json(resp).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the encoded spelling of '{name}' must reach it: {body}"
+        );
+        assert_eq!(body["data"]["ok"], json!(true), "{body}");
+    }
+}

@@ -331,6 +331,11 @@ impl CompiledOAuth2Login {
             }
         }
 
+        // Both uses of `max_age` here are total because `compile` ran
+        // `validate_shape`, which caps it at `MAX_STATE_COOKIE_MAX_AGE_SECS` —
+        // so the sum cannot overflow and the cast below cannot go negative.
+        // The bound is the check; a `checked_add` here would be a branch that
+        // cannot fire.
         let now = now_secs();
         let mut claims = json!({
             "nonce": nonce,
@@ -615,6 +620,20 @@ impl CompiledOAuth2Login {
 /// channel at the next reload. Secret *resolution* deliberately stays in
 /// [`CompiledOAuth2Login::compile`]: a bundle has to validate on a host that
 /// holds none of the production secrets.
+/// The ceiling on `state_cookie.max_age`, and the reason the two arithmetic
+/// sites below are total.
+///
+/// Unbounded, a large value overflowed `now + max_age` (a debug panic, caught
+/// by `CatchPanicLayer` and served as a `500`; a silent wrap in release, giving
+/// an `exp` already in the past) and wrapped `max_age as i64` negative, which
+/// emits `Max-Age=-…` — a directive browsers act on by deleting the cookie
+/// immediately. Every sign-in then failed the state check with nothing in the
+/// log but a missing cookie, which is close to unexplainable from the outside.
+///
+/// A day is far past any consent screen, including one that enrols a second
+/// factor, so the bound refuses nothing an operator meant.
+const MAX_STATE_COOKIE_MAX_AGE_SECS: u64 = 86_400;
+
 pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
     for (field, value) in [
         ("authorize_url", &cfg.authorize_url),
@@ -662,6 +681,16 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
                     also the state token's expiry"
                 .to_string(),
         );
+    }
+    if cfg.state_cookie.max_age > MAX_STATE_COOKIE_MAX_AGE_SECS {
+        return Err(format!(
+            "oauth2_login.state_cookie.max_age is {} seconds, above the {MAX_STATE_COOKIE_MAX_AGE_SECS} \
+             second ceiling ({} days). It is the window to finish one consent screen, not a \
+             session lifetime, and a long one keeps a replayable state token valid for as long \
+             as it lasts",
+            cfg.state_cookie.max_age,
+            MAX_STATE_COOKIE_MAX_AGE_SECS / 86_400,
+        ));
     }
     // Canonicalised by the formatter, which refuses anything else — but a
     // create-time message naming the field beats a reload-time quarantine.
@@ -1190,6 +1219,62 @@ mod tests {
         .await
         .expect_err("must refuse");
         assert!(err.contains("RFC 7518"), "{err}");
+    }
+
+    /// The window has a ceiling, and the ceiling is what makes `begin`'s
+    /// arithmetic total.
+    ///
+    /// A large `max_age` overflowed `now + max_age` and wrapped `max_age as
+    /// i64` negative, emitting `Max-Age=-…`. A browser deletes such a cookie
+    /// on receipt, so every sign-in then failed the state check with nothing
+    /// in the log but a cookie that was not there — an outage with no
+    /// visible cause, from a field an operator set by hand.
+    #[tokio::test]
+    async fn state_cookie_max_age_is_bounded_at_both_ends() {
+        let mut cfg = config();
+
+        cfg.state_cookie.max_age = 0;
+        let err = validate_shape(&cfg).expect_err("zero must be refused");
+        assert!(err.contains("greater than zero"), "{err}");
+
+        // The values that used to wrap.
+        for absurd in [u64::MAX, u64::MAX / 2, MAX_STATE_COOKIE_MAX_AGE_SECS + 1] {
+            cfg.state_cookie.max_age = absurd;
+            let err = validate_shape(&cfg).expect_err("{absurd} must be refused");
+            assert!(err.contains("max_age"), "{err}");
+            assert!(err.contains("ceiling"), "{err}");
+        }
+
+        // The ceiling itself, and the default, are accepted.
+        for ok in [1, 600, MAX_STATE_COOKIE_MAX_AGE_SECS] {
+            cfg.state_cookie.max_age = ok;
+            assert!(validate_shape(&cfg).is_ok(), "{ok} should be accepted");
+        }
+    }
+
+    /// The bound is enforced where the block is compiled, so a stored config
+    /// carrying an old out-of-range value is refused at load rather than
+    /// serving redirects a browser throws away.
+    #[tokio::test]
+    async fn an_out_of_range_max_age_is_refused_at_compile() {
+        let mut cfg = config();
+        cfg.state_cookie.max_age = u64::MAX;
+        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ));
+        let err = CompiledOAuth2Login::compile(
+            &cfg,
+            "signin",
+            &LoginDeps {
+                http_client: &reqwest::Client::new(),
+                jwks: &jwks,
+                allow_private_token_urls: false,
+            },
+        )
+        .await
+        .expect_err("must refuse");
+        assert!(err.contains("max_age"), "{err}");
     }
 
     /// Checked on the way *in*, so a value that reaches the workflow has
