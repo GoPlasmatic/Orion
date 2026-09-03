@@ -260,6 +260,318 @@ pub fn print_validation_envelope(
     Ok(code)
 }
 
+/// Everything that distinguishes one admin entity from another, in one value.
+///
+/// The CRUD commands for workflows, channels and connectors differ only in a
+/// noun and a set of endpoints — `create`/`update`/`delete`/`export` were
+/// token-identical across the three modules, and had drifted where nothing
+/// forced them to agree. Grouped for the reason [`ImportRequest`] is grouped,
+/// one step further out: `collection`, `export` and `validate` are three
+/// `&'static str` and `item` is one of a family of interchangeable
+/// `fn(&str) -> String`, so any two of them transpose without a compile error.
+/// Written once, in the entity's own command module, they cannot.
+pub struct EntityKind {
+    /// Capitalised singular, for human output: `"Channel"`.
+    pub title: &'static str,
+    /// Lowercase singular, for prompts: `"channel"`.
+    pub label: &'static str,
+    pub collection: &'static str,
+    pub export: &'static str,
+    pub validate: &'static str,
+    pub item: fn(&str) -> String,
+    /// The response field carrying the id. Not uniform across the API:
+    /// workflows and channels answer with `workflow_id`/`channel_id`,
+    /// connectors with a bare `id`.
+    pub id_field: &'static str,
+}
+
+/// The two endpoints only a *versioned* entity has.
+///
+/// Separate from [`EntityKind`] rather than `Option` fields inside it:
+/// connectors have no status transition and no version history, and there is
+/// no `paths::connector_status` to point at. Taking this type in the versioned
+/// commands means a connector cannot reach them — the mistake is a type error
+/// rather than a runtime `None` branch nobody would write a test for.
+pub struct VersionedEntityKind {
+    pub entity: &'static EntityKind,
+    pub status: fn(&str) -> String,
+    pub versions: fn(&str) -> String,
+}
+
+/// One status transition's worth of "which entity, to what, and for real?".
+///
+/// Grouped because the two trailing flags are both `bool` and one of them
+/// means "do not actually write": transposing them turns a pre-flight into a
+/// live transition and still compiles.
+pub struct StatusChange<'a> {
+    pub id: &'a str,
+    pub status: &'a str,
+    pub dry_run: bool,
+    pub defer_reload: bool,
+}
+
+/// `POST /{collection}` — create an entity from a request body.
+pub async fn create_entity(
+    client: &OrionClient,
+    kind: &EntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client.post(kind.collection, body).await?;
+    let entity = &resp["data"];
+    let id = entity[kind.id_field].as_str().unwrap_or("");
+
+    if quiet {
+        println!("{id}");
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    println!(
+        "{} {} created: {} ({id})",
+        "OK".green().bold(),
+        kind.title,
+        entity["name"].as_str().unwrap_or(""),
+    );
+    Ok(0)
+}
+
+/// `PUT /{collection}/{id}` — replace an entity's content.
+pub async fn update_entity(
+    client: &OrionClient,
+    kind: &EntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client.put(&(kind.item)(id), body).await?;
+    let entity = &resp["data"];
+
+    if quiet {
+        println!("{id}");
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    // A versioned entity's update may or may not have cut a new version, and
+    // which it did is the first thing a caller wants to know. A connector has
+    // no version at all, so the suffix is driven by the response rather than
+    // by a flag — `unwrap_or(0)` here would have invented "(v0)" for one.
+    let version = entity["version"]
+        .as_i64()
+        .map(|v| format!(" (v{v})"))
+        .unwrap_or_default();
+    println!(
+        "{} {} updated: {}{version}",
+        "OK".green().bold(),
+        kind.title,
+        entity["name"].as_str().unwrap_or(id),
+    );
+    Ok(0)
+}
+
+/// `DELETE /{collection}/{id}`, behind a confirmation.
+pub async fn delete_entity(
+    client: &OrionClient,
+    kind: &EntityKind,
+    quiet: bool,
+    yes: bool,
+    id: &str,
+) -> Result<i32> {
+    if !confirm(&format!("Delete {} {id}?", kind.label), yes)? {
+        println!("Cancelled.");
+        return Ok(0);
+    }
+    client.delete_request(&(kind.item)(id)).await?;
+    if !quiet {
+        println!("{} {} {id} deleted", "OK".green().bold(), kind.title);
+    }
+    Ok(0)
+}
+
+/// `POST /{collection}/validate` — check a definition without storing it.
+pub async fn validate_entity(
+    client: &OrionClient,
+    kind: &EntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client.post(kind.validate, body).await?;
+    print_validation_envelope(
+        &resp,
+        format,
+        quiet,
+        "OK",
+        &format!("{} definition is valid", kind.title),
+        &format!("{} definition has issues", kind.title),
+    )
+}
+
+/// `GET /{collection}/export{qs}` — the artifact array, pretty-printed.
+///
+/// The filters stay at the call site: each entity exposes a different set
+/// (channels filter on protocol and type, workflows on status, connectors on
+/// tag alone), and they arrive here already built by [`build_query_string`].
+pub async fn export_entities(client: &OrionClient, kind: &EntityKind, qs: &str) -> Result<i32> {
+    let resp: Value = client.get(&format!("{}{qs}", kind.export)).await?;
+    let items = resp.get("data").unwrap_or(&resp);
+    println!("{}", serde_json::to_string_pretty(items)?);
+    Ok(0)
+}
+
+/// `PATCH /{collection}/{id}/status` — activate or archive.
+pub async fn change_status(
+    client: &OrionClient,
+    kind: &VersionedEntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    req: StatusChange<'_>,
+) -> Result<i32> {
+    let StatusChange {
+        id,
+        status,
+        dry_run,
+        defer_reload,
+    } = req;
+    let qs = build_query_string(&[
+        ("dry_run", dry_run.then(|| "true".to_string())),
+        ("reload", defer_reload.then(|| "defer".to_string())),
+    ]);
+    let body = serde_json::json!({ "status": status });
+    let resp: Value = client
+        .patch(&format!("{}{qs}", (kind.status)(id)), &body)
+        .await?;
+    let title = kind.entity.title;
+
+    // A dry run answers with the `/validate` envelope, not the entity — and a
+    // transition that would be refused is reported as `valid: false` inside a
+    // 200. Render the findings and exit non-zero, so a pre-flight that fails
+    // cannot read as one that passed. It earns its keep because what the
+    // server checks is not reproducible client-side: activating a channel
+    // needs an active workflow, a route that collides with nothing, and a
+    // config that still builds.
+    if dry_run {
+        return print_validation_envelope(
+            &resp,
+            format,
+            quiet,
+            "DRY RUN",
+            &format!("{title} {id} can change to {status} (nothing written)"),
+            &format!("{title} {id} cannot change to {status}"),
+        );
+    }
+
+    if !quiet {
+        let entity = &resp["data"];
+        println!(
+            "{} {title} {} status changed to {}",
+            "OK".green().bold(),
+            entity["name"].as_str().unwrap_or(id),
+            colorize_status(status)
+        );
+        if defer_reload {
+            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
+        }
+    }
+    Ok(0)
+}
+
+/// One row of `{entity} versions`.
+///
+/// `priority` is real on both versioned entities: it is a required field on
+/// the channel and workflow responses alike, and it is how competing matches
+/// are ordered. The channels table lost the column in a copy-edit when that
+/// module was split out of the old `rules.rs`, which had it.
+#[derive(tabled::Tabled)]
+struct VersionRow {
+    #[tabled(rename = "Version")]
+    version: i64,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Priority")]
+    priority: i64,
+    #[tabled(rename = "Updated")]
+    updated: String,
+}
+
+/// `GET /{collection}/{id}/versions{qs}` — the version history.
+pub async fn list_versions(
+    client: &OrionClient,
+    kind: &VersionedEntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+    qs: &str,
+) -> Result<i32> {
+    let resp: Value = client.get(&format!("{}{qs}", (kind.versions)(id))).await?;
+    let vers = resp["data"].as_array().cloned().unwrap_or_default();
+
+    if quiet {
+        for v in &vers {
+            println!("{}", v["version"].as_i64().unwrap_or(0));
+        }
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    if vers.is_empty() {
+        println!("{}", "No versions found.".dimmed());
+        return Ok(0);
+    }
+
+    let rows: Vec<VersionRow> = vers
+        .iter()
+        .map(|v| VersionRow {
+            version: v["version"].as_i64().unwrap_or(0),
+            status: colorize_status(v["status"].as_str().unwrap_or("")),
+            priority: v["priority"].as_i64().unwrap_or(0),
+            updated: v["updated_at"].as_str().unwrap_or("").to_string(),
+        })
+        .collect();
+
+    output::print_table(rows);
+    print_list_footer(&resp, vers.len(), "version(s)");
+    Ok(0)
+}
+
+/// `POST /{collection}/{id}/versions` — cut a new draft from the latest.
+pub async fn create_version(
+    client: &OrionClient,
+    kind: &VersionedEntityKind,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
+    let resp: Value = client.post_empty(&(kind.versions)(id)).await?;
+    let entity = &resp["data"];
+
+    if quiet {
+        println!("{}", entity["version"].as_i64().unwrap_or(0));
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    println!(
+        "{} New draft version {} created for {} {}",
+        "OK".green().bold(),
+        entity["version"].as_i64().unwrap_or(0),
+        kind.entity.label,
+        entity["name"].as_str().unwrap_or(id)
+    );
+    Ok(0)
+}
+
 /// Which trace to wait on, and how long to keep asking.
 ///
 /// Grouped so `interval` and `timeout` — both bare `u64` seconds — cannot be

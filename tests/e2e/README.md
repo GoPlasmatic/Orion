@@ -52,6 +52,7 @@ tests/e2e/
 | `06_connectors_crud` | Connectors CRUD |
 | `07_data_sync` | Synchronous data processing through channels |
 | `08_data_async` | Async processing, traces, `trace_token` |
+| `09_channels_lifecycle` | Channel CRUD, status transitions, versions, export filters |
 | `10_engine_control` | Engine status and hot reload |
 | `11_error_handling` | Error envelope rendering, failure exit codes |
 | `12_full_lifecycle` | A full create→activate→send→archive walk |

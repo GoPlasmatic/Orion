@@ -9,6 +9,24 @@ use crate::output::{self, OutputFormat};
 use crate::utils;
 use orion_client::paths;
 
+/// What a connector is, in endpoint terms — the value every shared CRUD
+/// helper in `utils` is driven by.
+///
+/// There is no `VersionedEntityKind` beside this one, and that is the point:
+/// connectors are unversioned, so they must not reach the status-transition
+/// or version commands. There is no `paths::connector_status` to name either,
+/// so the mistake cannot be written.
+static KIND: utils::EntityKind = utils::EntityKind {
+    title: "Connector",
+    label: "connector",
+    collection: paths::CONNECTORS,
+    export: paths::CONNECTORS_EXPORT,
+    validate: paths::CONNECTORS_VALIDATE,
+    item: paths::connector,
+    // Not `connector_id`: connectors answer with a bare `id`.
+    id_field: "id",
+};
+
 #[derive(Args)]
 #[command(
     long_about = "Manage connectors -- external service connections (HTTP APIs, Kafka) used by workflow tasks.\n\n\
@@ -179,7 +197,7 @@ impl ConnectorsCmd {
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
             ConnectorsSubcommand::Create { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                create(client, format, quiet, &body).await
+                utils::create_entity(client, &KIND, format, quiet, &body).await
             }
             ConnectorsSubcommand::Update {
                 id,
@@ -188,15 +206,20 @@ impl ConnectorsCmd {
                 stdin,
             } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                update(client, format, quiet, id, &body).await
+                utils::update_entity(client, &KIND, format, quiet, id, &body).await
             }
-            ConnectorsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
+            ConnectorsSubcommand::Delete { id } => {
+                utils::delete_entity(client, &KIND, quiet, yes, id).await
+            }
             ConnectorsSubcommand::Test { id } => test(client, format, quiet, id).await,
             ConnectorsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                validate(client, format, quiet, &body).await
+                utils::validate_entity(client, &KIND, format, quiet, &body).await
             }
-            ConnectorsSubcommand::Export { tag } => export(client, tag).await,
+            ConnectorsSubcommand::Export { tag } => {
+                let qs = utils::build_query_string(&[("tag", tag.clone())]);
+                utils::export_entities(client, &KIND, &qs).await
+            }
             ConnectorsSubcommand::Enable { id } => toggle(client, quiet, id, true).await,
             ConnectorsSubcommand::Disable { id } => toggle(client, quiet, id, false).await,
             ConnectorsSubcommand::CircuitBreakers => circuit_breakers(client, format, quiet).await,
@@ -305,76 +328,6 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         println!("{}", serde_json::to_string_pretty(&config)?);
     }
 
-    Ok(0)
-}
-
-async fn create(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::CONNECTORS, body).await?;
-    let conn = &resp["data"];
-
-    if quiet {
-        println!("{}", conn["id"].as_str().unwrap_or(""));
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} Connector created: {} ({})",
-        "OK".green().bold(),
-        conn["name"].as_str().unwrap_or(""),
-        conn["id"].as_str().unwrap_or("")
-    );
-    Ok(0)
-}
-
-async fn update(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.put(&paths::connector(id), body).await?;
-
-    if quiet {
-        println!("{id}");
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    let conn = &resp["data"];
-    println!(
-        "{} Connector updated: {}",
-        "OK".green().bold(),
-        conn["name"].as_str().unwrap_or(id)
-    );
-    Ok(0)
-}
-
-async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Result<i32> {
-    if !utils::confirm(&format!("Delete connector {id}?"), yes)? {
-        println!("Cancelled.");
-        return Ok(0);
-    }
-
-    client.delete_request(&paths::connector(id)).await?;
-
-    if !quiet {
-        println!("{} Connector {id} deleted", "OK".green().bold());
-    }
     Ok(0)
 }
 
@@ -501,29 +454,22 @@ async fn test(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str
     Ok(exit)
 }
 
-async fn validate(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::CONNECTORS_VALIDATE, body).await?;
-    utils::print_validation_envelope(
-        &resp,
-        format,
-        quiet,
-        "OK",
-        "Connector definition is valid",
-        "Connector definition has issues",
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-async fn export(client: &OrionClient, tag: &Option<String>) -> Result<i32> {
-    let qs = utils::build_query_string(&[("tag", tag.clone())]);
-    let resp: Value = client
-        .get(&format!("{}{qs}", paths::CONNECTORS_EXPORT))
-        .await?;
-    let connectors = resp.get("data").unwrap_or(&resp);
-    println!("{}", serde_json::to_string_pretty(connectors)?);
-    Ok(0)
+    /// As for the other two kinds — and note what is absent: connectors have
+    /// no versioned descriptor, so there is nothing here to assert about a
+    /// status or versions endpoint. That is the type error doing its job.
+    #[test]
+    fn the_connector_kind_points_at_the_connector_endpoints() {
+        assert_eq!(KIND.collection, "/api/v1/admin/connectors");
+        assert_eq!(KIND.export, "/api/v1/admin/connectors/export");
+        assert_eq!(KIND.validate, "/api/v1/admin/connectors/validate");
+        assert_eq!((KIND.item)("c1"), "/api/v1/admin/connectors/c1");
+        assert_eq!(
+            KIND.id_field, "id",
+            "connectors answer with a bare id, not a prefixed one"
+        );
+    }
 }

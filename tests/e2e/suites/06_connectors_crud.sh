@@ -26,6 +26,29 @@ test_get_connector_details() {
     assert_json_has_key "$CLI_OUTPUT" '.data.created_at'
 }
 
+# The connector id field is a bare `id`, where workflows and channels answer
+# with a prefixed one. It is the single field of the shared descriptor that
+# differs between the three kinds, so it gets its own assertion.
+test_create_connector_quiet_returns_the_bare_id() {
+    reset_server_state
+    cli_quiet connectors create -f "$FIXTURES_DIR/connectors/http_connector.json"
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_matches "$CLI_OUTPUT" '^[0-9a-f-]{36}$'
+}
+
+# A connector has no version, so the update line must not print one. Without
+# this, collapsing the conditional back to a default would ship "(v0)".
+test_update_connector_prints_no_version() {
+    reset_server_state
+    cli_quiet connectors create -f "$FIXTURES_DIR/connectors/http_connector.json"
+    local conn_id="$CLI_OUTPUT"
+
+    cli_raw connectors update "$conn_id" -d '{"enabled": false}'
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_contains "$CLI_OUTPUT" "Connector updated:"
+    assert_not_contains "$CLI_OUTPUT" "(v"
+}
+
 test_list_connectors() {
     reset_server_state
     cli_quiet connectors create -f "$FIXTURES_DIR/connectors/http_connector.json"
@@ -61,6 +84,8 @@ test_delete_connector() {
 }
 
 run_test "create connector"              test_create_connector
+run_test "create connector quiet returns bare id" test_create_connector_quiet_returns_the_bare_id
+run_test "update connector prints no version"     test_update_connector_prints_no_version
 run_test "get connector details"         test_get_connector_details
 run_test "list connectors"               test_list_connectors
 run_test "update connector"              test_update_connector

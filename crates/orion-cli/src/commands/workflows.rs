@@ -10,6 +10,24 @@ use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
 use orion_client::paths;
 
+/// What a workflow is, in endpoint terms — the value every shared
+/// CRUD helper in `utils` is driven by.
+static KIND: utils::EntityKind = utils::EntityKind {
+    title: "Workflow",
+    label: "workflow",
+    collection: paths::WORKFLOWS,
+    export: paths::WORKFLOWS_EXPORT,
+    validate: paths::WORKFLOWS_VALIDATE,
+    item: paths::workflow,
+    id_field: "workflow_id",
+};
+
+static VERSIONED: utils::VersionedEntityKind = utils::VersionedEntityKind {
+    entity: &KIND,
+    status: paths::workflow_status,
+    versions: paths::workflow_versions,
+};
+
 #[derive(Args)]
 #[command(
     long_about = "Manage workflows -- processing pipelines that transform and route data.\n\n\
@@ -239,18 +257,6 @@ struct WorkflowRow {
     version: i64,
 }
 
-#[derive(Tabled)]
-struct VersionRow {
-    #[tabled(rename = "Version")]
-    version: i64,
-    #[tabled(rename = "Status")]
-    status: String,
-    #[tabled(rename = "Priority")]
-    priority: i64,
-    #[tabled(rename = "Updated")]
-    updated: String,
-}
-
 impl WorkflowsCmd {
     pub async fn run(
         &self,
@@ -292,7 +298,7 @@ impl WorkflowsCmd {
                 if let Some(wid) = custom_id {
                     body["workflow_id"] = Value::String(wid.clone());
                 }
-                create(client, format, quiet, &body).await
+                utils::create_entity(client, &KIND, format, quiet, &body).await
             }
             WorkflowsSubcommand::Update {
                 id,
@@ -301,22 +307,27 @@ impl WorkflowsCmd {
                 stdin,
             } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                update(client, format, quiet, id, &body).await
+                utils::update_entity(client, &KIND, format, quiet, id, &body).await
             }
-            WorkflowsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
+            WorkflowsSubcommand::Delete { id } => {
+                utils::delete_entity(client, &KIND, quiet, yes, id).await
+            }
             WorkflowsSubcommand::Activate {
                 id,
                 dry_run,
                 defer_reload,
             } => {
-                change_status(
+                utils::change_status(
                     client,
+                    &VERSIONED,
                     format,
                     quiet,
-                    id,
-                    STATUS_ACTIVE,
-                    *dry_run,
-                    *defer_reload,
+                    utils::StatusChange {
+                        id,
+                        status: STATUS_ACTIVE,
+                        dry_run: *dry_run,
+                        defer_reload: *defer_reload,
+                    },
                 )
                 .await
             }
@@ -325,14 +336,17 @@ impl WorkflowsCmd {
                 dry_run,
                 defer_reload,
             } => {
-                change_status(
+                utils::change_status(
                     client,
+                    &VERSIONED,
                     format,
                     quiet,
-                    id,
-                    STATUS_ARCHIVED,
-                    *dry_run,
-                    *defer_reload,
+                    utils::StatusChange {
+                        id,
+                        status: STATUS_ARCHIVED,
+                        dry_run: *dry_run,
+                        defer_reload: *defer_reload,
+                    },
                 )
                 .await
             }
@@ -341,7 +355,7 @@ impl WorkflowsCmd {
             }
             WorkflowsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                validate(client, format, quiet, &body).await
+                utils::validate_entity(client, &KIND, format, quiet, &body).await
             }
             WorkflowsSubcommand::Rollout {
                 id,
@@ -353,9 +367,11 @@ impl WorkflowsCmd {
                     ("limit", limit.map(|l| l.to_string())),
                     ("offset", offset.map(|o| o.to_string())),
                 ]);
-                versions(client, format, quiet, id, &qs).await
+                utils::list_versions(client, &VERSIONED, format, quiet, id, &qs).await
             }
-            WorkflowsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
+            WorkflowsSubcommand::NewVersion { id } => {
+                utils::create_version(client, &VERSIONED, format, quiet, id).await
+            }
             WorkflowsSubcommand::Test {
                 id,
                 file,
@@ -368,7 +384,11 @@ impl WorkflowsCmd {
                 let meta = metadata.as_deref().map(serde_json::from_str).transpose()?;
                 test_workflow(client, format, quiet, id, &payload, meta.as_ref(), *trace).await
             }
-            WorkflowsSubcommand::Export { status, tag } => export(client, status, tag).await,
+            WorkflowsSubcommand::Export { status, tag } => {
+                let qs =
+                    utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
+                utils::export_entities(client, &KIND, &qs).await
+            }
             WorkflowsSubcommand::Import {
                 file,
                 dry_run,
@@ -506,125 +526,6 @@ async fn get_workflow(
     Ok(0)
 }
 
-async fn create(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::WORKFLOWS, body).await?;
-    let wf = &resp["data"];
-
-    if quiet {
-        println!("{}", wf["workflow_id"].as_str().unwrap_or(""));
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} Workflow created: {} ({})",
-        "OK".green().bold(),
-        wf["name"].as_str().unwrap_or(""),
-        wf["workflow_id"].as_str().unwrap_or("")
-    );
-    Ok(0)
-}
-
-async fn update(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.put(&paths::workflow(id), body).await?;
-    let wf = &resp["data"];
-
-    if quiet {
-        println!("{id}");
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} Workflow updated: {} (v{})",
-        "OK".green().bold(),
-        wf["name"].as_str().unwrap_or(""),
-        wf["version"].as_i64().unwrap_or(0)
-    );
-    Ok(0)
-}
-
-async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Result<i32> {
-    if !utils::confirm(&format!("Delete workflow {id}?"), yes)? {
-        println!("Cancelled.");
-        return Ok(0);
-    }
-
-    client.delete_request(&paths::workflow(id)).await?;
-
-    if !quiet {
-        println!("{} Workflow {id} deleted", "OK".green().bold());
-    }
-    Ok(0)
-}
-
-async fn change_status(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    status: &str,
-    dry_run: bool,
-    defer_reload: bool,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("dry_run", dry_run.then(|| "true".to_string())),
-        ("reload", defer_reload.then(|| "defer".to_string())),
-    ]);
-    let body = serde_json::json!({ "status": status });
-    let resp: Value = client
-        .patch(&format!("{}{qs}", paths::workflow_status(id)), &body)
-        .await?;
-
-    // A dry run answers with the `/validate` envelope, not the entity — and a
-    // transition that would be refused is reported as `valid: false` inside a
-    // 200. Render the findings and exit non-zero, so a pre-flight that fails
-    // cannot read as one that passed.
-    if dry_run {
-        return utils::print_validation_envelope(
-            &resp,
-            format,
-            quiet,
-            "DRY RUN",
-            &format!("Workflow {id} can change to {status} (nothing written)"),
-            &format!("Workflow {id} cannot change to {status}"),
-        );
-    }
-
-    if !quiet {
-        let wf = &resp["data"];
-        println!(
-            "{} Workflow {} status changed to {}",
-            "OK".green().bold(),
-            wf["name"].as_str().unwrap_or(id),
-            colorize_status(status)
-        );
-        if defer_reload {
-            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
-        }
-    }
-    Ok(0)
-}
-
 async fn test_workflow(
     client: &OrionClient,
     format: &OutputFormat,
@@ -687,23 +588,6 @@ async fn test_workflow(
     Ok(if matched { 0 } else { 1 })
 }
 
-async fn validate(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::WORKFLOWS_VALIDATE, body).await?;
-    utils::print_validation_envelope(
-        &resp,
-        format,
-        quiet,
-        "OK",
-        "Workflow definition is valid",
-        "Workflow definition has issues",
-    )
-}
-
 async fn rollout(
     client: &OrionClient,
     quiet: bool,
@@ -729,78 +613,6 @@ async fn rollout(
             println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
         }
     }
-    Ok(0)
-}
-
-async fn versions(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    qs: &str,
-) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("{}{qs}", paths::workflow_versions(id)))
-        .await?;
-    let vers = resp["data"].as_array().cloned().unwrap_or_default();
-
-    if quiet {
-        for v in &vers {
-            println!("{}", v["version"].as_i64().unwrap_or(0));
-        }
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    if vers.is_empty() {
-        println!("{}", "No versions found.".dimmed());
-        return Ok(0);
-    }
-
-    let rows: Vec<VersionRow> = vers
-        .iter()
-        .map(|v| VersionRow {
-            version: v["version"].as_i64().unwrap_or(0),
-            status: colorize_status(v["status"].as_str().unwrap_or("")),
-            priority: v["priority"].as_i64().unwrap_or(0),
-            updated: v["updated_at"].as_str().unwrap_or("").to_string(),
-        })
-        .collect();
-
-    output::print_table(rows);
-    utils::print_list_footer(&resp, vers.len(), "version(s)");
-    Ok(0)
-}
-
-async fn new_version(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-) -> Result<i32> {
-    let resp: Value = client.post_empty(&paths::workflow_versions(id)).await?;
-    let wf = &resp["data"];
-
-    if quiet {
-        println!("{}", wf["version"].as_i64().unwrap_or(0));
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} New draft version {} created for workflow {}",
-        "OK".green().bold(),
-        wf["version"].as_i64().unwrap_or(0),
-        wf["name"].as_str().unwrap_or(id)
-    );
     Ok(0)
 }
 
@@ -830,21 +642,6 @@ fn print_trace(trace: &Value, indent: usize) {
             println!("{prefix}{key}: {val_str}");
         }
     }
-}
-
-async fn export(
-    client: &OrionClient,
-    status: &Option<String>,
-    tag: &Option<String>,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
-
-    let resp: Value = client
-        .get(&format!("{}{qs}", paths::WORKFLOWS_EXPORT))
-        .await?;
-    let workflows = resp.get("data").unwrap_or(&resp);
-    println!("{}", serde_json::to_string_pretty(workflows)?);
-    Ok(0)
 }
 
 /// The key a bulk import collides on: `workflow_id`. An artifact without one
@@ -1021,6 +818,27 @@ async fn dependencies(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The one mistake a descriptor value makes possible: every `paths::` item
+    /// fn has the same type, so a static wired to the wrong entity's family
+    /// compiles. Asserted against literal URLs, not the constants it was built
+    /// from.
+    #[test]
+    fn the_workflow_kind_points_at_the_workflow_endpoints() {
+        assert_eq!(KIND.collection, "/api/v1/admin/workflows");
+        assert_eq!(KIND.export, "/api/v1/admin/workflows/export");
+        assert_eq!(KIND.validate, "/api/v1/admin/workflows/validate");
+        assert_eq!((KIND.item)("w1"), "/api/v1/admin/workflows/w1");
+        assert_eq!(KIND.id_field, "workflow_id");
+        assert_eq!(
+            (VERSIONED.status)("w1"),
+            "/api/v1/admin/workflows/w1/status"
+        );
+        assert_eq!(
+            (VERSIONED.versions)("w1"),
+            "/api/v1/admin/workflows/w1/versions"
+        );
+    }
 
     /// When both sides carry a hash, that is the whole answer — the fallback
     /// must not run and cannot disagree with it.

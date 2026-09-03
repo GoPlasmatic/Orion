@@ -50,7 +50,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 - `src/client.rs` — thin presentation adapter over the shared `orion-client` crate's `OrionClient` (the transport itself — auth, 30s timeout, envelope parsing, typed `ClientError` — lives there); this wrapper translates typed errors into the CLI's terminal messages (hints, `[CODE] message`, field errors). Endpoint paths come from `orion_client::paths`, never format strings.
 - `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), plus `resolve_api_key()` for the flag → env → file chain
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
-- `src/utils.rs` — shared command helpers: `run_import()`, `read_json_input()`, `confirm()`, plus the two renderers every list and validation path goes through — `print_list_footer()` (reads the envelope's top-level `total`; says `Showing N of M` when the page is short of it) and `print_validation_envelope()` (the `{valid, errors, warnings}` shape, returning exit 1 when invalid)
+- `src/utils.rs` — shared command helpers. **The CRUD commands live here, not in the command modules**: `create_entity`/`update_entity`/`delete_entity`/`validate_entity`/`export_entities` take an `EntityKind` (the entity's nouns and endpoints, declared once as a `static` in its own command module), and `change_status`/`list_versions`/`create_version` take a `VersionedEntityKind` — which connectors deliberately do not have, so an unversioned entity cannot reach them. Also `run_import()`, `wait_for_trace()` (shared by `traces wait` and `send --wait`), `read_json_input()`, `confirm()`, and the two renderers every list and validation path goes through — `print_list_footer()` (reads the envelope's top-level `total`; says `Showing N of M` when the page is short of it) and `print_validation_envelope()` (the `{valid, errors, warnings}` shape, returning exit 1 when invalid)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
 
 ### Command Modules
@@ -73,7 +73,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell/elvish) |
 
-Shared bulk-import logic lives in `utils::run_import()`.
+Shared logic lives in `src/utils.rs`: the entity CRUD commands (driven by each module's `EntityKind` static), bulk import (`run_import()`), and the trace wait. A command module holds its clap definitions, its own tables and detail views, and the verbs unique to it — not a fourth copy of `create`.
 
 **Every list surface pages** (50 default, 1000 max, server-clamped) and the versioned lists plus connectors and traces also sort. Every list command must carry `--limit`/`--offset`/`--sort-by`/`--sort-order` — one that omits them silently truncates at 50 with no way to see the rest.
 

@@ -10,6 +10,24 @@ use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
 use orion_client::paths;
 
+/// What a channel is, in endpoint terms — the value every shared
+/// CRUD helper in `utils` is driven by.
+static KIND: utils::EntityKind = utils::EntityKind {
+    title: "Channel",
+    label: "channel",
+    collection: paths::CHANNELS,
+    export: paths::CHANNELS_EXPORT,
+    validate: paths::CHANNELS_VALIDATE,
+    item: paths::channel,
+    id_field: "channel_id",
+};
+
+static VERSIONED: utils::VersionedEntityKind = utils::VersionedEntityKind {
+    entity: &KIND,
+    status: paths::channel_status,
+    versions: paths::channel_versions,
+};
+
 #[derive(Args)]
 #[command(
     long_about = "Manage channels -- service endpoints that receive data and route it to a workflow.\n\n\
@@ -192,16 +210,6 @@ struct ChannelRow {
     version: i64,
 }
 
-#[derive(Tabled)]
-struct VersionRow {
-    #[tabled(rename = "Version")]
-    version: i64,
-    #[tabled(rename = "Status")]
-    status: String,
-    #[tabled(rename = "Updated")]
-    updated: String,
-}
-
 impl ChannelsCmd {
     pub async fn run(
         &self,
@@ -236,7 +244,7 @@ impl ChannelsCmd {
             ChannelsSubcommand::Get { id } => get_channel(client, format, quiet, id).await,
             ChannelsSubcommand::Create { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                create(client, format, quiet, &body).await
+                utils::create_entity(client, &KIND, format, quiet, &body).await
             }
             ChannelsSubcommand::Update {
                 id,
@@ -245,22 +253,27 @@ impl ChannelsCmd {
                 stdin,
             } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                update(client, format, quiet, id, &body).await
+                utils::update_entity(client, &KIND, format, quiet, id, &body).await
             }
-            ChannelsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
+            ChannelsSubcommand::Delete { id } => {
+                utils::delete_entity(client, &KIND, quiet, yes, id).await
+            }
             ChannelsSubcommand::Activate {
                 id,
                 dry_run,
                 defer_reload,
             } => {
-                change_status(
+                utils::change_status(
                     client,
+                    &VERSIONED,
                     format,
                     quiet,
-                    id,
-                    STATUS_ACTIVE,
-                    *dry_run,
-                    *defer_reload,
+                    utils::StatusChange {
+                        id,
+                        status: STATUS_ACTIVE,
+                        dry_run: *dry_run,
+                        defer_reload: *defer_reload,
+                    },
                 )
                 .await
             }
@@ -269,20 +282,23 @@ impl ChannelsCmd {
                 dry_run,
                 defer_reload,
             } => {
-                change_status(
+                utils::change_status(
                     client,
+                    &VERSIONED,
                     format,
                     quiet,
-                    id,
-                    STATUS_ARCHIVED,
-                    *dry_run,
-                    *defer_reload,
+                    utils::StatusChange {
+                        id,
+                        status: STATUS_ARCHIVED,
+                        dry_run: *dry_run,
+                        defer_reload: *defer_reload,
+                    },
                 )
                 .await
             }
             ChannelsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
-                validate(client, format, quiet, &body).await
+                utils::validate_entity(client, &KIND, format, quiet, &body).await
             }
             ChannelsSubcommand::Export {
                 status,
@@ -296,16 +312,18 @@ impl ChannelsCmd {
                     ("channel_type", channel_type.clone()),
                     ("protocol", protocol.clone()),
                 ]);
-                export(client, &qs).await
+                utils::export_entities(client, &KIND, &qs).await
             }
             ChannelsSubcommand::Versions { id, limit, offset } => {
                 let qs = utils::build_query_string(&[
                     ("limit", limit.map(|l| l.to_string())),
                     ("offset", offset.map(|o| o.to_string())),
                 ]);
-                versions(client, format, quiet, id, &qs).await
+                utils::list_versions(client, &VERSIONED, format, quiet, id, &qs).await
             }
-            ChannelsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
+            ChannelsSubcommand::NewVersion { id } => {
+                utils::create_version(client, &VERSIONED, format, quiet, id).await
+            }
             ChannelsSubcommand::Import {
                 file,
                 dry_run,
@@ -446,219 +464,27 @@ async fn get_channel(
     Ok(0)
 }
 
-async fn create(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::CHANNELS, body).await?;
-    let ch = &resp["data"];
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if quiet {
-        println!("{}", ch["channel_id"].as_str().unwrap_or(""));
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} Channel created: {} ({})",
-        "OK".green().bold(),
-        ch["name"].as_str().unwrap_or(""),
-        ch["channel_id"].as_str().unwrap_or("")
-    );
-    Ok(0)
-}
-
-async fn update(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.put(&paths::channel(id), body).await?;
-    let ch = &resp["data"];
-
-    if quiet {
-        println!("{id}");
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} Channel updated: {} (v{})",
-        "OK".green().bold(),
-        ch["name"].as_str().unwrap_or(""),
-        ch["version"].as_i64().unwrap_or(0)
-    );
-    Ok(0)
-}
-
-async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Result<i32> {
-    if !utils::confirm(&format!("Delete channel {id}?"), yes)? {
-        println!("Cancelled.");
-        return Ok(0);
-    }
-
-    client.delete_request(&paths::channel(id)).await?;
-
-    if !quiet {
-        println!("{} Channel {id} deleted", "OK".green().bold());
-    }
-    Ok(0)
-}
-
-async fn change_status(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    status: &str,
-    dry_run: bool,
-    defer_reload: bool,
-) -> Result<i32> {
-    let qs = utils::build_query_string(&[
-        ("dry_run", dry_run.then(|| "true".to_string())),
-        ("reload", defer_reload.then(|| "defer".to_string())),
-    ]);
-    let body = serde_json::json!({ "status": status });
-    let resp: Value = client
-        .patch(&format!("{}{qs}", paths::channel_status(id)), &body)
-        .await?;
-
-    // A dry run answers with the `/validate` envelope, not the entity — and a
-    // transition that would be refused is reported as `valid: false` inside a
-    // 200. Channels have the most to say here: activation needs an active
-    // workflow, a route that collides with nothing, and a config that still
-    // builds, none of which a client can check for itself.
-    if dry_run {
-        return utils::print_validation_envelope(
-            &resp,
-            format,
-            quiet,
-            "DRY RUN",
-            &format!("Channel {id} can change to {status} (nothing written)"),
-            &format!("Channel {id} cannot change to {status}"),
+    /// The one mistake a descriptor value makes possible: every `paths::` item
+    /// fn has the same type, so `item: paths::workflow` under `KIND` compiles
+    /// and silently drives the wrong endpoint family.
+    ///
+    /// Asserted against literal URLs rather than the `paths::` constants the
+    /// static was built from — comparing it to itself would prove nothing.
+    #[test]
+    fn the_channel_kind_points_at_the_channel_endpoints() {
+        assert_eq!(KIND.collection, "/api/v1/admin/channels");
+        assert_eq!(KIND.export, "/api/v1/admin/channels/export");
+        assert_eq!(KIND.validate, "/api/v1/admin/channels/validate");
+        assert_eq!((KIND.item)("c1"), "/api/v1/admin/channels/c1");
+        assert_eq!(KIND.id_field, "channel_id");
+        assert_eq!((VERSIONED.status)("c1"), "/api/v1/admin/channels/c1/status");
+        assert_eq!(
+            (VERSIONED.versions)("c1"),
+            "/api/v1/admin/channels/c1/versions"
         );
     }
-
-    if !quiet {
-        let ch = &resp["data"];
-        println!(
-            "{} Channel {} status changed to {}",
-            "OK".green().bold(),
-            ch["name"].as_str().unwrap_or(id),
-            colorize_status(status)
-        );
-        if defer_reload {
-            println!("  Reload deferred -- run 'orion-cli engine reload' to apply.");
-        }
-    }
-    Ok(0)
-}
-
-async fn versions(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-    qs: &str,
-) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("{}{qs}", paths::channel_versions(id)))
-        .await?;
-    let vers = resp["data"].as_array().cloned().unwrap_or_default();
-
-    if quiet {
-        for v in &vers {
-            println!("{}", v["version"].as_i64().unwrap_or(0));
-        }
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    if vers.is_empty() {
-        println!("{}", "No versions found.".dimmed());
-        return Ok(0);
-    }
-
-    let rows: Vec<VersionRow> = vers
-        .iter()
-        .map(|v| VersionRow {
-            version: v["version"].as_i64().unwrap_or(0),
-            status: colorize_status(v["status"].as_str().unwrap_or("")),
-            updated: v["updated_at"].as_str().unwrap_or("").to_string(),
-        })
-        .collect();
-
-    output::print_table(rows);
-    utils::print_list_footer(&resp, vers.len(), "version(s)");
-    Ok(0)
-}
-
-async fn new_version(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    id: &str,
-) -> Result<i32> {
-    let resp: Value = client.post_empty(&paths::channel_versions(id)).await?;
-    let ch = &resp["data"];
-
-    if quiet {
-        println!("{}", ch["version"].as_i64().unwrap_or(0));
-        return Ok(0);
-    }
-
-    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-        output::print_value(format, &resp)?;
-        return Ok(0);
-    }
-
-    println!(
-        "{} New draft version {} created for channel {}",
-        "OK".green().bold(),
-        ch["version"].as_i64().unwrap_or(0),
-        ch["name"].as_str().unwrap_or(id)
-    );
-    Ok(0)
-}
-
-async fn validate(
-    client: &OrionClient,
-    format: &OutputFormat,
-    quiet: bool,
-    body: &Value,
-) -> Result<i32> {
-    let resp: Value = client.post(paths::CHANNELS_VALIDATE, body).await?;
-    utils::print_validation_envelope(
-        &resp,
-        format,
-        quiet,
-        "OK",
-        "Channel definition is valid",
-        "Channel definition has issues",
-    )
-}
-
-async fn export(client: &OrionClient, qs: &str) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("{}{qs}", paths::CHANNELS_EXPORT))
-        .await?;
-    let channels = resp.get("data").unwrap_or(&resp);
-    println!("{}", serde_json::to_string_pretty(channels)?);
-    Ok(0)
 }
