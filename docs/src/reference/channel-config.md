@@ -668,6 +668,15 @@ Orion still mints the state, the nonce and the PKCE challenge. The workflow cann
 
 The value is read from that query parameter on the authorize leg, checked against the allow-list **there**, sealed into the signed state, and handed back at `metadata.oauth.return_to`. Checking on the way in is what makes it safe to redirect to: a value that reaches the workflow has already passed. A value that has not is dropped silently. This is the one part of the flow a workflow cannot do for itself, because it never sees the authorize request.
 
+An entry admits a candidate when the two have the **same origin** — scheme, host and port all equal — and the candidate's path is the entry's path or lies beneath it at a `/` boundary:
+
+| Allow-list entry | Admits | Refuses |
+|---|---|---|
+| `https://app.example.com` | anything on that host | `https://app.example.com.evil.test/steal` |
+| `https://app.example.com/app` | `/app`, `/app/home` | `/application`, `/other` |
+
+The match is on origin and path segments rather than on the text, so the trailing slash is not load-bearing and a host that merely *starts with* a permitted one is a different origin. Relative values (`/dashboard`) are not accepted; entries and candidates are both absolute URLs.
+
 ### What is refused, and why
 
 - **`cache` alongside `oauth2_login`.** The response cache keys on the request and never on the caller, so a stored authorize `302` would replay one browser's state cookie to the next visitor and a stored callback would replay one user's session.

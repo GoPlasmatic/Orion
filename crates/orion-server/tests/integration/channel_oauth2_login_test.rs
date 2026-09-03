@@ -1188,3 +1188,107 @@ async fn the_access_token_never_reaches_the_persisted_trace() {
         "the access token reached the persisted trace: {rendered}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The spent state cookie is retired on every outcome
+// ---------------------------------------------------------------------------
+
+/// Clearing the state cookie is the **only** single-use enforcement Orion
+/// performs — the module doc says so, and says why: the state lives in a signed
+/// cookie rather than a stored row, so nothing else can retire it. That makes
+/// the outcomes where the clear was skipped exactly the outcomes a replay would
+/// follow.
+///
+/// It was skipped on three of them. `append_cookies` sat on the success arms
+/// only, so a callback whose workflow timed out, hit an engine error, or
+/// overran `max_result_size_bytes` answered 504/500 and left the spent cookie
+/// in the browser until its own `exp` — while the comment above
+/// `response_cookies` claimed it was appended "to whatever the workflow
+/// answers, including a failure".
+///
+/// `max_result_size_bytes` is the outcome this drives because it is the
+/// deterministic one: no sleeping, no unreachable host, just a workflow whose
+/// echoed grant is larger than a one-byte cap.
+#[tokio::test]
+async fn a_failing_callback_still_retires_the_spent_state_cookie() {
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+
+    let mut config = app_config();
+    // Small enough that any real envelope exceeds it, and the callback ends in
+    // `OrionError::ResponseTooLarge` rather than a `200`.
+    config.trace_queue.max_result_size_bytes = 1;
+    let app = common::test_app_with_config(config).await;
+    deploy(&app, login_config(&url), echo_grant_workflow()).await;
+
+    let (state, cookie) = begin(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+
+    let status = resp.status();
+    assert!(
+        status.is_server_error(),
+        "the cap must actually fire, or this test proves nothing: {status}"
+    );
+
+    let cleared = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("orion_oauth_state="))
+        .expect("the spent state cookie must be retired even on a failure");
+    assert!(
+        cleared.contains("Max-Age=0"),
+        "the clear must expire it, not reissue it: {cleared}"
+    );
+}
+
+/// The other half of the same rule: a channel with no `oauth2_login` has no
+/// platform cookies, and its failures must keep propagating as errors rather
+/// than being materialised into responses on the way past.
+#[tokio::test]
+async fn a_failure_on_an_ordinary_channel_carries_no_platform_cookie() {
+    let mut config = app_config();
+    config.trace_queue.max_result_size_bytes = 1;
+    let app = common::test_app_with_config(config).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "plain",
+        common::workflow_with_tasks(
+            "Plain",
+            json!([{
+                "id": "echo",
+                "name": "Echo",
+                "function": { "name": "map", "input": { "mappings": [
+                    { "path": "data.value", "logic": "a-value-larger-than-one-byte" }
+                ] } }
+            }]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/plain",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .expect("request");
+
+    assert!(resp.status().is_server_error(), "{}", resp.status());
+    assert_eq!(
+        resp.headers().get_all("set-cookie").iter().count(),
+        0,
+        "a channel with no oauth2_login has no platform cookie to append"
+    );
+}

@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::channel::guards::{Admission, CacheStoreCtx};
@@ -547,351 +547,379 @@ pub(super) async fn process_sync_for_channel(
     // `response_cookies` is appended to whatever the workflow answers,
     // including a failure: the OAuth2 state cookie has been spent by the time
     // the workflow runs and must not survive the response that spent it.
+    //
+    // That is enforced once, below, rather than at each place a response is
+    // built — which is what this comment used to claim and the code did not
+    // do. `append_cookies` sat on the three success arms only, so a callback
+    // whose workflow timed out, hit an engine error, or overran
+    // `max_result_size_bytes` answered 504/500 and left the spent cookie in
+    // the browser until its own `exp`. Clearing that cookie is the *only*
+    // single-use enforcement Orion performs (`oauth2_login.rs`), so the
+    // outcomes where it was skipped are exactly the ones a replay would follow.
     let (response_cookies, oauth_authorize, oauth_return_to) = match oauth {
         Some(o) => (o.response_cookies, o.authorize, o.return_to),
         None => (Vec::new(), None, None),
     };
 
-    // O1: `channel` is safe to use as a metric label below because the caller
-    // has already resolved it against the registry — an unknown name is a 404
-    // before it reaches here, so callers cannot grow Prometheus label
-    // cardinality by inventing path segments.
+    let result: Result<Response, OrionError> = async {
+        // O1: `channel` is safe to use as a metric label below because the caller
+        // has already resolved it against the registry — an unknown name is a 404
+        // before it reaches here, so callers cannot grow Prometheus label
+        // cardinality by inventing path segments.
 
-    let start = Instant::now();
-    let sticky_identity = crate::engine::utils::rollout_identity(
-        &metadata,
-        &state.config.engine.rollout_sticky_header,
-    );
+        let start = Instant::now();
+        let sticky_identity = crate::engine::utils::rollout_identity(
+            &metadata,
+            &state.config.engine.rollout_sticky_header,
+        );
 
-    // A2: when the channel opted in via `config.tracing.task_details = true`,
-    // use the with-trace engine entry point so per-step inputs/outputs are
-    // captured for persistence.
-    // Bounded by the same budget the persisted row is capped at, so the
-    // post-hoc `serialize_task_trace_capped` check becomes a backstop rather
-    // than the only defence.
-    let capture = channel_config
-        .trace_storage
-        .task_details
-        .then(|| crate::engine::TraceCapture {
-            max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
-        });
+        // A2: when the channel opted in via `config.tracing.task_details = true`,
+        // use the with-trace engine entry point so per-step inputs/outputs are
+        // captured for persistence.
+        // Bounded by the same budget the persisted row is capped at, so the
+        // post-hoc `serialize_task_trace_capped` check becomes a backstop rather
+        // than the only defence.
+        let capture =
+            channel_config
+                .trace_storage
+                .task_details
+                .then(|| crate::engine::TraceCapture {
+                    max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
+                });
 
-    // The shared post-admission step: message build, engine snapshot, the
-    // deadline arm, the `has_errors` rule and the two metrics. What stays here
-    // is response shaping and persistence.
-    let execution = crate::engine::execute_admitted(
-        &state.engine,
-        channel,
-        &data,
-        &metadata,
-        crate::engine::ExecOpts {
-            timeout_ms,
-            capture,
-            // The routing bucket rides beside the context rather than inside
-            // `data`, so it never reaches the caller and never needs stripping
-            // back out.
-            routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
-                sticky_identity,
-            )),
-            profile: profile.as_ref(),
-        },
-    )
-    .await;
-    if let Some(ref p) = profile {
-        p.set_workflow_total(execution.duration);
-    }
-    let crate::engine::Execution {
-        message,
-        task_trace,
-        outcome,
-        duration: engine_duration,
-    } = execution;
-
-    // One derivation of the label, shared with every other transport. The
-    // change this made here: a run that finished with task errors used to be
-    // counted `ok`, so a channel failing every request reported a 100% success
-    // rate while the Kafka and async paths counted the same runs as `error`.
-    metrics::record_message(channel, outcome.status_label());
-    metrics::record_message_duration(channel, engine_duration.as_secs_f64());
-
-    match outcome {
-        crate::engine::RunOutcome::Timeout(ms) => {
-            metrics::record_error("timeout");
-            Err(OrionError::Timeout {
-                channel: channel.to_string(),
-                timeout_ms: ms,
-            })
+        // The shared post-admission step: message build, engine snapshot, the
+        // deadline arm, the `has_errors` rule and the two metrics. What stays here
+        // is response shaping and persistence.
+        let execution = crate::engine::execute_admitted(
+            &state.engine,
+            channel,
+            &data,
+            &metadata,
+            crate::engine::ExecOpts {
+                timeout_ms,
+                capture,
+                // The routing bucket rides beside the context rather than inside
+                // `data`, so it never reaches the caller and never needs stripping
+                // back out.
+                routing_bucket: Some(crate::engine::utils::rollout_bucket_for_identity(
+                    sticky_identity,
+                )),
+                profile: profile.as_ref(),
+            },
+        )
+        .await;
+        if let Some(ref p) = profile {
+            p.set_workflow_total(execution.duration);
         }
-        crate::engine::RunOutcome::EngineError(e) => {
-            metrics::record_error("engine");
-            Err(OrionError::Engine(e))
-        }
-        // A synchronous caller is handed its task errors in the envelope with
-        // a 200 — the response carries the whole story, and a workflow that
-        // partially succeeded still has data worth returning. Only the metric
-        // label changed with the shared step: `orion_messages_total` counts
-        // this as `error` now, as the Kafka and async paths always did.
-        crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => {
-            // The *request's* duration — guards, execution, and the response
-            // build below. `execute_admitted` already recorded the engine
-            // call's own latency on `orion_message_duration_seconds`; this one
-            // is what the trace row reports.
-            let duration = start.elapsed();
-            let duration_ms = duration.as_secs_f64() * 1000.0;
+        let crate::engine::Execution {
+            message,
+            task_trace,
+            outcome,
+            duration: engine_duration,
+        } = execution;
 
-            // Shaped channels drain their response control out of the workflow
-            // output *before* the envelope is built, so `_orion.response`
-            // reaches neither the caller's body nor the persisted trace as
-            // content. A channel left on the default `envelope` mode never
-            // looks, which is what keeps an incidental `_orion` key in some
-            // workflow's data inert.
-            let mut data_out: Value = message.data().into();
-            // #312: what the workflow declared and did not get. Empty for
-            // every channel on the default `envelope` mode, which never looks
-            // at `_orion.response` at all.
-            let mut response_drops: Vec<Value> = Vec::new();
-            let shaped = channel_config
-                .parsed_config
-                .response
-                .as_ref()
-                .filter(|cfg| cfg.is_shaped())
-                .and_then(|cfg| drain_shaped_response(&mut data_out, cfg, &mut response_drops));
-            for entry in &response_drops {
-                let field = |k: &str| {
-                    entry
-                        .get(k)
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string()
-                };
-                let (kind, path, message) = (field("code"), field("path"), field("message"));
-                tracing::warn!(
-                    channel = channel,
-                    code = %kind,
-                    path = %path,
-                    reason = %message,
-                    "response declaration dropped"
-                );
-                metrics::record_response_drop(channel, kind);
-            }
+        // One derivation of the label, shared with every other transport. The
+        // change this made here: a run that finished with task errors used to be
+        // counted `ok`, so a channel failing every request reported a 100% success
+        // rate while the Kafka and async paths counted the same runs as `error`.
+        metrics::record_message(channel, outcome.status_label());
+        metrics::record_message_duration(channel, engine_duration.as_secs_f64());
 
-            // #307, `run_workflow_on_authorize`: the redirect is built after
-            // the workflow so the workflow can contribute to it, and the
-            // contribution is drained here the way `_orion.response` is —
-            // out of the body, before the envelope and the trace are built.
-            //
-            // A workflow that shaped its own response wins: that is how it
-            // refuses a sign-in (an unknown tenant, a maintenance window)
-            // without Orion needing a vocabulary for refusal. Only when it
-            // shaped nothing does the sign-in proceed.
-            if let Some(login) = oauth_authorize {
-                if shaped.is_none() {
-                    let contributed = drain_authorize_contribution(&mut data_out);
-                    return match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
-                        Ok(redirect) => {
-                            crate::metrics::record_oauth_login(
-                                channel,
-                                crate::channel::OAuthLeg::Authorize,
-                                "ok",
-                            );
-                            Ok(oauth_redirect_response(redirect))
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                channel = channel,
-                                error = %e,
-                                "Could not build the OAuth2 authorize redirect"
-                            );
-                            Err(OrionError::internal("could not begin the sign-in"))
-                        }
-                    };
-                }
-                tracing::debug!(
-                    channel = channel,
-                    "Workflow shaped its own response on the authorize leg; not redirecting"
-                );
-            }
-
-            let mut response = response_envelope(
-                message.id(),
-                data_out,
-                message
-                    .errors()
-                    .iter()
-                    .filter_map(|e| serde_json::to_value(e).ok())
-                    .chain(response_drops.iter().cloned())
-                    .collect(),
-                None,
-            );
-
-            // Serialize the full-detail envelope exactly once — reused for the
-            // size check, trace storage, and (on the error-free hot path) the
-            // cache and HTTP body with no re-serialization by Axum.
-            let response_json = serialize_envelope(&response)?;
-
-            // G1: when workflow errors are present, the client-facing body
-            // (and the cached copy) carry sanitized entries plus a
-            // correlation id; the persisted trace keeps the full detail.
-            //
-            // The two envelopes differ only in `errors` and `request_id`, so
-            // the public one is made by overwriting those two keys in place —
-            // rebuilding it would deep-convert the whole workflow output a
-            // second time.
-            // A dropped declaration counts. Not for the message metric —
-            // `record_message` above reads the engine outcome, and the workflow
-            // did succeed — but for the three things this flag actually gates:
-            // the trace is *stored* under an errors-only policy (otherwise the
-            // one trace carrying the evidence is the one sampled away), the
-            // trace row is findable by an operator searching for failures, and
-            // an incomplete response is not written to the response cache.
-            let has_errors = message.has_errors() || !response_drops.is_empty();
-            let public_json = if has_errors {
-                response["errors"] = Value::Array(sanitize_errors(
-                    message.errors(),
-                    state.config.verbose_errors(),
-                ));
-                response["request_id"] =
-                    json!(crate::request_context::request_id().unwrap_or_default());
-                Some(serialize_envelope(&response)?)
-            } else {
-                None
-            };
-
-            let max_result_size = state.config.trace_queue.max_result_size_bytes;
-            if max_result_size > 0 && response_json.len() > max_result_size {
-                metrics::record_error("result_size_exceeded");
-                // The message names the knob (G15): this error surfaces in
-                // the response and the log, and "a size cap fired" without
-                // saying which sends the operator to the connector-level
-                // caps, which never produce this error.
-                return Err(OrionError::ResponseTooLarge(format!(
-                    "Result size {} bytes exceeds trace_queue.max_result_size_bytes ({} bytes)",
-                    response_json.len(),
-                    max_result_size
-                )));
-            }
-
-            // Decided before the two strings below are built: under `off`,
-            // `errors_only` on a clean run, or any sample_rate < 1, both are
-            // pure waste — and a full copy of the request payload is not a
-            // cheap kind of waste on this path.
-            let plan = TracePlan::decide(&channel_config.trace_storage, has_errors);
-            let (input_json, task_trace_json) = if plan.persists() {
-                (
-                    serde_json::to_string(&data).ok(),
-                    crate::engine::utils::serialize_task_trace_capped(
-                        task_trace.as_ref(),
-                        max_result_size,
-                        channel,
-                    ),
-                )
-            } else {
-                (None, None)
-            };
-            // What a cache hit will replay. A shaped channel caches its status
-            // and headers alongside the body, so the second identical request
-            // is answered with the same contract as the first; an envelope
-            // channel caches the client-facing string exactly as before.
-            //
-            // Built only when something will actually store it. `persist_trace_and_cache`
-            // skips the write when there is no cache context or the run carried
-            // errors, and a channel with no response cache is the common case —
-            // so doing this unconditionally spent a full copy of the body plus a
-            // serialize pass, per request, on nothing. Serialized from borrows so
-            // the copy is the one the cache needs rather than a second one.
-            // A response that sets a cookie is never cached (#298). The cache
-            // key is built from the method, path params, query and payload —
-            // never from who is calling — so replaying a stored `set-cookie`
-            // hands the first caller's session to everyone who repeats their
-            // request for the TTL. The cookie is *output*, so folding it into
-            // the key would not help either.
-            //
-            // The whole store is suppressed rather than just the shaped
-            // serialization: falling through to the envelope body would cache
-            // a document a shaped channel cannot replay, quietly answering the
-            // second request with a different contract.
-            // `response_cookies` counts for the same reason the workflow's own
-            // do, and it is the sharper case: the OAuth2 callback's cookie
-            // retires a spent state, so replaying it would hand the next
-            // caller a cleared cookie for a sign-in that was not theirs — and
-            // the body it rides on is one user's session.
-            let sets_cookie = !response_cookies.is_empty()
-                || shaped
-                    .as_ref()
-                    .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
-            if sets_cookie {
-                tracing::debug!(
-                    channel = channel,
-                    "Response sets a cookie; not caching (it is per-caller)"
-                );
-            }
-            let cache_context = if sets_cookie { None } else { cache_context };
-
-            let will_cache = cache_context.is_some() && !has_errors;
-            let shaped_cache_json = shaped.as_ref().filter(|_| will_cache).and_then(|s| {
-                serde_json::to_string(&CachedShapedRef {
-                    shaped: CachedShapedInnerRef {
-                        status: s.status.as_u16(),
-                        headers: &s.headers,
-                        body: &s.body,
-                    },
+        match outcome {
+            crate::engine::RunOutcome::Timeout(ms) => {
+                metrics::record_error("timeout");
+                Err(OrionError::Timeout {
+                    channel: channel.to_string(),
+                    timeout_ms: ms,
                 })
-                .ok()
-            });
-            let cache_body = shaped_cache_json
-                .as_deref()
-                .or(public_json.as_deref())
-                .unwrap_or(&response_json);
-
-            persist_trace_and_cache(
-                state,
-                &channel_config,
-                &plan,
-                &CompletedTrace {
-                    mode: "sync",
-                    channel,
-                    channel_id: Some(channel_config.channel.channel_id.as_str()),
-                    input_json: input_json.as_deref(),
-                    response_json: &response_json,
-                    duration_ms,
-                    has_errors,
-                    task_trace_json: task_trace_json.as_deref(),
-                },
-                cache_body,
-                &cache_context,
-                profile.as_ref(),
-            )
-            .await;
-
-            // A shaped channel's body is whatever the workflow chose, so there
-            // is no envelope to append `_orion.profile` to. Profiling still
-            // records its timings (they reach the trace and the metrics); only
-            // the response-body copy is envelope-only.
-            if let Some(shaped) = shaped {
-                return Ok(append_cookies(shaped_response(shaped), &response_cookies));
             }
-
-            // Profile mode: rebuild the response with `_orion.profile`
-            // appended and re-serialize. Only paid when profiling is on.
-            //
-            // B3 shape lock: the debug surface lives under a single
-            // top-level `_orion` namespace so future debug fields (e.g.
-            // `_orion.task_trace`) can be added without colliding with
-            // workflow-level output keys that callers control.
-            if let Some(ref p) = profile {
-                let mut response_with_profile = response;
-                response_with_profile["_orion"] = json!({ "profile": p.to_json() });
-                return Ok(append_cookies(
-                    json_response(StatusCode::OK, serialize_envelope(&response_with_profile)?),
-                    &response_cookies,
-                ));
+            crate::engine::RunOutcome::EngineError(e) => {
+                metrics::record_error("engine");
+                Err(OrionError::Engine(e))
             }
+            // A synchronous caller is handed its task errors in the envelope with
+            // a 200 — the response carries the whole story, and a workflow that
+            // partially succeeded still has data worth returning. Only the metric
+            // label changed with the shared step: `orion_messages_total` counts
+            // this as `error` now, as the Kafka and async paths always did.
+            crate::engine::RunOutcome::Ok | crate::engine::RunOutcome::WorkflowErrors(_) => {
+                // The *request's* duration — guards, execution, and the response
+                // build below. `execute_admitted` already recorded the engine
+                // call's own latency on `orion_message_duration_seconds`; this one
+                // is what the trace row reports.
+                let duration = start.elapsed();
+                let duration_ms = duration.as_secs_f64() * 1000.0;
 
-            Ok(append_cookies(
-                json_response(StatusCode::OK, public_json.unwrap_or(response_json)),
-                &response_cookies,
-            ))
+                // Shaped channels drain their response control out of the workflow
+                // output *before* the envelope is built, so `_orion.response`
+                // reaches neither the caller's body nor the persisted trace as
+                // content. A channel left on the default `envelope` mode never
+                // looks, which is what keeps an incidental `_orion` key in some
+                // workflow's data inert.
+                let mut data_out: Value = message.data().into();
+                // #312: what the workflow declared and did not get. Empty for
+                // every channel on the default `envelope` mode, which never looks
+                // at `_orion.response` at all.
+                let mut response_drops: Vec<Value> = Vec::new();
+                let shaped = channel_config
+                    .parsed_config
+                    .response
+                    .as_ref()
+                    .filter(|cfg| cfg.is_shaped())
+                    .and_then(|cfg| drain_shaped_response(&mut data_out, cfg, &mut response_drops));
+                for entry in &response_drops {
+                    let field = |k: &str| {
+                        entry
+                            .get(k)
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string()
+                    };
+                    let (kind, path, message) = (field("code"), field("path"), field("message"));
+                    tracing::warn!(
+                        channel = channel,
+                        code = %kind,
+                        path = %path,
+                        reason = %message,
+                        "response declaration dropped"
+                    );
+                    metrics::record_response_drop(channel, kind);
+                }
+
+                // #307, `run_workflow_on_authorize`: the redirect is built after
+                // the workflow so the workflow can contribute to it, and the
+                // contribution is drained here the way `_orion.response` is —
+                // out of the body, before the envelope and the trace are built.
+                //
+                // A workflow that shaped its own response wins: that is how it
+                // refuses a sign-in (an unknown tenant, a maintenance window)
+                // without Orion needing a vocabulary for refusal. Only when it
+                // shaped nothing does the sign-in proceed.
+                if let Some(login) = oauth_authorize {
+                    if shaped.is_none() {
+                        let contributed = drain_authorize_contribution(&mut data_out);
+                        return match login.begin(contributed.as_ref(), oauth_return_to.as_deref()) {
+                            Ok(redirect) => {
+                                crate::metrics::record_oauth_login(
+                                    channel,
+                                    crate::channel::OAuthLeg::Authorize,
+                                    "ok",
+                                );
+                                Ok(oauth_redirect_response(redirect))
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    channel = channel,
+                                    error = %e,
+                                    "Could not build the OAuth2 authorize redirect"
+                                );
+                                Err(OrionError::internal("could not begin the sign-in"))
+                            }
+                        };
+                    }
+                    tracing::debug!(
+                        channel = channel,
+                        "Workflow shaped its own response on the authorize leg; not redirecting"
+                    );
+                }
+
+                let mut response = response_envelope(
+                    message.id(),
+                    data_out,
+                    message
+                        .errors()
+                        .iter()
+                        .filter_map(|e| serde_json::to_value(e).ok())
+                        .chain(response_drops.iter().cloned())
+                        .collect(),
+                    None,
+                );
+
+                // Serialize the full-detail envelope exactly once — reused for the
+                // size check, trace storage, and (on the error-free hot path) the
+                // cache and HTTP body with no re-serialization by Axum.
+                let response_json = serialize_envelope(&response)?;
+
+                // G1: when workflow errors are present, the client-facing body
+                // (and the cached copy) carry sanitized entries plus a
+                // correlation id; the persisted trace keeps the full detail.
+                //
+                // The two envelopes differ only in `errors` and `request_id`, so
+                // the public one is made by overwriting those two keys in place —
+                // rebuilding it would deep-convert the whole workflow output a
+                // second time.
+                // A dropped declaration counts. Not for the message metric —
+                // `record_message` above reads the engine outcome, and the workflow
+                // did succeed — but for the three things this flag actually gates:
+                // the trace is *stored* under an errors-only policy (otherwise the
+                // one trace carrying the evidence is the one sampled away), the
+                // trace row is findable by an operator searching for failures, and
+                // an incomplete response is not written to the response cache.
+                let has_errors = message.has_errors() || !response_drops.is_empty();
+                let public_json = if has_errors {
+                    response["errors"] = Value::Array(sanitize_errors(
+                        message.errors(),
+                        state.config.verbose_errors(),
+                    ));
+                    response["request_id"] =
+                        json!(crate::request_context::request_id().unwrap_or_default());
+                    Some(serialize_envelope(&response)?)
+                } else {
+                    None
+                };
+
+                let max_result_size = state.config.trace_queue.max_result_size_bytes;
+                if max_result_size > 0 && response_json.len() > max_result_size {
+                    metrics::record_error("result_size_exceeded");
+                    // The message names the knob (G15): this error surfaces in
+                    // the response and the log, and "a size cap fired" without
+                    // saying which sends the operator to the connector-level
+                    // caps, which never produce this error.
+                    return Err(OrionError::ResponseTooLarge(format!(
+                        "Result size {} bytes exceeds trace_queue.max_result_size_bytes ({} bytes)",
+                        response_json.len(),
+                        max_result_size
+                    )));
+                }
+
+                // Decided before the two strings below are built: under `off`,
+                // `errors_only` on a clean run, or any sample_rate < 1, both are
+                // pure waste — and a full copy of the request payload is not a
+                // cheap kind of waste on this path.
+                let plan = TracePlan::decide(&channel_config.trace_storage, has_errors);
+                let (input_json, task_trace_json) = if plan.persists() {
+                    (
+                        serde_json::to_string(&data).ok(),
+                        crate::engine::utils::serialize_task_trace_capped(
+                            task_trace.as_ref(),
+                            max_result_size,
+                            channel,
+                        ),
+                    )
+                } else {
+                    (None, None)
+                };
+                // What a cache hit will replay. A shaped channel caches its status
+                // and headers alongside the body, so the second identical request
+                // is answered with the same contract as the first; an envelope
+                // channel caches the client-facing string exactly as before.
+                //
+                // Built only when something will actually store it. `persist_trace_and_cache`
+                // skips the write when there is no cache context or the run carried
+                // errors, and a channel with no response cache is the common case —
+                // so doing this unconditionally spent a full copy of the body plus a
+                // serialize pass, per request, on nothing. Serialized from borrows so
+                // the copy is the one the cache needs rather than a second one.
+                // A response that sets a cookie is never cached (#298). The cache
+                // key is built from the method, path params, query and payload —
+                // never from who is calling — so replaying a stored `set-cookie`
+                // hands the first caller's session to everyone who repeats their
+                // request for the TTL. The cookie is *output*, so folding it into
+                // the key would not help either.
+                //
+                // The whole store is suppressed rather than just the shaped
+                // serialization: falling through to the envelope body would cache
+                // a document a shaped channel cannot replay, quietly answering the
+                // second request with a different contract.
+                // `response_cookies` counts for the same reason the workflow's own
+                // do, and it is the sharper case: the OAuth2 callback's cookie
+                // retires a spent state, so replaying it would hand the next
+                // caller a cleared cookie for a sign-in that was not theirs — and
+                // the body it rides on is one user's session.
+                let sets_cookie = !response_cookies.is_empty()
+                    || shaped
+                        .as_ref()
+                        .is_some_and(|s| s.headers.iter().any(|(n, _)| n == "set-cookie"));
+                if sets_cookie {
+                    tracing::debug!(
+                        channel = channel,
+                        "Response sets a cookie; not caching (it is per-caller)"
+                    );
+                }
+                let cache_context = if sets_cookie { None } else { cache_context };
+
+                let will_cache = cache_context.is_some() && !has_errors;
+                let shaped_cache_json = shaped.as_ref().filter(|_| will_cache).and_then(|s| {
+                    serde_json::to_string(&CachedShapedRef {
+                        shaped: CachedShapedInnerRef {
+                            status: s.status.as_u16(),
+                            headers: &s.headers,
+                            body: &s.body,
+                        },
+                    })
+                    .ok()
+                });
+                let cache_body = shaped_cache_json
+                    .as_deref()
+                    .or(public_json.as_deref())
+                    .unwrap_or(&response_json);
+
+                persist_trace_and_cache(
+                    state,
+                    &channel_config,
+                    &plan,
+                    &CompletedTrace {
+                        mode: "sync",
+                        channel,
+                        channel_id: Some(channel_config.channel.channel_id.as_str()),
+                        input_json: input_json.as_deref(),
+                        response_json: &response_json,
+                        duration_ms,
+                        has_errors,
+                        task_trace_json: task_trace_json.as_deref(),
+                    },
+                    cache_body,
+                    &cache_context,
+                    profile.as_ref(),
+                )
+                .await;
+
+                // A shaped channel's body is whatever the workflow chose, so there
+                // is no envelope to append `_orion.profile` to. Profiling still
+                // records its timings (they reach the trace and the metrics); only
+                // the response-body copy is envelope-only.
+                if let Some(shaped) = shaped {
+                    return Ok(shaped_response(shaped));
+                }
+
+                // Profile mode: rebuild the response with `_orion.profile`
+                // appended and re-serialize. Only paid when profiling is on.
+                //
+                // B3 shape lock: the debug surface lives under a single
+                // top-level `_orion` namespace so future debug fields (e.g.
+                // `_orion.task_trace`) can be added without colliding with
+                // workflow-level output keys that callers control.
+                if let Some(ref p) = profile {
+                    let mut response_with_profile = response;
+                    response_with_profile["_orion"] = json!({ "profile": p.to_json() });
+                    return Ok(json_response(
+                        StatusCode::OK,
+                        serialize_envelope(&response_with_profile)?,
+                    ));
+                }
+
+                Ok(json_response(
+                    StatusCode::OK,
+                    public_json.unwrap_or(response_json),
+                ))
+            }
         }
+    }
+    .await;
+
+    // The one place the platform's cookies reach the wire, so no outcome can
+    // be added later that quietly skips them. An error is materialised into
+    // its response here rather than propagated, because `IntoResponse` runs
+    // above this frame and has nothing to attach; the body is byte-identical
+    // either way, since it is the same `OrionError::into_response`. With no
+    // cookies to carry — every channel that does not declare `oauth2_login` —
+    // the error propagates exactly as before.
+    match result {
+        Ok(response) => Ok(append_cookies(response, &response_cookies)),
+        Err(e) if !response_cookies.is_empty() => {
+            Ok(append_cookies(e.into_response(), &response_cookies))
+        }
+        Err(e) => Err(e),
     }
 }
 

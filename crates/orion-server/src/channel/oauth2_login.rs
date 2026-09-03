@@ -549,16 +549,27 @@ impl CompiledOAuth2Login {
     /// `metadata.oauth.return_to` cannot be turned into an open redirect by a
     /// crafted sign-in link. A rejected value is dropped silently: a caller
     /// supplied it, and naming the refusal would only tell a probe which
-    /// prefixes exist.
+    /// destinations exist.
+    ///
+    /// The comparison is on **origin and path segments**, not on the text. A
+    /// raw `starts_with` reads like the obvious implementation and is an open
+    /// redirect: the natural entry `https://app.example.com` is a string prefix
+    /// of `https://app.example.com.evil.test/steal`, so the crafted host is
+    /// admitted, sealed into the signed state, and handed to the workflow as a
+    /// *vetted* value — which is precisely the moment the workflow stops being
+    /// able to defend itself. Requiring the entry to end in `/` would close
+    /// that one hole and leave the shape of the rule depending on a trailing
+    /// character an operator cannot be expected to know is load-bearing.
     pub fn accepted_return_to(&self, query: &HashMap<String, String>) -> Option<String> {
         let cfg = self.cfg.return_to.as_ref()?;
         let value = query.get(&cfg.param)?;
         if value.len() > MAX_RETURN_TO_BYTES {
             return None;
         }
+        let candidate = url::Url::parse(value).ok()?;
         cfg.allow_list
             .iter()
-            .any(|prefix| value.starts_with(prefix.as_str()))
+            .any(|entry| permits_return_to(entry, &candidate))
             .then(|| value.clone())
     }
 
@@ -735,6 +746,39 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
 /// operator sets `[oauth2_login] allow_private_token_urls`, and that flag is
 /// instance-wide. Two independent gates; this relaxes one of them, for a class
 /// of host that is not reachable from anywhere else.
+/// Whether one allow-list entry admits a candidate `return_to`.
+///
+/// Two conditions, and the second is the one a string prefix cannot express:
+///
+/// 1. **Same origin.** Scheme, host and port must match exactly, so a host that
+///    merely *starts with* the permitted one — `app.example.com.evil.test` — is
+///    a different origin and is refused. `Url::origin` also disregards
+///    userinfo, which is what stops `https://app.example.com@evil.test/` from
+///    reading as the permitted host; that URL's host is `evil.test`.
+/// 2. **Path-segment prefix.** The candidate's path must be the entry's path or
+///    live beneath it, cut at a `/`. So an entry of `/app` admits `/app` and
+///    `/app/home` but not `/application`. An entry with no path parses as `/`
+///    and therefore admits the whole origin, which is what writing a bare
+///    origin plainly means.
+///
+/// An entry that does not parse admits nothing. `validate_shape` already
+/// refuses those through [`require_https`], so this is unreachable rather than
+/// lenient — failing closed is simply the right answer for the case.
+fn permits_return_to(entry: &str, candidate: &url::Url) -> bool {
+    let Ok(allowed) = url::Url::parse(entry) else {
+        return false;
+    };
+    if allowed.origin() != candidate.origin() {
+        return false;
+    }
+    let (allowed_path, candidate_path) = (allowed.path(), candidate.path());
+    if let Some(base) = allowed_path.strip_suffix('/') {
+        // `/app/` — the trailing slash is already the boundary.
+        return candidate_path == base || candidate_path.starts_with(allowed_path);
+    }
+    candidate_path == allowed_path || candidate_path.starts_with(&format!("{allowed_path}/"))
+}
+
 fn require_https(field: &str, value: &str) -> Result<(), String> {
     let url = url::Url::parse(value)
         .map_err(|e| format!("oauth2_login.{field} '{value}' is not a URL: {e}"))?;
@@ -1150,32 +1194,125 @@ mod tests {
 
     /// Checked on the way *in*, so a value that reaches the workflow has
     /// already passed and cannot turn a workflow redirect into an open one.
+    ///
+    /// The entry here carries **no trailing slash**, which is what an operator
+    /// naturally writes and what the previous string-prefix implementation got
+    /// wrong: `https://app.example.com` is a textual prefix of
+    /// `https://app.example.com.evil.test/steal`, so the crafted host was
+    /// admitted and sealed into the signed state as a vetted destination. The
+    /// old test passed only because it configured the trailing slash.
     #[tokio::test]
     async fn return_to_is_filtered_against_the_allow_list() {
         let mut cfg = config();
         cfg.return_to = Some(crate::channel::ReturnToConfig {
             param: "next".to_string(),
-            allow_list: vec!["https://app.example.com/".to_string()],
+            allow_list: vec!["https://app.example.com".to_string()],
         });
         let login = compiled(&cfg).await;
 
-        let permitted = HashMap::from([(
-            "next".to_string(),
-            "https://app.example.com/dashboard".to_string(),
-        )]);
-        assert_eq!(
-            login.accepted_return_to(&permitted).as_deref(),
-            Some("https://app.example.com/dashboard")
-        );
+        for value in [
+            "https://app.example.com/dashboard",
+            "https://app.example.com/",
+            // A bare origin entry admits the whole origin, which is what
+            // writing a bare origin plainly means.
+            "https://app.example.com",
+            "https://app.example.com/a/b?q=1#frag",
+        ] {
+            let permitted = HashMap::from([("next".to_string(), value.to_string())]);
+            assert_eq!(
+                login.accepted_return_to(&permitted).as_deref(),
+                Some(value),
+                "{value}"
+            );
+        }
 
         for value in [
             "https://evil.example.com/",
-            // The allow-list is a prefix check, and this is why the trailing
-            // slash in the configured prefix matters.
-            "https://app.example.com.evil.test/",
+            // The open redirect: a longer host that starts with the permitted
+            // one. This is the case the trailing slash used to be load-bearing
+            // for, and it is now refused however the entry is written.
+            "https://app.example.com.evil.test/steal",
+            "https://app.example.com.evil.test",
+            // Userinfo cannot be used to make the host read as the permitted
+            // one — this URL's host is `evil.test`.
+            "https://app.example.com@evil.test/steal",
+            // A different scheme or port is a different origin.
+            "http://app.example.com/dashboard",
+            "https://app.example.com:8443/dashboard",
+            // Not a URL at all, and a relative path, are both refused: the
+            // allow-list is written in absolute URLs.
+            "/dashboard",
+            "javascript:alert(1)",
+            "",
         ] {
             let refused = HashMap::from([("next".to_string(), value.to_string())]);
             assert_eq!(login.accepted_return_to(&refused), None, "{value}");
+        }
+    }
+
+    /// A path on an entry is a boundary, not a substring: `/app` must not admit
+    /// `/application`, which is the same mistake as the host case one level
+    /// down.
+    #[tokio::test]
+    async fn return_to_path_matching_cuts_at_a_segment_boundary() {
+        let mut cfg = config();
+        cfg.return_to = Some(crate::channel::ReturnToConfig {
+            param: "next".to_string(),
+            allow_list: vec!["https://app.example.com/app".to_string()],
+        });
+        let login = compiled(&cfg).await;
+
+        for value in [
+            "https://app.example.com/app",
+            "https://app.example.com/app/",
+            "https://app.example.com/app/home",
+        ] {
+            let permitted = HashMap::from([("next".to_string(), value.to_string())]);
+            assert_eq!(
+                login.accepted_return_to(&permitted).as_deref(),
+                Some(value),
+                "{value}"
+            );
+        }
+
+        for value in [
+            "https://app.example.com/application",
+            "https://app.example.com/appliance/x",
+            "https://app.example.com/other",
+            "https://app.example.com/",
+        ] {
+            let refused = HashMap::from([("next".to_string(), value.to_string())]);
+            assert_eq!(login.accepted_return_to(&refused), None, "{value}");
+        }
+    }
+
+    /// A trailing slash on the entry means the same thing as none, so an
+    /// operator cannot get this wrong by writing it either way.
+    #[tokio::test]
+    async fn return_to_entry_means_the_same_with_or_without_a_trailing_slash() {
+        for entry in [
+            "https://app.example.com/app",
+            "https://app.example.com/app/",
+        ] {
+            let mut cfg = config();
+            cfg.return_to = Some(crate::channel::ReturnToConfig {
+                param: "next".to_string(),
+                allow_list: vec![entry.to_string()],
+            });
+            let login = compiled(&cfg).await;
+
+            for (value, admitted) in [
+                ("https://app.example.com/app", true),
+                ("https://app.example.com/app/home", true),
+                ("https://app.example.com/application", false),
+            ] {
+                let q = HashMap::from([("next".to_string(), value.to_string())]);
+                assert_eq!(
+                    login.accepted_return_to(&q).is_some(),
+                    admitted,
+                    "entry {entry} / value {value}"
+                );
+            }
         }
     }
 

@@ -870,9 +870,20 @@ fn default_state_cookie_max_age() -> u64 {
 pub struct ReturnToConfig {
     /// The query parameter carrying the destination, e.g. `next`.
     pub param: String,
-    /// Permitted destination prefixes, `https` only. A value that is not
-    /// prefixed by one of these is dropped — silently, because a caller
-    /// supplied it and a rejection would only tell a probe which prefixes
+    /// Permitted destinations, `https` only. A candidate is admitted when it
+    /// has the **same origin** as an entry (scheme, host and port all equal)
+    /// and its path is that entry's path or lies beneath it at a `/` boundary.
+    /// So `https://app.example.com` admits the whole of that host, and
+    /// `https://app.example.com/app` admits `/app` and `/app/home` but not
+    /// `/application`.
+    ///
+    /// It is deliberately not a string prefix: `https://app.example.com` is a
+    /// textual prefix of `https://app.example.com.evil.test/steal`, and a
+    /// value that passes this list is handed to the workflow as a vetted
+    /// destination.
+    ///
+    /// A value that matches nothing is dropped silently, because a caller
+    /// supplied it and a rejection would only tell a probe which destinations
     /// exist.
     pub allow_list: Vec<String>,
 }
