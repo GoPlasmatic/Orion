@@ -12,6 +12,7 @@
 //!
 //! | Module | Holds |
 //! |---|---|
+//! | [`content`] | the importable-content projection every `content_hash` is taken over |
 //! | [`dto`] | one struct per response body the admin API serves |
 //! | [`enums`] | closed value sets (status, protocol, …) and their string constants |
 //! | [`envelope`] | the `{"data": …}` and paginated envelopes admin 2xx responses carry |
@@ -20,7 +21,10 @@
 //!
 //! What deliberately does **not** live here: the server's `OrionError` enum
 //! (its internal error domain — only the serialized envelope is contract),
-//! database row types, request validation, and any I/O.
+//! database row types, request validation, and any I/O. Nor the content
+//! *hash* — [`content`] defines the projection a hash is taken over, but
+//! `canonical_json` and `content_hash` stay in the server, which is the only
+//! thing that computes one; see that module's doc for why.
 //!
 //! **Response deserialization is tolerant by design**: every field on every
 //! [`dto`] struct carries `#[serde(default)]`, unknown fields are ignored, and
@@ -43,6 +47,7 @@
 //! The `utoipa` feature adds `ToSchema` derives so the server can publish
 //! these exact types in its OpenAPI document; clients leave it off.
 
+pub mod content;
 pub mod dto;
 pub mod enums;
 pub mod envelope;

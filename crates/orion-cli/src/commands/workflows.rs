@@ -854,35 +854,29 @@ fn diff_key(wf: &Value) -> Option<&str> {
     wf["workflow_id"].as_str().or_else(|| wf["name"].as_str())
 }
 
-/// The fields a re-import would actually write. Comparing anything else
-/// (`version`, `status`, `created_at`, `content_hash`) reports drift for rows
-/// that are byte-identical where it counts.
-fn importable_content(wf: &Value) -> Value {
-    serde_json::json!({
-        "name": wf.get("name").cloned().unwrap_or(Value::Null),
-        "description": wf.get("description").cloned().unwrap_or(Value::Null),
-        "priority": wf.get("priority").cloned().unwrap_or(Value::from(0)),
-        "condition": wf.get("condition").cloned().unwrap_or(Value::Bool(true)),
-        "tasks": wf.get("tasks").cloned().unwrap_or(Value::Null),
-        "tags": wf.get("tags").cloned().unwrap_or_else(|| Value::Array(vec![])),
-        "loop": wf.get("loop").cloned().unwrap_or(Value::Null),
-        "continue_on_error": wf.get("continue_on_error").cloned().unwrap_or(Value::Bool(false)),
-    })
-}
-
 /// Whether the local artifact differs from the stored workflow.
 ///
 /// `content_hash` is the server's own `sha256:` over the canonical importable
 /// projection — "equal hashes mean importing one over the other is a no-op" —
 /// so when both sides carry one, that is the exact answer. A hand-authored
 /// file has no hash; those fall back to comparing the importable fields.
+///
+/// That fallback is [`orion_api::content::workflow_content`], the same
+/// projection the server hashes. It used to be a fourth copy of it here, which
+/// was self-consistent — both sides went through the same function — and so
+/// could not be *wrong*, only out of date: a field added to the server's
+/// projection would have made this print `=` for two workflows differing in
+/// exactly that field.
 fn workflow_differs(local: &Value, server: &Value) -> bool {
     match (
         local["content_hash"].as_str(),
         server["content_hash"].as_str(),
     ) {
         (Some(l), Some(s)) => l != s,
-        _ => importable_content(local) != importable_content(server),
+        _ => {
+            orion_api::content::workflow_content(local)
+                != orion_api::content::workflow_content(server)
+        }
     }
 }
 
@@ -1021,4 +1015,74 @@ async fn dependencies(
     }
 
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// When both sides carry a hash, that is the whole answer — the fallback
+    /// must not run and cannot disagree with it.
+    #[test]
+    fn equal_hashes_are_unchanged_and_unequal_ones_are_not() {
+        let a = json!({"name": "w", "content_hash": "sha256:aaa"});
+        let b = json!({"name": "DIFFERENT", "content_hash": "sha256:aaa"});
+        assert!(
+            !workflow_differs(&a, &b),
+            "the hash is the server's own answer; the fields are not consulted"
+        );
+
+        let c = json!({"name": "w", "content_hash": "sha256:bbb"});
+        assert!(workflow_differs(&a, &c));
+    }
+
+    /// The path every hand-authored file takes: a minimal local artifact
+    /// against a full server export. Everything the file leaves out is a
+    /// default the server filled in, so this is a no-op import and must read
+    /// as unchanged.
+    #[test]
+    fn a_minimal_local_file_matches_the_full_export_it_would_import_to() {
+        let local = json!({
+            "workflow_id": "wf-1",
+            "name": "Same",
+            "tasks": [{"id": "t"}],
+        });
+        let server = json!({
+            "workflow_id": "wf-1",
+            "name": "Same",
+            "tasks": [{"id": "t"}],
+            "version": 3,
+            "status": "active",
+            "rollout_percentage": 100,
+            "created_at": "2026-01-01T00:00:00",
+            "priority": 0,
+            "condition": true,
+            "tags": [],
+            "continue_on_error": false,
+            "description": null,
+        });
+        assert!(!workflow_differs(&local, &server));
+    }
+
+    /// `loop` is the one field projected only when it is really there, and an
+    /// explicit `null` is what `Option<Value>` reads a JSON null as — nothing.
+    /// A file writing it out must still import as a no-op.
+    #[test]
+    fn an_explicit_null_loop_is_the_same_as_no_loop() {
+        let local = json!({"name": "w", "tasks": [], "loop": null});
+        let server = json!({"name": "w", "tasks": [], "version": 2});
+        assert!(!workflow_differs(&local, &server));
+
+        let looping = json!({"name": "w", "tasks": [], "loop": {"over": "$.items"}});
+        assert!(workflow_differs(&looping, &server));
+    }
+
+    /// And a real difference is still a difference, on the no-hash path.
+    #[test]
+    fn a_changed_field_differs_without_a_hash() {
+        let local = json!({"name": "w", "tasks": [], "description": "changed"});
+        let server = json!({"name": "w", "tasks": [], "version": 2});
+        assert!(workflow_differs(&local, &server));
+    }
 }

@@ -73,10 +73,26 @@ test_diff_reports_drift_nonzero() {
     assert_contains "$CLI_OUTPUT" "1 modified"
 }
 
+# The no-hash fallback on its hardest input: a hand-authored file that omits
+# every field with a default, diffed against the full row the server stored
+# from it. Nothing the file leaves out is a difference, so this must read as
+# clean — it is the path `workflows diff` takes for any file a human wrote,
+# and the one where a projection that disagreed with the server's would show.
+test_diff_of_a_minimal_authored_file_is_clean() {
+    reset_server_state
+    cli_raw workflows import -f "$FIXTURES_DIR/workflows/minimal_authored.json"
+    assert_exit_code 0 "$CLI_EXIT"
+
+    cli_raw workflows diff -f "$FIXTURES_DIR/workflows/minimal_authored.json"
+    assert_exit_code 0 "$CLI_EXIT"
+    assert_contains "$CLI_OUTPUT" "0 new, 0 modified, 0 deleted"
+}
+
 run_test "import workflows from file" test_import_workflows
 run_test "import dry-run"             test_import_dry_run
 run_test "export workflows"           test_export_workflows
 run_test "diff round-trips its own export" test_diff_round_trips_its_own_export
 run_test "diff exits non-zero on drift"    test_diff_reports_drift_nonzero
+run_test "diff of a minimal authored file is clean" test_diff_of_a_minimal_authored_file_is_clean
 
 end_suite

@@ -28,6 +28,7 @@ assert_eq!(err.error.code, codes::NOT_FOUND);
 
 | Module | Holds |
 |---|---|
+| `content` | the importable-content projection every `content_hash` is taken over |
 | `dto` | one struct per response body the admin API serves |
 | `enums` | the closed value sets (status, protocol, …) and their string constants |
 | `envelope` | the `{"data": …}` and paginated envelopes admin 2xx responses carry |

@@ -1,0 +1,13 @@
+[
+  {
+    "workflow_id": "minimal-authored",
+    "name": "Minimal Authored",
+    "tasks": [
+      {
+        "id": "t1",
+        "name": "Log",
+        "function": { "name": "log", "input": { "message": "minimal" } }
+      }
+    ]
+  }
+]

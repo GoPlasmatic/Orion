@@ -16,6 +16,13 @@
 //! connector `id` — are excluded, which is what makes a re-import of an
 //! unmodified export hash equal.
 //!
+//! **The projection itself is [`orion_api::content`]**, not this file. It is
+//! a statement about the wire shape, and a fourth consumer lives outside the
+//! server: `orion-cli workflows diff` compares it on the no-hash path a
+//! hand-authored file takes, and carried its own copy until it had drifted on
+//! `loop`. What stays here is the decoding — rows hold their JSON as strings —
+//! and the hash, which nothing outside the server computes.
+//!
 //! Hashes are computed over **stored** values. A connector holding literal
 //! secrets therefore hashes over the secrets it stores, which a masked
 //! export can never reproduce — the same boundary the round-trip contract
@@ -37,41 +44,34 @@ use crate::storage::repositories::workflows::CreateWorkflowRequest;
 
 /// A workflow row's importable content, mirroring
 /// [`workflow_request_content`].
-/// `loop` is projected **only when present**, on both sides. Adding a key
-/// unconditionally would have changed the hash of every workflow that predates
-/// the column, which is not a cosmetic problem: applied package versions are
-/// content-immutable, so a re-`apply` of an unmodified artifact would stop
-/// being a no-op and start returning `409`. Absent in, absent out.
+///
+/// The row's JSON columns are decoded here and the projection itself is
+/// [`orion_api::content::workflow_content`] — including the rule that `loop`
+/// is emitted only when there is one, which that module documents.
 pub fn workflow_content(w: &Workflow) -> Result<Value, OrionError> {
-    let mut content = serde_json::json!({
+    Ok(orion_api::content::workflow_content(&serde_json::json!({
         "name": w.name,
         "description": w.description,
         "priority": w.priority,
         "condition": serde_json::from_str::<Value>(&w.condition_json)?,
         "tasks": serde_json::from_str::<Value>(&w.tasks_json)?,
         "tags": serde_json::from_str::<Value>(&w.tags_json)?,
+        "loop": w.loop_json.as_deref().map(serde_json::from_str::<Value>).transpose()?,
         "continue_on_error": w.continue_on_error,
-    });
-    if let Some(loop_json) = w.loop_json.as_deref() {
-        content["loop"] = serde_json::from_str::<Value>(loop_json)?;
-    }
-    Ok(content)
+    })))
 }
 
 pub fn workflow_request_content(r: &CreateWorkflowRequest) -> Value {
-    let mut content = serde_json::json!({
+    orion_api::content::workflow_content(&serde_json::json!({
         "name": r.name,
         "description": r.description,
         "priority": r.priority,
         "condition": r.condition,
         "tasks": r.tasks,
         "tags": r.tags,
+        "loop": r.loop_config,
         "continue_on_error": r.continue_on_error,
-    });
-    if let Some(loop_config) = &r.loop_config {
-        content["loop"] = loop_config.clone();
-    }
-    content
+    }))
 }
 
 /// A channel row's importable content, mirroring
@@ -82,7 +82,7 @@ pub fn channel_content(c: &Channel) -> Result<Value, OrionError> {
         .as_deref()
         .map(serde_json::from_str::<Value>)
         .transpose()?;
-    Ok(serde_json::json!({
+    Ok(orion_api::content::channel_content(&serde_json::json!({
         "name": c.name,
         "description": c.description,
         "channel_type": c.channel_type,
@@ -96,11 +96,11 @@ pub fn channel_content(c: &Channel) -> Result<Value, OrionError> {
         "config": serde_json::from_str::<Value>(&c.config_json)?,
         "priority": c.priority,
         "tags": serde_json::from_str::<Value>(&c.tags_json)?,
-    }))
+    })))
 }
 
 pub fn channel_request_content(r: &CreateChannelRequest) -> Value {
-    serde_json::json!({
+    orion_api::content::channel_content(&serde_json::json!({
         "name": r.name,
         "description": r.description,
         "channel_type": r.channel_type.as_str(),
@@ -114,7 +114,7 @@ pub fn channel_request_content(r: &CreateChannelRequest) -> Value {
         "config": r.config,
         "priority": r.priority,
         "tags": r.tags,
-    })
+    }))
 }
 
 /// A connector row's importable content, mirroring
@@ -122,23 +122,25 @@ pub fn channel_request_content(r: &CreateChannelRequest) -> Value {
 /// `name` and keeps the stored id, so it is not part of the artifact
 /// contract.
 pub fn connector_content(c: &Connector) -> Result<Value, OrionError> {
-    Ok(serde_json::json!({
+    Ok(orion_api::content::connector_content(&serde_json::json!({
         "name": c.name,
         "connector_type": c.connector_type,
         "config": serde_json::from_str::<Value>(&c.config_json)?,
         "enabled": c.enabled,
         "tags": serde_json::from_str::<Value>(&c.tags_json)?,
-    }))
+    })))
 }
 
 pub fn connector_request_content(r: &CreateConnectorRequest) -> Value {
-    serde_json::json!({
+    // `enabled` goes across as the `Option` it is — the shared projection
+    // applies the K1 default, so it is stated in one place rather than two.
+    orion_api::content::connector_content(&serde_json::json!({
         "name": r.name,
         "connector_type": r.connector_type.as_str(),
         "config": r.config,
-        "enabled": r.enabled.unwrap_or(true),
+        "enabled": r.enabled,
         "tags": r.tags,
-    })
+    }))
 }
 
 // ============================================================
@@ -288,6 +290,14 @@ mod tests {
             channel_content(&row).expect("channel content"),
             channel_request_content(&req)
         );
+        // The pin: a field added to the projection and not to the shared
+        // module — or the other way round — changes this literal, and the
+        // diff says exactly which key moved. It is also the receipt-immutability
+        // guard, since every stored channel hash is taken over this string.
+        assert_eq!(
+            canonical_json(&channel_request_content(&req)),
+            r#"{"channel_type":"sync","config":{"a":1},"consumer_group":null,"description":null,"methods":["POST"],"name":"Hash Ch","priority":2,"protocol":"rest","route_pattern":"/hash","tags":["t"],"topic":null,"transport_config":{},"workflow_id":"wf-1"}"#
+        );
 
         let req: crate::storage::repositories::connectors::CreateConnectorRequest =
             serde_json::from_value(json!({
@@ -311,6 +321,10 @@ mod tests {
         assert_eq!(
             connector_content(&row).expect("connector content"),
             connector_request_content(&req)
+        );
+        assert_eq!(
+            canonical_json(&connector_request_content(&req)),
+            r#"{"config":{"url":"https://example.com"},"connector_type":"http","enabled":false,"name":"hash-conn","tags":["t"]}"#
         );
     }
 
@@ -345,6 +359,13 @@ mod tests {
             updated_at: now,
         };
         let row_content = workflow_content(&row).expect("content");
+        // Note what is *not* here: no `loop` key. The row carries no loop,
+        // so the projection emits none — the rule that keeps a re-`apply` of
+        // an unmodified pre-loop package a no-op instead of a 409.
+        assert_eq!(
+            canonical_json(&row_content),
+            r#"{"condition":true,"continue_on_error":false,"description":null,"name":"Hash Me","priority":5,"tags":["a"],"tasks":[{"function":{"input":{"message":"x"},"name":"log"},"id":"t","name":"T"}]}"#
+        );
         assert_eq!(row_content, workflow_request_content(&req));
         assert_eq!(
             content_hash(&row_content),

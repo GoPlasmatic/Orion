@@ -392,7 +392,8 @@ Manages workflows. Alias: `rules`.
 `diff` answers the question `import` would act on: it matches local items to
 stored ones by `workflow_id` — the key an import collides on — and compares the
 server's `content_hash` when the file carries one (an exported artifact does),
-falling back to the importable fields for a hand-authored file. Fields that a
+falling back to the importable fields for a hand-authored file — the same
+projection the server hashes, so the two answers cannot disagree. Fields that a
 re-import never writes — `version`, `status`, `created_at` — are ignored, so a
 file exported and diffed straight back reports every workflow unchanged.
 
