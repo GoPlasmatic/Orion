@@ -52,10 +52,27 @@ struct Entry {
 /// channel `jwt` auth mode and the `jwt_verify` task.
 pub struct JwksCache {
     entries: tokio::sync::RwLock<HashMap<String, Arc<Entry>>>,
-    /// Single-flight: fetches for all URLs serialize here. JWKS fetches are
-    /// rare (cache TTL, refetch floor), so one lock is simpler than a
-    /// per-URL map and costs nothing observable.
-    fetch_lock: tokio::sync::Mutex<()>,
+    /// Single-flight, **per URL**: concurrent misses for one issuer collapse
+    /// into one fetch, and issuers do not queue behind each other.
+    ///
+    /// This was a single `Mutex<()>` for every URL, on the argument that JWKS
+    /// fetches are rare. They are — until one issuer is slow, and then every
+    /// *other* issuer's cache miss and rotation waits behind it: the lock is
+    /// held across [`Self::fetch`], which is a DNS resolution
+    /// (`validate_url_not_private`) plus a request bounded only by
+    /// [`FETCH_TIMEOUT`]. With several cold issuers the stalls add up, and
+    /// they land on the request path, because a key fetch is what a token
+    /// verification is waiting for.
+    ///
+    /// The map holds `Weak`, so an entry lives exactly as long as someone is
+    /// fetching that URL: the last holder to drop its `Arc` leaves a dangling
+    /// weak that the next acquire prunes. That bounds the map by *concurrent
+    /// fetches* rather than by URLs ever seen — which is the stronger
+    /// property, and it means the answer does not depend on where JWKS URLs
+    /// come from. (They are authored, not request data: a channel's stored
+    /// `auth.jwks_url`, or a `jwt_verify` task input validated at engine
+    /// build.)
+    flights: std::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
     /// The serving HTTP client — the one built with `PinnedDnsResolver`.
     client: reqwest::Client,
     /// `jwt.allow_private_jwks_urls`: skip the private-address check. Off by
@@ -67,10 +84,34 @@ impl JwksCache {
     pub fn new(client: reqwest::Client, allow_private: bool) -> Self {
         Self {
             entries: tokio::sync::RwLock::new(HashMap::new()),
-            fetch_lock: tokio::sync::Mutex::new(()),
+            flights: std::sync::Mutex::new(HashMap::new()),
             client,
             allow_private,
         }
+    }
+
+    /// The single-flight lock for one URL, shared with anyone else fetching it
+    /// right now.
+    ///
+    /// A `std::sync::Mutex` for the map: it guards plain data, is never held
+    /// across an `.await` (the guard drops at the end of this function, before
+    /// the caller awaits the per-URL lock), and a panic mid-update cannot
+    /// leave a map of weak pointers inconsistent — the same argument
+    /// `runtime::tasks` makes for its slot list.
+    fn flight(&self, url: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self
+            .flights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Drop the URLs nobody is fetching any more. O(live fetches), which is
+        // what keeps this from being a map that only grows.
+        flights.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(existing) = flights.get(url).and_then(std::sync::Weak::upgrade) {
+            return existing;
+        }
+        let fresh = Arc::new(tokio::sync::Mutex::new(()));
+        flights.insert(url.to_string(), Arc::downgrade(&fresh));
+        fresh
     }
 
     /// The decoding keys to try for (`kid`, `alg`): kid-exact matches when the
@@ -112,7 +153,11 @@ impl JwksCache {
             return existing;
         }
 
-        let _flight = self.fetch_lock.lock().await;
+        // Held for this URL only. Queuing behind another caller fetching the
+        // *same* URL is the point — that is the single flight; queuing behind
+        // a different issuer was not.
+        let flight = self.flight(url);
+        let _flight = flight.lock().await;
         // Someone else may have fetched while we queued.
         let current = self.entries.read().await.get(url).cloned();
         if !needs_fetch(current.as_ref(), force) {
@@ -326,6 +371,128 @@ mod tests {
 
         assert_eq!(keys.len(), 1);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// A JWKS mock that takes `delay` to answer, so one issuer can be slow
+    /// while another is not.
+    async fn slow_mock_jwks(delay: Duration) -> (String, Arc<AtomicUsize>) {
+        use base64::Engine as _;
+        let k = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("a-symmetric-test-secret");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let served = hits.clone();
+        let app = axum::Router::new().route(
+            "/jwks.json",
+            axum::routing::get(move || {
+                let hits = served.clone();
+                let k = k.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(delay).await;
+                    axum::Json(serde_json::json!({
+                        "keys": [{"kty": "oct", "k": k, "kid": "one", "alg": "HS256"}]
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let addr = listener.local_addr().expect("test addr");
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("test serve") });
+        (format!("http://{addr}/jwks.json"), hits)
+    }
+
+    /// One slow issuer must not hold up another.
+    ///
+    /// The single-flight lock used to be process-wide, and it is held across
+    /// the whole of `fetch` — a DNS resolution plus a request bounded only by
+    /// `FETCH_TIMEOUT`. So a cache miss for issuer B waited on issuer A's
+    /// timeout, on the request path, for a key set B had already published.
+    /// With several cold or unhealthy issuers the stalls add up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_slow_issuer_does_not_block_a_healthy_one() {
+        let (slow_url, _) = slow_mock_jwks(Duration::from_secs(2)).await;
+        let (fast_url, fast_hits) = mock_jwks().await;
+        let cache = Arc::new(JwksCache::new(reqwest::Client::new(), true));
+
+        let slow_cache = cache.clone();
+        let slow = tokio::spawn(async move {
+            slow_cache
+                .decoding_keys(&slow_url, Some("one"), Algorithm::HS256)
+                .await
+        });
+        // Let the slow fetch get as far as holding whatever it holds.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let started = Instant::now();
+        let keys = cache
+            .decoding_keys(&fast_url, Some("one"), Algorithm::HS256)
+            .await
+            .expect("the healthy issuer answers");
+
+        assert_eq!(keys.len(), 1);
+        assert_eq!(fast_hits.load(Ordering::SeqCst), 1);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the healthy issuer waited on the slow one: {:?}",
+            started.elapsed()
+        );
+        let _ = slow.await;
+    }
+
+    /// …while concurrent misses for *one* issuer still collapse into one
+    /// fetch. Per-URL locking is only correct if it is still single-flight.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_misses_for_one_issuer_still_share_a_fetch() {
+        let (url, hits) = slow_mock_jwks(Duration::from_millis(200)).await;
+        let cache = Arc::new(JwksCache::new(reqwest::Client::new(), true));
+
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let url = url.clone();
+            waiters.push(tokio::spawn(async move {
+                cache
+                    .decoding_keys(&url, Some("one"), Algorithm::HS256)
+                    .await
+            }));
+        }
+        for waiter in waiters {
+            assert_eq!(waiter.await.expect("join").expect("keys").len(), 1);
+        }
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "eight concurrent misses, one fetch"
+        );
+    }
+
+    /// The flight map holds only the URLs being fetched right now, so it
+    /// cannot grow with the number of issuers a node has ever seen.
+    #[tokio::test]
+    async fn the_flight_map_does_not_retain_finished_urls() {
+        let cache = JwksCache::new(reqwest::Client::new(), true);
+        let (url, _) = mock_jwks().await;
+
+        cache
+            .decoding_keys(&url, Some("one"), Algorithm::HS256)
+            .await
+            .expect("keys");
+        // The fetch is over, so nothing holds the flight lock any more; the
+        // next acquire prunes it. Ask for one to trigger the prune, then
+        // check only that one is left.
+        let _held = cache.flight("http://other.example/jwks.json");
+        let flights = cache
+            .flights
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            flights.len(),
+            1,
+            "a finished fetch must not keep its URL in the map: {:?}",
+            flights.keys().collect::<Vec<_>>()
+        );
     }
 
     /// An issuer that streams without declaring a length cannot make this
