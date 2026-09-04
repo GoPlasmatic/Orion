@@ -139,6 +139,10 @@ struct EntryState {
     /// Fingerprint of the oauth2 block this state was minted under. A
     /// mismatch (the connector was edited) resets everything below.
     fingerprint: String,
+    /// The invalidation generation `token` was acquired under — the same
+    /// stamp the published [`FastToken`] carries, so both paths refuse a
+    /// token a 401 has already rejected.
+    generation: u64,
     token: Option<CachedToken>,
     /// The freshest known refresh token (seed, persisted, or rotated).
     refresh_token: Option<String>,
@@ -150,6 +154,7 @@ impl EntryState {
     fn fresh(fingerprint: String) -> Self {
         Self {
             fingerprint,
+            generation: 0,
             token: None,
             refresh_token: None,
             rejected: None,
@@ -165,11 +170,29 @@ impl EntryState {
 struct FastToken {
     config: Option<OAuth2Config>,
     token: Option<CachedToken>,
+    /// The invalidation generation this token was acquired under. Stale
+    /// against [`TokenEntry::invalidated`] means a 401 arrived since, and the
+    /// fast path must not serve it. See [`OAuthTokenManager::invalidate`].
+    generation: u64,
 }
 
 struct TokenEntry {
     fast: arc_swap::ArcSwap<FastToken>,
     state: tokio::sync::Mutex<EntryState>,
+    /// Bumped by [`OAuthTokenManager::invalidate`] on every API 401, without
+    /// taking `state`.
+    ///
+    /// The invalidation used to be attempted under `state.try_lock()` and
+    /// simply skipped when another task held it — which is exactly when it
+    /// matters, because the task holding it is usually the one about to
+    /// publish a token. A skipped invalidation left the rejected token
+    /// fast-path eligible until its refresh margin, so the connector answered
+    /// 401 after 401 while a perfectly good refresh sat one call away.
+    ///
+    /// A counter rather than a flag, and read *before* a fetch rather than
+    /// after: that is what makes an invalidation arriving mid-flight
+    /// survive. See `access_token`.
+    invalidated: std::sync::atomic::AtomicU64,
 }
 
 /// The process-wide token manager, held on the
@@ -227,17 +250,29 @@ impl OAuthTokenManager {
     /// refetches. The refresh token is kept — it is still valid; only the
     /// access token was rejected. Called when the *API* answers 401 on an
     /// oauth2 connector: self-healing after IdP-side revocation.
+    ///
+    /// Cannot fail and cannot wait. It takes no lock at all: bumping the
+    /// generation is what invalidates, and both the fast path and the slow
+    /// path compare against it. Clearing the published token as well is a
+    /// courtesy — it saves the next caller a trip through the mutex — but it
+    /// is not what makes this correct, because an acquisition already in
+    /// flight will publish over it. The generation is what that publish
+    /// cannot outrun.
     pub async fn invalidate(&self, connector: &str) {
-        if let Some(entry) = self.entries.read().await.get(connector).cloned()
-            && let Ok(mut st) = entry.state.try_lock()
-        {
-            st.token = None;
-            let config = entry.fast.load().config.clone();
-            entry.fast.store(Arc::new(FastToken {
-                config,
-                token: None,
-            }));
-        }
+        let Some(entry) = self.entries.read().await.get(connector).cloned() else {
+            return;
+        };
+        // Release: a reader that sees this bump must also see everything
+        // written before the 401 that prompted it.
+        entry
+            .invalidated
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        let fast = entry.fast.load();
+        entry.fast.store(Arc::new(FastToken {
+            config: fast.config.clone(),
+            token: None,
+            generation: fast.generation,
+        }));
     }
 
     /// The current access token for `connector`, acquiring or refreshing as
@@ -266,13 +301,23 @@ impl OAuthTokenManager {
         let margin = Duration::from_secs(cfg.refresh_margin_secs.min(3600));
         let entry = self.entry(connector).await;
 
+        // The invalidation generation, read once and used for both paths.
+        // Read *before* anything else so that an invalidation racing this call
+        // is either already visible here (and honoured) or lands after the
+        // token this call publishes is stamped — in which case the stamp is
+        // stale and the *next* caller refetches. Either way it is not lost,
+        // which is the whole difference from the `try_lock` this replaces.
+        let generation = entry.invalidated.load(std::sync::atomic::Ordering::Acquire);
+
         // Fast path: exactly the condition the slow path answers from cache
-        // (unchanged config, token comfortably fresh), without the mutex —
-        // so requests never serialize behind an in-flight refresh while the
-        // current token is still valid past the margin.
+        // (unchanged config, token comfortably fresh, no 401 since it was
+        // acquired), without the mutex — so requests never serialize behind an
+        // in-flight refresh while the current token is still valid past the
+        // margin.
         {
             let fast = entry.fast.load();
-            if fast.config.as_ref() == Some(cfg)
+            if fast.generation == generation
+                && fast.config.as_ref() == Some(cfg)
                 && let Some(token) = fresh_token(&fast.token, margin)
             {
                 return Ok(token);
@@ -286,6 +331,14 @@ impl OAuthTokenManager {
         // token, refresh token, negative cache — belongs to the old config.
         if st.fingerprint != fingerprint {
             *st = EntryState::fresh(fingerprint.clone());
+        }
+
+        // A 401 since this token was cached means it is not a token any more,
+        // however fresh its expiry looks. Dropped here rather than by
+        // `invalidate` itself, because `invalidate` deliberately takes no
+        // lock — the generation is the message, this is where it is read.
+        if st.generation < generation {
+            st.token = None;
         }
 
         // Re-check under the lock: a queued caller usually finds the winner's
@@ -322,9 +375,18 @@ impl OAuthTokenManager {
         }
         // Publish for the fast path, whatever happened, while the lock is
         // still held (its writers are ordered by the mutex).
+        //
+        // Stamped with the generation read at the *top* of this call, not a
+        // fresh load: an invalidation that arrived while the token request was
+        // in flight rejected the token this is about to publish, and stamping
+        // it with the newer generation would hide that. Stale-stamping is the
+        // safe direction — the fast path skips it and the next caller
+        // refetches.
+        st.generation = generation;
         entry.fast.store(Arc::new(FastToken {
             config: Some(cfg.clone()),
             token: st.token.clone(),
+            generation,
         }));
         result
     }
@@ -339,8 +401,10 @@ impl OAuthTokenManager {
                 fast: arc_swap::ArcSwap::new(Arc::new(FastToken {
                     config: None,
                     token: None,
+                    generation: 0,
                 })),
                 state: tokio::sync::Mutex::new(EntryState::fresh(String::new())),
+                invalidated: std::sync::atomic::AtomicU64::new(0),
             })
         }))
     }
@@ -1162,6 +1226,123 @@ mod tests {
             h.await.expect("join").expect("token");
         }
         assert_eq!(idp.hits(), 1, "eight callers, one token request");
+    }
+
+    // ---- 401 invalidation cannot be dropped ----
+
+    /// The race the `try_lock` version lost.
+    ///
+    /// `invalidate` used to attempt `state.try_lock()` and skip when another
+    /// task held it — which is precisely when it matters, because the task
+    /// holding it is the one about to publish a token. Here the lock is held
+    /// for the whole invalidation, so the old code did nothing at all and the
+    /// rejected token stayed fast-path eligible until its refresh margin: a
+    /// connector answering 401 after 401 with a good refresh one call away.
+    #[tokio::test]
+    async fn invalidation_is_not_lost_when_the_state_lock_is_held() {
+        let idp = IdpState::ok(json!({ "access_token": "at-1", "expires_in": 3600 }));
+        let url = fake_idp(Arc::clone(&idp)).await;
+        let manager = manager_with(Arc::new(StubConnectorRepo::with(vec![])));
+        let cfg = cc_config(&url);
+
+        let first = manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
+        assert_eq!(first, "at-1");
+        assert_eq!(idp.hits(), 1);
+
+        // The API answers 401 while something else owns the entry's state —
+        // an acquisition for another config, a refresh, anything.
+        let entry = manager.entry("crm").await;
+        let held = entry.state.lock().await;
+        manager.invalidate("crm").await;
+        drop(held);
+
+        idp.set_response(200, json!({ "access_token": "at-2", "expires_in": 3600 }));
+        let second = manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
+
+        assert_eq!(
+            second, "at-2",
+            "the rejected token must not be served again"
+        );
+        assert_eq!(idp.hits(), 2, "the invalidation must force a token request");
+    }
+
+    /// An invalidation that lands *while* a token request is in flight rejects
+    /// the token that request is about to publish.
+    ///
+    /// This is why the generation is read before the fetch and stamped onto
+    /// the result, rather than re-read after it: a fresh read would say "no
+    /// invalidations since I published", which is false — one arrived in the
+    /// window, and the token being published is exactly the one it rejected.
+    /// Stale-stamping is the safe direction; the next caller refetches.
+    #[tokio::test]
+    async fn an_invalidation_during_a_fetch_rejects_the_token_it_publishes() {
+        let idp = IdpState::ok(json!({ "access_token": "at-1", "expires_in": 3600 }));
+        let url = fake_idp(Arc::clone(&idp)).await;
+        let manager = Arc::new(manager_with(Arc::new(StubConnectorRepo::with(vec![]))));
+        let cfg = Arc::new(cc_config(&url));
+
+        // Stand where the in-flight acquisition stands: the generation has
+        // been read, the token not yet published.
+        let entry = manager.entry("crm").await;
+        let observed = entry.invalidated.load(std::sync::atomic::Ordering::Acquire);
+
+        // The 401 arrives now, before the publish.
+        manager.invalidate("crm").await;
+
+        // …and the acquisition publishes, stamped with what it observed.
+        {
+            let mut st = entry.state.lock().await;
+            st.generation = observed;
+            st.token = Some(CachedToken {
+                access_token: "at-stale".to_string(),
+                expires_at: Instant::now() + Duration::from_secs(3600),
+                expires_at_epoch_ms: 0,
+            });
+            entry.fast.store(Arc::new(FastToken {
+                config: Some((*cfg).clone()),
+                token: st.token.clone(),
+                generation: observed,
+            }));
+        }
+
+        idp.set_response(200, json!({ "access_token": "at-2", "expires_in": 3600 }));
+        let next = manager
+            .access_token("crm", &cfg, true)
+            .await
+            .expect("token");
+
+        assert_eq!(
+            next, "at-2",
+            "a token published after the 401 that rejected it must not be served"
+        );
+        assert_eq!(idp.hits(), 1, "exactly one refetch");
+    }
+
+    /// The generation does not make every call refetch: with no invalidation,
+    /// the fast path still answers from cache.
+    #[tokio::test]
+    async fn the_generation_does_not_disturb_the_cached_fast_path() {
+        let idp = IdpState::ok(json!({ "access_token": "at-1", "expires_in": 3600 }));
+        let url = fake_idp(Arc::clone(&idp)).await;
+        let manager = manager_with(Arc::new(StubConnectorRepo::with(vec![])));
+        let cfg = cc_config(&url);
+
+        for _ in 0..5 {
+            assert_eq!(
+                manager
+                    .access_token("crm", &cfg, true)
+                    .await
+                    .expect("token"),
+                "at-1"
+            );
+        }
+        assert_eq!(idp.hits(), 1, "five calls, one token request");
     }
 
     // ---- refresh_token: seed, rotation, persistence, adoption ----
