@@ -11,6 +11,27 @@
       "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
     },
     {
+      "id": "validate",
+      "name": "Validate order",
+      "halt_on": "failure",
+      "function": {
+        "name": "validation",
+        "input": {
+          "rules": [
+            {
+              "logic": { "!!": [{ "var": "data.req.customer_id" }] },
+              "message": "customer_id is required"
+            },
+            { "logic": { "!!": [{ "var": "data.req.item" }] }, "message": "item is required" },
+            {
+              "logic": { ">": [{ "var": "data.req.total" }, 0] },
+              "message": "total must be positive"
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "record",
       "name": "Insert the order",
       "function": {

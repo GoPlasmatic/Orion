@@ -1,0 +1,26 @@
+{
+  "name": "valid order is recorded and history is returned",
+  "workflow": "../workflow.json",
+  "input": { "customer_id": 1, "item": "Difference Engine Blueprint", "total": 4200.0 },
+  "stubs": {
+    "data_write": {
+      "orders-db": { "status": "ok", "rows_affected": 1, "returning": [{ "id": 4 }] }
+    },
+    "data_query": {
+      "orders-db": [
+        {
+          "id": 1,
+          "name": "Ada Lovelace",
+          "email": "ada@example.com",
+          "orders": [{ "id": 4, "item": "Difference Engine Blueprint", "total": 4200.0 }]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "data.created.rows_affected": 1,
+    "data.customer.0.name": "Ada Lovelace",
+    "data.customer.0.orders.0.total": 4200.0
+  },
+  "expect_tasks": ["parse", "validate", "record", "history"]
+}

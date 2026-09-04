@@ -1,0 +1,9 @@
+{
+  "channel_id": "order-summary",
+  "name": "order-summary",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/order-summary",
+  "workflow_id": "order-summary"
+}
