@@ -80,11 +80,18 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
 
     // The broken channel must not be reachable...
     assert!(
-        state.channel_registry.get_by_name(bad_channel).is_none(),
+        state
+            .runtime
+            .load()
+            .channels
+            .get_by_name(bad_channel)
+            .is_none(),
         "quarantined channel must not be in the registry"
     );
     let reason = state
-        .channel_registry
+        .runtime
+        .load()
+        .channels
         .quarantine_reason(bad_channel)
         .expect("the broken channel must be quarantined, not merely absent");
     assert!(
@@ -118,7 +125,12 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
 
     // The quarantine must be confined to the broken row.
     assert!(
-        state.channel_registry.get_by_name("keep-ch").is_some(),
+        state
+            .runtime
+            .load()
+            .channels
+            .get_by_name("keep-ch")
+            .is_some(),
         "quarantining one channel must leave the others loaded"
     );
     assert!(serves_ok(&app, "keep-ch").await);
@@ -214,12 +226,19 @@ async fn an_unreachable_key_logic_header_warns_but_still_loads() {
     assert_eq!(status, StatusCode::OK, "reload must succeed: {body}");
 
     assert!(
-        state.channel_registry.get_by_name("warn-ch").is_some(),
+        state
+            .runtime
+            .load()
+            .channels
+            .get_by_name("warn-ch")
+            .is_some(),
         "an unreachable header is a warning, not a quarantine — the channel must load"
     );
     assert!(
         state
-            .channel_registry
+            .runtime
+            .load()
+            .channels
             .quarantine_reason("warn-ch")
             .is_none(),
         "the channel must not be quarantined for a statically-unreachable header"
@@ -312,7 +331,9 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
     // blast radius, not about relaxing the refusal.
     assert!(
         state
-            .channel_registry
+            .runtime
+            .load()
+            .channels
             .quarantine_reason("wedge-ch")
             .is_some()
     );
@@ -342,7 +363,9 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         state
-            .channel_registry
+            .runtime
+            .load()
+            .channels
             .match_route("GET", "quarantined/42")
             .expect("valid path")
             .is_none(),

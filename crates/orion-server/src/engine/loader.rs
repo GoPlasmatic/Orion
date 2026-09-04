@@ -284,7 +284,7 @@ pub fn build_single(
 /// F33: a channel whose workflows cannot be built — missing `workflow_id`,
 /// workflow not found among the active set, or a version that fails
 /// conversion — is reported as a [`ChannelLoadIssue`] instead of being
-/// silently skipped. Callers feed these into `ChannelRegistry::reload`, which
+/// silently skipped. Callers feed these into `ChannelLoader::build`, which
 /// quarantines the channel: previously it stayed registered in the route
 /// table with no workflow behind it, so requests got an opaque engine error.
 ///

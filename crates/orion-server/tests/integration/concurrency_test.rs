@@ -394,3 +394,141 @@ async fn test_concurrent_workflow_creation_same_name() {
         );
     }
 }
+
+// ============================================================
+// The engine and the channel estate are one published generation
+// ============================================================
+
+/// A reload publishes **once**.
+///
+/// This is the structural guarantee, stated as a number. The engine and the
+/// channel estate used to be two `ArcSwap`s stored one after the other: each
+/// store atomic, the pair not. Between them the node served the new estate
+/// against the old engine, and no ordering of the two could remove that window
+/// — only choose which mismatch it produced.
+///
+/// So the fix is not "store them closer together", it is "there is one store".
+/// Counting it is what keeps that true: re-split publication and this fails,
+/// whatever the two halves are called by then.
+#[tokio::test]
+async fn a_reload_publishes_exactly_one_generation() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    // A channel worth republishing, so the reload below is doing real work
+    // rather than rebuilding nothing.
+    common::create_and_activate_channel(&app, "gen-count-ch", common::echo_workflow("Gen Count"))
+        .await;
+
+    let before = state.runtime.published_count();
+    assert_eq!(
+        state.runtime.load().id,
+        before,
+        "the live generation's id is the publish count"
+    );
+
+    orion::runtime::reload_engine(&state)
+        .await
+        .expect("reload succeeds");
+
+    assert_eq!(
+        state.runtime.published_count(),
+        before + 1,
+        "one reload must publish exactly one generation"
+    );
+
+    // And the pair that came out of it is coherent: the channel is in the
+    // estate and its workflow is in the engine, read off one load.
+    let generation = state.runtime.load();
+    assert_eq!(generation.id, before + 1);
+    assert!(
+        generation.channels.get_by_name("gen-count-ch").is_some(),
+        "the published estate must carry the channel"
+    );
+    assert!(
+        generation
+            .engine
+            .workflows()
+            .iter()
+            .any(|w| w.channel == "gen-count-ch"),
+        "…and the engine published with it must carry its workflow"
+    );
+}
+
+/// A channel is never routable before its workflow is runnable.
+///
+/// The failure this pins is not a crash or an error code — it is a `200` that
+/// did nothing. With the estate and the engine published separately, a request
+/// arriving between the two stores was admitted against the *new* estate (the
+/// channel exists, its guards run) and executed by the *old* engine (which has
+/// no workflow for it). `process_message_for_channel` matched zero workflows,
+/// reported `Ok`, and the caller received its own input back with a `200`.
+///
+/// Every status code in that story is correct, which is exactly why
+/// `test_engine_reload_under_data_load` above cannot see it: the assertion has
+/// to be on the body. `404` is a fine answer here — the channel genuinely is
+/// not active yet. `200` without the workflow's stamp is the bug.
+///
+/// Timing-dependent by nature: it samples a window that no longer exists, so
+/// it proves nothing on its own. The guarantee is structural — one value, one
+/// store (`a_reload_publishes_exactly_one_generation`, and the retention test
+/// in `runtime::generation`). This is the net under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_channel_is_never_routable_before_its_workflow_runs() {
+    let app = common::test_app().await;
+
+    for round in 0..8 {
+        let channel = format!("gen-race-ch-{round}");
+
+        let activator = {
+            let app = app.clone();
+            let channel = channel.clone();
+            tokio::spawn(async move {
+                common::create_and_activate_channel(
+                    &app,
+                    &channel,
+                    common::echo_workflow(&format!("Gen Race {round}")),
+                )
+                .await;
+            })
+        };
+
+        // Hammer the channel across the activation. Stop once it answers with
+        // the workflow's output — by then the generation carrying both halves
+        // is live and there is nothing left to catch.
+        let mut served = false;
+        while !served {
+            let resp = app
+                .clone()
+                .oneshot(common::json_request(
+                    "POST",
+                    &format!("/api/v1/data/{channel}"),
+                    Some(serde_json::json!({"data": {"round": round}})),
+                ))
+                .await
+                .unwrap();
+            let status = resp.status();
+            if status == StatusCode::NOT_FOUND {
+                // Not activated yet, or activated and not yet published. Both
+                // are whole answers from one generation.
+                continue;
+            }
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "a channel mid-activation answers 404 or 200, nothing else"
+            );
+            let body = common::body_json(resp).await;
+            assert_eq!(
+                body["data"]["matched"],
+                serde_json::json!(true),
+                "a 200 means the channel was admitted, so its workflow must have \
+                 run: a routable channel whose engine has no workflow for it \
+                 returns the caller's own input with a 200 (body = {body})"
+            );
+            served = true;
+        }
+
+        activator.await.unwrap();
+    }
+}

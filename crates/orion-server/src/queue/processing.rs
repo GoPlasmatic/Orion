@@ -62,7 +62,9 @@ pub(super) struct DispatcherContext {
 /// owns its own handles.
 #[derive(Clone)]
 pub(super) struct ProcessingContext {
-    pub(super) engine: Arc<crate::engine::EngineHandle>,
+    /// Loaded once per dequeued message (see `process_trace`), not once per
+    /// worker: a worker outlives many generations.
+    pub(super) runtime: Arc<crate::runtime::RuntimeHandle>,
     pub(super) trace_repo: Arc<dyn TraceSink>,
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub(super) processing_timeout_ms: u64,
@@ -70,7 +72,6 @@ pub(super) struct ProcessingContext {
     pub(super) dlq_max_retries: i64,
     /// `Arc<str>` so the per-message context clone is a refcount bump.
     pub(super) rollout_sticky_header: std::sync::Arc<str>,
-    pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
     pub(super) global_trace_storage: crate::config::TraceStorageConfig,
 }
@@ -234,8 +235,15 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // run against the engine with the channel's own timeout and trace
     // policy silently replaced by global defaults. The refusal is handled
     // below, once the DLQ candidate exists to fail into.
+    //
+    // One generation for this message: the channel's timeout and trace policy
+    // below, and the engine that runs it, come from the same build. It is
+    // deliberately loaded *here* rather than carried from the submission that
+    // enqueued it — a config change between submission and dequeue applies, as
+    // the timeout note below says.
+    let generation = ctx.runtime.load();
     let (channel_runtime, quarantine_reason) =
-        match ctx.channel_registry.require_serviceable(&msg.channel) {
+        match generation.channels.require_serviceable(&msg.channel) {
             Ok(runtime) => (runtime, None),
             Err(e) => (None, Some(e.to_string())),
         };
@@ -323,7 +331,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // deadline arm and the `has_errors` rule. What stays here is persistence
     // and the DLQ routing.
     let execution = crate::engine::execute_admitted(
-        &ctx.engine,
+        &generation.engine,
         &channel,
         &msg.payload,
         &msg.metadata,

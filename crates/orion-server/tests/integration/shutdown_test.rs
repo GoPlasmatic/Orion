@@ -26,9 +26,7 @@ async fn test_worker_shutdown_empty_queue() {
             orion::storage::repositories::traces::SqlTraceRepository::new(pool.clone()),
         );
 
-    let engine = std::sync::Arc::new(orion::engine::EngineHandle::new(std::sync::Arc::new(
-        dataflow_rs::Engine::builder().build().unwrap(),
-    )));
+    let runtime = common::empty_runtime();
 
     let test_queue_config = orion::config::TraceQueueConfig {
         workers: 2,
@@ -39,7 +37,6 @@ async fn test_worker_shutdown_empty_queue() {
         max_queue_memory_bytes: 104_857_600,
         ..Default::default()
     };
-    let channel_registry = std::sync::Arc::new(orion::channel::ChannelRegistry::new());
     let global_trace_storage = orion::config::TraceStorageConfig::default();
     let (persistence_queue, _persistence_handle) = orion::queue::trace_persistence::start(
         &orion::runtime::TaskRegistry::new(),
@@ -50,10 +47,9 @@ async fn test_worker_shutdown_empty_queue() {
         &orion::runtime::TaskRegistry::new(),
         &test_queue_config,
         orion::queue::WorkerDeps {
-            engine,
+            runtime,
             trace_repo,
             dlq_repo: None,
-            channel_registry,
             persistence_queue,
             global_trace_storage,
             rollout_sticky_header: String::new(),

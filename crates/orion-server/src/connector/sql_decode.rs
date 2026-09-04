@@ -615,6 +615,11 @@ fn sqlite_column(
 
 #[cfg(test)]
 mod binary_tests {
+    // The crate warns on `panic!` because production code should not have any.
+    // `DecodeError` carries no `Debug`, so the two uses below are how a test
+    // unwraps one through the message an author would actually read.
+    #![allow(clippy::panic)]
+
     use super::*;
 
     /// `DecodeError` carries no `Debug`, and this is a test — so unwrap it

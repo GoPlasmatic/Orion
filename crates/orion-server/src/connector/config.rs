@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 /// `config_generation` when they differ, which is what keeps an epoch resync
 /// that touched no connector from invalidating every channel's cached runtime
 /// (N17). Every field of every variant therefore has to take part — a field
-/// left out of the comparison would be a config change the channel registry
+/// left out of the comparison would be a config change the channel loader
 /// never notices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]

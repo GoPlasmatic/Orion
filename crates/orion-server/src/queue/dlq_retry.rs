@@ -34,7 +34,7 @@ pub fn start_dlq_retry(
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
     trace_repo: Arc<dyn TraceSink>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    runtime: Arc<crate::runtime::RuntimeHandle>,
 ) {
     // `Arc` because the supervisor re-runs the body after a failure, so
     // nothing can be moved into it — each attempt clones.
@@ -50,7 +50,7 @@ pub fn start_dlq_retry(
                 dlq_repo.clone(),
                 trace_queue.clone(),
                 trace_repo.clone(),
-                channel_registry.clone(),
+                runtime.clone(),
                 shutdown,
             )
         },
@@ -62,7 +62,7 @@ async fn run_dlq_retry(
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
     trace_repo: Arc<dyn TraceSink>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    runtime: Arc<crate::runtime::RuntimeHandle>,
     mut shutdown: crate::runtime::Shutdown,
 ) {
     {
@@ -138,9 +138,12 @@ async fn run_dlq_retry(
                     serde_json::from_str(&entry.metadata_json).unwrap_or_default();
 
                 // Create a new pending trace for the retry. DLQ rows only
-                // carry the channel *name*; resolve the ID from the registry
-                // (NULL when the channel is no longer active — honest).
-                let channel_id = channel_registry
+                // carry the channel *name*; resolve the ID from the live
+                // generation (NULL when the channel is no longer active —
+                // honest).
+                let channel_id = runtime
+                    .load()
+                    .channels
                     .get_by_name(&entry.channel)
                     .map(|c| c.channel.channel_id.clone());
                 let new_trace = match trace_repo
@@ -284,6 +287,7 @@ async fn run_dlq_retry(
 mod tests {
     use super::*;
     use crate::errors::OrionError;
+    use crate::runtime::generation::test_handle as test_runtime;
     use crate::storage::models::{Trace, TraceDlqEntry};
     use crate::storage::repositories::helpers::PaginatedResult;
     use crate::storage::repositories::trace_dlq::TraceDlqRepository;
@@ -558,7 +562,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         // Advance past the first skipped tick
@@ -601,7 +605,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         advance_and_yield(Duration::from_secs(1)).await;
@@ -646,7 +650,7 @@ mod tests {
                         dlq_repo,
                         queue,
                         trace_repo,
-                        Arc::new(crate::channel::ChannelRegistry::new()),
+                        test_runtime(),
                     );
                     advance_and_yield(Duration::from_secs(1)).await;
                     advance_and_yield(Duration::from_secs(1)).await;
@@ -683,7 +687,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         advance_and_yield(Duration::from_secs(1)).await;
@@ -718,7 +722,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         advance_and_yield(Duration::from_secs(1)).await;
@@ -756,7 +760,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         advance_and_yield(Duration::from_secs(1)).await;
@@ -795,7 +799,7 @@ mod tests {
             dlq_repo.clone(),
             queue,
             trace_repo,
-            Arc::new(crate::channel::ChannelRegistry::new()),
+            test_runtime(),
         );
 
         advance_and_yield(Duration::from_secs(1)).await;

@@ -393,14 +393,10 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
     let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
     config.engine.fail_on_connector_load_error = true;
 
-    let err = orion::bootstrap::build_engine_components(
-        &config,
-        &repos,
-        std::sync::Arc::new(orion::channel::ChannelRegistry::new()),
-    )
-    .await
-    .err()
-    .expect("boot must refuse with a broken connector and fail-fast on");
+    let err = orion::bootstrap::build_engine_components(&config, &repos)
+        .await
+        .err()
+        .expect("boot must refuse with a broken connector and fail-fast on");
     let msg = err.to_string();
     assert!(msg.contains("refused to start"), "{msg}");
     assert!(msg.contains("f16-fatal"), "must name the connector: {msg}");
@@ -411,13 +407,9 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
 
     // Same database, flag off → boots degraded instead of refusing.
     config.engine.fail_on_connector_load_error = false;
-    orion::bootstrap::build_engine_components(
-        &config,
-        &repos,
-        std::sync::Arc::new(orion::channel::ChannelRegistry::new()),
-    )
-    .await
-    .expect("with fail-fast off the same state must boot (degraded)");
+    orion::bootstrap::build_engine_components(&config, &repos)
+        .await
+        .expect("with fail-fast off the same state must boot (degraded)");
 }
 
 /// F15: `storage` was an accepted connector type for the whole 0.x line with

@@ -90,10 +90,7 @@ async fn failed_running_write_routes_message_to_dlq() {
     });
     let dlq_repo = Arc::new(SqlTraceDlqRepository::new(pool.clone()));
 
-    let engine = Arc::new(orion::engine::EngineHandle::new(Arc::new(
-        dataflow_rs::Engine::builder().build().unwrap(),
-    )));
-    let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
+    let runtime = crate::common::empty_runtime();
     // Pinned rather than defaulted: this test asserts on the trace row right
     // after processing, so the write has to land inline.
     let tracing_storage = orion::config::TraceStorageConfig {
@@ -112,11 +109,10 @@ async fn failed_running_write_routes_message_to_dlq() {
         &tasks,
         &queue_config,
         orion::queue::WorkerDeps {
-            engine,
+            runtime,
             trace_repo: trace_repo.clone(),
             dlq_repo: Some(dlq_repo.clone()
                 as Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>),
-            channel_registry,
             persistence_queue,
             global_trace_storage: tracing_storage,
             rollout_sticky_header: String::new(),
@@ -236,10 +232,7 @@ async fn run_one_message_to_terminal_status(
     reader: &dyn TraceReader,
     queue_config: orion::config::TraceQueueConfig,
 ) -> Trace {
-    let engine = Arc::new(orion::engine::EngineHandle::new(Arc::new(
-        dataflow_rs::Engine::builder().build().unwrap(),
-    )));
-    let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
+    let runtime = crate::common::empty_runtime();
     // Pinned rather than defaulted: this test asserts on the trace row right
     // after processing, so the write has to land inline.
     let tracing_storage = orion::config::TraceStorageConfig {
@@ -253,10 +246,9 @@ async fn run_one_message_to_terminal_status(
         &tasks,
         &queue_config,
         orion::queue::WorkerDeps {
-            engine,
+            runtime,
             trace_repo: trace_repo.clone(),
             dlq_repo: None,
-            channel_registry,
             persistence_queue,
             global_trace_storage: tracing_storage,
             rollout_sticky_header: String::new(),

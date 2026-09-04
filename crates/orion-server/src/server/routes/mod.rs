@@ -172,7 +172,12 @@ pub(crate) async fn health_check(
     // Check database connectivity
     let db_healthy = state.ping_db().await.is_ok();
 
-    let workflows_loaded = workflows_loaded(&state);
+    // One generation for the whole report: the workflow count and the
+    // quarantine list below come from the same build, where they used to be
+    // read from two independently swapped values and could describe different
+    // ones.
+    let generation = state.runtime.load();
+    let workflows_loaded = workflows_loaded(&generation);
 
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
@@ -185,7 +190,7 @@ pub(crate) async fn health_check(
     // F35: channels that failed to load are quarantined — refused at every
     // ingress — while the rest of the instance serves normally. This is the
     // only signal that they are not being served.
-    let quarantined_channels = state.channel_registry.quarantined();
+    let quarantined_channels = generation.channels.quarantined();
 
     // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
     // 200s while no message is consumed. Absent entirely when Kafka is off.
@@ -389,8 +394,8 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
 /// cluster-Redis ping above). Both probes keep serving a constant
 /// `"engine": "ok"` component for response-shape stability — monitors key on
 /// the field — not because anything is checked.
-fn workflows_loaded(state: &AppState) -> usize {
-    state.engine.load().workflows().len()
+fn workflows_loaded(generation: &crate::runtime::RuntimeGeneration) -> usize {
+    generation.engine.workflows().len()
 }
 
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:

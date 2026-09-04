@@ -231,7 +231,7 @@ pub enum AsyncOnOverflow {
     Block,
 }
 
-// `PartialEq` is load-bearing: `ChannelRegistry` keys its per-channel runtime
+// `PartialEq` is load-bearing: `ChannelLoader` keys its per-channel runtime
 // cache on the global trace-storage config these values resolve against (N17).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]

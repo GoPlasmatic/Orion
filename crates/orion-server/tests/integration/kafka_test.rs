@@ -40,16 +40,13 @@ async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
     (container, brokers)
 }
 
-/// Create a simple test engine with no workflows.
-fn empty_engine() -> Arc<orion::engine::EngineHandle> {
-    Arc::new(orion::engine::EngineHandle::new(Arc::new(
-        dataflow_rs::Engine::builder().build().unwrap(),
-    )))
-}
-
-/// Empty channel registry for consumer tests (no per-channel guards configured).
-fn test_registry() -> Arc<orion::channel::ChannelRegistry> {
-    Arc::new(orion::channel::ChannelRegistry::new())
+/// An empty serving generation: no workflows, no channels — so no per-channel
+/// guards are configured for these consumer tests.
+fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
+    Arc::new(orion::runtime::RuntimeHandle::new(
+        Arc::new(dataflow_rs::Engine::builder().build().unwrap()),
+        Arc::new(orion::channel::ChannelSnapshot::empty()),
+    ))
 }
 
 /// Trace plumbing the consumer now requires.
@@ -174,13 +171,12 @@ async fn test_consumer_starts_and_stops() {
     let (_container, brokers) = start_kafka().await;
 
     let config = test_kafka_config(&brokers, "test-lifecycle", "test-channel");
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -211,14 +207,13 @@ async fn test_consumer_processes_valid_message() {
     let topic = "test-valid-msg";
     let channel = "test-channel";
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Start consumer
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -263,7 +258,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     let dlq_topic = format!("{}-dlq", topic);
     let channel = "test-channel";
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Create DLQ producer
     let dlq_producer = Arc::new(plain_producer(&brokers));
@@ -271,8 +266,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -443,15 +437,14 @@ async fn test_consumer_sends_invalid_utf8_to_dlq() {
     let dlq_topic = format!("{}-dlq", topic);
     let channel = "test-channel";
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     let dlq_producer = Arc::new(plain_producer(&brokers));
 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -524,14 +517,13 @@ async fn test_failed_message_redelivered_after_restart() {
         },
         ..test_kafka_config(&brokers, topic, channel)
     };
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Phase 1: no DLQ producer — the message cannot be dead-lettered
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine: engine.clone(),
-            channel_registry: test_registry(),
+            runtime: runtime.clone(),
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -578,8 +570,7 @@ async fn test_failed_message_redelivered_after_restart() {
     let handle2 = consumer::start_consumer(
         &config2,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -623,8 +614,7 @@ async fn test_consumer_metadata_injection() {
     let state =
         crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
             .await;
-    let engine = state.engine.clone();
-    let registry = state.channel_registry.clone();
+    let runtime = state.runtime.clone();
     let datalogic = state.datalogic.clone();
     let app = orion::server::build_router(state);
 
@@ -645,8 +635,7 @@ async fn test_consumer_metadata_injection() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: None,
@@ -696,13 +685,12 @@ async fn test_concurrent_producers_all_committed() {
     let msg_count = 50;
 
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -764,13 +752,12 @@ async fn test_rapid_burst_all_committed() {
     let channel = "burst-channel";
 
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -840,7 +827,7 @@ async fn test_consumer_multiple_topics() {
         lag_poll_interval_secs: 0,
         ..Default::default()
     };
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Produce to both topics BEFORE starting the consumer. Subscribing to
     // topics that do not exist yet hits librdkafka's metadata-refresh
@@ -875,8 +862,7 @@ async fn test_consumer_multiple_topics() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -932,7 +918,7 @@ async fn test_consumer_partition_rebalance() {
     // Wait for topic to be fully created
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Start consumer A
     let config_a = KafkaIngestConfig {
@@ -954,8 +940,7 @@ async fn test_consumer_partition_rebalance() {
     let handle_a = consumer::start_consumer(
         &config_a,
         consumer::ConsumerDeps {
-            engine: engine.clone(),
-            channel_registry: test_registry(),
+            runtime: runtime.clone(),
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -999,8 +984,7 @@ async fn test_consumer_partition_rebalance() {
     let handle_b = consumer::start_consumer(
         &config_b,
         consumer::ConsumerDeps {
-            engine: engine.clone(),
-            channel_registry: test_registry(),
+            runtime: runtime.clone(),
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -1085,7 +1069,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
         .create()
         .unwrap();
 
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     // Both halves run the same scenario; `instance_ids` is the only variable.
     // Returns the surviving member's rebalance rounds (before, after) the
@@ -1094,7 +1078,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
         brokers: &str,
         admin: &rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext>,
         producer: &FutureProducer,
-        engine: &Arc<orion::engine::EngineHandle>,
+        runtime: &Arc<orion::runtime::RuntimeHandle>,
         label: &str,
         instance_ids: [Option<&str>; 2],
     ) -> (u64, u64) {
@@ -1137,8 +1121,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
             consumer::start_consumer(
                 &config,
                 consumer::ConsumerDeps {
-                    engine: engine.clone(),
-                    channel_registry: test_registry(),
+                    runtime: runtime.clone(),
                     datalogic: test_datalogic(),
                     vars: None,
                     dlq_producer: None,
@@ -1204,7 +1187,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
         &brokers,
         &admin,
         &producer,
-        &engine,
+        &runtime,
         "static",
         [Some("node-a"), Some("node-b")],
     )
@@ -1223,7 +1206,7 @@ async fn test_static_membership_rejoin_avoids_rebalance() {
         &brokers,
         &admin,
         &producer,
-        &engine,
+        &runtime,
         "dynamic",
         [None, None],
     )
@@ -1257,13 +1240,12 @@ async fn test_consumer_broker_disconnect_recovery() {
     let topic = "test-broker-recovery";
     let channel = "recovery-channel";
     let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let runtime = empty_runtime();
 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: test_registry(),
+            runtime,
             datalogic: test_datalogic(),
             vars: None,
             dlq_producer: None,
@@ -1706,22 +1688,15 @@ async fn assert_no_commits_within(brokers: &str, group_id: &str, topic: &str, se
 /// consumer without resetting the guard state under test.
 async fn guarded_consumer_app() -> (
     axum::Router,
-    Arc<orion::engine::EngineHandle>,
-    Arc<orion::channel::ChannelRegistry>,
+    Arc<orion::runtime::RuntimeHandle>,
     Arc<datalogic_rs::Engine>,
 ) {
     let state =
         crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
             .await;
-    let engine = state.engine.clone();
-    let registry = state.channel_registry.clone();
+    let runtime = state.runtime.clone();
     let datalogic = state.datalogic.clone();
-    (
-        orion::server::build_router(state),
-        engine,
-        registry,
-        datalogic,
-    )
+    (orion::server::build_router(state), runtime, datalogic)
 }
 
 /// An HTTP connector pointing at a closed port, so every workflow that runs
@@ -1792,7 +1767,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let channel = "n16-dedup-retry-ch";
     let group_id = format!("n16-dedup-retry-{}", uuid::Uuid::new_v4());
 
-    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, datalogic) = guarded_consumer_app().await;
     dead_upstream_connector(&app, "n16-dead-retry").await;
     crate::common::create_and_activate_channel_with_config(
         &app,
@@ -1809,8 +1784,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine: engine.clone(),
-            channel_registry: registry.clone(),
+            runtime: runtime.clone(),
             datalogic: datalogic.clone(),
             vars: None,
             dlq_producer: None,
@@ -1837,8 +1811,7 @@ async fn a_deduplicated_record_survives_attempts_that_never_committed() {
     let handle2 = consumer::start_consumer(
         &config2,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -1878,7 +1851,7 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
     let channel = "n16-kafka-rl-ch";
     let group_id = format!("n16-kafka-rl-{}", uuid::Uuid::new_v4());
 
-    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, datalogic) = guarded_consumer_app().await;
     crate::common::create_and_activate_channel_with_config(
         &app,
         channel,
@@ -1892,8 +1865,7 @@ async fn a_rate_limited_record_is_throttled_not_discarded() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -1947,7 +1919,7 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
     let channel = "n16-kafka-bp-ch";
     let group_id = format!("n16-kafka-bp-{}", uuid::Uuid::new_v4());
 
-    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, datalogic) = guarded_consumer_app().await;
     crate::common::create_and_activate_channel_with_config(
         &app,
         channel,
@@ -1961,8 +1933,7 @@ async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() 
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -2003,7 +1974,7 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
     let channel = "n16-kafka-dup-ch";
     let group_id = format!("n16-kafka-dup-{}", uuid::Uuid::new_v4());
 
-    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, datalogic) = guarded_consumer_app().await;
     dead_upstream_connector(&app, "n16-dead-dup").await;
     crate::common::create_and_activate_channel_with_config(
         &app,
@@ -2020,8 +1991,7 @@ async fn a_duplicate_record_commits_without_a_dlq_write() {
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -2082,7 +2052,7 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
     let channel = "n16-kafka-timeout-ch";
     let group_id = format!("n16-kafka-timeout-{}", uuid::Uuid::new_v4());
 
-    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    let (app, runtime, datalogic) = guarded_consumer_app().await;
     crate::common::create_connector(
         &app,
         serde_json::json!({
@@ -2131,8 +2101,7 @@ async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_report
     let handle = consumer::start_consumer(
         &config,
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: Some(dlq_producer),
@@ -2190,8 +2159,7 @@ async fn a_kafka_message_writes_a_trace_row() {
     config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
     let state = crate::common::test_state_with_kafka(config, "127.0.0.1:1").await;
     let traces = state.repos.traces.clone();
-    let engine = state.engine.clone();
-    let registry = state.channel_registry.clone();
+    let runtime = state.runtime.clone();
     let datalogic = state.datalogic.clone();
     let persistence_queue = state.trace_persistence_queue.clone();
     let app = orion::server::build_router(state);
@@ -2206,8 +2174,7 @@ async fn a_kafka_message_writes_a_trace_row() {
     let handle = consumer::start_consumer(
         &guarded_kafka_config(&brokers, topic, channel, &group_id, false),
         consumer::ConsumerDeps {
-            engine,
-            channel_registry: registry,
+            runtime,
             datalogic,
             vars: None,
             dlq_producer: None,

@@ -154,7 +154,11 @@ pub struct ServingComponents {
     /// consumer is how two ingresses come to disagree about what a workflow
     /// reads.
     pub vars: Option<Arc<serde_json::Value>>,
-    pub engine: Arc<crate::engine::EngineHandle>,
+    /// The live serving generation. Pre-created around the boot placeholder
+    /// engine and an empty channel estate, so the `channel_call` handler —
+    /// which is registered *on* the engine this handle will carry — has
+    /// something to hold before either half exists.
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
@@ -173,13 +177,12 @@ pub struct EngineComponents {
 }
 
 /// Build the [`EngineComponents`]: load the connector registry, create the
-/// shared HTTP client, the datalogic engine, the engine lock (pre-created so
-/// the `channel_call` handler can reference it), the cache + external pool
+/// shared HTTP client, the datalogic engine, the runtime handle (pre-created
+/// so the `channel_call` handler can reference it), the cache + external pool
 /// caches, the custom function handlers, and the Kafka producer.
 pub async fn build_engine_components(
     config: &config::AppConfig,
     repos: &Repositories,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
 ) -> Result<EngineComponents, Box<dyn std::error::Error>> {
     // `[vars]` before the connectors that may reference them. Pure config —
     // no resolution, no I/O — so it costs nothing to have it early, and the
@@ -249,7 +252,7 @@ pub async fn build_engine_components(
     let secrets = Arc::new(crate::engine::ResolvedSecrets::resolve(&config.secrets).await?);
 
     // Shared datalogic engine — used by handlers for template evaluation and
-    // by the channel registry to pre-compile per-channel JSONLogic
+    // by the channel loader to pre-compile per-channel JSONLogic
     // (`validation_logic`, `authorization_logic`, the rate-limit and cache
     // `key_logic`).
     //
@@ -264,8 +267,9 @@ pub async fn build_engine_components(
     // Secrets are start-time config, resolved above, so there is no ordering
     // reason a channel guard should see fewer of them than a workflow does.
     //
-    // One engine, not two: this is also the placeholder the `EngineHandle`
-    // below is created around, until the real workflow engine replaces it.
+    // One engine, not two: this is also the placeholder the runtime handle
+    // below is created around, until the first published generation replaces
+    // it.
     // Building a second identical empty engine for that repeated nine operator
     // registrations and the secret store at every boot.
     let boot_engine = Arc::new(
@@ -289,10 +293,14 @@ pub async fn build_engine_components(
         );
     }
 
-    // Create the engine lock early so channel_call handler can reference it.
-    // We'll populate it with the real engine after building workflows.
-    let engine: Arc<crate::engine::EngineHandle> =
-        Arc::new(crate::engine::EngineHandle::new(boot_engine));
+    // Create the runtime handle early so the `channel_call` handler can
+    // reference it. Generation 0 is the boot placeholder engine and an empty
+    // channel estate; `load_channels_and_build_engine` publishes the first
+    // real generation over it.
+    let runtime: Arc<crate::runtime::RuntimeHandle> = Arc::new(crate::runtime::RuntimeHandle::new(
+        boot_engine,
+        Arc::new(crate::channel::ChannelSnapshot::empty()),
+    ));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(crate::connector::cache_backend::CachePool::new(
@@ -316,8 +324,7 @@ pub async fn build_engine_components(
     let mut custom_functions = crate::engine::build_custom_functions(crate::engine::HandlerDeps {
         registry: connector_registry.clone(),
         client: http_client.clone(),
-        engine: engine.clone(),
-        channel_registry: channel_registry.clone(),
+        runtime: runtime.clone(),
         jwks: jwks.clone(),
         engine_config: &config.engine,
         query_config: &config.query,
@@ -343,7 +350,7 @@ pub async fn build_engine_components(
             jwks,
             secrets,
             vars,
-            engine,
+            runtime,
             cache_pool,
             sql_pool_cache,
             mongo_pool_cache,
@@ -356,8 +363,9 @@ pub async fn build_engine_components(
 
 impl EngineComponents {
     /// Load active channels and workflows, build the engine's workflow set,
-    /// reload the channel registry (quarantining channels that fail to
-    /// load), and populate the pre-created engine lock. Returns the
+    /// build the channel estate (quarantining channels that fail to load),
+    /// and publish the two as generation 1 through the pre-created runtime
+    /// handle. Returns the
     /// [`ServingComponents`] `AppState` is assembled from, the loaded channels
     /// (the Kafka topic merge needs them) and the active-workflow count (for
     /// the gauge).
@@ -372,7 +380,7 @@ impl EngineComponents {
         self,
         config: &config::AppConfig,
         repos: &Repositories,
-        channel_registry: &crate::channel::ChannelRegistry,
+        channel_loader: &crate::channel::ChannelLoader,
     ) -> Result<
         (
             ServingComponents,
@@ -413,8 +421,10 @@ impl EngineComponents {
         .with_handlers(custom_functions);
         let (workflows, engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
-        channel_registry
-            .reload(
+        let previous = serving.runtime.load();
+        let channels_snapshot = channel_loader
+            .build(
+                &previous.channels,
                 &channels,
                 crate::channel::ReloadDeps {
                     vars: serving.vars.as_ref(),
@@ -440,7 +450,7 @@ impl EngineComponents {
         // N21: read from the registry rather than from a return value.
         // `reload` used to hand the same list back, so the quarantine set had
         // two representations and `/health` and this log could disagree.
-        for issue in channel_registry.quarantined() {
+        for issue in channels_snapshot.quarantined() {
             tracing::error!(
                 channel = %issue.channel,
                 reason = %issue.reason,
@@ -457,8 +467,6 @@ impl EngineComponents {
             "Workflows loaded"
         );
 
-        // Populate the pre-created engine lock with the real engine.
-        //
         // The observer is attached here rather than on the placeholder at
         // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
         // carries it across every subsequent reload, so this is the only place
@@ -467,7 +475,15 @@ impl EngineComponents {
             .with_workflows(workflows)
             .build()?
             .with_observer(Arc::new(crate::engine::MetricsObserver));
-        serving.engine.store(Arc::new(built_engine));
+
+        // Generation 1: the engine and the channel estate built from the same
+        // rows, published together. Nothing serves before this — the readiness
+        // flag is set by the caller afterwards — but publishing them as a pair
+        // is what makes the boot path and the reload path the same shape, and
+        // there is only one way to publish.
+        serving
+            .runtime
+            .publish(Arc::new(built_engine), Arc::new(channels_snapshot));
 
         Ok((serving, channels, active_workflows.len()))
     }
@@ -477,13 +493,12 @@ impl EngineComponents {
 ///
 /// Named fields rather than a positional list because three of the six are
 /// `Option` and the boot, test-harness and reload-restart paths all build the
-/// same set — `state.engine`, `state.datalogic`, `state.vars`,
+/// same set — `state.runtime`, `state.datalogic`, `state.vars`,
 /// `state.kafka.producer` on the reload side, and the matching
 /// [`ServingComponents`] fields on the boot side. A bare `None` in the fifth
 /// position tells a reader nothing about which dependency is absent.
 pub struct IngestDeps {
-    pub engine: Arc<crate::engine::EngineHandle>,
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub datalogic: Arc<datalogic_rs::Engine>,
     /// `[vars]` as one JSON object, stamped into every ingested message's
     /// `metadata.vars`. `None` when the instance declares none.
@@ -525,8 +540,7 @@ pub fn start_kafka_ingest(
     };
 
     let IngestDeps {
-        engine,
-        channel_registry,
+        runtime,
         datalogic,
         vars,
         kafka_producer,
@@ -544,8 +558,7 @@ pub fn start_kafka_ingest(
     let handle = crate::kafka::consumer::start_consumer(
         &merged_config,
         crate::kafka::consumer::ConsumerDeps {
-            engine,
-            channel_registry,
+            runtime,
             datalogic,
             vars,
             dlq_producer,
@@ -705,9 +718,8 @@ impl TaskHandles {
 pub fn start_background_tasks(
     config: &config::AppConfig,
     tasks: &crate::runtime::TaskRegistry,
-    engine: Arc<crate::engine::EngineHandle>,
+    runtime: Arc<crate::runtime::RuntimeHandle>,
     repos: &Repositories,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
     cluster: &crate::cluster::ClusterRuntime,
 ) -> (
     crate::queue::TracePersistenceQueue,
@@ -737,16 +749,15 @@ pub fn start_background_tasks(
     );
 
     // Start trace queue worker pool (with DLQ for failed async traces).
-    // The pool needs the persistence queue + channel registry so it can route
+    // The pool needs the persistence queue + runtime handle so it can route
     // status / result writes through the configured mode.
     let (trace_queue, worker_handle) = crate::queue::start_workers(
         tasks,
         &config.trace_queue,
         crate::queue::WorkerDeps {
-            engine,
+            runtime: runtime.clone(),
             trace_repo: repos.traces.clone(),
             dlq_repo: Some(repos.trace_dlq.clone()),
-            channel_registry: channel_registry.clone(),
             persistence_queue: trace_persistence_queue.clone(),
             global_trace_storage: config.trace_storage.clone(),
             rollout_sticky_header: config.engine.rollout_sticky_header.clone(),
@@ -799,7 +810,7 @@ pub fn start_background_tasks(
             repos.trace_dlq.clone(),
             trace_queue.clone(),
             repos.traces.clone(),
-            channel_registry,
+            runtime,
         );
         tracing::info!(
             poll_interval_secs = config.trace_queue.dlq_poll_interval_secs,
@@ -827,7 +838,10 @@ pub struct AppStateParams {
     pub pool: crate::storage::DbPool,
     pub repos: Repositories,
     pub components: ServingComponents,
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    /// The node's channel builder. Held on `AppState` because every reload
+    /// needs it; a request never does — it reads the estate off the published
+    /// generation instead.
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
     pub trace_queue: crate::queue::TraceQueue,
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     pub audit_queue: crate::queue::audit_queue::AuditQueue,
@@ -851,7 +865,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         pool,
         repos,
         components,
-        channel_registry,
+        channel_loader,
         trace_queue,
         trace_persistence_queue,
         audit_queue,
@@ -869,7 +883,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         jwks,
         secrets,
         vars,
-        engine,
+        runtime,
         cache_pool,
         sql_pool_cache,
         mongo_pool_cache,
@@ -883,7 +897,8 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
-        engine,
+        runtime,
+        channel_loader,
         reload_lock: tokio::sync::Mutex::new(()),
         secrets,
         vars,
@@ -896,7 +911,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
             mongo_pool_cache,
             smtp_pool_cache,
         },
-        channel_registry,
         trace_queue,
         db_pool: pool,
         config,

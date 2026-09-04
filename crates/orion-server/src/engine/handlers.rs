@@ -178,8 +178,10 @@ pub fn requires_mongo_database(function: &str) -> bool {
 pub struct HandlerDeps<'a> {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
-    pub engine: Arc<crate::engine::EngineHandle>,
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    /// The live serving generation, for the one handler that dispatches back
+    /// into the node (`channel_call`): it needs the target channel's guards
+    /// and an engine to run it on, and both come off one load.
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     /// The instance's JWKS cache — `jwt_verify`'s key source, shared with the
     /// channel `jwt` auth mode so both see one issuer rotation at once.
     pub jwks: Arc<crate::jwt::jwks::JwksCache>,
@@ -224,8 +226,7 @@ pub fn build_custom_functions(
     let HandlerDeps {
         registry,
         client,
-        engine,
-        channel_registry,
+        runtime,
         jwks,
         engine_config,
         query_config,
@@ -248,8 +249,7 @@ pub fn build_custom_functions(
     fns.insert(
         "channel_call".to_string(),
         Box::new(functions::channel_call::ChannelCallHandler {
-            engine,
-            channel_registry,
+            runtime,
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         }),

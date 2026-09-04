@@ -116,12 +116,18 @@ pub struct Execution {
 
 /// Run `channel`'s workflows over `data`, after the guards have admitted it.
 ///
-/// Owns the message build, the engine snapshot, the deadline arm and the
-/// `has_errors` rule. Everything downstream — persisting a trace, shaping a
-/// response, committing an offset, emitting the counter whose label
-/// [`RunOutcome::status_label`] derives — is the caller's.
+/// `engine` is the one belonging to the generation that admitted the request
+/// (`RuntimeGeneration::engine`) — passed in rather than loaded here, so a
+/// transport cannot admit against one generation and execute on the next. It
+/// used to take the engine *handle* and load it at this line, which is exactly
+/// where that mismatch entered.
+///
+/// Owns the message build, the deadline arm and the `has_errors` rule.
+/// Everything downstream — persisting a trace, shaping a response, committing
+/// an offset, emitting the counter whose label [`RunOutcome::status_label`]
+/// derives — is the caller's.
 pub async fn execute_admitted(
-    engine: &super::EngineHandle,
+    engine: &Arc<dataflow_rs::Engine>,
     channel: &str,
     data: &Value,
     metadata: &Value,
@@ -135,13 +141,9 @@ pub async fn execute_admitted(
     }
     let mut message = builder.build();
 
-    // A snapshot, taken once and held for the whole call: a reader that is
-    // mid-request keeps the engine it started with across a reload.
-    let engine = engine.load();
-
     let started = Instant::now();
     let call = run_for_channel(
-        &engine,
+        engine,
         channel,
         &mut message,
         opts.timeout_ms,

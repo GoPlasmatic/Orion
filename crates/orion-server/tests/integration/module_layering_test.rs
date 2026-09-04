@@ -62,11 +62,14 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         &["crate::server::", "crate::engine::"],
     ),
     // `runtime::reload` and `runtime::handler_deps` take an `AppState`, so
-    // nothing below the HTTP layer may name them. `runtime::tasks` is
-    // deliberately *not* on this list: the supervisor is a leaf that depends
-    // on nothing in the tree, and `queue`, `cluster` and the retention jobs
-    // take a `&TaskRegistry` as a parameter — injected downward, the same
-    // shape as `metrics`. Forbidding all of `runtime::` would refuse that.
+    // nothing below the HTTP layer may name them. `runtime::tasks` and
+    // `runtime::generation` are deliberately *not* on this list: both are
+    // leaves that depend on nothing above them, and both are injected
+    // downward as a parameter or a field — `queue`, `cluster` and the
+    // retention jobs take a `&TaskRegistry`; `engine`, `channel`, `kafka` and
+    // `queue` are handed an `Arc<RuntimeHandle>` and read the generation they
+    // were given. That is the same shape as `metrics`. Forbidding all of
+    // `runtime::` would refuse it.
     (
         "engine",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],

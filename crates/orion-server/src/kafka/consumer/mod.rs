@@ -63,8 +63,7 @@ pub(crate) use process::{INITIAL_RETRY_BACKOFF_MS, next_backoff_ms};
 /// optional dependency would add a ninth argument to a list already past
 /// clippy's limit.
 pub struct ConsumerDeps {
-    pub engine: Arc<crate::engine::EngineHandle>,
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub datalogic: Arc<datalogic_rs::Engine>,
     /// `[vars]` as one JSON object, stamped into every ingested message's
     /// `metadata.vars` — the Kafka half of what `build_request_metadata` does
@@ -100,8 +99,10 @@ pub struct ConsumerDeps {
 struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
-    engine: Arc<crate::engine::EngineHandle>,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    /// Loaded once per record, never once per loop: a consumer runs for the
+    /// life of a topic set and would otherwise pin the generation it started
+    /// on. See `process::process_message`.
+    runtime: Arc<crate::runtime::RuntimeHandle>,
     datalogic: Arc<datalogic_rs::Engine>,
     vars: Option<Arc<serde_json::Value>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
@@ -262,8 +263,7 @@ pub fn start_consumer(
     deps: ConsumerDeps,
 ) -> Result<ConsumerHandle, OrionError> {
     let ConsumerDeps {
-        engine,
-        channel_registry,
+        runtime,
         datalogic,
         vars,
         dlq_producer,
@@ -343,8 +343,7 @@ pub fn start_consumer(
     let ctx = ConsumeLoopContext {
         consumer: consumer.clone(),
         topic_map,
-        engine,
-        channel_registry,
+        runtime,
         datalogic,
         vars,
         dlq_producer,

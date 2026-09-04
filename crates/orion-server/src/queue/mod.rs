@@ -370,10 +370,9 @@ impl WorkerHandle {
 /// Named fields rather than a positional list: the two repositories are both
 /// `Arc<dyn …>` and one of them is optional, so a transposition compiles.
 pub struct WorkerDeps {
-    pub engine: Arc<crate::engine::EngineHandle>,
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub trace_repo: Arc<dyn TraceSink>,
     pub dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub persistence_queue: TracePersistenceQueue,
     pub global_trace_storage: crate::config::TraceStorageConfig,
     pub rollout_sticky_header: String,
@@ -382,7 +381,7 @@ pub struct WorkerDeps {
 /// Start the background worker pool and return a (TraceQueue, WorkerHandle) pair.
 ///
 /// Scalar config parameters (workers, buffer_size, timeouts, limits) are read
-/// from `config`. The `Arc` dependencies (engine, repos) arrive in [`WorkerDeps`]
+/// from `config`. The `Arc` dependencies (runtime, repos) arrive in [`WorkerDeps`]
 /// because they have independent lifetimes.
 pub fn start_workers(
     tasks: &crate::runtime::TaskRegistry,
@@ -390,10 +389,9 @@ pub fn start_workers(
     deps: WorkerDeps,
 ) -> (TraceQueue, WorkerHandle) {
     let WorkerDeps {
-        engine,
+        runtime,
         trace_repo,
         dlq_repo,
-        channel_registry,
         persistence_queue,
         global_trace_storage,
         rollout_sticky_header,
@@ -420,14 +418,13 @@ pub fn start_workers(
             memory_bytes: memory_bytes.clone(),
         },
         processing: processing::ProcessingContext {
-            engine,
+            runtime,
             trace_repo,
             dlq_repo,
             processing_timeout_ms: config.processing_timeout_ms,
             max_result_size_bytes: config.max_result_size_bytes,
             dlq_max_retries: config.dlq_max_retries,
             rollout_sticky_header: Arc::from(rollout_sticky_header.as_str()),
-            channel_registry,
             persistence_queue,
             global_trace_storage,
         },

@@ -517,6 +517,20 @@ pub(super) fn cached_response(body: String, shaped: bool, channel: &str) -> Resp
     json_response(StatusCode::OK, body)
 }
 
+/// The generation this request was admitted under, reduced to the two things
+/// execution needs from it.
+///
+/// They travel together because they must *be* together: the channel's runtime
+/// config decided which guards ran, and the engine is the one whose workflows
+/// those guards admitted the request to. Passing them as one value is what
+/// stops a caller pairing a config from one generation with an engine from the
+/// next — the mismatch that used to be possible when the two halves were
+/// published separately (`runtime::generation`).
+pub(super) struct AdmittedOn {
+    pub engine: std::sync::Arc<dataflow_rs::Engine>,
+    pub channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+}
+
 /// Core sync processing logic shared between simple HTTP and REST routes.
 /// Every ingress guard — origin allow-list, rate limit, validation, dedup,
 /// response-cache lookup, backpressure — has already run in the caller's
@@ -529,10 +543,14 @@ pub(super) async fn process_sync_for_channel(
     channel: &str,
     data: Value,
     metadata: Value,
-    channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+    admitted: AdmittedOn,
     profile_requested: bool,
     admission: Admission,
 ) -> Result<Response, OrionError> {
+    let AdmittedOn {
+        engine,
+        channel_config,
+    } = admitted;
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
     let Admission {
         backpressure_permit: _backpressure_permit,
@@ -594,7 +612,7 @@ pub(super) async fn process_sync_for_channel(
         // deadline arm, the `has_errors` rule and the two metrics. What stays here
         // is response shaping and persistence.
         let execution = crate::engine::execute_admitted(
-            &state.engine,
+            &engine,
             channel,
             &data,
             &metadata,

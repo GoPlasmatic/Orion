@@ -229,10 +229,16 @@ async fn process_one_kafka_message(
     // silently dropped: they record metrics, log, and are committed, dead
     // lettered or left for redelivery per `classify_guard_refusal`.
     let metadata = kafka_metadata_value(channel, topic, msg, ctx.vars.as_deref());
+    // One generation for this record: the channel's guards below and the
+    // engine that dispatches it further down come from the same build, and a
+    // reload mid-record changes neither. Loaded per record rather than per
+    // consume loop, which would pin the generation the consumer started on for
+    // the life of the topic set.
+    let generation = ctx.runtime.load();
     // F35: a quarantined channel is refused here too. Routed to the DLQ
     // rather than dropped, so the messages are replayable once the operator
     // fixes the channel's stored config.
-    let channel_runtime = match ctx.channel_registry.require_serviceable(channel) {
+    let channel_runtime = match generation.channels.require_serviceable(channel) {
         Ok(runtime) => runtime,
         Err(e) => {
             return fail(
@@ -338,7 +344,7 @@ async fn process_one_kafka_message(
     // non-deterministically. A message with no bucket is admitted by every
     // workflow, rollout or not.
     let execution = crate::engine::execute_admitted(
-        &ctx.engine,
+        &generation.engine,
         channel,
         &data,
         &metadata,

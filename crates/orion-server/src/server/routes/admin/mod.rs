@@ -880,7 +880,7 @@ async fn reload_after_commit(
     // Not `?`: see the note above. The degradation is on `/health`.
     let _ = reload_engine(state).await;
     // `Definitions` scope: a channel or workflow row moved, which changes the
-    // engine and the channel registry and nothing else. A peer answering this
+    // engine and the channel estate and nothing else. A peer answering this
     // reloads those and leaves its connector pools alone — before the scope
     // existed, every activation dropped every pooled connection on every node.
     state

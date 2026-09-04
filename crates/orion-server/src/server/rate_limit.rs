@@ -21,7 +21,7 @@ use crate::config::RateLimitConfig;
 use crate::metrics;
 
 /// Holds platform-level rate limiters (global defaults + endpoint-level).
-/// Per-channel rate limiters live in `ChannelRegistry` and are applied by the
+/// Per-channel rate limiters live in `ChannelSnapshot` and are applied by the
 /// ingress guards, not here.
 ///
 /// `trusted_proxies` deliberately does **not** live here even though the key

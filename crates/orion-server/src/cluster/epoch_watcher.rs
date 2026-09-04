@@ -3,7 +3,7 @@
 //! Every admin mutation bumps the `config_epoch` row in the shared DB (the
 //! send side, `bump_config_epoch`). Each node polls that row; when the epoch
 //! is ahead of what this node has applied it resyncs from the DB — the engine
-//! and channel registry always, the connector registry and the cached pools
+//! and channel estate always, the connector registry and the cached pools
 //! when the advance does not prove otherwise (`EpochScope`). Breaker resets
 //! ride the same row via `breaker_epoch`/`breaker_key`.
 

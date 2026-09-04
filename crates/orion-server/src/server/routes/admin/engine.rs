@@ -26,8 +26,8 @@ use super::audit_and_reload;
 pub(crate) async fn engine_status(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, OrionError> {
-    let engine = state.engine.load();
-    let workflows = engine.workflows();
+    let generation = state.runtime.load();
+    let workflows = generation.engine.workflows();
 
     let mut channels: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut active_count = 0u64;
@@ -73,8 +73,7 @@ pub(crate) async fn engine_reload(
     )
     .await?;
 
-    let engine = state.engine.load();
-    let workflows_count = engine.workflows().len();
+    let workflows_count = state.runtime.load().engine.workflows().len();
 
     Ok(data_response(json!({
         "reloaded": true,

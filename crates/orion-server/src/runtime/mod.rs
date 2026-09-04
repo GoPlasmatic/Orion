@@ -7,18 +7,26 @@
 //! epoch watcher are owned by four different modules, and "is every one of
 //! them still alive?" is a question about the node.
 //!
-//! [`reload`] rebuilds the serving generation — engine, channel registry, and
-//! the Kafka consumer that rides along with them. It was `engine::reload`, and
-//! that was the largest of the upward dependency edges in the tree: a module
-//! the whole request path sits *below* reached up into `server::state` for
-//! `AppState` and into `bootstrap` for `start_kafka_ingest`. It is not an
-//! engine concern — it reads the database, republishes the channel registry
-//! and restarts a Kafka consumer, and the engine is one of the three things it
-//! swaps. Here it depends downward on all of them.
+//! [`generation`] is that serving generation — the engine and the channel
+//! estate built from the same rows — and the handle that publishes it. It
+//! lives here for the same reason [`tasks`] does: it belongs to the node, and
+//! it is injected *downward* into `engine`, `channel`, `kafka` and `queue`
+//! rather than reaching up into any of them.
+//!
+//! [`reload`] rebuilds that generation, and restarts the Kafka consumer that
+//! rides along with it. It was `engine::reload`, and that was the largest of
+//! the upward dependency edges in the tree: a module the whole request path
+//! sits *below* reached up into `server::state` for `AppState` and into
+//! `bootstrap` for `start_kafka_ingest`. It is not an engine concern — it
+//! reads the database, rebuilds the channel estate and restarts a Kafka
+//! consumer, and the engine is one of the things it swaps. Here it depends
+//! downward on all of them.
 
+pub mod generation;
 pub mod reload;
 pub mod tasks;
 
+pub use generation::{RuntimeGeneration, RuntimeHandle};
 pub use reload::{
     ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db,
     spawn_kafka_restart_supervisor,
@@ -39,8 +47,7 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
     crate::engine::HandlerDeps {
         registry: state.connector_registry.clone(),
         client: state.http_client.clone(),
-        engine: state.engine.clone(),
-        channel_registry: state.channel_registry.clone(),
+        runtime: state.runtime.clone(),
         jwks: state.jwks.clone(),
         engine_config: &state.config.engine,
         query_config: &state.config.query,

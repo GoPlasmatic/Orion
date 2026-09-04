@@ -59,11 +59,16 @@ pub struct ChannelCallInput {
 
 /// Invokes another channel's workflow in-process (no HTTP round-trip).
 pub struct ChannelCallHandler {
-    pub engine: Arc<crate::engine::EngineHandle>,
-    /// Registry lookup for the target channel's ingress contract (F14).
-    /// Held as the shared Arc and consulted lazily per call, since the
-    /// registry is populated by reload after the engine is built.
-    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    /// The node's serving generation, consulted lazily per call — the handler
+    /// is registered on an engine that is itself part of a generation, so it
+    /// cannot hold one; it holds the handle and loads.
+    ///
+    /// One load per call gives the target's ingress contract (F14) and the
+    /// engine that will run it from the same build. The child may be a
+    /// *later* generation than its caller, which is deliberate: a reload
+    /// mid-workflow is a config change the child is entitled to see, and both
+    /// halves it does see agree with each other.
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
     pub max_call_depth: u32,
     pub default_timeout_ms: u64,
 }
@@ -197,8 +202,12 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // taken here.
             // F35: refuse a quarantined target rather than calling it with
             // none of its guards.
-            let target_runtime = self
-                .channel_registry
+            //
+            // One generation for this call: the target's guards here and the
+            // engine that runs it below come from the same build.
+            let generation = self.runtime.load();
+            let target_runtime = generation
+                .channels
                 .require_serviceable(&target_channel)
                 .map_err(|e| {
                     DataflowError::function_execution(
@@ -280,7 +289,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // routing bucket either: the child executes within its caller's
             // rollout decision rather than drawing one of its own.
             let child = crate::engine::execute_admitted(
-                &self.engine,
+                &generation.engine,
                 &target_channel,
                 &call_data,
                 &child_meta,

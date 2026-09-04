@@ -34,7 +34,7 @@ pub use job_lease::JobLeaseGate;
 /// the new epoch always sees the scope that goes with it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum EpochScope {
-    /// Reload the engine and the channel registry. No connector reload and no
+    /// Republish the runtime generation. No connector reload and no
     /// pool eviction: nothing about a workflow or a channel row changes which
     /// connectors exist or what they point at.
     Definitions,

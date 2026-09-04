@@ -2,9 +2,8 @@ use dataflow_rs::datalogic_rs;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use datalogic_rs::{Engine as DatalogicEngine, Logic};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 use super::config::ChannelConfig;
 use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
@@ -232,7 +231,7 @@ impl ChannelRow {
     }
 }
 
-/// The inputs to [`ChannelRegistry::reload`] that are *not* channel rows.
+/// The inputs to [`ChannelLoader::build`] that are *not* channel rows.
 ///
 /// A `ChannelRuntimeConfig` is derived from its row **and** from these, so the
 /// per-channel cache is only valid while they hold. Both move rarely — the
@@ -275,16 +274,25 @@ struct DepsFingerprint {
     trace_storage: TraceStorageConfig,
 }
 
-/// One immutable generation of the registry.
+/// One immutable generation of the channel estate: the serving map, the route
+/// table and the quarantine set, self-consistent with each other.
 ///
 /// N17: `by_name`, the route table and the quarantine map used to live behind
 /// three separate locks written one after another, so a reader could see a new
 /// serving map against an old route table or an old quarantine map — long
 /// enough to answer a request from a mismatched pair (a channel quarantined by
 /// this very reload resolved to `Ok(None)`, i.e. 404 "unknown channel" instead
-/// of 503 "quarantined"). They are one value now, published in a single store,
-/// so every read sees a self-consistent generation.
-struct RegistrySnapshot {
+/// of 503 "quarantined"). They are one value now.
+///
+/// It is a *value*, not a self-swapping registry: it carries no lock and no
+/// `ArcSwap`, and it is published — together with the engine built from the
+/// same rows — by [`crate::runtime::RuntimeHandle`]. That is what makes the
+/// pair atomic. While this type owned its own `ArcSwap`, each half of a reload
+/// was individually atomic and the *pair* was not, so a request could be
+/// admitted against a channel this generation had just added and then executed
+/// by the engine of the one before it — matching zero workflows and answering
+/// `200` with the caller's own input.
+pub struct ChannelSnapshot {
     by_name: HashMap<String, Arc<ChannelRuntimeConfig>>,
     /// `Arc` so an unchanged route set survives a reload without being
     /// rebuilt — `RouteTable::build` parses every pattern and its conflict
@@ -304,12 +312,12 @@ struct RegistrySnapshot {
     deps: DepsFingerprint,
 }
 
-impl RegistrySnapshot {
-    /// The empty generation a fresh registry starts on. Its fingerprint is
-    /// deliberately unmatchable (`connectors: u64::MAX` is never drawn by
-    /// `ConnectorRegistry::config_generation`), so the first reload cannot
+impl ChannelSnapshot {
+    /// The empty generation a node boots on. Its fingerprint is deliberately
+    /// unmatchable (`connectors: u64::MAX` is never drawn by
+    /// `ConnectorRegistry::config_generation`), so the first build cannot
     /// "reuse" anything.
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             by_name: HashMap::new(),
             route_table: Arc::new(RouteTable::default()),
@@ -321,9 +329,85 @@ impl RegistrySnapshot {
             },
         }
     }
+
+    /// Why a channel is quarantined, or `None` when it is serviceable (F35).
+    pub fn quarantine_reason(&self, name: &str) -> Option<String> {
+        self.quarantined.get(name).cloned()
+    }
+
+    /// Every quarantined channel, for `/health` and the admin surface.
+    ///
+    /// N21: this — not a return value from [`ChannelLoader::build`] — is the
+    /// single place the quarantine set is read from. The build used to hand
+    /// the same list back as a `Vec`, which meant two representations of one
+    /// fact: callers that wanted the set afterwards could read either, and the
+    /// `Vec` could carry two entries for a channel broken in both the engine
+    /// build and its own config while the map (last-write-wins) carried the
+    /// more specific one.
+    pub fn quarantined(&self) -> Vec<ChannelLoadIssue> {
+        self.quarantined
+            .iter()
+            .map(|(channel, reason)| ChannelLoadIssue {
+                channel: channel.clone(),
+                reason: reason.clone(),
+            })
+            .collect()
+    }
+
+    /// Look up a channel's runtime config, refusing quarantined channels.
+    ///
+    /// Every ingress path goes through this rather than [`Self::get_by_name`]:
+    /// a quarantined channel returns `Ok(None)` from a plain lookup, which is
+    /// indistinguishable from "no config" and would serve it with none of its
+    /// guards — the exact failure N3/N4 exist to prevent.
+    ///
+    /// Both halves read one generation (N17), and so does everything else the
+    /// request touches: the caller holds an `Arc<RuntimeGeneration>` for the
+    /// whole request, so the quarantine map, the serving map, the route table
+    /// and the engine it will run on all come from the same build.
+    pub fn require_serviceable(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
+        if let Some(reason) = self.quarantined.get(name) {
+            return Err(crate::errors::OrionError::unavailable(
+                crate::errors::Unavailable::ChannelQuarantined,
+                format!("Channel '{name}' failed to load and is not being served: {reason}"),
+            ));
+        }
+        Ok(self.by_name.get(name).cloned())
+    }
+
+    /// Look up an active channel by name.
+    pub fn get_by_name(&self, name: &str) -> Option<Arc<ChannelRuntimeConfig>> {
+        self.by_name.get(name).cloned()
+    }
+
+    /// Match a request (method, path) against REST channel route patterns.
+    /// Path should NOT include the `/api/v1/data/` prefix.
+    ///
+    /// `Err(BadRequest)` when the path carries an invalid percent-sequence
+    /// (N10) — the request is malformed however it would have resolved.
+    pub fn match_route(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Result<Option<RouteMatch>, crate::errors::OrionError> {
+        self.route_table.match_route(method, path)
+    }
+
+    /// How many channels this generation serves.
+    pub fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    /// Whether this generation serves no channel at all.
+    pub fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
 }
 
-/// Everything [`ChannelRegistry::reload`] needs beyond the channel rows.
+/// Everything [`ChannelLoader::build`] needs beyond the channel rows.
 ///
 /// Named rather than positional for the reason [`crate::engine::HandlerDeps`]
 /// is: five same-shaped borrows in a row is a silent-transposition hazard the
@@ -347,7 +431,7 @@ pub struct ReloadDeps<'a> {
     pub global_trace_storage: &'a TraceStorageConfig,
 }
 
-/// Everything [`ChannelRegistry::build_runtime`] needs beyond the channel row.
+/// Everything [`ChannelLoader::build_runtime`] needs beyond the channel row.
 struct RuntimeDeps<'a> {
     vars: Option<&'a std::sync::Arc<serde_json::Value>>,
     connector_registry: &'a ConnectorRegistry,
@@ -418,96 +502,43 @@ fn refuse_multi_key_object(logic: &serde_json::Value, field: &str) -> Result<(),
     }
 }
 
-/// In-memory registry of active channels, rebuilt on engine reload.
-/// Mirrors the ConnectorRegistry pattern.
-pub struct ChannelRegistry {
-    /// The published generation. `ArcSwap` rather than a lock because every
-    /// ingress reads it and the only writer stores a finished value: reads are
-    /// wait-free and need no `.await`.
-    snapshot: ArcSwap<RegistrySnapshot>,
-    /// Serialises [`Self::reload`]. Building a generation reads the current
-    /// snapshot (for the reuse cache) and then stores its successor; two
-    /// reloads racing that read-modify-write could publish a generation built
-    /// from a stale cache.
-    reload_lock: Mutex<()>,
+/// Turns stored channel rows into a [`ChannelSnapshot`].
+///
+/// It holds no published state — the generation it builds is handed to
+/// [`crate::runtime::RuntimeHandle::publish`] alongside the engine built from
+/// the same rows, and those two become visible together or not at all. What
+/// stays here is what building needs and a request does not: the cluster
+/// backends, the per-channel construction, and the reuse rules that make a
+/// reload cost what changed.
+///
+/// It used to own an `ArcSwap` of the generation and a `reload_lock` of its
+/// own. Both are gone: publication belongs to the runtime handle, and
+/// serialising the read-modify-write belongs to `AppStateInner::reload_lock`,
+/// which already spans the wider sequence (read the rows, build both halves,
+/// publish). The registry's own lock only ever covered its half — which is
+/// exactly why the two halves could be published a moment apart.
+pub struct ChannelLoader {
     /// `Some` = cluster mode (strict backend matrix in
-    /// [`ChannelRegistry::resolve_backend`]: shared-Redis defaults and load
+    /// [`ChannelLoader::resolve_backend`]: shared-Redis defaults and load
     /// errors instead of silent in-memory fallbacks).
     cluster: Option<ClusterBackends>,
 }
 
-impl Default for ChannelRegistry {
+impl Default for ChannelLoader {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ChannelRegistry {
+impl ChannelLoader {
     pub fn new() -> Self {
-        Self {
-            snapshot: ArcSwap::from_pointee(RegistrySnapshot::empty()),
-            reload_lock: Mutex::new(()),
-            cluster: None,
-        }
+        Self { cluster: None }
     }
 
     pub fn with_cluster(cluster: ClusterBackends) -> Self {
         Self {
             cluster: Some(cluster),
-            ..Self::new()
         }
-    }
-
-    /// Why a channel is quarantined, or `None` when it is serviceable (F35).
-    pub fn quarantine_reason(&self, name: &str) -> Option<String> {
-        self.snapshot.load().quarantined.get(name).cloned()
-    }
-
-    /// Every quarantined channel, for `/health` and the admin surface.
-    ///
-    /// N21: this — not a return value from [`Self::reload`] — is the single
-    /// place the quarantine set is read from. `reload` used to hand the same
-    /// list back as a `Vec`, which meant two representations of one fact:
-    /// callers that wanted the set *after* a reload could read either, and the
-    /// `Vec` could carry two entries for a channel broken in both the engine
-    /// build and its own config while the map (last-write-wins) carried the
-    /// more specific one.
-    pub fn quarantined(&self) -> Vec<ChannelLoadIssue> {
-        self.snapshot
-            .load()
-            .quarantined
-            .iter()
-            .map(|(channel, reason)| ChannelLoadIssue {
-                channel: channel.clone(),
-                reason: reason.clone(),
-            })
-            .collect()
-    }
-
-    /// Look up a channel's runtime config, refusing quarantined channels.
-    ///
-    /// Every ingress path goes through this rather than [`Self::get_by_name`]:
-    /// a quarantined channel returns `Ok(None)` from a plain lookup, which is
-    /// indistinguishable from "no config" and would serve it with none of its
-    /// guards — the exact failure N3/N4 exist to prevent.
-    ///
-    /// Both halves read **one** snapshot (N17). Reading the quarantine map and
-    /// the serving map from two independently swapped locks let a reload be
-    /// observed half-applied, and the half-applied answer was `Ok(None)`: a
-    /// channel this reload had just quarantined 404'd as unknown instead of
-    /// 503'ing as quarantined.
-    pub fn require_serviceable(
-        &self,
-        name: &str,
-    ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
-        let snapshot = self.snapshot.load();
-        if let Some(reason) = snapshot.quarantined.get(name) {
-            return Err(crate::errors::OrionError::unavailable(
-                crate::errors::Unavailable::ChannelQuarantined,
-                format!("Channel '{name}' failed to load and is not being served: {reason}"),
-            ));
-        }
-        Ok(snapshot.by_name.get(name).cloned())
     }
 
     /// Resolve a channel's dedup or response-cache backend — the full
@@ -590,24 +621,6 @@ impl ChannelRegistry {
                 Ok(cache_pool.default_memory(purpose))
             }
         }
-    }
-
-    /// Look up an active channel by name.
-    pub fn get_by_name(&self, name: &str) -> Option<Arc<ChannelRuntimeConfig>> {
-        self.snapshot.load().by_name.get(name).cloned()
-    }
-
-    /// Match a request (method, path) against REST channel route patterns.
-    /// Path should NOT include the `/api/v1/data/` prefix.
-    ///
-    /// `Err(BadRequest)` when the path carries an invalid percent-sequence
-    /// (N10) — the request is malformed however it would have resolved.
-    pub fn match_route(
-        &self,
-        method: &str,
-        path: &str,
-    ) -> Result<Option<RouteMatch>, crate::errors::OrionError> {
-        self.snapshot.load().route_table.match_route(method, path)
     }
 
     /// Build one channel's runtime config, or the [`ChannelLoadIssue`] that
@@ -943,18 +956,24 @@ impl ChannelRegistry {
         }))
     }
 
-    /// Rebuild the registry from a list of active channels and publish it as
-    /// one snapshot.
+    /// Build one generation of the channel estate from the active rows.
+    ///
+    /// Returns it rather than publishing it: the caller pairs it with the
+    /// engine built from the same rows and publishes both in a single store
+    /// (`RuntimeHandle::publish`). `previous` is the outgoing generation,
+    /// which is both the reuse cache and the source of guard *state* — see
+    /// the cost note below.
     ///
     /// Channels that fail to load (see [`ChannelLoadIssue`] for the two
     /// classes) are **quarantined**: absent from the serving map and from the
     /// route table, and refused at every ingress by
-    /// [`Self::require_serviceable`]. The rest of the reload succeeds. Read
-    /// the resulting set with [`Self::quarantined`] — that map is the one
+    /// [`ChannelSnapshot::require_serviceable`]. The rest of the build
+    /// succeeds. Read the resulting set with
+    /// [`ChannelSnapshot::quarantined`] — that map is the one
     /// representation of it (N21).
     ///
     /// This used to be all-or-nothing — a non-empty issue list left the
-    /// registry untouched and callers hard-failed. That kept a broken channel
+    /// estate untouched and callers hard-failed. That kept a broken channel
     /// from being served unguarded, which is right, but it also meant one
     /// channel with an unparseable `config_json` failed *every* operation that
     /// triggers a reload (activate, archive, delete, rollout) with a 500, and
@@ -970,12 +989,13 @@ impl ChannelRegistry {
     /// keeps the exact `Arc<ChannelRuntimeConfig>` it had: no JSON parse, no
     /// datalogic compilation, no backend resolution, no `Channel` clone. An
     /// unchanged serviceable set likewise keeps the built [`RouteTable`].
-    pub async fn reload(
+    pub async fn build(
         &self,
+        previous: &ChannelSnapshot,
         channels: &[Channel],
         deps: ReloadDeps<'_>,
         engine_issues: Vec<ChannelLoadIssue>,
-    ) {
+    ) -> ChannelSnapshot {
         let ReloadDeps {
             vars,
             connector_registry,
@@ -986,10 +1006,6 @@ impl ChannelRegistry {
             allow_private_token_urls,
             global_trace_storage,
         } = deps;
-        // Read-modify-write on the snapshot: serialise it so two reloads
-        // cannot both build from the same outgoing generation.
-        let _reload_guard = self.reload_lock.lock().await;
-
         let deps = RuntimeDeps {
             vars,
             connector_registry,
@@ -1014,7 +1030,6 @@ impl ChannelRegistry {
         // refilled every channel's burst and released every in-flight
         // concurrency count, so a caller could bypass a per-channel limit by
         // causing (or just waiting for) a reload.
-        let previous = self.snapshot.load_full();
         let cache_valid = previous.deps == fingerprint;
 
         // F33: seed with the engine-build failures (workflow missing or
@@ -1084,15 +1099,13 @@ impl ChannelRegistry {
         let loaded = by_name.len();
         let refused = quarantined.len();
 
-        // One store: `by_name`, the route table and the quarantine map become
-        // visible together or not at all (N17).
-        self.snapshot.store(Arc::new(RegistrySnapshot {
+        let snapshot = ChannelSnapshot {
             by_name,
             route_table,
             quarantined,
             route_key,
             deps: fingerprint,
-        }));
+        };
 
         if refused > 0 {
             tracing::error!(
@@ -1106,8 +1119,9 @@ impl ChannelRegistry {
         tracing::debug!(
             channels = channels.len(),
             reused,
-            "Channel registry snapshot published"
+            "Channel generation built"
         );
+        snapshot
     }
 }
 
@@ -1115,6 +1129,85 @@ impl ChannelRegistry {
 mod tests {
     use super::*;
     use crate::connector::test_support::StubConnectorRepo;
+    use arc_swap::ArcSwap;
+
+    /// A [`ChannelLoader`] plus the generation it last built.
+    ///
+    /// In production those two live apart: the loader is a component of the
+    /// node and the generation is published — with the engine — through
+    /// `RuntimeHandle`. These tests are about the loader alone, and several of
+    /// them (N6, N17) are specifically about state carried *across*
+    /// generations, so the outgoing one has to be kept somewhere between
+    /// calls. `ArcSwap` rather than a field because
+    /// `test_reader_never_sees_a_half_applied_quarantine` reads it from
+    /// another task while a build publishes.
+    struct TestRegistry {
+        loader: ChannelLoader,
+        current: ArcSwap<ChannelSnapshot>,
+    }
+
+    impl TestRegistry {
+        fn new() -> Self {
+            Self::wrap(ChannelLoader::new())
+        }
+
+        fn with_cluster(cluster: ClusterBackends) -> Self {
+            Self::wrap(ChannelLoader::with_cluster(cluster))
+        }
+
+        fn wrap(loader: ChannelLoader) -> Self {
+            Self {
+                loader,
+                current: ArcSwap::from_pointee(ChannelSnapshot::empty()),
+            }
+        }
+
+        fn snapshot(&self) -> Arc<ChannelSnapshot> {
+            self.current.load_full()
+        }
+
+        /// Build the next generation from the current one and publish it —
+        /// the pair of steps `runtime::reload` performs around the engine.
+        async fn build(
+            &self,
+            channels: &[Channel],
+            deps: ReloadDeps<'_>,
+            engine_issues: Vec<ChannelLoadIssue>,
+        ) {
+            let next = self
+                .loader
+                .build(&self.snapshot(), channels, deps, engine_issues)
+                .await;
+            self.current.store(Arc::new(next));
+        }
+
+        fn get_by_name(&self, name: &str) -> Option<Arc<ChannelRuntimeConfig>> {
+            self.snapshot().get_by_name(name)
+        }
+
+        fn quarantined(&self) -> Vec<ChannelLoadIssue> {
+            self.snapshot().quarantined()
+        }
+
+        fn quarantine_reason(&self, name: &str) -> Option<String> {
+            self.snapshot().quarantine_reason(name)
+        }
+
+        fn require_serviceable(
+            &self,
+            name: &str,
+        ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
+            self.snapshot().require_serviceable(name)
+        }
+
+        fn match_route(
+            &self,
+            method: &str,
+            path: &str,
+        ) -> Result<Option<RouteMatch>, crate::errors::OrionError> {
+            self.snapshot().match_route(method, path)
+        }
+    }
 
     /// A cache connector a channel can name for its dedup store without any
     /// external service behind it.
@@ -1122,9 +1215,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_channel_registry_empty() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         assert!(registry.get_by_name("nonexistent").is_none());
-        assert!(registry.snapshot.load().by_name.is_empty());
+        assert!(registry.snapshot().by_name.is_empty());
     }
 
     fn test_channel(name: &str, config_json: &str) -> Channel {
@@ -1190,7 +1283,7 @@ mod tests {
             }
         }
 
-        async fn reload(&self, registry: &ChannelRegistry, channels: &[Channel]) {
+        async fn reload(&self, registry: &TestRegistry, channels: &[Channel]) {
             self.reload_with_issues(registry, channels, Vec::new())
                 .await;
         }
@@ -1200,12 +1293,12 @@ mod tests {
         /// give a channel its workflow (F33).
         async fn reload_with_issues(
             &self,
-            registry: &ChannelRegistry,
+            registry: &TestRegistry,
             channels: &[Channel],
             engine_issues: Vec<ChannelLoadIssue>,
         ) {
             registry
-                .reload(
+                .build(
                     channels,
                     ReloadDeps {
                         vars: None,
@@ -1243,7 +1336,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_strict_mode_refuses_broken_dedup_connector() {
-        let registry = ChannelRegistry::with_cluster(cluster_backends());
+        let registry = TestRegistry::with_cluster(cluster_backends());
         let channel = test_channel(
             "strict-ch",
             r#"{"deduplication": {"header": "idem", "connector": "missing-connector"}}"#,
@@ -1258,7 +1351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_mode_defaults_dedup_to_shared_cache() {
-        let registry = ChannelRegistry::with_cluster(cluster_backends());
+        let registry = TestRegistry::with_cluster(cluster_backends());
         let channel = test_channel("shared-ch", r#"{"deduplication": {"header": "idem"}}"#);
         TestDeps::new().reload(&registry, &[channel]).await;
         assert!(registry.quarantined().is_empty());
@@ -1288,13 +1381,13 @@ mod tests {
     /// gate exists to prevent.
     #[tokio::test]
     async fn test_write_gated_connector_cannot_back_a_dedup_store() {
-        let registry = ChannelRegistry::with_cluster(cluster_backends());
+        let registry = TestRegistry::with_cluster(cluster_backends());
         let channel = test_channel(
             "gated-dedup-ch",
             r#"{"deduplication": {"header": "idem", "connector": "ro-cache"}}"#,
         );
         registry
-            .reload(
+            .build(
                 &[channel],
                 ReloadDeps {
                     vars: None,
@@ -1309,7 +1402,7 @@ mod tests {
                 Vec::new(),
             )
             .await;
-        // N21: `reload` no longer returns the issues it also records.
+        // N21: the build no longer returns the issues it also records.
         let issues = registry.quarantined();
         assert_eq!(issues.len(), 1, "issues = {issues:?}");
         assert!(
@@ -1324,13 +1417,13 @@ mod tests {
     /// refusal above is the gate and not the connector.
     #[tokio::test]
     async fn test_ungated_connector_still_backs_a_dedup_store() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let channel = test_channel(
             "open-dedup-ch",
             r#"{"deduplication": {"header": "idem", "connector": "rw-cache"}}"#,
         );
         registry
-            .reload(
+            .build(
                 &[channel],
                 ReloadDeps {
                     vars: None,
@@ -1345,7 +1438,7 @@ mod tests {
                 Vec::new(),
             )
             .await;
-        // N21: `reload` no longer returns the issues it also records.
+        // N21: the build no longer returns the issues it also records.
         let issues = registry.quarantined();
         assert!(issues.is_empty(), "issues = {issues:?}");
         let runtime = registry.get_by_name("open-dedup-ch").expect("loaded");
@@ -1358,13 +1451,13 @@ mod tests {
     /// through the gated connector.
     #[tokio::test]
     async fn test_single_node_write_gated_connector_falls_back() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let channel = test_channel(
             "gated-fallback-ch",
             r#"{"deduplication": {"header": "idem", "connector": "ro-cache"}}"#,
         );
         registry
-            .reload(
+            .build(
                 &[channel],
                 ReloadDeps {
                     vars: None,
@@ -1379,7 +1472,7 @@ mod tests {
                 Vec::new(),
             )
             .await;
-        // N21: `reload` no longer returns the issues it also records.
+        // N21: the build no longer returns the issues it also records.
         let issues = registry.quarantined();
         assert!(issues.is_empty(), "issues = {issues:?}");
         assert!(registry.get_by_name("gated-fallback-ch").is_some());
@@ -1387,7 +1480,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_node_broken_connector_still_falls_back() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let channel = test_channel(
             "fallback-ch",
             r#"{"deduplication": {"header": "idem", "connector": "missing-connector"}}"#,
@@ -1399,8 +1492,8 @@ mod tests {
         assert!(registry.get_by_name("fallback-ch").is_some());
     }
 
-    async fn reload_single_node(channel: Channel) -> (ChannelRegistry, Vec<ChannelLoadIssue>) {
-        let registry = ChannelRegistry::new();
+    async fn reload_single_node(channel: Channel) -> (TestRegistry, Vec<ChannelLoadIssue>) {
+        let registry = TestRegistry::new();
         let issues = reload_into(&registry, channel).await;
         (registry, issues)
     }
@@ -1413,7 +1506,7 @@ mod tests {
     /// a reload where the connectors changed too. That invalidates N17's
     /// whole-config cache, so these tests land on the rebuild path — the one
     /// where N6's field-level reuse is what preserves guard state.
-    async fn reload_into(registry: &ChannelRegistry, channel: Channel) -> Vec<ChannelLoadIssue> {
+    async fn reload_into(registry: &TestRegistry, channel: Channel) -> Vec<ChannelLoadIssue> {
         TestDeps::new().reload(registry, &[channel]).await;
         registry.quarantined()
     }
@@ -1485,7 +1578,7 @@ mod tests {
     /// keep serving with their guards rather than being dropped.
     #[tokio::test]
     async fn test_refusal_leaves_previous_registry_intact() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
 
         deps.reload(&registry, &[test_channel("keep-ch", "{}")])
@@ -1642,7 +1735,7 @@ mod tests {
     /// silently refilled every bucket on every admin mutation.
     #[tokio::test]
     async fn test_reload_preserves_rate_limiter_state_when_unchanged() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let config = r#"{"rate_limit": {"requests_per_second": 1, "burst": 2}}"#;
         let issues = reload_into(&registry, test_channel("rl-ch", config)).await;
         assert!(issues.is_empty(), "{issues:?}");
@@ -1684,7 +1777,7 @@ mod tests {
     /// file still passes with `key_headers` missing from the reuse tuple.
     #[tokio::test]
     async fn test_reload_rebuilds_limiter_when_key_headers_change() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let before = r#"{"rate_limit": {"requests_per_second": 1, "burst": 2, "key_headers": ["deviceid"]}}"#;
         let issues = reload_into(&registry, test_channel("kh-ch", before)).await;
         assert!(issues.is_empty(), "{issues:?}");
@@ -1729,7 +1822,7 @@ mod tests {
     /// never normalizes a header name per request.
     #[tokio::test]
     async fn test_key_headers_are_lowercased_at_load() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let issues = reload_into(
             &registry,
             test_channel(
@@ -1754,7 +1847,7 @@ mod tests {
     /// path, so refusing on it would be worse than the defect it reports.
     #[tokio::test]
     async fn test_unreachable_key_logic_header_still_loads() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let issues = reload_into(
             &registry,
             test_channel(
@@ -1775,7 +1868,7 @@ mod tests {
     /// hold.
     #[tokio::test]
     async fn test_reload_rebuilds_limiter_when_limits_change() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let _ = reload_into(
             &registry,
             test_channel(
@@ -1818,7 +1911,7 @@ mod tests {
     /// forgot the in-flight permits — and a fresh one when it changes.
     #[tokio::test]
     async fn test_reload_reuses_backpressure_semaphore_when_unchanged() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let config = r#"{"backpressure": {"max_concurrent_per_node": 3}}"#;
         let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
         let sem = registry
@@ -1865,7 +1958,7 @@ mod tests {
     /// permits held on the old generation still bound the new one.
     #[tokio::test]
     async fn test_reload_keeps_in_flight_backpressure_permits() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let config = r#"{"backpressure": {"max_concurrent_per_node": 2}}"#;
         let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
         let sem = registry
@@ -1899,7 +1992,7 @@ mod tests {
     /// epoch tick.
     #[tokio::test]
     async fn test_reload_reuses_runtime_config_when_nothing_changed() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let channel = test_channel(
             "reuse-ch",
@@ -1925,7 +2018,7 @@ mod tests {
     /// bytes change.
     #[tokio::test]
     async fn test_reload_rebuilds_runtime_config_when_the_row_changes() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let channel = test_channel("edit-ch", r#"{"rate_limit": {"requests_per_second": 10}}"#);
 
@@ -1960,7 +2053,7 @@ mod tests {
     /// exactly what the epoch resync's pool eviction exists to prevent.
     #[tokio::test]
     async fn test_reload_rebuilds_when_the_connector_generation_moves() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let repo = StubConnectorRepo::with(vec![("dedup-cache", "cache", MEMORY_CACHE)]);
         deps.connectors
@@ -2004,7 +2097,7 @@ mod tests {
     /// *change*, so an unchanged connector set leaves the cache intact.
     #[tokio::test]
     async fn test_reload_reuses_across_a_connector_load_that_changed_nothing() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let repo = StubConnectorRepo::with(vec![("dedup-cache", "cache", MEMORY_CACHE)]);
         deps.connectors
@@ -2042,15 +2135,15 @@ mod tests {
     /// over rather than rebuild it.
     #[tokio::test]
     async fn test_reload_reuses_route_table_when_the_serviceable_set_is_unchanged() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let alpha = rest_channel("alpha-ch", "/alpha/{id}");
 
         deps.reload(&registry, std::slice::from_ref(&alpha)).await;
-        let first = registry.snapshot.load().route_table.clone();
+        let first = registry.snapshot().route_table.clone();
 
         deps.reload(&registry, std::slice::from_ref(&alpha)).await;
-        let second = registry.snapshot.load().route_table.clone();
+        let second = registry.snapshot().route_table.clone();
         assert!(
             Arc::ptr_eq(&first, &second),
             "an unchanged route set must keep the built table"
@@ -2058,7 +2151,7 @@ mod tests {
 
         deps.reload(&registry, &[alpha, rest_channel("beta-ch", "/beta/{id}")])
             .await;
-        let third = registry.snapshot.load().route_table.clone();
+        let third = registry.snapshot().route_table.clone();
         assert!(
             !Arc::ptr_eq(&first, &third),
             "a new route-bearing channel must rebuild the table"
@@ -2082,7 +2175,7 @@ mod tests {
     /// makes that state unrepresentable.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_reader_never_sees_a_half_applied_quarantine() {
-        let registry = Arc::new(ChannelRegistry::new());
+        let registry = Arc::new(TestRegistry::new());
         let deps = TestDeps::new();
         let good = test_channel("flip-ch", "{}");
         // A distinct row, so the reuse cache never short-circuits the flip and
@@ -2152,14 +2245,14 @@ mod tests {
     /// are built from the complement), so this is the branch worth a test.
     #[tokio::test]
     async fn test_route_table_reuse_drops_a_newly_quarantined_channels_route() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         let alpha = rest_channel("alpha-ch", "/alpha/{id}");
         let beta = rest_channel("beta-ch", "/beta/{id}");
         let channels = [alpha.clone(), beta.clone()];
 
         deps.reload(&registry, &channels).await;
-        let first = registry.snapshot.load().route_table.clone();
+        let first = registry.snapshot().route_table.clone();
         assert!(
             registry
                 .match_route("GET", "alpha/7")
@@ -2178,7 +2271,7 @@ mod tests {
         )
         .await;
 
-        let second = registry.snapshot.load().route_table.clone();
+        let second = registry.snapshot().route_table.clone();
         assert!(
             !Arc::ptr_eq(&first, &second),
             "a channel leaving the serviceable set must rebuild the table, \
@@ -2233,7 +2326,7 @@ mod tests {
                 .with_test_writer()
                 .finish(),
         );
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         deps.reload_with_issues(
             &registry,
@@ -2260,14 +2353,14 @@ mod tests {
             quarantined[0].reason
         );
         assert!(registry.get_by_name("dup-ch").is_none());
-        assert!(registry.snapshot.load().by_name.is_empty());
+        assert!(registry.snapshot().by_name.is_empty());
     }
 
     /// The engine-quarantine seeding on its own: a channel whose config parses
     /// perfectly still must not serve when the engine could not build it.
     #[tokio::test]
     async fn test_engine_quarantined_channel_does_not_serve() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         deps.reload_with_issues(
             &registry,
@@ -2297,7 +2390,7 @@ mod tests {
     /// `/health`, the boot log, every ingress — already reads.
     #[tokio::test]
     async fn test_quarantine_set_is_readable_from_the_registry_alone() {
-        let registry = ChannelRegistry::new();
+        let registry = TestRegistry::new();
         let deps = TestDeps::new();
         deps.reload(
             &registry,

@@ -170,8 +170,9 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
     let app = orion::server::build_router(state.clone());
 
     let dispatchable: BTreeSet<String> = state
-        .engine
+        .runtime
         .load()
+        .engine
         .dispatchable_functions()
         .flat_map(|f| {
             std::iter::once(f.name.to_string())
@@ -242,7 +243,8 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
     use std::collections::BTreeSet;
 
     let state = crate::common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let engine = state.engine.load();
+    let generation = state.runtime.load();
+    let engine = &generation.engine;
 
     for name in orion::engine::known_functions() {
         assert!(

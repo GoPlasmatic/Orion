@@ -85,7 +85,7 @@ The bump carries a **scope**, and the replicas resync to it:
 
 | What you changed | What every other node does |
 |---|---|
-| A workflow or a channel | Rebuilds its engine and channel registry. Connector pools are untouched. |
+| A workflow or a channel | Republishes its runtime generation (engine + channel estate, one store). Connector pools are untouched. |
 | A connector (create, update, delete, reload) | The above, plus reloads its connector registry and drops its cached SQL, MongoDB and cache pools — the endpoint or the credentials behind a live connection may now be wrong. |
 
 Only the second row costs reconnections, and that is the point. Before the

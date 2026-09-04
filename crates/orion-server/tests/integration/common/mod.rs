@@ -17,7 +17,26 @@ use axum::http::Request;
 use serde_json::Value;
 use tower::ServiceExt;
 
-use orion::channel::ChannelRegistry;
+use orion::channel::ChannelLoader;
+
+/// An empty serving generation: an engine with no workflows and an estate with
+/// no channels.
+///
+/// For the component tests that drive a queue, a consumer or a handler
+/// directly rather than through [`test_app`] — they need a `RuntimeHandle` to
+/// hand over, and what it publishes is irrelevant to them. Tests that care
+/// about the generation's *contents* go through `test_app`, which publishes a
+/// real one.
+pub fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
+    Arc::new(orion::runtime::RuntimeHandle::new(
+        Arc::new(
+            dataflow_rs::Engine::builder()
+                .build()
+                .expect("empty engine"),
+        ),
+        Arc::new(orion::channel::ChannelSnapshot::empty()),
+    ))
+}
 use orion::config::AppConfig;
 use orion::server::state::AppState;
 
@@ -143,15 +162,14 @@ async fn test_state_inner(
         .await
         .expect("cluster runtime");
     let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
-    let channel_registry = Arc::new(if config.cluster.enabled {
-        ChannelRegistry::with_cluster((&*cluster).into())
+    let channel_loader = Arc::new(if config.cluster.enabled {
+        ChannelLoader::with_cluster((&*cluster).into())
     } else {
-        ChannelRegistry::new()
+        ChannelLoader::new()
     });
-    let components =
-        orion::bootstrap::build_engine_components(&config, &repos, channel_registry.clone())
-            .await
-            .expect("engine components");
+    let components = orion::bootstrap::build_engine_components(&config, &repos)
+        .await
+        .expect("engine components");
     // #268: the managed-OAuth2 runtime, single-node shape (no lease) — what
     // the probe and http_call paths need for oauth2 connectors under test.
     components
@@ -165,7 +183,7 @@ async fn test_state_inner(
         });
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (components, channels, active_workflow_count) = components
-        .load_channels_and_build_engine(&config, &repos, &channel_registry)
+        .load_channels_and_build_engine(&config, &repos, &channel_loader)
         .await
         .expect("load channels");
     ready.store(true, std::sync::atomic::Ordering::Release);
@@ -175,9 +193,8 @@ async fn test_state_inner(
         orion::bootstrap::start_background_tasks(
             &config,
             &tasks,
-            components.engine.clone(),
+            components.runtime.clone(),
             &repos,
-            channel_registry.clone(),
             &cluster,
         );
     // None unless the test's config carries `[kafka.topics]` mappings (the
@@ -187,8 +204,7 @@ async fn test_state_inner(
         &config.kafka,
         &channels,
         orion::bootstrap::IngestDeps {
-            engine: components.engine.clone(),
-            channel_registry: channel_registry.clone(),
+            runtime: components.runtime.clone(),
             datalogic: components.datalogic.clone(),
             vars: components.vars.clone(),
             kafka_producer: components.kafka_producer.clone(),
@@ -223,7 +239,7 @@ async fn test_state_inner(
         pool,
         repos,
         components,
-        channel_registry,
+        channel_loader,
         trace_queue,
         trace_persistence_queue,
         audit_queue,

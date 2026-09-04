@@ -1,53 +1,15 @@
-//! Running the engine for one channel, and the instrumented lock accessors
-//! every caller goes through to reach it.
+//! Running the engine for one channel: the deadline arm and the trace-capture
+//! policy every transport shares.
+//!
+//! The engine arrives as an `Arc` the caller already holds — it is one half of
+//! the `RuntimeGeneration` the request was admitted under
+//! (`crate::runtime::generation`), not something looked up here. That is what
+//! keeps admission and execution on the same build.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use arc_swap::ArcSwap;
-
 use super::profile;
-
-/// The live engine, swapped wholesale on reload.
-///
-/// Was `Arc<RwLock<Arc<Engine>>>`. The outer lock never protected a mutation —
-/// reload builds the replacement engine entirely outside it and the critical
-/// section was a single assignment — so all it ever did was serialise readers
-/// against a writer that had nothing left to do. Every data-plane request paid
-/// a futures-aware acquire, and a reload could still block readers in the
-/// window between the timeout and the store.
-///
-/// `ArcSwap` is the shape the access pattern always had: many readers taking a
-/// snapshot, one writer publishing a finished value. Readers never block and
-/// never wait, so the reload no longer needs a timeout to bound how long it
-/// might hold them off, and a reader that is mid-request keeps the engine it
-/// started with until it drops the `Arc`. N17 made the same change to the
-/// channel-registry snapshot for the same reason.
-///
-/// Serialising *reloads* is a separate concern and not what this type is for:
-/// two concurrent reloads would each build from a possibly stale read, and the
-/// loser's `store` would win. `AppStateInner::reload_lock` is what prevents
-/// that; this type only guarantees that whichever engine is published is
-/// published atomically.
-pub struct EngineHandle(ArcSwap<dataflow_rs::Engine>);
-
-impl EngineHandle {
-    pub fn new(engine: Arc<dataflow_rs::Engine>) -> Self {
-        Self(ArcSwap::new(engine))
-    }
-
-    /// A snapshot of the current engine. Wait-free; the returned `Arc` stays
-    /// valid across a concurrent [`Self::store`].
-    pub fn load(&self) -> Arc<dataflow_rs::Engine> {
-        self.0.load_full()
-    }
-
-    /// Publish a new engine. Readers already holding a snapshot finish against
-    /// the old one; every load after this returns the new one.
-    pub fn store(&self, engine: Arc<dataflow_rs::Engine>) {
-        self.0.store(engine);
-    }
-}
 
 /// Result of one engine invocation: the engine's own result plus the captured
 /// per-task `ExecutionTrace` when the caller opted in (A2).

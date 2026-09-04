@@ -6,7 +6,6 @@ use datalogic_rs::Engine as DatalogicEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::Mutex;
 
-use crate::channel::ChannelRegistry;
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -52,21 +51,30 @@ pub struct Caches {
 /// [`Kafka`] (`kafka`), [`Caches`] (`caches`); everything genuinely
 /// runtime-singular stays a flat field.
 pub struct AppStateInner {
-    pub engine: Arc<crate::engine::EngineHandle>,
+    /// The live serving generation — engine and channel estate, published as
+    /// one value. Every ingress loads it once per unit of work; the reload
+    /// republishes it. Was two fields, `engine` and `channel_registry`, each
+    /// swapped separately (see [`crate::runtime::generation`]).
+    pub runtime: Arc<crate::runtime::RuntimeHandle>,
+    /// Builds the channel half of a generation. A reload's tool, not a
+    /// request's: a request reads the estate off `runtime`.
+    pub channel_loader: Arc<crate::channel::ChannelLoader>,
     /// Serialises [`crate::runtime::reload_engine_with_opts`] end to end.
     ///
-    /// A reload is a read-modify-write across two published values: it reads
+    /// A reload is a read-modify-write over the published generation: it reads
     /// the active channels and workflows from the database, builds the new
     /// engine from the *current* one (`with_new_workflows` carries the handler
-    /// registry across), republishes the channel registry, and then stores the
-    /// engine. Two callers can start one concurrently — the admin mutations
+    /// registry across), builds the channel estate beside it, and publishes
+    /// both. Two callers can start one concurrently — the admin mutations
     /// (`audit_and_reload`) and the cluster epoch watcher — and without this
     /// they interleave: both read the same pre-mutation rows, and whichever
-    /// `store`s last wins. That is the *older* build often enough to matter,
+    /// publishes last wins. That is the *older* build often enough to matter,
     /// which leaves a just-activated channel invisible until the next reload.
     ///
-    /// `ChannelRegistry`'s own `reload_lock` does not cover this: it guards the
-    /// registry's read-modify-write alone, and the engine is stored outside it.
+    /// This is now the *only* lock in the sequence. `ChannelLoader` used to
+    /// keep one of its own, which guarded its half alone and could not span
+    /// the engine store — the asymmetry that let the two halves be published a
+    /// moment apart.
     ///
     /// Held across the Kafka consumer restart too, which is the one part that
     /// can sleep (up to 5 s of epoch jitter). A concurrent reload waiting that
@@ -97,7 +105,6 @@ pub struct AppStateInner {
     pub connector_registry: Arc<ConnectorRegistry>,
     /// Cache backends plus the external SQL/MongoDB connection-pool caches.
     pub caches: Caches,
-    pub channel_registry: Arc<ChannelRegistry>,
     pub trace_queue: TraceQueue,
     /// The startup pool. **Route handlers should not reach for this** — go
     /// through [`AppStateInner::pool_stats`] or
@@ -216,6 +223,6 @@ impl AppStateInner {
 /// Shared application state accessible from all route handlers.
 ///
 /// Cloning is O(1) — one atomic refcount bump on the `Arc`. Field access goes
-/// through `Arc<T>`'s built-in `Deref` so call sites (`state.engine`,
+/// through `Arc<T>`'s built-in `Deref` so call sites (`state.runtime`,
 /// `state.config`, …) work directly against the inner struct.
 pub type AppState = Arc<AppStateInner>;

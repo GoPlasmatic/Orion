@@ -16,7 +16,6 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 
-use orion::channel::ChannelRegistry;
 use orion::config::{StorageConfig, TraceQueueConfig, TraceStorageConfig};
 use orion::queue::{DlqRetryOptions, QueueMessage};
 use orion::storage::DbPool;
@@ -45,7 +44,8 @@ impl AsyncFunctionHandler for AlwaysFail {
     }
 }
 
-fn poison_engine() -> Arc<orion::engine::EngineHandle> {
+/// A serving generation whose only workflow fails every message.
+fn poison_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     let workflow = dataflow_rs::Workflow::from_json(
         r#"{
             "id": "poison-wf",
@@ -65,7 +65,10 @@ fn poison_engine() -> Arc<orion::engine::EngineHandle> {
         .build()
         .expect("engine builds");
 
-    Arc::new(orion::engine::EngineHandle::new(Arc::new(engine)))
+    Arc::new(orion::runtime::RuntimeHandle::new(
+        Arc::new(engine),
+        Arc::new(orion::channel::ChannelSnapshot::empty()),
+    ))
 }
 
 fn sqlite(pool: &DbPool) -> &sqlx::SqlitePool {
@@ -104,7 +107,7 @@ async fn poison_message_converges_on_dlq_max_retries() {
 
     let trace_repo: Arc<dyn TraceRepository> = Arc::new(SqlTraceRepository::new(pool.clone()));
     let dlq_repo: Arc<dyn TraceDlqRepository> = Arc::new(SqlTraceDlqRepository::new(pool.clone()));
-    let channel_registry = Arc::new(ChannelRegistry::new());
+    let runtime = poison_runtime();
     let trace_storage = TraceStorageConfig::default();
 
     let tasks = orion::runtime::TaskRegistry::new();
@@ -121,10 +124,9 @@ async fn poison_message_converges_on_dlq_max_retries() {
             ..Default::default()
         },
         orion::queue::WorkerDeps {
-            engine: poison_engine(),
+            runtime: runtime.clone(),
             trace_repo: trace_repo.clone(),
             dlq_repo: Some(dlq_repo.clone()),
-            channel_registry: channel_registry.clone(),
             persistence_queue,
             global_trace_storage: trace_storage,
             rollout_sticky_header: "x-orion-identity".to_string(),
@@ -143,7 +145,7 @@ async fn poison_message_converges_on_dlq_max_retries() {
         dlq_repo.clone(),
         trace_queue.clone(),
         trace_repo.clone(),
-        channel_registry,
+        runtime,
     );
 
     let trace = trace_repo

@@ -116,7 +116,7 @@ impl ConnectorRegistry {
     /// that changed the set; two equal tokens mean the same instance holding
     /// configs that compare equal, and no two instances ever share one.
     ///
-    /// N17: [`crate::channel::ChannelRegistry`] caches a whole
+    /// N17: [`crate::channel::ChannelLoader`] caches a whole
     /// `ChannelRuntimeConfig` across reloads, and that struct embeds dedup and
     /// response-cache backends resolved *through this registry*. The cache is
     /// only sound while the connector set behind those backends is unchanged,
@@ -415,7 +415,7 @@ impl ConnectorRegistry {
             }
             changed
         };
-        // N17: the token is [`crate::channel::ChannelRegistry`]'s cache key,
+        // N17: the token is the channel loader's reuse-cache key,
         // so it must move when the effective connector set moves and stay put
         // when it does not. Advancing it on every *load* rather than every
         // *change* would be sound but useless: a connector-scoped resync (and
@@ -470,7 +470,7 @@ impl ConnectorRegistry {
 
 /// A repository that returns whatever connector rows a test hands it.
 ///
-/// Lives outside `mod tests` because the channel registry's tests need it too:
+/// Lives outside `mod tests` because the channel loader's tests need it too:
 /// its per-channel cache is keyed on
 /// [`ConnectorRegistry::config_generation`], and the thing worth pinning is
 /// what happens to that key when a *load* of an unchanged set runs — which
@@ -757,7 +757,7 @@ mod tests {
                 registry.config_generation(),
                 after_first,
                 "an epoch resync that changed no connector must leave the \
-                 channel registry's cache key alone"
+                 channel loader's cache key alone"
             );
         }
     }

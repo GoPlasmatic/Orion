@@ -23,7 +23,8 @@ pub use config::{
 pub use oauth2_login::{CompiledOAuth2Login, Leg as OAuthLeg};
 pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 pub use registry::{
-    ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig, ClusterBackends, ReloadDeps,
+    ChannelLoadIssue, ChannelLoader, ChannelRuntimeConfig, ChannelSnapshot, ClusterBackends,
+    ReloadDeps,
 };
 pub use routing::{RouteMatch, RouteTable};
 

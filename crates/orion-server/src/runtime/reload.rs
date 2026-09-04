@@ -34,7 +34,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 /// touched no connector.
 ///
 /// [`EpochScope::Definitions`](crate::cluster::EpochScope::Definitions) skips the connector half. That is sound in the
-/// direction that matters: the channel registry keys its per-channel reuse on
+/// direction that matters: the channel loader keys its per-channel reuse on
 /// the connector registry's generation token
 /// (`channel::registry::DepsFingerprint`), and not reloading connectors leaves
 /// that token where it is, so a channel whose connectors did not change is
@@ -77,9 +77,9 @@ pub async fn reload_engine_with_opts(
     let start = std::time::Instant::now();
 
     // One reload at a time, process-wide. Everything below is a
-    // read-modify-write over the database rows and the two published values
-    // (channel registry, engine); overlapping reloads read the same rows and
-    // the loser's `store` wins. See `AppStateInner::reload_lock`.
+    // read-modify-write over the database rows and the published generation;
+    // overlapping reloads read the same rows and the loser's publish wins.
+    // See `AppStateInner::reload_lock`.
     let _reload_guard = state.reload_lock.lock().await;
 
     let result = async {
@@ -91,37 +91,46 @@ pub async fn reload_engine_with_opts(
             state.repos.workflows.list_active(),
         )?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        // The running engine is the screen: `with_new_workflows` carries the
-        // handler registry across, so the handlers that will run these
-        // workflows are exactly the ones already registered here. A workflow
-        // they cannot dispatch is quarantined per channel rather than failing
-        // the reload — which would take down every channel on every node over
-        // one bad stored row.
-        let current_engine = state.engine.load();
+        // The outgoing generation, read once: it is the screen for the new
+        // workflows, the base the new engine is built from, and the reuse
+        // cache the new channel estate is built against. Reading it once is
+        // what makes those three agree.
+        //
+        // The running engine is the screen because `with_new_workflows`
+        // carries the handler registry across, so the handlers that will run
+        // these workflows are exactly the ones already registered there. A
+        // workflow they cannot dispatch is quarantined per channel rather than
+        // failing the reload — which would take down every channel on every
+        // node over one bad stored row.
+        let current = state.runtime.load();
         let (workflows, engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows, &*current_engine);
+            crate::engine::build_engine_workflows(&channels, &active_workflows, &*current.engine);
 
-        // Build the new engine outside the write lock to minimize lock hold time.
-        // Clone the current engine Arc, build new workflows, then swap atomically.
+        // Both halves are built before anything is published, so a failure
+        // here — an engine that will not build — leaves the previous
+        // generation serving intact. Back when the channel estate was
+        // published first, this `?` could leave the node *permanently* mixed:
+        // new guards over old workflows, until some later reload happened to
+        // succeed.
         let new_engine = Arc::new(
-            current_engine
+            current
+                .engine
                 .with_new_workflows(workflows)
                 .map_err(crate::errors::OrionError::Engine)?,
         );
 
-        // Rebuild the channel registry BEFORE swapping the engine, so a
-        // channel is never reachable through the new engine before its guards
-        // exist. Channels that fail to load are quarantined — refused at every
+        // Channels that fail to load are quarantined — refused at every
         // ingress — and the reload proceeds (F35). It used to abort here,
         // which meant one unparseable `config_json` failed every activate,
         // archive, delete and rollout with a 500, and stopped the cluster
         // epoch watcher resyncing all nodes.
-        // The quarantine set is recorded on the registry itself and read back
-        // with `ChannelRegistry::quarantined` (reported via `/health`), so it
-        // is deliberately not propagated as an error here.
-        state
-            .channel_registry
-            .reload(
+        // The quarantine set is recorded on the generation and read back with
+        // `ChannelSnapshot::quarantined` (reported via `/health`), so it is
+        // deliberately not propagated as an error here.
+        let new_channels = state
+            .channel_loader
+            .build(
+                &current.channels,
                 &channels,
                 crate::channel::ReloadDeps {
                     vars: state.vars.as_ref(),
@@ -137,10 +146,12 @@ pub async fn reload_engine_with_opts(
             )
             .await;
 
-        // Publishing the new engine is a single atomic store. There is no
-        // window in which a reader is held off, so this needs neither a timeout
-        // nor a carefully-scoped drop before the Kafka restart below.
-        state.engine.store(new_engine);
+        // One store, both halves. There is no window in which a reader is held
+        // off, so this needs neither a timeout nor a carefully-scoped drop
+        // before the Kafka restart below — and no window in which a request is
+        // admitted by one generation and executed by another, which is what
+        // two stores here could not avoid however they were ordered.
+        let generation = state.runtime.publish(new_engine, Arc::new(new_channels));
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);
@@ -151,9 +162,10 @@ pub async fn reload_engine_with_opts(
         }
 
         tracing::info!(
+            generation,
             workflow_count = active_workflows.len(),
             channel_count = channels.len(),
-            "Engine reloaded"
+            "Runtime generation published"
         );
         Ok(())
     }
@@ -288,8 +300,7 @@ fn try_start_ingest(
         &state.config.kafka,
         channels,
         crate::bootstrap::IngestDeps {
-            engine: state.engine.clone(),
-            channel_registry: state.channel_registry.clone(),
+            runtime: state.runtime.clone(),
             datalogic: state.datalogic.clone(),
             vars: state.vars.clone(),
             kafka_producer: state.kafka.producer.clone(),

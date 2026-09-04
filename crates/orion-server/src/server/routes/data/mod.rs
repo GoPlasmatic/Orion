@@ -143,11 +143,22 @@ pub(crate) async fn dynamic_handler(
         return Err(OrionError::validation("Channel name must not be empty"));
     }
 
+    // One generation for this request, loaded once and held to the end: the
+    // route table below, the channel's guards, and the engine the workflow
+    // runs on all come from the same build.
+    //
+    // The route match and the serviceability lookup used to be two separate
+    // loads of the channel registry, so a reload landing between them could
+    // resolve a route from one generation and miss the name in the next — a
+    // 404 for a channel present in both. Holding the generation also keeps
+    // admission and execution together, which two published values could not.
+    let generation = state.runtime.load();
+
     // Resolve channel: try REST route table first, then direct name lookup.
     // N10: `?` answers 400 for invalid percent-sequences before any
     // resolution; matched params arrive percent-decoded exactly once.
-    let (channel, route_params, route_role) = if let Some(rm) = state
-        .channel_registry
+    let (channel, route_params, route_role) = if let Some(rm) = generation
+        .channels
         .match_route(method.as_str(), route_path)?
     {
         (rm.channel_name, rm.params, rm.role)
@@ -224,7 +235,7 @@ pub(crate) async fn dynamic_handler(
     // guards run is the transport's `GuardSet`, not a decision made here.
     // F35: a channel that failed to load is quarantined, not silently
     // config-less — serving it here would apply none of its guards.
-    let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
+    let channel_runtime = generation.channels.require_serviceable(&channel)?;
 
     let request_config = channel_runtime
         .as_ref()
@@ -250,7 +261,7 @@ pub(crate) async fn dynamic_handler(
     // The `Option` binding stays because `guards::GuardRequest` takes it by
     // reference and is shared with the Kafka and channel_call ingresses; the
     // clone below is the `Arc` every path past the gate is entitled to.
-    let Some(runtime) = channel_runtime.clone() else {
+    let Some(channel_config) = channel_runtime.clone() else {
         return Err(OrionError::NotFound(format!(
             "Channel '{channel}' not found or not active"
         )));
@@ -331,14 +342,14 @@ pub(crate) async fn dynamic_handler(
         // A channel may replace the BYTES of a refusal; the platform still
         // decides the status.
         Err(err) => {
-            return Ok(shape_guard_rejection(err, &channel, &runtime));
+            return Ok(shape_guard_rejection(err, &channel, &channel_config));
         }
         Ok(verdict) => verdict,
     };
 
     let mut admission = match guard_verdict {
         guards::GuardVerdict::CacheHit(body) => {
-            let shaped = runtime
+            let shaped = channel_config
                 .parsed_config
                 .response
                 .as_ref()
@@ -380,7 +391,7 @@ pub(crate) async fn dynamic_handler(
             channel,
             req.data,
             metadata,
-            runtime,
+            channel_config,
             profile_requested,
             admission,
         )
@@ -392,7 +403,10 @@ pub(crate) async fn dynamic_handler(
         &channel,
         req.data,
         metadata,
-        runtime,
+        sync::AdmittedOn {
+            engine: generation.engine.clone(),
+            channel_config,
+        },
         profile_requested,
         admission,
     )

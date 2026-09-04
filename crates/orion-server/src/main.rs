@@ -633,18 +633,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Create repositories
     let repos = bootstrap::Repositories::new(&pool, &config.storage)?;
 
-    // Channel registry
-    let channel_registry = Arc::new(if config.cluster.enabled {
-        orion::channel::ChannelRegistry::with_cluster((&*cluster).into())
+    // Builds the channel half of every generation. Cluster mode swaps in the
+    // strict backend matrix.
+    let channel_loader = Arc::new(if config.cluster.enabled {
+        orion::channel::ChannelLoader::with_cluster((&*cluster).into())
     } else {
-        orion::channel::ChannelRegistry::new()
+        orion::channel::ChannelLoader::new()
     });
 
-    // Connector registry, shared HTTP client, engine lock, cache pools,
+    // Connector registry, shared HTTP client, runtime handle, cache pools,
     // custom function handlers, and the Kafka producer (see
     // `bootstrap::build_engine_components`).
-    let components =
-        bootstrap::build_engine_components(&config, &repos, channel_registry.clone()).await?;
+    let components = bootstrap::build_engine_components(&config, &repos).await?;
 
     // #268: hand the managed-OAuth2 token manager its runtime — the shared
     // client, the encrypted state store, and (in cluster mode) the refresh
@@ -667,16 +667,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Readiness flag — set after engine is fully initialized
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Load active channels and workflows, build the engine, and populate the
-    // pre-created engine lock. Channels that fail to load are quarantined —
-    // refused at every ingress until fixed. Consumes `components`: the
-    // handler map goes into the engine, and what comes back is the half that
-    // backs `AppState` (F55).
+    // Load active channels and workflows, build both halves of the first
+    // generation, and publish it through the pre-created runtime handle.
+    // Channels that fail to load are quarantined — refused at every ingress
+    // until fixed. Consumes `components`: the handler map goes into the
+    // engine, and what comes back is the half that backs `AppState` (F55).
     let (components, channels, active_workflow_count) = components
-        .load_channels_and_build_engine(&config, &repos, &channel_registry)
+        .load_channels_and_build_engine(&config, &repos, &channel_loader)
         .await?;
 
-    // Mark the service as ready now that the engine and channel registry are loaded
+    // Mark the service as ready now that the first generation is published
     ready.store(true, std::sync::atomic::Ordering::Release);
 
     // Start the background tasks: trace persistence queue, trace queue
@@ -690,9 +690,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         bootstrap::start_background_tasks(
             &config,
             &tasks,
-            components.engine.clone(),
+            components.runtime.clone(),
             &repos,
-            channel_registry.clone(),
             &cluster,
         );
 
@@ -707,8 +706,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         &config.kafka,
         &channels,
         bootstrap::IngestDeps {
-            engine: components.engine.clone(),
-            channel_registry: channel_registry.clone(),
+            runtime: components.runtime.clone(),
             datalogic: components.datalogic.clone(),
             vars: components.vars.clone(),
             kafka_producer: components.kafka_producer.clone(),
@@ -733,7 +731,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         pool,
         repos,
         components,
-        channel_registry,
+        channel_loader,
         trace_queue,
         trace_persistence_queue,
         audit_queue,
