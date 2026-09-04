@@ -244,3 +244,67 @@ pub(super) fn update_envelope(res: &mongodb::results::UpdateResult) -> Value {
 pub(super) fn delete_envelope(deleted_count: u64) -> Value {
     serde_json::json!({ "status": "ok", "deleted": deleted_count })
 }
+
+// ============================================================
+// Driver-error classification (#297)
+// ============================================================
+
+/// MongoDB's duplicate-key error codes. `11000` is the one a modern server
+/// reports for a unique-index violation; `11001` is the legacy update spelling
+/// still seen from older deployments.
+const DUPLICATE_KEY_CODES: [i32; 2] = [11000, 11001];
+
+/// A MongoDB driver failure as a task error, with a unique-index violation
+/// classified as one.
+///
+/// Every Mongo write used to reach [`to_exec_error`], so a duplicate key was a
+/// 500 while the *identical* condition on SQL was a 409: `QueryFailure`'s
+/// integrity classification is reachable only through `From<sqlx::Error>`, and
+/// nothing mapped the document stores onto it. `#297` exists so an endpoint
+/// whose job is to answer 409 for a resubmission can; that reasoning does not
+/// stop at the SQL connectors.
+///
+/// [`to_exec_error`]: super::connector_helpers::to_exec_error
+pub(super) fn mongo_error(e: mongodb::error::Error) -> DataflowError {
+    if let mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(we)) =
+        e.kind.as_ref()
+        && DUPLICATE_KEY_CODES.contains(&we.code)
+    {
+        return crate::errors::integrity_dataflow_error(
+            crate::errors::IntegrityKind::Unique,
+            e.to_string(),
+        );
+    }
+    super::connector_helpers::to_exec_error(e).into()
+}
+
+/// The integrity error for a bulk write that applied **nothing** because every
+/// item the driver reported hit a unique index.
+///
+/// `None` when anything landed, when any failure was something else, or when
+/// there are no per-item failures to judge — all three are cases where a 409
+/// would be a worse answer than the bulk envelope, which names exactly what
+/// happened to each item.
+pub(super) fn all_duplicate_key(failed: &[(usize, Value)], what: &str) -> Option<DataflowError> {
+    if failed.is_empty() {
+        return None;
+    }
+    let is_duplicate = |detail: &Value| {
+        detail
+            .get("code")
+            .and_then(Value::as_i64)
+            .and_then(|c| i32::try_from(c).ok())
+            .is_some_and(|c| DUPLICATE_KEY_CODES.contains(&c))
+    };
+    if !failed.iter().all(|(_, detail)| is_duplicate(detail)) {
+        return None;
+    }
+    let first = failed
+        .first()
+        .map(|(_, d)| d.to_string())
+        .unwrap_or_default();
+    Some(crate::errors::integrity_dataflow_error(
+        crate::errors::IntegrityKind::Unique,
+        format!("{what} failed, no documents were written: {first}"),
+    ))
+}

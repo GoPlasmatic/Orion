@@ -460,6 +460,25 @@ pub enum QueryFailure {
     /// routine 409, not a 500. The `String` is the driver's text and reaches
     /// the operator-only `detail` alone, never a caller.
     Integrity(crate::errors::IntegrityKind, String),
+    /// The operation classified the failure itself and handed back a
+    /// finished [`DataflowError`].
+    ///
+    /// Some operations are not one driver call: `data_write`'s MongoDB branch
+    /// decides between a partial-bulk 207, a duplicate-key 409 and a plain
+    /// backend failure *before* the timeout wrapper ever sees a result. Those
+    /// used to be flattened with `.map_err(|e| e.to_string())` on the way in,
+    /// which routed them through [`From<String>`] — unconditionally
+    /// [`Self::Backend`] — so the classification was built and then discarded
+    /// one line later, and the caller got a double-prefixed message with the
+    /// wrong status. Passing the error through is the whole variant.
+    Classified(DataflowError),
+}
+
+/// An error that already knows what it is keeps its own classification.
+impl From<DataflowError> for QueryFailure {
+    fn from(e: DataflowError) -> Self {
+        Self::Classified(e)
+    }
 }
 
 impl From<String> for QueryFailure {
@@ -508,6 +527,7 @@ impl std::fmt::Display for QueryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Backend(m) | Self::Limit(m) | Self::Integrity(_, m) => f.write_str(m),
+            Self::Classified(e) => write!(f, "{e}"),
         }
     }
 }
@@ -1014,6 +1034,10 @@ impl QueryBudget {
                     QueryFailure::Backend(text) => {
                         to_exec_error(format!("{handler_name} query failed: {text}"))
                     }
+                    // Already classified by the operation, which knew more than
+                    // this wrapper can. Re-wrapping would only re-prefix a
+                    // message that already names its own failure.
+                    QueryFailure::Classified(e) => HandlerError::from(e),
                 }
             })
             .map_err(DataflowError::from)

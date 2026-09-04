@@ -27,13 +27,13 @@ use serde_json::{Map, Value};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, require_op_allowed, resolve_bool, resolve_bool_or, timed_query,
-    to_connect_error, to_exec_error,
+    ConnectorCall, require_op_allowed, resolve_bool, resolve_bool_or, timed_query, to_connect_error,
 };
 use super::data_write::{bulk_result, mongo_write_errors};
 use super::mongo_common::{
-    delete_envelope, empty_insert_envelope, require_document, require_mongo_backend,
-    resolve_document, resolve_document_array, update_envelope as build_update_envelope,
+    all_duplicate_key, delete_envelope, empty_insert_envelope, mongo_error, require_document,
+    require_mongo_backend, resolve_document, resolve_document_array,
+    update_envelope as build_update_envelope,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -602,7 +602,7 @@ async fn execute_write(
                 let id = serde_json::to_value(&res.inserted_id).ok();
                 bulk_result(BulkOutcome::all_ok(vec![id]), "MongoDB insert")
             }
-            Err(e) => Err(to_exec_error(e).into()),
+            Err(e) => Err(mongo_error(e)),
         },
         Prepared::InsertMany { docs, ordered } => {
             if docs.is_empty() {
@@ -624,13 +624,23 @@ async fn execute_write(
                     // Ordered stops at the first failure (later documents were
                     // never attempted); unordered attempts every document, so
                     // non-reported indices all landed.
-                    Some(failed) if ordered => {
-                        bulk_result(insert_outcome(sent, &failed), "MongoDB insert")
-                    }
                     Some(failed) => {
-                        bulk_result(unordered_insert_outcome(sent, &failed), "MongoDB insert")
+                        let outcome = if ordered {
+                            insert_outcome(sent, &failed)
+                        } else {
+                            unordered_insert_outcome(sent, &failed)
+                        };
+                        // #297, as on `data_write`'s Mongo branch: nothing
+                        // landed and every item hit a unique index is the 409
+                        // condition, not a 500. A partial batch stays a 207.
+                        if outcome.nothing_applied()
+                            && let Some(err) = all_duplicate_key(&failed, "MongoDB insert")
+                        {
+                            return Err(err);
+                        }
+                        bulk_result(outcome, "MongoDB insert")
                     }
-                    None => Err(to_exec_error(e).into()),
+                    None => Err(mongo_error(e)),
                 },
             }
         }
@@ -669,7 +679,7 @@ async fn execute_write(
             };
             match res {
                 Ok(r) => Ok((delete_envelope(r.deleted_count), TaskOutcome::Success)),
-                Err(e) => Err(to_exec_error(e).into()),
+                Err(e) => Err(mongo_error(e)),
             }
         }
     }
@@ -682,7 +692,7 @@ fn update_envelope(
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     match res {
         Ok(r) => Ok((build_update_envelope(&r), TaskOutcome::Success)),
-        Err(e) => Err(to_exec_error(e).into()),
+        Err(e) => Err(mongo_error(e)),
     }
 }
 

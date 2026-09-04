@@ -179,11 +179,15 @@ impl ConnectorHandler for DataWriteHandler {
                     .await
                     .map_err(to_connect_error)?;
                 // F11: bound the write like the SQL branches bound theirs.
-                timed_query(db.query_timeout_ms, call.name, async {
-                    execute_mongo(&client, database, mw)
-                        .await
-                        .map_err(|e| e.to_string())
-                })
+                // The error passes through as itself (`QueryFailure::Classified`):
+                // `execute_mongo` has already decided between a partial-bulk
+                // 207, a duplicate-key 409 and a backend failure, and
+                // stringifying it here threw all three away.
+                timed_query(
+                    db.query_timeout_ms,
+                    call.name,
+                    execute_mongo(&client, database, mw),
+                )
                 .await?
             }
             ConnectorConfig::Db(db) => {
@@ -366,11 +370,21 @@ async fn execute_mongo(
                 // from the driver's error rather than reporting one opaque
                 // message over a half-written collection.
                 Err(e) => match mongo_write_errors(&e) {
-                    Some(failed) => bulk_result(
-                        query::backend::mongo::insert_outcome(sent, &failed),
-                        "MongoDB insert",
-                    ),
-                    None => Err(to_exec_error(e).into()),
+                    Some(failed) => {
+                        let outcome = query::backend::mongo::insert_outcome(sent, &failed);
+                        // #297: nothing landed and every item hit a unique
+                        // index — the condition SQL answers with 409. A bulk
+                        // that partly applied stays a 207, because the envelope
+                        // says more there than a status can.
+                        if outcome.nothing_applied()
+                            && let Some(err) =
+                                super::mongo_common::all_duplicate_key(&failed, "MongoDB insert")
+                        {
+                            return Err(err);
+                        }
+                        bulk_result(outcome, "MongoDB insert")
+                    }
+                    None => Err(super::mongo_common::mongo_error(e)),
                 },
             }
         }
@@ -385,18 +399,21 @@ async fn execute_mongo(
             let res = if multi {
                 coll.update_many(filter, update)
                     .await
-                    .map_err(to_exec_error)?
+                    .map_err(super::mongo_common::mongo_error)?
             } else {
                 coll.update_one(filter, update)
                     .upsert(upsert)
                     .await
-                    .map_err(to_exec_error)?
+                    .map_err(super::mongo_common::mongo_error)?
             };
             Ok((update_envelope(&res), TaskOutcome::Success))
         }
         MongoWrite::Delete { collection, filter } => {
             let coll = db.collection::<Document>(&collection);
-            let res = coll.delete_many(filter).await.map_err(to_exec_error)?;
+            let res = coll
+                .delete_many(filter)
+                .await
+                .map_err(super::mongo_common::mongo_error)?;
             Ok((delete_envelope(res.deleted_count), TaskOutcome::Success))
         }
     }
