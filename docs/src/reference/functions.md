@@ -659,12 +659,19 @@ connector and writes `{ "rows_affected": N }`. Note: the author writes
 dialect-specific SQL, and a connector can disable this function entirely via
 its [`raw_write` operation gate](./data-dialect.md#connector-operation-gates).
 
+An `INSERT` also carries `last_insert_id` on MySQL and SQLite, the same key
+[`data_write`](#data_write) reports. PostgreSQL does not report one — it uses
+`RETURNING`, which the portable dialect supports. The key appears for an
+`INSERT`/`REPLACE` only: SQLite's `last_insert_rowid` belongs to the
+*connection*, so after an `UPDATE` it would report whatever an earlier insert
+on that pooled connection left behind.
+
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `INSERT`/`UPDATE`/`DELETE` statement with bind placeholders |
 | `params` | array | no | — | Values bound to the placeholders, in order |
-| `output` | string \| JSONLogic | no | `"data"` | Dotted path where `{ "rows_affected": N }` is written |
+| `output` | string \| JSONLogic | no | `"data"` | Dotted path where `{ "rows_affected": N }` (plus `last_insert_id` after an insert) is written |
 
 ```json
 {

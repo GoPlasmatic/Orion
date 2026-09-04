@@ -74,19 +74,39 @@ impl ConnectorHandler for DbWriteHandler {
 
         let query = write.query();
         let params = write.params();
-        let rows_affected = crate::connector::pool_cache::dispatch_sql_pool!(
-            &pool, p, _decode, bind => {
-                timed_query(
+        let (rows_affected, last_insert_id) = crate::connector::pool_cache::dispatch_sql_pool!(
+            &pool, p, _decode, bind, write_result => {
+                let result = timed_query(
                     db_config.query_timeout_ms,
                     call.name,
                     bind(sqlx::query(query), params).execute(p),
                 )
-                .await?
-                .rows_affected()
+                .await?;
+                write_result(&result)
             }
         );
 
-        Ok(serde_json::json!({ "rows_affected": rows_affected }).into())
+        let mut out = serde_json::json!({ "rows_affected": rows_affected });
+        // The generated key, on the drivers that report one — the same answer
+        // `data_write` gives, so reaching for the escape hatch does not cost
+        // the most common follow-up question after an insert.
+        //
+        // Only for an insert, and that is not pedantry: SQLite's
+        // `last_insert_rowid` is a property of the *connection*, so after an
+        // UPDATE it reports whatever an earlier insert on that pooled
+        // connection left behind. Raw SQL cannot be classified per-op — which
+        // is why `db_write` has its own `raw_write` gate — but the leading
+        // keyword is enough to know whether an id was generated at all.
+        if let Some(id) = last_insert_id
+            && matches!(
+                super::db_read::leading_keyword(query).as_deref(),
+                Some("INSERT" | "REPLACE")
+            )
+        {
+            out["last_insert_id"] = serde_json::json!(id);
+        }
+
+        Ok(out.into())
     }
 }
 
@@ -108,7 +128,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "query",
-        description: "INSERT/UPDATE/DELETE statement.",
+        description: "INSERT/UPDATE/DELETE statement. Bind placeholders are the backend's own spelling: ? for SQLite and MySQL, $1, $2, ... for PostgreSQL.",
         kind: FieldKind::String,
         required: true,
         ..FieldSchema::DEFAULT
@@ -122,7 +142,7 @@ pub(super) const DB_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "output",
-        description: "Dotted path where the rows-affected count is written.",
+        description: "Dotted path where the write result is written: {\"rows_affected\": n}, plus \"last_insert_id\" for an INSERT on MySQL or SQLite (PostgreSQL reports generated columns through RETURNING instead).",
         kind: FieldKind::String,
         template_at: &[""],
         ..FieldSchema::DEFAULT
