@@ -765,3 +765,91 @@ async fn projection_and_sort_honour_a_column_rename() {
         "the rename must reach projection and sort, not just the filter: {body}"
     );
 }
+
+/// `"count": true` answers `{"count": n}` rather than a row set, honouring the
+/// same filter a row query would.
+#[tokio::test]
+async fn test_data_query_count() {
+    let app = common::test_app().await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("dq-count", "sqlite:file:dq_count?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let body = run_query(
+        &app,
+        "dq-count",
+        "ch-dq-count",
+        json!({
+            "source": "users",
+            "count": true,
+            "filter": { ">": [{ "field": "age" }, 18] }
+        }),
+    )
+    .await;
+
+    assert_eq!(body["status"], "ok", "body = {body}");
+    // age > 18 → Bob(20), Carol(30), Dave(40).
+    assert_eq!(
+        body["data"]["result"],
+        json!({ "count": 3 }),
+        "body = {body}"
+    );
+}
+
+/// A filterless count counts the table, and is not capped by the page bounds —
+/// `limit` shapes a row set and there is no row set here.
+#[tokio::test]
+async fn test_data_query_count_without_a_filter() {
+    let app = common::test_app().await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("dq-countall", "sqlite:file:dq_ca?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let body = run_query(
+        &app,
+        "dq-countall",
+        "ch-dq-countall",
+        json!({ "source": "users", "count": true }),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["result"],
+        json!({ "count": 4 }),
+        "body = {body}"
+    );
+}
+
+/// A key that shapes a row set is refused alongside `count`, at the data route
+/// rather than silently ignored.
+#[tokio::test]
+async fn test_data_query_count_rejects_row_shaping_keys() {
+    let app = common::test_app().await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("dq-countbad", "sqlite:file:dq_cb?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let mut tasks = seed_tasks("dq-countbad");
+    tasks.push(dq(
+        "dq-countbad",
+        "t_query",
+        json!({ "source": "users", "count": true, "limit": 10 }),
+    ));
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-countbad",
+        common::workflow_with_tasks("dq", json!(tasks)),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-countbad", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "count + limit must be refused: {status} {body}"
+    );
+}

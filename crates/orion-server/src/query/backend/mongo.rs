@@ -34,6 +34,9 @@ pub struct MongoQuery {
     pub sort: Option<Document>,
     pub skip: Option<u64>,
     pub limit: u64,
+    /// Answer `count_documents(filter)` rather than a `find`. The paging and
+    /// projection fields carry their defaults and are not read.
+    pub count: bool,
 }
 
 /// Build a `MongoQuery` from the envelope and lowered condition, enforcing the
@@ -91,6 +94,7 @@ pub fn render(
         sort,
         skip,
         limit,
+        count: spec.count,
     })
 }
 

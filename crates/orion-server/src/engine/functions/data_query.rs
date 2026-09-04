@@ -144,7 +144,11 @@ impl ConnectorHandler for DataQueryHandler {
                 // Elasticsearch: render a search body and POST it via HTTP.
                 let eq = query::translate_es(query, params, &registry, &self.limits)
                     .map_err(DataflowError::from)?;
-                run_es_search(&self.http_client, es, &eq).await?
+                if eq.count {
+                    run_es_count(&self.http_client, es, &eq).await?
+                } else {
+                    run_es_search(&self.http_client, es, &eq).await?
+                }
             }
             ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
                 // MongoDB: render a `find` and execute it via the Mongo pool.
@@ -166,6 +170,15 @@ impl ConnectorHandler for DataQueryHandler {
                 // F11: DbConnectorConfig.query_timeout_ms never applied to
                 // Mongo — an unresponsive server hung the request for the
                 // channel timeout, which is itself optional.
+                if mq.count {
+                    let n = timed_query(db.query_timeout_ms, call.name, async {
+                        coll.count_documents(mq.filter)
+                            .await
+                            .map_err(|e| e.to_string())
+                    })
+                    .await?;
+                    return Ok(count_result(n).into());
+                }
                 let docs: Vec<Document> = timed_query(db.query_timeout_ms, call.name, async {
                     let mut find = coll.find(mq.filter);
                     if let Some(p) = mq.projection {
@@ -201,6 +214,11 @@ impl ConnectorHandler for DataQueryHandler {
                     .get_pool(call.connector, db)
                     .await
                     .map_err(to_connect_error)?;
+                if plan.count {
+                    return Ok(run_sql_count(&pool, &plan, dialect, db.query_timeout_ms)
+                        .await?
+                        .into());
+                }
                 run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms, parsed.format)
                     .await?
             }
@@ -215,6 +233,77 @@ impl ConnectorHandler for DataQueryHandler {
 
         Ok(result.into())
     }
+}
+
+/// The shape every backend answers a `"count": true` envelope with.
+///
+/// One object, one key, whatever the backend counted with — the point of the
+/// portable dialect is that the caller cannot tell which one ran.
+fn count_result(n: u64) -> Value {
+    serde_json::json!({ "count": n })
+}
+
+/// Execute the rendered `COUNT(*)`: one row, one column, read by the alias the
+/// renderer projected it under so the three dialects' default names for the
+/// expression never matter.
+async fn run_sql_count(
+    pool: &crate::connector::pool_cache::SqlPool,
+    plan: &query::SqlPlan,
+    dialect: SqlDialect,
+    timeout_ms: Option<u64>,
+) -> Result<Value, DataflowError> {
+    let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
+    let rows: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
+        pool, p, rows_to_json, _bind => {
+            let rows = timed_query(
+                timeout_ms,
+                NAME,
+                sqlx::query_with(&sql, values).fetch_all(p),
+            )
+            .await?;
+            rows_to_json(&rows, crate::connector::sql_decode::RowFormat::default())
+                .map_err(|e| decode_failure(NAME, e))?
+        }
+    );
+    let n = rows
+        .first()
+        .and_then(|r| r.get(query::backend::sql::COUNT_COLUMN))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("{NAME}: the count query returned no count"),
+                None,
+            )
+        })?;
+    Ok(count_result(n))
+}
+
+/// Execute an Elasticsearch count: POST the rendered query to
+/// `{url}/{index}/_count` and read the `count` it answers with.
+async fn run_es_count(
+    client: &reqwest::Client,
+    es: &EsConnectorConfig,
+    eq: &query::backend::es::EsQuery,
+) -> Result<Value, DataflowError> {
+    let url = format!("{}/{}/_count", es.url.trim_end_matches('/'), eq.index);
+    let req = es_request(client, es, reqwest::Method::POST, &url)
+        .await?
+        .json(&eq.body);
+
+    let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
+    if !status.is_success() {
+        return Err(DataflowError::function_execution(
+            format!("Elasticsearch count failed ({status}): {body}"),
+            None,
+        ));
+    }
+    let n = body.get("count").and_then(Value::as_u64).ok_or_else(|| {
+        DataflowError::function_execution(
+            format!("Elasticsearch count returned no count: {body}"),
+            None,
+        )
+    })?;
+    Ok(count_result(n))
 }
 
 /// Execute an Elasticsearch search: POST the rendered body to
@@ -405,9 +494,10 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "query",
-        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include. \
+        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include/count. \
                       An include selection is {fields, sort, limit}; `sort` is required because \
-                      the per-parent page is cut in the database.",
+                      the per-parent page is cut in the database. \"count\": true answers \
+                      {\"count\": n} instead of rows, and refuses the keys that shape a row set.",
         kind: FieldKind::Object,
         required: true,
         ..FieldSchema::DEFAULT

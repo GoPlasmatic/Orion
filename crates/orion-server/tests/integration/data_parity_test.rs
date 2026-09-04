@@ -549,6 +549,100 @@ async fn assert_parity(backend: Backend) {
     }
 }
 
+/// Run the count cases against one backend.
+///
+/// Kept out of the row matrix because they answer a different shape:
+/// `{"count": true}` returns `{"count": n}`, not a row set, so [`Case`] — whose
+/// whole assertion is the ordered `name` column — cannot carry one. The claim
+/// is the same, though: one envelope, one number, on every backend.
+///
+/// The dialect renders these three completely differently — `SELECT COUNT(*)`,
+/// `count_documents`, `POST _count` — which is exactly why the answer has to be
+/// asserted equal rather than assumed.
+async fn assert_count_parity(backend: Backend) {
+    let app = common::test_app().await;
+    let label = backend.label();
+    let h = common::backends::start(backend, &format!("cnt_{label}")).await;
+    h.prepare().await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    let seed_channel = format!("ch-cnt-{label}-seed");
+    common::create_and_activate_channel(
+        &app,
+        &seed_channel,
+        common::workflow_with_tasks("seed", json!(seed_tasks(&h))),
+    )
+    .await;
+    let (status, body) = dsl::post(&app, &seed_channel, json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK, "seeding failed: {body}");
+
+    // Four users are seeded; three are `active`, one is not.
+    let cases: [(&str, Value, u64); 3] = [
+        ("count_all", json!({ "source": "users", "count": true }), 4),
+        (
+            "count_filtered",
+            json!({ "source": "users", "count": true,
+                    "filter": { "==": [{ "field": "status" }, "active"] } }),
+            3,
+        ),
+        (
+            "count_matching_nothing",
+            json!({ "source": "users", "count": true,
+                    "filter": { "==": [{ "field": "status" }, "nobody"] } }),
+            0,
+        ),
+    ];
+
+    for (i, (name, query, expected)) in cases.iter().enumerate() {
+        let channel = format!("ch-cnt-{label}-{i}");
+        // Through the matrix's own builder, so the Mongo `database` key the
+        // activation gate requires is set exactly as it is for every row case.
+        let task = query_task_as(&h, "t_count", "data.result", query.clone());
+        common::create_and_activate_channel(
+            &app,
+            &channel,
+            common::workflow_with_tasks("count", json!([task])),
+        )
+        .await;
+        let (status, body) = dsl::post(&app, &channel, json!({ "data": {} })).await;
+        assert_eq!(status, StatusCode::OK, "[{label}] {name}: {body}");
+        assert_eq!(
+            body["data"]["result"],
+            json!({ "count": expected }),
+            "[{label}] case '{name}' counted differently: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn count_parity_sqlite() {
+    assert_count_parity(Backend::Sqlite).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn count_parity_postgres() {
+    assert_count_parity(Backend::Postgres).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn count_parity_mysql() {
+    assert_count_parity(Backend::Mysql).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn count_parity_mongo() {
+    assert_count_parity(Backend::Mongo).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn count_parity_es() {
+    assert_count_parity(Backend::Es).await;
+}
+
 /// The `include` rows of the matrix only assert *which parents* come back,
 /// because the doc stores refuse it outright. The nesting itself — the
 /// per-parent page, cut in SQL and ordered by the requested key (F27) — is

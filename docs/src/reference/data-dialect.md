@@ -134,11 +134,41 @@ not-representable, exactly as before.
 | `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]`. A null (or missing) value sorts as the smallest value — first on `asc`, last on `desc` — on every backend |
 | `limit` / `skip` | number | Pagination. A missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
 | `include` | object | Relation name → `{ "fields": [..], "sort": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+| `count` | boolean | Answer `{ "count": n }` — how many rows match — instead of returning them. See [Counting](#counting) |
 
 Null-first ordering is the native order of SQLite, MySQL, and MongoDB;
 PostgreSQL and Elasticsearch receive an explicit `NULLS FIRST` / `missing`
 clause to match. No hidden sort key is added, so a page containing nulls comes
 back in the same order on every backend.
+
+### Counting
+
+`"count": true` answers **how many rows match** rather than returning them:
+
+```json
+{ "name": "data_query", "input": {
+    "connector": "orders_db", "output": "data.total",
+    "params": { "status": { "var": "data.req.status" } },
+    "query": {
+      "source": "orders",
+      "count": true,
+      "filter": { "==": [{ "field": "status" }, { "param": "status" }] } } } }
+```
+
+The result is `{ "count": 12 }` — one object, one key, on every backend.
+`filter` means exactly what it means for a row query, so a list endpoint and
+its total are the same predicate written once.
+
+Every key that shapes a row set — `fields`, `sort`, `limit`, `skip`,
+`include` — is **rejected** alongside `count`, naming the key. `{"count": true,
+"limit": 10}` has two readings ("count the first ten" and "count them all, and
+also give me ten"), a projection over a single number has none, and choosing
+between them silently is what this dialect does not do. A page and its total
+are two calls.
+
+There is no `group_by` or aggregate function: `count` is the whole of it. For
+anything more, the raw escape hatches (`db_read`, `mongo_aggregate`) are the
+answer — at the cost of leaving the dialect's schema allowlist behind.
 
 ### Operator vocabulary
 
@@ -252,6 +282,7 @@ One task per operation:
 | `op` | SQL (sea-query) | MongoDB | Elasticsearch |
 |------|-----------------|---------|---------------|
 | query | `SELECT … WHERE …` | `find(filter)` | `POST {index}/_search` |
+| `count` | `SELECT COUNT(*) … WHERE …` | `count_documents(filter)` | `POST {index}/_count` |
 | `insert` | `INSERT INTO … VALUES …` | `insertOne` / `insertMany` | `POST {index}/_bulk` |
 | `update` | `UPDATE … SET … WHERE …` | `updateMany(filter, {$set})` | `POST {index}/_update_by_query` (painless script) |
 | `delete` | `DELETE FROM … WHERE …` | `deleteMany(filter)` | `POST {index}/_delete_by_query` |

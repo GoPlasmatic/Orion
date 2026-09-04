@@ -36,6 +36,10 @@ pub struct SqlPlan {
     pub includes: Vec<IncludePlan>,
     /// Parent physical columns added only to group children — stripped from output.
     pub strip: Vec<String>,
+    /// `main` is a `COUNT(*)`, so the one row it returns is the answer rather
+    /// than the first of many. `includes` and `strip` are empty — the envelope
+    /// refuses `include` alongside `count`.
+    pub count: bool,
 }
 
 /// One resolved `include`: the child relation to fetch and nest per parent.
@@ -257,6 +261,7 @@ pub fn plan_sql(
         main,
         includes,
         strip,
+        count: spec.count,
     })
 }
 

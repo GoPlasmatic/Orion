@@ -33,6 +33,10 @@ const INCLUDE_SUBQUERY_ALIAS: &str = "__orion_include";
 /// the page bounds (`LimitExceeded` / `SkipExceeded` when over the configured
 /// caps). `root_table` is the physical table the query selects from (and the
 /// correlation base for any relation subqueries).
+/// The alias `COUNT(*)` is projected under, so the handler reads one column
+/// name on every dialect instead of three.
+pub const COUNT_COLUMN: &str = "orion_count";
+
 pub fn render(
     spec: &QuerySpec,
     cond: &Cond,
@@ -42,6 +46,19 @@ pub fn render(
 ) -> Result<SelectStatement, QueryError> {
     let limit = resolve_limit(spec.limit, limits)?;
     let skip = resolve_skip(spec.skip, limits)?;
+
+    if spec.count {
+        // `COUNT(*)`, aliased so the handler reads one known column name rather
+        // than whatever the driver decided to call the expression — PostgreSQL
+        // says `count`, MySQL `COUNT(*)`, SQLite `COUNT(*)` too.
+        let mut stmt = Query::select();
+        stmt.expr_as(Func::count(Expr::col(Asterisk)), Alias::new(COUNT_COLUMN));
+        stmt.from(Alias::new(root_table));
+        if !matches!(cond, Cond::True) {
+            stmt.cond_where(render_expr(cond, root_table)?);
+        }
+        return Ok(stmt);
+    }
 
     let mut stmt = Query::select();
     match super::plan_projection(&spec.fields) {
@@ -1392,6 +1409,41 @@ mod tests {
     /// refuses the statement and every `action: "nothing"` upsert against a
     /// MySQL connector failed at first traffic. The polyfill's no-op assignment
     /// is the valid spelling of the same intent.
+    /// `count` renders one aliased `COUNT(*)` and keeps the filter, on every
+    /// dialect — the alias is what lets the handler read one column name
+    /// instead of PostgreSQL's `count` and the other two's `COUNT(*)`.
+    #[test]
+    fn test_count_renders_on_every_dialect() {
+        let query = json!({
+            "source": "users",
+            "count": true,
+            "filter": { "==": [{ "field": "status" }, "active"] }
+        });
+        assert_eq!(
+            sql_for(query.clone(), SqlDialect::Sqlite),
+            r#"SELECT COUNT(*) AS "orion_count" FROM "users" WHERE "status" = 'active'"#
+        );
+        assert_eq!(
+            sql_for(query.clone(), SqlDialect::Postgres),
+            r#"SELECT COUNT(*) AS "orion_count" FROM "users" WHERE "status" = 'active'"#
+        );
+        assert_eq!(
+            sql_for(query, SqlDialect::Mysql),
+            "SELECT COUNT(*) AS `orion_count` FROM `users` WHERE `status` = 'active'"
+        );
+    }
+
+    /// A filterless count still counts the table, with no `WHERE TRUE` and no
+    /// `LIMIT` — the page bounds shape a row set and there is no row set here.
+    #[test]
+    fn test_count_without_a_filter_has_no_where_or_limit() {
+        let sql = sql_for(
+            json!({ "source": "users", "count": true }),
+            SqlDialect::Sqlite,
+        );
+        assert_eq!(sql, r#"SELECT COUNT(*) AS "orion_count" FROM "users""#);
+    }
+
     #[test]
     fn test_upsert_do_nothing_renders_on_every_dialect() {
         let input = json!({

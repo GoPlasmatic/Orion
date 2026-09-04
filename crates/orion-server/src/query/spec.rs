@@ -19,6 +19,14 @@ pub struct QuerySpec {
     pub limit: Option<u64>,
     pub skip: Option<u64>,
     pub include: Vec<IncludeSpec>,
+    /// Answer *how many rows match* instead of returning them.
+    ///
+    /// The one envelope key that changes the shape of the answer: the result is
+    /// `{"count": n}`, not a row array. Every key that shapes a row set —
+    /// `fields`, `sort`, `limit`, `skip`, `include` — is refused alongside it,
+    /// because each has two readings over a count and guessing between them is
+    /// what this dialect does not do.
+    pub count: bool,
 }
 
 /// A related collection to nest in the result:
@@ -60,9 +68,12 @@ fn invalid(msg: impl Into<String>) -> QueryError {
 
 /// The complete key set of the query envelope. Anything else is a typo, and a
 /// typo here is a filter/projection/limit silently not applying (W6).
-const ENVELOPE_KEYS: [&str; 7] = [
-    "source", "filter", "fields", "sort", "limit", "skip", "include",
+const ENVELOPE_KEYS: [&str; 8] = [
+    "source", "filter", "fields", "sort", "limit", "skip", "include", "count",
 ];
+
+/// The keys that shape a row set, and so cannot travel with `count`.
+const ROW_SHAPE_KEYS: [&str; 5] = ["fields", "sort", "limit", "skip", "include"];
 
 /// Parse the `query` object into a [`QuerySpec`].
 pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
@@ -113,6 +124,21 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
     let skip = parse_u64(obj.get("skip"), "skip")?;
     let include = parse_include(obj.get("include"))?;
 
+    let count = match obj.get("count") {
+        None | Some(Json::Null) => false,
+        Some(Json::Bool(b)) => *b,
+        Some(_) => return Err(invalid("'count' must be a boolean")),
+    };
+    // Refused rather than ignored. "Count the first 10" and "count all, I also
+    // wanted 10 rows" are both readings of `{"count": true, "limit": 10}`, and
+    // a projection or an ordering over a single number is not a reading at all.
+    if count && let Some(key) = ROW_SHAPE_KEYS.iter().find(|k| obj.contains_key(**k)) {
+        return Err(invalid(format!(
+            "'{key}' has no meaning alongside \"count\": true, which answers \
+             {{\"count\": n}} rather than a row set — remove one of the two"
+        )));
+    }
+
     Ok(QuerySpec {
         source,
         filter,
@@ -121,6 +147,7 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
         limit,
         skip,
         include,
+        count,
     })
 }
 
@@ -369,5 +396,56 @@ mod tests {
         assert_eq!(spec.limit, Some(10));
         assert_eq!(spec.skip, Some(20));
         assert_eq!(spec.include.len(), 1);
+    }
+
+    /// `count` is a plain boolean and defaults off, so every envelope written
+    /// before it existed parses exactly as it did.
+    #[test]
+    fn count_defaults_off_and_parses() {
+        let spec = parse(&serde_json::json!({ "source": "users" })).expect("parses");
+        assert!(!spec.count);
+        let spec = parse(&serde_json::json!({ "source": "users", "count": true })).expect("parses");
+        assert!(spec.count);
+        let spec =
+            parse(&serde_json::json!({ "source": "users", "count": false })).expect("parses");
+        assert!(!spec.count);
+    }
+
+    /// A key that shapes a row set has no reading over a single number, so it
+    /// is refused by name rather than ignored.
+    #[test]
+    fn count_refuses_the_row_shaping_keys() {
+        for key in ["fields", "sort", "limit", "skip", "include"] {
+            let mut envelope = serde_json::json!({ "source": "users", "count": true });
+            envelope[key] = match key {
+                "fields" => serde_json::json!(["id"]),
+                "sort" => serde_json::json!([{ "id": "asc" }]),
+                "include" => serde_json::json!({ "orders": {} }),
+                _ => serde_json::json!(10),
+            };
+            let err = parse(&envelope).expect_err("must be refused").to_string();
+            assert!(err.contains(key), "{key}: {err}");
+            assert!(err.contains("count"), "{key}: {err}");
+        }
+    }
+
+    /// Those keys are only refused *alongside* count — on their own they are
+    /// the ordinary envelope.
+    #[test]
+    fn the_row_shaping_keys_are_fine_without_count() {
+        let spec = parse(&serde_json::json!({
+            "source": "users", "fields": ["id"], "limit": 10
+        }))
+        .expect("parses");
+        assert!(!spec.count);
+        assert_eq!(spec.limit, Some(10));
+    }
+
+    #[test]
+    fn count_must_be_a_boolean() {
+        let err = parse(&serde_json::json!({ "source": "users", "count": 1 }))
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("boolean"), "{err}");
     }
 }

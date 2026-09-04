@@ -47,6 +47,8 @@ pub struct EsQuery {
     /// `_id`, but never read one back, so insert-then-update-by-id was the one
     /// pattern ES could not express.
     pub include_id: bool,
+    /// Post to `{index}/_count` and read `count`, rather than `_search`.
+    pub count: bool,
 }
 
 /// Build an `EsQuery` from the envelope and lowered condition, enforcing the
@@ -67,6 +69,17 @@ pub fn render(
                 "deep pagination (from {from} + size {size} exceeds max_result_window {MAX_RESULT_WINDOW})"
             ),
             target: "elasticsearch".to_string(),
+        });
+    }
+
+    // `_count` takes a query and nothing else — no `size`, `from`, `sort` or
+    // `_source`, all of which it refuses.
+    if spec.count {
+        return Ok(EsQuery {
+            index: index.to_string(),
+            body: json!({ "query": query_json(cond, "")? }),
+            include_id: false,
+            count: true,
         });
     }
 
@@ -103,6 +116,7 @@ pub fn render(
         // nothing gets whole `_source` documents, exactly as before — adding a
         // key there would change every existing ES result.
         include_id: spec.fields.iter().any(|f| f == ES_DOCUMENT_KEY),
+        count: false,
     })
 }
 
