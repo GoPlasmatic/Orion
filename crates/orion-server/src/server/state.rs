@@ -81,6 +81,21 @@ pub struct AppStateInner {
     /// long is the correct outcome — the alternative is publishing an engine
     /// built from rows it re-read while the first reload was still running.
     pub reload_lock: tokio::sync::Mutex<()>,
+    /// Serialises `POST /admin/backups` end to end: choosing the destination
+    /// filename, running `VACUUM INTO`, and pruning to the retention count.
+    ///
+    /// Two backups started in the same second used to pick the same
+    /// second-precision filename, and `VACUUM INTO` refuses a destination that
+    /// exists — so one of the two failed with a 500. The filename now carries
+    /// milliseconds and a collision suffix, which fixes the name; the lock
+    /// fixes the rest of it. Concurrent backups are two full copies of the
+    /// database competing for the same disk the live database is on, and their
+    /// retention prunes race each other over the same files.
+    ///
+    /// A process-local mutex is sufficient because backups are refused
+    /// outright in cluster mode (they would land on one arbitrary node), so
+    /// there is never a second process writing this directory.
+    pub backup_lock: tokio::sync::Mutex<()>,
     /// `[secrets]`, resolved at startup. Held so the admin plane's per-request
     /// engines (the workflow test endpoint) carry the same store the serving
     /// engine does — otherwise "test this workflow" would refuse a definition

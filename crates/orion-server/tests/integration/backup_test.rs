@@ -332,3 +332,111 @@ async fn test_backup_contains_data() {
         "reported size should match filesystem metadata"
     );
 }
+
+// ============================================================
+// 4. Concurrent backups (B4)
+// ============================================================
+
+/// B4: several backups requested in the same second all succeed, with
+/// distinct files.
+///
+/// The filename carried seconds only, so two requests inside one second chose
+/// the same path — and `VACUUM INTO` refuses a destination that exists, so one
+/// of the two answered 500. Any scheduler firing on a boundary, an operator
+/// double-clicking, or a retry hits this.
+///
+/// Four concurrent requests, one assertion each on the two things that were
+/// wrong: every request succeeded, and every backup is its own file (a shared
+/// name would also show up as four responses naming three files).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_backups_all_succeed_with_distinct_files() {
+    let dirs = make_test_dirs("concurrent");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
+    // No retention: pruning would delete the very files this counts.
+    let app = backup_test_app(&base_dir, &backup_dir, None).await;
+
+    let mut requests = Vec::new();
+    for _ in 0..4 {
+        let app = app.clone();
+        requests.push(tokio::spawn(async move {
+            let resp = app
+                .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+                .await
+                .unwrap();
+            let status = resp.status();
+            let body = body_json(resp).await;
+            (status, body)
+        }));
+    }
+
+    let mut filenames = std::collections::BTreeSet::new();
+    for request in requests {
+        let (status, body) = request.await.unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "every concurrent backup must succeed, got {status}: {body}"
+        );
+        let filename = body["data"]["filename"]
+            .as_str()
+            .expect("filename")
+            .to_string();
+        let path = body["data"]["path"].as_str().expect("path");
+        assert!(
+            std::path::Path::new(path).exists(),
+            "reported backup is missing from disk: {path}"
+        );
+        filenames.insert(filename);
+    }
+
+    assert_eq!(
+        filenames.len(),
+        4,
+        "each backup must have its own file, got: {filenames:?}"
+    );
+
+    // And the directory agrees — nothing was silently overwritten.
+    let on_disk: Vec<String> = std::fs::read_dir(&backup_dir)
+        .expect("backup dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("orion_backup_"))
+        .collect();
+    assert_eq!(on_disk.len(), 4, "files on disk: {on_disk:?}");
+}
+
+/// Retention still counts correctly when the backups it prunes were created
+/// concurrently — the prune runs under the same lock, so it never races
+/// another backup's file into or out of the set it is deleting from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_backups_respect_the_retention_count() {
+    let dirs = make_test_dirs("concurrent_retention");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
+    let app = backup_test_app(&base_dir, &backup_dir, Some(2)).await;
+
+    let mut requests = Vec::new();
+    for _ in 0..5 {
+        let app = app.clone();
+        requests.push(tokio::spawn(async move {
+            app.oneshot(json_request("POST", "/api/v1/admin/backups", None))
+                .await
+                .unwrap()
+                .status()
+        }));
+    }
+    for request in requests {
+        assert_eq!(request.await.unwrap(), StatusCode::OK);
+    }
+
+    let remaining: Vec<String> = std::fs::read_dir(&backup_dir)
+        .expect("backup dir")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("orion_backup_"))
+        .collect();
+    assert_eq!(
+        remaining.len(),
+        2,
+        "retention must land on exactly the configured count: {remaining:?}"
+    );
+}

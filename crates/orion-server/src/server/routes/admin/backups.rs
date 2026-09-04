@@ -47,19 +47,26 @@ pub(crate) async fn create_backup(
     reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
-    // Run blocking filesystem operations off the async runtime
-    let dir = backup_dir.clone();
-    tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir))
-        .await
-        .map_err(|e| OrionError::internal_from("spawn_blocking failed", e))?
-        .map_err(|e| OrionError::Internal {
-            context: format!("Failed to create backup directory '{backup_dir}'"),
-            source: Some(Box::new(e)),
-        })?;
+    // One backup at a time on this node (B4). Held to the end of the handler,
+    // so it also covers the retention prune below — see
+    // `AppStateInner::backup_lock` for why concurrent backups are not just a
+    // naming problem.
+    let _backup_guard = state.backup_lock.lock().await;
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("orion_backup_{timestamp}.db");
-    let backup_path = std::path::Path::new(&backup_dir).join(&filename);
+    // Directory and destination together, in one trip off the async runtime:
+    // choosing a free name is a filesystem question, and asking it anywhere
+    // else means asking it before the directory exists.
+    let dir = backup_dir.clone();
+    let (filename, backup_path) = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir)?;
+        Ok::<_, std::io::Error>(unique_backup_path(&dir, chrono::Utc::now()))
+    })
+    .await
+    .map_err(|e| OrionError::internal_from("spawn_blocking failed", e))?
+    .map_err(|e| OrionError::Internal {
+        context: format!("Failed to create backup directory '{backup_dir}'"),
+        source: Some(Box::new(e)),
+    })?;
     let backup_path_str = backup_path.to_string_lossy().to_string();
 
     // VACUUM INTO is SQLite-specific. R26: the pool variant is matched inside
@@ -128,6 +135,58 @@ pub(crate) async fn create_backup(
     })))
 }
 
+/// A backup destination in `dir` that does not already exist, and its
+/// filename.
+///
+/// `VACUUM INTO` refuses a destination that exists, so two backups that agree
+/// on a name are one backup and one 500. The name used to carry seconds only,
+/// which made "the same name" mean "the same second" — reachable by two
+/// operators, a script, and any scheduler that fires on a boundary.
+///
+/// Two defences, because neither is enough alone. Milliseconds narrow the
+/// window; the collision suffix closes it, because a clock has no resolution
+/// that a caller cannot land twice inside. The suffix runs under
+/// `AppStateInner::backup_lock`, so the check and the `VACUUM INTO` that
+/// follows cannot interleave with another backup on this node — and nothing
+/// else writes this directory (cluster mode refuses backups entirely).
+///
+/// **Lexicographic order must stay chronological order.** It is the whole
+/// basis of retention: [`prune_old_backups`] sorts these names and deletes
+/// from the front, and `list_backups` sorts them descending to answer
+/// "newest first". Both parts hold. Milliseconds are zero-padded and appended
+/// in place, so they order within a second. The suffix separator is `_`
+/// (0x5F), which sorts *after* the `.` (0x2E) of an unsuffixed name, so
+/// `…_123.db` < `…_123_1.db` < `…_124.db` — later files sort later. A `-`
+/// separator would have inverted the first of those.
+fn unique_backup_path(
+    dir: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, std::path::PathBuf) {
+    /// Enough that reaching the end means something other than a name
+    /// collision is wrong. Each attempt is one `stat` of a path that almost
+    /// never exists.
+    const MAX_ATTEMPTS: u32 = 64;
+
+    let stamp = now.format("%Y%m%d_%H%M%S_%3f");
+    let mut candidate = String::new();
+    for attempt in 0..MAX_ATTEMPTS {
+        candidate = match attempt {
+            0 => format!("orion_backup_{stamp}.db"),
+            n => format!("orion_backup_{stamp}_{n}.db"),
+        };
+        let path = std::path::Path::new(dir).join(&candidate);
+        if !path.exists() {
+            return (candidate, path);
+        }
+    }
+    // Every candidate for this millisecond is taken, which the lock makes
+    // essentially impossible. Hand back the last one rather than inventing a
+    // name that breaks the ordering above: `VACUUM INTO` then fails saying the
+    // file exists, which is the truth.
+    let path = std::path::Path::new(dir).join(&candidate);
+    (candidate, path)
+}
+
 /// Whether a directory entry is one of Orion's own backup files.
 ///
 /// Shared by `prune_old_backups` and `list_backups` so the pruner can never
@@ -142,8 +201,8 @@ fn is_backup_file(path: &std::path::Path) -> bool {
 /// Delete the oldest `orion_backup_*.db` files in `backup_dir` so that at
 /// most `retain` remain, returning the filenames actually removed.
 ///
-/// Filenames embed a sortable UTC timestamp (`orion_backup_%Y%m%d_%H%M%S.db`),
-/// so lexicographic order is chronological order — the same invariant
+/// Filenames embed a sortable UTC timestamp (see [`unique_backup_path`]), so
+/// lexicographic order is chronological order — the same invariant
 /// `list_backups` sorts by. Only files matching the backup naming pattern are
 /// candidates; anything else in the directory is left alone. Called only
 /// after a successful backup with `retain >= 1` (validated config), so the
@@ -254,7 +313,7 @@ pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<V
 
 #[cfg(test)]
 mod tests {
-    use super::prune_old_backups;
+    use super::{prune_old_backups, unique_backup_path};
 
     struct TempDir(std::path::PathBuf);
 
@@ -358,5 +417,83 @@ mod tests {
         assert!(prune_old_backups(dir.path(), 5).is_empty());
         assert_eq!(dir.names(), vec!["orion_backup_20240101_000000.db"]);
         assert!(prune_old_backups("/nonexistent/orion-prune-test", 1).is_empty());
+    }
+
+    /// B4: two backups in the same millisecond must not choose the same
+    /// destination. `VACUUM INTO` refuses an existing file, so a shared name
+    /// is one backup and one 500 — and with second precision that was every
+    /// pair of requests inside the same second.
+    #[test]
+    fn two_backups_in_one_instant_get_different_names() {
+        let dir = TempDir::new("collide");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-04T12:00:00.123Z")
+            .expect("test timestamp")
+            .with_timezone(&chrono::Utc);
+
+        let (first, first_path) = unique_backup_path(dir.path(), now);
+        std::fs::write(&first_path, b"x").expect("test file");
+        // The same instant, exactly as a second concurrent request sees it.
+        let (second, _) = unique_backup_path(dir.path(), now);
+
+        assert_ne!(first, second, "the second backup would overwrite the first");
+        assert_eq!(first, "orion_backup_20260904_120000_123.db");
+        assert_eq!(second, "orion_backup_20260904_120000_123_1.db");
+    }
+
+    /// Retention depends on it: `prune_old_backups` deletes from the front of
+    /// a lexicographic sort and `list_backups` reverses one, so a name that
+    /// sorts out of order deletes the wrong file.
+    #[test]
+    fn names_sort_chronologically_including_collisions() {
+        let dir = TempDir::new("order");
+        let at = |ms: &str| {
+            chrono::DateTime::parse_from_rfc3339(&format!("2026-09-04T12:00:00.{ms}Z"))
+                .expect("test timestamp")
+                .with_timezone(&chrono::Utc)
+        };
+
+        // Two in the same millisecond, then one in the next.
+        let (a, a_path) = unique_backup_path(dir.path(), at("123"));
+        std::fs::write(&a_path, b"x").expect("test file");
+        let (b, b_path) = unique_backup_path(dir.path(), at("123"));
+        std::fs::write(&b_path, b"x").expect("test file");
+        let (c, _) = unique_backup_path(dir.path(), at("124"));
+
+        let mut sorted = vec![c.clone(), b.clone(), a.clone()];
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            vec![a, b, c],
+            "creation order and lexicographic order must agree"
+        );
+    }
+
+    /// The suffix keeps climbing rather than settling on the first collision.
+    #[test]
+    fn a_third_collision_takes_the_next_suffix() {
+        let dir = TempDir::new("third");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-04T12:00:00.500Z")
+            .expect("test timestamp")
+            .with_timezone(&chrono::Utc);
+
+        for expected in [
+            "orion_backup_20260904_120000_500.db",
+            "orion_backup_20260904_120000_500_1.db",
+            "orion_backup_20260904_120000_500_2.db",
+        ] {
+            let (name, path) = unique_backup_path(dir.path(), now);
+            assert_eq!(name, expected);
+            std::fs::write(&path, b"x").expect("test file");
+        }
+    }
+
+    /// A name produced here must be one the pruner and the lister recognise —
+    /// they filter on the prefix and extension, and a format change that broke
+    /// that would silently stop retention working.
+    #[test]
+    fn a_generated_name_is_recognised_as_a_backup_file() {
+        let dir = TempDir::new("recognised");
+        let (_, path) = unique_backup_path(dir.path(), chrono::Utc::now());
+        assert!(super::is_backup_file(&path), "{}", path.display());
     }
 }

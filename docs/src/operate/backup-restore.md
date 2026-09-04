@@ -28,7 +28,8 @@ its version better.
 ## Back up SQLite
 
 ```bash
-# Create a backup — writes storage.backup_dir/orion_backup_<timestamp>.db
+# Create a backup — writes storage.backup_dir/orion_backup_<UTC timestamp>.db
+# (to the millisecond, so backups taken in the same second are distinct files)
 curl -s -X POST http://localhost:8080/api/v1/admin/backups
 
 # List the backups currently on this node
@@ -65,7 +66,7 @@ disk.
 systemctl stop orion            # or: docker compose stop orion
 
 # 2. Put the backup in place of the live database (the storage.url path).
-cp /var/lib/orion/backups/orion_backup_20260727_101500.db /var/lib/orion/orion.db
+cp /var/lib/orion/backups/orion_backup_20260727_101500_042.db /var/lib/orion/orion.db
 
 # 3. Start Orion. Migrations run at boot unless storage.auto_migrate = false,
 #    in which case run `orion-server migrate` first.

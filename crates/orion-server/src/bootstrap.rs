@@ -900,6 +900,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         runtime,
         channel_loader,
         reload_lock: tokio::sync::Mutex::new(()),
+        backup_lock: tokio::sync::Mutex::new(()),
         secrets,
         vars,
         repos,
