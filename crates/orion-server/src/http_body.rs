@@ -352,6 +352,43 @@ mod tests {
         );
     }
 
+    /// An error body that is not valid UTF-8 still produces a message.
+    ///
+    /// The preview exists to explain a failure, so bytes that do not decode
+    /// must not become a second failure on top of the first — a peer that
+    /// answers 500 with a binary payload would otherwise cost the caller the
+    /// only diagnostic it had.
+    #[tokio::test]
+    async fn a_preview_of_non_utf8_bytes_is_lossy_rather_than_lost() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let url = format!("http://{}/", listener.local_addr().expect("test addr"));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("test accept");
+            let mut discard = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut discard).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\n")
+                .await;
+            // A lone 0xFF is not valid UTF-8 in any position.
+            let _ = socket.write_all(&[0xff, b'b', 0xfe, b'd']).await;
+        });
+
+        let response = reqwest::Client::new().get(url).send().await.expect("head");
+        let preview = read_preview(response, 512).await;
+
+        assert!(!preview.truncated);
+        assert_eq!(
+            preview.to_message(),
+            "\u{fffd}b\u{fffd}d",
+            "invalid bytes must become replacement characters, not an error"
+        );
+        let _ = server.await;
+    }
+
     /// A short error body is quoted verbatim, with no ellipsis to suggest
     /// there was more.
     #[tokio::test]
