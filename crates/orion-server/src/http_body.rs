@@ -228,18 +228,37 @@ pub(crate) async fn flood_server(
 
 /// Test-only: assert a flooded peer did not get to send its whole body.
 ///
-/// A read-then-measure cap lets all of it through and then reports a size
+/// A read-then-measure cap lets all of it through and *then* reports a size
 /// error, which is why every caller's test asserts on this rather than on the
-/// error alone. A streaming one stops within a socket buffer or two of the
-/// cap, so the bound is deliberately loose: the discriminator is "nowhere near
-/// all of it", not an exact byte count.
+/// error alone — the error is identical either way.
+///
+/// The bound is "not all of it", which is exactly the discriminator and
+/// nothing more: `Response::bytes()` consumes the body to its end, so every
+/// write succeeds and `written == attempted` on the nose. A streaming reader
+/// hangs up, the next write fails, and the peer stops short. Anything tighter
+/// is a statement about how far the writer runs ahead of the reader before the
+/// hang-up registers — which is a timing assumption, not a property of the
+/// code. A `written < attempted / 2` version of this passed everywhere except
+/// under `cargo llvm-cov`, where instrumentation slows the reader and the peer
+/// got 5,570,560 of 8,388,608 bytes out before it noticed. The percentage is
+/// in the message because it is worth *seeing*; it is not worth asserting.
 #[cfg(test)]
 pub(crate) fn assert_stopped_early(written: usize, attempted: usize, what: &str) {
     assert!(
-        written < attempted / 2,
-        "{what}: the peer got to write {written} of {attempted} bytes — the cap \
-         must be enforced while streaming, not after the body is buffered"
+        written < attempted,
+        "{what}: the peer got to write all {attempted} bytes — the cap must be \
+         enforced while streaming, not after the body is buffered"
     );
+    let leaked = (written as f64 / attempted as f64) * 100.0;
+    // Not a failure, but worth knowing: a reader that lets most of the body
+    // through is still bounded, just not promptly.
+    if written * 2 >= attempted {
+        eprintln!(
+            "note: {what} stopped the peer at {written} of {attempted} bytes \
+             ({leaked:.0}%) — bounded, but the reader is running well behind \
+             the writer"
+        );
+    }
 }
 
 #[cfg(test)]
