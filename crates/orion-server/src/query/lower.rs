@@ -353,6 +353,7 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
                 let name = fv.as_str().ok_or_else(|| QueryError::InvalidField {
                     field: fv.to_string(),
                     at: at.to_string(),
+                    did_you_mean: None,
                 })?;
                 return Ok(Operand::Field(resolve_field(ctx, entity, name, at)?));
             }
@@ -415,6 +416,7 @@ fn resolve_field(ctx: &Ctx, entity: &str, name: &str, at: &str) -> Result<FieldR
         return Err(QueryError::InvalidField {
             field: name.to_string(),
             at: at.to_string(),
+            did_you_mean: None,
         });
     }
     if name.contains('.') {

@@ -73,9 +73,12 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
     // W6: unknown keys were silently ignored — `"fileds"` selected every
     // column, `"lmit"` fell back to the default. Reject, naming the key.
     if let Some(unknown) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
+        let suggestion = crate::query::error::nearest(unknown, ENVELOPE_KEYS)
+            .map(|k| format!(" — did you mean \"{k}\"?"))
+            .unwrap_or_default();
         return Err(invalid(format!(
             "unknown key '{unknown}' in query envelope (expected \
-             source/filter/fields/sort/limit/skip/include)"
+             source/filter/fields/sort/limit/skip/include){suggestion}"
         )));
     }
 

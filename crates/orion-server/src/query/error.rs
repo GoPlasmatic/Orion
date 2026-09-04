@@ -19,14 +19,27 @@ pub enum QueryError {
     /// Shared by the read and write envelopes (W20).
     InvalidEnvelope(String),
     /// A field reference is invalid for identity mode (e.g. a dotted JSON path).
-    InvalidField { field: String, at: String },
+    ///
+    /// `did_you_mean` carries the nearest declared column when the name looks
+    /// like a typo of one — see [`nearest`]. It is `None` wherever the refusal
+    /// is not about a misspelling: a dotted path, an empty name, a `field`
+    /// value that is not a string, or a column that exists and is simply not
+    /// readable.
+    InvalidField {
+        field: String,
+        at: String,
+        did_you_mean: Option<String>,
+    },
     /// A `{"param": name}` referenced a name absent from the params map.
     MissingParam { name: String, at: String },
     /// A `some`/`all`/`none` referenced a relation not declared in the schema.
     UnknownRelation { relation: String, at: String },
     /// The envelope named an entity the schema does not declare, under the
     /// `reject` unmapped policy — the 1.0 default (F24).
-    UndeclaredEntity { entity: String },
+    UndeclaredEntity {
+        entity: String,
+        did_you_mean: Option<String>,
+    },
     /// An entity declares columns but marks every one `queryable: false`, so a
     /// query that names no `fields` has nothing it may return (F24). Refused
     /// rather than widened back to `SELECT *`.
@@ -52,8 +65,13 @@ impl std::fmt::Display for QueryError {
                 write!(f, "{what} has no portable form in v1 (at {at})")
             }
             QueryError::InvalidEnvelope(msg) => write!(f, "invalid envelope: {msg}"),
-            QueryError::InvalidField { field, at } => {
-                write!(f, "invalid field reference '{field}' (at {at})")
+            QueryError::InvalidField {
+                field,
+                at,
+                did_you_mean,
+            } => {
+                write!(f, "invalid field reference '{field}' (at {at})")?;
+                write_suggestion(f, did_you_mean)
             }
             QueryError::MissingParam { name, at } => {
                 write!(f, "query references undefined param '{name}' (at {at})")
@@ -64,14 +82,20 @@ impl std::fmt::Display for QueryError {
             // F24: the one error a 0.x workflow hits after the unmapped default
             // flipped to `reject`, so it spells out both ways forward rather
             // than just stating the refusal.
-            QueryError::UndeclaredEntity { entity } => write!(
-                f,
-                "entity '{entity}' is not declared in the task's schema: add \
-                 \"schema\": {{\"entities\": {{\"{entity}\": {{\"columns\": \
-                 {{\"<column>\": {{}}}}}}}}}} naming the columns this task uses, \
-                 or add \"unmapped\": \"identity\" to that schema to accept \
-                 undeclared names as physical ones (pre-1.0 behaviour)"
-            ),
+            QueryError::UndeclaredEntity {
+                entity,
+                did_you_mean,
+            } => {
+                write!(
+                    f,
+                    "entity '{entity}' is not declared in the task's schema: add \
+                     \"schema\": {{\"entities\": {{\"{entity}\": {{\"columns\": \
+                     {{\"<column>\": {{}}}}}}}}}} naming the columns this task uses, \
+                     or add \"unmapped\": \"identity\" to that schema to accept \
+                     undeclared names as physical ones (pre-1.0 behaviour)"
+                )?;
+                write_suggestion(f, did_you_mean)
+            }
             QueryError::NoQueryableColumns { entity } => write!(
                 f,
                 "entity '{entity}' declares columns but none of them are queryable, \
@@ -128,5 +152,92 @@ impl From<QueryError> for DataflowError {
             return crate::errors::connector_detail_error(e);
         }
         DataflowError::Validation(e.to_string())
+    }
+}
+
+/// Append `— did you mean "x"?` when there is a candidate.
+fn write_suggestion(
+    f: &mut std::fmt::Formatter<'_>,
+    did_you_mean: &Option<String>,
+) -> std::fmt::Result {
+    match did_you_mean {
+        Some(name) => write!(f, " — did you mean \"{name}\"?"),
+        None => Ok(()),
+    }
+}
+
+/// How far a name may be from a candidate before a typo stops being the likely
+/// explanation.
+///
+/// Scaled to the candidate, which the config suggester does not have to do:
+/// its candidates are long (`ORION_SERVER__PORT`), while an envelope key or a
+/// column can be three characters, and a fixed budget of 3 would offer "age"
+/// for "id". One edit for a short name, two from six characters, three from
+/// nine — never more than a third of the candidate.
+fn max_distance(candidate: &str) -> usize {
+    (candidate.chars().count() / 3).clamp(1, 3)
+}
+
+/// The nearest candidate to `name`, when one is close enough that a typo is the
+/// likely explanation.
+///
+/// Ties break on the candidate's own order so the suggestion is stable rather
+/// than dependent on a hash map's iteration. Case-insensitive, because a
+/// mis-cased name is a typo the author cannot see.
+pub(crate) fn nearest<'a, I>(name: &str, candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let needle: Vec<char> = name.to_lowercase().chars().collect();
+    candidates
+        .into_iter()
+        .filter(|c| *c != name)
+        .map(|candidate| {
+            let lowered: Vec<char> = candidate.to_lowercase().chars().collect();
+            (
+                crate::text::edit_distance_chars(&needle, &lowered),
+                candidate,
+            )
+        })
+        .filter(|(distance, candidate)| *distance <= max_distance(candidate))
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, candidate)| candidate.to_string())
+}
+
+#[cfg(test)]
+mod suggestion_tests {
+    use super::*;
+
+    #[test]
+    fn a_near_miss_is_offered() {
+        assert_eq!(
+            nearest("fileds", ["source", "filter", "fields", "sort"]),
+            Some("fields".to_string())
+        );
+        assert_eq!(
+            nearest("Name", ["id", "name", "email"]),
+            Some("name".to_string())
+        );
+    }
+
+    /// The budget scales with the candidate, so a short name does not collect
+    /// an unrelated neighbour.
+    #[test]
+    fn an_unrelated_name_is_not_offered() {
+        assert_eq!(nearest("id", ["age", "name", "email"]), None);
+        assert_eq!(nearest("customer_reference", ["id", "name"]), None);
+        assert_eq!(nearest("", ["id"]), None);
+    }
+
+    /// The name itself is never the suggestion — offering a name back to the
+    /// author who just typed it says nothing. A *different* near neighbour
+    /// still is, which is the whole point.
+    #[test]
+    fn the_name_itself_is_never_offered() {
+        assert_eq!(nearest("secret", ["secret"]), None);
+        assert_eq!(
+            nearest("secret", ["secret", "secrets"]),
+            Some("secrets".to_string())
+        );
     }
 }

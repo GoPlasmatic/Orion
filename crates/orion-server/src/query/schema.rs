@@ -227,6 +227,10 @@ impl EntityRegistry {
         if self.unmapped == UnmappedPolicy::Reject && !self.entities.contains_key(entity) {
             return Err(QueryError::UndeclaredEntity {
                 entity: entity.to_string(),
+                did_you_mean: crate::query::error::nearest(
+                    entity,
+                    self.entities.keys().map(String::as_str),
+                ),
             });
         }
         self.structural_table(entity)
@@ -336,6 +340,7 @@ impl EntityRegistry {
                 return Err(QueryError::InvalidField {
                     field: name.to_string(),
                     at: at.to_string(),
+                    did_you_mean: None,
                 });
             }
             let physical = col.name.clone().unwrap_or_else(|| name.to_string());
@@ -351,6 +356,9 @@ impl EntityRegistry {
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
                 at: at.to_string(),
+                did_you_mean: self.entities.get(entity).and_then(|e| {
+                    crate::query::error::nearest(name, e.columns.keys().map(String::as_str))
+                }),
             }),
         }
     }
@@ -478,6 +486,7 @@ pub(crate) fn validate_identifier(name: &str, at: &str) -> Result<(), QueryError
     let reject = || QueryError::InvalidField {
         field: name.to_string(),
         at: at.to_string(),
+        did_you_mean: None,
     };
     if name.is_empty() {
         return Err(reject());
@@ -812,7 +821,8 @@ mod tests {
         assert_eq!(
             err,
             QueryError::UndeclaredEntity {
-                entity: "secrets".to_string()
+                entity: "secrets".to_string(),
+                did_you_mean: None,
             }
         );
     }
@@ -823,6 +833,7 @@ mod tests {
     fn the_undeclared_entity_error_names_exactly_what_to_add() {
         let msg = QueryError::UndeclaredEntity {
             entity: "orders".to_string(),
+            did_you_mean: None,
         }
         .to_string();
         assert!(msg.contains("orders"), "{msg}");

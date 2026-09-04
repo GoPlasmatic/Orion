@@ -281,9 +281,12 @@ pub fn resolve_write(
         WriteError::invalid_envelope("write envelope must be a JSON object".to_string())
     })?;
     if let Some(unknown) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
+        let suggestion = crate::query::error::nearest(unknown, ENVELOPE_KEYS)
+            .map(|k| format!(" — did you mean \"{k}\"?"))
+            .unwrap_or_default();
         return Err(WriteError::invalid_envelope(format!(
             "unknown key '{unknown}' in write envelope (expected \
-             op/target/values/set/filter/on_conflict/returning/all)"
+             op/target/values/set/filter/on_conflict/returning/all){suggestion}"
         )));
     }
 
@@ -518,8 +521,11 @@ fn parse_conflict(
         .keys()
         .find(|k| !matches!(k.as_str(), "target" | "action"))
     {
+        let suggestion = crate::query::error::nearest(unknown, ["target", "action"])
+            .map(|k| format!(" — did you mean \"{k}\"?"))
+            .unwrap_or_default();
         return Err(WriteError::invalid_envelope(format!(
-            "unknown key '{unknown}' in on_conflict (expected target/action)"
+            "unknown key '{unknown}' in on_conflict (expected target/action){suggestion}"
         )));
     }
     let targets_raw = map
