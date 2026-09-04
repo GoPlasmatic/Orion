@@ -238,6 +238,11 @@ One task per operation:
   (default `false`) — a deliberate double opt-in.
 - **Bulk inserts are capped.** A `values` array longer than `write.max_rows`
   (default 1000) is rejected — never silently truncated.
+- **`returning` sets are capped.** An `update`/`delete` returns one row per row
+  *matched*, which the row cap on the way in says nothing about. A `returning`
+  set longer than `query.max_limit` (default 1000) is rejected the same way a
+  `data_query` page is — and the statement runs inside a transaction, so a
+  refused write leaves nothing behind.
 - **Connector operation gates.** A connector's config can disable operation
   types entirely (`operations: { "delete": false }`) — see
   [Connector operation gates](#connector-operation-gates).

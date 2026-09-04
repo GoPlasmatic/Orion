@@ -142,6 +142,24 @@ impl ResolvedWrite {
         }
     }
 
+    /// Whether this write's `returning` set is bounded by nothing the caller
+    /// has already been held to.
+    ///
+    /// An insert or upsert returns exactly one row per row written, and
+    /// [`resolve_write`] has already capped those at `write.max_rows`. An
+    /// update or delete returns one row per row *matched*, which is whatever
+    /// the filter happens to select — a whole table, for an acknowledged
+    /// unfiltered mutation. That is the case the execution path has to bound,
+    /// and the only one it has to open a transaction for.
+    pub fn returns_unbounded_rows(&self) -> bool {
+        match self {
+            ResolvedWrite::Update { returning, .. } | ResolvedWrite::Delete { returning, .. } => {
+                !returning.is_empty()
+            }
+            ResolvedWrite::Insert { .. } | ResolvedWrite::Upsert { .. } => false,
+        }
+    }
+
     /// Whether the lowered filter actually restricts the affected rows — this,
     /// not the mere presence of a `filter` key, is what [`resolve_write`]'s
     /// unfiltered guard is keyed on.

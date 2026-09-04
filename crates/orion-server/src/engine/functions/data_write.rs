@@ -51,6 +51,14 @@ pub struct DataWriteHandler {
     /// Safety bounds (`max_rows` / `allow_unfiltered`) from `[write]`,
     /// enforced inside `resolve_write`.
     pub write_config: crate::config::WriteConfig,
+    /// Hard cap on rows a `returning` clause may hand back, from
+    /// `query.max_limit` — the same knob and the same reject-never-truncate
+    /// rule `db_read` and `mongo_read` apply to a result set.
+    ///
+    /// `write.max_rows` bounds the rows going *in*; nothing bounded the rows
+    /// coming back, so an acknowledged unfiltered `update … returning` read a
+    /// whole table into memory.
+    pub max_returning: usize,
 }
 
 /// The mutation as the task states it, with `params` folded against the
@@ -208,6 +216,7 @@ impl ConnectorHandler for DataWriteHandler {
                     &resolved,
                     db.query_timeout_ms,
                     parsed.numeric_as,
+                    self.max_returning,
                 )
                 .await?
             }
@@ -243,11 +252,20 @@ impl ConnectorHandler for DataWriteHandler {
 /// trips on the hot path — and, on SQLite, hold the database's single write
 /// lock across them instead of releasing it when the statement ends.
 ///
+/// The one exception is an `update`/`delete` that asks for `returning`
+/// ([`ResolvedWrite::returns_unbounded_rows`]). Its result set is bounded by
+/// `max_returning`, and a write that trips that cap must leave nothing behind:
+/// reporting a 400 over a statement that had already committed would be worse
+/// than the unbounded read it replaces. The transaction is what makes the
+/// refusal honest. An `insert … returning` keeps the fast path — its result set
+/// is one row per row written, already capped by `write.max_rows`.
+///
 /// Every round trip shares one [`QueryBudget`]: `Pool::begin` acquires a
 /// connection *and* sends `BEGIN`, and the commit is another round trip, so
 /// leaving either unbounded would reintroduce the hang F11 closed, and giving
 /// each its own `query_timeout_ms` would triple the bound the connector's owner
 /// configured.
+#[allow(clippy::too_many_arguments)]
 async fn execute_sql(
     pool: &crate::connector::pool_cache::SqlPool,
     sql: &str,
@@ -255,6 +273,7 @@ async fn execute_sql(
     w: &ResolvedWrite,
     timeout_ms: Option<u64>,
     numeric: crate::connector::sql_decode::NumericAs,
+    max_returning: usize,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     let budget = QueryBudget::start(timeout_ms);
     // The transaction is per driver, so the whole statement runs inside the
@@ -263,10 +282,11 @@ async fn execute_sql(
     // the type vocabulary (#309).
     let mut out = crate::connector::pool_cache::dispatch_sql_pool!(
         pool, p, rows_to_json, _bind, write_result => {
-            if w.is_multi_row() {
+            if w.is_multi_row() || w.returns_unbounded_rows() {
                 let mut tx = budget.run(NAME, p.begin()).await?;
                 let out = run_write_statement(
                     &mut *tx, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                    max_returning,
                 )
                 .await?;
                 budget.run(NAME, tx.commit()).await?;
@@ -274,6 +294,7 @@ async fn execute_sql(
             } else {
                 run_write_statement(
                     p, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                    max_returning,
                 )
                 .await?
             }
@@ -286,9 +307,18 @@ async fn execute_sql(
 }
 
 /// Run the rendered statement on `executor` (the pool, or a transaction's
-/// connection). When `returning` is requested the statement returns rows
-/// (`fetch_all`); otherwise it is a plain `execute` returning the affected-row
-/// count (and `last_insert_id` where the driver reports one).
+/// connection). When `returning` is requested the statement's rows are streamed
+/// and counted against `max_returning`; otherwise it is a plain `execute`
+/// returning the affected-row count (and `last_insert_id` where the driver
+/// reports one).
+///
+/// Streamed rather than `fetch_all`ed because the cap has to bite before the
+/// rows are in memory — materialising a million-row `returning` set and then
+/// measuring it is the defect, not the check. The refusal is a
+/// [`QueryFailure::Limit`], so it reaches the caller as a 400 with the guidance
+/// intact, exactly like `db_read`'s row cap.
+///
+/// [`QueryFailure::Limit`]: super::connector_helpers::QueryFailure::Limit
 #[allow(clippy::too_many_arguments)]
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
@@ -299,6 +329,7 @@ async fn run_write_statement<'e, E, R, F, G>(
     rows_to_json: F,
     write_result: G,
     numeric: crate::connector::sql_decode::NumericAs,
+    max_returning: usize,
 ) -> Result<Value, DataflowError>
 where
     E: sqlx::Executor<'e, Database = R>,
@@ -328,7 +359,20 @@ where
         Ok(out)
     } else {
         let rows = budget
-            .run(NAME, sqlx::query_with(sql, values).fetch_all(executor))
+            .run(NAME, async {
+                use futures::TryStreamExt;
+                let mut stream = sqlx::query_with(sql, values).fetch(executor);
+                let mut rows = Vec::new();
+                while let Some(row) = stream.try_next().await? {
+                    if rows.len() >= max_returning {
+                        return Err(super::connector_helpers::QueryFailure::Limit(format!(
+                            "{NAME} 'returning' set exceeds query.max_limit                              ({max_returning} rows) — narrow the filter, drop                              'returning', or raise the cap"
+                        )));
+                    }
+                    rows.push(row);
+                }
+                Ok(rows)
+            })
             .await?;
         let returning = rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?;
         let count = returning.len();

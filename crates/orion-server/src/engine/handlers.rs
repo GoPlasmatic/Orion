@@ -346,6 +346,7 @@ pub fn build_custom_functions(
             http_client: client.clone(),
             registry: registry.clone(),
             write_config: write_config.clone(),
+            max_returning: query_config.max_limit as usize,
         },
     );
 
