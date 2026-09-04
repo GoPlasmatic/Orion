@@ -558,6 +558,15 @@ against a SQL connector and writes the result rows as a JSON array. Use
 placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 … for PostgreSQL.
 
+**Reads only.** The statement must open with `SELECT`, `WITH`, `VALUES` or
+`TABLE`, and a `WITH` carrying a data-modifying CTE
+(`WITH gone AS (DELETE … RETURNING …) …`) is refused. `EXPLAIN` is not
+admitted either — `EXPLAIN ANALYZE DELETE …` executes the delete. A statement
+that writes belongs in [`db_write`](#db_write), which has its own `raw_write`
+[operation gate](./data-dialect.md#connector-operation-gates); that gate is
+what makes a connector delete-proof, and it only holds because `db_read`
+cannot write.
+
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the SQL connector |

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
@@ -66,16 +67,18 @@ impl DbRead {
     }
 
     /// [`parse_statement`](Self::parse_statement) plus the read-only rendering
-    /// choice.
+    /// choice — and the check that the statement is actually a read.
     pub(super) fn parse_read(
         call: &ConnectorCall<'_>,
         input: &TemplatedInput,
         ctx: &TaskContext<'_>,
     ) -> Result<Self, HandlerError> {
-        Ok(Self {
+        let read = Self {
             numeric_as: resolve_numeric_as(input, call.name, ctx)?,
             ..Self::parse_statement(call, input, ctx)?
-        })
+        };
+        require_read_only(&read.query, call.name)?;
+        Ok(read)
     }
 
     pub(super) fn query(&self) -> &str {
@@ -207,7 +210,7 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "query",
-        description: "SQL query. Use $1, $2, ... placeholders bound from `params`.",
+        description: "Read statement — SELECT, WITH, VALUES or TABLE; a write belongs in db_write, which has its own 'raw_write' connector gate. Bind placeholders are the backend's own spelling: ? for SQLite and MySQL, $1, $2, ... for PostgreSQL.",
         kind: FieldKind::String,
         required: true,
         ..FieldSchema::DEFAULT
@@ -234,3 +237,299 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
 ];
+
+// -- Read-only statement check --
+//
+// `db_read` gates on the connector's `read` operation and then runs whatever
+// statement the task carries. `fetch` executes any statement — it merely
+// streams whatever rows come back — so `DELETE FROM t RETURNING id` ran here on
+// PostgreSQL and SQLite, and a bare `DELETE`/`UPDATE`/`INSERT` ran (returning no
+// rows) on all three, while `raw_write: false` was set on the connector.
+//
+// That made the operation gates advertise more than they enforced. The gate
+// table's own claim — "SQL writes are fully bounded by allowed_entities once
+// `raw_write: false` leaves `data_write` as the only write path" — is only true
+// with this check in place, because `db_read` was the second write path.
+//
+// The statement is a workflow-authored literal, never caller-supplied, so this
+// is not an injection guard; it is what makes "delete-proof connector" a
+// property an operator can rely on rather than a convention authors are asked
+// to keep.
+
+/// The statement kinds that return rows without modifying them.
+///
+/// Deliberately short. `EXPLAIN` is **not** here: `EXPLAIN ANALYZE DELETE …`
+/// executes the delete on PostgreSQL. Neither is `PRAGMA`, which writes on
+/// SQLite (`PRAGMA journal_mode = WAL`). A statement that needs to write
+/// belongs in `db_write`, which has its own `raw_write` gate.
+const READ_STATEMENTS: [&str; 4] = ["SELECT", "WITH", "VALUES", "TABLE"];
+
+/// The keywords that make a CTE data-modifying.
+const MODIFYING_STATEMENTS: [&str; 4] = ["INSERT", "UPDATE", "DELETE", "MERGE"];
+
+/// The only two token shapes this check needs: a bare word, and an opening
+/// parenthesis (which is what separates a data-modifying CTE from a column
+/// alias — `AS (INSERT …` versus `AS total`).
+#[derive(Debug, PartialEq, Eq)]
+enum Token {
+    Word(String),
+    Open,
+}
+
+/// Split a statement into significant tokens, with comments and every quoted
+/// form removed.
+///
+/// Stripping quoted text first is what keeps the check from reading data as
+/// syntax: `WHERE note = 'delete me'` contains the word `delete` and is a
+/// perfectly ordinary read. Handled: `--` line comments, `/* */` block comments
+/// (nested, as PostgreSQL allows), `'…'` strings with `''` escapes, `"…"` and
+/// `` `…` `` quoted identifiers, and PostgreSQL `$tag$…$tag$` dollar quoting.
+/// A `$1` placeholder is not a dollar quote — a tag may not start with a digit —
+/// so bind parameters survive untouched.
+fn scan(sql: &str) -> Vec<Token> {
+    let c: Vec<char> = sql.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            '-' if c.get(i + 1) == Some(&'-') => {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if c.get(i + 1) == Some(&'*') => {
+                let mut depth = 1usize;
+                i += 2;
+                while i < c.len() && depth > 0 {
+                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            '\'' => i = skip_quoted(&c, i, '\'', true),
+            '"' => i = skip_quoted(&c, i, '"', true),
+            '`' => i = skip_quoted(&c, i, '`', false),
+            '$' => match dollar_tag(&c, i) {
+                Some(tag) => i = skip_dollar_quoted(&c, i, &tag),
+                None => i += 1,
+            },
+            '(' => {
+                out.push(Token::Open);
+                i += 1;
+            }
+            ch if ch.is_alphanumeric() || ch == '_' => {
+                let start = i;
+                while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_') {
+                    i += 1;
+                }
+                out.push(Token::Word(
+                    c[start..i].iter().collect::<String>().to_uppercase(),
+                ));
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// Advance past a `quote`-delimited run starting at `i`. When `doubled` is set,
+/// two quote characters in a row are an escaped quote rather than the end.
+fn skip_quoted(c: &[char], mut i: usize, quote: char, doubled: bool) -> usize {
+    i += 1;
+    while i < c.len() {
+        if c[i] == quote {
+            if doubled && c.get(i + 1) == Some(&quote) {
+                i += 2;
+            } else {
+                return i + 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+/// The tag of a PostgreSQL dollar quote opening at `i` (`""` for `$$`), or
+/// `None` when this `$` starts something else — a `$1` bind placeholder, say.
+fn dollar_tag(c: &[char], i: usize) -> Option<String> {
+    let mut j = i + 1;
+    while j < c.len() && (c[j].is_alphabetic() || c[j] == '_' || (j > i + 1 && c[j].is_numeric())) {
+        j += 1;
+    }
+    (c.get(j) == Some(&'$')).then(|| c[i + 1..j].iter().collect())
+}
+
+/// Advance past a dollar-quoted block to just after its closing `$tag$`.
+fn skip_dollar_quoted(c: &[char], i: usize, tag: &str) -> usize {
+    let close: Vec<char> = format!("${tag}$").chars().collect();
+    let mut j = i + close.len();
+    while j + close.len() <= c.len() {
+        if c[j..j + close.len()] == close[..] {
+            return j + close.len();
+        }
+        j += 1;
+    }
+    c.len()
+}
+
+/// The statement's leading keyword, upper-cased, with comments and quoted text
+/// ignored — `None` for a statement with no keyword at all.
+///
+/// Shared with `db_write`, which needs to know whether the statement is an
+/// `INSERT` before it reports a `last_insert_id`.
+pub(super) fn leading_keyword(sql: &str) -> Option<String> {
+    scan(sql).into_iter().find_map(|t| match t {
+        // Leading `(` is ordinary — `(SELECT 1) UNION (SELECT 2)`.
+        Token::Word(w) => Some(w),
+        Token::Open => None,
+    })
+}
+
+/// Refuse a `db_read` statement that is not a read.
+///
+/// # Errors
+///
+/// [`DataflowError::Validation`] when the statement does not open with one of
+/// [`READ_STATEMENTS`], or when it carries a data-modifying CTE.
+fn require_read_only(query: &str, handler_name: &str) -> Result<(), HandlerError> {
+    let tokens = scan(query);
+    let Some(first) = leading_keyword(query) else {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} 'query' has no statement to run"
+        ))
+        .into());
+    };
+    if !READ_STATEMENTS.contains(&first.as_str()) {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} runs read statements only, but this one starts with \
+             '{first}' — use db_write for INSERT/UPDATE/DELETE (it has its own \
+             'raw_write' connector gate). Reads start with {}",
+            READ_STATEMENTS.join(", ")
+        ))
+        .into());
+    }
+    // A data-modifying CTE — `WITH moved AS (DELETE … RETURNING …) SELECT …` —
+    // opens with `WITH` and writes. It is the one way a statement that passes
+    // the check above can still mutate, and it is recognisable by shape: `AS`,
+    // an optional `[NOT] MATERIALIZED`, `(`, then the modifying keyword. A
+    // column alias (`AS total`) and an ordinary CTE (`AS (SELECT …)`) both fail
+    // to match, so neither is caught.
+    for (n, token) in tokens.iter().enumerate() {
+        if !matches!(token, Token::Word(w) if w == "AS") {
+            continue;
+        }
+        let mut j = n + 1;
+        while matches!(tokens.get(j), Some(Token::Word(w)) if w == "NOT" || w == "MATERIALIZED") {
+            j += 1;
+        }
+        if tokens.get(j) != Some(&Token::Open) {
+            continue;
+        }
+        if let Some(Token::Word(w)) = tokens.get(j + 1)
+            && MODIFYING_STATEMENTS.contains(&w.as_str())
+        {
+            return Err(DataflowError::Validation(format!(
+                "{handler_name} runs read statements only, but this one carries a \
+                 data-modifying '{w}' common table expression — use db_write \
+                 (it has its own 'raw_write' connector gate)"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(sql: &str) -> Result<(), String> {
+        require_read_only(sql, "db_read").map_err(|e| {
+            let e: DataflowError = e.into();
+            e.to_string()
+        })
+    }
+
+    #[test]
+    fn reads_are_admitted() {
+        for sql in [
+            "SELECT id FROM users WHERE id = $1",
+            "  \n select 1",
+            "-- a comment\nSELECT 1",
+            "/* block */ SELECT 1",
+            "(SELECT 1) UNION (SELECT 2)",
+            "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+            "VALUES (1), (2)",
+            "TABLE users",
+            // A locking read is a read: `FOR UPDATE` must not be mistaken for
+            // an UPDATE statement.
+            "SELECT id FROM jobs ORDER BY id FOR UPDATE SKIP LOCKED",
+            // The word only appears inside data.
+            "SELECT id FROM notes WHERE body = 'delete from users'",
+            "SELECT \"delete\" FROM t",
+            "SELECT total AS deleted FROM t",
+            "SELECT CAST(a AS text) FROM t",
+        ] {
+            assert!(
+                check(sql).is_ok(),
+                "must be admitted: {sql} — {:?}",
+                check(sql)
+            );
+        }
+    }
+
+    #[test]
+    fn writes_are_refused() {
+        for sql in [
+            "DELETE FROM audit_log WHERE id > 0 RETURNING id",
+            "delete from audit_log",
+            "INSERT INTO t (a) VALUES (1)",
+            "UPDATE t SET a = 1",
+            "TRUNCATE t",
+            "DROP TABLE t",
+            "PRAGMA journal_mode = WAL",
+            // `EXPLAIN ANALYZE` executes the statement it explains.
+            "EXPLAIN ANALYZE DELETE FROM t",
+            "  -- lead in\n  DELETE FROM t",
+        ] {
+            let err = check(sql).expect_err(&format!("must be refused: {sql}"));
+            assert!(err.contains("read statements only"), "{sql}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_data_modifying_cte_is_refused() {
+        for sql in [
+            "WITH gone AS (DELETE FROM t RETURNING id) SELECT * FROM gone",
+            "WITH added AS (INSERT INTO t (a) VALUES (1) RETURNING id) SELECT * FROM added",
+            "with m as materialized (update t set a = 1 returning id) select * from m",
+        ] {
+            let err = check(sql).expect_err(&format!("must be refused: {sql}"));
+            assert!(err.contains("data-modifying"), "{sql}: {err}");
+        }
+    }
+
+    /// A statement whose text merely *mentions* a modifying keyword inside a
+    /// literal, a comment or an identifier stays a read — the check reads
+    /// syntax, not data.
+    #[test]
+    fn quoted_text_is_not_syntax() {
+        assert!(check("SELECT 1 /* AS (DELETE */").is_ok());
+        assert!(check("SELECT 'x AS (DELETE FROM t)' AS s").is_ok());
+        assert!(check("SELECT $tag$ AS (DELETE FROM t) $tag$ AS s").is_ok());
+        assert!(check("SELECT * FROM t WHERE a = $1 AND b = $2").is_ok());
+    }
+
+    #[test]
+    fn an_empty_statement_is_refused() {
+        let err = check("   -- nothing here\n").expect_err("empty");
+        assert!(err.contains("no statement"), "{err}");
+    }
+}

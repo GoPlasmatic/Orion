@@ -487,6 +487,14 @@ raw SQL cannot be classified per-statement, `db_write` has its own `raw_write`
 gate — to make a connector fully delete-proof, disable both `delete` and
 `raw_write`.
 
+That pair is only sufficient because **`db_read` refuses to run a write.** Its
+statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH`
+carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is
+refused too. Without that check `db_read` was a second write path — `fetch`
+executes whatever statement it is handed, so `DELETE … RETURNING` ran under the
+`read` gate — and the bound below could not hold. `EXPLAIN` is not admitted
+either: `EXPLAIN ANALYZE DELETE …` executes the delete.
+
 The gates above are the `db` / `es` set — the set the portable dialect runs
 through. Other connector types carry gates for their own operations
 (`read`/`write` on `cache`, `publish` on `kafka`, a method allowlist on
