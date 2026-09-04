@@ -226,6 +226,21 @@ pub fn record_admin_auth_failure(reason: &'static str) {
     counter!("orion_admin_auth_failures_total", "reason" => reason).increment(1);
 }
 
+/// A trace read authorised by the deprecated `?token=` query parameter.
+///
+/// A deprecation nobody can measure is a deprecation nobody can ever act on:
+/// this is what tells an operator whether removing the query form would break
+/// a caller, before it is removed. Counted only when the token *worked* — a
+/// wrong one is a failed auth and already counted as one, and folding those in
+/// would report usage from clients that have no valid token at all. A flat
+/// zero over a retention window is the signal to drop the parameter.
+pub fn record_trace_token_query_read() {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_trace_token_query_reads_total").increment(1);
+}
+
 // ---------------------------------------------------------------------------
 // Histogram helpers
 // ---------------------------------------------------------------------------

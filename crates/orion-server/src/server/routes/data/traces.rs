@@ -3,6 +3,7 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -62,9 +63,38 @@ pub(crate) async fn list_traces(
 #[derive(Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct TraceAccessQuery {
-    /// The capability token returned with the async 202. Alternative to the
-    /// `x-trace-token` header for clients that cannot set headers.
+    /// **Deprecated.** The capability token returned with the async 202. Use
+    /// the `x-trace-token` header instead: a URL is not a private place. It
+    /// reaches browser history, reverse-proxy and CDN access logs, analytics,
+    /// `Referer` headers on anything the page loads next, and every chat
+    /// window a support ticket is pasted into — none of which the header
+    /// touches. Still accepted for clients that cannot set headers; responses
+    /// that authorise this way carry a `Deprecation` header, and
+    /// `orion_trace_token_query_reads_total` counts them so an operator can
+    /// see whether anything still depends on it.
     token: Option<String>,
+}
+
+/// A trace read never belongs in a shared cache.
+///
+/// The body carries the submission's full result, and the capability that
+/// authorised it travels in `x-trace-token` (or, worse, the query string) —
+/// **not** in `Authorization`, which is the header that makes a shared cache
+/// treat a response as private by default (RFC 9111 §3.5). Without this a
+/// proxy is entitled to store a trace body and hand it to the next caller who
+/// arrives with the same URL. The sign-in redirect already says `no-store` for
+/// the same class of reason; this is the other place a response is a secret.
+const NO_STORE: (axum::http::header::HeaderName, &str) =
+    (axum::http::header::CACHE_CONTROL, "no-store");
+
+/// Which lane authorised a trace read — the answer decides whether the
+/// response is also a deprecation notice.
+#[derive(Clone, Copy, PartialEq)]
+enum TraceLane {
+    /// An admin credential, or the `x-trace-token` header.
+    Supported,
+    /// The `?token=` query parameter (deprecated).
+    QueryToken,
 }
 
 #[utoipa::path(
@@ -74,9 +104,17 @@ pub(crate) struct TraceAccessQuery {
     description = "\
 Fetch one trace. Access follows a two-lane rule (R12): present either a \
 valid admin credential, or — for async submissions — the `trace_token` \
-returned with the 202, via the `x-trace-token` header or `?token=` query \
-parameter. Traces without a token (sync traces, DLQ retries, rows from \
-before 1.0.0) are admin-plane only when admin auth is enabled.",
+returned with the 202, in the `x-trace-token` header. Traces without a token \
+(sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when \
+admin auth is enabled.\n\n\
+The `?token=` query parameter is a **deprecated** alternative for clients \
+that cannot set headers. Prefer the header: a URL is not a private place, \
+and the token leaks into browser history, proxy and CDN logs, `Referer` \
+headers and anywhere a link is pasted. Reads authorised that way answer with \
+a `Deprecation` header.\n\n\
+Every response carries `Cache-Control: no-store` — the body is the \
+submission's result and the capability is not an `Authorization` header, so \
+nothing else stops a shared cache storing it.",
     params(
         ("id" = String, Path, description = "Trace ID"),
         TraceAccessQuery,
@@ -94,7 +132,7 @@ pub(crate) async fn get_trace(
     OrionQuery(query): OrionQuery<TraceAccessQuery>,
     PeerAddr(peer): PeerAddr,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Response, OrionError> {
     // This route carries its own auth (the admin middleware does not guard it),
     // so it has to carry the middleware's *brute-force* protection too. Without
     // this, the trace token was the one credential on the whole surface that
@@ -136,12 +174,24 @@ pub(crate) async fn get_trace(
     let auth_cfg = &state.config.admin_auth;
     let is_admin = auth_cfg.enabled
         && crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+    // Which lane answered, tracked rather than inferred: the response says
+    // `Deprecation` only when the query parameter is what got the caller in,
+    // and a caller who sends both is using the supported one.
+    let mut lane = TraceLane::Supported;
     if !is_admin {
-        let presented = headers
+        let header_token = headers
             .get("x-trace-token")
             .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .or_else(|| query.token.clone());
+            .map(str::to_string);
+        let presented = match header_token {
+            Some(token) => Some(token),
+            None => {
+                if query.token.is_some() {
+                    lane = TraceLane::QueryToken;
+                }
+                query.token.clone()
+            }
+        };
         let allowed = match trace.access_token_hash.as_deref() {
             Some(stored) => presented
                 .as_deref()
@@ -161,6 +211,17 @@ pub(crate) async fn get_trace(
             return Err(OrionError::Unauthorized(
                 "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
             ));
+        }
+        // Counted only once the token actually authorised: a wrong `?token=`
+        // is a failed auth, already counted as one, and counting it here too
+        // would make the deprecation gauge read as usage by clients that have
+        // no valid token at all.
+        if lane == TraceLane::QueryToken {
+            crate::metrics::record_trace_token_query_read();
+            tracing::debug!(
+                trace_id = %id,
+                "Trace read authorised by the deprecated `?token=` query parameter"
+            );
         }
         // A correct token clears the budget, the way a valid admin key does —
         // otherwise a legitimate poller inherits a lockout from whoever else
@@ -218,7 +279,17 @@ pub(crate) async fn get_trace(
         response["task_trace_json"] = v;
     }
 
-    Ok(data_response(response))
+    // `no-store` on both lanes; `Deprecation` only on the one being retired.
+    let mut out = data_response(response).into_response();
+    let headers = out.headers_mut();
+    headers.insert(NO_STORE.0, axum::http::HeaderValue::from_static(NO_STORE.1));
+    if lane == TraceLane::QueryToken {
+        headers.insert(
+            axum::http::HeaderName::from_static("deprecation"),
+            axum::http::HeaderValue::from_static("true"),
+        );
+    }
+    Ok(out)
 }
 
 /// Apply the S14 strip to every step snapshot inside a stored task trace.

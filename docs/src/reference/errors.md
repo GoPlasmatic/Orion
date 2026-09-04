@@ -81,7 +81,7 @@ An `/async` submission answers `202` with an acknowledgment, never a result:
 }
 ```
 
-Both fields are always present — the trace row is written before the response is sent, so the id can always be polled. The token appears only in this response; Orion stores its hash. Poll `GET /api/v1/admin/traces/{trace_id}` with the token in `x-trace-token` (or `?token=`), or with an admin credential.
+Both fields are always present — the trace row is written before the response is sent, so the id can always be polled. The token appears only in this response; Orion stores its hash. Poll `GET /api/v1/admin/traces/{trace_id}` with the token in `x-trace-token`, or with an admin credential. (The `?token=` query parameter also works and is [deprecated](./data-api.md#the-token-query-parameter-is-deprecated).)
 
 A failed async run surfaces on [the trace](./data-api.md#the-trace-object), not in any HTTP response. Its `status` becomes `failed`, and the trace detail carries the failure text in `error` — list rows name the same value `error_message`. Orion also enqueues the failed delivery to the [trace DLQ](./admin-api.md#trace-dlq) for retry.
 

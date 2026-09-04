@@ -2988,7 +2988,7 @@
         "tags": [
           "Traces"
         ],
-        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, via the `x-trace-token` header or `?token=` query parameter. Traces without a token (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when admin auth is enabled.",
+        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, in the `x-trace-token` header. Traces without a token (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when admin auth is enabled.\n\nThe `?token=` query parameter is a **deprecated** alternative for clients that cannot set headers. Prefer the header: a URL is not a private place, and the token leaks into browser history, proxy and CDN logs, `Referer` headers and anywhere a link is pasted. Reads authorised that way answer with a `Deprecation` header.\n\nEvery response carries `Cache-Control: no-store` — the body is the submission's result and the capability is not an `Authorization` header, so nothing else stops a shared cache storing it.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -3003,7 +3003,7 @@
           {
             "name": "token",
             "in": "query",
-            "description": "The capability token returned with the async 202. Alternative to the\n`x-trace-token` header for clients that cannot set headers.",
+            "description": "**Deprecated.** The capability token returned with the async 202. Use\nthe `x-trace-token` header instead: a URL is not a private place. It\nreaches browser history, reverse-proxy and CDN access logs, analytics,\n`Referer` headers on anything the page loads next, and every chat\nwindow a support ticket is pasted into — none of which the header\ntouches. Still accepted for clients that cannot set headers; responses\nthat authorise this way carry a `Deprecation` header, and\n`orion_trace_token_query_reads_total` counts them so an operator can\nsee whether anything still depends on it.",
             "required": false,
             "schema": {
               "type": "string"

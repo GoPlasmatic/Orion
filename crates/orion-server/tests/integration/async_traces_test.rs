@@ -747,3 +747,144 @@ async fn guessing_a_trace_token_trips_the_admin_lockout() {
         "after repeated wrong tokens the client must be in failed-auth backoff"
     );
 }
+
+// ============================================================
+// The `?token=` query parameter is deprecated (finding 8)
+// ============================================================
+
+/// The query parameter still authorises — deprecating a documented parameter
+/// is not the same as removing it, and a 1.x server must keep answering the
+/// clients that use it.
+#[tokio::test]
+async fn the_query_token_still_authorises_and_says_it_is_deprecated() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "dep-token-ch",
+        common::simple_log_workflow("Deprecated Token"),
+    )
+    .await;
+    let (trace_id, token) = common::submit_async(
+        &app,
+        "/api/v1/data/dep-token-ch/async",
+        serde_json::json!({"data": {"x": 1}}),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the query form must still work"
+    );
+    assert_eq!(
+        resp.headers()
+            .get("deprecation")
+            .and_then(|v| v.to_str().ok()),
+        Some("true"),
+        "a read authorised by `?token=` must say so in the response"
+    );
+}
+
+/// The supported lane is not marked deprecated — otherwise the header means
+/// nothing and a client migrating away from the query form sees no change.
+#[tokio::test]
+async fn the_header_token_is_not_marked_deprecated() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "hdr-token-ch",
+        common::simple_log_workflow("Header Token"),
+    )
+    .await;
+    let (trace_id, token) = common::submit_async(
+        &app,
+        "/api/v1/data/hdr-token-ch/async",
+        serde_json::json!({"data": {"x": 1}}),
+    )
+    .await;
+
+    let req = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .header("x-trace-token", &token)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers().get("deprecation").is_none(),
+        "the header lane is the supported one"
+    );
+
+    // A caller that sends both is using the supported form, not the legacy
+    // one — otherwise the deprecation counter reads as usage by clients that
+    // have already migrated.
+    let req = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/traces/{trace_id}?token={token}"))
+        .header("x-trace-token", &token)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(
+        resp.headers().get("deprecation").is_none(),
+        "the header wins when both are present"
+    );
+}
+
+/// A trace body is the submission's result, and its capability is not an
+/// `Authorization` header — so nothing but this stops a shared cache storing
+/// it and serving it to the next caller with the same URL.
+#[tokio::test]
+async fn every_trace_read_refuses_to_be_cached() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "nostore-ch",
+        common::simple_log_workflow("No Store"),
+    )
+    .await;
+    let (trace_id, token) = common::submit_async(
+        &app,
+        "/api/v1/data/nostore-ch/async",
+        serde_json::json!({"data": {"x": 1}}),
+    )
+    .await;
+
+    // Both lanes: the body is equally sensitive whichever one let the caller in.
+    let header_req = axum::http::Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/traces/{trace_id}"))
+        .header("x-trace-token", &token)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let query_req = common::json_request(
+        "GET",
+        &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
+        None,
+    );
+
+    for (lane, req) in [("header", header_req), ("query", query_req)] {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{lane}");
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "{lane} lane must not be cacheable"
+        );
+    }
+}

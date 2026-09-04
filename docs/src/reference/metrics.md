@@ -16,6 +16,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |
 | `orion_errors_total` | Counter | `reason` | Errors by cause: `engine`, `timeout`, `panic`, `kafka_retry`, and other reason codes. |
 | `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin requests: `missing_or_malformed`, `invalid_key`, `locked_out`, or `read_only_write` (a read-only key attempting a mutation — a 403, not a bad credential). |
+| `orion_trace_token_query_reads_total` | Counter | — | Trace reads authorised by the deprecated `?token=` query parameter. Counted only when the token was valid, so this is usage rather than guessing. A sustained zero means the parameter can be removed. |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served. |
 | `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency. |
 | `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency. |

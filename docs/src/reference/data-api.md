@@ -170,8 +170,7 @@ The token is shown once — only its hash is stored, and scopes the poll to
 this submission. The ack and failure semantics are specified in
 [Errors & Response Envelopes](./errors.md#the-async-acknowledgment).
 
-**Poll for the result** (header form, or `?token=` for clients that cannot
-set headers):
+**Poll for the result** — put the token in the `x-trace-token` header:
 
 ```bash
 curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655440000 \
@@ -224,8 +223,28 @@ Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):
 
 ```bash
-curl -s "http://localhost:8080/api/v1/admin/traces/{trace-id}?token={trace-token}"
+curl -s http://localhost:8080/api/v1/admin/traces/{trace-id} \
+  -H "x-trace-token: {trace-token}"
 ```
+
+Every trace read answers with `Cache-Control: no-store`. The body is the
+submission's result, and the capability that authorised it is not an
+`Authorization` header — which is the header a shared cache treats as making
+a response private — so nothing else would stop a proxy storing it.
+
+### The `?token=` query parameter is deprecated
+
+`GET /api/v1/admin/traces/{id}?token={trace-token}` still authorises, for
+clients that cannot set headers. Prefer the header, and migrate if you are
+using it: a URL is not a private place. It reaches browser history, reverse
+proxy and CDN access logs, analytics pipelines, the `Referer` header of
+anything the page loads next, and every chat window a support ticket is
+pasted into. A header reaches none of those.
+
+Reads authorised this way answer with `Deprecation: true`, and the server
+counts them in `orion_trace_token_query_reads_total` — so an operator can
+confirm nothing depends on the parameter before it is removed in a future
+major version.
 
 List rows are payload-free projections — `input_json`, `result_json` and
 `task_trace_json` are served only by the single-trace GET, and the served
