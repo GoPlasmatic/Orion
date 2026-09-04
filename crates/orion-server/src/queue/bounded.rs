@@ -37,6 +37,38 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+/// Subtract from a counter that must never go below zero, returning the value
+/// left in it.
+///
+/// `fetch_sub` at zero wraps to `usize::MAX`, and the module doc above is about
+/// why that matters: the wrapped value is what gets published as a gauge and
+/// interpolated into a refusal message, and — for the trace queue's byte
+/// counter — what gets compared against the configured ceiling, so one wrap
+/// turns a capacity limit into a permanent 503. `saturating_sub` on the value
+/// `fetch_sub` *returns* does not help: it clamps the copy the caller reads
+/// back, not the value left in the atomic. Only a compare-and-swap can clamp
+/// the atomic itself, which is what this does.
+///
+/// Every counter here is balanced by construction, so the clamp should never
+/// fire; the `debug_assert` says so out loud, and release builds degrade to a
+/// stuck-at-zero gauge rather than a counter reading 18 quintillion.
+///
+/// `Release` on success: a drain's `Acquire` load of zero has to mean every
+/// write ordered before this release actually happened.
+pub(crate) fn release_counter(counter: &AtomicUsize, by: usize) -> usize {
+    let previous = counter
+        .fetch_update(Ordering::Release, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(by))
+        })
+        // The closure never returns `None`, so this cannot fail.
+        .unwrap_or(0);
+    debug_assert!(
+        previous >= by,
+        "counter underflow: released {by} from {previous}"
+    );
+    previous.saturating_sub(by)
+}
+
 /// The `metrics.rs` setter this queue publishes its depth through.
 ///
 /// A function pointer rather than a metric name: every `gauge!` call in the
@@ -197,7 +229,7 @@ impl<T> BoundedWorker<T> {
         }
 
         // Nothing entered the queue, so nothing downstream will subtract it.
-        self.pending.fetch_sub(1, Ordering::AcqRel);
+        release_counter(&self.pending, 1);
         Err(if any_open {
             Rejected::Full(item)
         } else {
@@ -224,11 +256,11 @@ impl<T> BoundedWorker<T> {
                 Ok(())
             }
             Ok(Err(mpsc::error::SendError(returned))) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
+                release_counter(&self.pending, 1);
                 Err(Blocked::Closed(returned))
             }
             Err(_elapsed) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
+                release_counter(&self.pending, 1);
                 Err(Blocked::TimedOut)
             }
         }
@@ -325,11 +357,7 @@ impl<T> WorkerReceiver<T> {
     }
 
     fn release(&self) {
-        let depth = self
-            .pending
-            .fetch_sub(1, Ordering::AcqRel)
-            .saturating_sub(1);
-        (self.gauge)(depth as f64);
+        (self.gauge)(release_counter(&self.pending, 1) as f64);
     }
 }
 
@@ -352,13 +380,7 @@ impl<T> std::ops::Deref for Leased<T> {
 
 impl<T> Drop for Leased<T> {
     fn drop(&mut self) {
-        // Release, not Relaxed: a drain's `Acquire` load of zero has to mean
-        // every write ordered before this release has actually happened.
-        let depth = self
-            .pending
-            .fetch_sub(1, Ordering::Release)
-            .saturating_sub(1);
-        (self.gauge)(depth as f64);
+        (self.gauge)(release_counter(&self.pending, 1) as f64);
     }
 }
 

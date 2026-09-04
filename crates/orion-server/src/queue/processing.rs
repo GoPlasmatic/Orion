@@ -88,6 +88,61 @@ struct DlqCandidate<'a> {
     retry_count: i64,
 }
 
+/// One trace's claim on the queue's capacity, released on drop.
+///
+/// Q6: the dispatcher used to increment the two counters, spawn the task, and
+/// decrement them after `process_trace(...).await` returned. A panic in that
+/// future skipped both decrements — the permit came back (it was already RAII)
+/// but the accounting did not. `memory_bytes` is the admission authority in
+/// [`super::TraceQueue::enqueue`], so every panic permanently shrank the
+/// queue's capacity: enough of them and healthy submissions answer 503 with a
+/// counter describing work that finished long ago, until the process is
+/// restarted. `active` only fed a gauge, but the gauge is how an operator
+/// decides whether the pool is stuck.
+///
+/// A guard rather than tidier decrements: this is the same fix
+/// [`super::bounded::Leased`] already applies to the depth counter, for the
+/// same reason ("a worker that panics mid-write cannot strand the
+/// reservation"), and it is the only shape that holds for a failure mode
+/// nobody remembers to write code for.
+struct ActiveTrace {
+    active: Arc<AtomicUsize>,
+    memory_bytes: Arc<AtomicUsize>,
+    /// Exactly what `enqueue` reserved for this item.
+    reserved: usize,
+    /// Named in the panic log below: a `JoinError` from a detached task says
+    /// only *that* something panicked, and the dispatcher would have to keep a
+    /// side table to say *which* trace. The guard already knows.
+    trace_id: String,
+    /// Declared last so it is dropped last — after this type's `Drop` body has
+    /// released the counters. Shutdown waits on the permits, so returning one
+    /// while the accounting it was holding is still outstanding would let a
+    /// drain finish against counters that have not settled.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl Drop for ActiveTrace {
+    fn drop(&mut self) {
+        let active = super::bounded::release_counter(&self.active, 1);
+        metrics::set_trace_workers_active(active as f64);
+        let memory = super::bounded::release_counter(&self.memory_bytes, self.reserved);
+        metrics::set_trace_queue_memory_bytes(memory as f64);
+
+        // The panic itself still unwinds — this only makes it attributable.
+        // Without it a panicking trace is a bare stderr backtrace with no
+        // trace id, no channel, and nothing an alert can key on.
+        if std::thread::panicking() {
+            metrics::record_error("trace_worker_panic");
+            tracing::error!(
+                trace_id = %self.trace_id,
+                "Trace worker panicked; its queue capacity has been released. \
+                 The trace itself is lost — no result and no DLQ row — because \
+                 the panic unwound past both."
+            );
+        }
+    }
+}
+
 /// Main dispatcher loop: receives traces from the channel and spawns processing
 /// tasks, limited by a semaphore to `max_workers` concurrent traces.
 pub(super) async fn dispatcher_loop(
@@ -106,29 +161,25 @@ pub(super) async fn dispatcher_loop(
             Err(_) => break, // Semaphore closed
         };
 
-        // Release exactly what `enqueue` reserved for this item
-        let estimated_size = item.payload_size;
-
         // Dequeued — now active.
         let active = ctx.counters.active.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_workers_active(active as f64);
 
+        // Everything this item holds — the permit, its slot in the active
+        // count, and the bytes `enqueue` reserved for it — in one value that
+        // releases them however the task ends.
+        let claim = ActiveTrace {
+            active: ctx.counters.active.clone(),
+            memory_bytes: ctx.counters.memory_bytes.clone(),
+            reserved: item.payload_size,
+            trace_id: item.msg.trace_id.clone(),
+            _permit: permit,
+        };
         let processing = ctx.processing.clone();
-        let active_counter = ctx.counters.active.clone();
-        let memory_counter = ctx.counters.memory_bytes.clone();
 
         tokio::spawn(async move {
-            let _permit = permit; // guard: dropped on scope exit, even on panic
+            let _claim = claim;
             process_trace(item, processing).await;
-            let active = active_counter
-                .fetch_sub(1, Ordering::Relaxed)
-                .saturating_sub(1);
-            metrics::set_trace_workers_active(active as f64);
-            // Release memory accounting
-            let mem = memory_counter
-                .fetch_sub(estimated_size, Ordering::Relaxed)
-                .saturating_sub(estimated_size);
-            metrics::set_trace_queue_memory_bytes(mem as f64);
         });
     }
 
@@ -664,5 +715,130 @@ async fn enqueue_dlq_row(
             retry_count = dlq_retry_count,
             "Failed trace enqueued to DLQ for retry"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // The panic below is the subject of the test, not an accident.
+    #![allow(clippy::panic)]
+
+    use super::*;
+
+    fn claim(
+        active: &Arc<AtomicUsize>,
+        memory: &Arc<AtomicUsize>,
+        reserved: usize,
+        permit: tokio::sync::OwnedSemaphorePermit,
+    ) -> ActiveTrace {
+        // What the dispatcher does before handing the item to a task.
+        active.fetch_add(1, Ordering::Relaxed);
+        memory.fetch_add(reserved, Ordering::Relaxed);
+        ActiveTrace {
+            active: active.clone(),
+            memory_bytes: memory.clone(),
+            reserved,
+            trace_id: "t-panic".to_string(),
+            _permit: permit,
+        }
+    }
+
+    /// Q6: a trace whose processing panics must give back everything it was
+    /// holding.
+    ///
+    /// `memory_bytes` is what makes this more than a cosmetic gauge leak: it is
+    /// the value `TraceQueue::enqueue` compares against `max_memory_bytes`, so
+    /// bytes stranded by a panic are capacity the node never gets back. Enough
+    /// panics and every submission answers 503 while the queue is empty.
+    #[tokio::test]
+    async fn a_panicking_trace_releases_its_capacity() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let memory = Arc::new(AtomicUsize::new(0));
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("a free permit");
+
+        let guard = claim(&active, &memory, 4096, permit);
+        assert_eq!(memory.load(Ordering::Relaxed), 4096, "reserved up front");
+
+        let panicked = tokio::spawn(async move {
+            let _claim = guard;
+            panic!("a handler panicked mid-trace");
+        })
+        .await;
+
+        assert!(panicked.is_err(), "the task must actually have panicked");
+        assert_eq!(active.load(Ordering::Relaxed), 0, "worker slot leaked");
+        assert_eq!(memory.load(Ordering::Relaxed), 0, "reserved bytes leaked");
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "the concurrency permit must come back too"
+        );
+    }
+
+    /// The ordinary path releases exactly the same things — the guard is not a
+    /// panic-only mechanism bolted beside a normal one.
+    #[tokio::test]
+    async fn a_completed_trace_releases_the_same_capacity() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let memory = Arc::new(AtomicUsize::new(0));
+        let semaphore = Arc::new(Semaphore::new(1));
+        let permit = semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("a free permit");
+
+        let guard = claim(&active, &memory, 4096, permit);
+        tokio::spawn(async move {
+            let _claim = guard;
+        })
+        .await
+        .expect("no panic");
+
+        assert_eq!(active.load(Ordering::Relaxed), 0);
+        assert_eq!(memory.load(Ordering::Relaxed), 0);
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    /// Two traces' claims are independent: releasing one must not release the
+    /// other's bytes, which a shared "reset to zero" fix would.
+    #[tokio::test]
+    async fn one_panicking_trace_does_not_disturb_its_neighbour() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let memory = Arc::new(AtomicUsize::new(0));
+        let semaphore = Arc::new(Semaphore::new(2));
+
+        let doomed = claim(
+            &active,
+            &memory,
+            100,
+            semaphore.clone().acquire_owned().await.expect("permit"),
+        );
+        let survivor = claim(
+            &active,
+            &memory,
+            900,
+            semaphore.clone().acquire_owned().await.expect("permit"),
+        );
+
+        let _ = tokio::spawn(async move {
+            let _claim = doomed;
+            panic!("boom");
+        })
+        .await;
+
+        assert_eq!(active.load(Ordering::Relaxed), 1, "the survivor is active");
+        assert_eq!(
+            memory.load(Ordering::Relaxed),
+            900,
+            "only the panicking trace's reservation is released"
+        );
+        drop(survivor);
+        assert_eq!(memory.load(Ordering::Relaxed), 0);
     }
 }

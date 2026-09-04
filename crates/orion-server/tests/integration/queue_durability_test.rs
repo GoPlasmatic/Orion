@@ -682,3 +682,160 @@ async fn a_burst_of_traces_commits_as_a_single_batch() {
         "a burst under batch_size must commit in one transaction (Q11)"
     );
 }
+
+// ============================================================
+// Q6: a panicking trace must not permanently shrink the queue
+// ============================================================
+
+/// A task handler that panics instead of returning an error.
+///
+/// `AlwaysFail` in `trace_dlq_poison_test` covers the *error* path, which the
+/// DLQ already handles. This is the other one: a handler that unwinds, which
+/// is what any `expect`, slice index or arithmetic overflow inside a handler
+/// or the engine does.
+struct AlwaysPanic;
+
+#[async_trait]
+impl dataflow_rs::engine::functions::AsyncFunctionHandler for AlwaysPanic {
+    type Input = serde_json::Value;
+
+    async fn execute(
+        &self,
+        _ctx: &mut dataflow_rs::engine::task_context::TaskContext<'_>,
+        _input: &Self::Input,
+    ) -> dataflow_rs::Result<dataflow_rs::engine::task_outcome::TaskOutcome> {
+        panic!("a handler panicked mid-trace");
+    }
+}
+
+fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
+    let workflow = dataflow_rs::Workflow::from_json(
+        r#"{
+            "id": "panic-wf",
+            "name": "Panic",
+            "priority": 0,
+            "channel": "panic-ch",
+            "tasks": [
+                {"id": "t1", "name": "Boom", "function": {"name": "always_panic", "input": {}}}
+            ]
+        }"#,
+    )
+    .expect("panic workflow parses");
+
+    let engine = dataflow_rs::Engine::builder()
+        .with_workflow(workflow)
+        .register("always_panic", AlwaysPanic)
+        .build()
+        .expect("engine builds");
+
+    Arc::new(orion::runtime::RuntimeHandle::new(
+        Arc::new(engine),
+        Arc::new(orion::channel::ChannelSnapshot::empty()),
+    ))
+}
+
+/// Q6: the queue's memory reservation survives a panicking trace.
+///
+/// `max_queue_memory_bytes` is enforced against a running total that the
+/// dispatcher decrements when a trace finishes. Those decrements used to run
+/// *after* `process_trace(...).await` returned, so a panic skipped them and the
+/// bytes stayed reserved for work that had already ended. The counter is the
+/// admission authority, so the damage is cumulative and permanent: enough
+/// panics and every submission answers 503 while the queue sits empty.
+///
+/// The ceiling here fits one payload and not two, which is what makes the
+/// second submission the assertion. It is retried because releasing the
+/// reservation and accepting the next message are on different tasks — with
+/// the leak it never succeeds, with the fix it succeeds almost at once.
+///
+/// The panic backtrace this prints to stderr is the test doing its job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_panicking_trace_does_not_permanently_consume_queue_memory() {
+    // One `QueueMessage`'s worth of accounting, used both to size the ceiling
+    // and to submit, so the two cannot drift apart.
+    static PAYLOAD: std::sync::LazyLock<serde_json::Value> =
+        std::sync::LazyLock::new(|| serde_json::json!({ "n": 1 }));
+    static METADATA: std::sync::LazyLock<serde_json::Value> =
+        std::sync::LazyLock::new(|| serde_json::json!({}));
+
+    sqlx::any::install_default_drivers();
+    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let trace_repo: Arc<dyn TraceSink> = Arc::new(SqlTraceRepository::new(pool.clone()));
+    let tasks = orion::runtime::TaskRegistry::new();
+    let trace_storage = orion::config::TraceStorageConfig::default();
+    let (persistence_queue, _persistence_handle) =
+        orion::queue::trace_persistence::start(&tasks, &trace_storage, trace_repo.clone());
+
+    // The ceiling is derived from the payload rather than guessed, and admits
+    // exactly one message: a second is refused while the first is in flight,
+    // and a first whose reservation is *stranded* refuses it forever. A
+    // round-number ceiling silently stops discriminating — at 100 bytes this
+    // 9-byte payload can leak eleven times before the test notices.
+    let reservation = PAYLOAD.to_string().len() + METADATA.to_string().len();
+    let (trace_queue, _worker_handle) = orion::queue::start_workers(
+        &tasks,
+        &orion::config::TraceQueueConfig {
+            workers: 2,
+            buffer_size: 10,
+            max_queue_memory_bytes: reservation + 1,
+            ..Default::default()
+        },
+        orion::queue::WorkerDeps {
+            runtime: panicking_runtime(),
+            trace_repo: trace_repo.clone(),
+            dlq_repo: None,
+            persistence_queue,
+            global_trace_storage: trace_storage,
+            rollout_sticky_header: String::new(),
+        },
+    );
+
+    // The row has to exist: `process_trace` marks it `running` before it
+    // dispatches, and returns early if that write fails — which is how an
+    // earlier version of this test passed against the bug it was written for.
+    let submit = || {
+        let queue = trace_queue.clone();
+        let repo = trace_repo.clone();
+        async move {
+            let trace = repo
+                .create_pending("panic-ch", None, "async", Some("{}"), None)
+                .await
+                .expect("pending row");
+            queue
+                .submit(orion::queue::QueueMessage {
+                    trace_id: trace.id,
+                    channel: "panic-ch".to_string(),
+                    payload: PAYLOAD.clone(),
+                    metadata: METADATA.clone(),
+                    trace_headers: Default::default(),
+                    profile_requested: false,
+                    backpressure_permit: None,
+                })
+                .await
+        }
+    };
+
+    submit().await.expect("the first message fits");
+
+    // Once the panicking trace has unwound, its reservation is free again.
+    let mut accepted = false;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if submit().await.is_ok() {
+            accepted = true;
+            break;
+        }
+    }
+    assert!(
+        accepted,
+        "a panicking trace stranded its memory reservation: the queue is empty \
+         but still refusing submissions at its ceiling"
+    );
+}
