@@ -1485,6 +1485,88 @@ mod tests {
         assert!(write_sql(input, SqlDialect::Postgres).contains("DO NOTHING"));
     }
 
+    /// Every write op, rendered on all three dialects.
+    ///
+    /// The write goldens above run through `sqlite_w()` almost exclusively, and
+    /// that is how a MySQL upsert spent its life emitting
+    /// `ON DUPLICATE KEY IGNORE` — a statement the server refuses — with a
+    /// green suite. The read goldens have looped over the dialects since 1.0;
+    /// this is the write half of the same guard.
+    ///
+    /// `returning` is absent on purpose: MySQL refuses it, and that divergence
+    /// has its own test below.
+    #[test]
+    fn every_write_op_renders_on_every_dialect() {
+        let cases: [(&str, Json, [&str; 3]); 5] = [
+            (
+                "insert",
+                json!({ "op": "insert", "target": "users",
+                        "values": { "id": "u1", "name": "Alice" } }),
+                [
+                    r#"INSERT INTO "users" ("id", "name") VALUES (?, ?)"#,
+                    r#"INSERT INTO "users" ("id", "name") VALUES ($1, $2)"#,
+                    "INSERT INTO `users` (`id`, `name`) VALUES (?, ?)",
+                ],
+            ),
+            (
+                "insert_bulk",
+                json!({ "op": "insert", "target": "users",
+                        "values": [{ "id": "u1" }, { "id": "u2" }] }),
+                [
+                    r#"INSERT INTO "users" ("id") VALUES (?), (?)"#,
+                    r#"INSERT INTO "users" ("id") VALUES ($1), ($2)"#,
+                    "INSERT INTO `users` (`id`) VALUES (?), (?)",
+                ],
+            ),
+            (
+                "update",
+                json!({ "op": "update", "target": "users", "set": { "name": "Ada" },
+                        "filter": { "==": [{ "field": "id" }, "u1"] } }),
+                [
+                    r#"UPDATE "users" SET "name" = ? WHERE "id" = ?"#,
+                    r#"UPDATE "users" SET "name" = $1 WHERE "id" = $2"#,
+                    "UPDATE `users` SET `name` = ? WHERE `id` = ?",
+                ],
+            ),
+            (
+                "delete",
+                json!({ "op": "delete", "target": "users",
+                        "filter": { "==": [{ "field": "id" }, "u1"] } }),
+                [
+                    r#"DELETE FROM "users" WHERE "id" = ?"#,
+                    r#"DELETE FROM "users" WHERE "id" = $1"#,
+                    "DELETE FROM `users` WHERE `id` = ?",
+                ],
+            ),
+            (
+                "upsert_do_update",
+                json!({ "op": "upsert", "target": "users",
+                        "values": { "email": "a@x.io", "name": "Ada" },
+                        "on_conflict": { "target": ["email"], "action": "update" } }),
+                [
+                    r#"INSERT INTO "users" ("email", "name") VALUES (?, ?) ON CONFLICT ("email") DO UPDATE SET "name" = "excluded"."name""#,
+                    r#"INSERT INTO "users" ("email", "name") VALUES ($1, $2) ON CONFLICT ("email") DO UPDATE SET "name" = "excluded"."name""#,
+                    // MySQL cannot name a conflict target — the upsert fires on
+                    // any unique index. Documented in the parity table.
+                    "INSERT INTO `users` (`email`, `name`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `name` = VALUES(`name`)",
+                ],
+            ),
+        ];
+
+        for (name, envelope, expected) in cases {
+            for (dialect, want) in [SqlDialect::Sqlite, SqlDialect::Postgres, SqlDialect::Mysql]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    write_sql(envelope.clone(), dialect),
+                    want,
+                    "case '{name}' on {dialect:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_returning_on_mysql_rejected() {
         let input = json!({

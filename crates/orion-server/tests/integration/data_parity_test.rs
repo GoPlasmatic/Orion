@@ -614,6 +614,104 @@ async fn assert_count_parity(backend: Backend) {
     }
 }
 
+/// Upsert, executed against a real server on every SQL backend.
+///
+/// The renderer goldens pin the SQL each dialect produces; this pins that the
+/// server accepts it and does what the envelope said. MySQL spent its life
+/// emitting `ON DUPLICATE KEY IGNORE` for `action: "nothing"` — a statement the
+/// server refuses outright — behind a green suite, because the only upsert
+/// coverage ran on SQLite. `action: "nothing"` in particular has no other
+/// runtime test.
+///
+/// SQL only: `users.id` is a primary key here, which is the conflict target,
+/// and the document stores key upserts on `_id` through a different path with
+/// its own coverage.
+async fn assert_upsert_parity(backend: Backend) {
+    let app = common::test_app().await;
+    let label = backend.label();
+    let h = common::backends::start(backend, &format!("ups_{label}")).await;
+    h.prepare().await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    let mut tasks = seed_tasks(&h);
+    // Insert path: a key that is not there yet.
+    tasks.push(write_task(
+        &h,
+        "ups_new",
+        json!({ "op": "upsert", "target": "users",
+                "values": { "id": "u9", "name": "Eve", "age": 22, "status": "active" },
+                "on_conflict": { "target": ["id"], "action": "update" } }),
+    ));
+    // Update path: the same key again, with `action: "update"`.
+    tasks.push(write_task(
+        &h,
+        "ups_existing",
+        json!({ "op": "upsert", "target": "users",
+                "values": { "id": "u9", "name": "Evelyn", "age": 23, "status": "active" },
+                "on_conflict": { "target": ["id"], "action": "update" } }),
+    ));
+    // Do-nothing path: the same key once more, with `action: "nothing"`. The
+    // row must survive untouched — and on MySQL this statement has to be valid
+    // syntax at all.
+    tasks.push(write_task(
+        &h,
+        "ups_nothing",
+        json!({ "op": "upsert", "target": "users",
+                "values": { "id": "u9", "name": "OVERWRITTEN", "age": 99, "status": "active" },
+                "on_conflict": { "target": ["id"], "action": "nothing" } }),
+    ));
+    tasks.push(query_task_as(
+        &h,
+        "read_back",
+        "data.result",
+        json!({ "source": "users", "sort": by_name(),
+                "filter": { "==": [{ "field": "id" }, "u9"] } }),
+    ));
+
+    let channel = format!("ch-ups-{label}");
+    common::create_and_activate_channel(
+        &app,
+        &channel,
+        common::workflow_with_tasks("upsert", json!(tasks)),
+    )
+    .await;
+    let (status, body) = dsl::post(&app, &channel, json!({ "data": {} })).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "[{label}] upsert run failed: {body}"
+    );
+    assert_eq!(body["status"], "ok", "[{label}] upsert run failed: {body}");
+
+    let rows = body["data"]["result"]
+        .as_array()
+        .expect("result should be an array");
+    assert_eq!(rows.len(), 1, "[{label}] exactly one u9: {body}");
+    assert_eq!(
+        rows[0]["name"], "Evelyn",
+        "[{label}] the update path must have applied and the do-nothing path \
+         must not have: {body}"
+    );
+    assert_eq!(rows[0]["age"], 23, "[{label}] {body}");
+}
+
+#[tokio::test]
+async fn upsert_parity_sqlite() {
+    assert_upsert_parity(Backend::Sqlite).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn upsert_parity_postgres() {
+    assert_upsert_parity(Backend::Postgres).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn upsert_parity_mysql() {
+    assert_upsert_parity(Backend::Mysql).await;
+}
+
 #[tokio::test]
 async fn count_parity_sqlite() {
     assert_count_parity(Backend::Sqlite).await;
