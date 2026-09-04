@@ -27,6 +27,17 @@ use crate::storage::detect_backend;
 /// reference to the one place it is written (F48).
 const NAME: &str = <DataQueryHandler as ConnectorHandler>::NAME;
 
+/// Parent keys per `include` child query.
+///
+/// The keys go into one `IN (…)`, a bind parameter each, and a driver has a
+/// ceiling on those: PostgreSQL's protocol stops at 65535 per statement, and
+/// SQLite builds before 3.32 at 999. Neither is reachable at the default
+/// `query.max_limit` of 1000 — which is why this is the batch size, so a
+/// default deployment issues exactly the one query it always did — but
+/// `max_limit` is a documented knob, and raising it should not turn an
+/// `include` into a driver error naming neither the knob nor the relation.
+const MAX_INCLUDE_KEYS_PER_QUERY: usize = 1000;
+
 /// Executes a portable `data_query` — one backend-neutral filter + envelope that
 /// renders to native SQL, a MongoDB `find`, or an Elasticsearch search — against a
 /// SQL, Mongo, or ES connector. The translation lives in `src/query/`; this
@@ -308,8 +319,12 @@ async fn run_sql_with_includes(
         // `ORDER BY` names it (see `IncludePlan::projection`).
         let strip = inc.strip();
         let mut groups: HashMap<GroupKey, Vec<Value>> = HashMap::new();
-        if !keys.is_empty() {
-            let (csql, cvalues) = query::backend::sql::build_include_select(inc, &keys, dialect);
+        // One child query per batch of parent keys. A parent's key lands in
+        // exactly one batch and the per-parent page is cut inside the child
+        // query, so batching changes no result — only how many bind parameters
+        // one statement carries.
+        for chunk in keys.chunks(MAX_INCLUDE_KEYS_PER_QUERY) {
+            let (csql, cvalues) = query::backend::sql::build_include_select(inc, chunk, dialect);
             let children: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
                 pool, p, rows_to_json, _bind => {
                     let crows = budget
