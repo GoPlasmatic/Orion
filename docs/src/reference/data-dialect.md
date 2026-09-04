@@ -282,7 +282,7 @@ Elasticsearch. The table below is the complete list of divergences.
 | Deep ES pagination | `skip + limit` beyond `max_result_window` (10k) is rejected, not truncated |
 | Bulk upsert on Mongo/ES | Rejected — single-row upserts only |
 | `on_conflict.target` on MySQL | **Advisory.** MySQL's `ON DUPLICATE KEY UPDATE` cannot name a conflict target: the upsert fires on *any* unique index on the table, including the primary key and unique indexes the envelope never mentions. PostgreSQL and SQLite key on exactly the declared columns. The declared target is still required, and still resolved through the schema, but on MySQL it selects nothing — so an upsert on a table with more than one unique index can update a row the target did not identify. Model the table with a single unique key, or keep the upsert on PostgreSQL/SQLite, when that difference matters |
-| The document key (`_id`) | **Explicit everywhere.** Neither MongoDB nor Elasticsearch maps a logical `id` to `_id` implicitly — declare the rename (`{"columns": {"id": {"name": "_id"}}}`). Without it, `id` is an ordinary document field |
+| The document key (`_id`) | **Explicit everywhere.** Neither MongoDB nor Elasticsearch maps a logical `id` to `_id` implicitly — declare the rename (`{"columns": {"id": {"name": "_id"}}}`). Without it, `id` is an ordinary document field. On Elasticsearch the rename works in both directions: a write lifts `_id` out of `_source` into the action, and a read that *projects* it lifts it back in. A query that does not name it is unaffected |
 | ES upsert conflict target | Must resolve to the document `_id` (declare a schema rename); anything else is rejected |
 | Text-match case sensitivity | **Backend-defined; the dialect does not normalize it.** PostgreSQL `LIKE` is case-sensitive; SQLite's `LIKE` folds ASCII only; MySQL follows the column's collation (case-insensitive under the default `_ci` collations); MongoDB `$regex` is case-sensitive; Elasticsearch follows the field mapping (`keyword` exact, `text` analyzer-folded). Use a `keyword` mapping or a binary collation when an exact match matters |
 | [Extended-JSON values](#extended-json-values) (`$oid`, `$date`) | Native BSON on MongoDB. Rejected on SQL and Elasticsearch (`FeatureUnsupportedByTarget`) — a malformed payload is a located envelope error on every backend |
@@ -299,7 +299,12 @@ The dialect states the divergence instead of half-normalizing it.
 
 - **`_id` lives outside `_source`.** With the rename declared, a physical `_id`
   column is lifted into the bulk action / URL path on insert and upsert;
-  mutating `_id` in `set` is rejected.
+  mutating `_id` in `set` is rejected. A search returns only `_source`, so a
+  read that names the key in `fields` gets it lifted back into each document —
+  without that, `"fields": ["id"]` projected `"_source": ["_id"]` and returned
+  `{}` per hit, and insert-then-update-by-id was the one pattern ES could not
+  express. A query that does not project `_id` is unchanged: whole `_source`
+  documents, no key added.
 - **Read-your-writes.** Every ES write requests a refresh (`wait_for`, or
   `true` on the by-query endpoints), so a `data_query` later in the same
   pipeline sees the write — parity with SQL/Mongo visibility, at a throughput

@@ -219,6 +219,13 @@ impl ConnectorHandler for DataQueryHandler {
 
 /// Execute an Elasticsearch search: POST the rendered body to
 /// `{url}/{index}/_search` and return the `_source` of each hit as a JSON array.
+///
+/// When the projection named the document key, `_id` is lifted out of the hit
+/// and into the returned document. It has to be: ES keeps `_id` *outside*
+/// `_source`, so a schema declaring the `id` → `_id` rename — the spelling the
+/// write path requires — asked for `"_source": ["_id"]` and got `{}` back for
+/// every hit. The write path already lifts a physical `_id` the other way, into
+/// the bulk action; this is the read half of the same rename.
 async fn run_es_search(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
@@ -243,7 +250,16 @@ async fn run_es_search(
         .and_then(|h| h.as_array())
         .map(|hits| {
             hits.iter()
-                .map(|h| h.get("_source").cloned().unwrap_or(Value::Null))
+                .map(|h| {
+                    let mut source = h.get("_source").cloned().unwrap_or(Value::Null);
+                    if eq.include_id
+                        && let Some(id) = h.get(query::backend::es::ES_DOCUMENT_KEY)
+                        && let Value::Object(map) = &mut source
+                    {
+                        map.insert(query::backend::es::ES_DOCUMENT_KEY.to_string(), id.clone());
+                    }
+                    source
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -430,6 +446,13 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
+        name: "binary_as",
+        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
+        kind: FieldKind::String,
+        resolvable: true,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
@@ -437,10 +460,3 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
 ];
-    FieldSchema {
-        name: "binary_as",
-        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
-        kind: FieldKind::String,
-        resolvable: true,
-        ..FieldSchema::DEFAULT
-    },

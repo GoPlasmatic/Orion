@@ -25,11 +25,28 @@ use crate::query::write::{ResolvedConflict, ResolvedWrite, WriteError};
 /// we raise a capability error rather than return a truncated page.
 const MAX_RESULT_WINDOW: u64 = 10_000;
 
+/// The physical name of Elasticsearch's document key. There is no implicit
+/// `id` → `_id` mapping, so this is only ever reached through a declared
+/// schema rename.
+pub const ES_DOCUMENT_KEY: &str = "_id";
+
 /// A rendered Elasticsearch search: the index plus the request body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EsQuery {
     pub index: String,
     pub body: Json,
+    /// Whether the projection named the document key, so the handler must lift
+    /// `_id` back out of the hit and into the returned document.
+    ///
+    /// `_id` is metadata: Elasticsearch keeps it *outside* `_source`, and a
+    /// search returns only `_source`. So a schema that declares the rename
+    /// (`{"columns": {"id": {"name": "_id"}}}`) — the spelling the write path
+    /// requires and the parity table documents — produced `"_source": ["_id"]`
+    /// and handed back `{}` for every hit. Not an error, an empty object: a
+    /// workflow could write a document with an explicit `_id` and update one by
+    /// `_id`, but never read one back, so insert-then-update-by-id was the one
+    /// pattern ES could not express.
+    pub include_id: bool,
 }
 
 /// Build an `EsQuery` from the envelope and lowered condition, enforcing the
@@ -82,6 +99,10 @@ pub fn render(
     Ok(EsQuery {
         index: index.to_string(),
         body,
+        // Only when the projection actually names it. A query that projects
+        // nothing gets whole `_source` documents, exactly as before — adding a
+        // key there would change every existing ES result.
+        include_id: spec.fields.iter().any(|f| f == ES_DOCUMENT_KEY),
     })
 }
 
