@@ -1,6 +1,8 @@
 <!-- description: Connect Orion to PostgreSQL and build a service that writes an order and reads back the customer's history, using the portable, injection-safe data dialect. -->
 # Your First Connector
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 [Your first service](./first-service.md) transformed data in process. Real
 services talk to databases. This tutorial connects Orion to PostgreSQL and
 builds a service that **writes an order and reads back the customer's history**.
@@ -15,6 +17,14 @@ In this guide, you will:
 - create a connector that reaches it without storing a password,
 - write a workflow that inserts a row and reads related rows back,
 - call the result as a REST endpoint.
+
+## Before you start
+
+You need a running Orion server on `http://localhost:8080`, Git, Docker with
+Compose, and `curl`. Complete [Understand the HTTP Flow](./first-service.md) first if
+the workflow and channel lifecycle is new to you. The commands use a
+POSIX-compatible shell; on Windows, run them from WSL or adapt them for
+PowerShell.
 
 Every file below ships in the repository, so clone it first:
 
@@ -115,6 +125,9 @@ curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/record-order/status
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 ```
 
+Expected result: both calls return successful admin envelopes and the channel
+appears as `active` in `orion-cli channels list`.
+
 ## 5. Call it
 
 ```bash
@@ -160,6 +173,21 @@ SQLite and it renders different SQL; point it at MongoDB or Elasticsearch and
 the same envelope renders a `find` filter or a Query DSL search. See the
 [Portable Data Dialect](../reference/data-dialect.md) for the vocabulary and the
 per-backend notes.
+
+## Clean up or run it again
+
+The deployment script skips definitions that already exist, but every request
+inserts another order. Stop the local database and remove its tutorial data
+volume from the package directory:
+
+```bash
+docker compose down -v
+```
+
+If Orion was running outside that Compose project, delete `record-order` as a
+channel and workflow, then delete the `orders-db` connector through the CLI.
+Deletion is permanent; keep the definitions if you are continuing to the
+testing guide.
 
 ## Next steps
 

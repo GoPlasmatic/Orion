@@ -1,6 +1,27 @@
 <!-- description: Every Orion setting with its real default and environment variable — server, storage, engine, Kafka, tracing, TLS, rate limits, cluster and admin auth. -->
 # Config Reference
 
+**Page type:** Reference · **Audience:** Developers and platform operators
+
+## Section index
+
+| Configure… | Section |
+|---|---|
+| Resolution, files, and validation | [How Settings Are Resolved](#how-settings-are-resolved) |
+| Environment-specific values and secrets | [Vars and Secrets](#vars-and-secrets) |
+| SQLite, PostgreSQL, or MySQL | [Database Backend](#database-backend) and [Storage](#storage) |
+| HTTP, TLS, compression, and API docs | [Server](#server) |
+| Multiple replicas and Redis | [Cluster](#cluster-ha) |
+| Engine reload and connector failure | [Engine](#engine) |
+| Traces and audit retention | [Trace Queue](#trace-queue), [Trace Persistence](#trace-persistence), and [Audit Log Retention](#audit-log-retention) |
+| Query safety bounds | [Query and Write Bounds](#query-and-write-bounds) |
+| Kafka ingestion | [Kafka](#kafka) |
+| Authentication, JWT, OAuth, and CORS | [Admin Authentication](#admin-authentication), [JWT Verification](#jwt-verification), [Inbound OAuth2](#inbound-oauth2-sign-in), and [CORS](#cors) |
+| Logs, metrics, and distributed tracing | [Logging and Metrics](#logging-and-metrics) and [Tracing](#tracing) |
+
+Use browser search for an exact TOML key or `ORION_*` variable. Every table
+uses the wire name, default, and corresponding environment override.
+
 Every setting Orion has, with its real default and its environment variable. All settings have sensible defaults — `orion-server` with no config file at all starts and works. What follows is what you change when you want something other than a single-node development instance.
 
 Defaults on this page are checked against `crates/orion-server/src/config/*.rs` by an integration test, so they cannot drift from the code. A ready-to-edit file carrying the same values lives at [`config.toml.example`](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/config.toml.example) — the Docker image ships it at `/app/config.toml.example`, so copy it aside and pass `-c` to use it.

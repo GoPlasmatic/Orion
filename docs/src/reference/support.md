@@ -138,8 +138,9 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
   `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
   `x86_64-pc-windows-msvc`. The rationale for what is and is not on that
   list lives on the [Deploy with Docker](../operate/docker.md) page.
-- **From source** — any platform with a Rust 1.98+ toolchain; Linux and macOS
-  are exercised routinely, and CI runs on Linux.
+- **From source** — use the Rust version declared by the checked-out release's
+  `Cargo.toml` (`rust-version`; 1.98 in the release documented here). Linux and
+  macOS are exercised routinely, and CI runs on Linux.
 
 ## What support is (and is not)
 

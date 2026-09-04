@@ -3,7 +3,7 @@
 
 Every channel and workflow moves through three states, in one direction. The
 rules are enforced by the database, not by convention, which is what makes
-AI-generated logic and 3am changes equally safe to accept.
+AI-generated logic and urgent operator changes follow the same controlled path.
 
 ```orion-diagram
 {
@@ -100,5 +100,5 @@ list of triggers and how to clear one.
   query parameters.
 - [Packages](./packages.md) — how a promotion drives these transitions in
   dependency order, with one reload.
-- [Your First Service](../getting-started/first-service.md) — the lifecycle in
-  four calls.
+- [Understand the HTTP Flow](../getting-started/first-service.md) — create and
+  activate the definitions in four administration calls, then invoke them.

@@ -6,6 +6,38 @@ All admin endpoints are under `/api/v1/admin/`. When
 valid API key. Success and error bodies follow the
 [response envelopes](#response-envelopes) below.
 
+## Endpoint index
+
+| Resource | Operations |
+|---|---|
+| [Channels](#channels) | Create, validate, activate, version, import, and export endpoints |
+| [Workflows](#workflows) | Create, test, activate, roll out, version, import, and export endpoints |
+| [Connectors](#connectors) | Create, validate, test, update, and circuit-breaker endpoints |
+| [Packages](#packages) | Inspect applied package receipts |
+| [Engine](#engine) | Inspect and reload the running engine |
+| [Functions](#functions) | Discover registered task functions and schemas |
+| [Audit logs](#audit-logs) | Query administrative actions |
+| [Trace DLQ](#trace-dlq) | Inspect and retry failed asynchronous persistence |
+| [Backups](#backups) | Create and list SQLite backups |
+
+All resources use the [authentication](#authentication), [response
+envelopes](#response-envelopes), and [lifecycle](#lifecycle) contracts below.
+The generated [OpenAPI specification](./openapi.md) is the machine-readable
+source for clients and code generation.
+
+### Common errors
+
+| Operation | Status/code | Corrective action |
+|---|---|---|
+| Create or update invalid JSON | `400 VALIDATION_ERROR` | Correct the field paths in `details`, then call `/validate` before writing |
+| Read an unknown ID | `404 NOT_FOUND` | Verify the resource kind, ID, and target instance |
+| Reuse an ID, channel name, route, or immutable package version | `409 CONFLICT` | Inspect the existing resource; create a new entity version when changing active content |
+| Activate with a missing dependency or invalid transition | `400 VALIDATION_ERROR` | Run the same status request with `?dry_run=true` and resolve every reported error |
+| Call without a valid admin credential | `401 UNAUTHORIZED` | Supply the configured header and key format |
+
+See [Errors & Response Envelopes](./errors.md) for the complete registry and
+response shapes. Branch on `error.code`, not the human-readable message.
+
 ## Authentication
 
 Admin API endpoints require an API key when `admin_auth.enabled` is true.
@@ -35,6 +67,11 @@ environment variable. Keys listed under `admin_auth.read_only_api_keys`
 authorise `GET`/`HEAD` only; every mutating method answers `403`.
 
 ### Failed-auth backoff
+
+**Rationale.** This fixed policy limits credential guessing without adding
+another security setting that can be disabled accidentally. The values below
+are part of server behavior; clients only need to handle the resulting `401`
+and retry conservatively.
 
 Wrong credentials are rate-limited, so the admin plane cannot be guessed at
 line speed. The policy is fixed — there is no setting for it:
@@ -83,6 +120,11 @@ List endpoints add pagination counters alongside it — `limit` and `offset` alw
 Pre-1.0 responses differed for ten handlers — the [upgrade guide](../operate/upgrading-to-1.0.md) has the full list.
 
 ### Paging and sorting by endpoint
+
+**Rationale.** Traces use keyset paging because that table can grow without
+bound. Smaller administrative collections retain offset paging. Clients should
+follow the endpoint contract below rather than assuming every collection has
+the same sorting controls.
 
 Not every list takes the same query parameters. The asymmetry is contract, not
 accident — the trace list pages by keyset because its table is the one that
@@ -185,7 +227,7 @@ simply omit the parameter.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/workflows` | Create workflow (as draft; optional `id` field for custom IDs, optional `tags: ["..."]` selection labels read back by `?tag=` filters and package export) |
+| POST | `/api/v1/admin/workflows` | Create workflow as a draft. Optional `workflow_id` supplies a custom ID; `tags: ["..."]` supplies selection labels used by `?tag=` filters and package export |
 | GET | `/api/v1/admin/workflows` | List workflows. Filter with `?tag=`, `?status=` |
 | GET | `/api/v1/admin/workflows/{id}` | Get workflow by ID |
 | PUT | `/api/v1/admin/workflows/{id}` | Update draft workflow |

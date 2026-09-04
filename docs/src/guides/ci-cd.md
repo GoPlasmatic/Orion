@@ -1,9 +1,12 @@
-<!-- description: A three-stage Orion promotion pipeline: prove the logic offline, plan it against the target with zero writes, then apply. The first two need no server. -->
+<!-- description: A three-stage Orion promotion pipeline: prove the logic offline, plan against the target with zero writes, then apply the same versioned artifact. -->
 # CI/CD with Packages
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 A promotion pipeline for Orion has three jobs: prove the logic offline, check it
-against the target without writing, then apply it. Each maps to one command, and
-the first two need no server and no secrets.
+against the target without writing, then apply it. Each maps to one command.
+The offline checks need no server or secrets; planning and applying need access
+to the target instance.
 
 **The artifact is the deployable.** `orion-server package export` produces one
 versioned JSON file; you commit it, CI gates it, and CI applies it. Nothing is
@@ -16,6 +19,14 @@ artifact straight from a definition directory, with no instance in the loop —
 which is what you want when the definitions are the source of truth and the
 shared `constants`, `errors` and `fragments` a set declares have to be resolved
 before anything is sent. Everything downstream is identical either way.
+
+## Before you start
+
+You need Git, `orion-server`, a repository for the definitions, and a CI system
+that can run shell commands. Planning and applying additionally require network
+access to the target Orion instance and an admin token supplied through the CI
+secret store. The GitHub Actions YAML below is an example; adapt its secret
+names and installation policy for your CI provider.
 
 ## Repository layout
 

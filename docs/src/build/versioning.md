@@ -123,8 +123,8 @@ reactivates an archived version in place — `PATCH /{id}/status` addresses a
 workflow id, not a version, and activating always promotes the current draft.
 What you do instead is put the known-good content into a new draft and activate
 that. Because active versions are immutable, the content you are copying is
-guaranteed to be exactly what it was when it last served — which is the whole
-reason rollback is trustworthy rather than hopeful.
+guaranteed to be exactly what it was when it last served. Rollback therefore
+uses previously served content rather than reconstructing it from memory.
 
 If you promote with packages, re-apply the previous artifact and stop reading —
 that is the whole procedure, and [Promote Between

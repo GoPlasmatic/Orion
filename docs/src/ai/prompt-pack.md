@@ -131,7 +131,7 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
 ````
 
 A worked end-to-end session using exactly these calls is
-[Your First Service](../getting-started/first-service.md), and the lifecycle
+[Understand the HTTP Flow](../getting-started/first-service.md), and the lifecycle
 rules above are explained for humans in
 [The Entity Lifecycle](../concepts/lifecycle.md). The deeper references the LLM
 (or you) may need are the [Workflow Reference](../reference/workflows.md),

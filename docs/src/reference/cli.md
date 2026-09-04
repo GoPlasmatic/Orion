@@ -457,6 +457,11 @@ Example: `orion-cli connectors test payment-api`
 
 Sends data to a channel. Synchronous by default; `--async-mode` submits for background processing and returns a trace ID.
 
+By default, `send` takes a **bare business payload** and wraps it in Orion's
+`{"data": …}` request envelope. Do not pass an already wrapped envelope: doing
+so nests it twice, and a workflow expecting `data.order` would instead receive
+`data.data.order`. The same rule applies to `workflows test`.
+
 | Flag | Description |
 |------|-------------|
 | `<channel>` | Channel name to send data to. |

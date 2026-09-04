@@ -1,17 +1,19 @@
-<!-- description: Orion is a declarative services runtime. A service is one JSON document — logic, connectors, endpoint — live a second after you post it. No rebuild, no restart. -->
+<!-- description: Build services at AI speed on a consistent foundation. Define business logic in lightweight JSON; Orion provides the secure, reliable runtime around it. -->
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>
-  <p>The declarative runtime for AI agents, workflows, microservices, and event processing.</p>
-  <p class="hero-sub">Safe enough to let an AI write your services. Fast enough to run them in production.</p>
+  <p>Build services at AI speed — without rebuilding the foundation every time.</p>
+  <p class="hero-sub">Describe your business logic in lightweight JSON. Orion makes it a secure, reliable service.</p>
 </div>
 
-Orion is a declarative services runtime. A service is one JSON document holding the logic, the connectors it reaches, and the endpoint it answers on. Post it to a running server and it is live a second later. No rebuild, no restart, no downtime.
+AI has made writing code incredibly fast. Work that once took weeks can now take an afternoon. But every new service still needs the same essential foundation: routing, security, resilience, connections, deployment controls, and observability. When that foundation is generated from scratch each time, small differences can become production problems.
 
-Everything around that logic is the runtime's job, and it works the same way for every service you put on it: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. That is the glue you would otherwise write again for every microservice, agent backend, stream processor, and data pipeline.
+That is why we built Orion. Orion is a declarative services runtime that gives every service the same strong foundation from the start. You define what the service should do in a lightweight JSON workflow — yourself or with the AI tool of your choice — and connect it to an endpoint with a channel. Post the definitions, activate them, and your API is live. No application server to write, build, or restart.
+
+Orion handles everything around your business logic consistently: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. You build fast without generating a new version of the basics for every microservice, agent backend, stream processor, or data pipeline.
 
 > **First time here?** [**Install & Run**](./getting-started/install.md) puts a
-> server on your machine in about a minute. The next page turns it into a
+> server on your machine in a few steps. The next page turns it into a
 > service.
 
 ## What you can build
@@ -44,24 +46,24 @@ Orion carries the same infrastructure across five kinds of service:
 
 ## What you get
 
-- **No service to build.** Post a JSON document and you have a live REST or Kafka endpoint. No Dockerfile, no CI pipeline, no server code.
+- **No application server to build.** Post a workflow and channel definition and you have a live REST or Kafka endpoint. No Dockerfile or server code for each service.
 - **Production features included.** Rate limiting, circuit breakers, timeouts, caching, and payload validation are things you configure on a channel instead of writing.
 - **Safe for AI-written logic.** Draft-before-activate, dry-run, percentage rollout, and one-command rollback mean AI output cannot quietly break production.
 - **Services that call services.** `channel_call` runs another workflow in-process, so composition costs no network hop and no serialization.
 - **One binary, one file.** A single Rust binary with an embedded database — with PostgreSQL or MySQL waiting for when you outgrow that.
-- **Measured, not claimed.** **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency, on the published [v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) — run conditions and all.
+- **Published performance record.** Orion 1.0.0 measured **5.1K–5.7K workflow requests/sec** per instance with single-digit millisecond latency under its documented benchmark conditions. Read the [v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md) before applying those results to another version or workload.
 
 ## Start here
 
 <div class="doc-cards">
 
-- [**Install & Run**](./getting-started/install.md)
+- [**Quickstart: Your First Live API**](./getting-started/quickstart.md)
 
-  A server on your machine in about a minute.
+  Start Orion, deploy a tested service, and call its endpoint.
 
-- [**Your First Service**](./getting-started/first-service.md)
+- [**Choose Your Use Case**](./getting-started/use-cases.md)
 
-  A workflow and a channel, end to end, in four API calls.
+  Follow the path for REST, webhooks, Kafka, databases, or AI authoring.
 
 - [**How Orion Works**](./concepts/how-orion-works.md)
 
@@ -85,17 +87,17 @@ Orion carries the same infrastructure across five kinds of service:
 
 <div class="doc-cards">
 
-- [**Authoring Workflows**](./build/workflows.md)
+- [**Build Orion Services**](./build/index.md)
 
-  Workflows, channels, connectors, offline testing, and versioned rollout.
+  The recommended path through workflows, channels, connectors, testing, and rollout.
 
-- [**Production Operations**](./operate/production-checklist.md)
+- [**Operate Orion**](./operate/index.md)
 
   Docker and Kubernetes, cluster mode, monitoring, promotion between environments.
 
-- [**Admin API Reference**](./reference/admin-api.md)
+- [**Reference Index**](./reference/index.md)
 
-  Every endpoint, the workflow schema, every task function, the full config surface.
+  Find APIs, schemas, functions, configuration, metrics, and errors by task.
 
 - [**Orion Console**](./getting-started/console.md)
 

@@ -1,5 +1,7 @@
 <!-- description: A channel is an Orion service endpoint: where traffic arrives, which workflow runs, and the contract — auth, rate limits, validation — a caller must satisfy. -->
-# Channels
+# Understand Channels
+
+**Page type:** Concept · **Audience:** Service authors
 
 A **channel** is a service endpoint. It says where traffic arrives, which
 workflow runs when it does, and what contract the caller has to satisfy on the
@@ -106,5 +108,5 @@ versioned services instead of one large workflow.
 - [Workflows](./workflows.md) — what the channel hands the request to.
 - [Data API](../reference/data-api.md) — how a request path resolves to a
   channel, and the shape of what comes back.
-- [Your First Service](../getting-started/first-service.md) — create a channel
+- [Understand the HTTP Flow](../getting-started/first-service.md) — create a channel
   and call it.

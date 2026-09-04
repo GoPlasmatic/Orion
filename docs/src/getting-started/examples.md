@@ -1,13 +1,22 @@
 <!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, Kafka events, IoT alerts — each with a step-by-step walkthrough. -->
 # Run the Examples
 
-The repository ships eight ready-to-deploy services. Each is a **package** — the
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
+The current repository ships ready-to-deploy services. Each is a **package** — the
 channels, workflows, and (when needed) connector that make up one service,
 grouped so they deploy and [promote](../concepts/packages.md) together.
 
 Most are self-contained: built-in functions and JSONLogic only, no database and
 no connector to set up. Every workflow here is linted and deployed end-to-end in
 CI, so what you copy is what CI proves.
+
+## Before you start
+
+You need Git, `curl`, Python 3, a POSIX-compatible shell, and an Orion server
+running on `http://localhost:8080`. Some packages also require Docker with
+Compose; their descriptions call this out. Windows users should run the shell
+scripts from WSL.
 
 ## 1. Get the files
 
@@ -123,12 +132,20 @@ It exits non-zero on any failure, so it gates CI alongside `orion-server lint`.
 does the same job against a **real server**: the repo's e2e suite deploys each
 case through `orion-cli` and asserts the live responses.
 
+## Clean up or run another example
+
+`deploy.sh` is repeatable: it skips existing definitions and sends the sample
+request again. To avoid identifier collisions while experimenting, use a fresh
+local SQLite database or remove the example's channel before its workflow with
+`orion-cli ... delete --yes`. Connector-backed package READMEs name their
+Docker volumes and cleanup commands.
+
 ## Next steps
 
 - [Test & Promote a Service](./test-and-promote.md) — take one of these
   packages from a local run to a second instance.
 - [Your First Connector](./first-connector.md) — build `postgres-orders` by
   hand, one step at a time.
-- [Workflow Schema](../reference/workflows.md) and
+- [Workflow JSON Schema](../reference/workflows.md) and
   [Task Functions](../reference/functions.md) — the reference behind every file
   above.

@@ -14,6 +14,14 @@ Orion ships an official Helm chart that deploys the
 Every release publishes the chart to GHCR as an OCI artifact, so there is no
 chart repository to add. CI lints and renders it on every change.
 
+## Before you start
+
+You need a Kubernetes cluster, Helm 3, `kubectl`, and access to GHCR. Production
+installs also need reachable PostgreSQL or MySQL and Redis services, an admin
+API key, and permission to create workloads, Services, Jobs, and Secrets. The
+commands below pin chart `1.0.0`, matching the chart version in this checkout;
+choose the chart version that matches the Orion release you intend to deploy.
+
 ```bash
 helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0
 ```

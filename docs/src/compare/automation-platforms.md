@@ -127,4 +127,4 @@ that logic lives in exactly one place is worth more than either tool.
 - [Orion vs Durable Execution Engines](./durable-execution.md) — where the scheduled and the long-running work goes instead.
 - [Connector Types](../reference/connectors.md) — the five types, and how credentials are held.
 - [Version & Roll Out Changes](../build/versioning.md) — what "rollback" means here.
-- [The Console (Orion UI)](../getting-started/console.md) — the browser view, and what it is for.
+- [Orion Console](../getting-started/console.md) — the browser view, and what it is for.

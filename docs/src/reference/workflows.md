@@ -1,5 +1,7 @@
 <!-- description: The Orion workflow object in full: fields, tasks, task groups, terminal steps, the shared data context, request metadata, loops, error handling and rollout. -->
-# Workflow Schema
+# Workflow JSON Schema
+
+**Page type:** Reference · **Audience:** Workflow authors and tooling developers
 
 A **workflow** is a versioned, JSON-defined pipeline of tasks. A
 [channel](../concepts/channels.md) links to a workflow by `workflow_id`.
@@ -76,6 +78,8 @@ its `input`:
 ```
 
 ### Task groups
+
+**Since:** Orion 1.2
 
 An element of `tasks` carrying its own `tasks` key is a **task group** rather
 than a task: one condition guarding a contiguous run of steps, instead of the

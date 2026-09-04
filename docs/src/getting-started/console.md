@@ -1,29 +1,40 @@
 <!-- description: Orion UI is the operations console over the admin API: live dashboards, a channel to workflow to connector system map, trace drill-downs and a data console. -->
-# The Console (Orion UI)
+# Orion Console
+
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
 
 Orion itself is API-first — everything in these docs is plain HTTP. [**Orion UI**](https://github.com/GoPlasmatic/Orion-ui)
 is the operations console on top of that API: live dashboards, a system map of every
 channel → workflow → connector, workflow logic visualization, trace drill-downs, and a
 data console for firing test requests. Everything the admin API can do, point-and-click.
 
+## Before you start
+
+You need Docker and a running Orion server. The command below assumes the server
+is available on port 8080 and starts the console on port 8081. On Linux,
+`host.docker.internal` may require Docker's `host-gateway` mapping; the Orion UI
+repository documents deployment-specific alternatives.
+
 ## Zero to a live service — no code
 
-The full creation loop in under a minute: import a workflow (paste → validate →
-**dry-run** → activate), watch its logic render as a graph, give it an endpoint with the
-channel form, send a request from the Data Console, and see the service on the System Map.
+The video below demonstrates the full creation loop: import a workflow (paste →
+validate → **dry-run** → activate), watch its logic render as a graph, give it
+an endpoint with the channel form, send a request from the Data Console, and
+see the service on the System Map. Actual time depends on the environment and
+the service definition.
 
 <div class="themed-media">
   <video class="media-dark" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-dark.webm"></video>
   <video class="media-light" controls muted playsinline preload="metadata" src="../videos/ui-quickstart-light.webm"></video>
 </div>
-<span class="asciinema-caption">▶ Click to play. The same flow as <a href="first-service.html">Your First Service</a> — as clicks instead of curl.</span>
+<span class="asciinema-caption">▶ Click to play. The same flow as <a href="first-service.html">Understand the HTTP Flow</a> — as clicks instead of curl.</span>
 
 ## Run it
 
 The UI ships as a production-ready container image (nginx, multi-arch):
 
 ```bash
-docker run -p 8081:8080 \
+docker run --name orion-console -p 8081:8080 \
   -e ORION_URL=http://host.docker.internal:8080 \
   ghcr.io/goplasmatic/orion-ui:latest
 ```
@@ -97,10 +108,22 @@ search and drill-down, and a command palette (<kbd>⌘K</kbd>) for jumping anywh
 > [recording pipeline](https://github.com/GoPlasmatic/Orion/tree/main/docs/recordings)
 > — re-run `record-ui.sh` and they regenerate.
 
-## Related
+## Clean up
 
-- [Your First Service](./first-service.md) — the same flow as four API calls,
-  if you would rather see the wire format.
+Stop the foreground container with `Ctrl-C`, then remove it:
+
+```bash
+docker rm orion-console
+```
+
+The Console stores Orion definitions through the server, so removing the UI
+container does not delete workflows, channels, connectors, or traces.
+
+## Next steps
+
+- [Understand the HTTP Flow](./first-service.md) — the same flow as four
+  administration calls followed by one endpoint request, if you would rather
+  see the wire format.
 - [Run the Examples](./examples.md) — services to import and click through.
 - [Monitoring & Alerts](../operate/monitoring.md) — the metrics behind the
   dashboard, and what to alert on.

@@ -1,12 +1,21 @@
 <!-- description: Run an Orion workflow for every record on a Kafka topic: how records arrive, what happens when one fails, and what processed-once does and does not mean. -->
 # Consume from Kafka
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 A Kafka channel runs a workflow for every record on a topic. The workflow is the
 same shape as an HTTP channel's — what changes is how records arrive, what
 happens when one fails, and what "processed once" does and does not mean.
 
 The repository ships a runnable example — `examples/packages/kafka-order-events`
 — and the JSON below is included from it.
+
+## Before you start
+
+You need an Orion server, access to a Kafka broker, and permission to create or
+use a topic and consumer group. The runnable repository example additionally
+uses Git, Docker with Compose, `curl`, Python 3, and a POSIX-compatible shell.
+Do not reuse a production consumer group while following the guide.
 
 ## 1. Enable the consumer
 

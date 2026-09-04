@@ -338,6 +338,138 @@ if [ -n "$desc_report" ]; then
   err 'page description missing, mis-sized or duplicated (docs/seo.mjs reads these)'
 fi
 
+## 16. Chapter titles are unique. Search results and browser tabs only carry
+##     the H1, so two chapters with one title are indistinguishable even when
+##     their sidebar labels happen to differ.
+title_report=$(python3 - <<'TITLEPY'
+import collections, pathlib, re
+
+summary = pathlib.Path('docs/src/SUMMARY.md').read_text()
+paths = [m[1] for m in re.findall(r'\[([^\]]+)\]\(\./([A-Za-z0-9_./-]+\.md)\)', summary)]
+seen = collections.defaultdict(list)
+for rel in paths:
+    p = pathlib.Path('docs/src') / rel
+    if not p.exists():
+        continue
+    h1 = next((line[2:].strip() for line in p.read_text().splitlines()
+               if line.startswith('# ')), None)
+    if h1:
+        seen[h1.casefold()].append((rel, h1))
+for entries in seen.values():
+    if len(entries) > 1:
+        print('duplicate H1:', ', '.join(f'{p} ({h})' for p, h in entries))
+TITLEPY
+)
+if [ -n "$title_report" ]; then
+  printf '%s\n' "$title_report" >&2
+  err 'duplicate chapter titles'
+fi
+
+## 17. Relative Markdown links carrying a fragment resolve to a real heading.
+##     mdBook preserves underscores and repeated hyphens in heading IDs; this
+##     slugger mirrors that behavior for the syntax used in this book.
+fragment_report=$(python3 - <<'FRAGPY'
+import pathlib, re, urllib.parse
+
+root = pathlib.Path('docs/src')
+
+def anchors(path):
+    found, counts, fenced = set(), {}, False
+    for line in path.read_text().splitlines():
+        if line.startswith('```'):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        match = re.match(r'^(#{1,6})\s+(.+?)\s*#*$', line)
+        if not match:
+            continue
+        slug = re.sub(r'<[^>]+>', '', match.group(2))
+        slug = re.sub(r'[`*~]', '', slug).lower()
+        slug = re.sub(r'[^\w\- ]', '', slug).replace(' ', '-')
+        duplicate = counts.get(slug, 0)
+        counts[slug] = duplicate + 1
+        if duplicate:
+            slug = f'{slug}-{duplicate}'
+        found.add(slug)
+    return found
+
+for source in sorted(root.rglob('*.md')):
+    for match in re.finditer(r'\]\(([^)\s]+\.md)#([^)\s]+)\)', source.read_text()):
+        target = (source.parent / match.group(1)).resolve()
+        fragment = urllib.parse.unquote(match.group(2))
+        if target.exists() and fragment not in anchors(target):
+            print(f'{source}: missing fragment #{fragment} in {target}')
+FRAGPY
+)
+if [ -n "$fragment_report" ]; then
+  printf '%s\n' "$fragment_report" >&2
+  err 'broken relative fragment links'
+fi
+
+## 18. Executable tutorials state the version they were actually run with,
+##     and that version follows the workspace rather than becoming stale prose.
+tutorial_report=$(python3 - <<'TUTORIALPY'
+import pathlib, re
+
+cargo = pathlib.Path('Cargo.toml').read_text()
+version = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M).group(1)
+paths = [
+    'getting-started/quickstart.md', 'getting-started/install.md',
+    'getting-started/first-service.md', 'getting-started/first-connector.md',
+    'getting-started/test-and-promote.md', 'getting-started/examples.md',
+    'getting-started/console.md', 'guides/orders-golden-path.md',
+    'guides/worked-examples.md', 'guides/kafka-channels.md',
+    'guides/ci-cd.md', 'ai/claude-code.md',
+]
+for rel in paths:
+    path = pathlib.Path('docs/src') / rel
+    text = path.read_text() if path.exists() else ''
+    match = re.search(r'^\*\*Tested with:\*\* Orion ([^ ]+) · \*\*Last reviewed:\*\* (\d{4}-\d{2}-\d{2})$', text, re.M)
+    if not match:
+        print(f'{path}: missing Tested with / Last reviewed metadata')
+    elif match.group(1) != version:
+        print(f'{path}: tested with {match.group(1)}, workspace version is {version}')
+    if rel.startswith('getting-started/') or rel == 'guides/orders-golden-path.md':
+        if not re.search(r'^## Next steps$', text, re.M):
+            print(f'{path}: executable tutorial has no ## Next steps')
+TUTORIALPY
+)
+if [ -n "$tutorial_report" ]; then
+  printf '%s\n' "$tutorial_report" >&2
+  err 'tutorial test metadata missing or stale'
+fi
+
+## 19. Retired editorial terms and the unsafe quickstart shortcut do not
+##     return. Product names inside URLs and historical upgrade notes are not
+##     aliases and remain valid.
+forbidden=$(grep -rnE 'CI-CD|The Console \(Orion UI\)|raw\.githubusercontent\.com/GoPlasmatic/Orion/main/examples/quickstart\.sh *\| *bash' \
+  docs/src --include='*.md' 2>/dev/null || true)
+if [ -n "$forbidden" ]; then
+  printf '%s\n' "$forbidden" >&2
+  err 'deprecated terminology or pipe-to-shell quickstart'
+fi
+
+## 20. Repository JSON examples and the published OpenAPI document parse.
+##     Workflow semantics are covered by the existing server/example CI; this
+##     catches malformed copyable assets before those deeper checks run.
+json_report=$(python3 - <<'JSONPY'
+import json, pathlib
+
+paths = [pathlib.Path('docs/openapi.json')]
+paths.extend(pathlib.Path('examples').rglob('*.json'))
+for path in sorted(paths):
+    try:
+        json.loads(path.read_text())
+    except Exception as exc:
+        print(f'{path}: {exc}')
+JSONPY
+)
+if [ -n "$json_report" ]; then
+  printf '%s\n' "$json_report" >&2
+  err 'invalid JSON in a copyable repository example'
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo 'docs-lint: OK'
 else

@@ -1,6 +1,12 @@
 <!-- description: Every Orion connector type and its config — http, kafka, db, cache, es, smtp and storage — with secret references, auth schemes and per-operation gates. -->
 # Connector Types
 
+Connector validation errors return `400 VALIDATION_ERROR` with field paths.
+Workflow execution failures that cannot be exposed return `500 ENGINE_ERROR`,
+while an open circuit returns `503 CIRCUIT_OPEN`. Correct the connector definition,
+test it through `POST /connectors/{id}/test`, and use [Errors & Response
+Envelopes](./errors.md) for the complete contract.
+
 A **connector** is a named connection to an external system — an API, a database, a cache, a Kafka cluster, or a search cluster. Workflows reference connectors by name. Credentials stay in the connector, never in workflow JSON.
 
 There are exactly seven connector types:

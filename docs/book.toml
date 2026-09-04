@@ -1,6 +1,6 @@
 [book]
 title = "Orion Documentation"
-description = "Orion is a declarative services runtime: describe a service as JSON, send it to a running server, and it's live in seconds. Safe enough to let an AI write your services. Fast enough to run them in production."
+description = "Orion is a declarative services runtime. Define business logic in a workflow, expose it through a channel, and run it on a consistent production foundation."
 authors = ["Plasmatic"]
 language = "en"
 src = "src"
@@ -17,14 +17,13 @@ additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
+edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 # No "1., 2., 3." prefixes in the sidebar. The parts already group the book,
 # and the numbers implied a reading order this estate does not have — nobody
 # reads the reference section in order. Titles alone are what you scan for.
 no-section-label = true
 
-# No `edit-url-template`: the per-page "Suggest an edit" pencil in the menu bar
-# only renders when that key is set. The git-repository-url icon above still
-# points anyone who wants to file a change at the repo.
+# The edit template makes the menu-bar pencil open the exact Markdown source.
 
 # No expand/collapse in the sidebar: the one nested chapter this book has
 # (Upgrades → Upgrading to 1.0.0) simply shows. Note this key governs *chapter*

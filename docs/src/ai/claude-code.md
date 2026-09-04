@@ -1,6 +1,8 @@
 <!-- description: A ten-minute session: install the Orion agent skill, describe a service in English, and watch Claude Code draft, dry-run, activate and roll it back safely. -->
 # Orion + Claude Code
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 The fastest way to experience "AI writes services, not code": install the
 [Orion agent skill](./skills.md), then describe the service you want. Claude
 drafts the workflow, dry-runs it against sample data, activates it, and wires up
@@ -14,10 +16,11 @@ This page is a 10-minute guided session. In it, you will:
 - inspect what it deployed using real trace data,
 - change the logic behind a canary rollout, and roll it back.
 
-## Setup
+## Before you start
 
-With [Orion and the CLI installed](../getting-started/install.md) and a server
-running:
+You need Claude Code, a POSIX-compatible shell, the Orion agent skill source,
+and [Orion and the CLI installed](../getting-started/install.md). Start the
+server locally, then configure the CLI:
 
 ```bash
 orion-cli config set-server http://localhost:8080

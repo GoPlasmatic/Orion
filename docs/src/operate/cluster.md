@@ -20,12 +20,14 @@ Reach for cluster mode when you need one of these, in roughly this order:
 - **Config changes that fan out.** Without it, an activation reaches only the
   node that received the API call.
 
-Throughput is usually the *weakest* reason. A single instance sustains
-**5.1K–5.7K workflow requests/sec** with single-digit-millisecond average
-latency in the
+Throughput is usually the *weakest* reason. In the published Orion 1.0.0 test, a
+single instance sustained **5.1K–5.7K workflow requests/sec** with
+single-digit-millisecond average latency under the
 [v1.0.0 benchmark record](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
-(Apple M2 Pro Mac Mini, release build, 50 concurrent connections). Most estates
-hit an availability requirement long before they hit that ceiling.
+(Apple M2 Pro Mac Mini, release build, 50 concurrent connections). Treat this
+as a versioned benchmark result, not a capacity promise for another release,
+machine, or workflow. Most estates hit an availability requirement long before
+they hit a throughput ceiling.
 
 > [!NOTE]
 > The published record measures a **single instance**. The repository ships a

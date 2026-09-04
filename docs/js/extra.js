@@ -32,6 +32,99 @@
   }
 })();
 
+// ── Page feedback ──
+// Keep feedback tied to the page that prompted it. GitHub's issue composer
+// preserves the rendered URL and title without collecting reader data here.
+(function () {
+  function injectFeedback() {
+    var main = document.querySelector(".content main");
+    var heading = main && main.querySelector("h1");
+    if (!main || !heading || main.querySelector(".page-feedback")) return;
+
+    var sourcePath = window.location.pathname
+      .replace(/^\//, "")
+      .replace(/\.html$/, ".md");
+    if (!sourcePath || sourcePath === "index.md") sourcePath = "introduction.md";
+
+    var edit = document.createElement("a");
+    edit.href =
+      "https://github.com/GoPlasmatic/Orion/edit/main/docs/src/" + sourcePath;
+    edit.textContent = "Edit this page";
+
+    var issue = document.createElement("a");
+    issue.href =
+      "https://github.com/GoPlasmatic/Orion/issues/new?labels=documentation" +
+      "&title=" + encodeURIComponent("Docs feedback: " + heading.textContent.trim()) +
+      "&body=" + encodeURIComponent(
+        "Page: " + window.location.href + "\n\nWhat were you trying to do?\n\nWhat was unclear or missing?\n"
+      );
+    issue.textContent = "Was this helpful? Send feedback";
+
+    var feedback = document.createElement("aside");
+    feedback.className = "page-feedback";
+    feedback.setAttribute("aria-label", "Documentation feedback");
+    feedback.appendChild(edit);
+    feedback.appendChild(issue);
+    main.appendChild(feedback);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectFeedback);
+  } else {
+    injectFeedback();
+  }
+})();
+
+// ── Page type and audience ──
+// The source tree is deliberately organized by documentation purpose. Surface
+// that purpose on every rendered page so a reader can tell whether they are in
+// a tutorial, explanation, task guide, or exact contract before reading on.
+(function () {
+  function injectPageMeta() {
+    var main = document.querySelector(".content main");
+    var heading = main && main.querySelector("h1");
+    if (!heading) return;
+
+    var next = heading.nextElementSibling;
+    if (next && next.textContent.trim().indexOf("Page type:") === 0) {
+      next.classList.add("page-meta");
+      return;
+    }
+
+    var path = window.location.pathname;
+    var meta = { type: "Overview", audience: "Developers evaluating Orion" };
+
+    if (path.indexOf("/getting-started/") !== -1) {
+      meta = { type: "Tutorial", audience: "Developers getting started" };
+    } else if (path.indexOf("/concepts/") !== -1) {
+      meta = { type: "Concept", audience: "Service authors" };
+    } else if (path.indexOf("/reference/") !== -1) {
+      meta = { type: "Reference", audience: "Developers looking up an exact contract" };
+    } else if (path.indexOf("/operate/upgrading-") !== -1) {
+      meta = { type: "Upgrade guide", audience: "Operators upgrading Orion" };
+    } else if (path.indexOf("/operate/") !== -1) {
+      meta = { type: "How-to guide", audience: "Developers and platform operators" };
+    } else if (path.indexOf("/build/") !== -1 || path.indexOf("/guides/") !== -1) {
+      meta = { type: "How-to guide", audience: "Service authors" };
+    } else if (path.indexOf("/ai/") !== -1) {
+      meta = { type: "Guide", audience: "Developers building with AI tools" };
+    } else if (path.indexOf("/compare/") !== -1 || /\/(comparison|characteristics)\.html$/.test(path)) {
+      meta = { type: "Evaluation guide", audience: "Developers assessing fit" };
+    }
+
+    var paragraph = document.createElement("p");
+    paragraph.className = "page-meta";
+    paragraph.textContent = meta.type + " · " + meta.audience;
+    heading.insertAdjacentElement("afterend", paragraph);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectPageMeta);
+  } else {
+    injectPageMeta();
+  }
+})();
+
 // ── Icon sprite ──
 // One hidden <svg> of <symbol>s, injected once, referenced everywhere as
 // <svg class="orion-ico"><use href="#i-name"></use></svg> via window.orionIcon.

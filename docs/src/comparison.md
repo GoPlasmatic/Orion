@@ -1,10 +1,11 @@
 <!-- description: Where Orion fits against durable execution engines, API gateways, automation platforms and rule engines — and the five cases where it is the wrong tool. -->
 # Is Orion Right for You?
 
-Orion is a declarative services runtime. A service is one JSON document holding
-the logic, the connectors it reaches, and the endpoint it answers on. Post it to
-a running server and it is live a second later, with the rate limiting, retries,
-versioning and metrics already around it.
+Orion is a declarative services runtime. An Orion service consists of a workflow
+that defines its logic and a channel that defines its entry point, plus optional
+connectors for external systems. Post and activate those definitions on a
+running server and the endpoint becomes live, with rate limiting, retries,
+versioning and metrics available around it.
 
 That puts Orion next to a lot of familiar tools without being quite any of them.
 Orion is the service itself, not a proxy in front of one and not a coordinator
@@ -88,7 +89,7 @@ traces.
 
 ## Related
 
-- [Install & Run](./getting-started/install.md) — decide by trying it; it takes about a minute.
+- [Install & Run](./getting-started/install.md) — decide by running it locally and verifying its health.
 - [How Orion Works](./concepts/how-orion-works.md) — the mental model, if you want it before the install.
 - [Architectural Characteristics](./characteristics.md) — everything the runtime carries, mapped.
 - [Build with Claude Code](./ai/claude-code.md) — hand the authoring to an assistant.

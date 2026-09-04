@@ -1,14 +1,17 @@
 <!-- description: Four Orion services, each described in a sentence and deployed as JSON — with every block pulled from the example packages CI actually deploys and tests. -->
 # Worked Examples: Prompt to Service
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 Four services, each described in a sentence, generated as JSON, and deployed. The
 JSON in this page is pulled from the repository's example packages, so every
 block is the file CI deploys and tests — not a paraphrase of it.
 
-## Set up once
+## Before you start
 
-These examples all run against the shipped packages, so start from a clone with
-a server on `http://localhost:8080`:
+You need Git, `curl`, Python 3, a POSIX-compatible shell, and an Orion server on
+`http://localhost:8080`. Windows users should run the repository shell scripts
+from WSL. These examples use the shipped packages, so start from a clone:
 
 ```bash
 git clone https://github.com/GoPlasmatic/Orion.git

@@ -1,13 +1,33 @@
-<!-- description: Install Orion on macOS, Linux, Windows or Docker — server and CLI. A single binary with an embedded database, running and health-checked in about a minute. -->
+<!-- description: Install Orion on macOS, Linux, Windows or Docker, start its embedded database, and verify the server and optional CLI locally. -->
 # Install & Run
 
-Orion is a single binary with an embedded database. Installing it and getting a running server takes about a minute.
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
+Orion is a single binary with an embedded database. This guide installs it,
+starts it locally, and verifies that it is ready. The time required depends on
+the installation method; building from source takes longer than installing a
+release binary.
 
 In this guide, you will:
 
 - install `orion-server` and the `orion-cli` companion,
 - start a server on the default settings,
 - verify it answers `/health`.
+
+## Before you start
+
+Choose an installation method available on your system:
+
+| Method | Platforms | Prerequisite |
+|---|---|---|
+| Homebrew | macOS Apple Silicon, Linux | Homebrew |
+| Shell installer | Linux, macOS Apple Silicon | A POSIX shell and `curl` |
+| PowerShell installer | Windows | Windows PowerShell |
+| Docker | Any Docker-supported platform | Docker Engine or Docker Desktop |
+| Source build | Any Rust-supported platform | Git and the Rust toolchain version declared in the repository's `Cargo.toml` |
+
+You also need `curl` to run the health check shown below. PowerShell users can
+use `Invoke-RestMethod http://localhost:8080/health` instead.
 
 ## Install the server
 
@@ -37,7 +57,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 ```
 
-**From source** (requires Rust 1.98+):
+**From source** (this release's `Cargo.toml` currently declares Rust 1.98):
 
 ```bash
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server
@@ -60,9 +80,10 @@ cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server o
 
 `orion-cli` drives the same admin API from the terminal, and is what an AI assistant uses through the [Orion agent skill](../ai/skills.md). It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
 
-The CLI is versioned in lockstep with the server and ships in the same release, so
-the two always agree on the wire format. Every method below is the server's, with
-`orion-server` swapped for `orion-cli`.
+The CLI is versioned in lockstep with the server and ships in the same release.
+Use matching CLI and server releases so their supported wire formats agree.
+Every method below is the server's, with `orion-server` swapped for
+`orion-cli`.
 
 **Homebrew** (macOS Apple Silicon and Linux):
 
@@ -82,7 +103,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/relea
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-cli-installer.ps1 | iex"
 ```
 
-**From source** (requires Rust 1.98+):
+**From source** (this release's `Cargo.toml` currently declares Rust 1.98):
 
 ```bash
 cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-cli
@@ -111,7 +132,7 @@ Expected JSON response:
 ```json
 {
   "status": "ok",
-  "version": "1.0.0",
+  "version": "<installed-version>",
   "uptime_seconds": 5,
   "components": {
     "database": "ok",
@@ -119,13 +140,18 @@ Expected JSON response:
     "connectors": "ok",
     "channels": "ok"
   },
-  "git_hash": "1a2b3c4d",
-  "build_timestamp": "1786365371",
+  "git_hash": "<build-commit>",
+  "build_timestamp": "<build-timestamp>",
   "workflows_loaded": 0,
   "connectors": { "circuit_breaker_scope": "node", "circuit_breakers": {}, "failed_to_load": [] },
   "channels": { "quarantined": [] }
 }
 ```
+
+This response is illustrative. Build-identifying values change between
+releases, and additional health components may appear as Orion evolves. Use
+`status`, `workflows_loaded`, and the component states for the checks below
+rather than comparing the whole response byte for byte.
 
 A status of `"status": "ok"` with `"workflows_loaded": 0` confirms the server is
 ready to accept service definitions — you have not created anything yet.
@@ -155,6 +181,7 @@ Check a file before you deploy it — `orion-server validate-config -c config.to
 
 ## Next steps
 
-- [Your First Service](./first-service.md) — turn a JSON document into a live REST endpoint, in four calls.
-- [The Console (Orion UI)](./console.md) — the same flow point-and-click, if you would rather not use a terminal.
+- [Understand the HTTP Flow](./first-service.md) — create and activate a workflow and
+  channel in four administration calls, then invoke the REST endpoint.
+- [Orion Console](./console.md) — the same flow point-and-click, if you would rather not use a terminal.
 - [Run the Examples](./examples.md) — deploy a ready-made service from the repository instead of writing one.

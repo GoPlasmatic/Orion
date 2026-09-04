@@ -1,5 +1,7 @@
 <!-- description: A connector is a named connection to an external system. Configure it once; workflows reference it by name, and credentials, pooling and retries live there. -->
-# Connectors
+# Understand Connectors
+
+**Page type:** Concept · **Audience:** Service authors
 
 A **connector** is a named connection to an external system. You configure it
 once, then reference it by name from any workflow. Credentials, pooling,

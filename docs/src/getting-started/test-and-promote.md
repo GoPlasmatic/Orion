@@ -1,6 +1,8 @@
 <!-- description: Prove an Orion workflow offline with lint, dry-run and regression cases, then export, plan and apply it to a second instance as one versioned package. -->
 # Test & Promote a Service
 
+**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+
 A service you can call is not yet a service you can ship. This tutorial takes a
 working workflow, proves it offline, and moves it to a second instance as one
 versioned artifact.
@@ -14,7 +16,15 @@ In this guide, you will:
 - export the deployed service as a **package** and apply it to a second local
   instance.
 
-You need a clone of the repository — the examples below run against files in it:
+## Before you start
+
+You need `orion-server`, `curl`, `jq`, Git, and a POSIX-compatible shell. Start
+one Orion instance on `http://localhost:8080`; the promotion steps later start
+a second instance on port 8081. Complete [Your First
+Service](./first-service.md) first so the example definitions already make
+sense. Windows users should run the shell commands from WSL.
+
+The examples below run against files in the repository, so clone it first:
 
 ```bash
 git clone https://github.com/GoPlasmatic/Orion.git
@@ -284,13 +294,25 @@ answers `high-value-order@1.0.0 is already applied with identical content —
 nothing to do`. A *changed* artifact reusing an applied version is refused with
 a `409` instead: content changes ride a version bump.
 
+## Clean up
+
+Stop the port-9090 server with `Ctrl-C` in its terminal. From the repository
+root, remove only the files this tutorial created:
+
+```bash
+rm -i orion-qa.db high-value-order-1.0.0.json
+```
+
+The interactive prompt protects similarly named files. The source definitions
+under `examples/` are not modified.
+
 ## Next steps
 
 - [Packages](../concepts/packages.md) — what a package is, and why the module
   boundary sits there.
 - [Promote Between Environments](../operate/promotion.md) — receipts, rollback, secrets
   that survive the trip, and the `requires` boundary.
-- [Author Workflows](../build/workflows.md) — the how-to layer, now that you
+- [How to Author Workflows](../build/workflows.md) — the how-to layer, now that you
   can test what you write.
 - [CLI Reference](../reference/cli.md) — every flag of `lint`, `dry-run`,
   `test`, and `package`.

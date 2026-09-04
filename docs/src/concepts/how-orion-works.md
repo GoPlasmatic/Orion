@@ -5,7 +5,8 @@ Orion is a service runtime that executes service definitions you send it over an
 
 ## Three primitives
 
-You build every service from the same three objects.
+Every Orion service has a channel and a workflow. Add connectors when its logic
+needs to reach an external system.
 
 ```orion-diagram
 {
@@ -80,7 +81,7 @@ The same binary serves both planes. Only the configuration and the backends chan
 
 | Operational Dimension | Development Environment | Production Environment |
 |---|---|---|
-| **Control Plane** | Admin API invoked via CLI or Web Console | Admin API managed via automated GitOps / CI-CD pipelines |
+| **Control Plane** | Admin API invoked via CLI or Orion Console | Admin API managed via automated GitOps / CI/CD pipelines |
 | **Data Plane** | Local HTTP testing traffic | Load-balanced HTTP REST and Kafka event traffic |
 | **Datastore** | Embedded SQLite (zero external dependencies) | High-availability PostgreSQL or MySQL cluster |
 | **Clustering** | Single process (no coordination required) | Multi-replica cluster coordinated via shared database and Redis |
@@ -105,5 +106,5 @@ There is **no plugin mechanism, no scripting runtime, and no WASM sandbox**. A t
 - [Channels](./channels.md), [Workflows](./workflows.md) and [Connectors](./connectors.md) — one page per primitive.
 - [The Entity Lifecycle](./lifecycle.md) — draft, active, archived, and what each transition does to the running engine.
 - [Is Orion Right for You?](../comparison.md) — the same boundary from outside: which neighbouring tool does this job better, and where Orion loses.
-- [Install & Run](../getting-started/install.md) then [Your First Service](../getting-started/first-service.md) — the calls that turn the diagram above into a live endpoint.
+- [Install & Run](../getting-started/install.md) then [Understand the HTTP Flow](../getting-started/first-service.md) — the calls that turn the diagram above into a live endpoint.
 - [Design Notes](../reference/design-notes.md) — the internals behind the guarantees, for when you want them.

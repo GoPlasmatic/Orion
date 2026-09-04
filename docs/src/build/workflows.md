@@ -1,11 +1,16 @@
 <!-- description: How to author an Orion workflow: reaching request data, branching with JSONLogic, task groups and terminal steps, calling out of process, and error handling. -->
-# Authoring Workflows
+# How to Author Workflows
+
+**Page type:** How-to guide · **Audience:** Service authors
 
 A workflow is a JSON document listing tasks to run in order. This page is how to write one: how request data reaches your logic, how to branch, how tasks reach outside the process, and how errors come back out.
 
-## Start with parse, always
+## Parse request payloads first
 
-The raw request payload is **not** in the expression context. A workflow that reads request data begins with `parse_json`, which lifts the payload into the data context under a name you choose:
+The raw request payload is **not** in the expression context. A workflow that
+reads JSON request data normally begins with `parse_json`, which lifts the
+payload into the data context under a name you choose. Workflows that do not
+read a request payload do not need this step.
 
 ```json
 { "id": "parse", "name": "Parse payload",
@@ -178,7 +183,7 @@ orion-server dry-run -w workflow.json -i payload.json
 
 ## Related
 
-- [Workflow Schema](../reference/workflows.md) — every field, with defaults.
+- [Workflow JSON Schema](../reference/workflows.md) — every field, with defaults.
 - [Task Functions](../reference/functions.md) — the input each function takes.
 - [Expression Language](../reference/expressions.md) — the operators you can use in `logic` and `condition`.
 - [Workflow Patterns](../guides/workflow-patterns.md) — the shapes these pieces make once combined.

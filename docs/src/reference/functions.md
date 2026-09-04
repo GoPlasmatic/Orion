@@ -21,10 +21,17 @@ The context's exact shape, and how task `condition` expressions are evaluated
 against it, are defined in the
 [Workflow Reference](./workflows.md#the-data-context).
 
-Orion ships **26 functions** (plus `validate`, an alias for `validation`). Eight
-are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; eighteen are Orion handlers that talk to [connectors](./connectors.md),
-compose channels, or compute locally.
+When a function fails, the data-plane response follows [Errors & Response
+Envelopes](./errors.md). Use its stable error code and the trace's task ID to
+identify the failing step; do not parse the message text. Individual entries
+below describe function-specific validation and runtime failures.
+
+The index below lists the functions available in the release documented by
+this site. Some are contributed by the
+[dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) engine; the rest are
+Orion handlers that talk to [connectors](./connectors.md), compose channels, or
+compute locally. Query `GET /api/v1/admin/functions` for the authoritative list
+on a running instance.
 
 <div class="table-filter" data-label="Filter functions"></div>
 
@@ -63,8 +70,8 @@ compose channels, or compute locally.
 > `control`, `data`, or `utility` for every function, so tooling should branch
 > on those rather than on the labels here.
 >
-> That endpoint serves **all** of the functions above. The eight the engine
-> contributes carry `source: "engine"` and **no** `input_fields`, because Orion
+> That endpoint serves **all** of the functions above. Functions contributed by
+> the engine carry `source: "engine"` and **no** `input_fields`, because Orion
 > declares no schema for them and so does not input-validate them at create
 > time; the rest carry `source: "orion"` and their schema. `validation` carries
 > `validate` in `aliases` rather than appearing twice.
@@ -1194,6 +1201,8 @@ is.
 ```
 
 ## Inspecting schemas at runtime
+
+**Since:** Orion 1.2 for the complete function catalog.
 
 `GET /api/v1/admin/functions` returns the live input schema for the connector,
 composition, and utility functions (the data functions are provided by

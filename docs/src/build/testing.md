@@ -182,6 +182,8 @@ way — every workflow runs tasks — so omitting it means unchecked.
 
 ## Every `expect` path names its root
 
+**Since:** Orion 1.2
+
 ```json
 "expect": {
   "data.order.flagged": true,

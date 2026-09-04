@@ -1,5 +1,7 @@
 <!-- description: A workflow is an ordered pipeline of tasks in JSON, versioned like source code and executed directly by the engine — no build step and no binary. -->
-# Workflows
+# Understand Workflows
+
+**Page type:** Concept · **Audience:** Service authors
 
 A **workflow** is an ordered pipeline of tasks — the business logic a channel
 runs. It is a JSON document, versioned like source code, and it never becomes a
@@ -42,8 +44,9 @@ and configure them; you do not write them.
 ```
 
 Every function's exact `input` is in the [Function Reference](../reference/functions.md),
-and connector-backed inputs are schema-validated when you save the workflow —
-a typo is a `400` with a field path, not a surprise at 3am.
+and connector-backed inputs are schema-validated when you save the workflow.
+An invalid field returns `400` with its field path before the workflow reaches
+production.
 
 An element of `tasks` carrying its own `tasks` key is a **task group**: one
 condition guarding a contiguous run of tasks, evaluated once on entry. Any step
@@ -121,7 +124,7 @@ channel, a task failure routes the trace to the dead letter queue for retry.
 
 ## Next steps
 
-- [Workflow Schema](../reference/workflows.md) — every field, the data context
+- [Workflow JSON Schema](../reference/workflows.md) — every field, the data context
   in full, matching and rollout semantics.
 - [Task Functions](../reference/functions.md) — what each function does and the
   exact `input` it takes.

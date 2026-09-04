@@ -62,7 +62,7 @@ it:
 | File | Covers |
 |---|---|
 | `references/workflows.md` | Workflow JSON in full: tasks, task groups, `terminal`, fragments, loops, the data context, request metadata, error branching |
-| `references/functions.md` | All 27 task functions, grouped, with inputs for the common ones |
+| `references/functions.md` | The task functions for the documented release, grouped, with inputs for the common ones |
 | `references/expressions.md` | The complete JSONLogic vocabulary and its silent-failure edges |
 | `references/channels.md` | Channel JSON, every `config` guard block, and connector types |
 | `references/cli.md` | Full `orion-cli` / `orion-server` map, offline testing, shared definitions and `compile`, packages, troubleshooting |
