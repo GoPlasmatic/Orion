@@ -10,8 +10,9 @@ use serde_json::{Map, Value};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, build_entity_registry, decode_failure, es_request, is_mongo, require_op_allowed,
-    resolve_numeric_as, resolve_params, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, QueryBudget, build_entity_registry, decode_failure, es_request, is_mongo,
+    require_op_allowed, resolve_numeric_as, resolve_params, timed_query, to_connect_error,
+    to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -260,6 +261,13 @@ async fn run_es_search(
 /// Grouping is by [`query::GroupKey`], not by the key's JSON text, so a parent
 /// key and a child foreign key that the driver rendered differently (`"7"` vs
 /// `7`) still join (W14).
+///
+/// Every round trip — the main query and one child query per include relation —
+/// shares a single [`QueryBudget`]. Each used to start its own `timed_query`,
+/// which is a fresh budget, so a query with three includes could run for four
+/// times the `query_timeout_ms` its connector was configured with. That is the
+/// hazard `QueryBudget` exists to close on the write path, and the read path
+/// with includes is the other place a logical operation spans round trips.
 async fn run_sql_with_includes(
     pool: &crate::connector::pool_cache::SqlPool,
     plan: &query::SqlPlan,
@@ -267,18 +275,16 @@ async fn run_sql_with_includes(
     timeout_ms: Option<u64>,
     numeric: crate::connector::sql_decode::NumericAs,
 ) -> Result<Value, DataflowError> {
+    let budget = QueryBudget::start(timeout_ms);
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
     // `SqlxValues` implements `IntoArguments` for all three drivers as well as
     // `Any`, so the builder above needs no change — only the execute site
     // dispatches (#309).
     let mut parents: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
         pool, p, rows_to_json, _bind => {
-            let rows = timed_query(
-                timeout_ms,
-                NAME,
-                sqlx::query_with(&sql, values).fetch_all(p),
-            )
-            .await?;
+            let rows = budget
+                .run(NAME, sqlx::query_with(&sql, values).fetch_all(p))
+                .await?;
             rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?
         }
     );
@@ -307,12 +313,9 @@ async fn run_sql_with_includes(
             let (csql, cvalues) = query::backend::sql::build_include_select(inc, &keys, dialect);
             let children: Vec<Value> = crate::connector::pool_cache::dispatch_sql_pool!(
                 pool, p, rows_to_json, _bind => {
-                    let crows = timed_query(
-                        timeout_ms,
-                        NAME,
-                        sqlx::query_with(&csql, cvalues).fetch_all(p),
-                    )
-                    .await?;
+                    let crows = budget
+                        .run(NAME, sqlx::query_with(&csql, cvalues).fetch_all(p))
+                        .await?;
                     rows_to_json(&crows, numeric).map_err(|e| decode_failure(NAME, e))?
                 }
             );
