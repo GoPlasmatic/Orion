@@ -1,11 +1,13 @@
 //! Documentation drift guard for the task-function surface.
 //!
-//! `reference/functions.md` opens by stating how many functions Orion ships —
-//! "**18 functions** … Eight are contributed by the dataflow-rs engine; ten are
-//! Orion handlers". The docs 2.0 proposal called numbers like that out by name
-//! (style rule 18: "no hand-maintained magic numbers … cite the generated
-//! source or omit the number"), because the estate had already shipped a
-//! 16-vs-18 disagreement between two pages.
+//! `reference/functions.md` used to open by stating how many functions Orion
+//! ships — "**18 functions** … Eight are contributed by the dataflow-rs engine;
+//! ten are Orion handlers". The docs 2.0 proposal called numbers like that out
+//! by name (style rule 18: "no hand-maintained magic numbers … cite the
+//! generated source or omit the number"), because the estate had already
+//! shipped a 16-vs-18 disagreement between two pages. The page has since taken
+//! the rule's other half and omits them, pointing at `GET /admin/functions`
+//! instead — so the counts here are checked when present rather than required.
 //!
 //! `docs/lint.sh` check 5 stops the number being *restated* elsewhere. It
 //! cannot tell whether the number is *right*. This module can, and it checks
@@ -21,9 +23,11 @@
 //! 1. Every registry function has a row.
 //! 2. No non-`Data` row invents a function the registry does not carry — which
 //!    is what a renamed or deleted handler looks like.
-//! 3. The stated counts agree with the table, and the handler count agrees with
-//!    the registry. This is what makes "18" a checked number rather than a
-//!    typed one.
+//! 3. The handler count agrees with the registry, and any count the page
+//!    *states* agrees with the table. Stating one is optional — the rule is
+//!    "cite the generated source or omit the number", and the page may take
+//!    either half — but a number that is there is a checked number rather than
+//!    a typed one.
 //! 4. Every row has a section on the page documenting it.
 
 use std::collections::BTreeSet;
@@ -103,52 +107,72 @@ fn backticked(cell: &str) -> Vec<String> {
         .collect()
 }
 
+/// The counts the page may spell out as words. One table, read in both
+/// directions, so the two readings cannot drift apart.
+const WORDS: [&str; 21] = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+];
+
 /// The number a spelled-out word denotes, for the counts the page writes as
 /// words rather than digits.
 fn number_word(n: usize) -> String {
-    const WORDS: [&str; 21] = [
-        "zero",
-        "one",
-        "two",
-        "three",
-        "four",
-        "five",
-        "six",
-        "seven",
-        "eight",
-        "nine",
-        "ten",
-        "eleven",
-        "twelve",
-        "thirteen",
-        "fourteen",
-        "fifteen",
-        "sixteen",
-        "seventeen",
-        "eighteen",
-        "nineteen",
-        "twenty",
-    ];
     WORDS
         .get(n)
         .map(|w| w.to_string())
         .unwrap_or_else(|| n.to_string())
 }
 
-/// The word immediately preceding `phrase` in the document, lowercased.
+/// The value of a word that states a count — spelled out or in digits — or
+/// `None` when the word is not a count at all.
 ///
-/// Used to read the counts the page spells out ("Eight **are contributed by**
-/// …") without pinning the whole sentence, so a reword that keeps the claim
-/// does not fail the test.
-fn word_before(doc: &str, phrase: &str) -> String {
-    let at = doc
-        .find(phrase)
-        .unwrap_or_else(|| panic!("reference/functions.md no longer contains {phrase:?}"));
-    doc[..at]
-        .split_whitespace()
-        .next_back()
-        .unwrap_or_default()
-        .to_lowercase()
+/// `None` is the load-bearing answer: it is what "Some are contributed by …"
+/// and "the rest are Orion handlers" produce, and those are a page that has
+/// *omitted* the number rather than got it wrong.
+fn word_value(word: &str) -> Option<usize> {
+    WORDS
+        .iter()
+        .position(|w| *w == word)
+        .or_else(|| word.parse().ok())
+}
+
+/// The count the page states immediately before `phrase`, or `None` when it
+/// states none there.
+///
+/// Reads the word rather than pinning the sentence, so a reword that keeps the
+/// claim keeps passing.
+fn stated_number_before(doc: &str, phrase: &str) -> Option<usize> {
+    let at = doc.find(phrase)?;
+    let word = doc[..at].split_whitespace().next_back()?.to_lowercase();
+    word_value(&word)
+}
+
+/// The bolded total the page may open with (`Orion ships **26 functions**`), or
+/// `None` when it states no total.
+fn stated_total(doc: &str) -> Option<usize> {
+    let at = doc.find(" functions**")?;
+    let head = &doc[..at];
+    let opening = head.rfind("**")?;
+    head[opening + 2..].trim().parse().ok()
 }
 
 /// Functions the registry carries — the ones Orion implements and input-schema
@@ -312,6 +336,23 @@ fn no_documented_orion_function_is_a_ghost() {
     );
 }
 
+/// A count the page states must be right — and it is free to state none.
+///
+/// Style rule 18, which this module's header quotes, is "no hand-maintained
+/// magic numbers … **cite the generated source or omit the number**". Both
+/// halves are compliant, and the page currently takes the second one: it names
+/// no totals and points at `GET /api/v1/admin/functions` for the authoritative
+/// list. Requiring a number would make the rule's own recommended option fail
+/// the build.
+///
+/// What this guard exists to stop is a number that is *there and wrong* — the
+/// estate shipped a 16-vs-18 disagreement between two pages, which is what
+/// prompted the rule. So each of the three counts is checked when, and only
+/// when, the page states it.
+///
+/// The table-versus-registry check is not conditional on anything: it is about
+/// the table, not about a sentence, and it is what keeps the summary honest
+/// however the prose is written.
 #[test]
 fn the_stated_counts_match_the_table() {
     let doc = doc();
@@ -319,28 +360,35 @@ fn the_stated_counts_match_the_table() {
     let orion = documented_orion_names(&rows).len();
     let dataflow = rows.len() - orion;
 
-    assert!(
-        doc.contains(&format!("**{} functions**", rows.len())),
-        "reference/functions.md states a total that its own summary table \
-         contradicts: the table has {} rows",
-        rows.len()
-    );
-    assert_eq!(
-        word_before(&doc, "are contributed by"),
-        number_word(dataflow),
-        "the stated dataflow-rs function count disagrees with the summary table"
-    );
-    assert_eq!(
-        word_before(&doc, "are Orion handlers"),
-        number_word(orion),
-        "the stated Orion handler count disagrees with the summary table"
-    );
     assert_eq!(
         orion,
         registry().len(),
         "the summary table's Connector/Composition rows and the schema registry \
          are different sizes"
     );
+
+    if let Some(total) = stated_total(&doc) {
+        assert_eq!(
+            total,
+            rows.len(),
+            "reference/functions.md states a total its own summary table \
+             contradicts — drop the number or correct it"
+        );
+    }
+    if let Some(stated) = stated_number_before(&doc, "are contributed by") {
+        assert_eq!(
+            number_word(stated),
+            number_word(dataflow),
+            "the stated dataflow-rs function count disagrees with the summary table"
+        );
+    }
+    if let Some(stated) = stated_number_before(&doc, "are Orion handlers") {
+        assert_eq!(
+            number_word(stated),
+            number_word(orion),
+            "the stated Orion handler count disagrees with the summary table"
+        );
+    }
 }
 
 #[test]
