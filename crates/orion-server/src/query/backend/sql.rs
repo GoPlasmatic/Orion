@@ -525,9 +525,20 @@ fn render_insert(
 
     if let Some((c, set)) = upsert {
         let mut oc = OnConflict::columns(c.targets.iter().map(|t| Alias::new(t.as_str())));
+        // `do_nothing_on(targets)`, never `do_nothing()`. The two are identical
+        // on PostgreSQL and SQLite — both render `ON CONFLICT (…) DO NOTHING` —
+        // but MySQL has no DO NOTHING and sea-query renders the bare form as
+        // `ON DUPLICATE KEY IGNORE`, which is not MySQL syntax at all: the
+        // statement is refused by the server, so every `action: "nothing"`
+        // upsert against a MySQL connector failed at first traffic. The
+        // polyfill renders `ON DUPLICATE KEY UPDATE <target> = <target>`, a
+        // no-op assignment that leaves the existing row untouched.
+        let do_nothing = |oc: &mut OnConflict| {
+            oc.do_nothing_on(c.targets.iter().map(|t| Alias::new(t.as_str())));
+        };
         match c.action {
             ConflictAction::Nothing => {
-                oc.do_nothing();
+                do_nothing(&mut oc);
             }
             ConflictAction::Update => {
                 if !set.is_empty() {
@@ -545,7 +556,7 @@ fn render_insert(
                         .map(|c2| Alias::new(c2.as_str()))
                         .collect();
                     if upd.is_empty() {
-                        oc.do_nothing();
+                        do_nothing(&mut oc);
                     } else {
                         oc.update_columns(upd);
                     }
@@ -1374,6 +1385,52 @@ mod tests {
             sql,
             r#"INSERT INTO "users" ("email", "name") VALUES (?, ?) ON CONFLICT ("email") DO NOTHING"#
         );
+    }
+
+    /// MySQL has no `DO NOTHING`, and sea-query's bare `do_nothing()` renders
+    /// `ON DUPLICATE KEY IGNORE` there — not MySQL syntax, so the server
+    /// refuses the statement and every `action: "nothing"` upsert against a
+    /// MySQL connector failed at first traffic. The polyfill's no-op assignment
+    /// is the valid spelling of the same intent.
+    #[test]
+    fn test_upsert_do_nothing_renders_on_every_dialect() {
+        let input = json!({
+            "op": "upsert",
+            "target": "users",
+            "values": { "email": "a@x.io", "name": "Ada" },
+            "on_conflict": { "target": ["email"], "action": "nothing" }
+        });
+        assert_eq!(
+            write_sql(input.clone(), SqlDialect::Mysql),
+            "INSERT INTO `users` (`email`, `name`) VALUES (?, ?) \
+             ON DUPLICATE KEY UPDATE `email` = `email`"
+        );
+        for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite] {
+            let sql = write_sql(input.clone(), dialect);
+            assert!(
+                sql.contains("DO NOTHING"),
+                "{dialect:?} must keep DO NOTHING: {sql}"
+            );
+        }
+    }
+
+    /// An upsert whose inserted columns are *all* conflict targets has nothing
+    /// left to assign, so it collapses to the do-nothing clause — by the same
+    /// route, and so with the same MySQL hazard.
+    #[test]
+    fn test_upsert_with_no_updatable_column_renders_on_every_dialect() {
+        let input = json!({
+            "op": "upsert",
+            "target": "tags",
+            "values": { "a": 1, "b": 2 },
+            "on_conflict": { "target": ["a", "b"], "action": "update" }
+        });
+        assert_eq!(
+            write_sql(input.clone(), SqlDialect::Mysql),
+            "INSERT INTO `tags` (`a`, `b`) VALUES (?, ?) \
+             ON DUPLICATE KEY UPDATE `a` = `a`, `b` = `b`"
+        );
+        assert!(write_sql(input, SqlDialect::Postgres).contains("DO NOTHING"));
     }
 
     #[test]
