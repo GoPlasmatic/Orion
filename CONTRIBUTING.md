@@ -9,6 +9,7 @@ Contributions are welcome! Whether it's a bug fix, new feature, documentation im
 **Prerequisites:**
 
 - [Rust 1.98+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.98)
+  — and the MSRV now tracks [Wasmtime's](https://docs.wasmtime.dev/stability-release.html) (stable minus two), which the plugin sandbox depends on; a Wasmtime upgrade may move it
 - SQLite (bundled — no separate install needed)
 
 **Clone and build:**

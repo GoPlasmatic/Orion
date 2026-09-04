@@ -354,6 +354,93 @@ pub fn record_engine_reload_duration(duration_secs: f64) {
     histogram!("orion_engine_reload_duration_seconds").record(duration_secs);
 }
 
+// ---------------------------------------------------------------------------
+// Plugins
+// ---------------------------------------------------------------------------
+
+/// One plugin invocation: outcome counted, duration observed. `plugin` is a
+/// registered plugin id and `function` an interned registered name — never
+/// a string a guest chose.
+pub fn record_plugin_invocation(
+    plugin: &str,
+    function: &'static str,
+    outcome: &'static str,
+    secs: f64,
+) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_plugin_invocations_total",
+        "plugin" => plugin.to_owned(),
+        "function" => function,
+        "outcome" => outcome
+    )
+    .increment(1);
+    histogram!(
+        "orion_plugin_invocation_duration_seconds",
+        "plugin" => plugin.to_owned(),
+        "function" => function
+    )
+    .record(secs);
+}
+
+/// How long an invocation waited for its function's concurrency permit.
+pub fn record_plugin_queue_time(plugin: &str, function: &'static str, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!(
+        "orion_plugin_queue_seconds",
+        "plugin" => plugin.to_owned(),
+        "function" => function
+    )
+    .record(secs);
+}
+
+/// A failed invocation, by the host's stable category (`plugin::Category`).
+pub fn record_plugin_failure(plugin: &str, function: &'static str, category: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_plugin_failures_total",
+        "plugin" => plugin.to_owned(),
+        "function" => function,
+        "category" => category
+    )
+    .increment(1);
+}
+
+/// A component compiled (or refused) for `plugin`: outcome counted, compile
+/// time observed on success.
+pub fn record_plugin_load(plugin: &str, outcome: &'static str, compile_secs: Option<f64>) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_plugin_loads_total",
+        "plugin" => plugin.to_owned(),
+        "outcome" => outcome
+    )
+    .increment(1);
+    if let Some(secs) = compile_secs {
+        histogram!(
+            "orion_plugin_compile_duration_seconds",
+            "plugin" => plugin.to_owned()
+        )
+        .record(secs);
+    }
+}
+
+/// Plugin instances alive right now, across every function.
+pub fn set_plugin_live_instances(count: u64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_plugin_live_instances").set(count as f64);
+}
+
 /// Record engine reload event.
 pub fn record_engine_reload(status: &'static str) {
     if !is_enabled() {

@@ -461,6 +461,39 @@
 # batch_workers = 4                 # Each worker owns an independent batch
 
 # ============================================================
+# Plugins — custom task functions as sandboxed WebAssembly
+# ============================================================
+
+# [plugins]
+# WebAssembly Components behind the orion:plugin world, run as ordinary task
+# functions. Off by default; enabling it changes nothing until a plugin is
+# uploaded and activated. Every limit is the host's — a plugin requests
+# nothing — and an override block below may only lower one.
+# enabled = false
+# cache_dir = ""                     # Reserved; must stay empty until the on-disk cache exists
+# max_component_bytes = 16777216     # Largest component an upload may carry (16 MiB)
+# max_memory_bytes = 67108864        # Linear memory per invocation (64 MiB); also the pooling
+                                     # allocator's per-instance virtual reservation
+# max_request_bytes = 1048576        # Largest evaluated input handed to a guest
+# max_response_bytes = 1048576       # Largest JSON a guest may return
+# max_timeout_ms = 5000              # Wall-clock ceiling per invocation
+# max_concurrency_per_function = 64  # Concurrent invocations of one function
+# max_live_instances = 256           # Instance pool across every function; at least the above
+# overrides = []                     # Per-plugin ceilings; see [[plugins.overrides]] below
+# fuel_backstop = 100000000000       # Instruction budget backstop, not a contract
+
+# [plugins.trust]
+# public_keys = []                   # When set, uploads must carry a signature over the digest
+
+# [[plugins.overrides]]              # Repeat per plugin; each field lowers the host ceiling
+# id = "acme.iso8583"
+# timeout_ms = 100
+# max_memory_bytes = 16777216
+# max_concurrency = 8
+# max_request_bytes = 262144
+# max_response_bytes = 262144
+
+# ============================================================
 # Vars and secrets — the values that differ per environment
 # ============================================================
 #

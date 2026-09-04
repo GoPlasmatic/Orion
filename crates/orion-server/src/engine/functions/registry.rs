@@ -459,13 +459,22 @@ impl FunctionRegistry {
         input: &Value,
         task_path: &str,
     ) -> Vec<FieldError> {
-        let Some(fields) = self
-            .get(function_name)
-            .and_then(|e| e.input_fields.as_deref())
-        else {
+        self.get(function_name)
+            .map(|entry| entry.validate_input(input, task_path))
+            .unwrap_or_default()
+    }
+}
+
+impl FunctionEntry {
+    /// Validate a task's `input` against this entry's declared schema — the
+    /// per-entry half of [`FunctionRegistry::validate_input`], also run by a
+    /// plugin handler at execution time over the resolved input.
+    pub fn validate_input(&self, input: &Value, task_path: &str) -> Vec<FieldError> {
+        let Some(fields) = self.input_fields.as_deref() else {
             return Vec::new();
         };
-        let entry = self.get(function_name).expect("looked up above");
+        let entry = self;
+        let function_name = self.name.as_str();
 
         let mut errors = Vec::new();
         let obj = match input.as_object() {
@@ -810,8 +819,17 @@ pub fn interned(name: &str) -> Option<&'static str> {
 
 impl FunctionEntry {
     /// The `&'static str` this entry's name interns to — a metric label.
+    ///
+    /// Interned on first use for an entry no registry has held yet, so a
+    /// handler built straight from a manifest (a test, a dry run) labels
+    /// itself the same way one a generation carries does. Still bounded: one
+    /// leak per distinct registered name.
     pub fn label(&self) -> &'static str {
-        interned(&self.name).expect("every registered name is interned at construction")
+        if let Some(label) = interned(&self.name) {
+            return label;
+        }
+        intern(&self.name);
+        interned(&self.name).expect("interned just above")
     }
 }
 

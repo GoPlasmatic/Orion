@@ -40,6 +40,25 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 > [!NOTE]
 > `orion_errors_total{reason="channel_quarantined"}` fires only on the Kafka and async-queue delivery paths. A synchronous call to a quarantined channel returns an error but increments no counter.
 
+## Plugins
+
+Emitted by the WebAssembly plugin sandbox (`[plugins]`). `plugin` is a
+registered plugin id and `function` a registered function name — never a
+string a guest chose. `category` is the host's stable classification of a
+failure: `caller_input`, `guest_error`, `bad_code`, `request_size`,
+`response_size`, `permit`, `instances`, `fuel`, `memory`, `timeout`, `trap`
+or `bad_result`.
+
+| Name | Type | Labels | Description |
+|------|------|--------|-------------|
+| `orion_plugin_invocations_total` | Counter | `plugin`, `function`, `outcome` | Plugin function invocations; `outcome` is `ok` or `error`. |
+| `orion_plugin_invocation_duration_seconds` | Histogram | `plugin`, `function` | Wall-clock time of one invocation, sandbox setup included. |
+| `orion_plugin_queue_seconds` | Histogram | `plugin`, `function` | Time an invocation waited for its function's concurrency permit. |
+| `orion_plugin_failures_total` | Counter | `plugin`, `function`, `category` | Failed invocations by category. `timeout` is the one retryable category; `fuel`, `memory`, `permit`, `instances` and the two sizes are limits an operator raised or a plugin exceeded. |
+| `orion_plugin_loads_total` | Counter | `plugin`, `outcome` | Components compiled for a plugin; `outcome` is `ok` or `error`. |
+| `orion_plugin_compile_duration_seconds` | Histogram | `plugin` | Cranelift compile time of one component. Paid once per digest per process. |
+| `orion_plugin_live_instances` | Gauge | — | Plugin instances alive right now, across every function. Bounded by `plugins.max_live_instances`. |
+
 ## Trace pipeline
 
 | Name | Type | Labels | Description |

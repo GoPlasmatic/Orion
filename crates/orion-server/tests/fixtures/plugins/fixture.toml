@@ -1,0 +1,62 @@
+abi = "orion:plugin@1.0.0"
+name = "test.fixture"
+version = "0.0.0"
+component = "fixture.wasm"
+
+[[functions]]
+name = "test.fixture.identity"
+description = "Return the input unchanged"
+output_default_root = "data"
+
+[[functions.input_fields]]
+name = "message"
+kind = "any"
+required = true
+resolvable = true
+
+[[functions]]
+name = "test.fixture.wrap"
+description = "Wrap the input in an object with its length"
+output_default_root = "data"
+
+[[functions.input_fields]]
+name = "message"
+kind = "any"
+required = true
+resolvable = true
+
+[[functions]]
+name = "test.fixture.trap"
+description = "Execute an unreachable instruction"
+
+[[functions]]
+name = "test.fixture.alloc-forever"
+description = "Allocate until the host refuses"
+
+[[functions]]
+name = "test.fixture.spin"
+description = "Loop until interrupted"
+
+[[functions]]
+name = "test.fixture.big-output"
+description = "Return a string of the requested length"
+
+[[functions.input_fields]]
+name = "size"
+kind = "number"
+
+[[functions]]
+name = "test.fixture.bad-json"
+description = "Return text that is not JSON"
+
+[[functions]]
+name = "test.fixture.bad-code"
+description = "Fail with a code outside the grammar"
+
+[[functions]]
+name = "test.fixture.caller-input-error"
+description = "Fail blaming the caller"
+
+[[functions]]
+name = "test.fixture.internal-error"
+description = "Fail blaming the plugin"

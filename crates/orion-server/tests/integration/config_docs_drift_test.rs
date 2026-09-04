@@ -77,6 +77,14 @@ const NO_DEFAULT: &[&str] = &[
     "kafka.extra_config",
     "kafka.topics.topic",
     "kafka.topics.channel",
+    // The fields of the `[[plugins.overrides]]` array of tables: every one is
+    // an `Option`, and `id` names the plugin the block is for.
+    "plugins.overrides.id",
+    "plugins.overrides.timeout_ms",
+    "plugins.overrides.max_memory_bytes",
+    "plugins.overrides.max_concurrency",
+    "plugins.overrides.max_request_bytes",
+    "plugins.overrides.max_response_bytes",
 ];
 
 /// Settings where the derived `Default` and the `#[serde(default = "…")]`

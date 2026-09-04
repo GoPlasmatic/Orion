@@ -40,6 +40,9 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ("kafka", &["crate::server::", "crate::bootstrap::"]),
     ("queue", &["crate::server::", "crate::bootstrap::"]),
     ("jwt", &["crate::server::", "crate::bootstrap::"]),
+    // The plugin sandbox produces registry entries and handlers for a
+    // generation to carry; it names nothing above `engine`.
+    ("plugin", &["crate::server::", "crate::bootstrap::"]),
     // Storage and config are below everything that serves.
     (
         "storage",
@@ -94,6 +97,10 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ),
     (
         "queue",
+        &["crate::runtime::reload", "crate::runtime::handler_deps"],
+    ),
+    (
+        "plugin",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     ("storage", &["crate::runtime::"]),

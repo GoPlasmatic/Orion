@@ -56,6 +56,11 @@ version = 2
 # the weak file-level MPL-2.0.
 allow = [
     "Apache-2.0",
+    # Wasmtime and Cranelift (the plugin sandbox): Apache-2.0 with the LLVM
+    # exception, which only relaxes the attribution requirement for binaries.
+    # A distinct SPDX expression, so the bare "Apache-2.0" entry does not
+    # cover it. Allowed deliberately — see plugin.md, "Costs".
+    "Apache-2.0 WITH LLVM-exception",
     "MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",

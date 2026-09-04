@@ -247,6 +247,19 @@ where
     ov!(audit.max_pending: usize);
     ov!(audit.drain_timeout_secs: u64);
 
+    // Plugins
+    ov!(plugins.enabled: bool);
+    ov!(plugins.cache_dir: String);
+    ov!(plugins.max_component_bytes: usize);
+    ov!(plugins.max_memory_bytes: usize);
+    ov!(plugins.max_request_bytes: usize);
+    ov!(plugins.max_response_bytes: usize);
+    ov!(plugins.max_timeout_ms: u64);
+    ov!(plugins.max_concurrency_per_function: u32);
+    ov!(plugins.max_live_instances: u32);
+    ov!(plugins.fuel_backstop: u64);
+    ov_list!(plugins.trust.public_keys);
+
     // Query dialect
     ov!(query.default_limit: u64);
     ov!(query.max_limit: u64);

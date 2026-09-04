@@ -20,6 +20,7 @@ categories = ["web-programming", "web-programming::http-server"]
 include = [
     "/src/**",
     "/migrations/**",
+    "/wit/**",
     "/build.rs",
     "/Cargo.toml",
     "/LICENSE",
@@ -146,6 +147,15 @@ dashmap = "6"
 # Wait-free publication of the ChannelRegistry snapshot: every data-plane
 # request reads it, and the only writer stores a finished value (N17).
 arc-swap = "1"
+# The plugin sandbox (`plugin.md`): WebAssembly Components behind the
+# `orion:plugin` WIT world. Exactly the features the runtime needs and no
+# default: `runtime` + `cranelift` to compile and run, `component-model` for
+# the world, `async` so a guest call is a future the executor can cancel,
+# `pooling-allocator` for microsecond instantiation, `std`. No `wasi` — the
+# world imports nothing — and none of `wat`, `gc`, `debug`, `cache` or the
+# backtrace symbolisers, which are what a default build's size is made of.
+# Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
+wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
 # SCRAM work without a system OpenSSL at runtime (kafka.auth support).

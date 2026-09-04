@@ -8,6 +8,7 @@ mod kafka;
 mod logging;
 mod oauth2_login;
 mod observability;
+mod plugins;
 mod query;
 mod rate_limit;
 mod references;
@@ -32,6 +33,7 @@ pub use oauth2_login::OAuth2LoginConfig;
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };
+pub use plugins::{PluginOverride, PluginTrustConfig, PluginsConfig};
 pub use query::QueryConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
 pub use retired_env::retired_env_names;
@@ -94,6 +96,8 @@ pub struct AppConfig {
     /// where `{"secret": "name"}` reaches them. Never part of a message, so
     /// never part of a trace.
     pub secrets: SecretsConfig,
+    /// The WebAssembly plugin sandbox and its ceilings. Off by default.
+    pub plugins: PluginsConfig,
 }
 
 fn default_environment() -> String {
@@ -126,6 +130,7 @@ impl Default for AppConfig {
             cluster: ClusterConfig::default(),
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),
+            plugins: PluginsConfig::default(),
         }
     }
 }
