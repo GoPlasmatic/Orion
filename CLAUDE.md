@@ -93,6 +93,7 @@ src/
 │   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
 │   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read/write/aggregate, publish_kafka, send_email, storage_presign/head, crypto, jwt_sign/verify
 ├── errors.rs            # OrionError enum → HTTP response mapping
+├── http_body.rs         # Reading an outbound response under a byte cap **while streaming** — `read_bounded` (refuses before the chunk that crosses the limit), `read_preview` (bounded error text), `check_declared_length`. A leaf, like `crypto.rs`: `engine` (http_call, Elasticsearch), `connector` (OAuth2 token endpoints) and `jwt` (JWKS) all cap egress and none may reach the others. A cap applied after `Response::bytes()` bounds the *result*, not the memory — every new egress path goes through here
 ├── jwt/                 # Shared JWT core (verify, sign, JWKS cache) behind three surfaces: `jwt` channel auth, jwt_verify, jwt_sign
 ├── kafka/               # Kafka producer & consumer
 ├── metrics.rs           # Prometheus metrics collection

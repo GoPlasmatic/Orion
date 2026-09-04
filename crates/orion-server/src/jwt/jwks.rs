@@ -184,16 +184,14 @@ impl JwksCache {
                 .get("cache-control")
                 .and_then(|v| v.to_str().ok()),
         );
-        let body = response
-            .bytes()
+        // Bounded *while streaming* (`http_body`): an issuer — or anything
+        // answering on its behalf — must not be able to hand this cache a
+        // body larger than the cap by omitting `Content-Length`. Reading it
+        // whole and measuring afterwards enforced the cap on the result and
+        // not on the memory, which is what the cap is for.
+        let body = crate::http_body::read_bounded(response, MAX_JWKS_BYTES)
             .await
-            .map_err(|e| format!("read failed: {e}"))?;
-        if body.len() > MAX_JWKS_BYTES {
-            return Err(format!(
-                "document is {} bytes (cap {MAX_JWKS_BYTES})",
-                body.len()
-            ));
-        }
+            .map_err(|e| format!("JWKS {e}"))?;
         let set: jsonwebtoken::jwk::JwkSet =
             serde_json::from_slice(&body).map_err(|e| format!("not a JWK set: {e}"))?;
 
@@ -328,5 +326,33 @@ mod tests {
 
         assert_eq!(keys.len(), 1);
         assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// An issuer that streams without declaring a length cannot make this
+    /// cache buffer more than `MAX_JWKS_BYTES`.
+    ///
+    /// The cap used to be checked after `bytes()` had already read the body to
+    /// its end, so it bounded the *document this accepted* and not the memory
+    /// it took to refuse one — and a JWKS URL is reachable from a channel's
+    /// `auth` config, fetched on a cache miss, per issuer.
+    #[tokio::test]
+    async fn a_flooding_issuer_is_cut_off_at_the_cap() {
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: usize = 128; // 8 MiB against a 256 KiB cap
+        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
+        // `allow_private` — the flood server is on loopback, and the address
+        // check would otherwise refuse it before any body was read.
+        let cache = JwksCache::new(reqwest::Client::new(), true);
+
+        let result = cache
+            .decoding_keys(&url, Some("one"), Algorithm::HS256)
+            .await;
+
+        assert_eq!(result.err(), Some(RejectReason::KeysUnavailable));
+        crate::http_body::assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "the JWKS fetch",
+        );
     }
 }

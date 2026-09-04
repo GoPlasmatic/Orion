@@ -56,6 +56,20 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "crypto.rs",
         &["crate::server::", "crate::engine::", "crate::channel::"],
     ),
+    // Egress body reading is used by `engine` (http_call, Elasticsearch),
+    // `connector` (OAuth2 token endpoints) and `jwt` (JWKS). None of those may
+    // reach the others, which is why it is a leaf rather than living in the
+    // one that happened to implement it correctly first.
+    (
+        "http_body.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::channel::",
+            "crate::connector::",
+            "crate::jwt::",
+        ],
+    ),
     ("trace_context.rs", &["crate::server::", "crate::engine::"]),
     (
         "request_context.rs",

@@ -765,23 +765,13 @@ async fn request_token_inner(
         .await
         .map_err(|e| OAuthError::Transport(format!("token request failed: {e}")))?;
     let status = response.status();
-    if let Some(len) = response.content_length()
-        && len as usize > MAX_TOKEN_RESPONSE_BYTES
-    {
-        return Err(OAuthError::Transport(format!(
-            "token response declared Content-Length {len} (cap {MAX_TOKEN_RESPONSE_BYTES})"
-        )));
-    }
-    let body = response
-        .bytes()
+    // Bounded *while streaming* (`http_body`), and read on every status: the
+    // body is the authority on whether the request was rejected (see below),
+    // so this cannot skip it for a non-2xx. The declared-length check alone
+    // was no cap at all against a token endpoint that omits `Content-Length`.
+    let body = crate::http_body::read_bounded(response, MAX_TOKEN_RESPONSE_BYTES)
         .await
-        .map_err(|e| OAuthError::Transport(format!("token response read failed: {e}")))?;
-    if body.len() > MAX_TOKEN_RESPONSE_BYTES {
-        return Err(OAuthError::Transport(format!(
-            "token response is {} bytes (cap {MAX_TOKEN_RESPONSE_BYTES})",
-            body.len()
-        )));
-    }
+        .map_err(|e| OAuthError::Transport(format!("token response {e}")))?;
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
 
     // RFC 6749 §5.2 pairs the error body with a 400, and most IdPs comply.
@@ -1436,5 +1426,46 @@ mod tests {
             "method": "GET"
         }))
         .expect("base http config")
+    }
+
+    /// A token endpoint that streams without declaring a length cannot make
+    /// this buffer past `MAX_TOKEN_RESPONSE_BYTES`.
+    ///
+    /// The declared-length check was already here and is no cap on its own: a
+    /// chunked response skips it entirely, and the check that followed ran on
+    /// a body `bytes()` had already read to its end. This path also runs on
+    /// every token refresh for every OAuth2 connector, so the flood is
+    /// repeatable on a schedule Orion sets itself.
+    #[tokio::test]
+    async fn a_flooding_token_endpoint_is_cut_off_at_the_cap() {
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: usize = 128; // 8 MiB against a 64 KiB cap
+        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
+
+        let err = request_token_inner(
+            &reqwest::Client::new(),
+            TokenEndpoint {
+                token_url: &url,
+                client_id: "cid",
+                client_secret: "csecret",
+                client_auth: "basic",
+            },
+            // The flood server is on loopback; the SSRF check would refuse it
+            // before a body was read.
+            true,
+            vec![("grant_type", "client_credentials".to_string())],
+        )
+        .await
+        .expect_err("must refuse an oversized token response");
+
+        assert!(
+            matches!(err, OAuthError::Transport(ref m) if m.contains("token response")),
+            "unexpected error: {err:?}"
+        );
+        crate::http_body::assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "the token request",
+        );
     }
 }

@@ -123,27 +123,14 @@ pub async fn read_es_body(
     resp: reqwest::Response,
     max_size: usize,
 ) -> Result<Value, DataflowError> {
-    if let Some(len) = resp.content_length()
-        && len as usize > max_size
-    {
-        return Err(DataflowError::function_execution(
-            format!(
-                "Elasticsearch response declared Content-Length {len} exceeds \
-                 limit of {max_size} bytes"
-            ),
-            None,
-        ));
-    }
-    let bytes = resp.bytes().await.map_err(to_exec_error)?;
-    if bytes.len() > max_size {
-        return Err(DataflowError::function_execution(
-            format!(
-                "Elasticsearch response body is {} bytes, exceeding limit of {max_size} bytes",
-                bytes.len()
-            ),
-            None,
-        ));
-    }
+    // Bounded *while streaming* (`http_body`): a `_search` that answers with
+    // no `Content-Length` used to be buffered whole and measured afterwards,
+    // so the cap bounded what the workflow received and not what the node
+    // held. `max_size` is per connector, so the exposure scaled with the
+    // largest configured limit times the in-flight ES calls.
+    let bytes = crate::http_body::read_bounded(resp, max_size)
+        .await
+        .map_err(|e| to_exec_error(format!("Elasticsearch response {e}")))?;
     serde_json::from_slice(&bytes).map_err(|e| to_exec_error(e).into())
 }
 
@@ -1105,6 +1092,40 @@ where
 mod tests {
     use super::*;
     use crate::connector::DialectGuards;
+
+    /// An Elasticsearch node that streams a `_search` result without
+    /// declaring a length cannot make this buffer past `max_response_size`.
+    ///
+    /// The cap used to run after `bytes()` had read the body to its end, so a
+    /// hit set larger than the limit was held in full before being refused —
+    /// and `max_response_size` is per connector, so the exposure was that
+    /// number times the ES calls in flight.
+    #[tokio::test]
+    async fn a_flooding_es_response_is_cut_off_at_the_cap() {
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: usize = 128; // 8 MiB against the 4 KiB cap below
+        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
+
+        let response = reqwest::Client::new()
+            .get(url)
+            .send()
+            .await
+            .expect("response head");
+        let err = read_es_body(response, 4096)
+            .await
+            .expect_err("must refuse an oversized hit set");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Elasticsearch response") && msg.contains("4096"),
+            "the refusal must name the connector's limit: {msg}"
+        );
+        crate::http_body::assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "read_es_body",
+        );
+    }
 
     fn es_config(allow_private_urls: bool) -> EsConnectorConfig {
         EsConnectorConfig {

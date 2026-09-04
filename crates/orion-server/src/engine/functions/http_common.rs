@@ -516,11 +516,15 @@ fn redirect_target(
 /// Only the final parse step is format-dispatched — the size cap, the non-2xx
 /// error path, and the streaming reads are identical for every format.
 ///
-/// The limit is enforced *while streaming*: a chunked response with no
-/// `Content-Length` must not get to sit fully in memory before the size
-/// check — that is the exact OOM the limit exists to prevent.
+/// The cap is enforced *while streaming*, by [`crate::http_body`]: a chunked
+/// response with no `Content-Length` must not get to sit fully in memory
+/// before the size check — that is the exact OOM the limit exists to prevent.
+/// This function had the only correct implementation of that in the tree, and
+/// the three egress paths that copied the shape around it did not; it is a
+/// shared primitive now, and what stays here is the interpretation — which
+/// statuses are failures, and how the body is parsed.
 async fn read_response(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     url: &url::Url,
     max_size: usize,
     format: ResponseFormat,
@@ -528,62 +532,33 @@ async fn read_response(
     let status = response.status();
     let safe = safe_url(url.as_str());
 
-    // Check Content-Length hint before reading body
-    if let Some(content_length) = response.content_length()
-        && content_length as usize > max_size
-    {
-        return Err(DataflowError::function_execution(
-            format!(
-                "Response from {safe} declared Content-Length {content_length} exceeds limit of {max_size} bytes"
-            ),
-            None,
-        ));
-    }
+    // The declared-length refusal is taken before the status branch, so a
+    // non-2xx that announces an oversized body is refused as oversized rather
+    // than quoted back — the preview below would otherwise be the only thing
+    // standing between that body and the trace it lands in.
+    crate::http_body::check_declared_length(&response, max_size).map_err(|e| {
+        DataflowError::function_execution(format!("Response from {safe}: {e}"), None)
+    })?;
 
     if !status.is_success() {
         // Read at most `ERROR_BODY_PREVIEW` bytes of the error body for the
         // message; anything beyond that is dropped, never buffered. Capped
         // well under `max_size` deliberately — this body is someone else's
         // error text headed for a persisted trace, not data the workflow
-        // asked for. Read errors end the body early (the status alone still
-        // makes a useful error).
-        let cap = max_size.min(ERROR_BODY_PREVIEW);
-        let mut body_bytes = Vec::new();
-        let mut truncated = false;
-        while let Some(chunk) = response.chunk().await.ok().flatten() {
-            let room = cap.saturating_sub(body_bytes.len());
-            let take = chunk.len().min(room);
-            body_bytes.extend_from_slice(&chunk[..take]);
-            if take < chunk.len() {
-                truncated = true;
-                break;
-            }
-        }
-        let body_text = String::from_utf8_lossy(&body_bytes);
-        // Said explicitly, so a truncated body is never mistaken for the whole
-        // of a short one when someone is reading a trace to explain a failure.
-        let ellipsis = if truncated { "… (truncated)" } else { "" };
+        // asked for.
+        let preview =
+            crate::http_body::read_preview(response, max_size.min(ERROR_BODY_PREVIEW)).await;
         return Err(DataflowError::http(
             status.as_u16(),
-            format!("HTTP {status} from {safe}: {body_text}{ellipsis}"),
+            format!("HTTP {status} from {safe}: {}", preview.to_message()),
         ));
     }
 
-    let mut body_bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| {
-        DataflowError::function_execution(
-            format!("Failed to read response body from {safe}: {e}"),
-            None,
-        )
-    })? {
-        if body_bytes.len() + chunk.len() > max_size {
-            return Err(DataflowError::function_execution(
-                format!("Response body from {safe} exceeds limit of {max_size} bytes"),
-                None,
-            ));
-        }
-        body_bytes.extend_from_slice(&chunk);
-    }
+    let body_bytes = crate::http_body::read_bounded(response, max_size)
+        .await
+        .map_err(|e| {
+            DataflowError::function_execution(format!("Response from {safe}: {e}"), None)
+        })?;
 
     match format {
         ResponseFormat::Json => serde_json::from_slice(&body_bytes).map_err(|e| {
@@ -1743,6 +1718,53 @@ mod tests {
         assert!(
             !msg.contains("truncated"),
             "short body marked truncated: {msg}"
+        );
+    }
+
+    /// A server that streams without declaring a length cannot make
+    /// `http_call` buffer past the connector's `max_response_size`.
+    ///
+    /// This path always enforced the cap while streaming — it is where the
+    /// shape came from — so the test is here to keep it that way now that the
+    /// loop lives in `http_body` and is shared with three other callers.
+    /// Driven through `execute_request` rather than `read_response` so the
+    /// connector's configured limit is proved to reach it.
+    #[tokio::test]
+    async fn a_flooding_endpoint_is_cut_off_at_the_connector_limit() {
+        const CHUNK: usize = 64 * 1024;
+        const CHUNKS: usize = 128; // 8 MiB against the 4 KiB limit below
+        let (url, server) = crate::http_body::flood_server(CHUNK, CHUNKS).await;
+
+        let http_config = HttpConnectorConfig {
+            max_response_size: 4096,
+            ..redaction_config(&url)
+        };
+        let err = execute_request(
+            &reqwest::Client::new(),
+            &http_config,
+            RequestSpec {
+                auth: None,
+                method: &reqwest::Method::GET,
+                url: &url,
+                task_headers: None,
+                body: None,
+                body_format: BodyFormat::default(),
+                response_format: ResponseFormat::default(),
+                timeout: std::time::Duration::from_secs(10),
+            },
+        )
+        .await
+        .expect_err("must refuse an oversized response")
+        .to_string();
+
+        assert!(
+            err.contains("4096"),
+            "the refusal must name the connector's limit: {err}"
+        );
+        crate::http_body::assert_stopped_early(
+            server.await.expect("test server"),
+            CHUNK * CHUNKS,
+            "http_call",
         );
     }
 }
