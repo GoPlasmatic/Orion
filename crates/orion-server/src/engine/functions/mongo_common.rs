@@ -185,12 +185,30 @@ pub(super) async fn drain_capped(
 /// spelling (`{"$oid": …}`, `{"$date": {"$numberLong": …}}`) — the same
 /// spellings every input document accepts, so read output round-trips into the
 /// next filter unchanged.
-pub(super) fn docs_to_json(docs: &[Document]) -> Value {
-    Value::Array(
-        docs.iter()
-            .filter_map(|doc| serde_json::to_value(doc).ok())
-            .collect(),
-    )
+///
+/// A document that will not serialize is an error naming its index, not a gap
+/// in the array. This used to be `filter_map(… .ok())`, which dropped it: the
+/// caller got a shorter result set with nothing saying so, and the row count
+/// silently disagreed with the database. The SQL side settled the same question
+/// the other way — see [`super::connector_helpers::decode_failure`], whose
+/// whole point is that a value with no JSON form must say so rather than
+/// vanish.
+///
+/// # Errors
+///
+/// [`DataflowError`] naming the offending document's index.
+pub(super) fn docs_to_json(docs: &[Document], handler_name: &str) -> Result<Value, DataflowError> {
+    docs.iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            serde_json::to_value(doc).map_err(|e| {
+                DataflowError::Validation(format!(
+                    "{handler_name}: document [{i}] has no JSON representation: {e}"
+                ))
+            })
+        })
+        .collect::<Result<Vec<Value>, _>>()
+        .map(Value::Array)
 }
 
 // ============================================================

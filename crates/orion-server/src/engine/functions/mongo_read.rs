@@ -165,7 +165,7 @@ impl ConnectorHandler for MongoReadHandler {
         })
         .await?;
 
-        Ok(docs_to_json(&docs).into())
+        Ok(docs_to_json(&docs, NAME)?.into())
     }
 }
 

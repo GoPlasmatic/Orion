@@ -198,7 +198,7 @@ impl ConnectorHandler for MongoAggregateHandler {
         })
         .await?;
 
-        Ok(docs_to_json(&docs).into())
+        Ok(docs_to_json(&docs, NAME)?.into())
     }
 }
 

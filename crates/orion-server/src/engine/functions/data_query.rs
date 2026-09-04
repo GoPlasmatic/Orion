@@ -171,11 +171,10 @@ impl ConnectorHandler for DataQueryHandler {
                     cursor.try_collect().await.map_err(|e| e.to_string())
                 })
                 .await?;
-                Value::Array(
-                    docs.iter()
-                        .filter_map(|d| serde_json::to_value(d).ok())
-                        .collect(),
-                )
+                // Shared with `mongo_read`/`mongo_aggregate`, so an
+                // unserializable document is the same named error on every
+                // MongoDB read path rather than a silently shorter array here.
+                super::mongo_common::docs_to_json(&docs, NAME)?
             }
             ConnectorConfig::Db(db) => {
                 // SQL: dialect from the connection-string scheme, the same
