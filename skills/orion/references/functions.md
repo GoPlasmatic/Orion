@@ -1,191 +1,146 @@
 # Task functions
 
-27 names are valid in a task's `function.name`. **Get the authoritative input
-schema from the running instance** — this file is orientation, not
-specification:
+Read this reference when choosing functions or authoring a task's `function.input`.
+The running instance is the schema authority:
 
 ```bash
-orion-cli functions list --quiet                              # every valid name
-orion-cli functions list --output json | jq '.data[] | select(.name == "http_call")'
+orion-cli functions list
+orion-cli functions list --quiet
+orion-cli functions list --output json \
+  | jq '.data[] | select(.name == "data_query")'
 ```
 
-Two classes behave differently at write time:
+Do this before writing an unfamiliar input. The catalog reports names,
+categories, descriptions, typed fields, expression-capable fields, accepted
+secret references, and defaults for the installed release.
 
-- **Engine built-ins** (from dataflow-rs) are *not* input-schema-validated when
-  the workflow is created, so a bad `input` surfaces at execution.
-- **Connector and utility functions** (Orion's own) *are* validated on
-  create/update, and their schemas appear in `functions list`.
+## Select the right family
 
-| Group | Names |
+| Need | Prefer |
 |---|---|
-| Data (engine) | `parse_json`, `parse_xml`, `map`, `filter`, `validation` (alias `validate`), `log`, `publish_json`, `publish_xml` |
-| HTTP | `http_call` |
-| Portable data | `data_query`, `data_write` |
-| Raw SQL | `db_read`, `db_write` |
-| MongoDB | `mongo_read`, `mongo_write`, `mongo_aggregate` |
+| Parse ingress | `parse_json`, `parse_xml` |
+| Transform or branch | `map`, `filter`, `validation` / `validate` |
+| Serialize data | `publish_json`, `publish_xml` |
+| Log structured data | `log` |
+| HTTP service | `http_call` |
+| Portable database access | `data_query`, `data_write` |
+| Raw SQL escape hatch | `db_read`, `db_write` |
+| Native MongoDB | `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | Cache | `cache_read`, `cache_write` |
-| Messaging | `publish_kafka`, `send_email` |
-| Object storage | `storage_presign`, `storage_head` |
-| Composition | `channel_call` |
-| Utility | `crypto`, `jwt_sign`, `jwt_verify` |
+| Kafka or email | `publish_kafka`, `send_email` |
+| Object metadata/presigning | `storage_head`, `storage_presign` |
+| Call another Orion service | `channel_call` |
+| Cryptography or JWT | `crypto`, `jwt_sign`, `jwt_verify` |
 
-Prefer `data_query` / `data_write` over `db_read` / `db_write`: the portable
-dialect is parameterized, injection-safe and backend-neutral. The raw pair is
-the escape hatch for SQL the dialect cannot express.
+Prefer the portable data dialect unless the operation genuinely requires raw
+SQL or native MongoDB. It is parameterized, backend-neutral, and checked against
+connector operation gates.
 
-`crypto`, `jwt_sign` and `jwt_verify` need no connector and make no egress, so
-`orion-server dry-run` executes them for real rather than stubbing them.
-
-They are also the only functions whose fields carry key material —
-`crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and
-`audience` — and each takes two spellings. `{"secret": "name"}` reads the
-engine's `[secrets]` store, which is the one to reach for: it is an allowlist
-the operator published, and a misspelled name fails when the engine is built
-rather than in production. A string is a literal or an `env://NAME` /
-`vault://…` reference resolved at execution. Neither echoes the resolved value
-into a trace or an error.
-
-Every other field in every other function treats such a string as itself, which
-is why writing one there is refused with `UNRESOLVED_SECRET_REF` rather than
-silently sent to the backend. `functions list --output json` marks the fields
-that accept one.
-
-## The ones you will use constantly
-
-### `parse_json` / `parse_xml`
-
-Almost every workflow starts here — without it, conditions reading `data.*` see
-an empty context.
-
-| Field | Required | Notes |
-|---|:--:|---|
-| `source` | yes | Where to read the raw value, e.g. `"payload"` |
-| `target` | yes | Parsed value is stored at `data.{target}` |
-
-`parse_xml` takes the same two fields.
+## Task shape
 
 ```json
-{ "name": "parse_json", "input": { "source": "payload", "target": "order" } }
+{
+  "id": "fetch-customer",
+  "name": "Fetch customer",
+  "condition": true,
+  "continue_on_error": false,
+  "function": {
+    "name": "data_query",
+    "input": {}
+  }
+}
 ```
 
-### `map`
+A task condition is strict JSONLogic. Many function input fields accept either
+a literal or JSONLogic; the catalog identifies which. A literal remains valid.
+Do not invent legacy `*_logic` companions when the schema says the field
+itself is expression-capable.
 
-The primary tool for reshaping, computing and enriching. An ordered list of
-JSONLogic expressions, each written to a dotted path.
+A function's destination is usually `output`, which may itself be an
+expression in current releases. `http_call` and `channel_call` retain the
+legacy alias `response_path`; supplying both is a duplicate-field error.
+A computed destination makes static read/write analysis incomplete, so clippy
+will stay conservative.
 
-| Field | Required | Notes |
-|---|:--:|---|
-| `mappings` | yes | Ordered `{ "path", "logic" }` entries |
-| `mappings[].path` | yes | Dotted target, e.g. `"data.order.total"` |
-| `mappings[].logic` | yes | Expression whose result is written there |
+## Core data functions
+
+Nearly every body-reading workflow begins with:
 
 ```json
-{ "name": "map", "input": { "mappings": [
-  { "path": "data.order.flagged", "logic": true },
-  { "path": "data.order.total_with_tax",
-    "logic": { "*": [{ "var": "data.order.total" }, 1.1] } }
-] } }
+{
+  "name": "parse_json",
+  "input": { "source": "payload", "target": "order" }
+}
 ```
 
-A misspelled operator here is **silent** — see `expressions.md`.
+This makes the request available at `data.order`. The raw payload is not
+available through `{"var":"payload"}`.
 
-### `filter`
-
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `condition` | yes | — | Evaluated against the data context |
-| `on_reject` | no | `"halt"` | `"halt"` stops the workflow; `"skip"` skips only this task |
-
-`on_reject: "halt"` inside a `loop` body ends the whole loop — that is the
-idiomatic early break.
-
-### `validation` / `validate`
-
-Each rule's `logic` must evaluate to exactly `true`; anything else records the
-`message`. Non-destructive — it never mutates the context.
+`map` applies mappings in order:
 
 ```json
-{ "name": "validation", "input": { "rules": [
-  { "logic": { "!!": [{ "var": "data.order.customer_id" }] }, "message": "customer_id is required" },
-  { "logic": { ">": [{ "var": "data.order.total" }, 0] }, "message": "total must be positive" }
-] } }
+{
+  "name": "map",
+  "input": {
+    "mappings": [
+      { "path": "data.order.total_with_tax",
+        "logic": { "*": [{ "var": "data.order.total" }, 1.18] } }
+    ]
+  }
+}
 ```
 
-### `log`
+`filter` rejects when its condition is false. `on_reject: "halt"` ends the
+workflow; `"skip"` skips that task. A halting filter inside a loop is the
+normal early-break mechanism.
 
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `message` | yes | — | JSONLogic; a plain string is valid |
-| `level` | no | `"info"` | `trace` \| `debug` \| `info` \| `warn` \| `error` |
-| `fields` | no | `{}` | name → JSONLogic, logged as structured fields |
+`validation` runs rules whose `logic` must be exactly true and reports their
+messages without mutating the context.
 
-### `publish_json` / `publish_xml`
+`publish_json` and `publish_xml` serialize an in-context value. Despite
+their names, they do not send data externally.
 
-These serialize a field **inside** the context to a string at another field.
-They do **not** publish to an external system — the name misleads.
+## Connector functions
 
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `source` | yes | — | Field under `data`, e.g. `"order"` reads `data.order` |
-| `target` | yes | — | Field under `data` receiving the string |
-| `pretty` | no | `false` | `publish_json` only |
-| `root_element` | no | `"root"` | `publish_xml` only |
+A connector function names a connector statically unless its runtime schema
+explicitly allows otherwise. Keep connector selection static so activation,
+dependency inspection, rename guards, and package closure can prove it exists.
 
-### `http_call`
+Current `http_call` fields—including headers, path, body, formats, output,
+and timeout—can be expressions. Let the connector own the base URL,
+authentication, retries, response-size cap, SSRF policy, and allowed methods.
+The workflow supplies request-specific values.
 
-The connector supplies the base URL and auth; the workflow never holds
-credentials.
+`channel_call` runs another channel's workflow in-process. The called channel
+keeps its own admission rules, workflow versions, timeout, and metadata. Static
+targets appear in `workflows dependencies`; a dynamic target makes that report
+explicitly incomplete. Orion detects cycles and enforces a call-depth limit.
 
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `connector` | yes | — | Name of an HTTP connector |
-| `method` | no | `"GET"` | `GET` \| `POST` \| `PUT` \| `PATCH` \| `DELETE` |
-| `path` / `path_logic` | no | — | Appended to the connector's base URL; `_logic` computes it |
-| `headers` | no | `{}` | Extra headers, string → string |
-| `body` / `body_logic` | no | — | Static or computed request body |
-| `body_format` | no | `"json"` | `json` \| `form` \| `text` |
-| `output` | no | — | Dotted path for the response; omit to discard |
-| `response_format` | no | `"json"` | `json` (parsed, fails if invalid) \| `text` |
-| `timeout_ms` | no | `30000` | Per-request timeout |
+Connector errors that are continued are recorded in
+`metadata._orion_errors`. Database constraint failures have stable codes such
+as `integrity_unique`, `integrity_foreign_key`, `integrity_not_null`, and
+`integrity_check`; branch on codes, never backend error text.
 
-`body_format: "form"` URL-encodes for OAuth token endpoints and form APIs:
-scalars encode directly, arrays become repeated keys, `null` entries are
-skipped, nested values are rejected. Each format stamps its own `content-type`;
-setting one in `headers` changes the label, never the bytes.
+## Credentials and environment-specific values
 
-```json
-{ "name": "http_call", "input": {
-  "connector": "payment-api", "method": "POST", "path": "/charge",
-  "body_logic": { "var": "data.payment" },
-  "output": "data.charge_result", "timeout_ms": 5000
-} }
-```
+Do not place credentials in ordinary inputs. Use:
 
-### `channel_call`
+- a connector with `env://...` or `vault://...` secret references;
+- a declared secret read with `{"secret":"name"}` in expression-safe fields;
+- the explicit key-bearing fields of `crypto`, `jwt_sign`, and `jwt_verify`.
 
-Invokes another channel's workflow **in-process** — no network hop. The target
-keeps its own versioning and governance; cycle detection and a max call depth
-prevent runaway recursion.
+Only fields marked by the runtime schema accept direct secret references.
+Elsewhere Orion refuses them with `UNRESOLVED_SECRET_REF`. A declared secret
+cannot be read where its result would be persisted, such as a map result or log
+field.
 
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `channel` / `channel_logic` | exactly one | — | Static or computed target channel name |
-| `data` / `data_logic` | at most one | request payload | Static or derived payload |
-| `output` | no | `"data"` | Dotted path for the response |
-| `timeout_ms` | no | from config | Per-call timeout |
+`crypto` and JWT functions perform no external I/O, so offline dry-runs can
+execute them rather than stub them.
 
-A dynamic `channel_logic` makes the static dependency list incomplete —
-`orion-cli workflows dependencies <id>` says so when it cannot resolve targets.
+## Offline egress behavior
 
-## Output paths
-
-Every connector function writes to a dotted path named `output`. `http_call`
-and `channel_call` also accept the pre-1.0 spelling `response_path`; supplying
-**both** is a duplicate-field error, not a precedence rule.
-
-For the remaining functions — the data dialect, Mongo, cache, Kafka, email,
-storage, crypto and JWT — read the schema off the instance rather than guessing:
-
-```bash
-orion-cli functions list --output json | jq '.data[] | select(.name == "data_query")'
-```
+`orion-server dry-run` and `test` do not contact external systems by default.
+Provide deterministic stubs for connector functions and `channel_call`.
+Use the exact stub syntax reported by the command's `--help` and assert both
+the trace and final context. Never turn a workflow test into an accidental live
+dependency test.

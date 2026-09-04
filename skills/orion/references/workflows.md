@@ -1,270 +1,170 @@
-# Workflow reference
+# Workflows
 
-A workflow is a versioned, JSON-defined pipeline of tasks. A channel links to
-one by `workflow_id`. When a request arrives, Orion matches an active workflow,
-runs its tasks in order, and returns the resulting data context.
+Read this reference when creating or changing workflow JSON.
 
-## The workflow object
+## Object and lifecycle
 
-`POST /api/v1/admin/workflows` creates it; `PUT .../{id}` replaces the draft.
-Server-managed fields are set by Orion — do not send them on create.
-
-| Field | Type | Required | Default | Notes |
-|---|---|:--:|---|---|
-| `workflow_id` | string | no | auto UUID v4 | ≤128 chars, alphanumeric plus `.`, `-`, `_`, must start alphanumeric |
-| `name` | string | **yes** | — | ≤255 chars, non-empty |
-| `description` | string | no | — | ≤2048 chars |
-| `priority` | integer | no | `0` | Higher is evaluated first when several workflows could match |
-| `condition` | JSONLogic | no | `true` | Whether this workflow matches the request |
-| `tasks` | array | **yes** | — | Ordered, non-empty list of tasks or task groups |
-| `tags` | string[] | no | `[]` | Free-form labels; filter with `--tag` |
-| `loop` | object | no | — | Run the whole task list once per sweep |
-| `continue_on_error` | bool | no | `false` | A failing task does not halt the pipeline |
-| `version` | integer | server-managed | `1` | Increments per saved version |
-| `status` | string | server-managed | `draft` | `draft` \| `active` \| `archived` |
-| `rollout_percentage` | integer | server-managed | `100` | Traffic share when active |
-| `created_at` / `updated_at` | string | server-managed | — | RFC 3339 |
-
-Responses wrap the resource in a `data` envelope. Validation failures return
-`400` with field-pathed errors.
-
-## Tasks
-
-| Field | Type | Required | Default | Notes |
-|---|---|:--:|---|---|
-| `id` | string | **yes** | — | Unique within the workflow; appears in traces |
-| `name` | string | **yes** | — | Human-readable label |
-| `function` | object | **yes** | — | `{ "name": …, "input": { … } }` |
-| `condition` | JSONLogic | no | — | Falsy means this task is skipped |
-| `continue_on_error` | bool | no | inherits workflow | Per-task override |
-| `terminal` | bool | no | `false` | End the workflow after this step runs |
+A workflow requires `workflow_id`, `name`, `condition`, and `tasks`.
+The server owns version, status, rollout, content hash, and timestamps. Optional
+authoring fields include priority, tags, loop configuration, and
+`continue_on_error`.
 
 ```json
 {
-  "id": "flag",
-  "name": "Flag high-value order",
-  "condition": { ">": [{ "var": "data.order.total" }, 10000] },
-  "function": {
-    "name": "map",
-    "input": { "mappings": [{ "path": "data.order.flagged", "logic": true }] }
-  }
+  "workflow_id": "order-processing",
+  "name": "Order processing",
+  "condition": true,
+  "tasks": []
 }
 ```
 
-### Task groups
+Create produces a draft. Only drafts are editable, and only one draft exists
+per workflow ID. Activation makes a version immutable. Archive retires active
+versions; it does not reveal or reactivate a predecessor.
 
-An element of `tasks` that carries its own `tasks` key is a **task group** —
-one condition guarding a contiguous run of steps, instead of the same condition
-repeated on every one. Presence of a `tasks` key is the *only* rule that
-distinguishes the two shapes; a group has no `function`. An element with
-neither is reported as a broken task, not an empty group.
+## Steps, groups, and terminal behavior
 
-| Field | Required | Notes |
-|---|:--:|---|
-| `id` | **yes** | Shares one id namespace with tasks — a collision is refused at create |
-| `tasks` | **yes** | Non-empty; a condition guarding nothing is refused |
-| `condition` | no | Evaluated **once, on entry**. Falsy skips the whole span without evaluating members' own conditions |
-| `terminal` | no | End the workflow after the whole span |
-| `name` / `description` | no | Optional here, unlike on a task where `name` is required |
+A task step contains an ID, display name, optional condition/error behavior, and
+one function. IDs must be unique across the authored tree.
 
-Groups nest up to 8 levels. Everything downstream — traces, audit trails,
-`metadata.progress` — sees the **flattened** list: the group is a property of
-the definition, not a step that runs.
+A task group is a step whose `tasks` array contains nested steps. Its condition
+gates the group. Group error behavior applies to its subtree. Groups may nest
+only to the engine's supported maximum depth; lint reports violations.
 
 ```json
-{ "id": "not_found",
-  "condition": { "==": [{ "var": "data.user" }, null] },
-  "terminal": true,
+{
+  "id": "premium-path",
+  "name": "Premium path",
+  "condition": { "==": [{ "var": "data.customer.tier" }, "premium"] },
   "tasks": [
-    { "id": "body", "name": "404 body", "function": { "name": "map", "input": { "mappings": [
-        { "path": "data.out", "logic": { "error": "User Not Found" } } ] } } },
-    { "id": "status", "name": "404 status", "function": { "name": "map", "input": { "mappings": [
-        { "path": "data._orion.response", "logic": { "status": 404, "body_path": "data.out" } } ] } } }
-  ] }
+    {
+      "id": "price",
+      "name": "Calculate price",
+      "function": { "name": "map", "input": { "mappings": [] } }
+    }
+  ]
+}
 ```
 
-### Terminal steps
+`terminal: true` on any step ends the workflow after that step or group
+completes. Use it for explicit successful exits. Use a halting `filter` when
+termination depends on a predicate evaluated as a task.
 
-`terminal: true` is the guard clause: *if this, answer and stop*. It is about
-**position, not outcome**:
+## Fragments and shared values
 
-- A falsy `condition` does not halt — the step did not run.
-- A skipped task does not halt.
-- A task that *failed* under `continue_on_error: true` **does** halt, because
-  the author said nothing runs after this one.
-
-Task groups and `terminal` need dataflow-rs 3.6 (Orion 1.2.0+). On an older
-engine a group **fails to load** loudly, but a bare `terminal: true` is
-silently ignored and every later task runs — gate on the server version when
-deploying to instances you do not control.
-
-### Fragments — a reused task sequence
-
-A **fragment** is a named, parameterised task sequence declared in the
-definition set's shared documents and spliced in by a step that carries `use`
-instead of `function`:
+Definition directories may contain shared values referenced by `$from` and
+parameterized task fragments invoked with `use` plus `with`.
 
 ```json
-{ "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
+{ "id": "session", "use": "require-session",
+  "with": { "deny_message": "Please sign in" } }
 ```
 
-It is authored exactly like a workflow's `tasks`, task groups and `terminal`
-included, and `{"$param": "deny_message"}` reads a parameter. A parameter with
-no `default` is required at every call site.
+Compilation expands fragments and prefixes every contributed ID, including
+nested groups. A fragment cannot recursively use another fragment. Single-file
+admin endpoints cannot resolve source forms and return `UNCOMPILED_SOURCE`.
+Always lint and compile the definition set.
 
-Every id the fragment contributes is prefixed with the call-site id, **at every
-depth** — a group's own id and its members' alike (`_session.check`,
-`_session.deny`) — and the prefix is flat, one segment, not one per enclosing
-group. That is what lets one workflow use a fragment twice. A fragment cannot
-use another fragment at any depth; nesting one inside a task group is refused,
-not quietly expanded.
+## Context
 
-Expansion happens when a *set* is loaded, before validation, so `lint`,
-`dry-run` and `test` see the expanded tasks. The admin API loads no set and
-refuses `use` (and `$from`) with `UNCOMPILED_SOURCE` — `orion-server compile`
-is the step that produces what it accepts. See `references/cli.md`.
+Every run has three readable roots:
 
-## The data context
-
-Tasks share one JSON document. Its top level holds exactly three readable
-areas:
-
-| Area | Starts as | Purpose |
-|---|---|---|
-| `data` | `{}` | The working document. For a sync channel the final `data` is the response body |
-| `metadata` | ingress-stamped | Request context — channel, method, headers, params |
-| `temp_data` | `{}` | Scratch space. Not part of the response |
-
-**`payload` is not in the context.** The raw ingress payload lives outside the
-JSONLogic context, so `{"var": "payload.x"}` resolves to nothing. `parse_json`
-or `parse_xml` with `source: "payload"` is the only way to reach it — which is
-why a workflow that reads request data must start with one.
-
-### Output paths
-
-Every connector function writes its result to a dotted path named `output`; a
-`map` task uses its mapping `path` instead. Orion creates the path if it does
-not exist. `http_call` and `channel_call` also accept the pre-1.0 spelling
-`response_path` — supplying **both** is a duplicate-field error, not a
-precedence rule.
-
-### Request metadata
-
-**HTTP** — Orion copies a caller-supplied `metadata` object first, then stamps
-its own keys on top:
-
-| Key | Stamped | Value |
-|---|---|---|
-| `channel` | always | Resolved channel name; always overrides a caller value |
-| `http_method` | always | `POST`, `GET`, … |
-| `params` | when non-empty | Path parameters from the REST route pattern |
-| `query` | when non-empty | Query-string parameters |
-| `headers` | always | All headers, names lowercased; `authorization`, `cookie`, `proxy-authorization` and `x-api-key` values masked |
-| `cookies` | when the channel opts in | Only those named by `request.cookies_to_metadata` |
-
-Nothing else on the HTTP path — no client IP, no request path, no trace id. A
-channel with `request.body_mode = "payload"` takes no caller `metadata` at all.
-
-**Kafka** — `channel`, `kafka_topic`, `kafka_partition`, `kafka_offset`, and
-`kafka_key` (only when valid UTF-8). Record headers are not copied.
-
-**`channel_call`** — the called workflow inherits the parent's `metadata`, with
-`channel` overwritten and two tracking keys added: `_orion_call_depth` and
-`_orion_call_chain`.
-
-### The `_orion` namespace
-
-Orion reserves these keys and no others:
-
-| Key | Meaning |
+| Root | Purpose |
 |---|---|
-| `data._orion.response` | Shaped channels write `status`, `headers`, `body` here; Orion drains it before replying |
-| `_orion.profile` | Per-task timings in the response envelope when profiling is requested — never in the context |
-| `metadata._orion_call_depth` | `channel_call` nesting depth |
-| `metadata._orion_call_chain` | Channel names traversed |
-| `metadata._orion_errors` | Codes of tasks that failed in this run |
+| `data` | Working document and default sync response data |
+| `metadata` | Trusted ingress/channel context and declared vars |
+| `temp_data` | Scratch state excluded from the response |
 
-## Error handling
+The raw request body is outside that JSONLogic document. Parsing functions read
+it as `source: "payload"` and write beneath `data`.
 
-By default the pipeline **halts** on the first task that errors and returns the
-error to the caller. `continue_on_error: true` on the workflow keeps running
-and collects errors; on a single task it makes just that step non-fatal.
-`filter` gives finer control: `on_reject: "halt"` stops the workflow,
-`on_reject: "skip"` skips only the current task.
+HTTP metadata may include channel, method, lower-cased/masked headers, route
+params, query values, and explicitly opted-in cookies. Kafka metadata includes
+topic, partition, offset, and a UTF-8 key. `channel_call` inherits metadata
+while overwriting the channel identity and adding call-chain fields.
 
-For async channels, a task failure routes the trace to the dead-letter queue
-for automatic retry.
+Do not trust caller-provided metadata for authorization. Orion overwrites its
+reserved ingress keys, but business metadata remains user input unless a guard
+establishes otherwise.
 
-### Branching on a failure
+Reserved state includes:
 
-A continued run appends a record to `metadata._orion_errors`:
+- `data._orion.response` for shaped responses;
+- `metadata._orion_errors` for continued task failures;
+- `metadata._orion_call_depth` and `metadata._orion_call_chain`;
+- response-only profiling data under `_orion.profile`.
+
+Avoid creating your own values in the `_orion` namespace.
+
+## Failure behavior
+
+Without an override, a task error halts the pipeline. A task-level
+`continue_on_error: true` makes that step non-fatal; workflow/group settings
+apply more broadly.
+
+Continued failures append bounded, sanitized records to
+`metadata._orion_errors`, including task ID, workflow ID, stable code, and
+status—not backend error messages. Branch on the code. Connector and integrity
+codes may be more specific than the generic engine codes.
 
 ```json
-{ "task_id": "charge_payment", "workflow_id": "place-order",
-  "code": "TIMEOUT_ERROR", "status": 500 }
+{
+  "id": "recover",
+  "name": "Recover from timeout",
+  "condition": {
+    "in": [
+      { "var": "metadata._orion_errors.0.code" },
+      ["TIMEOUT_ERROR", "IO_ERROR"]
+    ]
+  },
+  "function": { "name": "map", "input": { "mappings": [] } }
+}
 ```
 
-`code` is closed: `VALIDATION_ERROR`, `WORKFLOW_ERROR`, `TASK_ERROR`,
-`FUNCTION_NOT_FOUND`, `FUNCTION_ERROR`, `LOGIC_ERROR`, `HTTP_ERROR`,
-`TIMEOUT_ERROR`, `IO_ERROR`, `DESERIALIZATION_ERROR`, `UNKNOWN_ERROR`, plus
-service kinds Orion mints such as `circuit_open`. `status` separates a handler
-that errored (always `500`) from a task that returned a 5xx *outcome*.
+For async HTTP or Kafka work, an unhandled failure follows trace/DLQ policy.
+Inspect the trace rather than assuming the acknowledgement means completion.
 
-```json
-{ "id": "retry_later",
-  "condition": { "in": [ { "var": "metadata._orion_errors.0.code" },
-                         ["TIMEOUT_ERROR", "IO_ERROR"] ] } }
-```
+## Loops
 
-Three properties: **no message ever** (codes and task ids only, so an upstream
-URL or body cannot leak past `verbose_errors`), **not caller-supplied** (the
-key is cleared at every ingress and reset on `channel_call`), and **bounded**
-(only the most recent records are kept).
+A workflow loop repeats the whole task list. `max` is required and bounded by
+server configuration; `init` defaults to zero and `increment` must advance.
+An optional `counter` writes beneath `temp_data`.
 
-`metadata.progress` is the older, weaker signal — a single slot overwritten by
-every task, carrying no reason. Prefer `_orion_errors`.
+Do not make a workflow condition depend on data first produced by the loop
+body: the condition is checked before the first sweep. Put an early exit inside
+the body with a `filter` using `on_reject: "halt"`. Reaching `max` is normal
+completion.
 
-## Loop
+## Matching and version selection
 
-A workflow with a `loop` runs its **whole task list once per sweep**. It is how
-one workflow calls a connector per array element, which a JSONLogic `map`
-cannot do.
+A channel binds to a workflow ID. Among eligible active definitions, higher
+priority matches first after conditions and rollout admission are considered.
 
-| Field | Required | Default | Notes |
-|---|:--:|---|---|
-| `max` | **yes** | — | Upper bound on sweeps. Half-open: `init: 0, max: 10` yields `0`–`9` |
-| `counter` | no | — | `temp_data` field holding the count — `"i"` is `temp_data.i`; dots nest |
-| `init` | no | `0` | First counter value |
-| `increment` | no | `1` | At least `1`, so the counter always advances |
+Canary activation assigns a percentage to the new active version and leaves the
+remainder on existing active versions. The active percentages for an ID must
+form the partition required by the engine; otherwise bound channels are
+quarantined. Use activation `--dry-run` before changing traffic.
 
-Per sweep, in order: write the counter, check `counter < max`, re-evaluate the
-**workflow** condition, run the task list.
+HTTP rollout can be sticky using the configured identity header, otherwise the
+forwarded client IP, with random-per-request fallback when neither is present.
+`channel_call` preserves the parent rollout decision. Kafka is admitted
+without an HTTP caller bucket.
 
-**Do not put the break in the workflow `condition`.** `data` starts empty, so a
-condition reading `data.*` is false on sweep 0 — before any `parse_json` has
-run — and the loop never starts. Put the break in the body as a `filter` task
-with `on_reject: "halt"`, which ends the whole loop rather than the sweep.
+Promoting a version fully archives the replaced active version. For rollback,
+copy known-good archived content into a new draft, test, and activate it—or
+reapply the previous package artifact.
 
-`max` is structural — the loop cannot outrun it. Reaching it is normal
-completion, not an error. It is capped by `engine.max_loop_iterations`
-(default `10000`); exceeding that is refused with `400` at write time.
+## Testing checklist
 
-## Matching and rollout
+Test at least:
 
-If several active workflows are bound to a channel, they are evaluated in
-`priority` order (higher first) and the first whose `condition` matches wins.
+- normal and malformed payloads;
+- every meaningful condition branch;
+- missing/null/empty values;
+- continued and unhandled function failures;
+- loop zero, one, and maximum-boundary behavior;
+- shaped response control data when the channel uses it;
+- dependency stubs and their output paths.
 
-`rollout_percentage` (`1`–`100`) is the traffic share an active version takes.
-`0` is refused — a version serving no traffic is an archived version.
-
-## Lifecycle
-
-```
-draft --activate--> active --archive--> archived
-```
-
-- **draft** — editable, not served. Only **one draft per `workflow_id`** at a
-  time. Create starts here.
-- **active** — served, **immutable**.
-- **archived** — retired and kept. It is a rollback *source*: copy its content
-  into a new draft. Nothing reactivates it in place.
+Inspect task states and intermediate context in the trace, not only the final
+response.

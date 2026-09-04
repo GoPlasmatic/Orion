@@ -61,11 +61,11 @@ it:
 
 | File | Covers |
 |---|---|
-| `references/workflows.md` | Workflow JSON in full: tasks, task groups, `terminal`, fragments, loops, the data context, request metadata, error branching |
-| `references/functions.md` | The task functions for the documented release, grouped, with inputs for the common ones |
-| `references/expressions.md` | The complete JSONLogic vocabulary and its silent-failure edges |
-| `references/channels.md` | Channel JSON, every `config` guard block, and connector types |
-| `references/cli.md` | Full `orion-cli` / `orion-server` map, offline testing, shared definitions and `compile`, packages, troubleshooting |
+| `references/workflows.md` | Tasks, groups, fragments, context, loops, failures, and version selection |
+| `references/functions.md` | Function selection, live schema discovery, expression-capable inputs, and egress boundaries |
+| `references/expressions.md` | JSONLogic evaluation, templates, secrets, and silent-failure edges |
+| `references/channels.md` | Ingress guards, request/response behavior, cookies, stored config, and connectors |
+| `references/cli.md` | Offline checks, lifecycle operations, compilation, packages, and troubleshooting |
 
 Anything discoverable at runtime is *not* restated in the skill — it tells the
 agent to run `orion-cli functions list` for a function's input schema, and

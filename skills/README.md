@@ -51,13 +51,13 @@ exposed to the network.
 
 ```
 orion/
-├── SKILL.md                    # loaded first: concepts, the safe path, the command map
+├── SKILL.md                    # loaded first: concepts, lifecycle, and operating path
 └── references/
     ├── workflows.md            # workflow JSON, task groups, fragments, data context, loops
-    ├── functions.md            # the 27 task functions
-    ├── expressions.md          # JSONLogic vocabulary and its silent-failure edges
-    ├── channels.md             # channel config blocks and connectors
-    └── cli.md                  # full command map, offline testing, compile, troubleshooting
+    ├── functions.md            # function selection, schemas, expression-capable inputs
+    ├── expressions.md          # JSONLogic evaluation and silent-failure edges
+    ├── channels.md             # ingress guards, responses, stored config, connectors
+    └── cli.md                  # offline checks, lifecycle, packages, troubleshooting
 ```
 
 `SKILL.md` is what enters the agent's context up front; the `references/` files
@@ -65,7 +65,6 @@ are opened only when the task needs them.
 
 ## Keeping it honest
 
-The skill points at the instance for anything that can be discovered at
-runtime — `orion-cli functions list` for input schemas, `--help` for flags —
-rather than restating it. Prefer that over adding another table here: a table
-can drift, the instance cannot.
+The skill points at the instance for anything discoverable at runtime —
+`orion-cli functions list` for input schemas and `--help` for flags — rather
+than freezing catalogs that drift between releases.
