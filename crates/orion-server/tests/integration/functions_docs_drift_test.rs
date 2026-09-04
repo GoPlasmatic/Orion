@@ -413,3 +413,71 @@ fn every_documented_function_has_a_section() {
          docs/src/reference/functions.md: {missing:?}"
     );
 }
+
+// ============================================================
+// Retry safety (finding 10, bullet 3)
+// ============================================================
+
+/// The `## Retry safety` table, as `name -> answer`.
+///
+/// A `depends_on` row spells the deciding input in the same cell —
+/// `` `depends_on` `method` `` — so the answer here is the two joined, which is
+/// what the registry's `DependsOn { input }` carries.
+fn documented_retry_safety(doc: &str) -> std::collections::BTreeMap<String, String> {
+    let section = doc
+        .split("## Retry safety")
+        .nth(1)
+        .expect("the page must carry a `## Retry safety` section");
+    // Stop at the next section, so the summary table above is never read here.
+    let section = section.split("\n## ").next().unwrap_or(section);
+    let mut out = std::collections::BTreeMap::new();
+    for line in section.lines() {
+        let cells = row_cells(line);
+        // The legend table (Answer | Meaning) has two cells; this one has three.
+        if cells.len() != 3 {
+            continue;
+        }
+        let Some(name) = backticked(cells[0]).into_iter().next() else {
+            continue;
+        };
+        let answer = backticked(cells[1]).join(" ");
+        if answer.is_empty() {
+            continue;
+        }
+        out.insert(name, answer);
+    }
+    out
+}
+
+/// What the registry says, in the spelling the page uses.
+fn registry_retry_safety() -> std::collections::BTreeMap<String, String> {
+    use orion::engine::functions::schema::RetrySafety;
+    registry()
+        .iter()
+        .map(|s| {
+            let answer = match s.retry_safety {
+                RetrySafety::DependsOn { input } => format!("depends_on {input}"),
+                other => other.as_str().to_string(),
+            };
+            (s.name.to_string(), answer)
+        })
+        .collect()
+}
+
+/// The documented retry safety is the registry's, function for function.
+///
+/// This is documentation an author acts on — "is it safe if the DLQ replays
+/// this?" — so a page that disagrees with the code is worse than no page. The
+/// `depends_on` rows are included in the comparison rather than waved through:
+/// naming the wrong deciding input sends someone to read the wrong field.
+#[test]
+fn the_retry_safety_table_matches_the_registry() {
+    let documented = documented_retry_safety(&doc());
+    let declared = registry_retry_safety();
+
+    assert_eq!(
+        documented, declared,
+        "the `## Retry safety` table in docs/src/reference/functions.md does not \
+         match `schema::REGISTRY`"
+    );
+}

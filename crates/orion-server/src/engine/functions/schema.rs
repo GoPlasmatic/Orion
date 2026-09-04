@@ -201,6 +201,59 @@ pub enum WriteShape {
     Nothing,
 }
 
+/// Whether running a task twice can do its work twice.
+///
+/// Not the same question as [`ErrorClass::is_retryable`], which asks whether an
+/// *error* was transient. This asks what a retry costs when the answer is yes:
+/// a `db_read` re-run is free, a `send_email` re-run is a second email. Orion
+/// retries tasks in more places than an author necessarily has in mind — the
+/// DLQ retry loop, a Kafka redelivery of an uncommitted offset, `http_call`'s
+/// own transport retry — and nothing told them which functions those retries
+/// are safe over.
+///
+/// The connector layer already knows this shape for one case:
+/// `HttpConnectorConfig::retry_non_idempotent` exists because *"a timed-out
+/// POST may already have been applied"*. This is that fact, per function, where
+/// an author and their tooling can read it.
+///
+/// [`ErrorClass::is_retryable`]: crate::engine::ErrorClass::is_retryable
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RetrySafety {
+    /// No external effect at all: the answer is a function of the input, and
+    /// nothing outside the message changes. Free to retry.
+    Pure,
+    /// Reads state without changing it. A retry costs another round trip and
+    /// may observe a newer value, but repeats no work.
+    Read,
+    /// Writes, but a second run lands the same end state as the first.
+    IdempotentWrite,
+    /// Writes, and a second run duplicates the effect. Retrying sends the
+    /// second email, publishes the second record.
+    UnsafeWrite,
+    /// The answer is the task's own, and this is the input that decides it.
+    ///
+    /// The honest variant. A third of the set genuinely has no fixed answer —
+    /// `data_write` with `op: "upsert"` is idempotent and with `op: "insert"`
+    /// is not; `http_call` is a `GET` or a `POST`. Collapsing those to a
+    /// boolean would state something false about half of every deployment's
+    /// workflows, so the field names the input to go and look at instead.
+    DependsOn { input: &'static str },
+}
+
+impl RetrySafety {
+    /// The value `/admin/functions` and the reference table both spell.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pure => "pure",
+            Self::Read => "read",
+            Self::IdempotentWrite => "idempotent_write",
+            Self::UnsafeWrite => "unsafe_write",
+            Self::DependsOn { .. } => "depends_on",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionSchema {
     pub name: &'static str,
@@ -211,6 +264,11 @@ pub struct FunctionSchema {
     /// a new handler cannot reach the clippy rules with its writes unknown —
     /// `every_function_declares_where_it_writes` refuses one that tries.
     pub writes: WriteShape,
+    /// What a second run of this task does — see [`RetrySafety`]. Declared
+    /// per function rather than derived, because nothing in the input schema
+    /// implies it: `db_read` and `db_write` have the same shape and opposite
+    /// answers.
+    pub retry_safety: RetrySafety,
     /// Whether a key outside `input_fields` is an error rather than ignored.
     ///
     /// True for the functions dataflow-rs owns the config struct for
@@ -260,6 +318,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: false,
         validate_static: None,
     },
@@ -269,6 +328,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: CACHE_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::IdempotentWrite,
         deny_unknown: false,
         validate_static: None,
     },
@@ -278,6 +338,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: false,
         validate_static: None,
     },
@@ -287,6 +348,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::DependsOn { input: "sql" },
         deny_unknown: false,
         validate_static: None,
     },
@@ -298,6 +360,7 @@ const REGISTRY: &[FunctionSchema] = &[
         writes: WriteShape::OutputPath {
             default_root: Some("data"),
         },
+        retry_safety: RetrySafety::Read,
         deny_unknown: false,
         validate_static: None,
     },
@@ -309,6 +372,7 @@ const REGISTRY: &[FunctionSchema] = &[
         writes: WriteShape::OutputPath {
             default_root: Some("data"),
         },
+        retry_safety: RetrySafety::DependsOn { input: "op" },
         deny_unknown: false,
         validate_static: None,
     },
@@ -318,6 +382,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: false,
         validate_static: None,
     },
@@ -329,6 +394,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // write does — the crypto/send_email rationale exactly.
         input_fields: MONGO_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::DependsOn { input: "op" },
         deny_unknown: true,
         validate_static: Some(super::mongo_write::validate_static_input),
     },
@@ -338,6 +404,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: MONGO_AGGREGATE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: true,
         validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
@@ -347,6 +414,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::DependsOn { input: "channel" },
         deny_unknown: false,
         validate_static: None,
     },
@@ -359,6 +427,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // silently mean "use the default".
         input_fields: CRYPTO_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Pure,
         deny_unknown: true,
         validate_static: Some(super::crypto::validate_static_input),
     },
@@ -368,6 +437,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "utility",
         input_fields: JWT_SIGN_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Pure,
         deny_unknown: true,
         validate_static: Some(super::jwt_sign::validate_static_input),
     },
@@ -377,6 +447,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "utility",
         input_fields: JWT_VERIFY_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: true,
         validate_static: Some(super::jwt_verify::validate_static_input),
     },
@@ -386,6 +457,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::DependsOn { input: "method" },
         deny_unknown: true,
         validate_static: None,
     },
@@ -397,6 +469,7 @@ const REGISTRY: &[FunctionSchema] = &[
         // a misspelled `reply_to`) silently changes who gets what.
         input_fields: SEND_EMAIL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::UnsafeWrite,
         deny_unknown: true,
         validate_static: Some(super::send_email::validate_static_input),
     },
@@ -406,6 +479,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: STORAGE_PRESIGN_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Pure,
         deny_unknown: true,
         validate_static: Some(super::storage_presign::validate_static_input),
     },
@@ -415,6 +489,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: STORAGE_HEAD_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::Read,
         deny_unknown: true,
         validate_static: None,
     },
@@ -424,6 +499,7 @@ const REGISTRY: &[FunctionSchema] = &[
         category: "connector",
         input_fields: PUBLISH_KAFKA_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
+        retry_safety: RetrySafety::UnsafeWrite,
         deny_unknown: true,
         validate_static: None,
     },
@@ -491,12 +567,18 @@ pub struct CatalogueEntry {
     /// a consumer branches on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_fields: Option<&'static [FieldSchema]>,
+    /// What a second run of this function does — see [`RetrySafety`]. Served
+    /// for every entry, built-ins included: "is it safe to retry this task?"
+    /// is a question about every function a workflow can name, not only the
+    /// ones Orion declares an input schema for.
+    pub retry_safety: RetrySafety,
 }
 
 /// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
 /// with no Orion-declared input schema.
 ///
-/// `(name, description, aliases, writes)` — the four things that vary. Every
+/// `(name, description, aliases, writes, retry_safety)` — the five things that
+/// vary. Every
 /// entry is `category: "data"` (the fourth wire value, matching the grouping
 /// `reference/functions.md` already gives these in its summary table),
 /// `source: Engine`, and no input schema, so [`catalogue`] supplies those
@@ -507,31 +589,41 @@ pub struct CatalogueEntry {
 /// `writes` is here for the same reason it is on [`FunctionSchema`]: the
 /// authoring analysis has to know where a built-in puts its output, and the
 /// only defensible place to say so is beside the row that declares the
-/// built-in.
-const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape)] = &[
+/// built-in. `retry_safety` is here on the same argument, and stated per row
+/// rather than supplied wholesale by [`catalogue`] even though all eight are
+/// currently [`RetrySafety::Pure`] — a built-in that one day reaches outside
+/// the message must be made to answer, not inherit a default that was true of
+/// its neighbours. (`log` writes only to this node's own observability output.
+/// A retry repeating a log line is not a duplicated effect in the sense this
+/// field is about.)
+const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape, RetrySafety)] = &[
     (
         "parse_json",
         "Parse the raw payload into the data context.",
         &[],
         WriteShape::Target,
+        RetrySafety::Pure,
     ),
     (
         "parse_xml",
         "Parse an XML payload into the data context.",
         &[],
         WriteShape::Target,
+        RetrySafety::Pure,
     ),
     (
         "map",
         "Transform and reshape data with JSONLogic mappings.",
         &[],
         WriteShape::Mappings,
+        RetrySafety::Pure,
     ),
     (
         "filter",
         "Gate the pipeline on a JSONLogic condition.",
         &[],
         WriteShape::Nothing,
+        RetrySafety::Pure,
     ),
     (
         "validation",
@@ -539,24 +631,28 @@ const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape)] = &[
         // Upstream accepts both spellings; they are one function.
         &["validate"],
         WriteShape::Nothing,
+        RetrySafety::Pure,
     ),
     (
         "log",
         "Emit a structured log line.",
         &[],
         WriteShape::Nothing,
+        RetrySafety::Pure,
     ),
     (
         "publish_json",
         "Serialize a context field to a JSON string.",
         &[],
         WriteShape::Target,
+        RetrySafety::Pure,
     ),
     (
         "publish_xml",
         "Serialize a context field to an XML string.",
         &[],
         WriteShape::Target,
+        RetrySafety::Pure,
     ),
 ];
 
@@ -574,8 +670,8 @@ pub fn write_shape(function: &str) -> Option<WriteShape> {
     }
     ENGINE_BUILTINS
         .iter()
-        .find(|(name, _, aliases, _)| *name == function || aliases.contains(&function))
-        .map(|(_, _, _, writes)| *writes)
+        .find(|(name, _, aliases, _, _)| *name == function || aliases.contains(&function))
+        .map(|(_, _, _, writes, _)| *writes)
 }
 
 /// Every function a workflow may name, sorted by name.
@@ -593,19 +689,19 @@ pub fn catalogue() -> Vec<CatalogueEntry> {
             source: Source::Orion,
             aliases: &[],
             input_fields: Some(schema.input_fields),
+            retry_safety: schema.retry_safety,
         })
-        .chain(
-            ENGINE_BUILTINS
-                .iter()
-                .map(|&(name, description, aliases, _writes)| CatalogueEntry {
-                    name,
-                    description,
-                    category: "data",
-                    source: Source::Engine,
-                    aliases,
-                    input_fields: None,
-                }),
-        )
+        .chain(ENGINE_BUILTINS.iter().map(
+            |&(name, description, aliases, _writes, retry_safety)| CatalogueEntry {
+                name,
+                description,
+                category: "data",
+                source: Source::Engine,
+                aliases,
+                input_fields: None,
+                retry_safety,
+            },
+        ))
         .collect();
     out.sort_by_key(|e| e.name);
     out
@@ -1016,7 +1112,7 @@ mod write_shape_tests {
                 schema.name
             );
         }
-        for (name, _, aliases, _) in ENGINE_BUILTINS {
+        for (name, _, aliases, _, _) in ENGINE_BUILTINS {
             assert!(
                 write_shape(name).is_some(),
                 "built-in '{name}' has no WriteShape"

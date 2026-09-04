@@ -6239,7 +6239,8 @@
                 "name",
                 "description",
                 "category",
-                "source"
+                "source",
+                "retry_safety"
               ],
               "properties": {
                 "aliases": {
@@ -6266,6 +6267,9 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "retry_safety": {
+                  "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
                 },
                 "source": {
                   "type": "string",
@@ -6667,7 +6671,8 @@
           "name",
           "description",
           "category",
-          "source"
+          "source",
+          "retry_safety"
         ],
         "properties": {
           "aliases": {
@@ -6694,6 +6699,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "retry_safety": {
+            "description": "What a second run of this function does, as\n`{\"kind\": \"...\"}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,\nor `depends_on` with the `input` that decides it (`http_call` on its\n`method`, `data_write` on its `op`).\n\nA different question from whether an *error* was transient: this is\nwhat a retry costs when it is. Orion retries tasks in several places —\nthe trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and\nthis is how an author or a tool knows which of those are safe over a\ngiven function."
           },
           "source": {
             "type": "string",

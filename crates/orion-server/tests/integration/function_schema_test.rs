@@ -371,3 +371,50 @@ async fn channel_call_without_channel_or_logic_is_rejected() {
         "should report channel_call needs a channel, got {body:?}"
     );
 }
+
+/// Every catalogue entry carries a retry-safety answer, and it reaches the
+/// wire.
+///
+/// The field exists so tooling can ask "is it safe if this task runs twice?"
+/// without hard-coding a table. Serving it for the Orion handlers only would
+/// make that question unanswerable for `map` and `filter` — which is most of
+/// what a workflow is made of — so built-ins carry it too.
+#[tokio::test]
+async fn the_catalogue_serves_retry_safety_for_every_function() {
+    let app = test_app().await;
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/functions", None))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let entries = body["data"].as_array().expect("catalogue array");
+    assert!(!entries.is_empty());
+
+    const KNOWN: [&str; 5] = [
+        "pure",
+        "read",
+        "idempotent_write",
+        "unsafe_write",
+        "depends_on",
+    ];
+    for entry in entries {
+        let name = entry["name"].as_str().expect("name");
+        let kind = entry["retry_safety"]["kind"]
+            .as_str()
+            .unwrap_or_else(|| panic!("'{name}' serves no retry_safety.kind"));
+        assert!(
+            KNOWN.contains(&kind),
+            "'{name}' serves an unknown retry_safety kind '{kind}'"
+        );
+        // The whole point of `depends_on` is naming where to look.
+        if kind == "depends_on" {
+            assert!(
+                entry["retry_safety"]["input"]
+                    .as_str()
+                    .is_some_and(|i| !i.is_empty()),
+                "'{name}' says depends_on without naming the input"
+            );
+        }
+    }
+}

@@ -884,6 +884,17 @@ pub(crate) struct FunctionSchemaItem {
     /// is therefore not input-validated at create time.
     #[serde(skip_serializing_if = "Option::is_none")]
     input_fields: Option<Vec<Value>>,
+    /// What a second run of this function does, as
+    /// `{"kind": "..."}` — `pure`, `read`, `idempotent_write`, `unsafe_write`,
+    /// or `depends_on` with the `input` that decides it (`http_call` on its
+    /// `method`, `data_write` on its `op`).
+    ///
+    /// A different question from whether an *error* was transient: this is
+    /// what a retry costs when it is. Orion retries tasks in several places —
+    /// the trace DLQ, a Kafka redelivery, `http_call`'s transport retry — and
+    /// this is how an author or a tool knows which of those are safe over a
+    /// given function.
+    retry_safety: Value,
 }
 
 /// A liveness / readiness / health probe body.
