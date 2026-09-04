@@ -120,9 +120,9 @@ The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches,
 
 **Lifecycle.** Tokens are acquired lazily, cached in memory, and refreshed behind the margin — **single-flight**, so concurrent requests wait on the in-flight refresh instead of racing it (the race that, under rotation, invalidates the winner's new token). One acquisition serves every request in the cache window; a 401 from the API drops the cached token so the next call refetches. Token-endpoint outcomes land in the [`orion_oauth_token_requests_total`](./metrics.md) counter, and `POST /api/v1/admin/connectors/{id}/test` acquires a **real token**, validating the whole setup before any workflow depends on it.
 
-**Rotation persistence.** When a refresh response carries a new refresh token, Orion persists it — with the access token and its expiry — to the `connector_oauth_state` table, encrypted when [`storage.connector_encryption_key`](./configuration.md#storage) is set. The connector's own config is never mutated: it stays the declarative seed. The state row is stamped with a fingerprint of the `auth` block, so **editing the connector discards stale state — which is also the recovery story for a burned token: update the connector with a fresh seed, and the seed wins.** In cluster mode a refresh takes a job lease and other nodes adopt the persisted token instead of rotating against each other.
+**Rotation persistence.** When a refresh response carries a new refresh token, Orion persists it — with the access token and its expiry — to the `connector_oauth_state` table, encrypted when [`storage.connector_encryption_key`](./configuration.md#storage) is set. The connector's own config is never mutated: it stays the declarative seed. The state row is stamped with a fingerprint of the `auth` block, so **editing the connector discards stale state, which is also the recovery story for a burned token: update the connector with a fresh seed, and the seed wins.** In cluster mode a refresh takes a job lease and other nodes adopt the persisted token instead of rotating against each other.
 
-**Failures.** An unreachable token endpoint is retryable and trips the connector's circuit breaker like any outage. A rejection (`invalid_grant`, `invalid_client`) is a non-retryable error naming the OAuth error code, negative-cached for 30 s so a burned token is never retry-looped against the IdP — and it deliberately does not trip the API's breaker (a credential failure says nothing about the API's health).
+**Failures.** An unreachable token endpoint is retryable and trips the connector's circuit breaker like any outage. A rejection (`invalid_grant`, `invalid_client`) is a non-retryable error naming the OAuth error code, negative-cached for 30 s so a burned token is never retry-looped against the IdP, and it deliberately does not trip the API's breaker (a credential failure says nothing about the API's health).
 
 **Zoom Server-to-Server OAuth** is the `account_credentials` grant — what Zoom moved every server-side integration to when it retired JWT apps in 2023. It exchanges `grant_type=account_credentials` plus the `account_id` with Basic client auth:
 
@@ -156,7 +156,7 @@ Task headers always win. A workflow may override `content-type`, `authorization`
 
 ### Query-parameter precedence
 
-Some APIs authenticate with credentials **in the query string** — legacy SMS and telecom gateways, older payment and lookup APIs. `query_params` is their home:
+Some APIs authenticate with credentials **in the query string**: legacy SMS and telecom gateways, older payment and lookup APIs. `query_params` is their home:
 
 ```json
 {
@@ -177,14 +177,14 @@ Parameters are applied in this order, and all three layers survive:
 | 2 | A query string on the task's `path` |
 | 3 | Connector `query_params` |
 
-**Do not put credentials in the connector `url` instead.** It works, and it fails two ways. Export masks a query value whose *name* looks secret (`pwd` is masked, `pass` is not — the distinction is arbitrary), and re-import then refuses the masked literal, so the connector cannot be promoted between instances. And the resolved URL is interpolated into every timeout and failure message, reaching traces, the DLQ, server logs, OTel spans, the trace read API — which a caller can reach with its own `x-trace-token`, not just an admin — and the admin connector probe's response body.
+**Do not put credentials in the connector `url` instead.** It works, and it fails two ways. Export masks a query value whose *name* looks secret (`pwd` is masked, `pass` is not — the distinction is arbitrary), and re-import then refuses the masked literal, so the connector cannot be promoted between instances. And the resolved URL is interpolated into every timeout and failure message, reaching traces, the DLQ, server logs, OTel spans, the trace read API, which a caller can reach with its own `x-trace-token`, not just an admin, and the admin connector probe's response body.
 
 `query_params` avoids all of that because the values are **never merged into the URL**. They are applied at the request builder, so the SSRF-validated URL and every error message stay credential-free; they cannot ride a cross-host redirect, the same rule headers and auth already follow; and they are percent-encoded, so a secret containing `&`, `=` or a space works where URL interpolation would silently corrupt it.
 
 Two behaviours to know:
 
 - **Order is sorted, not authored.** Parameter order is observable on the wire and matters to signature-based gateways, so the map is stored sorted rather than in an order that would vary per call.
-- **A name already present in the connector `url`'s query is refused at authoring time** — the request would otherwise carry it twice with an undefined tie-break.
+- **A name already present in the connector `url`'s query is refused at authoring time**: the request would otherwise carry it twice with an undefined tie-break.
 
 Values mask on admin reads like header values do, and a `env://`/`vault://` reference survives export → import intact. Use references rather than literals for anything secret: a masked literal cannot be re-imported.
 
@@ -310,7 +310,7 @@ Runs parameterized queries against PostgreSQL, MySQL, SQLite, or MongoDB. The `c
 
 Two ways to talk to it: the portable [`data_query` / `data_write`](./data-dialect.md) dialect, which runs unchanged against SQL, MongoDB, and Elasticsearch; or raw SQL via [`db_read` / `db_write`](./functions.md#db_read).
 
-There is no `retry` field: a statement that timed out may already have been applied, so database calls are never re-driven — see [Retries](#retries-http-only). Bound the call with `connect_timeout_ms` and `query_timeout_ms` instead.
+There is no `retry` field: a statement that timed out may already have been applied, so database calls are never re-driven. See [Retries](#retries-http-only). Bound the call with `connect_timeout_ms` and `query_timeout_ms` instead.
 
 > [!NOTE]
 > A `mongodb://` or `mongodb+srv://` scheme makes this a MongoDB connector. `data_query` and `data_write` run against it unchanged (pass a `database` field in the task input); the raw-native surface is the [`mongo_read`](./functions.md#mongo_read) / [`mongo_write`](./functions.md#mongo_write) / [`mongo_aggregate`](./functions.md#mongo_aggregate) trio, whose documents are extended JSON (`$oid`, `$date`, nested shapes).
@@ -377,11 +377,11 @@ An Elasticsearch cluster driven by the portable dialect: [`data_query`](./functi
 | `operations` | object | no | all allowed | Same gate set as `db` — see [Operation gates](#operation-gates) |
 | `dialect` | object | no | both guards off | [Dialect guards](#dialect-guards) |
 
-There is no `retry` field: the dialect drives `_bulk` and the by-query mutations through this connector as well as `_search`, and none are safe to re-send blind — see [Retries](#retries-http-only). ES-specific dialect semantics (the `_id` rename, forced refresh, capability limits) live in the [Portable Data Dialect](./data-dialect.md#elasticsearch-notes) reference.
+There is no `retry` field: the dialect drives `_bulk` and the by-query mutations through this connector as well as `_search`, and none are safe to re-send blind. See [Retries](#retries-http-only). ES-specific dialect semantics (the `_id` rename, forced refresh, capability limits) live in the [Portable Data Dialect](./data-dialect.md#elasticsearch-notes) reference.
 
 ## `smtp`
 
-An SMTP server for [`send_email`](./functions.md#send_email) — the
+An SMTP server for [`send_email`](./functions.md#send_email): the
 lowest-common-denominator mail transport that self-hosted and enterprise
 environments already run. Transport, credentials, TLS mode, and the default
 sender live here; the message lives on the task.
@@ -416,12 +416,12 @@ sender live here; the message lives on the task.
 authentication without sending mail, through the same pooled transport real
 sends use. There is no `retry` field, and `send_email` never retries on its
 own: SMTP has no idempotency key, so a re-driven timeout is a duplicate
-email — see [Retries](#retries-http-only).
+email. See [Retries](#retries-http-only).
 
 ## `storage`
 
 S3-compatible object storage for [`storage_presign`](./functions.md#storage_presign)
-and [`storage_head`](./functions.md#storage_head) — a deliberately
+and [`storage_head`](./functions.md#storage_head): a deliberately
 **zero-data-path** surface: presigning is local SigV4 arithmetic over the
 connector's credentials, `storage_head` is one bounded metadata request, and
 object bytes never move through the runtime. Works against any S3-compatible
@@ -490,7 +490,7 @@ Connector API reads mask by **allowlist**. A field comes back readable only when
 - `connection_string` and all header values are always masked.
 - Readable URL-shaped values are redacted in band: userinfo and query parameters are stripped.
 
-Exports apply the same masking, so a literal secret does not survive export → import. Author connectors with `env://` references — see [Secrets in an exported bundle](./admin-api.md#secrets-in-an-exported-bundle).
+Exports apply the same masking, so a literal secret does not survive export → import. Author connectors with `env://` references. See [Secrets in an exported bundle](./admin-api.md#secrets-in-an-exported-bundle).
 
 ## Circuit breakers
 

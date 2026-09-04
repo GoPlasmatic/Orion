@@ -2,7 +2,7 @@
 # Version & Roll Out Changes
 
 Active workflows and channels are immutable. Changing one means creating a new
-version and activating it — which is also what makes rollback trustworthy: the
+version and activating it, which is also what makes rollback trustworthy: the
 old content is guaranteed to be exactly what it was when it last served. This
 page is the mechanics, [rolling back](#roll-back) included.
 
@@ -197,14 +197,14 @@ The full matrix is in
 > [!TIP]
 > For a whole service, prefer `orion-server package` over these endpoints. It
 > computes the closure, activates in dependency order, reloads once, and leaves
-> a receipt — see [Promote Between Environments](../operate/promotion.md).
+> a receipt. See [Promote Between Environments](../operate/promotion.md).
 
 ## Related
 
-- [The Entity Lifecycle](../concepts/lifecycle.md) — the rules behind all of
+- [The Entity Lifecycle](../concepts/lifecycle.md): the rules behind all of
   this, in one page.
-- [Admin API](../reference/admin-api.md) — the endpoints and their parameters.
-- [Promote Between Environments](../operate/promotion.md) — the packaged form of
+- [Admin API](../reference/admin-api.md): the endpoints and their parameters.
+- [Promote Between Environments](../operate/promotion.md): the packaged form of
   the same job.
-- [Monitoring & Alerts](../operate/monitoring.md) — watching a rollout while it
+- [Monitoring & Alerts](../operate/monitoring.md): watching a rollout while it
   ramps.

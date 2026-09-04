@@ -17,7 +17,7 @@ export ORION_ADMIN_TOKEN=…    # sent as the admin bearer token
 ```
 
 Every subcommand except `lint` calls an instance's admin API. Against an
-instance with `admin_auth.enabled = true` — which production should be — an
+instance with `admin_auth.enabled = true`, which production should be — an
 unset `ORION_ADMIN_TOKEN` means every call is refused.
 
 `lint` needs no server and no token, which is what lets it run as a CI gate on a
@@ -48,7 +48,7 @@ orion-server package diff  -s https://prod.orion.internal -f payments-1.4.0.json
 | `diff` | Any instance | Nothing | Compare the instance's content hashes against the artifact's; exits non-zero on drift |
 
 **Use `lint` as the PR gate. Use `plan` as the pre-deploy gate. Use `diff` as
-the post-deploy check** — and as a scheduled job, because it is how you learn
+the post-deploy check**, and as a scheduled job, because it is how you learn
 that production drifted from what you shipped.
 
 ## Select what ships
@@ -60,7 +60,7 @@ create it:
 { "channel_id": "payments", "tags": ["pkg:payments"], "...": "..." }
 ```
 
-Export selects **channels** — by tag or by explicit id — and computes the
+Export selects **channels**: by tag or by explicit id, and computes the
 closure from there: each channel brings its workflow, and each workflow brings
 every connector it references.
 
@@ -86,7 +86,7 @@ Knowing the phases is what lets you interpret a failure, so they are worth
 reading once:
 
 1. **Claim the receipt as `staged`.** This is the atomic immutability check — a
-   reused applied version with different content is refused here — and it
+   reused applied version with different content is refused here, and it
    doubles as the guard against two applies running at once.
 2. **Stage every entity as a draft**, in dependency order: connectors, then
    workflows, then channels. Connector import reloads the connector registry
@@ -97,7 +97,7 @@ reading once:
 5. **Flip the receipt to `applied`.**
 
 Two properties fall out of that ordering. However many entities the package
-carries, the running engine rebuilds **once** — every replica converges on the
+carries, the running engine rebuilds **once**: every replica converges on the
 whole package, never on a half-applied one. And every call is stamped with
 `X-Orion-Change-Context: package=<name>@<version>`, so the
 [audit trail](./audit-logs.md) filters back into the promotion that caused it.
@@ -188,9 +188,9 @@ in
 
 ## Related
 
-- [Packages](../concepts/packages.md) — what a package is and why the boundary
+- [Packages](../concepts/packages.md): what a package is and why the boundary
   sits there.
-- [Test & Promote a Service](../getting-started/test-and-promote.md) — the whole
+- [Test & Promote a Service](../getting-started/test-and-promote.md): the whole
   flow against two local instances.
-- [Audit Logs](./audit-logs.md) — how a promotion appears in the trail.
-- [CLI Reference](../reference/cli.md#package) — every flag of every verb.
+- [Audit Logs](./audit-logs.md): how a promotion appears in the trail.
+- [CLI Reference](../reference/cli.md#package): every flag of every verb.

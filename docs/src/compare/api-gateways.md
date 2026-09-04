@@ -57,7 +57,7 @@ on both sides, because an Orion channel polices what reaches it rather than
 trusting whatever is in front.
 
 In a fleet, keep both and let them do different jobs: the gateway enforces what
-is true for *every* service — TLS, identity, IP policy — and the channel
+is true for *every* service — TLS, identity, IP policy, and the channel
 enforces what is true for *this* service, like a per-tenant limit keyed by a
 field in the payload. Orion is then an upstream that needs fewer of the
 gateway's compensating features, not one that makes the gateway redundant.
@@ -75,7 +75,7 @@ gateway's compensating features, not one that makes the gateway redundant.
 
 - The question is what the service *does*, not how traffic reaches it.
 - You want the limit keyed by something only the payload knows — a tenant id, a
-  plan tier — which a gateway cannot see without parsing your schema.
+  plan tier, which a gateway cannot see without parsing your schema.
 - You want the endpoint to exist because you posted JSON, with no upstream to
   deploy first.
 
@@ -98,7 +98,7 @@ The normal production shape: gateway at the edge, Orion behind it.
 
 - **No OIDC flows and no mTLS termination.** Channels verify `api_key`, HMAC
   signatures and JWT bearer tokens themselves; the IdP dance (discovery, PKCE,
-  userinfo) and client certificates need a proxy in front — see
+  userinfo) and client certificates need a proxy in front. See
   [Secure an Instance](../operate/security.md).
 - **No load balancing or health-based ejection across upstreams.** Orion is an
   upstream; something else spreads traffic across its replicas.
@@ -111,7 +111,7 @@ The normal production shape: gateway at the edge, Orion behind it.
 
 ## Related
 
-- [Is Orion Right for You?](../comparison.md) — the chart, and the other neighbours.
-- [Secure an Instance](../operate/security.md) — admin auth, data-plane auth, TLS, trusted proxies.
-- [Channel Configuration](../reference/channel-config.md) — every guard a channel can declare.
-- [Configure Channels](../build/channels.md) — the same guards, as a walkthrough.
+- [Is Orion Right for You?](../comparison.md): the chart, and the other neighbours.
+- [Secure an Instance](../operate/security.md): admin auth, data-plane auth, TLS, trusted proxies.
+- [Channel Configuration](../reference/channel-config.md): every guard a channel can declare.
+- [Configure Channels](../build/channels.md): the same guards, as a walkthrough.

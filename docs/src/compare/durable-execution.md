@@ -133,7 +133,7 @@ shape:
 
 ## Related
 
-- [Is Orion Right for You?](../comparison.md) — the chart, and the other neighbours.
-- [Traces & Async Processing](../operate/traces.md) — what Orion stores instead of a journal.
-- [The Entity Lifecycle](../concepts/lifecycle.md) — draft, active, archived, and hot reload.
-- [Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md) — what Orion re-drives, and what it deliberately does not.
+- [Is Orion Right for You?](../comparison.md): the chart, and the other neighbours.
+- [Traces & Async Processing](../operate/traces.md): what Orion stores instead of a journal.
+- [The Entity Lifecycle](../concepts/lifecycle.md): draft, active, archived, and hot reload.
+- [Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md): what Orion re-drives, and what it deliberately does not.

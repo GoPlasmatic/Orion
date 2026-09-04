@@ -95,7 +95,7 @@ connection across the whole fleet.
 
 A node running an older release bumps the epoch without writing a scope, and
 its peers read that as "everything". A mixed-version fleet therefore behaves as
-it did before — the reconnect storm, never a missed change — and stops as soon
+it did before — the reconnect storm, never a missed change, and stops as soon
 as every node is writing scopes.
 
 That holds because the scope is *stamped with the epoch it was written for*,
@@ -111,7 +111,7 @@ resync, which is what an unattributable scope has always meant.
 The row keeps **one** scope, so it describes one bump. A node that finds the
 epoch several ahead of what it last applied is applying all of those bumps in
 one resync, and the scopes of the earlier ones were overwritten by the later
-ones — so it resyncs wide, exactly as it would for a scope it could not
+ones, so it resyncs wide, exactly as it would for a scope it could not
 attribute. That is the common case whenever changes come in a burst: creating a
 connector and activating the workflow that uses it is three bumps, and they
 land well inside one `epoch_poll_interval_ms`. Peers pay one wide resync for
@@ -157,7 +157,7 @@ These are per-node **by design**, and each has ×N semantics you should size for
 > succeeds; the channel is then quarantined at load — refused at every ingress
 > with a `503`, absent from the route table, logged as `Channel quarantined`,
 > and listed under `/health`'s `channels.quarantined` with
-> `components.channels: "degraded"` — while the node boots and every other
+> `components.channels: "degraded"`, while the node boots and every other
 > channel keeps serving. Silently degrading to per-node state would leave a
 > channel advertising a guarantee it no longer keeps.
 
@@ -183,7 +183,7 @@ as a `pre-install`/`pre-upgrade` Job, and `docker-compose.ha.yml` has a one-shot
 
 ## Two packaged topologies
 
-- **[Kubernetes (Helm)](./kubernetes.md)** — `deploy/helm/orion` deploys the
+- **[Kubernetes (Helm)](./kubernetes.md)**: `deploy/helm/orion` deploys the
   cluster shape: 2 replicas by default, the pre-upgrade migration Job, surge
   rolling deploys, a PodDisruptionBudget, anti-affinity, hardened pod defaults,
   and a dedicated metrics listener. It installs as
@@ -225,13 +225,13 @@ each pool is still a cluster if it has more than one node.
 
 ## Related
 
-- [Deploy on Kubernetes (Helm)](./kubernetes.md) — the chart that implements
+- [Deploy on Kubernetes (Helm)](./kubernetes.md): the chart that implements
   this shape.
-- [Deploy with Docker](./docker.md) — the compose topology, and the single-node
+- [Deploy with Docker](./docker.md): the compose topology, and the single-node
   case.
-- [Timeouts, Retries & Circuit Breakers](./failure-handling.md) — the drain
+- [Timeouts, Retries & Circuit Breakers](./failure-handling.md): the drain
   sequence a rolling deploy depends on.
-- [Monitoring & Alerts](./monitoring.md) — scraping a fleet, and the per-node
+- [Monitoring & Alerts](./monitoring.md): scraping a fleet, and the per-node
   metrics that need aggregating.
-- [Configuration Reference](../reference/configuration.md#cluster-ha) — every
+- [Configuration Reference](../reference/configuration.md#cluster-ha): every
   `[cluster]` key with its default.

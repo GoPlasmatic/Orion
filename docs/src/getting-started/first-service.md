@@ -182,11 +182,11 @@ definitions. Skip them if you want to continue into testing and promotion.
 
 ## Next steps
 
-- [Packages](../concepts/packages.md) — you created two individual definitions;
+- [Packages](../concepts/packages.md): you created two individual definitions;
   keep them together as a versioned package for source control and promotion.
-- [Your First Connector](./first-connector.md) — the same shape of service, but reading and writing a real PostgreSQL database.
-- [Test & Promote a Service](./test-and-promote.md) — test this workflow offline, then ship it to a second instance as a versioned package.
-- [Build a Service with Claude Code](../ai/claude-code.md) — hand the four steps above to an AI assistant and describe what you want instead.
-- [Secure an Instance](../operate/security.md) — The data plane you just called
+- [Your First Connector](./first-connector.md): the same shape of service, but reading and writing a real PostgreSQL database.
+- [Test & Promote a Service](./test-and-promote.md): test this workflow offline, then ship it to a second instance as a versioned package.
+- [Build a Service with Claude Code](../ai/claude-code.md): hand the four steps above to an AI assistant and describe what you want instead.
+- [Secure an Instance](../operate/security.md): The data plane you just called
   does not authenticate. Read this before anything you do not control can reach
   it.

@@ -8,7 +8,7 @@
 
 AI has made writing code incredibly fast. Work that once took weeks can now take an afternoon. But every new service still needs the same essential foundation: routing, security, resilience, connections, deployment controls, and observability. When that foundation is generated from scratch each time, small differences can become production problems.
 
-That is why we built Orion. Orion is a declarative services runtime that gives every service the same strong foundation from the start. You define what the service should do in a lightweight JSON workflow — yourself or with the AI tool of your choice — and connect it to an endpoint with a channel. Post the definitions, activate them, and your API is live. No application server to write, build, or restart.
+That is why we built Orion. Orion is a declarative services runtime that gives every service the same strong foundation from the start. You define what the service should do in a lightweight JSON workflow — yourself or with the AI tool of your choice, and connect it to an endpoint with a channel. Post the definitions, activate them, and your API is live. No application server to write, build, or restart.
 
 Orion handles everything around your business logic consistently: route and protocol matching, ingress guards, rate limiting, circuit breaking, fault tolerance, connection pooling, zero-downtime hot reload, and end-to-end observability. You build fast without generating a new version of the basics for every microservice, agent backend, stream processor, or data pipeline.
 
@@ -107,4 +107,4 @@ Orion carries the same infrastructure across five kinds of service:
 
 ## The project
 
-Orion is open source under Apache-2.0 and developed in the open at [GoPlasmatic/Orion](https://github.com/GoPlasmatic/Orion). Questions go to [Discussions](https://github.com/GoPlasmatic/Orion/discussions) and bugs to [Issues](https://github.com/GoPlasmatic/Orion/issues); [Support & Compatibility](./reference/support.md) states what a release guarantees. Using Orion for something? Add yourself to [ADOPTERS.md](https://github.com/GoPlasmatic/Orion/blob/main/ADOPTERS.md) — the usage reports shape the roadmap.
+Orion is open source under Apache-2.0 and developed in the open at [GoPlasmatic/Orion](https://github.com/GoPlasmatic/Orion). Questions go to [Discussions](https://github.com/GoPlasmatic/Orion/discussions) and bugs to [Issues](https://github.com/GoPlasmatic/Orion/issues); [Support & Compatibility](./reference/support.md) states what a release guarantees. Using Orion for something? Add yourself to [ADOPTERS.md](https://github.com/GoPlasmatic/Orion/blob/main/ADOPTERS.md): the usage reports shape the roadmap.

@@ -191,10 +191,10 @@ testing guide.
 
 ## Next steps
 
-- [Test & Promote a Service](./test-and-promote.md) — dry-run this workflow with
+- [Test & Promote a Service](./test-and-promote.md): dry-run this workflow with
   the database stubbed out, then ship it to another instance.
-- [Connectors](../concepts/connectors.md) — the idea, and the other types.
-- [Connector Types](../reference/connectors.md) — every field of every type,
+- [Connectors](../concepts/connectors.md): the idea, and the other types.
+- [Connector Types](../reference/connectors.md): every field of every type,
   with gates, retries, and secret handling.
-- [Portable Data Dialect](../reference/data-dialect.md) — operators, schema
+- [Portable Data Dialect](../reference/data-dialect.md): operators, schema
   registry, relations, write envelopes, safety guards.

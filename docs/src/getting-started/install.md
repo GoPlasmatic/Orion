@@ -78,7 +78,7 @@ cargo install --git https://github.com/GoPlasmatic/Orion --locked orion-server o
 
 ## Install the CLI
 
-`orion-cli` drives the same admin API from the terminal, and is what an AI assistant uses through the [Orion agent skill](../ai/skills.md). It is optional — every step in these tutorials also has a `curl` form — but it is shorter to type.
+`orion-cli` drives the same admin API from the terminal, and is what an AI assistant uses through the [Orion agent skill](../ai/skills.md). It is optional — every step in these tutorials also has a `curl` form, but it is shorter to type.
 
 The CLI is versioned in lockstep with the server and ships in the same release.
 Use matching CLI and server releases so their supported wire formats agree.
@@ -149,7 +149,7 @@ Expected JSON response:
 ```
 
 This response is illustrative. Build-identifying values change between
-releases, and additional health components may appear as Orion evolves. Use
+releases, and more health components may appear as Orion evolves. Use
 `status`, `workflows_loaded`, and the component states for the checks below
 rather than comparing the whole response byte for byte.
 
@@ -160,7 +160,7 @@ ready to accept service definitions — you have not created anything yet.
 
 Two more surfaces are live already:
 
-- **Swagger UI** at [http://localhost:8080/docs](http://localhost:8080/docs) — the whole admin API, explorable. It is served outside production environments; see [OpenAPI Specification](../reference/openapi.md).
+- **Swagger UI** at [http://localhost:8080/docs](http://localhost:8080/docs): the whole admin API, explorable. It is served outside production environments; see [OpenAPI Specification](../reference/openapi.md).
 - **The CLI**, once you point it at the server:
 
   ```bash
@@ -181,7 +181,7 @@ Check a file before you deploy it — `orion-server validate-config -c config.to
 
 ## Next steps
 
-- [Understand the HTTP Flow](./first-service.md) — create and activate a workflow and
+- [Understand the HTTP Flow](./first-service.md): create and activate a workflow and
   channel in four administration calls, then invoke the REST endpoint.
-- [Orion Console](./console.md) — the same flow point-and-click, if you would rather not use a terminal.
-- [Run the Examples](./examples.md) — deploy a ready-made service from the repository instead of writing one.
+- [Orion Console](./console.md): the same flow point-and-click, if you would rather not use a terminal.
+- [Run the Examples](./examples.md): deploy a ready-made service from the repository instead of writing one.

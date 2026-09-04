@@ -49,11 +49,11 @@ decision: library, or runtime.
 Everything between "the engine can run a pipeline" and "this is a service you
 can operate":
 
-- [Channels](../concepts/channels.md) — REST routes, plain HTTP, and Kafka
+- [Channels](../concepts/channels.md): REST routes, plain HTTP, and Kafka
   topics, each with ingress guards.
-- [Connectors](../concepts/connectors.md) — pooled, credential-holding
+- [Connectors](../concepts/connectors.md): pooled, credential-holding
   connections with circuit breakers, referenced by name.
-- Storage and [lifecycle](../concepts/lifecycle.md) — draft, active, archived,
+- Storage and [lifecycle](../concepts/lifecycle.md): draft, active, archived,
   immutable versions, and an atomic engine swap on activation.
 - The [admin API](../reference/admin-api.md), the CLI, and the agent skill that
   lets an assistant drive all of it.
@@ -67,7 +67,7 @@ The engine is not similar on both sides — it is the same engine. The workflow
 shape, the [data context](../reference/workflows.md#the-data-context), how
 conditions are evaluated, and the [`loop`](../reference/workflows.md#loop) all
 come from dataflow-rs, so what you learn writing one transfers to the other.
-Orion's [data functions](../reference/functions.md#data-functions) — parsing,
+Orion's [data functions](../reference/functions.md#data-functions): parsing,
 mapping, filtering, validation, logging — are the engine's own too.
 
 What does not transfer is everything that touches a connector — those handlers
@@ -107,7 +107,7 @@ where it can be changed without a deploy.
 
 - **No custom task functions.** [The set that ships](../reference/functions.md)
   is the set. There is no plugin
-  mechanism, no scripting runtime and no WASM sandbox — see
+  mechanism, no scripting runtime and no WASM sandbox. See
   [what you can extend](../concepts/how-orion-works.md#what-you-can-extend).
 - **No control over engine construction.** Orion decides when the engine
   rebuilds and what goes into it.
@@ -123,7 +123,7 @@ where it can be changed without a deploy.
 
 ## Related
 
-- [Is Orion Right for You?](../comparison.md) — the chart, and the other neighbours.
-- [How Orion Works](../concepts/how-orion-works.md) — the three primitives, and the extension boundary.
-- [Task Functions](../reference/functions.md) — the whole set, and which come from where.
-- [Design Notes](../reference/design-notes.md) — the internals behind the guarantees.
+- [Is Orion Right for You?](../comparison.md): the chart, and the other neighbours.
+- [How Orion Works](../concepts/how-orion-works.md): the three primitives, and the extension boundary.
+- [Task Functions](../reference/functions.md): the whole set, and which come from where.
+- [Design Notes](../reference/design-notes.md): the internals behind the guarantees.

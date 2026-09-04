@@ -14,7 +14,7 @@ admin credentials.
 
 ## Before you start
 
-- A running Orion instance — see [Install & Run](../getting-started/install.md).
+- A running Orion instance. See [Install & Run](../getting-started/install.md).
 - `orion-cli` on your `PATH`, from the same page, pointed at that instance:
 
   ```bash
@@ -105,8 +105,8 @@ in the environment you launch it from.
 
 ## Related
 
-- [Build a Service with Claude Code](./claude-code.md) — a full guided session.
-- [Prompt Pack (any LLM)](./prompt-pack.md) — for an assistant with no shell.
-- [CLI Reference](../reference/cli.md) — every command the skill drives.
-- [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active rules that
+- [Build a Service with Claude Code](./claude-code.md): a full guided session.
+- [Prompt Pack (any LLM)](./prompt-pack.md): for an assistant with no shell.
+- [CLI Reference](../reference/cli.md): every command the skill drives.
+- [The Entity Lifecycle](../concepts/lifecycle.md): the draft/active rules that
   make delegating this safe.

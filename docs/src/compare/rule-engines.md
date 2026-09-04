@@ -1,4 +1,4 @@
-<!-- description: Orion vs Drools, OPA and GoRules: inference over accumulating facts versus ordered JSONLogic conditions over one payload — and which suits a decision API. -->
+<!-- description: Orion vs Drools, OPA and GoRules: inference over accumulating facts versus ordered JSONLogic conditions over one payload, and which suits a decision API. -->
 # Orion vs Rule Engines
 
 > **In one line.** A rule engine works out the firing order itself and re-fires
@@ -92,7 +92,7 @@ match on what an earlier task wrote there. What never happens is a rule firing
 ## Running both
 
 Keep the engine as the decision service and call it from a workflow with
-[`http_call`](../reference/functions.md#http_call) — an OPA sidecar answering
+[`http_call`](../reference/functions.md#http_call): an OPA sidecar answering
 an authorization question is a normal step in an Orion pipeline. Orion handles
 ingress, validation, enrichment and the response shape; the engine answers the
 one question it is better at.
@@ -120,7 +120,7 @@ one question it is better at.
 
 ## Related
 
-- [Is Orion Right for You?](../comparison.md) — the chart, and the other neighbours.
-- [Expression Language (JSONLogic)](../reference/expressions.md) — every operator, with a test holding the list true.
-- [Common Workflow Patterns](../guides/workflow-patterns.md) — exclusive branches and error collection.
-- [Author Workflows](../build/workflows.md) — conditions, mapping and validation in practice.
+- [Is Orion Right for You?](../comparison.md): the chart, and the other neighbours.
+- [Expression Language (JSONLogic)](../reference/expressions.md): every operator, with a test holding the list true.
+- [Common Workflow Patterns](../guides/workflow-patterns.md): exclusive branches and error collection.
+- [Author Workflows](../build/workflows.md): conditions, mapping and validation in practice.

@@ -9,7 +9,7 @@ Setting `environment = "production"` makes exactly five things fatal at startup
 rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
 `[cors] allowed_origins = ["*"]` wildcard, `server.verbose_errors = true`, and
 `cluster.enabled` together with `storage.auto_migrate`. Everything else on this
-page — **including TLS and per-channel data-plane `auth`** — is never gated by
+page — **including TLS and per-channel data-plane `auth`**: is never gated by
 production mode and stays your responsibility.
 
 ## Authenticate the admin plane
@@ -59,13 +59,13 @@ curl -H "X-API-Key: your-secret-key"            http://localhost:8080/api/v1/adm
 
 Three modes are built in, all configured per channel:
 
-- **`api_key`** — a key compared in constant time against the SHA-256 of each
+- **`api_key`**: a key compared in constant time against the SHA-256 of each
   accepted key.
-- **`hmac`** — a signature (SHA-1/256/512) over a templated signing string —
+- **`hmac`**: a signature (SHA-1/256/512) over a templated signing string —
   the raw body by default, timestamped schemes via `message` or a `preset` —
   verified before parsing. This covers the webhook schemes of Stripe, GitHub,
   Shopify, Slack, Zoom, and Webex.
-- **`jwt`** — bearer-token verification, detailed below.
+- **`jwt`**: bearer-token verification, detailed below.
 
 All three take `env://` references, mask their credential fields in API reads, and
 answer a uniform `401` that never reveals which part failed. The full contract —
@@ -137,7 +137,7 @@ token applies without a restart. `aws-sm://`, `gcp-sm://`, and `azure-kv://` are
 reserved: a reference using one without a live resolver is refused rather than
 passed to the backend as a literal credential.
 
-Channel `auth` blocks take the same references, and three workflow functions take them for key material. Which fields resolve one — and which look like they should but do not — is [Environment Variables](../reference/environment-variables.md#where-a-reference-resolves).
+Channel `auth` blocks take the same references, and three workflow functions take them for key material. Which fields resolve one, and which look like they should but do not — is [Environment Variables](../reference/environment-variables.md#where-a-reference-resolves).
 
 Key material a *workflow* reads has a better home than a reference in the definition: declare it once in `[secrets]` and name it from the task.
 
@@ -150,7 +150,7 @@ partner_hmac = "env://PARTNER_HMAC_KEY"
 { "op": "hmac", "key": { "secret": "partner_hmac" }, "data": { "var": "data.body" } }
 ```
 
-Two things change. The workflow reaches an **allowlist** the operator published rather than whatever the process environment holds under a name the definition chose; and a misspelled name is caught when the engine is built, not by a task failing in production. The value itself is held by the engine, never by a message, so it cannot appear in a trace snapshot, a `map` mapping clone or a response body — and the engine refuses a workflow that would copy it somewhere recorded. See [Vars and Secrets](../reference/configuration.md#vars-and-secrets).
+Two things change. The workflow reaches an **allowlist** the operator published rather than whatever the process environment holds under a name the definition chose; and a misspelled name is caught when the engine is built, not by a task failing in production. The value itself is held by the engine, never by a message, so it cannot appear in a trace snapshot, a `map` mapping clone or a response body, and the engine refuses a workflow that would copy it somewhere recorded. See [Vars and Secrets](../reference/configuration.md#vars-and-secrets).
 
 For defence below the API, encrypt the connector configs at rest:
 
@@ -245,7 +245,7 @@ the instance-level handshake is [Configuration › CORS](../reference/configurat
 
 **Credentialed CORS widens what a browser will do on a user's behalf.**
 `cors.allow_credentials = true` lets any page on a listed origin send the user's
-cookies to Orion and read the response — so the origin list becomes a trust
+cookies to Orion and read the response, so the origin list becomes a trust
 boundary, not a convenience. Two consequences worth stating:
 
 - Every origin you list is one that can act as a logged-in user. List the
@@ -273,13 +273,13 @@ Credentialed cross-origin sessions usually also need `set-cookie` in
 
 ## Related
 
-- [Production Checklist](./production-checklist.md) — every pre-go-live item,
+- [Production Checklist](./production-checklist.md): every pre-go-live item,
   including the ones on this page, as one list.
-- [Cluster Mode & High Availability](./cluster.md) — what changes about all of
+- [Cluster Mode & High Availability](./cluster.md): what changes about all of
   this once there is more than one replica.
-- [Channel Configuration](../reference/channel-config.md) — the per-channel
+- [Channel Configuration](../reference/channel-config.md): the per-channel
   `auth`, `origin_allow_list`, and validation contracts.
-- [Connector Types](../reference/connectors.md) — secret references, masking,
+- [Connector Types](../reference/connectors.md): secret references, masking,
   and operation gates in full.
-- [Configuration Reference](../reference/configuration.md) — every key named
+- [Configuration Reference](../reference/configuration.md): every key named
   here, with its default and environment variable.

@@ -121,9 +121,9 @@ container does not delete workflows, channels, connectors, or traces.
 
 ## Next steps
 
-- [Understand the HTTP Flow](./first-service.md) — the same flow as four
+- [Understand the HTTP Flow](./first-service.md): the same flow as four
   administration calls followed by one endpoint request, if you would rather
   see the wire format.
-- [Run the Examples](./examples.md) — services to import and click through.
-- [Monitoring & Alerts](../operate/monitoring.md) — the metrics behind the
+- [Run the Examples](./examples.md): services to import and click through.
+- [Monitoring & Alerts](../operate/monitoring.md): the metrics behind the
   dashboard, and what to alert on.

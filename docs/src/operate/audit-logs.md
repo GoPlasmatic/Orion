@@ -160,10 +160,10 @@ on every restart is not a default worth offering.
 
 ## Related
 
-- [Admin API › Audit Logs](../reference/admin-api.md#audit-logs) — the endpoint,
+- [Admin API › Audit Logs](../reference/admin-api.md#audit-logs): the endpoint,
   its parameters, and the response shape.
-- [Traces & Async Processing](./traces.md) — the data-plane counterpart.
-- [Promote Between Environments](./promotion.md) — where
+- [Traces & Async Processing](./traces.md): the data-plane counterpart.
+- [Promote Between Environments](./promotion.md): where
   `X-Orion-Change-Context` is set for you.
 - [Configuration Reference](../reference/configuration.md#audit-log-retention) —
   every `[audit]` key.

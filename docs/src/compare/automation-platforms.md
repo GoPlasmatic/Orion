@@ -105,7 +105,7 @@ that logic lives in exactly one place is worth more than either tool.
   `http_call` against its API, written by you.
 - **No interactive OAuth.** An `http` connector's `oauth2` auth manages the
   token lifecycle itself — client-credentials and refresh-token grants,
-  acquired, cached and refreshed by Orion — but there is no
+  acquired, cached and refreshed by Orion, but there is no
   authorization-code dance: a grant that begins in a browser is completed
   elsewhere, and Orion is seeded with its refresh token.
 - **No schedules or polling triggers.** Orion runs when it is called. There is
@@ -123,8 +123,8 @@ that logic lives in exactly one place is worth more than either tool.
 
 ## Related
 
-- [Is Orion Right for You?](../comparison.md) — the chart, and the other neighbours.
-- [Orion vs Durable Execution Engines](./durable-execution.md) — where the scheduled and the long-running work goes instead.
-- [Connector Types](../reference/connectors.md) — the five types, and how credentials are held.
-- [Version & Roll Out Changes](../build/versioning.md) — what "rollback" means here.
-- [Orion Console](../getting-started/console.md) — the browser view, and what it is for.
+- [Is Orion Right for You?](../comparison.md): the chart, and the other neighbours.
+- [Orion vs Durable Execution Engines](./durable-execution.md): where the scheduled and the long-running work goes instead.
+- [Connector Types](../reference/connectors.md): the five types, and how credentials are held.
+- [Version & Roll Out Changes](../build/versioning.md): what "rollback" means here.
+- [Orion Console](../getting-started/console.md): the browser view, and what it is for.

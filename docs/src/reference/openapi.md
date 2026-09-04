@@ -51,10 +51,10 @@ When the two disagree on a shape, the spec dumped from your binary wins.
 
 ## Related
 
-- [Admin API](./admin-api.md) — semantics of the management endpoints the spec
+- [Admin API](./admin-api.md): semantics of the management endpoints the spec
   only shapes.
-- [Data API](./data-api.md) — how requests reach channels, and the trace
+- [Data API](./data-api.md): how requests reach channels, and the trace
   endpoints.
-- [CLI](./cli.md) — `dump-openapi` and the other diagnostic subcommands.
-- [Configuration](./configuration.md#api-docs) — the `server.docs.enabled`
+- [CLI](./cli.md): `dump-openapi` and the other diagnostic subcommands.
+- [Configuration](./configuration.md#api-docs): the `server.docs.enabled`
   setting.

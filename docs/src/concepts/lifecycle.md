@@ -22,12 +22,12 @@ AI-generated logic and urgent operator changes follow the same controlled path.
 
 ## The three states
 
-- **draft** — editable, and invisible to traffic. Everything you create starts
+- **draft**: editable, and invisible to traffic. Everything you create starts
   here. Only **one draft per id** may exist at a time, so "the draft" is always
   unambiguous.
-- **active** — serving, and **immutable**. Nothing can edit an active version;
+- **active**: serving, and **immutable**. Nothing can edit an active version;
   changing it means creating a new version and activating that.
-- **archived** — retired, and kept. An archived version is a rollback target,
+- **archived**: retired, and kept. An archived version is a rollback target,
   not a deleted row.
 
 ## Why immutability is the load-bearing rule
@@ -38,7 +38,7 @@ is re-promoting content that is guaranteed to be what it was. A reviewer
 approving a diff is approving the exact bytes that will run.
 
 The cost is one extra step: you cannot patch production in place. The benefit is
-that no change can arrive without a new version to point at — which is what lets
+that no change can arrive without a new version to point at, which is what lets
 you hand workflow authoring to an AI assistant and still know what is deployed.
 
 ## What moves the engine
@@ -94,11 +94,11 @@ list of triggers and how to clear one.
 
 ## Next steps
 
-- [Version & Roll Out Changes](../build/versioning.md) — the endpoints behind
+- [Version & Roll Out Changes](../build/versioning.md): the endpoints behind
   each transition, and how to roll one out gradually.
-- [Admin API](../reference/admin-api.md) — status changes, versions, and their
+- [Admin API](../reference/admin-api.md): status changes, versions, and their
   query parameters.
-- [Packages](./packages.md) — how a promotion drives these transitions in
+- [Packages](./packages.md): how a promotion drives these transitions in
   dependency order, with one reload.
-- [Understand the HTTP Flow](../getting-started/first-service.md) — create and
+- [Understand the HTTP Flow](../getting-started/first-service.md): create and
   activate the definitions in four administration calls, then invoke them.

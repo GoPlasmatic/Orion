@@ -1,4 +1,4 @@
-<!-- description: A package is one Orion service versioned as a unit — its channels, workflows and connectors — and the boundary along which a service ships between instances. -->
+<!-- description: A package is one Orion service versioned as a unit — its channels, workflows and connectors, and the boundary along which a service ships between instances. -->
 # Packages
 
 A **package** is one service, named and versioned as a unit: the channels it
@@ -57,16 +57,16 @@ workflow. Selecting the endpoints selects the service.
 
 What the closure deliberately does *not* pull in is anything belonging to
 someone else. A `channel_call` target you did not select is not swept up; it is
-recorded as a **requirement** — a name the package uses but does not contain.
+recorded as a **requirement**: a name the package uses but does not contain.
 Requirements keep packages small and their boundaries stated, and the target
 instance is checked for each one before anything is written.
 
 ## Two forms of the same thing
 
-- **Source form** — a directory of entity JSON files, one per channel, workflow
+- **Source form**: a directory of entity JSON files, one per channel, workflow
   and connector. This is what you author, review and keep in git; the
   [shipped examples](../getting-started/examples.md) are packages in this form.
-- **Artifact form** — one JSON document carrying the entities plus a name, a
+- **Artifact form**: one JSON document carrying the entities plus a name, a
   version, the Orion version it came from, and a content hash. This is what
   travels between instances.
 
@@ -79,7 +79,7 @@ for a task fragment. Artifact form never carries either: the hash, the receipt
 and the running engine only ever see resolved documents.
 
 The hash is computed over importable content only — versions, statuses and
-timestamps are the target's business, not the artifact's — so the same logic
+timestamps are the target's business, not the artifact's, so the same logic
 hashes the same whichever instance exported it.
 
 ## Receipts and immutability
@@ -97,11 +97,11 @@ procedural:
 
 ## Next steps
 
-- [Test & Promote a Service](../getting-started/test-and-promote.md) — export a
+- [Test & Promote a Service](../getting-started/test-and-promote.md): export a
   package and apply it to a second instance, start to finish.
-- [Promote Between Environments](../operate/promotion.md) — the five verbs, the secrets
+- [Promote Between Environments](../operate/promotion.md): the five verbs, the secrets
   rules, and the `requires` boundary in detail.
-- [Run the Examples](../getting-started/examples.md) — the deployable example packages in source
+- [Run the Examples](../getting-started/examples.md): the deployable example packages in source
   form, ready to deploy.
-- [The Entity Lifecycle](./lifecycle.md) — the draft/active/archived rules that
+- [The Entity Lifecycle](./lifecycle.md): the draft/active/archived rules that
   `apply` drives on your behalf.

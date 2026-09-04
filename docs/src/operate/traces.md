@@ -200,11 +200,11 @@ to record per-function and per-connector timings.
 
 ## Related
 
-- [Monitoring & Alerts](./monitoring.md) — the DLQ-depth, job-staleness, and
+- [Monitoring & Alerts](./monitoring.md): the DLQ-depth, job-staleness, and
   persistence-failure alerts that cover this subsystem.
-- [Troubleshooting](./troubleshooting.md) — a filling DLQ, a stuck queue, and
+- [Troubleshooting](./troubleshooting.md): a filling DLQ, a stuck queue, and
   what to do about each.
-- [Data API](../reference/data-api.md) — the trace object and the async
+- [Data API](../reference/data-api.md): the trace object and the async
   submission contract.
-- [Configuration Reference](../reference/configuration.md#trace-queue) — every
+- [Configuration Reference](../reference/configuration.md#trace-queue): every
   `[trace_queue]` and `[trace_storage]` key.

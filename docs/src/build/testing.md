@@ -76,9 +76,9 @@ it or pass a config file.
 orion-server dry-run -w workflow.json -i payload.json
 ```
 
-`-i` takes the **bare payload** — not the `{"data": …}` envelope the HTTP API
+`-i` takes the **bare payload**: not the `{"data": …}` envelope the HTTP API
 uses. `--metadata` takes a second file holding the request metadata the HTTP
-ingress would have built — see [Supply request metadata](#supply-request-metadata).
+ingress would have built. See [Supply request metadata](#supply-request-metadata).
 The command prints one JSON document on stdout, so `jq` can read it:
 
 | Field | Holds |
@@ -94,7 +94,7 @@ The command prints one JSON document on stdout, so `jq` can read it:
 | `errors` | Task errors, if any |
 
 The five documents after `trace` are the same set, in the same shape, that a
-case's `expect` roots address — so a path read off a dry run works in a case
+case's `expect` roots address, so a path read off a dry run works in a case
 unchanged. `output` is kept as an alias of `data` because CI `jq` filters read
 it. `calls` is grouped by function rather than flat; each record carries a
 `seq` if you need the order across functions.
@@ -120,8 +120,8 @@ and the rest — are answered from a **stub file** rather than a real backend:
 }
 ```
 
-The outer key is the function name, the inner key is the task's `connector` — or
-its `channel` for `channel_call` — and `"*"` matches any target. The value is
+The outer key is the function name, the inner key is the task's `connector`, or
+its `channel` for `channel_call`, and `"*"` matches any target. The value is
 what the task writes to its `output` path.
 
 ```bash
@@ -178,7 +178,7 @@ workflows and fixtures beside them:
 
 `expect_errors` defaulting to empty is the load-bearing default: a workflow that
 starts failing its tasks cannot pass silently. `expect_tasks` cannot work that
-way — every workflow runs tasks — so omitting it means unchecked.
+way — every workflow runs tasks, so omitting it means unchecked.
 
 ## Every `expect` path names its root
 
@@ -306,9 +306,9 @@ uses `metadata.params` needs that context to be testable at all:
 The block is normalized the way the ingress builds one, so an offline pass means
 a production pass:
 
-- **Header keys are lowercased** — HTTP header names arrive lowercase, so
+- **Header keys are lowercased**: HTTP header names arrive lowercase, so
   `"DeviceId"` would match offline and miss in production.
-- **Credential headers are masked** — `authorization`, `cookie`,
+- **Credential headers are masked**: `authorization`, `cookie`,
   `proxy-authorization` and `x-api-key` read back as `******`, exactly as they
   do in a served request.
 - **`_orion_errors` is cleared**; it is engine-owned.
@@ -369,15 +369,15 @@ actually run with.
     orion-server test ./workflow-tests
 ```
 
-No server, no database, no secrets — which is what makes this runnable on a
+No server, no database, no secrets, which is what makes this runnable on a
 pull request from a fork. The deploy half of the pipeline is
 [CI/CD with Packages](../guides/ci-cd.md).
 
 ## Related
 
-- [CLI Reference](../reference/cli.md) — every flag of every subcommand.
-- [Test & Promote a Service](../getting-started/test-and-promote.md) — the same
+- [CLI Reference](../reference/cli.md): every flag of every subcommand.
+- [Test & Promote a Service](../getting-started/test-and-promote.md): the same
   commands as a walkthrough.
-- [CI/CD with Packages](../guides/ci-cd.md) — the promotion pipeline these gates
+- [CI/CD with Packages](../guides/ci-cd.md): the promotion pipeline these gates
   feed.
-- [Author Workflows](./workflows.md) — what you are testing.
+- [Author Workflows](./workflows.md): what you are testing.

@@ -63,7 +63,7 @@ the traffic blackholed.
      http://localhost:8080/health | jq '.channels.quarantined'
    ```
 
-2. **Scan for the rest before they bite** — `orion-server preflight` reads the
+2. **Scan for the rest before they bite**: `orion-server preflight` reads the
    stored estate and names every channel and workflow the current rules refuse.
 3. **Fix the stored config** through the admin API (create a new version;
    active versions are immutable).
@@ -73,7 +73,7 @@ the traffic blackholed.
 
 > [!NOTE]
 > There is no metric for quarantine on the synchronous path. `/health` and the
-> reload log are the signals — which is why the `channels` component going
+> reload log are the signals, which is why the `channels` component going
 > `degraded` deserves an alert of its own.
 
 **What happens to traffic meanwhile.** Sync and `/async` HTTP requests get the
@@ -105,7 +105,7 @@ match a channel declaring `/orders`.
 
 **Why.** This is deliberate. A failing *database* is `503` with
 `"status": "degraded"`. A failed connector load, a quarantined channel, or a
-dead Kafka consumer is `"status": "degraded"` at HTTP **200** — the instance is
+dead Kafka consumer is `"status": "degraded"` at HTTP **200**: the instance is
 still serving, and a `503` would eject a healthy node from its load balancer
 over a component nothing in flight may even use.
 
@@ -123,7 +123,7 @@ Anonymous callers get only the coarse component states, by design.
 ## Clients get `429` far below the configured rate
 
 **Why.** The rate limiter identifies callers by TCP peer address. Behind a
-proxy, load balancer, or ingress, that peer is always the proxy — so every
+proxy, load balancer, or ingress, that peer is always the proxy, so every
 client collapses into one bucket.
 
 **What to do.** List the addresses your proxies connect from:
@@ -166,7 +166,7 @@ epoch.
 
 **Why.** Async traces that fail land in `trace_dlq` and are retried with
 exponential backoff. A growing depth means failures are arriving faster than
-retries succeed — or that retries are off.
+retries succeed, or that retries are off.
 
 **What to do.**
 
@@ -194,7 +194,7 @@ redelivered — throttling, not loss. It shows up as lag, not as errors.
 `orion_errors_total`, then either raise the channel's `rate_limit` and
 `backpressure.max_concurrent_per_node`, or add consumers. Messages are processed
 strictly sequentially per consumer — the at-least-once commit contract requires
-it — so throughput scales by running more instances in the same consumer group,
+it, so throughput scales by running more instances in the same consumer group,
 not by raising a concurrency knob.
 
 If `/readyz` is failing too, Kafka ingestion is degraded rather than throttled;
@@ -216,7 +216,7 @@ not that the work failed.
 
 **Why.** The raw request payload is **not** in the JSONLogic context.
 `{"var": "payload.x"}` resolves to nothing, and every condition referencing
-`data.*` evaluates against an empty object — so tasks silently skip and the
+`data.*` evaluates against an empty object, so tasks silently skip and the
 response comes back with nothing in it.
 
 **What to do.** Start the workflow with a `parse_json` task:
@@ -263,10 +263,10 @@ and brokers are reachable before you find out the hard way.
 
 ## Related
 
-- [Monitoring & Alerts](./monitoring.md) — the signals that surface these
+- [Monitoring & Alerts](./monitoring.md): the signals that surface these
   before a caller does.
-- [Traces & Async Processing](./traces.md) — the queue and DLQ in full.
-- [Timeouts, Retries & Circuit Breakers](./failure-handling.md) — the controls
+- [Traces & Async Processing](./traces.md): the queue and DLQ in full.
+- [Timeouts, Retries & Circuit Breakers](./failure-handling.md): the controls
   behind several entries above.
-- [Errors & Response Envelopes](../reference/errors.md) — every error code and
+- [Errors & Response Envelopes](../reference/errors.md): every error code and
   what it means.

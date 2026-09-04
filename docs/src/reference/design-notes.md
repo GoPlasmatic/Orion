@@ -1,7 +1,7 @@
 <!-- description: The reasoning behind Orion's rules — read a note when a rule looks arbitrary and you want the argument, or when you are weighing whether its trade-off fits. -->
 # Design Notes
 
-You do not need this page to run Orion. Every rule below is stated in one sentence on the page that owns it; this page holds the reasoning. Read a note when a rule looks arbitrary and you want the argument — or when you are deciding whether the rule's trade-off fits your case.
+You do not need this page to run Orion. Every rule below is stated in one sentence on the page that owns it; this page holds the reasoning. Read a note when a rule looks arbitrary and you want the argument, or when you are deciding whether the rule's trade-off fits your case.
 
 Each note opens with the rule as shipped, makes the case, and links the page that states the rule normatively. This is also the one page in the reference where runtime internals (`ArcSwap`, semaphores, hash framing) are fair game.
 
@@ -15,7 +15,7 @@ Deduplication matters most on Kafka ingest, because Kafka is at-least-once by de
 
 Without that distinction, the first attempt's own claim would refuse its retry. The ingress would read the refusal as "already handled" and commit the offset — a record committed having never run, which is the failure mode deduplication exists to prevent, inverted.
 
-Over HTTP there is no settle step to reason about. One request is one delivery; the claim simply stands for the rest of the window, and a replay of the key is answered `409 Conflict` — which is what a replay should get.
+Over HTTP there is no settle step to reason about. One request is one delivery; the claim simply stands for the rest of the window, and a replay of the key is answered `409 Conflict`, which is what a replay should get.
 
 The residual risk is the transport's, not the guard's. A record whose workflow completed but whose offset commit was lost is redelivered and *is* suppressed — its key was settled. A record that never reached a committed outcome is reprocessed. Deduplication narrows at-least-once; it does not make Kafka exactly-once.
 
@@ -32,7 +32,7 @@ Stated normatively in: [Channel Configuration](./channel-config.md).
 
 Orion does not inspect headers to decide cache identity and will not grow a `cache_key_headers` setting. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent.
 
-The consequence is the one rule to design around: **if a response varies by anything a header carries, that thing must appear in the payload, or the channel must not cache.** A channel whose workflow reads `metadata.headers` or `metadata.cookies` — through `validation_logic` or a task — and lets one of them change the response body is a channel whose cache will serve one caller's body to another. A channel that emits a `Set-Cookie` through response shaping is the same hazard in reverse: a cached response replays one caller's cookie to the next. Fold the distinguishing value into the payload and name it in `cache_key_fields`, or leave `cache` disabled.
+The consequence is the one rule to design around: **if a response varies by anything a header carries, that thing must appear in the payload, or the channel must not cache.** A channel whose workflow reads `metadata.headers` or `metadata.cookies` — through `validation_logic` or a task, and lets one of them change the response body is a channel whose cache will serve one caller's body to another. A channel that emits a `Set-Cookie` through response shaping is the same hazard in reverse: a cached response replays one caller's cookie to the next. Fold the distinguishing value into the payload and name it in `cache_key_fields`, or leave `cache` disabled.
 
 This is a deliberate boundary rather than a gap. Orion is single-tenant by design, and the key strategy is the workflow author's to define, expressed in the payload they control — not inferred by the runtime from transport headers whose meaning it cannot know. A runtime that guessed — hashing `Authorization`, say — would fragment the cache for channels where the header does not matter and still miss the channels where some other header does.
 
@@ -58,8 +58,8 @@ A forwarded header is a claim, not a fact: any client can send one. Only a proxy
 
 The default is empty because the two failure modes are not symmetric:
 
-- **Behind a load balancer with the list unset**, every request appears to come from the balancer. All clients share one rate-limit bucket, and the limit applies to the whole fleet at once. This is degraded, but visible and recoverable: list the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]` — and per-client limiting returns.
-- **List a network you do not control**, and clients on it can spoof `X-Forwarded-For` to mint a fresh identity per request — which is no rate limiting at all, and forged addresses in the audit trail besides. This failure is silent.
+- **Behind a load balancer with the list unset**, every request appears to come from the balancer. All clients share one rate-limit bucket, and the limit applies to the whole fleet at once. This is degraded, but visible and recoverable: list the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]`, and per-client limiting returns.
+- **List a network you do not control**, and clients on it can spoof `X-Forwarded-For` to mint a fresh identity per request, which is no rate limiting at all, and forged addresses in the audit trail besides. This failure is silent.
 
 An overly cautious default costs a config line; an overly trusting one is a security hole. That asymmetry is the design.
 
@@ -88,12 +88,12 @@ Stated normatively in: [Data API](./data-api.md#paging-a-large-traces-table).
 
 **The rule as shipped:** a reload builds the new engine beside the running one and publishes it with a single atomic pointer swap; requests already executing finish on the engine they started with, and no request is dropped or held off.
 
-The engine handle is a double `Arc`: the server shares one `Arc<ArcSwap<Engine>>`, an atomic cell holding the current `Arc<Engine>`. A request begins by loading a snapshot — cloning the inner `Arc` out of the cell — and runs against that snapshot for its whole lifetime. Publishing a new engine is one atomic store into the cell. There is no lock, so there is no window in which a reader is held off and no writer waiting for readers to drain: loads before the store return the old engine, loads after it return the new one. The old engine stays alive by reference count until its last in-flight request completes, then is freed.
+The engine handle is a double `Arc`: the server shares one `Arc<ArcSwap<Engine>>`, an atomic cell holding the current `Arc<Engine>`. A request begins by loading a snapshot — cloning the inner `Arc` out of the cell, and runs against that snapshot for its whole lifetime. Publishing a new engine is one atomic store into the cell. There is no lock, so there is no window in which a reader is held off and no writer waiting for readers to drain: loads before the store return the old engine, loads after it return the new one. The old engine stays alive by reference count until its last in-flight request completes, then is freed.
 
 The ordering around the swap is deliberate:
 
 1. **Build off to the side.** The reload reads every active channel and workflow from the database and constructs the new engine outside any lock. If the engine itself cannot be built, the reload aborts and the running engine is untouched — the failure mode is "the old configuration keeps serving", never "nothing serves".
-2. **Guards before reachability.** The channel registry — route table, rate limiters, compiled validation logic, dedup stores, response caches, backpressure semaphores — is rebuilt *before* the engine swap, so a channel is never reachable through the new engine before its guards exist. A channel that fails to load during this rebuild is quarantined — refused at every ingress, reported through `GET /health` — and the reload proceeds for every other channel. The alternative, aborting the whole reload for one broken `config_json`, would make every activate, archive, and delete hostage to the estate's worst row.
+2. **Guards before reachability.** The channel registry — route table, rate limiters, compiled validation logic, dedup stores, response caches, backpressure semaphores — is rebuilt *before* the engine swap, so a channel is never reachable through the new engine before its guards exist. A channel that fails to load during this rebuild is quarantined — refused at every ingress, reported through `GET /health`, and the reload proceeds for every other channel. The alternative, aborting the whole reload for one broken `config_json`, would make every activate, archive, and delete hostage to the estate's worst row.
 3. **Publish, then tend the consumer.** After the store, the Kafka consumer is restarted only if the reload changed the set of subscribed topics; otherwise it is paused and resumed around the swap. In cluster mode, epoch-driven reloads add per-node jitter to a full restart so the replicas do not all leave and rejoin the consumer group at the same instant.
 
 A cluster resync — triggered when another node's mutation advances the shared config epoch — is this same reload plus a connector-registry refresh and eviction of all cached connector pools, because a remote node cannot know *which* connector changed; pools rebuild lazily on next use.
@@ -106,25 +106,25 @@ Stated normatively in: [The Entity Lifecycle](../concepts/lifecycle.md#what-move
 
 There are two decisions here: guards as data, and the order.
 
-Four ingresses can dispatch a message to a channel — synchronous HTTP, `/async` submission, Kafka, and in-process `channel_call` — and the channel's declared contract must hold on whichever one the message arrived on. A single function applies the guards, and *which* guards run is data: a per-transport guard set, one constant row per ingress, rather than a comment repeated at four call sites. Adding an ingress means adding a row, and every exclusion in the matrix is a property of the transport rather than an oversight. A Kafka record has no `Origin` header to check and is already authenticated by the broker connection. An `/async` submission answers `202` with a trace ID and has no response body to cache. A `channel_call` is a step inside a request that was authenticated and deduplicated at its own ingress — enforcing either again would break composition without making it safer.
+Four ingresses can dispatch a message to a channel — synchronous HTTP, `/async` submission, Kafka, and in-process `channel_call`, and the channel's declared contract must hold on whichever one the message arrived on. A single function applies the guards, and *which* guards run is data: a per-transport guard set, one constant row per ingress, rather than a comment repeated at four call sites. Adding an ingress means adding a row, and every exclusion in the matrix is a property of the transport rather than an oversight. A Kafka record has no `Origin` header to check and is already authenticated by the broker connection. An `/async` submission answers `202` with a trace ID and has no response body to cache. A `channel_call` is a step inside a request that was authenticated and deduplicated at its own ingress — enforcing either again would break composition without making it safer.
 
 The order is deliberate:
 
-- **Rate limit first**, so a refusal costs the least work — and so rejected requests still consume a token. If any other check ran before the limiter, an attacker probing that check would get unmetered rejections.
+- **Rate limit first**, so a refusal costs the least work, and so rejected requests still consume a token. If any other check ran before the limiter, an attacker probing that check would get unmetered rejections.
 - **Authentication immediately after, and before anything stateful.** An unauthenticated caller must not reach the response-cache lookup, which would let them probe which requests are cached. Nor may they reach the dedup store, where they could claim an idempotency key belonging to a real caller and have the genuine request refused as a duplicate. Keeping authentication *after* the rate limit means credential-stuffing is metered like any other traffic.
 - **Origin allow-list, then `validation_logic`**: refusals of requests that would never be admitted, before any shared state is touched on their behalf.
-- **Deduplication before the cache lookup**, so a replayed idempotency key is answered `409` rather than served a cached body. The two guards answer different questions — "did this delivery already happen?" versus "do we already know the answer?" — and the idempotency contract outranks the optimization.
+- **Deduplication before the cache lookup**, so a replayed idempotency key is answered `409` rather than served a cached body. The two guards answer different questions — "did this delivery already happen?" versus "do we already know the answer?", and the idempotency contract outranks the optimization.
 - **Backpressure last.** A cache hit should not consume a concurrency permit it never needed. And because the permit is the only guard that can refuse *after* the idempotency key has been claimed, its refusal releases the claim before returning — a shed request does not burn a key it never got to use.
 
 An admitted request leaves the pipeline carrying what the rest of processing needs: the backpressure permit, the context for storing the response in the cache, the resolved deadline (see [Kafka's timeout clamp](#kafkas-timeout-clamp)), and the dedup claim to settle.
 
-One nuance surprises often enough to state here: applying the rate limit on every transport means the same limiter is *consulted* everywhere, not that the four ingresses share one bucket. The default bucket key is whatever caller identity the transport has — client IP over HTTP, topic on Kafka, the calling channel for `channel_call` — so `requests_per_second` is a per-identity rate on each ingress. Only a `rate_limit.key_logic` that returns a transport-independent value turns it into one shared throughput cap.
+One nuance surprises often enough to state here: applying the rate limit on every transport means the same limiter is *consulted* everywhere, not that the four ingresses share one bucket. The default bucket key is whatever caller identity the transport has — client IP over HTTP, topic on Kafka, the calling channel for `channel_call`, so `requests_per_second` is a per-identity rate on each ingress. Only a `rate_limit.key_logic` that returns a transport-independent value turns it into one shared throughput cap.
 
 Stated normatively in: [How Orion Works](../concepts/how-orion-works.md#one-requests-journey) and [Channel Configuration](./channel-config.md).
 
 ## Related
 
-- [How Orion Works](../concepts/how-orion-works.md) — the request flow these internals sit behind.
-- [Channel Configuration](./channel-config.md) — every channel key named above: `deduplication`, `cache`, `timeout_ms`, `rate_limit`, `validation_logic`.
-- [Configuration](./configuration.md) — the server-level ceilings and `trusted_proxies`.
-- [Data API](./data-api.md) — the trace endpoints the cursor pages.
+- [How Orion Works](../concepts/how-orion-works.md): the request flow these internals sit behind.
+- [Channel Configuration](./channel-config.md): every channel key named above: `deduplication`, `cache`, `timeout_ms`, `rate_limit`, `validation_logic`.
+- [Configuration](./configuration.md): the server-level ceilings and `trusted_proxies`.
+- [Data API](./data-api.md): the trace endpoints the cursor pages.

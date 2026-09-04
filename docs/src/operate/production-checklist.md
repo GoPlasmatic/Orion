@@ -9,7 +9,7 @@ Setting `environment = "production"` makes exactly five things fatal at startup
 rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
 `[cors] allowed_origins = ["*"]` wildcard, `server.verbose_errors = true`, and
 `cluster.enabled` together with `storage.auto_migrate`. Every other row below —
-**TLS and per-channel data-plane `auth` included** — is never checked for you.
+**TLS and per-channel data-plane `auth` included**: is never checked for you.
 
 ## Before it takes traffic
 
@@ -64,8 +64,8 @@ keeps serving everything else.
 
 ## Related
 
-- [Secure an Instance](./security.md) — the security rows, in detail.
-- [Cluster Mode & High Availability](./cluster.md) — the multi-replica rows.
-- [Monitoring & Alerts](./monitoring.md) — what to watch once this is live.
-- [Troubleshooting](./troubleshooting.md) — when one of these turns out to have
+- [Secure an Instance](./security.md): the security rows, in detail.
+- [Cluster Mode & High Availability](./cluster.md): the multi-replica rows.
+- [Monitoring & Alerts](./monitoring.md): what to watch once this is live.
+- [Troubleshooting](./troubleshooting.md): when one of these turns out to have
   been missed.

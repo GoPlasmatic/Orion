@@ -43,7 +43,7 @@ A channel is reachable on up to four ingresses. Each guard runs on the ingresses
 | `oauth2_login` | Yes | No | No | No |
 | `timeout_ms` | Yes | Yes | Yes¹ | Yes |
 
-¹ Clamped to a transport ceiling — see [Timeouts](#timeouts). Every No cell is deliberate; the owning section below states why.
+¹ Clamped to a transport ceiling. See [Timeouts](#timeouts). Every No cell is deliberate; the owning section below states why.
 
 <details><summary>Order of application</summary>
 
@@ -72,7 +72,7 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 
 `rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v1/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload; config-file topic mappings take precedence over channel-declared ones (see [Kafka Consumer Configuration](./configuration.md#kafka)).
 
-**`route_pattern` grammar.** The pattern must start with `/`. It must not contain whitespace, `?`, `#`, or `%`. No segment may be empty (no `//`, no trailing `/`). A parameter is a whole segment written `{name}`; the name must match `[A-Za-z_][A-Za-z0-9_]*` and be unique within the pattern. Captured parameters reach the workflow as `metadata.params` — see the [Workflow Schema](./workflows.md).
+**`route_pattern` grammar.** The pattern must start with `/`. It must not contain whitespace, `?`, `#`, or `%`. No segment may be empty (no `//`, no trailing `/`). A parameter is a whole segment written `{name}`; the name must match `[A-Za-z_][A-Za-z0-9_]*` and be unique within the pattern. Captured parameters reach the workflow as `metadata.params`. See the [Workflow Schema](./workflows.md).
 
 A channel names its workflow with a top-level `workflow_id`; how conditions and rollout percentages select a workflow version is specified in the [Workflow Schema](./workflows.md). Activation requires that workflow to be active.
 
@@ -175,7 +175,7 @@ An unlisted provider is the explicit form — configuration, never code:
 
 One named non-goal: **Twilio**, whose base string needs the full public URL plus re-sorted form parameters — a per-provider algorithm, not a concatenation.
 
-**`jwt`** verifies a bearer token at ingress and exposes the **verified claims** — never the token — at `metadata.auth.claims.*`, where `validation_logic`, `authorization_logic`, and every workflow task can read them. That is the difference from fronting Orion with a gateway: a gateway can accept or reject, but it cannot give the workflow the identity (`sub`, roles) that per-user logic needs, except by forwarding spoofable headers.
+**`jwt`** verifies a bearer token at ingress and exposes the **verified claims**: never the token — at `metadata.auth.claims.*`, where `validation_logic`, `authorization_logic`, and every workflow task can read them. That is the difference from fronting Orion with a gateway: a gateway can accept or reject, but it cannot give the workflow the identity (`sub`, roles) that per-user logic needs, except by forwarding spoofable headers.
 
 ```json
 {
@@ -193,7 +193,7 @@ Verification is fail-fast (RFC 8725): extract → allowlist (`alg: none` and dow
 
 Rules:
 
-- **A failure is always `401` with one message**, whatever the cause. The response never reveals whether the header was missing, the key wrong, the signature malformed, or the timestamp stale. A template header missing from the request refuses — never empty-string substitution — and the replay window is checked before any MAC work.
+- **A failure is always `401` with one message**, whatever the cause. The response never reveals whether the header was missing, the key wrong, the signature malformed, or the timestamp stale. A template header missing from the request refuses — never empty-string substitution, and the replay window is checked before any MAC work.
 - **Auth configs are validated structurally at create/update/validate/import**: a missing `secret`, an unknown preset, a malformed template, or half a replay guard is a `400` naming the problem — not a channel quarantined at the next reload.
 - **`env://` references resolve at channel load.** An `auth` block that cannot be built — an unset `env://` secret, for example — quarantines the channel rather than serving it unauthenticated.
 - **`auth.keys`, `auth.secret`/`auth.secrets`, and `auth.jwt_keys[].key` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
@@ -250,7 +250,7 @@ The limit applies on every ingress, whether or not the platform limiter ([`[rate
 Names are matched case-insensitively (they are lowercased at load) and the list **adds to** the built-in set rather than replacing it, so declaring a header can never take `x-tenant-id` away from an expression that already reads it. Listing a built-in again is a no-op. The set stays closed by default because the request path materializes exactly the names that might be read — a channel does not pay an allocation per header for a key that references one of them.
 
 > [!WARNING]
-> A header is caller-supplied and therefore spoofable, so a key derived from one bounds an **honest** client. That is the right trade for a burst control, and the wrong one for a quota: forging a token-bucket key gets you a different bucket, not a bigger one, but forging a quota key is the whole attack. For per-user quotas, count in the workflow — `db_write`/`mongo_write` can increment and read back atomically — and keep this guard on top as the per-caller burst control.
+> A header is caller-supplied and therefore spoofable, so a key derived from one bounds an **honest** client. That is the right trade for a burst control, and the wrong one for a quota: forging a token-bucket key gets you a different bucket, not a bigger one, but forging a quota key is the whole attack. For per-user quotas, count in the workflow — `db_write`/`mongo_write` can increment and read back atomically, and keep this guard on top as the per-caller burst control.
 
 The key is part of the control, not a hint:
 
@@ -266,7 +266,7 @@ Limiter state survives engine reloads: a channel whose `requests_per_second`, `b
 
 ## Backpressure
 
-`backpressure` bounds a channel's in-flight work with a semaphore. When every permit is taken, additional requests are refused with `503 Service Unavailable` immediately — load shedding, not queueing.
+`backpressure` bounds a channel's in-flight work with a semaphore. When every permit is taken, more requests are refused with `503 Service Unavailable` immediately — load shedding, not queueing.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -352,7 +352,7 @@ Rules:
 An expression that does not compile quarantines the channel rather than falling back — a cache key that silently widens serves one caller's body to the next. One that resolves to `null` at request time bypasses the cache for that request, as an unresolvable `cache_key_fields` does. Each entry resolves as a literal payload key (`user_id`), a dotted path (`user.id`), or the same path with a leading `data.` prefix (`data.user_id`). A request that resolves **none** of the declared fields bypasses the cache entirely: the workflow runs, nothing is stored, and Orion logs a warning naming the channel and fields — it almost always means the names do not match the payload shape.
 
 > [!WARNING]
-> Request headers are never part of the cache key. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent. If a response varies by anything a header carries, that value must appear in the payload and in `cache_key_fields` — or the channel must not cache.
+> Request headers are never part of the cache key. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent. If a response varies by anything a header carries, that value must appear in the payload and in `cache_key_fields`, or the channel must not cache.
 
 Behaviour:
 
@@ -366,14 +366,14 @@ Behaviour:
 
 ## Request body
 
-`request` controls how the HTTP request body becomes `data` and `metadata`. **HTTP ingresses only** — Kafka parses the whole payload as `data` and builds metadata separately, and `channel_call` inherits the parent's metadata with `data` from the task input, so neither is affected.
+`request` controls how the HTTP request body becomes `data` and `metadata`. **HTTP ingresses only**: Kafka parses the whole payload as `data` and builds metadata separately, and `channel_call` inherits the parent's metadata with `data` from the task input, so neither is affected.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `body_mode` | string | no | `"auto"` | `auto` detects the Orion envelope; `payload` takes the parsed body verbatim. |
 | `cookies_to_metadata` | array of strings | no | — | Named request cookies copied to `metadata.cookies.*`. Absent exposes nothing. |
 
-Under `auto`, **an object carrying a top-level `data` or `metadata` key is the envelope** — that key becomes the payload and every sibling field is discarded. Anything else (an array, a scalar, an object without those keys) is the payload as it stands, and an empty body is `{}`.
+Under `auto`, **an object carrying a top-level `data` or `metadata` key is the envelope**: that key becomes the payload and every sibling field is discarded. Anything else (an array, a scalar, an object without those keys) is the payload as it stands, and an empty body is `{}`.
 
 That rule keys on a field *name*, so a request model that owns the name `data` — the standard FCM/push payload shape, among others — is read as an envelope and loses its siblings silently, with a normal `200`. `payload` mode is the opt-out:
 
@@ -418,21 +418,21 @@ and then, in any task or in `validation_logic`:
 
 A listed-but-absent cookie is simply not present — never `null`, never an error. The raw `Cookie` header stays masked: this allowlist is additive and never unmasks it. `metadata.cookies` is platform-reserved, stamped from the allowlist and stripped otherwise, so a caller cannot supply it in an envelope.
 
-**Scope it to opaque identifiers a workflow matches against its own stored state** — a browser-pinning id, a first-party visitor id, a bucket cookie. For a session token, JWT or CSRF token use [`auth.mode: "jwt"`](#authentication) with `source: {"cookie": …}` instead, where the token is consumed at verification rather than copied into the context.
+**Scope it to opaque identifiers a workflow matches against its own stored state**: a browser-pinning id, a first-party visitor id, a bucket cookie. For a session token, JWT or CSRF token use [`auth.mode: "jwt"`](#authentication) with `source: {"cookie": …}` instead, where the token is consumed at verification rather than copied into the context.
 
 > [!WARNING]
-> **Allowlisted values land in `traces.result_json` and `trace_dlq.metadata_json` unmasked.** The read side is covered — `GET /admin/traces/{id}` strips all of `context.metadata` — but the row on disk is not. Note also that `tracing.mode = "off"` suppresses only *sync* persistence: on an `/async` channel the row is still written before the `202`, so turning tracing off is **not** a complete mitigation there. `trace_queue.retention_hours` is the ageing-out control.
+> **Allowlisted values land in `traces.result_json` and `trace_dlq.metadata_json` unmasked.** The read side is covered — `GET /admin/traces/{id}` strips all of `context.metadata`, but the row on disk is not. Note also that `tracing.mode = "off"` suppresses only *sync* persistence: on an `/async` channel the row is still written before the `202`, so turning tracing off is **not** a complete mitigation there. `trace_queue.retention_hours` is the ageing-out control.
 
 Two further limits worth knowing:
 
-- **A cookie-varying channel must not enable `cache`.** `compute_cache_key` hashes method, params, query and payload — never headers — so a cached response would replay one caller's `Set-Cookie` to the next.
+- **A cookie-varying channel must not enable `cache`.** `compute_cache_key` hashes method, params, query and payload — never headers, so a cached response would replay one caller's `Set-Cookie` to the next.
 - **`rate_limit.key_logic` still cannot see cookies.** Its context is `{client_ip, channel, headers}`, and `cookie` is not among the readable headers. Per-cookie rate limiting stays out of reach.
 
 `channel_call` propagates metadata verbatim, so an allowlisted cookie reaches sub-channels — the same way verified claims do.
 
 ## Error bodies
 
-Every ingress guard rejection answers with the platform envelope `{"error": {"code", "message", "request_id"}}`. `response.error_bodies` lets a channel replace those **bytes** — for a migrated API whose deployed clients parse a different shape. **The platform still decides the status.**
+Every ingress guard rejection answers with the platform envelope `{"error": {"code", "message", "request_id"}}`. `response.error_bodies` lets a channel replace those **bytes**: for a migrated API whose deployed clients parse a different shape. **The platform still decides the status.**
 
 ```json
 {
@@ -448,7 +448,7 @@ Every ingress guard rejection answers with the platform envelope `{"error": {"co
 }
 ```
 
-Keys are HTTP statuses (`400`–`599`) plus an optional `"default"`. `error_bodies` is **independent of `mode`** — an `envelope` channel can use it, since the two settings answer different questions and `mode` covers only the success path.
+Keys are HTTP statuses (`400`–`599`) plus an optional `"default"`. `error_bodies` is **independent of `mode`**: an `envelope` channel can use it, since the two settings answer different questions and `mode` covers only the success path.
 
 | Placeholder | Value |
 |---|---|
@@ -475,7 +475,7 @@ Three further guarantees:
 
 ## Response shaping
 
-By default every sync channel answers `200` with the fixed envelope `{id, status, data, errors}`, whatever happened — see [Errors & Response Envelopes](./errors.md). That is a workable contract between workflows and an awkward one for a REST API: no `201` with a `Location`, no `404`, no content type but JSON.
+By default every sync channel answers `200` with the fixed envelope `{id, status, data, errors}`, whatever happened. See [Errors & Response Envelopes](./errors.md). That is a workable contract between workflows and an awkward one for a REST API: no `201` with a `Location`, no `404`, no content type but JSON.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -515,7 +515,7 @@ The control block's fields:
 
 **Header allowlist.** With no `allowed_headers`, a workflow may set `content-type`, `location`, `cache-control`, `etag`, `last-modified`, `retry-after`, `content-language`, and `link`. The hop-by-hop headers (`connection`, `keep-alive`, `proxy-authenticate`, `proxy-authorization`, `te`, `trailer`, `transfer-encoding`, `upgrade`), `content-length`, and `x-request-id` are refused even when listed — response framing belongs to the server, and `x-request-id` correlates a response with its stored trace. A dropped header does not fail the request.
 
-**Repeated headers.** The first value for a name replaces whatever the platform set — so a workflow's `content-type` still wins — and every later value is appended beside it. That is what makes an array meaningful.
+**Repeated headers.** The first value for a name replaces whatever the platform set, so a workflow's `content-type` still wins, and every later value is appended beside it. That is what makes an array meaningful.
 
 **Failures are soft.** A shaped channel whose workflow sets no control block, or an unusable one, falls back to the standard envelope rather than erroring.
 
@@ -546,9 +546,9 @@ Reading cookies is configured per channel with `request.cookies_to_metadata`. Wr
 | `http_only` | boolean | no | Adds `HttpOnly`. A `false` emits nothing — the attribute has no negative form. |
 | `secure` | boolean | no | Adds `Secure`. |
 
-**Why its own switch, not `allowed_headers`.** That list *replaces* the default one, so gating cookies on it would mean a channel setting a session cookie also has to re-list `content-type` to keep serving JSON. The raw escape hatch still works — list `set-cookie` in `allowed_headers` and write the header directly, with an array for more than one — but the declared form is what validates the value and spells the attributes for you.
+**Why its own switch, not `allowed_headers`.** That list *replaces* the default one, so gating cookies on it would mean a channel setting a session cookie also has to re-list `content-type` to keep serving JSON. The raw escape hatch still works — list `set-cookie` in `allowed_headers` and write the header directly, with an array for more than one, but the declared form is what validates the value and spells the attributes for you.
 
-**A response that sets a cookie is never cached.** The response cache keys on the method, path parameters, query and payload — never on who is calling — so a stored `Set-Cookie` would be replayed to every caller repeating that request for the TTL. Orion suppresses the cache write instead. This applies however the cookie was set, including through `allowed_headers`.
+**A response that sets a cookie is never cached.** The response cache keys on the method, path parameters, query and payload — never on who is calling, so a stored `Set-Cookie` would be replayed to every caller repeating that request for the TTL. Orion suppresses the cache write instead. This applies however the cookie was set, including through `allowed_headers`.
 
 **Values are validated, and a refusal is reported.** A `value` carrying `;`, a comma, a quote, a backslash, CR or LF is refused, because a workflow interpolating user input into a cookie could otherwise inject further attributes or split the response. `path`, `domain` and `expires` refuse `;`, CR and LF for the same reason, and `secure`/`http_only` must be real booleans — coercing the string `"false"` to `true` would be worse than refusing it.
 
@@ -560,7 +560,7 @@ As everywhere on this path the failure is **soft**: the cookie is dropped and th
 
 This is *establishment*, not verification, which is why it is a `config` block rather than a fourth [`auth.mode`](#authentication). The two compose: `oauth2_login` mints a session, and `auth.mode = "jwt"` with `source: {"cookie": …}` guards every route the session then reaches.
 
-**The channel serves two routes.** Its `route_pattern` is the authorize leg — where you send a user to begin — and `callback_path` is where the identity provider sends the browser back. Both are gated for collisions at activation, like any other route.
+**The channel serves two routes.** Its `route_pattern` is the authorize leg, where you send a user to begin, and `callback_path` is where the identity provider sends the browser back. Both are gated for collisions at activation, like any other route.
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
@@ -648,7 +648,7 @@ This is *establishment*, not verification, which is why it is a `config` block r
 
 ### `run_workflow_on_authorize`
 
-Off by default, the channel answers the redirect itself and the workflow is never entered — which is what makes the CSRF binding and the nonce unskippable.
+Off by default, the channel answers the redirect itself and the workflow is never entered, which is what makes the CSRF binding and the nonce unskippable.
 
 Turn it on and the workflow runs first. It can refuse the sign-in by shaping its own `data._orion.response` (an unknown tenant, a maintenance window), or contribute to the redirect:
 
@@ -668,7 +668,7 @@ Orion still mints the state, the nonce and the PKCE challenge. The workflow cann
 
 The value is read from that query parameter on the authorize leg, checked against the allow-list **there**, sealed into the signed state, and handed back at `metadata.oauth.return_to`. Checking on the way in is what makes it safe to redirect to: a value that reaches the workflow has already passed. A value that has not is dropped silently. This is the one part of the flow a workflow cannot do for itself, because it never sees the authorize request.
 
-An entry admits a candidate when the two have the **same origin** — scheme, host and port all equal — and the candidate's path is the entry's path or lies beneath it at a `/` boundary:
+An entry admits a candidate when the two have the **same origin**: scheme, host and port all equal, and the candidate's path is the entry's path or lies beneath it at a `/` boundary:
 
 | Allow-list entry | Admits | Refuses |
 |---|---|---|
@@ -712,7 +712,7 @@ Single use is enforced by clearing the state cookie on the callback, not by a st
 }
 ```
 
-**Context.** The expression evaluates against exactly `{ "data": …, "metadata": … }`. `data` is the request payload as submitted — the guard runs before any workflow task, so `data.order_id` resolves here even though the workflow itself reads the payload only after `parse_json`. `metadata` has the same shape the workflow's data context carries (headers, query, path params, channel name; transport-dependent) — see the [Workflow Schema](./workflows.md). On Kafka, `metadata` carries the record coordinates and no headers.
+**Context.** The expression evaluates against exactly `{ "data": …, "metadata": … }`. `data` is the request payload as submitted — the guard runs before any workflow task, so `data.order_id` resolves here even though the workflow itself reads the payload only after `parse_json`. `metadata` has the same shape the workflow's data context carries (headers, query, path params, channel name; transport-dependent). See the [Workflow Schema](./workflows.md). On Kafka, `metadata` carries the record coordinates and no headers.
 
 Rules:
 
@@ -732,7 +732,7 @@ Rules:
 { "timeout_ms": 5000 }
 ```
 
-The value governs every ingress. Where the channel declares none, each ingress falls back to its own server-level default — and on two ingresses that server value is a **ceiling** the channel value is clamped to, never a mere default:
+The value governs every ingress. Where the channel declares none, each ingress falls back to its own server-level default, and on two ingresses that server value is a **ceiling** the channel value is clamped to, never a mere default:
 
 | Ingress | Channel declares none | Channel declares more than the transport allows |
 |---|---|---|
@@ -747,7 +747,7 @@ On those paths the deadline protects something shared. A Kafka dispatch blocks t
 
 </details>
 
-A `channel_call` task may set its own `timeout_ms`, which outranks the target channel's — see [Task Functions](./functions.md). The server-level settings live in the [Configuration Reference](./configuration.md).
+A `channel_call` task may set its own `timeout_ms`, which outranks the target channel's. See [Task Functions](./functions.md). The server-level settings live in the [Configuration Reference](./configuration.md).
 
 ## CORS & origins
 
@@ -797,7 +797,7 @@ Neither is authentication: `Origin` is client-supplied, and any non-browser call
 
 ## Related
 
-- [Data API](./data-api.md) — how requests resolve to channels, and what traces carry.
-- [Workflow Schema](./workflows.md) — the data context these guards feed, and workflow selection.
-- [Connector Types](./connectors.md) — the cache connectors named by `deduplication.connector` and `cache.connector`.
-- [Configuration Reference](./configuration.md) — every server-level setting named on this page.
+- [Data API](./data-api.md): how requests resolve to channels, and what traces carry.
+- [Workflow Schema](./workflows.md): the data context these guards feed, and workflow selection.
+- [Connector Types](./connectors.md): the cache connectors named by `deduplication.connector` and `cache.connector`.
+- [Configuration Reference](./configuration.md): every server-level setting named on this page.

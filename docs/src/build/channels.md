@@ -31,7 +31,7 @@ is what `orion-cli send` and the examples use.
 
 Set `channel_type: "async"` and the channel answers `202` with a trace id
 instead of the result. Any REST channel also serves its async form at
-`/{route_pattern}/async` — so the same endpoint can be called both ways without
+`/{route_pattern}/async`, so the same endpoint can be called both ways without
 a second channel.
 
 **Use sync for:** anything the caller waits on. **Use async for:** work that
@@ -143,7 +143,7 @@ up to N× this number in flight.
 { "config": { "timeout_ms": 5000 } }
 ```
 
-This is the promise you make the caller. Set connector timeouts below it — see
+This is the promise you make the caller. Set connector timeouts below it. See
 [Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md).
 
 ## Shape the response
@@ -168,10 +168,10 @@ none.
 
 ## Related
 
-- [Channel Configuration](../reference/channel-config.md) — every key, default,
+- [Channel Configuration](../reference/channel-config.md): every key, default,
   and which ingresses each guard applies to.
-- [Channels](../concepts/channels.md) — the concept, if this page assumed too
+- [Channels](../concepts/channels.md): the concept, if this page assumed too
   much.
-- [Data API](../reference/data-api.md) — how a request resolves to a channel.
-- [Secure an Instance](../operate/security.md) — the instance-level half of the
+- [Data API](../reference/data-api.md): how a request resolves to a channel.
+- [Secure an Instance](../operate/security.md): the instance-level half of the
   same job.

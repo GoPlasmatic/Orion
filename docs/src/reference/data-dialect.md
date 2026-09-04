@@ -2,15 +2,15 @@
 # Portable Data Dialect
 
 The **portable data dialect** lets a workflow express a database query or
-mutation once — in a backend-neutral, JSONLogic-shaped envelope — and run it
+mutation once — in a backend-neutral, JSONLogic-shaped envelope, and run it
 unchanged against **PostgreSQL, MySQL, SQLite, MongoDB, or Elasticsearch**.
 Switching backend is a connector change, not a rewrite.
 
 Two functions implement it:
 
-- [`data_query`](./functions.md#data_query) — reads: filter, project, sort,
+- [`data_query`](./functions.md#data_query): reads: filter, project, sort,
   paginate, and include related records.
-- [`data_write`](./functions.md#data_write) — writes: insert, update, delete,
+- [`data_write`](./functions.md#data_write): writes: insert, update, delete,
   and upsert.
 
 The raw functions (`db_read`/`db_write` for SQL; `mongo_read`/`mongo_write`/
@@ -45,7 +45,7 @@ array either way.
 
 A complete call does two more things. It binds request values through `params`,
 and it declares the entities it touches in `schema`. A call with no schema is
-refused — see [The schema registry](#the-schema-registry):
+refused. See [The schema registry](#the-schema-registry):
 
 ```json
 {
@@ -160,13 +160,13 @@ applying.
 
 ### Range, null and quantifier semantics
 
-These rules are **normative** — every renderer implements them, and the
+These rules are **normative**: every renderer implements them, and the
 cross-backend parity suite pins them:
 
 - **Chained ranges keep each bound's strictness.** An inclusive chain
   `{ "<=": [1, {"field": "x"}, 10] }` renders as an inclusive `BETWEEN` (or
   its backend equivalent). A strict chain (`<`) renders as per-bound
-  comparisons — never widened into `BETWEEN` — and a mixed chain keeps the
+  comparisons — never widened into `BETWEEN`, and a mixed chain keeps the
   strict side strict. The descending spellings
   `{ ">": [10, {"field": "x"}, 1] }` / `">="` denote the same ranges with the
   operands reversed.
@@ -241,10 +241,10 @@ One task per operation:
 - **`returning` sets are capped.** An `update`/`delete` returns one row per row
   *matched*, which the row cap on the way in says nothing about. A `returning`
   set longer than `query.max_limit` (default 1000) is rejected the same way a
-  `data_query` page is — and the statement runs inside a transaction, so a
+  `data_query` page is, and the statement runs inside a transaction, so a
   refused write leaves nothing behind.
 - **Connector operation gates.** A connector's config can disable operation
-  types entirely (`operations: { "delete": false }`) — see
+  types entirely (`operations: { "delete": false }`). See
   [Connector operation gates](#connector-operation-gates).
 
 ## Backend mapping
@@ -305,7 +305,7 @@ The dialect states the divergence instead of half-normalizing it.
   pipeline sees the write — parity with SQL/Mongo visibility, at a throughput
   cost.
 - **`_bulk` is non-transactional.** Each action is applied independently, so
-  any subset can land — see [Bulk writes](#bulk-writes). Version conflicts on
+  any subset can land. See [Bulk writes](#bulk-writes). Version conflicts on
   `_update_by_query`/`_delete_by_query` surface as errors (`conflicts=abort`).
 
 ## Result shapes
@@ -318,7 +318,7 @@ Written to the task's `output` path:
 | SQL write | `{ "status": "ok", "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
 | MongoDB / ES write | `"status"` plus doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
 
-Every write result carries a **`status`** — `"ok"` or `"partial"` — so one
+Every write result carries a **`status`**: `"ok"` or `"partial"`, so one
 check works across all backends.
 
 ## Bulk writes
@@ -388,7 +388,7 @@ A relation's `to` target does not itself need declaring for the relation to
 resolve — like its join keys, it is structure the schema's author wrote, not a
 caller-supplied name. Naming one of its **columns** is caller input again:
 `include: { "orders": {} }` works against an undeclared `orders`, while
-`include: { "orders": { "fields": ["id"] } }` — or any `some`/`all`/`none`
+`include: { "orders": { "fields": ["id"] } }`, or any `some`/`all`/`none`
 predicate over it — needs `orders` declared.
 
 ```json
@@ -410,14 +410,14 @@ predicate over it — needs `orders` declared.
 }
 ```
 
-- **Renames** — logical entity/column names map to physical tables/columns
-  (`id` → `user_id`, or `id` → `_id` on both document stores — see the
+- **Renames**: logical entity/column names map to physical tables/columns
+  (`id` → `user_id`, or `id` → `_id` on both document stores. See the
   parity table).
-- **Types** — declared hints (`int`, `text`, …), validated at parse time but
+- **Types**: declared hints (`int`, `text`, …), validated at parse time but
   not consumed: values keep their natural JSON types end to end, and no
   backend coerces on the hint. The key is reserved for value coercion in a
   later version; an unknown type name is a hard error.
-- **Allowlist** — under `"unmapped": "reject"` (the default), only declared
+- **Allowlist**: under `"unmapped": "reject"` (the default), only declared
   entities and columns are usable. `queryable: false` hides a column from
   reads; `writable: false` protects it from writes (generated/identity
   columns). A read that names no `fields` returns exactly the entity's
@@ -425,7 +425,7 @@ predicate over it — needs `orders` declared.
   *no* columns has no column allowlist and still reads every column; one whose
   declared columns are all non-queryable is refused rather than widened back
   to `SELECT *`.
-- **Relations** — declare `has_one` / `has_many` / `many_to_many` (the latter
+- **Relations**: declare `has_one` / `has_many` / `many_to_many` (the latter
   via `through`) so `some`/`all`/`none` predicates and `include` work.
 
 ## Relations and includes
@@ -497,7 +497,7 @@ statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH`
 carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is
 refused too. Without that check `db_read` was a second write path — `fetch`
 executes whatever statement it is handed, so `DELETE … RETURNING` ran under the
-`read` gate — and the bound below could not hold. `EXPLAIN` is not admitted
+`read` gate, and the bound below could not hold. `EXPLAIN` is not admitted
 either: `EXPLAIN ANALYZE DELETE …` executes the delete.
 
 The gates above are the `db` / `es` set — the set the portable dialect runs
@@ -524,7 +524,7 @@ guard could match, and are bounded only by `operations`. So:
 - **Reads are not**, because `read` gates `data_query`, `db_read`,
   `mongo_read` and `mongo_aggregate` together: a connector that permits the
   dialect permits raw SQL and raw `find` too. Bound those at the database
-  credential — a role that can only see the allowlisted tables — or keep raw
+  credential — a role that can only see the allowlisted tables, or keep raw
   reads on a separate connector.
 - On MongoDB the task's `database` field is not checked against the guard
   either, so an allowlisted collection name can be read from any database the
@@ -564,9 +564,9 @@ The `[query]` and `[write]` sections — `default_limit`, `max_limit`,
 
 ## Related
 
-- [Function Reference](./functions.md#data_query) — the `data_query` and
+- [Function Reference](./functions.md#data_query): the `data_query` and
   `data_write` task fields that carry these envelopes.
-- [Connectors](./connectors.md) — `db`/`es` connector configuration, including
+- [Connectors](./connectors.md): `db`/`es` connector configuration, including
   the operation gates each type carries.
-- [Configuration Reference](./configuration.md) — the `[query]`/`[write]`
+- [Configuration Reference](./configuration.md): the `[query]`/`[write]`
   server bounds and their environment overrides.

@@ -17,7 +17,7 @@ change before it holds anything you care about.
 > [!WARNING]
 > **The default SQLite database lives inside the container.** Without a volume,
 > every workflow, channel, and connector you create is lost when the container
-> is replaced — which includes every image upgrade.
+> is replaced, which includes every image upgrade.
 
 ```bash
 docker run -p 8080:8080 \
@@ -63,7 +63,7 @@ environment:
 ```
 
 A name that is not a real setting is refused at startup with the nearest match,
-rather than silently ignored — so a typo costs you a boot, not a week. Mount a
+rather than silently ignored, so a typo costs you a boot, not a week. Mount a
 TOML file and pass `-c` if you prefer files; the environment still overrides it.
 
 ## Give the container time to drain
@@ -128,14 +128,14 @@ drain settings on *your* hardware, not just on the reference one.
 
 ## Upgrade a compose deployment
 
-1. **Back up the database** — a SQLite volume snapshot, or your database's own
+1. **Back up the database**: a SQLite volume snapshot, or your database's own
    tooling. See [Back Up & Restore](./backup-restore.md).
 2. **Read the version's upgrade guide** and run `orion-server preflight` with the
    new image against the old database. See [Upgrades](./upgrades.md).
 3. **Bump the pinned tag** and, in a cluster, let the `migrate` service apply
    migrations before the replicas restart.
 4. **Restart one node at a time** so the load balancer always has a node to send
-   to. With a single node, there is a gap — which is the argument for the second
+   to. With a single node, there is a gap, which is the argument for the second
    one.
 
 ## Running without a container
@@ -145,18 +145,18 @@ from a release or Homebrew, put the config somewhere readable, and run
 `orion-server -c /etc/orion/config.toml` under whatever supervises processes on
 that host.
 
-We ship container images and a Helm chart, not a systemd unit — so if you run it
+We ship container images and a Helm chart, not a systemd unit, so if you run it
 under systemd, you write the unit file. Give it the same two properties this
 page has been about: a durable path for the database, and a stop timeout longer
 than the drain budget.
 
 ## Related
 
-- [Cluster Mode & High Availability](./cluster.md) — what the HA compose file is
+- [Cluster Mode & High Availability](./cluster.md): what the HA compose file is
   configuring, and why.
-- [Deploy on Kubernetes (Helm)](./kubernetes.md) — the same shape, on
+- [Deploy on Kubernetes (Helm)](./kubernetes.md): the same shape, on
   Kubernetes.
-- [Production Checklist](./production-checklist.md) — before this becomes
+- [Production Checklist](./production-checklist.md): before this becomes
   production.
-- [Configuration Reference](../reference/configuration.md) — every environment
+- [Configuration Reference](../reference/configuration.md): every environment
   variable named here.

@@ -40,7 +40,7 @@ Responses wrap the resource in a `data` envelope:
 { "data": { "workflow_id": "high-value-order", "version": 1, "status": "draft", "...": "..." } }
 ```
 
-Validation failures return `400` with a field-level error envelope — see
+Validation failures return `400` with a field-level error envelope. See
 [Errors](./errors.md) for the format.
 
 ## Tasks
@@ -141,7 +141,7 @@ It is about **position, not outcome**:
 
 ### Halting on failure
 
-`halt_on: "failure"` ends the workflow when the task **failed** — a recorded
+`halt_on: "failure"` ends the workflow when the task **failed**: a recorded
 status of `400` or above, which covers a `validation` rule that did not pass,
 any task returning that range, and a handler error. A success falls through.
 
@@ -160,7 +160,7 @@ by *or*, so `terminal` stays strictly stronger and no combination contradicts.
 records status `400`, and the engine's rule is that `4xx` warns and carries on;
 `continue_on_error` governs `5xx` and handler errors only. So a `validation`
 followed by unguarded tasks records an error and proceeds exactly as if it had
-passed — which is how a check that reads correct ships doing nothing.
+passed, which is how a check that reads correct ships doing nothing.
 
 Collecting every rule failure and carrying on is a legitimate shape, and the
 default keeps it. When you meant a gate, say so:
@@ -221,7 +221,7 @@ Every connector function writes its result to a dotted path named `output`; a
 `map` task uses its mapping `path` instead. Orion creates the path inside the
 context if it does not exist. `http_call` and `channel_call` also accept the
 pre-1.0 spelling `response_path`. Supplying **both** in one input is a
-duplicate-field error, not a precedence rule — see
+duplicate-field error, not a precedence rule. See
 [Support & Compatibility](./support.md#accepted-alternate-spellings).
 
 ### Request metadata
@@ -281,7 +281,7 @@ No other key or *prefix* in the context is reserved, but three plain metadata
 keys are still platform-owned and force-stamped at every ingress, so a caller
 cannot supply them: `channel`, `cookies` and `vars` (see [Request
 metadata](#request-metadata)). `metadata.progress` is engine-owned too, but it
-belongs to dataflow-rs rather than Orion — see below.
+belongs to dataflow-rs rather than Orion. See below.
 
 ### Branching on a failure
 
@@ -347,7 +347,7 @@ refuses stays `FUNCTION_ERROR`: a syntax error, a missing column, a deadlock.
 
 The driver's own message is not exposed anywhere on this path. It names tables,
 columns, index names and often the value that conflicted, so it stays in the
-operator-only detail kept on the trace — which means a workflow can tell *what
+operator-only detail kept on the trace, which means a workflow can tell *what
 kind* of rule was violated but not *which* rule. Where an endpoint has to
 distinguish two unique indexes on one table, query for the expected case
 explicitly before the write and leave the constraint as the backstop for the
@@ -369,7 +369,7 @@ Three properties to rely on:
 **`metadata.progress`** is the older, weaker signal, written by dataflow-rs
 after every task that *ran* — `{workflow_id, task_id, status_code}`, with
 `status_code` `500` on failure. It is a single slot overwritten by every
-subsequent task and carries no reason, so it distinguishes "failed" from
+later task and carries no reason, so it distinguishes "failed" from
 "skipped by condition" and nothing more. Prefer `_orion_errors`.
 
 ## Conditions
@@ -377,11 +377,11 @@ subsequent task and carries no reason, so it distinguishes "failed" from
 Conditions are [JSONLogic](https://jsonlogic.com) expressions, compiled once
 at engine build time. They appear at two levels:
 
-- **Workflow-level `condition`** — decides whether the whole workflow
+- **Workflow-level `condition`**: decides whether the whole workflow
   *matches* a request. Defaults to `true` (always matches). If multiple active
   workflows are bound to a channel, the first match wins (see
   [Matching](#matching)).
-- **Task-level `condition`** — decides whether *that task* runs within a
+- **Task-level `condition`**: decides whether *that task* runs within a
   matched workflow. Use it for branching inside a pipeline.
 
 The complete operator set — core JSONLogic plus the date, string, array, math,
@@ -453,7 +453,7 @@ Stopping early is a [`filter`](./functions.md#filter) task with `on_reject:
 > **Do not put the break in the workflow `condition`.** It looks like the
 > natural home for it and it does not work: `data` [starts empty](#the-data-context),
 > so `{"<": [{"var": "temp_data.i"}, {"var": "data.req.count"}]}` as a workflow
-> condition is false on sweep 0 — before any `parse_json` has run — and the
+> condition is false on sweep 0 — before any `parse_json` has run, and the
 > loop never starts at all. Inside the body the parse has already happened,
 > which is why the break belongs there.
 >
@@ -481,13 +481,13 @@ groups rather than one flat list.
 
 By default the pipeline **halts** on the first task that errors, and the error
 is returned to the caller. Set `continue_on_error: true` on the workflow to
-keep running subsequent tasks and collect errors instead, or on a single task
+keep running later tasks and collect errors instead, or on a single task
 to make just that step non-fatal. A run that continues records each failure's
 code at [`metadata._orion_errors`](#branching-on-a-failure), so a later task
 can branch on *why* the step failed rather than only on whether it did.
 
 **"Errors" here means a handler failure or a status of `500` or above.** A task
-that records a `4xx` — which is what a failing `validation` rule does — logs a
+that records a `4xx`, which is what a failing `validation` rule does — logs a
 warning and the pipeline carries on, whatever `continue_on_error` says. That is
 deliberate: a `4xx` is the task reporting on its input, not the engine failing
 to run it. It is also the one thing about this field worth knowing before you
@@ -523,13 +523,13 @@ key `(workflow_id, version)`. Status moves in one direction:
 }
 ```
 
-- **draft** — editable; not served. Only **one draft per `workflow_id`** may
+- **draft**: editable; not served. Only **one draft per `workflow_id`** may
   exist at a time. Creating a workflow starts it as a draft.
-- **active** — served; **immutable**. To change an active workflow, create a
+- **active**: served; **immutable**. To change an active workflow, create a
   new draft version, edit it, and activate it.
-- **archived** — retired, and kept. An archived version is a rollback *source*:
+- **archived**: retired, and kept. An archived version is a rollback *source*:
   its content is what you copy into a new draft and activate. Nothing
-  reactivates an archived version in place — see
+  reactivates an archived version in place. See
   [Version & Roll Out Changes › Roll back](../build/versioning.md#roll-back).
 
 | Action | Endpoint |
@@ -560,7 +560,7 @@ remainder goes to the previously active version. Traffic is bucketed by a
 stable hash of the request, so a given caller routes consistently. Promote by
 raising the percentage to `100`, which archives the older active version. Roll
 back instantly by re-activating a previous version. Both moves go through the
-status and rollout endpoints — see
+status and rollout endpoints. See
 [Status changes](./admin-api.md#status-changes).
 
 ## Complete example
@@ -609,11 +609,11 @@ status and rollout endpoints — see
 
 ## Related
 
-- [Function Reference](./functions.md) — the `input` schema for every built-in
+- [Function Reference](./functions.md): the `input` schema for every built-in
   function.
-- [Expression Reference](./expressions.md) — every operator conditions and
+- [Expression Reference](./expressions.md): every operator conditions and
   mappings can use, with the silent-failure edges.
-- [Channel Configuration](./channel-config.md) — how a channel binds to a
+- [Channel Configuration](./channel-config.md): how a channel binds to a
   workflow and shapes its response.
-- [Admin API](./admin-api.md#lifecycle) — the endpoints that create, version,
+- [Admin API](./admin-api.md#lifecycle): the endpoints that create, version,
   and activate workflows.

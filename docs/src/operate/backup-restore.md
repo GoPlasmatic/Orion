@@ -116,10 +116,10 @@ else".
 
 ## Related
 
-- [Cluster Mode & High Availability](./cluster.md) — why the backup endpoint is
+- [Cluster Mode & High Availability](./cluster.md): why the backup endpoint is
   refused there.
-- [Promote Between Environments](./promotion.md) — package export as the
+- [Promote Between Environments](./promotion.md): package export as the
   estate-level backup.
-- [Upgrades](./upgrades.md) — where "back up first" is step one.
-- [Configuration Reference](../reference/configuration.md#storage) — the
+- [Upgrades](./upgrades.md): where "back up first" is step one.
+- [Configuration Reference](../reference/configuration.md#storage): the
   `[storage]` backup keys.

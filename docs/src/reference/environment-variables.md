@@ -11,9 +11,9 @@ Orion reads the process environment five ways, and which one applies is decided 
 | Var reference | `var://name` | a stored connector or channel config | at every load and reload |
 | Declared value | `[vars]` / `[secrets]` | the config file, read by name from a workflow | once, at startup |
 
-The first belongs to [Configuration Reference](./configuration.md): every setting has an override, and that page names them all. The rest are this page's subject. They are not interchangeable — `${VAR}` rewrites *text* before it is parsed, `env://` rewrites a *parsed value* after — which is why both reach a connector and only one reaches a config file.
+The first belongs to [Configuration Reference](./configuration.md): every setting has an override, and that page names them all. The rest are this page's subject. They are not interchangeable — `${VAR}` rewrites *text* before it is parsed, `env://` rewrites a *parsed value* after, which is why both reach a connector and only one reaches a config file.
 
-The last is different in kind: it does not rewrite anything. The operator declares a name in the config file, and a workflow reads that name. Which is why it is the one to reach for when a *workflow* needs a value that varies by environment — see [Values a workflow reads by name](#values-a-workflow-reads-by-name).
+The last is different in kind: it does not rewrite anything. The operator declares a name in the config file, and a workflow reads that name. Which is why it is the one to reach for when a *workflow* needs a value that varies by environment. See [Values a workflow reads by name](#values-a-workflow-reads-by-name).
 
 `var://name` is the same declaration reaching a *stored config* instead of a message. `[vars]` is one section listing everything that differs per instance; `var://` is how a connector or a channel — neither of which the config file can see — reads one. See [Parameterising a stored config](#parameterising-a-stored-config).
 
@@ -58,7 +58,7 @@ The three workflow entries are exceptions with a reason: a signing key has nowhe
 
 ## Parameterising a stored config
 
-A connector and a channel live in the **database**, not in the config file — so `${VAR}` never reaches them, and promoting a package from staging to production would otherwise carry staging's TTLs, rate limits and hostnames with it. `var://name` is how one stored config reads a value the instance declares:
+A connector and a channel live in the **database**, not in the config file, so `${VAR}` never reaches them, and promoting a package from staging to production would otherwise carry staging's TTLs, rate limits and hostnames with it. `var://name` is how one stored config reads a value the instance declares:
 
 ```toml
 [vars]
@@ -76,11 +76,11 @@ idp_issuer = "https://login.${ENVIRONMENT}.example.com"
 
 Three things follow from `var://` resolving *before* the config is typed:
 
-- **A var keeps its type.** `"ttl_secs": "var://cache_ttl"` becomes the number `300`, not the string `"300"` — which matters because the fields worth varying per instance are mostly numbers, and a string where a number belongs simply fails to parse. This is the one respect in which `var://` differs from `env://`, whose values are always strings.
+- **A var keeps its type.** `"ttl_secs": "var://cache_ttl"` becomes the number `300`, not the string `"300"`, which matters because the fields worth varying per instance are mostly numbers, and a string where a number belongs simply fails to parse. This is the one respect in which `var://` differs from `env://`, whose values are always strings.
 - **A reference is the whole string.** `"var://cache_ttl"` resolves; `"ttl is var://cache_ttl"` is that text.
 - **An undeclared name refuses the row.** The connector or channel does not load, and the error names the reference and lists what `[vars]` does declare. Passing `var://cache_ttl` through as its own text is how a TTL silently stops being a number.
 
-**A channel's `*_logic` fields are skipped** — `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic`. Those are JSONLogic evaluated per *message*, so a literal `"var://x"` inside one is a string the author wrote to compare against, not a value to substitute. Read a var there the way a workflow does, with `{"var": "metadata.vars.x"}`.
+**A channel's `*_logic` fields are skipped**: `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic`. Those are JSONLogic evaluated per *message*, so a literal `"var://x"` inside one is a string the author wrote to compare against, not a value to substitute. Read a var there the way a workflow does, with `{"var": "metadata.vars.x"}`.
 
 > [!NOTE]
 > `var://` is for values that are **not** secret — a TTL, a limit, a hostname, a topic prefix. Vars are stamped into every message's metadata and appear in traces, which is the point. A credential belongs in `[secrets]` or on a connector; see [Which section a value belongs in](#values-a-workflow-reads-by-name).
@@ -124,7 +124,7 @@ The two are the same declaration model with opposite trace contracts, and that i
 Each section refuses the other's value shape, because either mistake is silent. A literal in `[secrets]` is a key in the deployment's file tree; a reference in `[vars]` reaches the workflow as the characters `env://PARTNER_HMAC_KEY`, because nothing resolves one on the way into metadata.
 
 > [!NOTE]
-> `{"secret": …}` resolves in a **channel guard** too — `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic` — because secrets are start-time config, resolved before any channel loads, and the guard engine is built over the same store the workflow engines get. Channel authentication additionally takes `env://` in its four key-bearing fields.
+> `{"secret": …}` resolves in a **channel guard** too — `validation_logic`, `authorization_logic`, and the rate-limit and cache `key_logic`, because secrets are start-time config, resolved before any channel loads, and the guard engine is built over the same store the workflow engines get. Channel authentication additionally takes `env://` in its four key-bearing fields.
 >
 > A stored *config value* is the one place a secret does not reach: `var://` resolves there and `{"secret": …}` does not. That is deliberate — a config value is not evaluated, so there is nothing to hold the result, and a credential a backend needs belongs on the connector that dials it.
 
@@ -140,7 +140,7 @@ Offline, there is no config file to read either section from. `orion-server dry-
 { "config": { "auth": { "mode": "hmac", "secret": "env://STRIPE_WEBHOOK_SECRET" } } }
 ```
 
-The stored row holds a variable name, so a database dump is not a leak and one document deploys everywhere. A **literal** credential is worse than untidy: API reads mask it as `"******"`, and an import carrying `"******"` is refused — so a connector authored with a literal cannot be promoted between instances at all. The table of what survives an export is in [Promote Between Environments](../operate/promotion.md#secrets-survive-the-trip--if-authored-as-references).
+The stored row holds a variable name, so a database dump is not a leak and one document deploys everywhere. A **literal** credential is worse than untidy: API reads mask it as `"******"`, and an import carrying `"******"` is refused, so a connector authored with a literal cannot be promoted between instances at all. The table of what survives an export is in [Promote Between Environments](../operate/promotion.md#secrets-survive-the-trip--if-authored-as-references).
 
 For the three workflow fields there is a second reason. Connector configs can be encrypted at rest with `storage.connector_encryption_key`; **workflow documents cannot**. A literal key in a `crypto` or `jwt_sign` task sits in the `workflows` table in clear, and every version of that workflow keeps it.
 
@@ -163,7 +163,7 @@ A `vault://` reference is re-read on every reload, so a renewed token applies wi
 
 ## Naming the variables
 
-Name them anything, with one restriction: Orion refuses to start on an `ORION_*` variable that follows the override grammar without being one of its settings, so a typo costs a boot rather than a week of a silently ignored setting. A secret that must live in that namespace needs the reserved prefix — `env://ORION_SECRET_STRIPE_API_KEY` — which Orion never reads as configuration. The exemptions, and why the scan looks at the `__` rather than the `ORION_`, are in [Configuration Reference › Misspellings are startup errors](./configuration.md#misspellings-are-startup-errors-not-silent-no-ops).
+Name them anything, with one restriction: Orion refuses to start on an `ORION_*` variable that follows the override grammar without being one of its settings, so a typo costs a boot rather than a week of a silently ignored setting. A secret that must live in that namespace needs the reserved prefix — `env://ORION_SECRET_STRIPE_API_KEY`, which Orion never reads as configuration. The exemptions, and why the scan looks at the `__` rather than the `ORION_`, are in [Configuration Reference › Misspellings are startup errors](./configuration.md#misspellings-are-startup-errors-not-silent-no-ops).
 
 ## What an unset variable does
 
@@ -179,13 +179,13 @@ Name them anything, with one restriction: Orion refuses to start on an `ORION_*`
 | A workflow naming an undeclared `{"secret": …}` | The engine refuses the workflow, and the channel is **quarantined** rather than served with the key resolving to `null`. |
 | A reserved scheme | Refused wherever it is resolved, so an unresolvable reference never reaches the remote system as its own text. |
 
-Creating or updating a connector does **not** resolve its references — `POST /connectors` checks the config's shape, not this host's environment — so a connector authored on a laptop is accepted there and reveals the missing variable at load. `POST /connectors/validate` reports an unresolvable reference as a *warning* for the same reason: a CI runner holds no production secrets and must still be able to check a bundle. Neither `/health` line is a 503; both are the degraded-but-serving state described in [Troubleshooting](../operate/troubleshooting.md#health-says-degraded-but-returns-http-200).
+Creating or updating a connector does **not** resolve its references — `POST /connectors` checks the config's shape, not this host's environment, so a connector authored on a laptop is accepted there and reveals the missing variable at load. `POST /connectors/validate` reports an unresolvable reference as a *warning* for the same reason: a CI runner holds no production secrets and must still be able to check a bundle. Neither `/health` line is a 503; both are the degraded-but-serving state described in [Troubleshooting](../operate/troubleshooting.md#health-says-degraded-but-returns-http-200).
 
 ## Inventory what a set needs
 
-`orion-server lint ./definitions` ends with one `note:` per secret the set references, naming each one and the files that mention it: `[env.reference]` for each variable an `env://` reference needs in the environment, and `[secrets.reference]` for each name a `{"secret": …}` needs in the serving instance's `[secrets]` section. Both are exit-neutral — neither the exit code nor `--deny-warnings` counts a note — because the machine running `lint` is not the machine that will serve the set, so its environment and its config say nothing about whether the value will be present where it matters.
+`orion-server lint ./definitions` ends with one `note:` per secret the set references, naming each one and the files that mention it: `[env.reference]` for each variable an `env://` reference needs in the environment, and `[secrets.reference]` for each name a `{"secret": …}` needs in the serving instance's `[secrets]` section. Both are exit-neutral — neither the exit code nor `--deny-warnings` counts a note, because the machine running `lint` is not the machine that will serve the set, so its environment and its config say nothing about whether the value will be present where it matters.
 
-The scan is textual: it walks every string in every definition, so it reports what a set *mentions*. A reference in a workflow field that resolves nothing no longer hides among them — `lint` fails the set with `[env.unresolved]` before the inventory is worth reading — but a connector or channel field is still inventoried without any claim that the variable will be set where it matters.
+The scan is textual: it walks every string in every definition, so it reports what a set *mentions*. A reference in a workflow field that resolves nothing no longer hides among them — `lint` fails the set with `[env.unresolved]` before the inventory is worth reading, but a connector or channel field is still inventoried without any claim that the variable will be set where it matters.
 
 ## Supplying them
 

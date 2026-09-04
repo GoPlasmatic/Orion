@@ -41,7 +41,7 @@ response shapes. Branch on `error.code`, not the human-readable message.
 ## Authentication
 
 Admin API endpoints require an API key when `admin_auth.enabled` is true.
-The server reads the key from **exactly one header** — the one named by
+The server reads the key from **exactly one header**: the one named by
 `admin_auth.header`, which defaults to `Authorization` (with or without a
 `Bearer ` prefix):
 
@@ -51,7 +51,7 @@ curl -H "Authorization: Bearer your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
-To use a custom header instead, set `admin_auth.header` — and note this
+To use a custom header instead, set `admin_auth.header`, and note this
 *replaces* the default, it does not add a second accepted header. With
 `header = "X-API-Key"`, an `Authorization: Bearer` credential is no longer
 read:
@@ -91,7 +91,7 @@ Two details are easy to get wrong:
 
 - **The client is identified by the `rate_limit.trusted_proxies` policy**, not
   by a raw `X-Forwarded-For`, so a forged header cannot mint a fresh budget per
-  request. Behind an unlisted proxy every caller shares one budget — see the
+  request. Behind an unlisted proxy every caller shares one budget. See the
   `client_ip` note under [Audit Logs](#audit-logs).
 - **`GET /traces/{id}` shares the same budget.** It authenticates itself with a
   per-submission trace token rather than through the middleware, so a wrong
@@ -100,7 +100,7 @@ Two details are easy to get wrong:
 
 A read-only key refused on a mutation is a `403` and does **not** count: the
 credential is valid, only its authority is not. Each outcome increments
-`orion_admin_auth_failures_total` under its own `reason` — see the
+`orion_admin_auth_failures_total` under its own `reason`. See the
 [Metrics Reference](./metrics.md).
 
 ## Response envelopes
@@ -140,7 +140,7 @@ small enough that sorting client-side is cheaper than supporting it server-side.
 
 `limit` and `offset` are therefore the only two you can rely on everywhere.
 
-Errors follow one structure across both planes — see
+Errors follow one structure across both planes. See
 [Errors & Response Envelopes](./errors.md#the-error-envelope).
 
 ## Lifecycle
@@ -357,7 +357,7 @@ second item would silently rewrite what the first just staged.
 ### Grouping a multi-request operation (`X-Orion-Change-Context`)
 
 A promotion is many API calls. Send the same `X-Orion-Change-Context` header
-on each — e.g. `package=payments@1.4.0` — and every audit row the operation
+on each — e.g. `package=payments@1.4.0`, and every audit row the operation
 produces carries it under `details.change_context`, so the trail can be
 filtered back into the operation that caused it. Free-form, truncated at 256
 bytes. Imports additionally write one audit row per entity written, alongside
@@ -398,7 +398,7 @@ error, so a CI runner holding no production secrets can still check a bundle.
 | GET | `/api/v1/admin/audit-logs` | List audit log entries, newest first. Filters (AND-combined, exact match): `?action=`, `?resource_type=`, `?resource_id=`, `?principal=`; time range: `?start_time=` (inclusive) and `?end_time=` (exclusive), RFC 3339; paging: `?offset=`, `?limit=` (clamped to 1–1000, default 50). An unknown parameter returns `400` |
 
 **What a row records.** Every admin mutation writes one, including
-`POST /workflows/{id}/test` — which runs the workflow's tasks against live
+`POST /workflows/{id}/test`, which runs the workflow's tasks against live
 connectors and so is a side-effecting operation, not a dry run.
 
 - `principal` — the actor. `key-<16 hex>` for an authenticated caller, or
@@ -417,8 +417,8 @@ connectors and so is a side-effecting operation, not a dry run.
   (256 bytes for `user_agent`, 200 for a supplied `x-request-id`). Fields that
   are unavailable are omitted rather than recorded empty.
 
-  `client_ip` follows the `rate_limit.trusted_proxies` policy — which applies
-  whether or not `rate_limit.enabled` is set — so a forged `X-Forwarded-For`
+  `client_ip` follows the `rate_limit.trusted_proxies` policy, which applies
+  whether or not `rate_limit.enabled` is set, so a forged `X-Forwarded-For`
   cannot dictate it. The flip side is that with the **default empty list**,
   forwarded headers are ignored entirely and the recorded address is the
   direct peer: behind an ingress or load balancer that is the proxy's address
@@ -438,11 +438,11 @@ automatically with backoff (see
 [Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md)). Two
 different failures put it there, and the queue does not distinguish them:
 
-- **The run failed** — a task errored, or the workflow exceeded the channel's
+- **The run failed**: a task errored, or the workflow exceeded the channel's
   timeout. The trace is settled `failed` and the whole submission is queued for
   re-execution, so a downstream outage that has since recovered drains by
   itself.
-- **The run never started** — the trace's pre-run status write failed, so the
+- **The run never started**: the trace's pre-run status write failed, so the
   message is queued rather than dropped and re-runs once the database recovers.
 
 A *result* write that fails after a successful run is the one failure that does
@@ -512,11 +512,11 @@ Every error code, the shared error envelope, field-pathed validation
 
 ## Related
 
-- [Errors & Response Envelopes](./errors.md) — every code these endpoints
+- [Errors & Response Envelopes](./errors.md): every code these endpoints
   return, and the envelope they return it in.
-- [Promote Between Environments](../operate/promotion.md) — the operator's
+- [Promote Between Environments](../operate/promotion.md): the operator's
   guide to the export and import endpoints above.
-- [OpenAPI Specification](./openapi.md) — the generated contract, and where to
+- [OpenAPI Specification](./openapi.md): the generated contract, and where to
   fetch it.
-- [The Entity Lifecycle](../concepts/lifecycle.md) — the rules the status
+- [The Entity Lifecycle](../concepts/lifecycle.md): the rules the status
   endpoints enforce.

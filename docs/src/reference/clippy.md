@@ -48,7 +48,7 @@ item.
 | `style.terminal_on_last_step` | warn | workflow | terminal: true on the last top-level step is a no-op |
 
 `scope: set` rules read the whole set — the other workflows, the channels,
-the shared `fragments` — and run only in directory mode. The two rules
+the shared `fragments`, and run only in directory mode. The two rules
 that need the serving instance's config (`-c`) are skipped with a note
 when none is given.
 
@@ -165,7 +165,7 @@ quarantined at load. Skipped, with a note, without `-c`.
 A `secure` or `http_only` that is a literal non-boolean, or a `max_age` that is
 a literal non-integer, in a mapping to `data._orion.response.cookies`. The
 response builder refuses the value — coercing the string `"false"` to `true`
-would be worse — and drops the cookie, while the request still answers with its
+would be worse, and drops the cookie, while the request still answers with its
 declared status. A dropped session cookie therefore presents to a browser
 exactly like the browser having refused it. Silent when the value is an
 expression, which can be either type per request; those are reported at runtime

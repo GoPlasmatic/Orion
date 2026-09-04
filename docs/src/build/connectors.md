@@ -62,7 +62,7 @@ makes the call a validation error regardless of what any workflow asks:
 ```
 
 **Both `delete` and `raw_write` must be off to make a SQL connector
-delete-proof** — raw SQL cannot be classified per operation, so `db_write` is
+delete-proof**: raw SQL cannot be classified per operation, so `db_write` is
 gated as a whole.
 
 An HTTP connector gates by method instead, as an allow-list. Empty means every
@@ -95,7 +95,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/connectors/orders-db/test
 ```
 
 For a `db` or `cache` connector this opens a real connection. For `http` it
-issues a **real GET with real credentials** — which is the point: a wrong bearer
+issues a **real GET with real credentials**, which is the point: a wrong bearer
 token is invisible until traffic hits it. A `401` or `403` is reported as *not*
 reachable.
 
@@ -118,7 +118,7 @@ configured database and, when enabled, Kafka.
 ```
 
 Two things are doing real work there. `params` is the only door request data
-comes through, and every resolved value becomes a bound parameter — so the
+comes through, and every resolved value becomes a bound parameter, so the
 dialect is injection-safe by construction. `schema` declares what the task may
 touch; undeclared entities and columns are rejected, so a task without one
 reaches nothing.
@@ -133,7 +133,7 @@ reaches nothing.
 | **Bounded by** | The task's `schema`, plus connector gates | Connector gates and the database user |
 
 **Use the portable dialect by default.** Reach for raw SQL only when the dialect
-cannot express the query — a window function, a recursive CTE — and know that
+cannot express the query — a window function, a recursive CTE, and know that
 you have given up the schema bound when you do.
 
 ## Keep it healthy
@@ -146,10 +146,10 @@ off by default. Inspect and reset them at
 
 ## Related
 
-- [Connector Types](../reference/connectors.md) — every field of every type.
-- [Portable Data Dialect](../reference/data-dialect.md) — the query and write
+- [Connector Types](../reference/connectors.md): every field of every type.
+- [Portable Data Dialect](../reference/data-dialect.md): the query and write
   envelope in full.
-- [Your First Connector](../getting-started/first-connector.md) — the same job
+- [Your First Connector](../getting-started/first-connector.md): the same job
   as a walkthrough against PostgreSQL.
 - [Secure an Instance](../operate/security.md#keep-credentials-out-of-the-database)
   — secrets, masking, and encryption at rest.

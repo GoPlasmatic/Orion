@@ -70,6 +70,6 @@ Notes](./design-notes.md).
 
 ## Related
 
-- [Reference Index](./index.md) — choose the contract by task.
-- [Support & Compatibility](./support.md) — release and upgrade guarantees.
-- [OpenAPI Specification](./openapi.md) — machine-readable API contract.
+- [Reference Index](./index.md): choose the contract by task.
+- [Support & Compatibility](./support.md): release and upgrade guarantees.
+- [OpenAPI Specification](./openapi.md): machine-readable API contract.

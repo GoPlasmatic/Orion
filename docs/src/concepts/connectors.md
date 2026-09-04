@@ -43,7 +43,7 @@ credential, and one circuit breaker. Change the endpoint and both follow.
 | `storage` | S3-compatible object storage | `storage_presign`, `storage_head` |
 
 One `db` type covers both SQL and MongoDB: the connection-string scheme selects
-the backend. Connectors are **unversioned** — unlike channels and workflows, an
+the backend. Connectors are **unversioned**: unlike channels and workflows, an
 update replaces the stored config and the registry reloads immediately. There is
 no draft step and no activation.
 
@@ -62,7 +62,7 @@ this way:
 - **The database never stores the credential**, so a database dump is not a
   credential leak.
 - **The same JSON works in every environment.** Dev, QA, and production differ
-  only in what the variable holds — which is what makes a connector
+  only in what the variable holds, which is what makes a connector
   [promotable](./packages.md).
 - **A connector holding a literal secret exports as `"******"` and is refused on
   import.** Masked values cannot round-trip, by design.
@@ -103,11 +103,11 @@ trip a shared connector for every other channel using it.
 
 ## Next steps
 
-- [Your First Connector](../getting-started/first-connector.md) — configure one
+- [Your First Connector](../getting-started/first-connector.md): configure one
   against PostgreSQL and use it from a workflow.
-- [Connector Types](../reference/connectors.md) — every field of every type,
+- [Connector Types](../reference/connectors.md): every field of every type,
   with defaults, gates, retries, and masking rules.
-- [Portable Data Dialect](../reference/data-dialect.md) — the backend-neutral
+- [Portable Data Dialect](../reference/data-dialect.md): the backend-neutral
   query and write envelope, so switching databases is a connector change.
-- [Task Functions](../reference/functions.md) — the functions that call
+- [Task Functions](../reference/functions.md): the functions that call
   connectors, and their inputs.

@@ -245,11 +245,11 @@ Click a node to expand it; click a capability to open its page.
 
 ## Related
 
-- [How Orion Works](./concepts/how-orion-works.md) — the three primitives and one
+- [How Orion Works](./concepts/how-orion-works.md): the three primitives and one
   request's journey, if this page is your first stop.
-- [Production Checklist](./operate/production-checklist.md) — the same estate as
+- [Production Checklist](./operate/production-checklist.md): the same estate as
   a list of things to set before go-live, with the owning page for each.
-- [Configuration Reference](./reference/configuration.md) — every setting behind
+- [Configuration Reference](./reference/configuration.md): every setting behind
   the characteristics above.
-- [Design Notes](./reference/design-notes.md) — why several of these are built
+- [Design Notes](./reference/design-notes.md): why several of these are built
   the way they are.

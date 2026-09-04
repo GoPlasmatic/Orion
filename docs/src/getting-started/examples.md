@@ -3,7 +3,7 @@
 
 **Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
 
-The current repository ships ready-to-deploy services. Each is a **package** — the
+The current repository ships ready-to-deploy services. Each is a **package**: the
 channels, workflows, and (when needed) connector that make up one service,
 grouped so they deploy and [promote](../concepts/packages.md) together.
 
@@ -142,10 +142,10 @@ Docker volumes and cleanup commands.
 
 ## Next steps
 
-- [Test & Promote a Service](./test-and-promote.md) — take one of these
+- [Test & Promote a Service](./test-and-promote.md): take one of these
   packages from a local run to a second instance.
-- [Your First Connector](./first-connector.md) — build `postgres-orders` by
+- [Your First Connector](./first-connector.md): build `postgres-orders` by
   hand, one step at a time.
 - [Workflow JSON Schema](../reference/workflows.md) and
-  [Task Functions](../reference/functions.md) — the reference behind every file
+  [Task Functions](../reference/functions.md): the reference behind every file
   above.

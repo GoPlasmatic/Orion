@@ -10,10 +10,10 @@ file — are in the
 
 **1.2.0 is a minor release and behaves like one.** No config key was renamed
 or removed, no API path moved, no metric was renamed, and the release ships
-**no database migrations** — the schema is byte-identical to 1.1.0's, so a
+**no database migrations**: the schema is byte-identical to 1.1.0's, so a
 rollback needs no schema work. Seven changes can reach you. **Two are breaking
 — the CLI's MCP server is gone, and offline test suites need every `expect`
-path rooted — and two more can turn a green CI gate red.** Those are the rows
+path rooted, and two more can turn a green CI gate red.** Those are the rows
 to read first.
 
 The version-independent procedure — back up, preflight, validate config,
@@ -47,7 +47,7 @@ below carries its own detection command.
 
 **What changed.** In a `*.case.json`, a leading `data.` used to be optional.
 That made the case file the only surface in Orion accepting an unrooted path —
-every mapping `path` in every shipped workflow already spells one — and the
+every mapping `path` in every shipped workflow already spells one, and the
 cost of the exception was silence. `metadata.foo` was read as
 `data.metadata.foo`, came back absent, and because an expected `null` matches
 an absent path, `"metadata.foo": null` **passed**. A typo'd root
@@ -80,7 +80,7 @@ may never have been checked at all. See
 **What changed.** `package lint` and `lint <dir>` now run one shared
 cross-reference pass. `package lint` gains the checks the artifact form never
 had — connector type, duplicate `route_pattern`, the unresolvable-JSONLogic
-advisory, and `env://` collection — and every finding now carries a stable
+advisory, and `env://` collection, and every finding now carries a stable
 `check` id and a severity.
 
 The severity is the part that cuts both ways:
@@ -98,7 +98,7 @@ starts passing an artifact whose only findings were advisory.
 
 **What to do.** Run `orion-server package lint -f <artifact>` against your
 current artifacts before upgrading the pipeline, and fix what it names. If you
-want the old all-findings-are-fatal behaviour, add `--deny-warnings` — but note
+want the old all-findings-are-fatal behaviour, add `--deny-warnings`, but note
 it counts warnings, not inventory notes, so a set that authors secrets with
 `env://` no longer fails for doing the documented thing.
 
@@ -108,7 +108,7 @@ it counts warnings, not inventory notes, so a set that authors secrets with
 
 **What changed.** `"tasks": []` used to be accepted with a `201`. It parses
 cleanly and then fails the engine's own `Workflow::validate()`, which runs
-during the engine **build** — so, exactly like a duplicate task id, activating
+during the engine **build**, so, exactly like a duplicate task id, activating
 one took down every channel on every node rather than quarantining itself. It
 is now a `400` at create, which is what the
 [Workflow Reference](../reference/workflows.md#the-workflow-object) has always
@@ -142,7 +142,7 @@ only covered names that reach the engine's "custom function" path.
 `enrich`, `http_call` and `publish_kafka` do not: they deserialize into typed
 built-in variants, so the engine accepts them at build time whether or not a
 handler is registered. Orion registers `http_call` and `publish_kafka` but
-**not** `enrich` — so a stored task naming `enrich` used to build cleanly and
+**not** `enrich`, so a stored task naming `enrich` used to build cleanly and
 then fail every request with `FunctionNotFound`. Its channel is now
 [quarantined](./troubleshooting.md#a-channel-answers-503-failed-to-load-and-is-not-being-served) instead.
 
@@ -170,7 +170,7 @@ arrived by import. Replace it with `http_call` against the same upstream.
 ## 5. `/admin/functions` lists every function, not just the schema registry
 
 **What changed.** The endpoint served the schema registry — the functions Orion
-input-validates — which is 18 of the 27 names a workflow may use. The nine it
+input-validates, which is 18 of the 27 names a workflow may use. The nine it
 omitted (`map`, `filter`, `log`, `parse_json`, `parse_xml`,
 `validation`/`validate`, `publish_json`, `publish_xml`) are the most-used
 functions there are, so anything completing from this endpoint offered the
@@ -186,7 +186,7 @@ carry `source: "orion"` and their schema as before, and `validation` carries
 `input_fields` key at all.
 
 **What to do.** This is additive, but a consumer that assumed every row carries
-`input_fields` will need to branch on `source` — or simply tolerate the key's
+`input_fields` will need to branch on `source`, or simply tolerate the key's
 absence. Nothing else about the endpoint moved.
 
 ---
@@ -270,13 +270,13 @@ plain task: when a fragment contained a **task group**, only the group's own
 `id` was rewritten and the ids of the tasks inside it were emitted verbatim
 into the host workflow's namespace. Using such a fragment twice produced
 duplicate step ids; using it once collided with any host task sharing a name
-with one of its nested tasks — and either was refused with
+with one of its nested tasks, and either was refused with
 `DUPLICATE_TASK_ID`, which fails the whole engine reload rather than one
 workflow. Nothing showed the author it was coming, because the colliding name
 is private to the fragment.
 
 Every id a fragment contributes is now prefixed, at every depth, flat
-(`{call-site}.{id}`) rather than one segment per enclosing group — so a
+(`{call-site}.{id}`) rather than one segment per enclosing group, so a
 fragment's `refused`/`deny` inside a group become `_session.refused` and
 `_session.deny`. In the same walk, a `use` nested inside a task group is now
 refused (`shared.fragment_nested`) instead of surviving unexpanded into a
@@ -318,12 +318,12 @@ prefixed name.
 
 ## Related
 
-- [Upgrades](./upgrades.md) — the version-independent procedure.
-- [Troubleshooting](./troubleshooting.md) — quarantine, degraded health, and
+- [Upgrades](./upgrades.md): the version-independent procedure.
+- [Troubleshooting](./troubleshooting.md): quarantine, degraded health, and
   the rest of the symptom index.
-- [Test Workflows Offline](../build/testing.md) — the case-file surface row 1
+- [Test Workflows Offline](../build/testing.md): the case-file surface row 1
   changes.
-- [Workflow Reference](../reference/workflows.md) — the workflow and task
+- [Workflow Reference](../reference/workflows.md): the workflow and task
   contract, including task groups and `terminal`.
-- [Agent Skill Setup](../ai/skills.md) — what replaces the MCP server row 7
+- [Agent Skill Setup](../ai/skills.md): what replaces the MCP server row 7
   removes.

@@ -74,17 +74,17 @@ supported-version window, the MSRV, and the platform matrix.
 
 ## Per-version guides
 
-- [Upgrading to 1.1.0](./upgrading-to-1.1.md) — from 1.0.x. A minor release:
+- [Upgrading to 1.1.0](./upgrading-to-1.1.md): from 1.0.x. A minor release:
   five behaviour changes, no renames, no rewrites. One of them can start
   refusing traffic on a channel that appeared to work.
-- [Upgrading to 1.0.0](./upgrading-to-1.0.md) — from 0.3.0. Every break, grouped
+- [Upgrading to 1.0.0](./upgrading-to-1.0.md): from 0.3.0. Every break, grouped
   by type, with the preflight scanner that finds the database-backed ones.
 
 ## Related
 
-- [CLI Reference](../reference/cli.md) — `preflight`, `validate-config`,
+- [CLI Reference](../reference/cli.md): `preflight`, `validate-config`,
   `migrate`, and `test-connectivity` in full.
-- [Configuration Reference](../reference/configuration.md) — every key and its
+- [Configuration Reference](../reference/configuration.md): every key and its
   environment variable, the authority when a config error names one.
 - [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md) —
   what was added, as opposed to what broke.

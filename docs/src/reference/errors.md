@@ -167,12 +167,12 @@ a drift test fails the build if `src/` emits one or if this table and the
 `path` points at the offending field, rooted according to how far the request
 got before it was rejected:
 
-- **Validation ran** — the path is resource-rooted and may be indexed:
+- **Validation ran**: the path is resource-rooted and may be indexed:
   `channel.protocol`, `tasks[2].function.input.connector`. Inside a
   [task group](./workflows.md#task-groups) the index nests, naming the
   coordinate as authored rather than the position the task ends up at once the
   engine flattens the tree: `tasks[1].tasks[0].id`.
-- **The body did not deserialize** — validation never ran, and the layer that
+- **The body did not deserialize**: validation never ran, and the layer that
   reports the failure knows the field name but not which resource was being
   parsed. The path is `body.<field>`, or bare `body` when the field cannot be
   recovered from the parser's message at all.
@@ -185,7 +185,7 @@ The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{i
 
 ## Validation warnings
 
-`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only — it means "`POST /workflows` would accept this" — so a workflow can be valid and still carry warnings. These are reported:
+`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only — it means "`POST /workflows` would accept this", so a workflow can be valid and still carry warnings. These are reported:
 
 | Warning | Meaning |
 |---|---|
@@ -222,7 +222,7 @@ The [configuration reference](./configuration.md#server) owns the setting's valu
 
 ## Related
 
-- [Admin API](./admin-api.md) — the endpoints these envelopes wrap, and each payload under `data`.
-- [Data API](./data-api.md) — routing, traces, shaped responses, and profiling around the result envelope.
-- [Configuration](./configuration.md#server) — the `server.verbose_errors` row and the trace-queue size caps named above.
-- [Workflows](./workflows.md) — the task pipelines whose failures land in `errors[]`.
+- [Admin API](./admin-api.md): the endpoints these envelopes wrap, and each payload under `data`.
+- [Data API](./data-api.md): routing, traces, shaped responses, and profiling around the result envelope.
+- [Configuration](./configuration.md#server): the `server.verbose_errors` row and the trace-queue size caps named above.
+- [Workflows](./workflows.md): the task pipelines whose failures land in `errors[]`.

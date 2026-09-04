@@ -177,9 +177,9 @@ orders. The command does not remove your repository checkout.
 
 ## Next steps
 
-- [Portable Data Dialect](../reference/data-dialect.md) — exact query and write
+- [Portable Data Dialect](../reference/data-dialect.md): exact query and write
   envelopes used by the workflow.
-- [CI/CD with Packages](./ci-cd.md) — compile, plan, and apply the same
+- [CI/CD with Packages](./ci-cd.md): compile, plan, and apply the same
   definitions between environments.
-- [Production Checklist](../operate/production-checklist.md) — replace local
+- [Production Checklist](../operate/production-checklist.md): replace local
   defaults before accepting external traffic.

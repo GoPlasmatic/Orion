@@ -33,7 +33,7 @@ switch, not a version bump:
 
 - React Flow 12 is published as `@xyflow/react` (12.x). It still ships a UMD
   build (`dist/umd/index.js`) and its peer range accepts React >= 17, so
-  vendoring it the same way is feasible — but it is a migration: `parentNode` →
+  vendoring it the same way is feasible, but it is a migration: `parentNode` →
   `parentId` on nodes, the removal of `nodeInternals`, and measured-dimension
   changes all touch `diagram-widget.js`.
 - dagre's maintained fork is `@dagrejs/dagre` (3.x). The `graphlib.Graph` /

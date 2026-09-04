@@ -3,8 +3,8 @@
 
 [JSONLogic](https://jsonlogic.com) is Orion's expression language. Expressions
 decide whether a workflow matches, whether a task runs, and what a `map`
-mapping writes — see the [Workflow Reference](./workflows.md). Channels use the
-same language for `validation_logic` and rate-limit `key_logic` — see
+mapping writes. See the [Workflow Reference](./workflows.md). Channels use the
+same language for `validation_logic` and rate-limit `key_logic`. See
 [Channel Configuration](./channel-config.md). Every expression is evaluated by
 [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) and compiled once,
 at engine build time.
@@ -34,7 +34,7 @@ at engine build time.
 ## Available operators
 
 The tables below are the **complete** set Orion compiles. They are not the
-whole JSONLogic spec — see [Feature boundary](#feature-boundary).
+whole JSONLogic spec. See [Feature boundary](#feature-boundary).
 `crates/orion-server/tests/integration/jsonlogic_operators_test.rs` asserts
 this table against the engine, so it cannot drift from what actually runs.
 
@@ -104,7 +104,7 @@ expression is compiled, not per request. Do not add fixed offsets by hand —
 | `group_by` | `{ "group_by": [{ "var": "data.meetings" }, { "format_date": [{ "var": "start" }, "dd MMM yyyy", "Asia/Kolkata" ] }] }` | Collapse on a computed key → array of `{key, items}` rows, insertion-ordered |
 | `distinct` | `{ "distinct": [{ "var": "data.tags" }] }` | Deduplicate, first occurrence wins; add a key expression to dedupe by computed key |
 
-`group_by`'s second argument is evaluated **per element** — inside it, `var`
+`group_by`'s second argument is evaluated **per element**: inside it, `var`
 paths are element-relative and `{ "var": "" }` is the element itself. The
 result is an *array* of `{key, items}` groups (not an object), so it composes
 directly with `map` / `filter` / `sort`.
@@ -133,7 +133,7 @@ every expression surface (conditions, `map` logic, `body_logic`, channel
 guards). A string encodes as its UTF-8 bytes; any other value encodes as its
 compact-JSON text (key order preserved); `null` is an error. Decoders are
 strict: the input must be valid for the alphabet — base64 accepts padded and
-unpadded input — and the decoded bytes must be valid UTF-8. Binary payloads
+unpadded input, and the decoded bytes must be valid UTF-8. Binary payloads
 belong to the `crypto` function's `input_encoding` instead.
 
 | Operator | Example | Meaning |
@@ -160,7 +160,7 @@ allowed. Values are drawn live in dry-run and `orion-server test` too — like
 ### Strings (Orion operators)
 
 Registered by Orion, so — like the encoding and randomness operators above and
-unlike [`ext-string`](#strings-ext-string) — they are not gated by a cargo
+unlike [`ext-string`](#strings-ext-string): they are not gated by a cargo
 feature and are available on every expression surface.
 
 `url_encode` follows the same text model as the encoders: a string encodes as
@@ -199,7 +199,7 @@ handles scalars). Elements render exactly as `cat` renders them, so
 Two idioms follow from `join` and are worth knowing instead of asking for more
 operators:
 
-- **`replace(s, from, to)` is `{"join": [{"split": [s, from]}, to]}`** — literal
+- **`replace(s, from, to)` is `{"join": [{"split": [s, from]}, to]}`**: literal
   substring replacement, not a regex. (`{"cat": [{"split": [s, from]}]}` is the
   delete-all form and worked before `join` existed.) Splitting on an empty
   delimiter explodes into characters, so guard against that.
@@ -231,7 +231,7 @@ secret the instance does not declare. Both surface as a quarantined channel
 with the reason named, not as a value that silently goes missing. So read a
 secret in a **condition**, or in one of the five function fields that take key
 material — `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys[].key`,
-`issuer` and `audience` — and nowhere else. A value *derived* from a secret
+`issuer` and `audience`, and nowhere else. A value *derived* from a secret
 belongs inside a function, not in a mapping.
 
 Three limits worth knowing:
@@ -242,7 +242,7 @@ Three limits worth knowing:
   reference in a sibling `kid` or `key_encoding` is read verbatim and is refused
   like any other stray one. The `{"secret": …}` **operator** is separate and
   wider: it resolves wherever the engine evaluates JSONLogic, which now includes
-  a connector task's expression fields — so
+  a connector task's expression fields, so
   `{"cat": ["Bearer ", {"secret": "partner_token"}]}` works in an `http_call`
   header. It still resolves nothing in a document-shaped field, which folds
   `{"var": …}` only. A credential a remote system needs generally belongs on the
@@ -253,7 +253,7 @@ Three limits worth knowing:
   well. Secrets are start-time config, resolved before any channel loads, so a
   guard sees exactly what a workflow sees.
 - **Deployment values are not secrets.** A topic prefix or a partner's base URL
-  belongs in `[vars]`, read as `{"var": "metadata.vars.name"}` — which *is*
+  belongs in `[vars]`, read as `{"var": "metadata.vars.name"}`, which *is*
   recorded, on purpose, because an operator reading a trace needs to see it.
   See [Environment Variables](./environment-variables.md).
 
@@ -330,12 +330,12 @@ and only a field that actually reads the message is evaluated per request.
 ```
 
 `userId` gets the value. `expiresAt` gets the *object* `{"cat": [...]}`, stored
-in MongoDB verbatim — and in a `filter`, a node like that matches nothing.
+in MongoDB verbatim, and in a `filter`, a node like that matches nothing.
 There is no error at write time. Note that `{"val": …}` is folded no more than
 `cat` is, despite being a documented operator: only `var` is.
 
 The reason is `$`. These are exactly the fields that carry MongoDB operators and
-extended-JSON wrappers — `$set`, `$push`, `$oid`, `$date` — and one `$` is
+extended-JSON wrappers — `$set`, `$push`, `$oid`, `$date`, and one `$` is
 stripped from every key in a position the engine evaluates. Making them
 expressions would turn `{"$set": …}` into `{"set": …}` in every stored
 definition that was not hand-corrected, silently. The scalar fields carry no
@@ -369,9 +369,9 @@ The extension categories — `datetime`, `ext-string`, `ext-array`, `ext-math`,
 
 ## Related
 
-- [Workflow Reference](./workflows.md) — the workflow object and the data
+- [Workflow Reference](./workflows.md): the workflow object and the data
   context that conditions and mappings read.
-- [Channel Configuration](./channel-config.md) — `validation_logic` and
+- [Channel Configuration](./channel-config.md): `validation_logic` and
   `key_logic`, and the dedicated context each one sees.
-- [Function Reference](./functions.md) — every function's `input` schema,
+- [Function Reference](./functions.md): every function's `input` schema,
   including the fields that accept logic values.

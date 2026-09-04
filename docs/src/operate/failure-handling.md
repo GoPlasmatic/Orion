@@ -20,7 +20,7 @@ Timeouts apply at four levels, from the outside in.
 | Health check | `engine.health_check_timeout_secs` | How long `/health` waits on a component |
 
 The channel timeout is the one to set deliberately, because it is the promise
-you make to the caller. It applies on **every ingress** — sync, `/async`, Kafka,
+you make to the caller. It applies on **every ingress**: sync, `/async`, Kafka,
 and `channel_call` — with per-ingress ceilings that clamp it where the transport
 demands. The per-ingress defaults and the clamp table are in
 [Channel Configuration › Timeouts](../reference/channel-config.md#timeouts);
@@ -40,7 +40,7 @@ nobody is waiting for the answer.
 > [!IMPORTANT]
 > **Only HTTP connectors retry.** No other connector type is ever re-driven. An
 > `INSERT` that timed out may already have been applied, and Orion cannot tell
-> the difference from the outside — so it does not guess.
+> the difference from the outside, so it does not guess.
 
 HTTP retries use exponential backoff, capped at 60 s, and apply only to
 retryable failures on idempotent methods. The full contract — what counts as
@@ -81,15 +81,15 @@ curl -s http://localhost:8080/api/v1/admin/connectors/circuit-breakers
 curl -s -X POST http://localhost:8080/api/v1/admin/connectors/circuit-breakers/{key}
 ```
 
-In cluster mode breakers trip **per node** — each replica learns independently
-that a backend is down — while a reset fans out to every node over the config
+In cluster mode breakers trip **per node**: each replica learns independently
+that a backend is down, while a reset fans out to every node over the config
 epoch. That asymmetry is deliberate: tripping is an observation, and each node
 observes for itself; resetting is a decision, and you make it once.
 
 ## Decide what a failing task does to the request
 
 By default a workflow **halts** on the first task that errors — a handler error
-or a `5xx` — and the error goes back to the caller. Set `continue_on_error` on
+or a `5xx`, and the error goes back to the caller. Set `continue_on_error` on
 the workflow to collect errors and keep going:
 
 ```json
@@ -139,7 +139,7 @@ an upstream URL and response body.
 
 `SIGTERM` and `SIGINT` start a controlled sequence built for load balancers:
 
-1. **`/readyz` flips to `503` immediately** — the balancer pulls the node from
+1. **`/readyz` flips to `503` immediately**: the balancer pulls the node from
    rotation.
 2. **The node keeps accepting and serving** for `server.shutdown_drain_secs`
    (default 30 s), so requests the balancer routes here during its own poll
@@ -173,11 +173,11 @@ is a bug, and it is logged as one.
 
 ## Related
 
-- [Traces & Async Processing](./traces.md) — the DLQ that catches failed async
+- [Traces & Async Processing](./traces.md): the DLQ that catches failed async
   work.
-- [Monitoring & Alerts](./monitoring.md) — what to watch so you learn about
+- [Monitoring & Alerts](./monitoring.md): what to watch so you learn about
   these before your callers do.
-- [Troubleshooting](./troubleshooting.md) — symptom-first fixes, including a
+- [Troubleshooting](./troubleshooting.md): symptom-first fixes, including a
   breaker that will not close.
-- [Connector Types](../reference/connectors.md) — the normative retry and
+- [Connector Types](../reference/connectors.md): the normative retry and
   breaker specifications.

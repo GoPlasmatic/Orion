@@ -22,7 +22,7 @@ answer to a bug in an old release is always the newest one.
 | Older 1.x releases | Upgrade to the latest release for fixes    |
 | 0.x releases       | End of life                                |
 
-Security vulnerabilities should be reported privately — see the
+Security vulnerabilities should be reported privately. See the
 [security policy](https://github.com/GoPlasmatic/Orion/blob/main/SECURITY.md).
 
 ## Versioning
@@ -131,14 +131,14 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
 
 ## Platforms
 
-- **Docker images** — published to `ghcr.io/goplasmatic/orion` for
+- **Docker images**: published to `ghcr.io/goplasmatic/orion` for
   `linux/amd64` and `linux/arm64` (Debian trixie-slim base).
-- **Prebuilt binaries** — GitHub release artifacts (shell/PowerShell
+- **Prebuilt binaries**: GitHub release artifacts (shell/PowerShell
   installers and Homebrew) for `aarch64-apple-darwin`,
   `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
   `x86_64-pc-windows-msvc`. The rationale for what is and is not on that
   list lives on the [Deploy with Docker](../operate/docker.md) page.
-- **From source** — use the Rust version declared by the checked-out release's
+- **From source**: use the Rust version declared by the checked-out release's
   `Cargo.toml` (`rust-version`; 1.98 in the release documented here). Linux and
   macOS are exercised routinely, and CI runs on Linux.
 
@@ -151,9 +151,9 @@ reports prioritized. There is no commercial support offering at this time.
 
 ## Related
 
-- [Upgrades](../operate/upgrades.md) — the standing procedure, and how a
+- [Upgrades](../operate/upgrades.md): the standing procedure, and how a
   renamed key fails on each surface.
-- [Upgrading to 1.1.0](../operate/upgrading-to-1.1.md) — the per-version guide
+- [Upgrading to 1.1.0](../operate/upgrading-to-1.1.md): the per-version guide
   for the current release.
-- [Configuration Reference](./configuration.md) — the settings this policy
+- [Configuration Reference](./configuration.md): the settings this policy
   freezes.

@@ -33,7 +33,7 @@ helm install orion deploy/helm/orion
 ```
 
 The chart installs with `ORION_ENVIRONMENT=production` by default, which
-enforces admin auth and refuses permissive CORS at boot — so a bare
+enforces admin auth and refuses permissive CORS at boot, so a bare
 `helm install` **will not come up until you provide admin API keys** (or opt
 into the dev stack below). The failure is loud at install time rather than
 silent in production.
@@ -127,7 +127,7 @@ HTTP port — the metrics listener (below) is intentionally not exposed.
 
 ## Notable Values
 
-The important subset — see the chart's
+The important subset. See the chart's
 [`values.yaml`](https://github.com/GoPlasmatic/Orion/blob/main/deploy/helm/orion/values.yaml)
 for the full annotated list:
 
@@ -228,18 +228,18 @@ curl -s http://localhost:8080/health     # component detail (database, engine)
 
 Common symptoms:
 
-- **Pod not Ready, no restarts** — boot is still in progress. The startup
+- **Pod not Ready, no restarts**: boot is still in progress. The startup
   probe budgets up to 5 minutes for the pending-migration check, cluster
   Redis connect, connector loading, and engine build before liveness kicks
   in. Check `kubectl logs` for which stage it's in.
-- **CrashLoop right after install** — most often a missing required input.
+- **CrashLoop right after install**: most often a missing required input.
   With `env=production` (the default) Orion refuses to boot without admin
   keys, with a CORS wildcard, or with `storage.autoMigrate=true` on a cluster
   install. The log line names the offending setting.
-- **Replicas refusing to start after `helm upgrade`** — a pending migration:
+- **Replicas refusing to start after `helm upgrade`**: a pending migration:
   check the `<release>-migrate` Job's logs
   (`kubectl logs job/orion-migrate`).
-- **Nothing scraping metrics** — the install notes say so explicitly; enable
+- **Nothing scraping metrics**: the install notes say so explicitly; enable
   `metrics.serviceMonitor` (Operator), `metrics.podMonitor`, or
   `metrics.prometheusAnnotations`.
 
@@ -263,14 +263,14 @@ helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0 \
 The combination matters: a ReadWriteOnce claim cannot serve a surge replica
 (hence `Recreate` and one replica), and a hook Job cannot share the replica's
 volume (hence boot-time migration instead of the Job). Backups then land
-under `/app/data/backups` — see [Back Up & Restore](./backup-restore.md).
+under `/app/data/backups`. See [Back Up & Restore](./backup-restore.md).
 
 ## Related
 
-- [Cluster Mode & High Availability](./cluster.md) — what this chart is
+- [Cluster Mode & High Availability](./cluster.md): what this chart is
   configuring, and why each piece is there
-- [Deploy with Docker](./docker.md) — the same shape without Kubernetes
-- [Production Checklist](./production-checklist.md) — before this serves real
+- [Deploy with Docker](./docker.md): the same shape without Kubernetes
+- [Production Checklist](./production-checklist.md): before this serves real
   traffic
-- [Config Reference](../reference/configuration.md) — every `ORION_*` key `extraEnv` can set
-- [Chart source](https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion) — templates, `values.yaml`, `values.schema.json`
+- [Config Reference](../reference/configuration.md): every `ORION_*` key `extraEnv` can set
+- [Chart source](https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion): templates, `values.yaml`, `values.schema.json`

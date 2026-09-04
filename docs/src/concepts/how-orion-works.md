@@ -103,8 +103,8 @@ There is **no plugin mechanism, no scripting runtime, and no WASM sandbox**. A t
 
 ## Next steps
 
-- [Channels](./channels.md), [Workflows](./workflows.md) and [Connectors](./connectors.md) — one page per primitive.
-- [The Entity Lifecycle](./lifecycle.md) — draft, active, archived, and what each transition does to the running engine.
-- [Is Orion Right for You?](../comparison.md) — the same boundary from outside: which neighbouring tool does this job better, and where Orion loses.
-- [Install & Run](../getting-started/install.md) then [Understand the HTTP Flow](../getting-started/first-service.md) — the calls that turn the diagram above into a live endpoint.
-- [Design Notes](../reference/design-notes.md) — the internals behind the guarantees, for when you want them.
+- [Channels](./channels.md), [Workflows](./workflows.md) and [Connectors](./connectors.md): one page per primitive.
+- [The Entity Lifecycle](./lifecycle.md): draft, active, archived, and what each transition does to the running engine.
+- [Is Orion Right for You?](../comparison.md): the same boundary from outside: which neighbouring tool does this job better, and where Orion loses.
+- [Install & Run](../getting-started/install.md) then [Understand the HTTP Flow](../getting-started/first-service.md): the calls that turn the diagram above into a live endpoint.
+- [Design Notes](../reference/design-notes.md): the internals behind the guarantees, for when you want them.

@@ -24,11 +24,11 @@ uses the wire name, default, and corresponding environment override.
 
 Every setting Orion has, with its real default and its environment variable. All settings have sensible defaults — `orion-server` with no config file at all starts and works. What follows is what you change when you want something other than a single-node development instance.
 
-Defaults on this page are checked against `crates/orion-server/src/config/*.rs` by an integration test, so they cannot drift from the code. A ready-to-edit file carrying the same values lives at [`config.toml.example`](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/config.toml.example) — the Docker image ships it at `/app/config.toml.example`, so copy it aside and pass `-c` to use it.
+Defaults on this page are checked against `crates/orion-server/src/config/*.rs` by an integration test, so they cannot drift from the code. A ready-to-edit file carrying the same values lives at [`config.toml.example`](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/config.toml.example): the Docker image ships it at `/app/config.toml.example`, so copy it aside and pass `-c` to use it.
 
 ## CLI Commands
 
-Every `orion-server` subcommand — and the whole `orion-cli` surface — is
+Every `orion-server` subcommand, and the whole `orion-cli` surface — is
 documented in the [CLI Reference](./cli.md). All subcommands honor `${VAR}` /
 `${VAR:-default}` substitution in the loaded config file, so the same
 `config.toml` can be reused across environments.
@@ -37,7 +37,7 @@ documented in the [CLI Reference](./cli.md). All subcommands honor `${VAR}` /
 
 Three layers, in increasing precedence:
 
-1. **Struct defaults** — everything on this page.
+1. **Struct defaults**: everything on this page.
 2. **The config file**, passed with `-c`. Values may reference process environment variables two ways:
 
    - `${VAR}` (required — startup fails if unset) or `${VAR:-default}` (optional), substituted **before** parsing, so it can build a value out of parts. `$$` escapes a literal `$`. The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database.
@@ -48,7 +48,7 @@ Three layers, in increasing precedence:
    `[vars]` and `[secrets]` are skipped by the `env://` pass because each owns its own reference semantics: a var must be a literal (nothing resolves one on its way into metadata), and a secret must be a reference.
 3. **Environment variables**, named `ORION_SECTION__KEY` with a double underscore between levels — `ORION_SERVER__PORT`, `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED`. These win over the file. Every setting's variable is in the tables below; list-valued settings take a comma-separated string.
 
-The two substitution syntaxes reach different surfaces — connectors and channels live in the database, not in this file — and [Environment Variables](./environment-variables.md) is the one table of which resolves where.
+The two substitution syntaxes reach different surfaces — connectors and channels live in the database, not in this file, and [Environment Variables](./environment-variables.md) is the one table of which resolves where.
 
 Run `orion-server validate-config` to see the merged result without starting: it prints the full effective config — every section, serialized from the same structs the server runs on — as TOML (`--format json` and `--format summary` also exist). Secrets are masked with the same policy as the connector API: values under secret-looking keys are replaced with `******`, and passwords embedded in URL-shaped values such as `storage.url` are struck out in place. Configuration is validated at startup too, and an invalid value stops the boot rather than being silently ignored.
 
@@ -86,7 +86,7 @@ Any value starting with `prod` (case-insensitive) is a production environment, w
 
 - **Admin auth must be enabled.** `admin_auth.enabled = false` becomes a fatal config error instead of a log line nobody reads.
 - **CORS may not be `["*"]`.** The wildcard is rejected; list explicit origins.
-- **A cluster may not migrate at boot.** `cluster.enabled = true` with `storage.auto_migrate = true` is refused — see [`auto_migrate` in a cluster](#storage).
+- **A cluster may not migrate at boot.** `cluster.enabled = true` with `storage.auto_migrate = true` is refused. See [`auto_migrate` in a cluster](#storage).
 
 That is the whole mechanism — it does not change any other default. Everything else on this page is still yours to set, and the [Production Checklist](../operate/production-checklist.md) is the list worth walking.
 
@@ -168,10 +168,10 @@ data_mounts = ["/zoom", "/Legacy-App"]
 
 A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`. `/async` works under a mount too.
 
-A mount may not claim a platform route — `/api` (which covers `/api/v1/admin`, `/api/v1/data`, the OpenAPI document and any future `/api/v2`), `/health`, `/healthz`, `/readyz`, `/metrics` or `/docs` — and two mounts may not nest, which would be a router conflict at boot. All of these are startup errors.
+A mount may not claim a platform route — `/api` (which covers `/api/v1/admin`, `/api/v1/data`, the OpenAPI document and any future `/api/v2`), `/health`, `/healthz`, `/readyz`, `/metrics` or `/docs`, and two mounts may not nest, which would be a router conflict at boot. All of these are startup errors.
 
 > [!WARNING]
-> The literal `"/"` mounts the data plane at the root. It is accepted, and it is the blunt option: an unmatched URL becomes a channel lookup instead of a `404`, and a **future platform route could shadow a channel already serving that path** — a wrong answer rather than an error. Orion refuses to activate a channel whose served path would fall under a platform route, and warns at startup, but a named mount avoids the hazard entirely by claiming a first-segment namespace. Prefer one.
+> The literal `"/"` mounts the data plane at the root. It is accepted, and it is the blunt option: an unmatched URL becomes a channel lookup instead of a `404`, and a **future platform route could shadow a channel already serving that path**: a wrong answer rather than an error. Orion refuses to activate a channel whose served path would fall under a platform route, and warns at startup, but a named mount avoids the hazard entirely by claiming a first-segment namespace. Prefer one.
 | `server.verbose_errors` | — | `ORION_SERVER__VERBOSE_ERRORS` | Unset returns real task-failure messages on the data plane when `environment` is not a production variant, and the generic placeholder in it. `false` sanitizes everywhere. **`true` is refused in production** and the server will not start. |
 
 On SIGTERM or SIGINT Orion withdraws readiness first, then stops accepting, then drains. Set both timeouts below your orchestrator's termination grace period, or it kills the process mid-drain.
@@ -215,7 +215,7 @@ Off by default because the layer is unconditional once inserted: it runs DEFLATE
 |---|---|---|---|
 | `server.docs.enabled` | — | `ORION_SERVER__DOCS__ENABLED` | Unset serves Swagger UI (`/docs`) and the spec (`/api/v1/openapi.json`) only when `environment` is not a production variant. Set `true` to serve them in production anyway, `false` to switch them off everywhere. |
 
-Both endpoints are unauthenticated and the spec publishes the complete admin API surface — route shapes, request schemas, the `admin_auth.header` semantics — so production deployments do not serve them by default. When disabled the routes are not registered at all: both paths return 404, not 401, so their existence is not advertised. `orion-server dump-openapi` writes the spec to a file offline regardless of this setting.
+Both endpoints are unauthenticated and the spec publishes the complete admin API surface — route shapes, request schemas, the `admin_auth.header` semantics, so production deployments do not serve them by default. When disabled the routes are not registered at all: both paths return 404, not 401, so their existence is not advertised. `orion-server dump-openapi` writes the spec to a file offline regardless of this setting.
 
 ## Storage
 
@@ -235,13 +235,13 @@ Both endpoints are unauthenticated and the spec publishes the complete admin API
 
 **Use SQLite for:** a single instance — a development or design-time node, an appliance install, anything where one process owns the database file. It is the default, provisions nothing, and creates the file on first boot. It is also the only backend with an [in-product backup](../operate/backup-restore.md#what-is-provided-per-backend).
 
-**Use PostgreSQL or MySQL for:** more than one replica, write-heavy estates, and every deployment that needs [cluster mode](../operate/cluster.md#requirements) — which refuses to start against a `sqlite:` URL, because a file is single-host. Backup and restore become your snapshot or PITR tooling's job; Orion provides neither for these backends.
+**Use PostgreSQL or MySQL for:** more than one replica, write-heavy estates, and every deployment that needs [cluster mode](../operate/cluster.md#requirements): which refuses to start against a `sqlite:` URL, because a file is single-host. Backup and restore become your snapshot or PITR tooling's job; Orion provides neither for these backends.
 
 **Sizing the pool.** `max_connections` is per process. With N replicas, N × `max_connections` must stay below the server's own `max_connections` (PostgreSQL's default is 100, and superuser slots and other clients come out of that budget) or replicas will fail to connect under load. The default of 50 suits a single node against a dedicated database; three replicas against a stock Postgres want roughly 25 each, less whatever else connects.
 
 **`auto_migrate` in a cluster.** With `auto_migrate = true`, every replica tries to migrate at boot and they race. The intended shape is `auto_migrate = false` plus `orion-server migrate` as a pre-deploy job; startup then fails fast if migrations are still pending, instead of serving against a schema it does not understand.
 
-`cluster.enabled = true` with `auto_migrate = true` is **a startup error in production** — a guardrail that fires after the race is no guardrail. Outside production it stays a warning, which is what lets a throwaway cluster (the Helm chart's `devStack`, whose database is created by the same release and so cannot be migrated by a pre-install hook) boot without a migrate step. A single-node install is unaffected either way: `cluster.enabled` is `false` by default, and migrating at boot is what makes `orion-server` a single-binary install.
+`cluster.enabled = true` with `auto_migrate = true` is **a startup error in production**: a guardrail that fires after the race is no guardrail. Outside production it stays a warning, which is what lets a throwaway cluster (the Helm chart's `devStack`, whose database is created by the same release and so cannot be migrated by a pre-install hook) boot without a migrate step. A single-node install is unaffected either way: `cluster.enabled` is `false` by default, and migrating at boot is what makes `orion-server` a single-binary install.
 
 The migrate step already exists in both reference deployments: the Helm chart runs a pre-install/pre-upgrade `orion-server migrate` Job, and `docker-compose.ha.yml` a one-shot `migrate` service the replicas depend on.
 
@@ -301,13 +301,13 @@ An enabled connector whose config cannot be loaded — a missing `env://DB_PASSW
 
 Three surfaces report this:
 
-- `GET /health` sets `components.connectors` to `degraded` and lists the failures under `connectors.failed_to_load`. The overall status becomes `degraded`, but the HTTP status stays **200** — the rest of the instance is serving, and a 503 would pull the node out of its load balancer over a connector nothing in flight may be using. Alert on the field, not the status code.
+- `GET /health` sets `components.connectors` to `degraded` and lists the failures under `connectors.failed_to_load`. The overall status becomes `degraded`, but the HTTP status stays **200**: the rest of the instance is serving, and a 503 would pull the node out of its load balancer over a connector nothing in flight may be using. Alert on the field, not the status code.
 - `GET /api/v1/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures.
 - `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only — a hot reload never takes a running process down.
 
-**`max_memory_cache_entries`** bounds each in-memory cache **namespace**, with LRU eviction on insert. There is no single shared store: the built-in dedup store, the built-in response cache, and every `(purpose, connector)` use of a `backend = "memory"` cache connector each get their own instance with their own bound, so a hot workflow cache cannot evict dedup entries — but the budgets add up. Worst-case resident entries are `max_memory_cache_entries × number of namespaces`: the two built-in stores plus up to three (workflow cache, dedup, response cache) for every memory connector. Size a memory-constrained host from that product, not from the single value. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
+**`max_memory_cache_entries`** bounds each in-memory cache **namespace**, with LRU eviction on insert. There is no single shared store: the built-in dedup store, the built-in response cache, and every `(purpose, connector)` use of a `backend = "memory"` cache connector each get their own instance with their own bound, so a hot workflow cache cannot evict dedup entries, but the budgets add up. Worst-case resident entries are `max_memory_cache_entries × number of namespaces`: the two built-in stores plus up to three (workflow cache, dedup, response cache) for every memory connector. Size a memory-constrained host from that product, not from the single value. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
 
-**`rollout_sticky_header`** decides how a request is bucketed for canary rollouts. With a header configured, the same caller always lands in the same bucket and therefore on the same workflow version. Empty (the default) falls back to the forwarded client IP, and with neither available the bucket is random per request — so a caller can flip between versions mid-session.
+**`rollout_sticky_header`** decides how a request is bucketed for canary rollouts. With a header configured, the same caller always lands in the same bucket and therefore on the same workflow version. Empty (the default) falls back to the forwarded client IP, and with neither available the bucket is random per request, so a caller can flip between versions mid-session.
 
 ### Circuit Breaker
 
@@ -414,7 +414,7 @@ The env-var form is a comma-separated `topic:channel` list: `ORION_KAFKA__TOPICS
 | `kafka.dlq.enabled` | `false` | `ORION_KAFKA__DLQ__ENABLED` | Enable so poison messages stop blocking a partition. |
 | `kafka.dlq.topic` | `"orion-dlq"` | `ORION_KAFKA__DLQ__TOPIC` | To match an existing naming convention. |
 
-Delivery is at-least-once: an offset advances only on successful processing or a *confirmed* DLQ write. With the DLQ disabled a failing message is retried in place with capped backoff rather than lost — which is safe, but means one poison message can stall its partition until you enable this.
+Delivery is at-least-once: an offset advances only on successful processing or a *confirmed* DLQ write. With the DLQ disabled a failing message is retried in place with capped backoff rather than lost, which is safe, but means one poison message can stall its partition until you enable this.
 
 ### Broker Authentication
 
@@ -533,7 +533,7 @@ Instance-wide policy for JWT verification. The per-issuer settings — algorithm
 |---|---|---|---|
 | `jwt.allow_private_jwks_urls` | `false` | `ORION_JWT__ALLOW_PRIVATE_JWKS_URLS` | Turn on for an issuer on a private address (an in-cluster Keycloak, a sidecar). |
 
-`jwks_url` is authored input — a field of a channel's `auth` block or of a `jwt_verify` task — and it is the one egress path in the runtime with no operator-configured connector behind it. So it is checked twice: the URL must be `https://` where it is authored, and the address it resolves to is checked on **every fetch**, exactly as an `http` connector without `allow_private_urls` is. The split is deliberate — an admin API that resolves DNS before accepting a channel is an admin API that hangs when the issuer is down, and a host that was public when the channel was stored can be private by the time it is dialled.
+`jwks_url` is authored input — a field of a channel's `auth` block or of a `jwt_verify` task, and it is the one egress path in the runtime with no operator-configured connector behind it. So it is checked twice: the URL must be `https://` where it is authored, and the address it resolves to is checked on **every fetch**, exactly as an `http` connector without `allow_private_urls` is. The split is deliberate — an admin API that resolves DNS before accepting a channel is an admin API that hangs when the issuer is down, and a host that was public when the channel was stored can be private by the time it is dialled.
 
 Setting this to `true` disables the address check for every JWKS fetch on the instance. It is instance-wide rather than per channel because a per-channel opt-out would let the author of a definition grant themselves the egress the setting exists to gate.
 
@@ -563,10 +563,10 @@ Exactly `["*"]` is permissive CORS and is **rejected at startup** when `environm
 
 **The two header lists are additive.** They extend the built-in sets; they cannot narrow them. Allowed: `content-type`, `authorization`, `accept`, `x-api-key`, `idempotency-key`, `x-request-id`. Exposed: `x-request-id`, `retry-after`. A replacing key would let an operator adding `deviceid` silently drop `authorization` and `content-type` — breaking admin auth, the dedup guard and every browser JSON call, with no server-side error anywhere. Header names are lowercased (`deviceId` → `deviceid`), which is correct: HTTP header names are case-insensitive and the preflight match is byte-lowercase. An entry that is not a valid header name is a startup error, not a silently dropped one.
 
-**`allow_credentials` requires explicit origins.** The Fetch spec forbids pairing `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Origin: *` — the browser rejects the response — and the underlying layer asserts on the combination at router construction, so it would crash the process at boot. Orion refuses it during config validation instead. A `"*"` entry in either header list is refused for the same reason: it silently converts the explicit list back into a wildcard.
+**`allow_credentials` requires explicit origins.** The Fetch spec forbids pairing `Access-Control-Allow-Credentials: true` with `Access-Control-Allow-Origin: *` — the browser rejects the response, and the underlying layer asserts on the combination at router construction, so it would crash the process at boot. Orion refuses it during config validation instead. A `"*"` entry in either header list is refused for the same reason: it silently converts the explicit list back into a wildcard.
 
 > [!NOTE]
-> Orion sends the explicit allow-headers list on **every** configuration, including the wildcard-origin default. It previously sent `Access-Control-Allow-Headers: *` there, and per the Fetch Standard `Authorization` is a *CORS non-wildcard request-header name* that `*` never covers — so a browser calling the admin API with a bearer token failed preflight on a default install. Sending the list is strictly widening.
+> Orion sends the explicit allow-headers list on **every** configuration, including the wildcard-origin default. It previously sent `Access-Control-Allow-Headers: *` there, and per the Fetch Standard `Authorization` is a *CORS non-wildcard request-header name* that `*` never covers, so a browser calling the admin API with a bearer token failed preflight on a default install. Sending the list is strictly widening.
 
 CORS is instance-level. It cannot be configured per channel: preflights are answered before routing, so no channel is known yet. The per-channel [`origin_allow_list`](./channel-config.md#cors--origins) is a server-side origin *check*, not CORS.
 
@@ -641,8 +641,8 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 
 ## Related
 
-- [Production Checklist](../operate/production-checklist.md) — which of these
+- [Production Checklist](../operate/production-checklist.md): which of these
   settings to change before an instance takes real traffic.
-- [Secure an Instance](../operate/security.md) — the security settings in
+- [Secure an Instance](../operate/security.md): the security settings in
   context, with the reasoning.
-- [CLI Reference](./cli.md) — `validate-config`, `migrate`, and the rest.
+- [CLI Reference](./cli.md): `validate-config`, `migrate`, and the rest.

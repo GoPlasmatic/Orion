@@ -110,7 +110,7 @@ orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
 | `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
 | `--no-activate` | Do not mark workflows and channels for activation, so the artifact applies as drafts. |
 
-**Why it exists.** References resolve when a *set* is loaded, and the admin API loads no set: it takes one document, with nothing to resolve names against. Without this step the only path from `definitions/` to a running instance was a deploy tool that reimplemented the expander — and a partial reimplementation shows up as `UNCOMPILED_SOURCE` on the POST, 62 workflows deep.
+**Why it exists.** References resolve when a *set* is loaded, and the admin API loads no set: it takes one document, with nothing to resolve names against. Without this step the only path from `definitions/` to a running instance was a deploy tool that reimplemented the expander, and a partial reimplementation shows up as `UNCOMPILED_SOURCE` on the POST, 62 workflows deep.
 
 **It runs `lint <dir>` first**, and emits nothing if that fails. A compile that wrote out a set its own linter rejects is how an artifact reaches `package apply` having passed CI.
 
@@ -259,7 +259,7 @@ Example: `orion-server -c config.toml test-connectivity`
 
 Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema`. Read-only. Config-file problems are `validate-config`'s job — this reads what only the database knows.
 
-The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../operate/upgrading-to-1.0.md) and are what make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. **Advisories** carry the same ids `lint` uses — `[engine.unguarded_validation]`, `[engine.group_continue_on_error]` — and name a stored workflow that serves correctly and says less than its author meant it to; they never change the exit code.
+The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../operate/upgrading-to-1.0.md) and are what make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. **Advisories** carry the same ids `lint` uses — `[engine.unguarded_validation]`, `[engine.group_continue_on_error]`, and name a stored workflow that serves correctly and says less than its author meant it to; they never change the exit code.
 
 Example: `orion-server -c config.toml preflight`
 
@@ -271,7 +271,7 @@ Example: `orion-server dump-openapi > openapi.json`
 
 ### `package`
 
-Exports a package — selected channels, their workflows, and every connector those workflows reference — and promotes it between instances. The artifact is one JSON document. Every subcommand except `lint` calls an instance's admin API, authenticating with the `ORION_ADMIN_TOKEN` environment variable. The model is described in [Promote Between Environments](../operate/promotion.md).
+Exports a package — selected channels, their workflows, and every connector those workflows reference, and promotes it between instances. The artifact is one JSON document. Every subcommand except `lint` calls an instance's admin API, authenticating with the `ORION_ADMIN_TOKEN` environment variable. The model is described in [Promote Between Environments](../operate/promotion.md).
 
 ```bash
 orion-server package <export|lint|plan|apply|diff> [flags]
@@ -390,7 +390,7 @@ Manages workflows. Alias: `rules`.
 | `new_version` | Upsert: the draft is replaced in place, or a new draft version is cut over an active entity. Identical content is a no-op. |
 
 `diff` answers the question `import` would act on: it matches local items to
-stored ones by `workflow_id` — the key an import collides on — and compares the
+stored ones by `workflow_id` — the key an import collides on, and compares the
 server's `content_hash` when the file carries one (an exported artifact does),
 falling back to the importable fields for a hand-authored file — the same
 projection the server hashes, so the two answers cannot disagree. Fields that a
@@ -638,14 +638,14 @@ Example: `orion-cli completions zsh > ~/.zfunc/_orion-cli`
 
 ## Related
 
-- [Configuration Reference](./configuration.md) — every server setting and its `ORION_*` override.
-- [Admin API](./admin-api.md) — the HTTP endpoints `orion-cli` drives.
-- [Promote Between Environments](../operate/promotion.md) — the promotion model behind `orion-server package`.
-- [OpenAPI](./openapi.md) — the spec `dump-openapi` prints.
+- [Configuration Reference](./configuration.md): every server setting and its `ORION_*` override.
+- [Admin API](./admin-api.md): the HTTP endpoints `orion-cli` drives.
+- [Promote Between Environments](../operate/promotion.md): the promotion model behind `orion-server package`.
+- [OpenAPI](./openapi.md): the spec `dump-openapi` prints.
 
 ## Shared definitions
 
-A definition set can say a thing once. Two mechanisms, one resolution pass, both expanded **before** validation — so `lint`, `dry-run` and `test` all check and run the expanded form, and the server, the admin API, traces and the UI never see a reference.
+A definition set can say a thing once. Two mechanisms, one resolution pass, both expanded **before** validation, so `lint`, `dry-run` and `test` all check and run the expanded form, and the server, the admin API, traces and the UI never see a reference.
 
 ```json
 { "constants": { "db": { "connector": "sias-mongo", "database": "app" } },
@@ -658,7 +658,7 @@ A definition set can say a thing once. Two mechanisms, one resolution pass, both
 { "input": { "$from": "constants.db", "collection": "users" } }
 ```
 
-resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users"}`. It is a **merge, not a substitution**, and **siblings win** — so a call site overrides one field without copying the rest. A `$from` alone in its object, naming a scalar or array, replaces the whole node.
+resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users"}`. It is a **merge, not a substitution**, and **siblings win**, so a call site overrides one field without copying the rest. A `$from` alone in its object, naming a scalar or array, replaces the whole node.
 
 **Fragments are named task sequences**, parameterised:
 

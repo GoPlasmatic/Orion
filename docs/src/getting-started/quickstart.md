@@ -86,9 +86,9 @@ removing it also removes the definitions created in this tutorial.
 
 ## Next steps
 
-- [Understand the HTTP flow](./first-service.md) — make each administration
+- [Understand the HTTP flow](./first-service.md): make each administration
   call by hand and inspect the definitions.
-- [Choose a use case](./use-cases.md) — follow a path for REST, webhooks, Kafka,
+- [Choose a use case](./use-cases.md): follow a path for REST, webhooks, Kafka,
   databases, or AI-assisted authoring.
-- [How Orion Works](../concepts/how-orion-works.md) — build the complete mental
+- [How Orion Works](../concepts/how-orion-works.md): build the complete mental
   model in one page.

@@ -59,7 +59,7 @@ vice versa.
 
 Most workflows are `"condition": true` at the top with conditions on tasks. Reach
 for a workflow-level condition when the pipelines genuinely differ — a v2 payload
-shape alongside a v1, say — and give the specific one a higher `priority` so it
+shape alongside a v1, say, and give the specific one a higher `priority` so it
 is evaluated first.
 
 ## Enrich from an external system
@@ -85,7 +85,7 @@ unpromotable.
 ```
 
 **Why it bites.** A workflow with an embedded credential exports as `"******"`
-and is refused on import, so it cannot be promoted at all — and it was in your
+and is refused on import, so it cannot be promoted at all, and it was in your
 git history the whole time. See
 [Connect Databases & APIs](../build/connectors.md).
 
@@ -133,7 +133,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/order-enrichment \
 Four things this shows that are easy to get wrong:
 
 - **The payload is built first.** `channel_call`'s `data` is a single
-  expression, and JSONLogic has no object constructor — so the caller assembles
+  expression, and JSONLogic has no object constructor, so the caller assembles
   the sub-request in `temp_data` with `map`, then passes it by reference.
 - **`output` receives the callee's whole data context**, not its HTTP envelope.
   The lookup workflow parses into `data.lookup`, so the caller reads
@@ -223,9 +223,9 @@ task.
 
 ## Related
 
-- [Author Workflows](../build/workflows.md) — the how-to these patterns sit on.
-- [Worked Examples: Prompt to Service](./worked-examples.md) — four of these
+- [Author Workflows](../build/workflows.md): the how-to these patterns sit on.
+- [Worked Examples: Prompt to Service](./worked-examples.md): four of these
   patterns as deployable packages.
-- [Expression Language](../reference/expressions.md) — the operators, and the
+- [Expression Language](../reference/expressions.md): the operators, and the
   misspelling trap.
-- [Task Functions](../reference/functions.md) — every function's input schema.
+- [Task Functions](../reference/functions.md): every function's input schema.

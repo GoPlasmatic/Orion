@@ -1,4 +1,4 @@
-<!-- description: Structured logs, Prometheus metrics, OpenTelemetry spans and three health endpoints from one Orion binary — and what is actually worth alerting on. -->
+<!-- description: Structured logs, Prometheus metrics, OpenTelemetry spans and three health endpoints from one Orion binary, and what is actually worth alerting on. -->
 # Monitoring & Alerts
 
 Orion emits structured logs, Prometheus metrics, OpenTelemetry spans, and three
@@ -15,7 +15,7 @@ format = "json"     # json for production, pretty for a terminal
 
 JSON output goes straight into Loki, Datadog, or CloudWatch without a parser.
 `RUST_LOG` gives per-crate control when you need it —
-`RUST_LOG=orion=debug,tower_http=warn,sqlx=warn` — and overrides the level above
+`RUST_LOG=orion=debug,tower_http=warn,sqlx=warn`, and overrides the level above
 for the crates it names.
 
 | Level | What lands here |
@@ -75,7 +75,7 @@ on per-request tracing:
 `orion_task_duration_seconds` covers **every** dispatched task, including the
 engine's own data functions (`map`, `filter`, `parse_json`, …) that no
 connector metric can see. `orion_connector_request_duration_seconds` is the
-narrower view of the same work, keyed by connector rather than by task — so
+narrower view of the same work, keyed by connector rather than by task, so
 subtracting *it* from the task total separates time spent talking to a backend
 from time spent shaping data.
 
@@ -127,7 +127,7 @@ not break a distributed trace — including through Kafka headers.
 > **Two sampling knobs, different jobs.** `tracing.sample_rate` governs OTLP
 > span export. Trace *persistence* sampling
 > ([`trace_storage.sample_rate`](../reference/configuration.md#trace-persistence))
-> applies to **sync traces only** — an async submission's trace row is how its
+> applies to **sync traces only**: an async submission's trace row is how its
 > result reaches the caller, so async traces always persist. Bound async trace
 > storage with `errors_only` or `trace_queue.retention_hours` instead. See
 > [Traces & Async Processing](./traces.md).
@@ -157,7 +157,7 @@ readinessProbe:
 > **Point monitors at `/health`'s `status` field, not only at its HTTP code.**
 > A failing database answers `503` with `"status": "degraded"`. But a failed
 > connector load, a quarantined channel, or a dead Kafka consumer also report
-> `"status": "degraded"` at HTTP **200** — the instance still serves traffic,
+> `"status": "degraded"` at HTTP **200**: the instance still serves traffic,
 > and a `503` would eject a healthy node from its load balancer over a component
 > nothing in flight may even use.
 
@@ -174,7 +174,7 @@ cannot be unavailable once the process serves.
 ### `components.config_propagation`
 
 Cluster mode only. `degraded` means this node committed a change, applied it
-locally, and then failed to advance the shared config epoch — so the other
+locally, and then failed to advance the shared config epoch, so the other
 replicas have not been told. The request that made the change still succeeded,
 because it did; see
 [Cluster › When a change does not propagate](cluster.md#when-a-change-does-not-propagate)
@@ -191,7 +191,7 @@ longer what the database says. It clears on the next successful reload.
 The signal exists because nothing else reports it. An admin mutation that
 commits and then fails to reload answers **2xx**, deliberately: the row is
 `active` and the next successful reload will serve it, so a `5xx` would tell the
-client its change failed when it did not — and the natural response, retrying,
+client its change failed when it did not, and the natural response, retrying,
 writes a second version or collides with the first. The same argument
 [`config_propagation`](#componentsconfig_propagation) makes for a lost epoch
 bump. The cluster epoch watcher's resync has no caller to tell at all.
@@ -218,7 +218,7 @@ The essential ones are the trace dispatcher, the trace persistence workers, the
 audit writer, the DLQ retry consumer, and — in cluster mode — the epoch
 watcher. Each fails silently by nature: a dead persistence worker drops traces
 and counts them as queue overflow, a dead audit writer loses the record of
-every subsequent admin mutation, a dead epoch watcher leaves the node serving
+every later admin mutation, a dead epoch watcher leaves the node serving
 the configuration it booted with. `error` takes the node out of rotation so the
 loss stops rather than continues unobserved.
 
@@ -228,7 +228,7 @@ correctly, so they show as `degraded` and readiness is unaffected.
 
 With an admin credential, `/health` adds a `background_tasks` array naming each
 task, its state, and how many times the supervisor has restarted it. **A
-running task with a non-zero restart count is the one worth alerting on** — it
+running task with a non-zero restart count is the one worth alerting on**: it
 is up now, and it has been failing.
 
 For a running instance's own view, `GET /api/v1/admin/engine/status` returns the
@@ -237,7 +237,7 @@ version, uptime, workflow counts, and the channel list.
 ## Watch it in the console
 
 Everything above surfaces visually in
-[the Orion console](../getting-started/console.md) — live request rate, error
+[the Orion console](../getting-started/console.md): live request rate, error
 rate, latency percentiles, outcomes by channel, and trace drill-downs.
 
 <div class="themed-media">
@@ -247,11 +247,11 @@ rate, latency percentiles, outcomes by channel, and trace drill-downs.
 
 ## Related
 
-- [Metrics Reference](../reference/metrics.md) — every series, its type, and its
+- [Metrics Reference](../reference/metrics.md): every series, its type, and its
   labels.
-- [Traces & Async Processing](./traces.md) — trace storage modes, the queue, and
+- [Traces & Async Processing](./traces.md): trace storage modes, the queue, and
   the DLQ.
-- [Troubleshooting](./troubleshooting.md) — what to do when one of these signals
+- [Troubleshooting](./troubleshooting.md): what to do when one of these signals
   fires.
 - [Configuration Reference](../reference/configuration.md#logging-and-metrics) —
   the keys on this page, with defaults.

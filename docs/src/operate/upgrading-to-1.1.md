@@ -14,7 +14,7 @@ and their configuration keys are in the
 no API path moved, no metric was renamed, and every stored workflow, channel
 and connector keeps validating. Nothing here requires a rewrite. Five changes
 can reach you, and **one of them can start refusing live traffic on a channel
-that appeared to be working** — that is the row to read first.
+that appeared to be working**: that is the row to read first.
 
 The version-independent procedure — back up, preflight, validate config,
 migrate, roll — is on [Upgrades](./upgrades.md).
@@ -34,7 +34,7 @@ migrate, roll — is on [Upgrades](./upgrades.md).
 **`orion-server preflight` does not cover this release.** Its checks are the
 0.3 → 1.0 breaks; it has no 1.1 rules, so a clean preflight run says nothing
 about the rows above. Run it anyway if you are also crossing 1.0 — it is
-read-only and cheap — but use the detection command in each section below for
+read-only and cheap, but use the detection command in each section below for
 1.1. Row 1's detection is the one worth doing *before* the rollout.
 
 ---
@@ -44,7 +44,7 @@ read-only and cheap — but use the detection command in each section below for
 **What changed.** `rate_limit.key_logic` could only read eight hard-coded
 request headers, and referencing any other header was not an error. A missing
 path resolves to `null` in datalogic, and the guard serialized that into the
-key — so the bucket became the literal string `"null"` for **every** caller on
+key, so the bucket became the literal string `"null"` for **every** caller on
 the channel. An intended per-device or per-partner quota silently became one
 shared channel-wide bucket, with no log, no warning and no metric. A single
 typo — `deviceid` for `device-id` — was enough.
@@ -94,7 +94,7 @@ case-insensitively. Editing it rebuilds the limiter rather than carrying
 per-key state across a re-dimensioning.
 
 That configuration was never enforcing the limit it declared — it was
-admitting unbounded traffic against a control that read as active — so the
+admitting unbounded traffic against a control that read as active, so the
 refusal surfaces a defect rather than creating one. If a channel turns out not
 to need a keyed limit at all, remove `key_logic` and the limit applies
 per-caller-identity as it does everywhere else.
@@ -171,7 +171,7 @@ silently withheld.
 
 **What to do.** Nothing is required. If a wide-open default was not what you
 wanted, 1.1.0 also adds `additional_allowed_headers`, `expose_headers`,
-`allow_credentials` and `max_age_secs` under `[cors]` — see the
+`allow_credentials` and `max_age_secs` under `[cors]`. See the
 [Config Reference](../reference/configuration.md). `max_age_secs` is capped at
 `86400`, because browsers clamp it anyway.
 
@@ -194,7 +194,7 @@ container rather than by name.
 shows the mask.
 
 **What to do.** Nothing, unless you had tooling reading a header value back out
-of a connector — which was never the supported path. **Export and import are
+of a connector, which was never the supported path. **Export and import are
 unaffected**: `env://` and `vault://` references still survive a read, so
 promotion round-trips exactly as before.
 
@@ -238,9 +238,9 @@ Deployments not using `oauth2` simply carry an empty table.
 
 ## Related
 
-- [Upgrades](./upgrades.md) — the version-independent procedure
-- [Upgrading to 1.0.0](./upgrading-to-1.0.md) — if you are crossing 1.0 as well
-- [Support & Compatibility](../reference/support.md) — what a version number
+- [Upgrades](./upgrades.md): the version-independent procedure
+- [Upgrading to 1.0.0](./upgrading-to-1.0.md): if you are crossing 1.0 as well
+- [Support & Compatibility](../reference/support.md): what a version number
   promises, and the supported-version window
 - [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md)
   — what was added, as opposed to what changed behaviour

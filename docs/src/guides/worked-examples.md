@@ -125,7 +125,7 @@ several providers' payloads. Send an empty body and the workflow still
 normalizes.
 
 **In production, add authentication.** A webhook endpoint reachable by anyone is
-a webhook endpoint anyone can forge. Use `hmac` mode — see
+a webhook endpoint anyone can forge. Use `hmac` mode. See
 [Configure Channels › Authenticate callers](../build/channels.md#authenticate-callers).
 
 ## Severity-based notification routing
@@ -139,7 +139,7 @@ urgent ones.
 > about the *routing decision*, which is the part worth version-controlling.
 >
 > To make it real, replace those `map` tasks with `http_call` tasks pointing at
-> an email and an SMS connector. The conditions do not change — see
+> an email and an SMS connector. The conditions do not change. See
 > [Connect Databases & APIs](../build/connectors.md).
 
 **The prompt:**
@@ -185,6 +185,6 @@ it.
 - **The patterns behind these:**
   [Common Workflow Patterns](./workflow-patterns.md).
 - **Testing them:** every self-contained example above has offline regression
-  cases in `examples/workflow-tests/` — see
+  cases in `examples/workflow-tests/`. See
   [Test Workflows Offline](../build/testing.md).
 - **Shipping them:** [CI/CD with Packages](./ci-cd.md).

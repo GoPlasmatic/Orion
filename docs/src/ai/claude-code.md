@@ -6,7 +6,7 @@
 The fastest way to experience "AI writes services, not code": install the
 [Orion agent skill](./skills.md), then describe the service you want. Claude
 drafts the workflow, dry-runs it against sample data, activates it, and wires up
-the endpoint — while Orion's lifecycle rules (draft → test → activate, immutable
+the endpoint, while Orion's lifecycle rules (draft → test → activate, immutable
 versions, gradual rollout) keep every step reversible.
 
 This page is a 10-minute guided session. In it, you will:
@@ -95,7 +95,7 @@ Active versions are immutable, so Claude must cut a new version
 
 This is worth understanding rather than delegating blindly, because it is the
 one place the obvious mental model is wrong. **Nothing reactivates an archived
-version in place** — status addresses a workflow id, not a version, and
+version in place**: status addresses a workflow id, not a version, and
 activating always promotes the current draft. Rolling back is rolling *forward*
 to the old content:
 
@@ -107,7 +107,7 @@ orion-cli workflows activate order-triage
 ```
 
 Because active versions are immutable, the content being copied is exactly what
-it was when it last served — which is why rollback is trustworthy rather than
+it was when it last served, which is why rollback is trustworthy rather than
 hopeful. If you promote with [packages](../operate/promotion.md), re-applying
 the previous artifact is the whole procedure.
 
@@ -118,17 +118,17 @@ HTTP transport exposed the full admin API on a port with no authentication of
 its own, and all 58 of its tools were mirrors of commands the CLI already had.
 
 A skill is a better fit for the same job. It is knowledge — loaded only when a
-task needs it, costing nothing until then — and the CLI is the hands. The agent
+task needs it, costing nothing until then, and the CLI is the hands. The agent
 inherits your credentials rather than holding its own, every write lands in the
 audit log under your principal, and nothing new listens on a port.
 
 ## Where to go next
 
-- [Agent Skill Setup](./skills.md) — the install, what the skill knows, and how
+- [Agent Skill Setup](./skills.md): the install, what the skill knows, and how
   to scope an agent's access.
-- [Prompt Pack (any LLM)](./prompt-pack.md) — the same powers over the plain
+- [Prompt Pack (any LLM)](./prompt-pack.md): the same powers over the plain
   REST API, for an assistant with no shell.
-- [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active/immutable
+- [The Entity Lifecycle](../concepts/lifecycle.md): the draft/active/immutable
   rules that make delegating this safe.
-- [Worked Examples: Prompt to Service](../guides/worked-examples.md) — the
+- [Worked Examples: Prompt to Service](../guides/worked-examples.md): the
   prompts behind four shipped services, with the JSON each produced.

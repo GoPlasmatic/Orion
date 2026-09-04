@@ -1,4 +1,4 @@
-<!-- description: Where Orion fits against durable execution engines, API gateways, automation platforms and rule engines — and the five cases where it is the wrong tool. -->
+<!-- description: Where Orion fits against durable execution engines, API gateways, automation platforms and rule engines, and the five cases where it is the wrong tool. -->
 # Is Orion Right for You?
 
 Orion is a declarative services runtime. An Orion service consists of a workflow
@@ -89,8 +89,8 @@ traces.
 
 ## Related
 
-- [Install & Run](./getting-started/install.md) — decide by running it locally and verifying its health.
-- [How Orion Works](./concepts/how-orion-works.md) — the mental model, if you want it before the install.
-- [Architectural Characteristics](./characteristics.md) — everything the runtime carries, mapped.
-- [Build with Claude Code](./ai/claude-code.md) — hand the authoring to an assistant.
-- [Secure an Instance](./operate/security.md) — the authentication planning the warning above calls for.
+- [Install & Run](./getting-started/install.md): decide by running it locally and verifying its health.
+- [How Orion Works](./concepts/how-orion-works.md): the mental model, if you want it before the install.
+- [Architectural Characteristics](./characteristics.md): everything the runtime carries, mapped.
+- [Build with Claude Code](./ai/claude-code.md): hand the authoring to an assistant.
+- [Secure an Instance](./operate/security.md): the authentication planning the warning above calls for.

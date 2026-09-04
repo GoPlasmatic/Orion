@@ -60,12 +60,12 @@ orion-server compile services/payments \
 ```
 
 The version in that filename is the unit of promotion. An applied version is
-content-immutable, so any content change needs a bump — which makes the commit
+content-immutable, so any content change needs a bump, which makes the commit
 that bumps it the reviewable record of the change.
 
 ## The pull-request gate
 
-Everything here runs offline. No server, no database, no credentials — so it
+Everything here runs offline. No server, no database, no credentials, so it
 works on a fork's pull request.
 
 ```yaml
@@ -277,9 +277,9 @@ and still checks the artifact.
 
 ## Related
 
-- [Promote Between Environments](../operate/promotion.md) — the five verbs, the
+- [Promote Between Environments](../operate/promotion.md): the five verbs, the
   receipt model, and what a mid-apply failure leaves behind.
-- [Test Workflows Offline](../build/testing.md) — the gates the first job runs.
-- [Packages](../concepts/packages.md) — why the artifact is the unit.
-- [Audit Logs](../operate/audit-logs.md) — every apply is stamped with its
+- [Test Workflows Offline](../build/testing.md): the gates the first job runs.
+- [Packages](../concepts/packages.md): why the artifact is the unit.
+- [Audit Logs](../operate/audit-logs.md): every apply is stamped with its
   package name and version.

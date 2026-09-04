@@ -111,9 +111,9 @@ executed by the engine on behalf of a channel. See
 
 ## Related
 
-- [Functions](./functions.md) — every built-in task function with its input
+- [Functions](./functions.md): every built-in task function with its input
   schema.
-- [Configuration](./configuration.md) — the server settings behind these
+- [Configuration](./configuration.md): the server settings behind these
   behaviours.
-- [Admin API](./admin-api.md) — the endpoints that manage the entities defined
+- [Admin API](./admin-api.md): the endpoints that manage the entities defined
   here.

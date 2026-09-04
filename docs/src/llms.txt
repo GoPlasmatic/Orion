@@ -93,7 +93,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Connector Types](https://docs.goplasmatic.io/reference/connectors.html): per-type field tables, secret references, operation gates, retries, masking, breakers
 - [Portable Data Dialect](https://docs.goplasmatic.io/reference/data-dialect.html): backend-neutral query/write envelope across SQL, MongoDB, Elasticsearch
 - [Configuration Reference](https://docs.goplasmatic.io/reference/configuration.html): every setting, default, and ORION_* environment variable
-- [Environment Variables](https://docs.goplasmatic.io/reference/environment-variables.html): ORION_* overrides, ${VAR} substitution and env:// secret references — which surfaces resolve which, and what an unset variable does
+- [Environment Variables](https://docs.goplasmatic.io/reference/environment-variables.html): ORION_* overrides, ${VAR} substitution and env:// secret references, which surfaces resolve which, and what an unset variable does
 - [Metrics Reference](https://docs.goplasmatic.io/reference/metrics.html): every exported series, its type and labels
 - [Errors & Response Envelopes](https://docs.goplasmatic.io/reference/errors.html): the admin and data envelopes, every error code, verbose_errors
 - [CLI Reference](https://docs.goplasmatic.io/reference/cli.html): every orion-server and orion-cli subcommand, plus the shared-definition catalog ($from, fragments) and the compile step that resolves it

@@ -52,7 +52,7 @@ per-file run cannot make. That is the form to use in CI.
 `lint` has two neighbours. `orion-server fmt` writes every definition file
 in the one house style (`--check` in CI), and `orion-server clippy` reports
 what `lint` accepts but an author would want to know — a condition that can
-never match, steps that can never run — and only when it is certain. See
+never match, steps that can never run, and only when it is certain. See
 [Definition Style](../reference/fmt.md) and
 [Advisory Checks](../reference/clippy.md).
 
@@ -77,7 +77,7 @@ orion-server dry-run -w examples/packages/high-value-order/workflow.json \
 ```
 
 It prints one JSON document on stdout — `matched`, the per-task `trace`, the
-final `output` context, and any `errors` — so `jq` can read it. Here `flag`
+final `output` context, and any `errors`, so `jq` can read it. Here `flag`
 fires and the output carries `data.order.flagged: true`:
 
 ```bash
@@ -92,7 +92,7 @@ restart, no request.
 ## 3. Stub the calls that leave the process
 
 `high-value-order` only maps data. A workflow that reads a database or calls an
-API cannot run offline unless something answers those calls — which is what a
+API cannot run offline unless something answers those calls, which is what a
 **stub file** is: canned responses, keyed by function and by the connector the
 task names.
 
@@ -196,7 +196,7 @@ each workflow pulls in its connectors. That set is the package's **closure**.
 
 > If your definitions live in a directory rather than on an instance,
 > [`orion-server compile`](../reference/cli.md#compile) builds the same
-> artifact straight from the files — no instance to export from — and resolves
+> artifact straight from the files — no instance to export from, and resolves
 > any shared values and fragments on the way. Everything below is identical
 > either way.
 
@@ -257,7 +257,7 @@ applied high-value-order@1.0.0 to http://localhost:9090
 ```
 
 `apply` stages every entity, activates them in dependency order — connectors,
-then workflows, then channels — and reloads the engine **once** at the end.
+then workflows, then channels, and reloads the engine **once** at the end.
 
 > [!NOTE]
 > Against an instance with admin auth enabled, `export`, `plan`, `apply` and
@@ -308,11 +308,11 @@ under `examples/` are not modified.
 
 ## Next steps
 
-- [Packages](../concepts/packages.md) — what a package is, and why the module
+- [Packages](../concepts/packages.md): what a package is, and why the module
   boundary sits there.
-- [Promote Between Environments](../operate/promotion.md) — receipts, rollback, secrets
+- [Promote Between Environments](../operate/promotion.md): receipts, rollback, secrets
   that survive the trip, and the `requires` boundary.
-- [How to Author Workflows](../build/workflows.md) — the how-to layer, now that you
+- [How to Author Workflows](../build/workflows.md): the how-to layer, now that you
   can test what you write.
-- [CLI Reference](../reference/cli.md) — every flag of `lint`, `dry-run`,
+- [CLI Reference](../reference/cli.md): every flag of `lint`, `dry-run`,
   `test`, and `package`.

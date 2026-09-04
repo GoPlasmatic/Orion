@@ -60,11 +60,11 @@ negation of the branch above it. See
 Tasks do not pass values to each other. They share one JSON document, the **data
 context**, and each task reads and writes paths in it:
 
-- **`data`** — the working document. For a sync channel, the final `data` object
+- **`data`**: the working document. For a sync channel, the final `data` object
   is the response body.
-- **`metadata`** — stamped by the ingress: channel name, method, headers, route
+- **`metadata`**: stamped by the ingress: channel name, method, headers, route
   parameters.
-- **`temp_data`** — scratch space that never reaches the response.
+- **`temp_data`**: scratch space that never reaches the response.
 
 One rule catches most beginners: **the raw request payload is not in the
 context**. A workflow that reads request data starts with a `parse_json` task,
@@ -104,7 +104,7 @@ node:
 ## Versioned, not edited
 
 An active workflow is **immutable**. Changing one means creating a new version,
-testing it, and activating that — which is also why rolling back is putting
+testing it, and activating that, which is also why rolling back is putting
 known-good content into a new version rather than a redeploy, and why that
 content is guaranteed to be what it was when it last served.
 [The Entity Lifecycle](./lifecycle.md) covers the rules;
@@ -113,8 +113,8 @@ offers, on purpose.
 
 ## Errors
 
-By default the pipeline halts on the first task that **errors** — a handler
-error or a `5xx` — and the error reaches the caller in the response envelope.
+By default the pipeline halts on the first task that **errors**: a handler
+error or a `5xx`, and the error reaches the caller in the response envelope.
 Set `continue_on_error` on the workflow to collect errors and keep going
 instead. A task that records a `4xx`, as a failing
 [`validation`](../reference/functions.md#validation--validate) rule does, halts
@@ -124,11 +124,11 @@ channel, a task failure routes the trace to the dead letter queue for retry.
 
 ## Next steps
 
-- [Workflow JSON Schema](../reference/workflows.md) — every field, the data context
+- [Workflow JSON Schema](../reference/workflows.md): every field, the data context
   in full, matching and rollout semantics.
-- [Task Functions](../reference/functions.md) — what each function does and the
+- [Task Functions](../reference/functions.md): what each function does and the
   exact `input` it takes.
-- [Expression Language](../reference/expressions.md) — the JSONLogic operator
+- [Expression Language](../reference/expressions.md): the JSONLogic operator
   catalogue, and the silent-failure edges to avoid.
-- [Test & Promote a Service](../getting-started/test-and-promote.md) — run a
+- [Test & Promote a Service](../getting-started/test-and-promote.md): run a
   workflow offline before it ever sees traffic.

@@ -18,7 +18,7 @@ The data API handles runtime request processing: routing messages to channels, e
 > when admin auth is enabled (`[admin_auth]`), and its rows carry no payloads.
 > The single-trace GET follows a two-lane rule instead: a valid admin
 > credential always works, and an async submission's `trace_token` grants
-> access to that one trace — so data-plane callers can poll their own results
+> access to that one trace, so data-plane callers can poll their own results
 > without holding an admin key. Channel endpoints stay unauthenticated.
 
 ## Route Resolution
@@ -56,7 +56,7 @@ data_mounts = ["/zoom"]
 
 A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them — they are matched prefix-free, so nothing about the channel changes.
 
-This is additive: the canonical prefix stays, so `orion-cli` and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat — see the configuration reference.
+This is additive: the canonical prefix stays, so `orion-cli` and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat. See the configuration reference.
 
 ### Request body
 
@@ -70,7 +70,7 @@ By default a channel detects the envelope: **an object carrying a top-level `dat
 | empty | `{}` | `{}` |
 | `{"metadata": {"a": 1}, "b": 2}` | `{}` | `{"a": 1}` — **`b` is discarded** |
 
-That last row is the sharp edge. Detection keys on a field *name*, so a request model that owns the name `data` is read as an envelope and **every sibling field is dropped** — silently, with a normal `200`. It is not an exotic collision: it is the standard FCM/push payload shape.
+That last row is the sharp edge. Detection keys on a field *name*, so a request model that owns the name `data` is read as an envelope and **every sibling field is dropped**: silently, with a normal `200`. It is not an exotic collision: it is the standard FCM/push payload shape.
 
 Set [`config.request.body_mode`](./channel-config.md#request-body) to `"payload"` on such a channel and the whole body is taken verbatim:
 
@@ -166,7 +166,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
 }
 ```
 
-The token is shown once — only its hash is stored — and scopes the poll to
+The token is shown once — only its hash is stored, and scopes the poll to
 this submission. The ack and failure semantics are specified in
 [Errors & Response Envelopes](./errors.md#the-async-acknowledgment).
 
@@ -281,10 +281,10 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 
 ## Related
 
-- [Channel Configuration](./channel-config.md) — the guards a request passes
+- [Channel Configuration](./channel-config.md): the guards a request passes
   through before a workflow runs.
-- [Errors & Response Envelopes](./errors.md) — the sync envelope, and how a
+- [Errors & Response Envelopes](./errors.md): the sync envelope, and how a
   failed task appears in it.
-- [Traces & Async Processing](../operate/traces.md) — the async submission's
+- [Traces & Async Processing](../operate/traces.md): the async submission's
   other half.
-- [Channels](../concepts/channels.md) — what a route resolves to.
+- [Channels](../concepts/channels.md): what a route resolves to.

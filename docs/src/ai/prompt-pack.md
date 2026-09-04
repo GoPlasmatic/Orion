@@ -13,7 +13,7 @@ Orion's plain REST API — no CLI, no tooling, just HTTP.
 
 > [!NOTE]
 > **Provenance.** The block is hand-maintained and matches **Orion 1.0.0**. It
-> is deliberately short — a summary an LLM can hold, not a specification — so it
+> is deliberately short — a summary an LLM can hold, not a specification, so it
 > tells the model to read `GET /api/v1/admin/functions` for exact input schemas
 > rather than trusting the list it carries. If your instance is newer than this
 > page, that endpoint is the authority; this text is the orientation.
@@ -145,9 +145,9 @@ rules above are explained for humans in
 
 ## Related
 
-- [Agent Skill Setup](./skills.md) — the richer alternative, when your agent
+- [Agent Skill Setup](./skills.md): the richer alternative, when your agent
   reads skills and can run `orion-cli`.
-- [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active rules in
+- [The Entity Lifecycle](../concepts/lifecycle.md): the draft/active rules in
   the block above, explained for humans.
-- [Task Functions](../reference/functions.md) — the authority the block tells
+- [Task Functions](../reference/functions.md): the authority the block tells
   the model to consult.

@@ -87,7 +87,7 @@ as an HTTP one does. The record's coordinates arrive as metadata:
 {{#include ../../../examples/packages/kafka-order-events/workflow.json}}
 ```
 
-Nothing in that workflow is Kafka-specific except the metadata paths — which is
+Nothing in that workflow is Kafka-specific except the metadata paths, which is
 the point. The same task pipeline would serve an HTTP channel; only the ingress
 changed. Its logic is covered offline by
 `examples/workflow-tests/kafka-order-events-*.case.json`, which run it through
@@ -173,10 +173,10 @@ In cluster mode each replica uses static group membership keyed by its
 
 ## Related
 
-- [Configuration › Kafka](../reference/configuration.md#kafka) — every setting,
+- [Configuration › Kafka](../reference/configuration.md#kafka): every setting,
   including broker auth and the DLQ.
-- [Channel Configuration](../reference/channel-config.md) — which guards apply
+- [Channel Configuration](../reference/channel-config.md): which guards apply
   on the Kafka ingress.
-- [Troubleshooting](../operate/troubleshooting.md) — lag that is really
+- [Troubleshooting](../operate/troubleshooting.md): lag that is really
   throttling, and quarantined channels whose records go to the DLQ.
-- [Channels](../concepts/channels.md) — where Kafka sits among the protocols.
+- [Channels](../concepts/channels.md): where Kafka sits among the protocols.

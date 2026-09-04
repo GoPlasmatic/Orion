@@ -243,7 +243,7 @@ an accepted alias for `validation`.
 ### `log`
 
 Emits a structured log line. `message` is a JSONLogic expression (a plain string
-is valid), and `fields` attaches additional JSONLogic-derived key/values.
+is valid), and `fields` attaches more JSONLogic-derived key/values.
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -320,7 +320,7 @@ support. The connector supplies the base URL and auth.
 | `timeout_ms` | number \| JSONLogic | no | `30000` | Per-request timeout in milliseconds |
 
 Every field above except `method` is JSONLogic, so it may be written as a plain
-literal — which is what it evaluates to — or as an expression over the message.
+literal, which is what it evaluates to, or as an expression over the message.
 A literal is folded once when the engine is built and costs nothing per request;
 only a field that actually reads the message pays. `headers` is the one that
 changes what is expressible: a value can now be computed, so a bearer token or a
@@ -554,7 +554,7 @@ individual ops entirely. Results are normalized per backend — SQL returns
 where supported); MongoDB and Elasticsearch return doc-store counts
 (`inserted`/`ids`, `matched`/`modified`, `deleted`). Every result carries a
 `status`; a bulk insert that applied only some of its rows reports
-`"partial"` with a per-item array — see
+`"partial"` with a per-item array. See
 [Bulk writes](./data-dialect.md#bulk-writes).
 
 ### `db_read`
@@ -611,7 +611,7 @@ decision rather than an accident. `bigint` is unaffected either way, because a
 64-bit integer is exact in JSON.
 
 SQLite has no static column types — a `NUMERIC` column stores whichever storage
-class the value fits — so the setting has nothing to act on there and is
+class the value fits, so the setting has nothing to act on there and is
 ignored.
 
 #### Column types
@@ -634,7 +634,7 @@ message: cast it in the query (`SELECT extra::text`) and use
 
 A MySQL `BOOLEAN` / `BOOL` / `TINYINT(1)` column reads back as a JSON
 **boolean**, the same as a PostgreSQL `bool`. MySQL has no boolean type — all
-three spellings are `TINYINT(1)` — but the width-1 declaration is the
+three spellings are `TINYINT(1)`, but the width-1 declaration is the
 convention every framework writes and the only one MySQL 8 still preserves, so
 it is treated as the boolean it is meant to be. A `TINYINT` *without* the width
 is a different column and stays a number; if you are genuinely storing a small
@@ -916,7 +916,7 @@ be enabled in config. If `value` is omitted, the full data context is published.
 ```
 
 A computed `topic` is what lets one task fan a stream out by content — the
-tenant, the region, the event type — where before it took one task per
+tenant, the region, the event type, where before it took one task per
 destination:
 
 ```json
@@ -1011,7 +1011,7 @@ uploads. Each method answers to its own connector gate (`presign_get` /
 
 One SigV4-signed HEAD for object metadata. A missing object is **data, not
 failure**: 404 answers `{ "exists": false }` — "is it there yet?" is the
-question this function exists to ask — while auth failures, timeouts, and
+question this function exists to ask, while auth failures, timeouts, and
 other statuses fail the task. One attempt inside the circuit breaker; a
 workflow can loop if it wants polling.
 
@@ -1036,7 +1036,7 @@ workflow can loop if it wants polling.
 
 ### `channel_call`
 
-Invokes another channel's workflow **in-process** — no network hop. The called
+Invokes another channel's workflow **in-process**: no network hop. The called
 channel keeps its own versioning and governance. Cycle detection and a max call
 depth prevent runaway recursion.
 
@@ -1160,7 +1160,7 @@ claim.
 | `kid` | string | no | — | Key id stamped into the header, for rotation-aware verifiers |
 | `output` | string \| JSONLogic | no | `"data"` | Where the token (string) is stored |
 
-`iat` and `exp` supplied through `claims` must be **numbers** — seconds since
+`iat` and `exp` supplied through `claims` must be **numbers**: seconds since
 the Unix epoch (NumericDate, RFC 7519 §2). A string date is refused at sign
 time rather than minting a token every verifier rejects later. Nothing in Orion
 makes a trust decision on `iat`: neither `jwt_verify` nor the channel `jwt`
@@ -1211,11 +1211,11 @@ the same schemas to AI assistants so generated workflows use correct field names
 
 ## Related
 
-- [Workflow Reference](./workflows.md) — the workflow schema, the data context,
+- [Workflow Reference](./workflows.md): the workflow schema, the data context,
   and how task conditions select which tasks run.
-- [Portable Data Dialect](./data-dialect.md) — the full envelope, operator
+- [Portable Data Dialect](./data-dialect.md): the full envelope, operator
   vocabulary, and backend parity rules behind `data_query`/`data_write`.
-- [Connectors](./connectors.md) — per-type connector fields, retries, and
+- [Connectors](./connectors.md): per-type connector fields, retries, and
   circuit-breaker behaviour.
-- [Admin API](./admin-api.md) — creating, validating, and activating the
+- [Admin API](./admin-api.md): creating, validating, and activating the
   workflows these functions run in.

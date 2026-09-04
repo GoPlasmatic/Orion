@@ -56,7 +56,7 @@ again to each member.
 An **operator node** is a single-key object whose key is an operator the
 engine evaluates (`var`, `>=`, `and`, `cat`, `secret`, …). It is recognised
 wherever it appears — a `condition`, a mapping's `logic`, a `filter`, a
-query-dialect filter — and laid out by its **shape**:
+query-dialect filter, and laid out by its **shape**:
 
 | Shape | Definition | Layout |
 |---|---|---|
@@ -127,5 +127,5 @@ files in the run are still formatted.
 
 ## Related
 
-- [CLI Reference — `fmt`](./cli.md#fmt) — the command, its flags and exit codes
-- [Test Workflows Offline](../build/testing.md) — where `fmt --check` sits in a CI gate
+- [CLI Reference — `fmt`](./cli.md#fmt): the command, its flags and exit codes
+- [Test Workflows Offline](../build/testing.md): where `fmt --check` sits in a CI gate
