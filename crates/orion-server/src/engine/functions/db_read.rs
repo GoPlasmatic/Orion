@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
     ConnectorCall, decode_failure, reject_mongo_connector, require_op_allowed, resolve_bind_params,
-    resolve_numeric_as, timed_query, to_connect_error,
+    resolve_row_format, timed_query, to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -38,7 +38,7 @@ pub struct DbReadHandler {
 pub struct DbRead {
     query: String,
     params: Vec<Value>,
-    numeric_as: crate::connector::sql_decode::NumericAs,
+    format: crate::connector::sql_decode::RowFormat,
 }
 
 impl DbRead {
@@ -48,7 +48,8 @@ impl DbRead {
     /// The half `db_read` and `db_write` genuinely share: a literal statement
     /// and message-derived binds.
     ///
-    /// `numeric_as` is **not** read here. It governs how a decoded row renders,
+    /// The rendering choices (`numeric_as`, `binary_as`) are **not** read here.
+    /// They govern how a decoded row renders,
     /// and `db_write` decodes no rows — it answers `rows_affected`. Reading it
     /// on both paths meant a wrong value produced `db_write: 'numeric_as' must
     /// be one of number/string`, an error naming a field `DB_WRITE_FIELDS` does
@@ -62,7 +63,7 @@ impl DbRead {
         Ok(Self {
             query: call.require_str(input, "query")?.to_string(),
             params: resolve_bind_params(input, call.name, ctx)?,
-            numeric_as: crate::connector::sql_decode::NumericAs::default(),
+            format: crate::connector::sql_decode::RowFormat::default(),
         })
     }
 
@@ -74,7 +75,7 @@ impl DbRead {
         ctx: &TaskContext<'_>,
     ) -> Result<Self, HandlerError> {
         let read = Self {
-            numeric_as: resolve_numeric_as(input, call.name, ctx)?,
+            format: resolve_row_format(input, call.name, ctx)?,
             ..Self::parse_statement(call, input, ctx)?
         };
         require_read_only(&read.query, call.name)?;
@@ -89,8 +90,8 @@ impl DbRead {
         &self.params
     }
 
-    pub(super) fn numeric_as(&self) -> crate::connector::sql_decode::NumericAs {
-        self.numeric_as
+    pub(super) fn format(&self) -> crate::connector::sql_decode::RowFormat {
+        self.format
     }
 }
 
@@ -146,7 +147,7 @@ impl ConnectorHandler for DbReadHandler {
 
         let max_rows = self.max_rows;
         let params = read.params();
-        let numeric = read.numeric_as();
+        let format = read.format();
         let query = read.query();
 
         // One body, three drivers: the macro binds the concrete pool, its
@@ -184,7 +185,7 @@ impl ConnectorHandler for DbReadHandler {
                     Ok(rows)
                 })
                 .await?;
-                rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?
+                rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?
             }
         );
 
@@ -225,6 +226,13 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "numeric_as",
         description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs.",
+        kind: FieldKind::String,
+        resolvable: true,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "binary_as",
+        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary.",
         kind: FieldKind::String,
         resolvable: true,
         ..FieldSchema::DEFAULT

@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
     ConnectorCall, QueryBudget, build_entity_registry, decode_failure, es_request, is_mongo,
-    require_op_allowed, resolve_numeric_as, resolve_params, timed_query, to_connect_error,
+    require_op_allowed, resolve_params, resolve_row_format, timed_query, to_connect_error,
     to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
@@ -62,9 +62,9 @@ pub struct DataQuery {
     query: Value,
     params: Map<String, Value>,
     schema: Option<Value>,
-    /// How an arbitrary-precision decimal is rendered (#309). SQL backends
-    /// only; Elasticsearch and MongoDB carry their own JSON types.
-    numeric_as: crate::connector::sql_decode::NumericAs,
+    /// How a decimal and a binary column render. SQL backends only;
+    /// Elasticsearch and MongoDB carry their own JSON types.
+    format: crate::connector::sql_decode::RowFormat,
     database: Option<String>,
 }
 
@@ -101,7 +101,7 @@ impl ConnectorHandler for DataQueryHandler {
             // message touches the query. It produces concrete literals, not
             // SQL, which the pure translation path then folds into the filter.
             params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
-            numeric_as: resolve_numeric_as(input, call.name, ctx)?,
+            format: resolve_row_format(input, call.name, ctx)?,
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, relation declarations.
             schema: input.get("schema").cloned(),
@@ -201,14 +201,8 @@ impl ConnectorHandler for DataQueryHandler {
                     .get_pool(call.connector, db)
                     .await
                     .map_err(to_connect_error)?;
-                run_sql_with_includes(
-                    &pool,
-                    &plan,
-                    dialect,
-                    db.query_timeout_ms,
-                    parsed.numeric_as,
-                )
-                .await?
+                run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms, parsed.format)
+                    .await?
             }
             // `DataBackend` admits `db` and `es` and nothing else, and it
             // produced the "is not a db or es connector" refusal — the one this
@@ -283,7 +277,7 @@ async fn run_sql_with_includes(
     plan: &query::SqlPlan,
     dialect: SqlDialect,
     timeout_ms: Option<u64>,
-    numeric: crate::connector::sql_decode::NumericAs,
+    format: crate::connector::sql_decode::RowFormat,
 ) -> Result<Value, DataflowError> {
     let budget = QueryBudget::start(timeout_ms);
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
@@ -295,7 +289,7 @@ async fn run_sql_with_includes(
             let rows = budget
                 .run(NAME, sqlx::query_with(&sql, values).fetch_all(p))
                 .await?;
-            rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?
+            rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?
         }
     );
 
@@ -330,7 +324,7 @@ async fn run_sql_with_includes(
                     let crows = budget
                         .run(NAME, sqlx::query_with(&csql, cvalues).fetch_all(p))
                         .await?;
-                    rows_to_json(&crows, numeric).map_err(|e| decode_failure(NAME, e))?
+                    rows_to_json(&crows, format).map_err(|e| decode_failure(NAME, e))?
                 }
             );
             for mut child in children {
@@ -443,3 +437,10 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         ..FieldSchema::DEFAULT
     },
 ];
+    FieldSchema {
+        name: "binary_as",
+        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
+        kind: FieldKind::String,
+        resolvable: true,
+        ..FieldSchema::DEFAULT
+    },

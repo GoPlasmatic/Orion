@@ -60,6 +60,63 @@ impl NumericAs {
     pub const VALUES: &'static str = "number/string";
 }
 
+/// How to render a binary column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BinaryAs {
+    /// The bytes as text when they are valid UTF-8, lowercase hex when they are
+    /// not.
+    ///
+    /// The default, and the one setting whose *output shape depends on the
+    /// data*: two rows of one column can come back as text and as hex, with
+    /// nothing distinguishing them, so a workflow that decodes the hex breaks
+    /// the first time a value happens to be valid UTF-8. It is the default
+    /// because MySQL reports `TEXT` and `JSON` columns as `BLOB`, which makes
+    /// text the right answer far more often than not — and because it is what
+    /// every existing task already reads.
+    ///
+    /// For a column that is genuinely binary, name the encoding instead.
+    #[default]
+    Auto,
+    /// Lowercase hex, whatever the bytes are.
+    Hex,
+    /// Standard base64 (padded), whatever the bytes are.
+    Base64,
+    /// The bytes as UTF-8 text, or a named decode error when they are not —
+    /// the strict reading of "this column holds text".
+    Text,
+}
+
+impl BinaryAs {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "auto" => Some(Self::Auto),
+            "hex" => Some(Self::Hex),
+            "base64" => Some(Self::Base64),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+    pub const VALUES: &'static str = "auto/hex/base64/text";
+}
+
+/// How one result set renders the values JSON cannot hold exactly.
+///
+/// One struct rather than a growing parameter list: every decoder threads it
+/// from the handler to the column, and a third question about rendering should
+/// not mean touching all eight signatures again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RowFormat {
+    pub numeric: NumericAs,
+    pub binary: BinaryAs,
+}
+
+impl RowFormat {
+    /// The rendering an unconfigured task gets.
+    pub fn new(numeric: NumericAs, binary: BinaryAs) -> Self {
+        Self { numeric, binary }
+    }
+}
+
 /// A column that could not be decoded, named so the author can act.
 ///
 /// Carries the remedy as well as the cause: casting in SQL and parsing back is
@@ -119,17 +176,36 @@ fn float_to_json(v: f64, column: &str, sql_type: &str) -> Decoded<Value> {
         })
 }
 
-/// Binary columns become a string: the UTF-8 text when the bytes are valid
-/// UTF-8 (MySQL reports `TEXT`/`JSON` columns as `BLOB`, so this is the common
-/// case), otherwise lowercase hex.
-fn blob_to_json(bytes: Vec<u8>) -> Value {
-    match String::from_utf8(bytes) {
-        Ok(s) => Value::String(s),
-        Err(e) => Value::String(crate::crypto::encode_bytes(
-            crate::crypto::Codec::Hex,
-            &e.into_bytes(),
+/// Binary columns become a string, in the spelling `binary_as` asks for.
+///
+/// [`BinaryAs::Auto`] is the historical rule — UTF-8 text when the bytes are
+/// valid UTF-8 (MySQL reports `TEXT`/`JSON` columns as `BLOB`, so this is the
+/// common case), lowercase hex when they are not. It is also the one mode whose
+/// output shape is decided by the value rather than by the task, which is the
+/// reason the other three exist.
+fn blob_to_json(bytes: Vec<u8>, mode: BinaryAs, column: &str, sql_type: &str) -> Decoded<Value> {
+    let hex = |b: &[u8]| Value::String(crate::crypto::encode_bytes(crate::crypto::Codec::Hex, b));
+    Ok(match mode {
+        BinaryAs::Auto => match String::from_utf8(bytes) {
+            Ok(s) => Value::String(s),
+            Err(e) => hex(&e.into_bytes()),
+        },
+        BinaryAs::Hex => hex(&bytes),
+        BinaryAs::Base64 => Value::String(crate::crypto::encode_bytes(
+            crate::crypto::Codec::Base64,
+            &bytes,
         )),
-    }
+        BinaryAs::Text => match String::from_utf8(bytes) {
+            Ok(s) => Value::String(s),
+            Err(e) => {
+                return Err(DecodeError {
+                    column: column.to_string(),
+                    sql_type: sql_type.to_string(),
+                    detail: format!("binary_as is \"text\" but the bytes are not valid UTF-8: {e}"),
+                });
+            }
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -142,12 +218,12 @@ fn blob_to_json(bytes: Vec<u8>) -> Value {
 /// an enum, a domain over another type) and `name()` for the rest. Matching the
 /// type the server declared, rather than probing Rust types until one sticks,
 /// is what makes an unhandled type a named error instead of a silent null.
-pub fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow], numeric: NumericAs) -> Decoded<Vec<Value>> {
+pub fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow], format: RowFormat) -> Decoded<Vec<Value>> {
     rows.iter()
         .map(|row| {
             let mut obj = Map::new();
             for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), pg_column(row, i, &name, numeric)?);
+                obj.insert(name.clone(), pg_column(row, i, &name, format)?);
             }
             Ok(Value::Object(obj))
         })
@@ -158,7 +234,7 @@ fn pg_column(
     row: &sqlx::postgres::PgRow,
     i: usize,
     name: &str,
-    numeric: NumericAs,
+    format: RowFormat,
 ) -> Decoded<Value> {
     use sqlx::postgres::{PgTypeInfo, PgTypeKind};
 
@@ -192,7 +268,7 @@ fn pg_column(
     // it needs `try_get_unchecked`, not a new arm.
     let kind = info.kind().clone();
     if let PgTypeKind::Domain(inner) = &kind {
-        return pg_by_name(row, i, name, inner.name(), numeric, &fail);
+        return pg_by_name(row, i, name, inner.name(), format, &fail);
     }
     // An enum arrives as its label, in the wire's binary format, which for an
     // enum *is* the text. sqlx has no Rust type for a database-defined enum, so
@@ -204,10 +280,10 @@ fn pg_column(
             .map_err(|e| fail(format!("enum label is not UTF-8: {e}")));
     }
     if let PgTypeKind::Array(elem) = &kind {
-        return pg_array(row, i, name, elem.name(), numeric, &fail);
+        return pg_array(row, i, name, elem.name(), format, &fail);
     }
 
-    pg_by_name(row, i, name, &sql_type, numeric, &fail)
+    pg_by_name(row, i, name, &sql_type, format, &fail)
 }
 
 /// The scalar table. Names are `PgTypeInfo::name()` — sqlx's display names,
@@ -217,7 +293,7 @@ fn pg_by_name(
     i: usize,
     column: &str,
     sql_type: &str,
-    numeric: NumericAs,
+    format: RowFormat,
     fail: &dyn Fn(String) -> DecodeError,
 ) -> Decoded<Value> {
     macro_rules! get {
@@ -237,7 +313,7 @@ fn pg_by_name(
         "FLOAT8" => float_to_json(get!(f64), column, sql_type)?,
         "NUMERIC" => decimal_to_json(
             get!(bigdecimal::BigDecimal).to_string(),
-            numeric,
+            format.numeric,
             column,
             sql_type,
         )?,
@@ -254,7 +330,7 @@ fn pg_by_name(
         // The value itself, not a re-parsed string: the whole reason a workflow
         // stores a document is to read it back as one.
         "JSON" | "JSONB" => get!(Value),
-        "BYTEA" => blob_to_json(get!(Vec<u8>)),
+        "BYTEA" => blob_to_json(get!(Vec<u8>), format.binary, column, sql_type)?,
         "TIMESTAMPTZ" => Value::String(
             get!(chrono::DateTime<chrono::Utc>)
                 .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
@@ -278,7 +354,7 @@ fn pg_array(
     i: usize,
     column: &str,
     elem: &str,
-    numeric: NumericAs,
+    format: RowFormat,
     fail: &dyn Fn(String) -> DecodeError,
 ) -> Decoded<Value> {
     macro_rules! arr {
@@ -302,7 +378,7 @@ fn pg_array(
         "FLOAT4" => arr!(f32, |v: f32| float_to_json(f64::from(v), column, elem)),
         "FLOAT8" => arr!(f64, |v: f64| float_to_json(v, column, elem)),
         "NUMERIC" => arr!(bigdecimal::BigDecimal, |v: bigdecimal::BigDecimal| {
-            decimal_to_json(v.to_string(), numeric, column, elem)
+            decimal_to_json(v.to_string(), format.numeric, column, elem)
         }),
         // The same spellings as the scalar table above: `pg_column` hands this
         // function `elem.name()`, so `char(n)[]` arrives as `CHAR` and
@@ -318,7 +394,12 @@ fn pg_array(
         ),
         "UUID" => arr!(uuid::Uuid, |v: uuid::Uuid| Ok(Value::String(v.to_string()))),
         "JSON" | "JSONB" => arr!(Value, Ok::<Value, DecodeError>),
-        "BYTEA" => arr!(Vec<u8>, |v: Vec<u8>| Ok(blob_to_json(v))),
+        "BYTEA" => arr!(Vec<u8>, |v: Vec<u8>| blob_to_json(
+            v,
+            format.binary,
+            column,
+            elem
+        )),
         "TIMESTAMPTZ" => arr!(chrono::DateTime<chrono::Utc>, |v: chrono::DateTime<
             chrono::Utc,
         >| {
@@ -355,13 +436,13 @@ fn pg_array(
 /// `DECIMAL` and `JSON`.
 pub fn mysql_rows_to_json(
     rows: &[sqlx::mysql::MySqlRow],
-    numeric: NumericAs,
+    format: RowFormat,
 ) -> Decoded<Vec<Value>> {
     rows.iter()
         .map(|row| {
             let mut obj = Map::new();
             for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), mysql_column(row, i, &name, numeric)?);
+                obj.insert(name.clone(), mysql_column(row, i, &name, format)?);
             }
             Ok(Value::Object(obj))
         })
@@ -372,7 +453,7 @@ fn mysql_column(
     row: &sqlx::mysql::MySqlRow,
     i: usize,
     name: &str,
-    numeric: NumericAs,
+    format: RowFormat,
 ) -> Decoded<Value> {
     let raw = row.try_get_raw(i).map_err(|e| DecodeError {
         column: name.to_string(),
@@ -427,7 +508,7 @@ fn mysql_column(
         "DOUBLE" => float_to_json(get!(f64), name, &sql_type)?,
         "DECIMAL" => decimal_to_json(
             get!(bigdecimal::BigDecimal).to_string(),
-            numeric,
+            format.numeric,
             name,
             &sql_type,
         )?,
@@ -440,7 +521,7 @@ fn mysql_column(
         }
         "JSON" => get!(Value),
         "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            blob_to_json(get!(Vec<u8>))
+            blob_to_json(get!(Vec<u8>), format.binary, name, &sql_type)?
         }
         "TIMESTAMP" => Value::String(
             get!(chrono::DateTime<chrono::Utc>)
@@ -468,23 +549,29 @@ fn mysql_column(
 /// here describes the *value*, not the schema. That is why a `numeric_as`
 /// setting has nothing to act on: a SQLite `NUMERIC` column stores whichever
 /// class the value fits, and what comes back is already an integer, a float or
-/// text.
+/// text. `binary_as` *is* honoured — `BLOB` is a storage class, so it survives
+/// the same round trip a declared type does not.
 pub fn sqlite_rows_to_json(
     rows: &[sqlx::sqlite::SqliteRow],
-    _numeric: NumericAs,
+    format: RowFormat,
 ) -> Decoded<Vec<Value>> {
     rows.iter()
         .map(|row| {
             let mut obj = Map::new();
             for (i, name) in column_names(row).into_iter().enumerate() {
-                obj.insert(name.clone(), sqlite_column(row, i, &name)?);
+                obj.insert(name.clone(), sqlite_column(row, i, &name, format)?);
             }
             Ok(Value::Object(obj))
         })
         .collect()
 }
 
-fn sqlite_column(row: &sqlx::sqlite::SqliteRow, i: usize, name: &str) -> Decoded<Value> {
+fn sqlite_column(
+    row: &sqlx::sqlite::SqliteRow,
+    i: usize,
+    name: &str,
+    format: RowFormat,
+) -> Decoded<Value> {
     let raw = row.try_get_raw(i).map_err(|e| DecodeError {
         column: name.to_string(),
         sql_type: "?".to_string(),
@@ -516,7 +603,7 @@ fn sqlite_column(row: &sqlx::sqlite::SqliteRow, i: usize, name: &str) -> Decoded
         "INTEGER" => Value::Number(get!(i64).into()),
         "REAL" => float_to_json(get!(f64), name, &sql_type)?,
         "TEXT" => Value::String(get!(String)),
-        "BLOB" => blob_to_json(get!(Vec<u8>)),
+        "BLOB" => blob_to_json(get!(Vec<u8>), format.binary, name, &sql_type)?,
         other => {
             return Err(fail(format!(
                 "no JSON representation for {other} is defined"
@@ -524,4 +611,74 @@ fn sqlite_column(row: &sqlx::sqlite::SqliteRow, i: usize, name: &str) -> Decoded
         }
     };
     Ok(value)
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+
+    /// `DecodeError` carries no `Debug`, and this is a test — so unwrap it
+    /// through the message an author would actually see.
+    fn blob(bytes: Vec<u8>, mode: BinaryAs) -> Value {
+        match blob_to_json(bytes, mode, "c", "BLOB") {
+            Ok(v) => v,
+            Err(e) => panic!("{}", e.message("test")),
+        }
+    }
+
+    /// The historical rule, and the only mode whose result shape is decided by
+    /// the bytes rather than by the task.
+    #[test]
+    fn auto_reads_utf8_as_text_and_the_rest_as_hex() {
+        assert_eq!(
+            blob(b"hello".to_vec(), BinaryAs::Auto),
+            Value::String("hello".to_string())
+        );
+        assert_eq!(
+            blob(vec![0xff, 0x00], BinaryAs::Auto),
+            Value::String("ff00".to_string())
+        );
+    }
+
+    /// The point of naming an encoding: one shape whatever the bytes are, so a
+    /// workflow that decodes the column cannot be broken by a row that happens
+    /// to be valid UTF-8.
+    #[test]
+    fn a_named_encoding_does_not_depend_on_the_bytes() {
+        for (mode, utf8, binary) in [
+            (BinaryAs::Hex, "68690a", "ff00"),
+            (BinaryAs::Base64, "aGkK", "/wA="),
+        ] {
+            assert_eq!(
+                blob(b"hi\n".to_vec(), mode),
+                Value::String(utf8.to_string()),
+                "{mode:?} on text-shaped bytes"
+            );
+            assert_eq!(
+                blob(vec![0xff, 0x00], mode),
+                Value::String(binary.to_string()),
+                "{mode:?} on binary bytes"
+            );
+        }
+    }
+
+    /// `text` is the strict reading: bytes that are not UTF-8 are a named
+    /// decode error, not a silent fallback to another shape.
+    #[test]
+    fn text_refuses_bytes_that_are_not_utf8() {
+        let Err(err) = blob_to_json(vec![0xff], BinaryAs::Text, "payload", "BYTEA") else {
+            panic!("bytes that are not UTF-8 must not decode as text");
+        };
+        let msg = err.message("db_read");
+        assert!(msg.contains("payload"), "{msg}");
+        assert!(msg.contains("binary_as"), "{msg}");
+    }
+
+    #[test]
+    fn the_default_is_the_historical_rule() {
+        assert_eq!(BinaryAs::default(), BinaryAs::Auto);
+        assert_eq!(RowFormat::default().binary, BinaryAs::Auto);
+        assert_eq!(BinaryAs::parse("base64"), Some(BinaryAs::Base64));
+        assert_eq!(BinaryAs::parse("utf8"), None);
+    }
 }

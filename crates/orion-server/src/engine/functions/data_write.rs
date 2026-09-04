@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
     ConnectorCall, QueryBudget, build_entity_registry, decode_failure, es_request, es_write_error,
-    is_mongo, require_op_allowed, resolve_numeric_as, resolve_params, send_es, timed_query,
+    is_mongo, require_op_allowed, resolve_params, resolve_row_format, send_es, timed_query,
     to_connect_error, to_exec_error,
 };
 use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
@@ -69,9 +69,9 @@ pub struct DataWriteHandler {
 /// there is nothing to resolve until the connector is in hand.
 pub struct DataWrite {
     params: Map<String, Value>,
-    /// How an arbitrary-precision decimal in a `returning` row is rendered
-    /// (#309). SQL backends only.
-    numeric_as: crate::connector::sql_decode::NumericAs,
+    /// How a decimal and a binary column in a `returning` row render. SQL
+    /// backends only.
+    format: crate::connector::sql_decode::RowFormat,
     schema: Option<Value>,
     envelope: Value,
     database: Option<String>,
@@ -123,7 +123,7 @@ impl ConnectorHandler for DataWriteHandler {
             // Resolved against the message context (the only point the message
             // touches the mutation); it produces literals, not SQL.
             params: resolve_params(input, <Self as ConnectorHandler>::NAME, ctx),
-            numeric_as: resolve_numeric_as(input, <Self as ConnectorHandler>::NAME, ctx)?,
+            format: resolve_row_format(input, <Self as ConnectorHandler>::NAME, ctx)?,
             // Optional inline schema (privileged config): renames, allowlist,
             // and the per-column `writable` flag.
             schema: input.get("schema").cloned(),
@@ -215,7 +215,7 @@ impl ConnectorHandler for DataWriteHandler {
                     values,
                     &resolved,
                     db.query_timeout_ms,
-                    parsed.numeric_as,
+                    parsed.format,
                     self.max_returning,
                 )
                 .await?
@@ -272,7 +272,7 @@ async fn execute_sql(
     values: sea_query_sqlx::SqlxValues,
     w: &ResolvedWrite,
     timeout_ms: Option<u64>,
-    numeric: crate::connector::sql_decode::NumericAs,
+    format: crate::connector::sql_decode::RowFormat,
     max_returning: usize,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     let budget = QueryBudget::start(timeout_ms);
@@ -285,7 +285,7 @@ async fn execute_sql(
             if w.is_multi_row() || w.returns_unbounded_rows() {
                 let mut tx = budget.run(NAME, p.begin()).await?;
                 let out = run_write_statement(
-                    &mut *tx, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                    &mut *tx, sql, values, w, &budget, rows_to_json, write_result, format,
                     max_returning,
                 )
                 .await?;
@@ -293,7 +293,7 @@ async fn execute_sql(
                 out
             } else {
                 run_write_statement(
-                    p, sql, values, w, &budget, rows_to_json, write_result, numeric,
+                    p, sql, values, w, &budget, rows_to_json, write_result, format,
                     max_returning,
                 )
                 .await?
@@ -328,7 +328,7 @@ async fn run_write_statement<'e, E, R, F, G>(
     budget: &QueryBudget,
     rows_to_json: F,
     write_result: G,
-    numeric: crate::connector::sql_decode::NumericAs,
+    format: crate::connector::sql_decode::RowFormat,
     max_returning: usize,
 ) -> Result<Value, DataflowError>
 where
@@ -337,7 +337,7 @@ where
     sea_query_sqlx::SqlxValues: sqlx::IntoArguments<'e, R>,
     F: Fn(
         &[R::Row],
-        crate::connector::sql_decode::NumericAs,
+        crate::connector::sql_decode::RowFormat,
     ) -> Result<Vec<Value>, crate::connector::sql_decode::DecodeError>,
     G: Fn(&R::QueryResult) -> (u64, Option<i64>),
 {
@@ -374,7 +374,7 @@ where
                 Ok(rows)
             })
             .await?;
-        let returning = rows_to_json(&rows, numeric).map_err(|e| decode_failure(NAME, e))?;
+        let returning = rows_to_json(&rows, format).map_err(|e| decode_failure(NAME, e))?;
         let count = returning.len();
         Ok(json!({ "rows_affected": count, "returning": returning }))
     }
@@ -724,6 +724,13 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "numeric_as",
         description: "How an arbitrary-precision decimal column is rendered: \"number\" (default) or \"string\". A number is computable in JSONLogic and rounds beyond 2^53 or on most decimal fractions; a string keeps every digit, which is what a money column needs. SQL backends only.",
+        kind: FieldKind::String,
+        resolvable: true,
+        ..FieldSchema::DEFAULT
+    },
+    FieldSchema {
+        name: "binary_as",
+        description: "How a binary column is rendered: \"auto\" (default), \"hex\", \"base64\" or \"text\". Auto reads the bytes as text when they are valid UTF-8 and as hex when they are not, so its result shape depends on the data; name an encoding for a column that is genuinely binary. SQL backends only.",
         kind: FieldKind::String,
         resolvable: true,
         ..FieldSchema::DEFAULT

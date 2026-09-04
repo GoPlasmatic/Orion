@@ -965,6 +965,45 @@ pub fn resolve_numeric_as(
     }
 }
 
+/// Read the `binary_as` input: how a binary column is rendered.
+///
+/// Absent is [`crate::connector::sql_decode::BinaryAs::Auto`], the historical
+/// rule — text when the bytes are valid UTF-8, hex when they are not. That is
+/// the one setting whose output *shape* depends on the value rather than on
+/// the task, so a column that is genuinely binary should name an encoding.
+pub fn resolve_binary_as(
+    input: &TemplatedInput,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<crate::connector::sql_decode::BinaryAs, DataflowError> {
+    use crate::connector::sql_decode::BinaryAs;
+    match resolve_optional_str(input, "binary_as", handler_name, ctx)? {
+        None => Ok(BinaryAs::default()),
+        Some(s) => BinaryAs::parse(&s).ok_or_else(|| {
+            DataflowError::Validation(format!(
+                "{handler_name}: 'binary_as' must be one of {} (got '{s}')",
+                BinaryAs::VALUES
+            ))
+        }),
+    }
+}
+
+/// Both rendering choices a result set carries, read together.
+///
+/// # Errors
+///
+/// As [`resolve_numeric_as`] and [`resolve_binary_as`].
+pub fn resolve_row_format(
+    input: &TemplatedInput,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<crate::connector::sql_decode::RowFormat, DataflowError> {
+    Ok(crate::connector::sql_decode::RowFormat::new(
+        resolve_numeric_as(input, handler_name, ctx)?,
+        resolve_binary_as(input, handler_name, ctx)?,
+    ))
+}
+
 /// The query timeout a connector that declares no `query_timeout_ms` gets.
 const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
 

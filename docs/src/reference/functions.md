@@ -411,6 +411,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
 | `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns). SQL backends only |
+| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](#binary-columns). SQL backends only |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 > [!NOTE]
@@ -469,6 +470,7 @@ for the full envelope, backend mapping, and safety rules.
 | `schema` | object | yes | — | Inline entity schema: renames, allowlist, `writable` flags. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones. Enforced at run time, like `data_query`'s |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
 | `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns). SQL backends only |
+| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](#binary-columns). SQL backends only |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the write result is written |
 
 #### Updating array elements
@@ -580,6 +582,7 @@ cannot write.
 | `query` | string | yes | — | `SELECT` statement with bind placeholders |
 | `params` | array | no | — | Values bound to the placeholders, in order |
 | `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns) |
+| `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](#binary-columns). |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
 
 ```json
@@ -613,6 +616,32 @@ decision rather than an accident. `bigint` is unaffected either way, because a
 SQLite has no static column types — a `NUMERIC` column stores whichever storage
 class the value fits, so the setting has nothing to act on there and is
 ignored.
+
+#### Binary columns
+
+A `bytea` (PostgreSQL), `blob` (SQLite) or `binary`/`varbinary`/`blob` (MySQL)
+column has no JSON form either. `binary_as` decides which way that resolves:
+
+| Value | Result |
+|---|---|
+| `"auto"` (default) | The bytes as text when they are valid UTF-8, lowercase hex when they are not |
+| `"hex"` | Lowercase hex, whatever the bytes are |
+| `"base64"` | Standard padded base64, whatever the bytes are |
+| `"text"` | The bytes as UTF-8 text, or a **`400` naming the column** when they are not |
+
+`auto` is the default because MySQL reports `TEXT` and `JSON` columns as
+`BLOB` — so text is the right answer far more often than not — and because it
+is what every task written before this setting existed already reads.
+
+It is also the one mode whose **result shape is decided by the data**: two rows
+of the same column can come back as text and as hex, with nothing in the result
+telling them apart, so a workflow that hex-decodes the column breaks the first
+time a value happens to be valid UTF-8. For a column that is genuinely binary,
+name an encoding. This is the same trade `numeric_as` makes, and it resolves
+the same way: the default is the convenient one, not the safe one.
+
+Unlike `numeric_as`, this setting **does** apply on SQLite — `BLOB` is a
+storage class, so it survives the round trip a declared type does not.
 
 #### Column types
 
