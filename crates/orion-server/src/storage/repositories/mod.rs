@@ -4,6 +4,7 @@ pub mod cluster;
 pub mod connectors;
 pub mod helpers;
 pub mod packages;
+pub mod plugins;
 pub mod trace_dlq;
 pub mod traces;
 pub(crate) mod versioned;
@@ -31,6 +32,7 @@ pub struct Repositories {
     pub audit_logs: Arc<dyn audit_logs::AuditLogRepository>,
     pub trace_dlq: Arc<dyn trace_dlq::TraceDlqRepository>,
     pub packages: Arc<dyn packages::PackageRepository>,
+    pub plugins: Arc<dyn plugins::PluginRepository>,
 }
 
 impl Repositories {
@@ -62,6 +64,7 @@ impl Repositories {
             audit_logs: Arc::new(audit_logs::SqlAuditLogRepository::new(pool.clone())),
             trace_dlq: Arc::new(trace_dlq::SqlTraceDlqRepository::new(pool.clone())),
             packages: Arc::new(packages::SqlPackageRepository::new(pool.clone())),
+            plugins: Arc::new(plugins::SqlPluginRepository::new(pool.clone())),
         })
     }
 

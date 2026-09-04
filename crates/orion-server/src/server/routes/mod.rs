@@ -24,6 +24,9 @@ pub struct RouteOptions {
     /// Bounds admin request bodies independently of the data plane (R16) —
     /// see [`admin::admin_routes`].
     pub max_admin_body_size: usize,
+    /// The admin body limit for the plugin routes alone: base64 of the
+    /// largest component plus room for the manifest and import framing.
+    pub plugin_body_size: usize,
     /// Gates `/docs` and `/api/v1/openapi.json` (S17, resolved by
     /// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the
     /// whole admin API surface anonymously, so production deployments keep it
@@ -75,6 +78,7 @@ pub(crate) fn shadowed_platform_route(served_path: &str) -> Option<&'static str>
 pub fn api_routes(options: RouteOptions) -> Router<AppState> {
     let RouteOptions {
         max_admin_body_size,
+        plugin_body_size,
         docs_enabled,
         metrics_enabled,
         data_mounts,
@@ -83,7 +87,10 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
         .route("/health", get(health_check))
         .route("/healthz", get(liveness_check))
         .route("/readyz", get(readiness_check))
-        .nest("/api/v1/admin", admin::admin_routes(max_admin_body_size))
+        .nest(
+            "/api/v1/admin",
+            admin::admin_routes(max_admin_body_size, plugin_body_size),
+        )
         .nest("/api/v1/data", data::data_routes());
 
     // Extra data-plane mounts (`server.data_mounts`). `.route`, never
@@ -192,6 +199,12 @@ pub(crate) async fn health_check(
     // only signal that they are not being served.
     let quarantined_channels = generation.channels.quarantined();
 
+    // A plugin that did not load on this node — no artifact, a component
+    // that will not compile, a failed self-test, or the sandbox being off
+    // while an active row exists — quarantines the workflows naming its
+    // functions the same way; this is the signal for it.
+    let plugin_issues = &generation.plugins.issues;
+
     // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
     // 200s while no message is consumed. Absent entirely when Kafka is off.
     let kafka_state = kafka_component(&state);
@@ -253,6 +266,16 @@ pub(crate) async fn health_check(
             // the newest config. Taking it out of rotation would trade a
             // stale-config problem for an availability one.
             "engine_reload": if reload_degraded { "degraded" } else { "ok" },
+            // `disabled` is a state, not a fault: a node without the sandbox
+            // serves everything else. It degrades only when an active plugin
+            // row exists that this node could not load.
+            "plugins": if state.plugins.is_none() && plugin_issues.is_empty() {
+                "disabled"
+            } else if plugin_issues.is_empty() {
+                "ok"
+            } else {
+                "degraded"
+            },
         },
     });
     if let Some(kafka) = kafka_state {
@@ -281,6 +304,16 @@ pub(crate) async fn health_check(
         });
         body["channels"] = json!({
             "quarantined": quarantined_channels,
+        });
+        body["plugins"] = json!({
+            "loaded": generation.plugins.plugins.iter().map(|p| json!({
+                "plugin": p.id,
+                "version": p.version,
+                "digest": p.digest,
+                "functions": p.functions,
+                "compile_ms": p.compile_ms,
+            })).collect::<Vec<_>>(),
+            "failed_to_load": plugin_issues,
         });
         // O9: task names are internal topology, so the per-task breakdown
         // rides with the other admin-only detail. The coarse

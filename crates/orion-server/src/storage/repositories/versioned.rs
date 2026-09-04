@@ -21,7 +21,9 @@ pub(crate) struct VersionedSpec {
     pub id_col: DynIden,
     pub version_col: DynIden,
     pub status_col: DynIden,
-    pub priority_col: DynIden,
+    /// The engine load order, highest first — `None` for an entity without
+    /// one (plugins), which lists by id instead.
+    pub priority_col: Option<DynIden>,
     /// Named so [`archive_latest_active`]'s single-statement SQLite arm can
     /// stamp it explicitly — there RETURNING cannot see the AFTER UPDATE
     /// trigger that normally maintains it.
@@ -191,14 +193,16 @@ pub(crate) async fn list_active<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
 ) -> Result<Vec<T>, OrionError> {
-    let (sql, values) = build_sqlx(
-        pool.backend(),
-        Query::select()
-            .column(Asterisk)
-            .from(spec.table.clone())
-            .and_where(Expr::col(spec.status_col.clone()).eq(EntityStatus::Active.as_str()))
-            .order_by(spec.priority_col.clone(), Order::Desc),
-    );
+    let mut select = Query::select();
+    select
+        .column(Asterisk)
+        .from(spec.table.clone())
+        .and_where(Expr::col(spec.status_col.clone()).eq(EntityStatus::Active.as_str()));
+    match &spec.priority_col {
+        Some(priority) => select.order_by(priority.clone(), Order::Desc),
+        None => select.order_by(spec.id_col.clone(), Order::Asc),
+    };
+    let (sql, values) = build_sqlx(pool.backend(), &mut select);
     Ok(pool.fetch_all_as::<T>(&sql, values).await?)
 }
 
@@ -451,7 +455,7 @@ mod tests {
             id_col: Channels::ChannelId.into_iden(),
             version_col: Channels::Version.into_iden(),
             status_col: Channels::Status.into_iden(),
-            priority_col: Channels::Priority.into_iden(),
+            priority_col: Some(Channels::Priority.into_iden()),
             updated_at_col: Channels::UpdatedAt.into_iden(),
             label: "Channel",
             noun: "channel",

@@ -695,6 +695,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &cluster,
         );
 
+    // The plugin epoch ticker: the clock every plugin deadline is measured
+    // in, supervised as `Required` so a dead ticker degrades `/readyz`
+    // rather than silently disabling every deadline.
+    if let Some(sandbox) = &components.plugins {
+        orion::plugin::ticker::start(&tasks, sandbox.clone());
+    }
+
     // Kafka ingest starts **after** the background tasks, not before.
     //
     // The consumer now writes a `traces` row per message, so it needs the

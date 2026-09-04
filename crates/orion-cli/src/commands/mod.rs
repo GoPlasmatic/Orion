@@ -12,6 +12,7 @@ pub mod functions;
 pub mod health;
 pub mod metrics;
 pub mod packages;
+pub mod plugins;
 pub mod traces;
 pub mod workflows;
 
@@ -40,6 +41,10 @@ pub enum Commands {
     /// Manage connectors -- external service connections (HTTP, Kafka) used by tasks
     #[command(alias = "conn")]
     Connectors(connectors::ConnectorsCmd),
+
+    /// Manage plugins -- sandboxed WebAssembly task functions
+    #[command(alias = "plug")]
+    Plugins(plugins::PluginsCmd),
 
     /// Send data to a channel for synchronous or asynchronous processing
     Send(data::SendCmd),

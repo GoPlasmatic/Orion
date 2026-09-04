@@ -24,7 +24,7 @@ fn spec() -> VersionedSpec {
         id_col: Workflows::WorkflowId.into_iden(),
         version_col: Workflows::Version.into_iden(),
         status_col: Workflows::Status.into_iden(),
-        priority_col: Workflows::Priority.into_iden(),
+        priority_col: Some(Workflows::Priority.into_iden()),
         updated_at_col: Workflows::UpdatedAt.into_iden(),
         label: "Workflow",
         noun: "workflow",

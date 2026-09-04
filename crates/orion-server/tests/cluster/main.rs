@@ -176,6 +176,100 @@ async fn cluster_nodes_with(
     }
 }
 
+/// A plugin activated through node A is compiled and served by node B within
+/// a few epoch polls: the `Plugins` scope makes B compare the active set's
+/// fingerprint, load the artifact from the shared database and rebuild its
+/// engine with the new handler — no request to B's admin API, no shared
+/// filesystem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn plugin_activation_propagates_across_nodes() {
+    use base64::Engine as _;
+    let h = two_nodes_with(|c| {
+        c.plugins.enabled = true;
+        c.plugins.max_timeout_ms = 2_000;
+    })
+    .await;
+    let component = include_bytes!("../fixtures/plugins/fixture.wasm");
+    let manifest = include_str!("../fixtures/plugins/fixture-upload.toml");
+
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/plugins",
+            Some(json!({
+                "manifest": manifest,
+                "component": base64::engine::general_purpose::STANDARD.encode(component),
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/plugins/test.fixture/status",
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Node B's generation carries the function once its watcher resyncs.
+    let loaded = eventually(h.poll, async || {
+        h.state_b
+            .runtime
+            .load()
+            .functions
+            .contains("test.fixture.wrap")
+    })
+    .await;
+    assert!(
+        loaded,
+        "node B must load the plugin within a few epoch polls"
+    );
+    assert!(h.state_b.runtime.load().plugins.issues.is_empty());
+
+    // And a workflow activated on A that calls it serves on B.
+    common::create_and_activate_channel(
+        &h.node_a,
+        "plugin-prop",
+        json!({
+            "name": "Wrap on B",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "input"}}},
+                {"id": "wrap", "name": "wrap", "function": {"name": "test.fixture.wrap",
+                    "input": {"message": {"var": "data.input.msg"}, "output": "data.result"}}}
+            ]
+        }),
+    )
+    .await;
+    let served = eventually(h.poll, async || {
+        let resp = h
+            .node_b
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/plugin-prop",
+                Some(json!({"data": {"msg": "hi"}})),
+            ))
+            .await
+            .unwrap();
+        if resp.status() != StatusCode::OK {
+            return false;
+        }
+        body_json(resp).await["data"]["result"]["wrapped"]["message"] == "hi"
+    })
+    .await;
+    assert!(served, "node B must serve the plugin-backed channel");
+}
+
 /// A2: a channel activated through node A is served by node B within a few
 /// epoch polls, with no request to node B's admin API.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

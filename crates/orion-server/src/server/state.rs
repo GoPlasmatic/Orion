@@ -19,6 +19,10 @@ pub struct Kafka {
     /// Kafka producer — needed to restart consumer with DLQ support. `None`
     /// when Kafka is disabled or no brokers are configured.
     pub producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    /// The per-connector producer cache the `publish_kafka` handler resolves
+    /// through, kept so a reload that rebuilds the engine can register the
+    /// same publisher boot did. `None` whenever `producer` is.
+    pub producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
     /// Kafka consumer handle — stored here so engine reload can restart the
     /// consumer when async channel topic mappings change.
     pub consumer_handle: Arc<Mutex<Option<crate::kafka::consumer::ConsumerHandle>>>,
@@ -163,6 +167,9 @@ pub struct AppStateInner {
     /// worker or DLQ retry consumer was invisible to every probe while the
     /// data plane kept answering 200s.
     pub tasks: Arc<crate::runtime::TaskRegistry>,
+    /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
+    /// plugin a load issue on this node rather than a running function.
+    pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,

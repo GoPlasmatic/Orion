@@ -20,6 +20,7 @@
 - [Understand Workflows](./concepts/workflows.md)
 - [Understand Connectors](./concepts/connectors.md)
 - [Packages](./concepts/packages.md)
+- [Plugins](./concepts/plugins.md)
 - [The Entity Lifecycle](./concepts/lifecycle.md)
 
 # Build with AI
@@ -76,6 +77,7 @@
 - [Workflow JSON Schema](./reference/workflows.md)
 - [Expression Language (JSONLogic)](./reference/expressions.md)
 - [Task Functions](./reference/functions.md)
+- [Plugins](./reference/plugins.md)
 - [Connector Types](./reference/connectors.md)
 - [Portable Data Dialect](./reference/data-dialect.md)
 - [Configuration Reference](./reference/configuration.md)

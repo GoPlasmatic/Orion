@@ -11,6 +11,7 @@
 pub mod error;
 pub mod handler;
 pub mod limits;
+pub mod loader;
 pub mod manifest;
 pub mod runtime;
 pub mod ticker;
@@ -18,5 +19,6 @@ pub mod ticker;
 pub use error::{Category, Failure};
 pub use handler::PluginFunctionHandler;
 pub use limits::{HostState, Limits};
+pub use loader::{LoadedPlugin, PluginLoadIssue, PluginSet, load_active};
 pub use manifest::{ABI, Manifest};
 pub use runtime::{EPOCH_TICK, LoadError, LoadedComponent, WasmRuntime};

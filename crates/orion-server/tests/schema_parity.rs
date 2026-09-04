@@ -154,6 +154,10 @@ const BACKEND_SPECIFIC_INDEXES: &[(&str, &str)] = &[
         "same as idx_workflows_single_draft",
     ),
     (
+        "idx_plugins_single_draft",
+        "same as idx_workflows_single_draft",
+    ),
+    (
         "idx_channels_route_partial",
         "partial index — MySQL has no equivalent",
     ),
@@ -1164,7 +1168,7 @@ fn active_immutability_rules() -> BTreeMap<(&'static str, String), BTreeSet<Stri
             // Postgres puts the comparisons in the function the trigger calls,
             // the other two inline them in the trigger. Both are matched by
             // the shared `<entity>_active_immutable` name.
-            for entity in ["workflows", "channels"] {
+            for entity in ["workflows", "channels", "plugins"] {
                 let marker = format!("{entity}_active_immutable");
                 let Some(start) = sql.rfind(&marker) else {
                     continue;
@@ -1199,7 +1203,7 @@ fn active_immutability_triggers_guard_the_same_columns_on_every_backend() {
          looking at anything, which is worse than a mismatch"
     );
 
-    for entity in ["workflows", "channels"] {
+    for entity in ["workflows", "channels", "plugins"] {
         let per_backend: Vec<(&str, &BTreeSet<String>)> = ["sqlite", "postgres", "mysql"]
             .iter()
             .map(|b| {
@@ -1240,7 +1244,11 @@ async fn active_immutability_triggers_cover_every_content_column() {
     let schema = sqlite_schema().await;
     let rules = active_immutability_rules();
 
-    for (entity, id_column) in [("workflows", "workflow_id"), ("channels", "channel_id")] {
+    for (entity, id_column) in [
+        ("workflows", "workflow_id"),
+        ("channels", "channel_id"),
+        ("plugins", "plugin_id"),
+    ] {
         let mutable: BTreeSet<&str> = MUTABLE_WHILE_ACTIVE
             .iter()
             .filter(|(t, _, _)| *t == entity)

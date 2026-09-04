@@ -148,6 +148,7 @@ async fn the_catalogue_route_serves_the_generations_registry() {
         generation.engine.clone(),
         generation.channels.clone(),
         Arc::new(extended),
+        generation.plugins.clone(),
     );
     let resp = app
         .oneshot(json_request("GET", "/api/v1/admin/functions", None))
@@ -216,6 +217,7 @@ async fn create_time_validation_reads_the_generations_registry() {
         generation.engine.clone(),
         generation.channels.clone(),
         Arc::new(extended),
+        generation.plugins.clone(),
     );
 
     let resp = app

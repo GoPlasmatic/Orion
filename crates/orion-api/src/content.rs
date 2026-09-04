@@ -69,6 +69,19 @@ fn defaulted(doc: &Value, key: &str, default: Value) -> Value {
     doc.get(key).cloned().unwrap_or(default)
 }
 
+/// A plugin's importable content: the manifest, the digest and the tags.
+///
+/// The component bytes are not content — the digest *is* the component, and
+/// a response never carries the bytes — so an export with the artifact
+/// inlined and one without hash the same.
+pub fn plugin_content(doc: &Value) -> Value {
+    json!({
+        "manifest": optional(doc, "manifest"),
+        "digest": optional(doc, "digest"),
+        "tags": defaulted(doc, "tags", json!([])),
+    })
+}
+
 /// A workflow's importable content.
 pub fn workflow_content(doc: &Value) -> Value {
     let mut content = json!({

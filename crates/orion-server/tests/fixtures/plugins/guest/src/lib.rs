@@ -50,7 +50,7 @@ impl Guest for Fixture {
                     .map(|rest| rest.trim_start())
                     .map(|rest| rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
                     .and_then(|digits| digits.parse().ok())
-                    .unwrap_or(2 * 1024 * 1024);
+                    .unwrap_or(1024);
                 let mut s = String::with_capacity(size + 2);
                 s.push('"');
                 s.extend(core::iter::repeat('x').take(size));

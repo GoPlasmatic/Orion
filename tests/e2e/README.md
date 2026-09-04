@@ -37,7 +37,7 @@ down — nothing to start or clean up manually.
 tests/e2e/
 ├── run.sh          # entry point: prerequisites, build, server lifecycle, suite discovery
 ├── helpers.sh      # framework: assertions, CLI wrappers, server control, case runner
-├── suites/         # 12 suites, sourced in filename order
+├── suites/         # 16 suites, sourced in filename order
 ├── cases/          # data-driven runtime-behaviour cases (run by suite 13)
 └── fixtures/       # workflow / connector / request JSON used by the suites
 ```

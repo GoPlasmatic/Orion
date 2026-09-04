@@ -13,6 +13,7 @@ valid API key. Success and error bodies follow the
 | [Channels](#channels) | Create, validate, activate, version, import, and export endpoints |
 | [Workflows](#workflows) | Create, test, activate, roll out, version, import, and export endpoints |
 | [Connectors](#connectors) | Create, validate, test, update, and circuit-breaker endpoints |
+| [Plugins](#plugins) | Upload, activate, version, import, and export WebAssembly plugins |
 | [Packages](#packages) | Inspect applied package receipts |
 | [Engine](#engine) | Inspect and reload the running engine |
 | [Functions](#functions) | Discover registered task functions and schemas |
@@ -241,6 +242,45 @@ simply omit the parameter.
 | POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
 | GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/workflows/validate` | Validate workflow definition |
+
+## Plugins
+
+WebAssembly plugins — sandboxed custom task functions; see
+[Plugins](../concepts/plugins.md) and the [Plugins reference](./plugins.md).
+The lifecycle is the workflow's. An upload carries the manifest (TOML text or
+the manifest as a JSON object) and the component as base64, or a `digest` this
+instance already holds; the server validates, hashes, compiles and probes it
+before the draft exists.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/admin/plugins` | Upload a plugin as a draft: `{ "manifest": …, "component": "<base64>", "tags": [] }`. `400` on a bad manifest, component or digest, or when plugins are disabled on this node |
+| GET | `/api/v1/admin/plugins` | List plugins. Filter with `?tag=`, `?status=` |
+| GET | `/api/v1/admin/plugins/{id}` | Get the latest version, with this node's load state under `health` |
+| PUT | `/api/v1/admin/plugins/{id}` | Update the draft: any of `manifest`, `component`, `digest`, `tags`; an absent field keeps its value |
+| DELETE | `/api/v1/admin/plugins/{id}` | Delete every version and any component nothing names. `409` while an active workflow calls one of its functions |
+| PATCH | `/api/v1/admin/plugins/{id}/status` | Activate (supersedes the previously active version) or archive (`409` while an active workflow calls a function). `?dry_run=true` / `?reload=defer` — see [Status changes](#status-changes) |
+| GET | `/api/v1/admin/plugins/{id}/versions` | Version history |
+| POST | `/api/v1/admin/plugins/{id}/versions` | New draft version from the latest |
+| GET | `/api/v1/admin/plugins/{id}/dependencies` | The functions the latest version declares and the active workflows calling them |
+| POST | `/api/v1/admin/plugins/import` | Bulk import (as drafts). Items carry the component inline or name a digest the target holds. `?dry_run=true`, `?on_conflict=fail\|skip\|new_version` |
+| GET | `/api/v1/admin/plugins/export` | Export plugins; `?include_artifacts=true` inlines each component as base64 |
+| POST | `/api/v1/admin/plugins/validate` | Validate a manifest and component without storing them; `valid: true` means `POST /plugins` would accept the payload on this node |
+
+```bash
+# Upload from a manifest and its component
+jq -n --rawfile manifest plugin.toml --arg component "$(base64 < component.wasm)" \
+  '{manifest: $manifest, component: $component}' \
+  | curl -s -X POST http://localhost:8080/api/v1/admin/plugins \
+      -H 'Content-Type: application/json' --data @-
+
+# Activate; the engine reloads and the functions appear in GET /admin/functions
+curl -s -X PATCH http://localhost:8080/api/v1/admin/plugins/acme.iso8583/status \
+  -H 'Content-Type: application/json' -d '{"status":"active"}'
+
+# Export with the components inlined, for a promotion
+curl -s "http://localhost:8080/api/v1/admin/plugins/export?include_artifacts=true" | jq '.data' > plugins.json
+```
 
 ## Connectors
 

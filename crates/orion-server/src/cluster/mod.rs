@@ -42,6 +42,11 @@ pub enum EpochScope {
     /// connector registry and evict the pools, because the endpoint or the
     /// credentials behind a cached connection may now be wrong.
     Connectors,
+    /// A plugin was activated, archived or deleted. Peers republish the
+    /// generation and compare the active plugin set's fingerprint, which is
+    /// what makes each compile locally only what changed. No connector
+    /// reload: a plugin row changes nothing about a connector.
+    Plugins,
     /// Everything. The default, and what an unrecognised or absent scope
     /// means — an older node's bump, or a value a newer node writes that this
     /// one does not know. Reading an unknown scope as "resync everything"
@@ -56,6 +61,7 @@ impl EpochScope {
         match self {
             Self::Definitions => "definitions",
             Self::Connectors => "connectors",
+            Self::Plugins => "plugins",
             Self::All => "all",
         }
     }
@@ -66,6 +72,7 @@ impl EpochScope {
         match raw {
             "definitions" => Self::Definitions,
             "connectors" => Self::Connectors,
+            "plugins" => Self::Plugins,
             _ => Self::All,
         }
     }
@@ -298,6 +305,7 @@ mod tests {
         for scope in [
             EpochScope::Definitions,
             EpochScope::Connectors,
+            EpochScope::Plugins,
             EpochScope::All,
         ] {
             assert_eq!(EpochScope::parse(scope.as_str()), scope);

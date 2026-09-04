@@ -87,6 +87,80 @@ pub struct WorkflowResponse {
     pub updated_at: NaiveDateTime,
 }
 
+/// One version of a plugin, as every plugin endpoint returns it.
+///
+/// `manifest` is the validated manifest as JSON — what was uploaded, with
+/// nothing the server inferred added to it. `functions` is the list of
+/// names it declares, repeated at the top level so a client need not walk
+/// the manifest to learn what the plugin adds to the vocabulary. `health` is
+/// present only on the single-entity read, and only when the serving node
+/// has an opinion: it says whether *this node* loaded the digest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct PluginResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub plugin_id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub version: i64,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    /// `sha256:…` of the component bytes — the identity a generation, a
+    /// trace, a package and the catalogue all name the artifact by.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub digest: String,
+    /// The WIT package version the component was built against.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub abi: String,
+    /// The author's own version string from the manifest, informational.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub plugin_version: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub manifest: Value,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub functions: Vec<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub tags: Value,
+    /// `sha256:…` over the importable content (manifest, digest, tags) — the
+    /// same projection the upsert import compares.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub content_hash: String,
+    /// This node's load state for the version, on the single-entity read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<PluginHealth>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub created_at: NaiveDateTime,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub updated_at: NaiveDateTime,
+}
+
+/// Whether the node answering loaded a plugin version, and if not, why.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct PluginHealth {
+    /// `loaded`, `failed`, `disabled` (plugins are off on this node) or
+    /// `inactive` (the version is not the one this node's generation carries).
+    #[serde(default)]
+    pub state: String,
+    /// Compile time in milliseconds when loaded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile_ms: Option<u64>,
+    /// The stage and reason when `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// API-friendly representation of a Channel with parsed JSON fields.
 ///
 /// This — not the server's `Channel` row struct — is what every channel

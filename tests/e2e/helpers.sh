@@ -380,6 +380,9 @@ format = "pretty"
 [metrics]
 enabled = false
 
+[plugins]
+enabled = true
+
 [vars]
 topic_prefix = "\${E2E_VAR_TOPIC_PREFIX}"
 max_retries = 3

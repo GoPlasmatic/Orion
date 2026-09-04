@@ -74,6 +74,25 @@ pub fn workflow_request_content(r: &CreateWorkflowRequest) -> Value {
     }))
 }
 
+/// A plugin row's importable content, mirroring [`plugin_request_content`].
+pub fn plugin_content(p: &crate::storage::models::Plugin) -> Result<Value, OrionError> {
+    Ok(orion_api::content::plugin_content(&serde_json::json!({
+        "manifest": serde_json::from_str::<Value>(&p.manifest_json)?,
+        "digest": p.digest,
+        "tags": serde_json::from_str::<Value>(&p.tags_json)?,
+    })))
+}
+
+/// A resolved plugin draft's importable content — the manifest as it will
+/// be stored, the digest of the bytes it names, and its tags.
+pub fn plugin_request_content(manifest: &Value, digest: &str, tags: &[String]) -> Value {
+    orion_api::content::plugin_content(&serde_json::json!({
+        "manifest": manifest,
+        "digest": digest,
+        "tags": tags,
+    }))
+}
+
 /// A channel row's importable content, mirroring
 /// [`channel_request_content`].
 pub fn channel_content(c: &Channel) -> Result<Value, OrionError> {

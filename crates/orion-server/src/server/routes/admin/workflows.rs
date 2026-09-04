@@ -273,16 +273,25 @@ impl super::VersionedLifecycle for WorkflowLifecycle<'_> {
     }
 
     async fn activation_gates(&self, draft: &Self::Row) -> Vec<OrionError> {
-        match super::services::workflows::ensure_connectors_exist(
+        let mut gates = Vec::new();
+        // Every function the tasks name must be one this generation
+        // dispatches: a plugin function whose plugin was archived, or which
+        // this node could not load, is refused here rather than quarantined
+        // after the fact.
+        if let Err(e) = super::services::plugins::ensure_functions_available(&self.functions, draft)
+        {
+            gates.push(e);
+        }
+        if let Err(e) = super::services::workflows::ensure_connectors_exist(
             self.connectors,
             draft,
             &self.functions,
         )
         .await
         {
-            Ok(()) => Vec::new(),
-            Err(e) => vec![e],
+            gates.push(e);
         }
+        gates
     }
 }
 

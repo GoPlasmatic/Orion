@@ -103,9 +103,9 @@ fn setup_kafka_producer(
     custom_functions: &mut std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     connector_registry: Arc<ConnectorRegistry>,
     max_pool_cache_entries: usize,
-) -> Result<Option<Arc<crate::kafka::producer::KafkaProducer>>, Box<dyn std::error::Error>> {
+) -> Result<KafkaProducers, Box<dyn std::error::Error>> {
     if !kafka_config.enabled || kafka_config.brokers.is_empty() {
-        return Ok(None);
+        return Ok((None, None));
     }
     let producer = Arc::new(crate::kafka::producer::KafkaProducer::new(
         &kafka_config.brokers.join(","),
@@ -121,10 +121,22 @@ fn setup_kafka_producer(
         kafka_config.extra_config.clone(),
         max_pool_cache_entries,
     ));
-    crate::engine::register_kafka_publisher(custom_functions, connector_registry, producers);
+    crate::engine::register_kafka_publisher(
+        custom_functions,
+        connector_registry,
+        producers.clone(),
+    );
     tracing::info!("Kafka producer initialized");
-    Ok(Some(producer))
+    Ok((Some(producer), Some(producers)))
 }
+
+/// What [`setup_kafka_producer`] yields: the producer the DLQ writes through
+/// and the per-connector cache the `publish_kafka` handler resolves through,
+/// both `None` when Kafka is off.
+type KafkaProducers = (
+    Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
+);
 
 /// The long-lived half of [`EngineComponents`] — everything that outlives
 /// engine construction and goes on to back `AppState`.
@@ -164,6 +176,14 @@ pub struct ServingComponents {
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    /// The producer cache the `publish_kafka` handler resolves through —
+    /// kept beside the producer so a reload that rebuilds the engine can
+    /// register the same publisher boot did.
+    pub kafka_producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
+    /// The plugin sandbox, when `plugins.enabled`: one engine per process,
+    /// sized from the ceilings before the first generation loads anything
+    /// into it. `None` makes every stored plugin a load issue on this node.
+    pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
 }
 
 /// The engine's serving components, built in one pass by
@@ -336,12 +356,24 @@ pub async fn build_engine_components(
         smtp_pool_cache: smtp_pool_cache.clone(),
     });
 
-    let kafka_producer = setup_kafka_producer(
+    let (kafka_producer, kafka_producers) = setup_kafka_producer(
         &config.kafka,
         &mut custom_functions,
         connector_registry.clone(),
         config.engine.max_pool_cache_entries,
     )?;
+
+    let plugins = if config.plugins.enabled {
+        Some(
+            crate::plugin::WasmRuntime::new(&config.plugins).map_err(|e| {
+                crate::errors::OrionError::Config {
+                    message: format!("plugins: the sandbox could not be created: {e}"),
+                }
+            })?,
+        )
+    } else {
+        None
+    };
 
     Ok(EngineComponents {
         serving: ServingComponents {
@@ -357,6 +389,8 @@ pub async fn build_engine_components(
             mongo_pool_cache,
             smtp_pool_cache,
             kafka_producer,
+            kafka_producers,
+            plugins,
         },
         custom_functions,
     })
@@ -392,7 +426,7 @@ impl EngineComponents {
     > {
         let EngineComponents {
             serving,
-            custom_functions,
+            mut custom_functions,
         } = self;
         // Load active channels and workflows, build engine
         let channels = repos.channels.list_active().await?;
@@ -409,6 +443,31 @@ impl EngineComponents {
         }
         let active_workflows = repos.workflows.list_active().await?;
 
+        // The active plugins, loaded into the sandbox — or every one a load
+        // issue, on a node with the sandbox off — and the registry this
+        // generation carries: the built-ins plus what loaded. The plugin
+        // handlers join Orion's own on the builder below.
+        let plugin_rows = repos.plugins.list_active().await?;
+        let plugins = Arc::new(
+            crate::plugin::load_active(
+                plugin_rows,
+                repos.plugins.as_ref(),
+                serving.plugins.as_ref(),
+                &config.plugins,
+            )
+            .await,
+        );
+        let functions = Arc::new(
+            crate::engine::FunctionRegistry::builtin()
+                .with_entries(plugins.entries())
+                .map_err(|e| crate::errors::OrionError::Config {
+                    message: format!("plugin function registry: {e}"),
+                })?,
+        );
+        for (name, handler) in plugins.handlers() {
+            custom_functions.insert(name, handler);
+        }
+
         // The handlers go on the builder *before* the workflows are converted,
         // because converting screens each one against them: a workflow naming
         // a function nothing will dispatch, or carrying an input its handler
@@ -420,8 +479,11 @@ impl EngineComponents {
             &serving.secrets,
         )
         .with_handlers(custom_functions);
-        let (workflows, engine_issues) =
+        let (workflows, mut engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
+        for issue in &mut engine_issues {
+            plugins.annotate(&mut issue.reason);
+        }
         let previous = serving.runtime.load();
         let channels_snapshot = channel_loader
             .build(
@@ -485,7 +547,8 @@ impl EngineComponents {
         serving.runtime.publish(
             Arc::new(built_engine),
             Arc::new(channels_snapshot),
-            crate::engine::FunctionRegistry::builtin().clone(),
+            functions,
+            plugins,
         );
 
         Ok((serving, channels, active_workflows.len()))
@@ -892,6 +955,8 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         mongo_pool_cache,
         smtp_pool_cache,
         kafka_producer,
+        kafka_producers,
+        plugins,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
     // callers need it whether or not the platform limiter is enabled: the
@@ -928,12 +993,14 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         reload_degraded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         kafka: crate::server::state::Kafka {
             producer: kafka_producer,
+            producers: kafka_producers,
             consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
             ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
         },
         trace_persistence_queue,
         cluster,
         tasks,
+        plugins,
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,

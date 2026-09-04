@@ -43,13 +43,13 @@ the vocabulary behind it. This is all of it:
 
 | `action` | `resource_type` | Written by |
 |---|---|---|
-| `create` | `workflow`, `channel`, `connector` | `POST /{kind}` |
+| `create` | `workflow`, `channel`, `connector`, `plugin` | `POST /{kind}` |
 | `create` | `backup` | `POST /backups` |
-| `create_version` | `workflow`, `channel` | `POST /{kind}/{id}/versions` |
-| `update` | `workflow`, `channel`, `connector` | `PUT /{kind}/{id}` |
-| `delete` | `workflow`, `channel`, `connector` | `DELETE /{kind}/{id}` |
-| `import` | `workflow`, `channel`, `connector` | `POST /{kind}/import` — one row per entity written, plus a batch summary row |
-| `status_active`, `status_archived` | `workflow`, `channel` | `PATCH /{kind}/{id}/status`, named for the status requested. There is no `status_draft`: a transition *to* draft is refused before anything is written |
+| `create_version` | `workflow`, `channel`, `plugin` | `POST /{kind}/{id}/versions` |
+| `update` | `workflow`, `channel`, `connector`, `plugin` | `PUT /{kind}/{id}` |
+| `delete` | `workflow`, `channel`, `connector`, `plugin` | `DELETE /{kind}/{id}` |
+| `import` | `workflow`, `channel`, `connector`, `plugin` | `POST /{kind}/import` — one row per entity written, plus a batch summary row |
+| `status_active`, `status_archived` | `workflow`, `channel`, `plugin` | `PATCH /{kind}/{id}/status`, named for the status requested. There is no `status_draft`: a transition *to* draft is refused before anything is written |
 | `update_rollout` | `workflow` | `PATCH /workflows/{id}/rollout` |
 | `test` | `workflow`, `connector` | `POST /workflows/{id}/test`, `POST /connectors/{id}/test` — both reach live backends, so both are recorded |
 | `reset` | `circuit_breaker` | `POST /connectors/circuit-breakers/{key}` |

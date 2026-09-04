@@ -81,6 +81,7 @@ pub fn build_router(state: AppState) -> Router {
     // metrics -> rate limit -> admin auth -> compression -> body limit -> route.
     let router = routes::api_routes(routes::RouteOptions {
         max_admin_body_size: state.config.server.max_admin_body_size,
+        plugin_body_size: state.config.plugins.max_component_bytes / 3 * 4 + (1 << 20),
         docs_enabled: state.config.docs_enabled(),
         metrics_enabled: state.config.metrics.on_main_listener(),
         data_mounts: state.config.server.data_mounts.clone(),

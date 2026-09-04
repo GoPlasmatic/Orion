@@ -11,15 +11,60 @@ use serde_json::Value;
 
 use super::enums::parse_json_field;
 use super::rows::{
-    AuditLogEntry, Channel, Connector, PackageReceipt, TraceDlqEntry, TraceDlqSummary,
+    AuditLogEntry, Channel, Connector, PackageReceipt, Plugin, TraceDlqEntry, TraceDlqSummary,
     TraceListRow, Workflow,
 };
 use crate::errors::OrionError;
 
 pub use orion_api::dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, PackageReceiptResponse,
-    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    PluginHealth, PluginResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
+    TraceListItemResponse, WorkflowResponse,
 };
+
+impl TryFrom<&Plugin> for PluginResponse {
+    type Error = OrionError;
+
+    fn try_from(plugin: &Plugin) -> Result<Self, Self::Error> {
+        let id = &plugin.plugin_id;
+        let manifest: Value =
+            parse_json_field(&plugin.manifest_json, "plugin", id, "manifest_json")?;
+        let functions = manifest
+            .get("functions")
+            .and_then(Value::as_array)
+            .map(|fs| {
+                fs.iter()
+                    .filter_map(|f| f.get("name").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let field = |key: &str| {
+            manifest
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        Ok(Self {
+            plugin_id: plugin.plugin_id.clone(),
+            version: plugin.version,
+            status: plugin.status.clone(),
+            digest: plugin.digest.clone(),
+            abi: field("abi"),
+            plugin_version: field("version"),
+            manifest,
+            functions,
+            tags: parse_json_field(&plugin.tags_json, "plugin", id, "tags_json")?,
+            content_hash: crate::storage::content::content_hash(
+                &crate::storage::content::plugin_content(plugin)?,
+            ),
+            health: None,
+            created_at: plugin.created_at,
+            updated_at: plugin.updated_at,
+        })
+    }
+}
 
 impl TryFrom<&Workflow> for WorkflowResponse {
     type Error = OrionError;

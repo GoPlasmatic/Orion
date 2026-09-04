@@ -37,7 +37,12 @@ orion-client.workspace = true
 # Same spec as orion-server so the shared lockfile carries one `toml` tree.
 # (reqwest reaches this binary only through orion-client now.)
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+# Plugin uploads: the component travels as base64 inside the JSON body.
+base64 = "0.23"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 anyhow = "1"
 # Cancellation for the benchmark runner's Ctrl-C handling.
 tokio-util = "0.7"
+
+[dev-dependencies]
+tempfile = "3"

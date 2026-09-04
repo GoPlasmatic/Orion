@@ -82,6 +82,25 @@ pub fn channel_versions(id: &str) -> String {
     format!("{CHANNELS}/{}/versions", seg(id))
 }
 
+// -- Admin: plugins --
+pub const PLUGINS: &str = "/api/v1/admin/plugins";
+pub const PLUGINS_EXPORT: &str = "/api/v1/admin/plugins/export";
+pub const PLUGINS_IMPORT: &str = "/api/v1/admin/plugins/import";
+pub const PLUGINS_VALIDATE: &str = "/api/v1/admin/plugins/validate";
+
+pub fn plugin(id: &str) -> String {
+    format!("{PLUGINS}/{}", seg(id))
+}
+pub fn plugin_status(id: &str) -> String {
+    format!("{PLUGINS}/{}/status", seg(id))
+}
+pub fn plugin_versions(id: &str) -> String {
+    format!("{PLUGINS}/{}/versions", seg(id))
+}
+pub fn plugin_dependencies(id: &str) -> String {
+    format!("{PLUGINS}/{}/dependencies", seg(id))
+}
+
 // -- Admin: connectors --
 pub const CONNECTORS: &str = "/api/v1/admin/connectors";
 pub const CONNECTORS_EXPORT: &str = "/api/v1/admin/connectors/export";

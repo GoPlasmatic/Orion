@@ -5,6 +5,7 @@ pub(crate) mod connectors;
 pub(crate) mod engine;
 pub(crate) mod functions;
 pub(crate) mod packages;
+pub(crate) mod plugins;
 pub(crate) mod services;
 pub(crate) mod trace_dlq;
 pub(crate) mod workflows;
@@ -874,19 +875,27 @@ async fn reload_after_commit(
     state: &AppState,
     reload: ReloadMode,
 ) -> Result<(), crate::errors::OrionError> {
+    // `Definitions` scope: a channel or workflow row moved, which changes the
+    // engine and the channel estate and nothing else. A peer answering this
+    // reloads those and leaves its connector pools alone — before the scope
+    // existed, every activation dropped every pooled connection on every node.
+    reload_after_commit_scoped(state, reload, crate::cluster::EpochScope::Definitions).await
+}
+
+/// [`reload_after_commit`] with the scope the mutation names — `Plugins`
+/// for the plugin routes, whose peers must compare the active plugin set
+/// rather than only republish definitions.
+async fn reload_after_commit_scoped(
+    state: &AppState,
+    reload: ReloadMode,
+    scope: crate::cluster::EpochScope,
+) -> Result<(), crate::errors::OrionError> {
     if reload == ReloadMode::Defer {
         return Ok(());
     }
     // Not `?`: see the note above. The degradation is on `/health`.
     let _ = reload_engine(state).await;
-    // `Definitions` scope: a channel or workflow row moved, which changes the
-    // engine and the channel estate and nothing else. A peer answering this
-    // reloads those and leaves its connector pools alone — before the scope
-    // existed, every activation dropped every pooled connection on every node.
-    state
-        .cluster
-        .bump_config_epoch(crate::cluster::EpochScope::Definitions)
-        .await;
+    state.cluster.bump_config_epoch(scope).await;
     Ok(())
 }
 
@@ -898,7 +907,7 @@ async fn reload_after_commit(
 /// traffic. Raising it for a big import raised it for the unauthenticated plane
 /// too. Applied here it sits closer to the handler than the global one, so it
 /// wins for these routes and nowhere else.
-pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
+pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<AppState> {
     let channel_routes = Router::new()
         .route(
             "/",
@@ -918,6 +927,28 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
             "/{id}/versions",
             get(channels::list_channel_versions).post(channels::create_new_channel_version),
         );
+
+    // A component is up to `plugins.max_component_bytes`, and base64 is
+    // four thirds of that; the admin plane's own limit is sized for JSON
+    // definitions. Applied on this router alone so nothing else grows.
+    let plugin_routes = Router::new()
+        .route("/", get(plugins::list_plugins).post(plugins::create_plugin))
+        .route("/import", post(plugins::import_plugins))
+        .route("/export", get(plugins::export_plugins))
+        .route("/validate", post(plugins::validate_plugin))
+        .route(
+            "/{id}",
+            get(plugins::get_plugin)
+                .put(plugins::update_plugin)
+                .delete(plugins::delete_plugin),
+        )
+        .route("/{id}/status", patch(plugins::change_plugin_status))
+        .route("/{id}/dependencies", get(plugins::plugin_dependencies))
+        .route(
+            "/{id}/versions",
+            get(plugins::list_plugin_versions).post(plugins::create_new_plugin_version),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(plugin_body_size));
 
     let workflow_routes = Router::new()
         .route(
@@ -1003,6 +1034,7 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
     Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
+        .nest("/plugins", plugin_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)

@@ -103,21 +103,86 @@ pub async fn reload_engine_with_opts(
         // failing the reload — which would take down every channel on every
         // node over one bad stored row.
         let current = state.runtime.load();
-        let (workflows, engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows, &*current.engine);
 
-        // Both halves are built before anything is published, so a failure
-        // here — an engine that will not build — leaves the previous
-        // generation serving intact. Back when the channel estate was
-        // published first, this `?` could leave the node *permanently* mixed:
-        // new guards over old workflows, until some later reload happened to
-        // succeed.
-        let new_engine = Arc::new(
-            current
-                .engine
-                .with_new_workflows(workflows)
-                .map_err(crate::errors::OrionError::Engine)?,
-        );
+        // The plugin half decides how the engine is built. An unchanged
+        // active plugin set keeps the cheap path: `with_new_workflows` carries
+        // the running engine's handler map across, so the running engine is
+        // the screen and the handlers that will run these workflows are
+        // exactly the ones already registered there. A changed set — an
+        // activation, an archive, a new digest — needs handlers the old
+        // engine does not have, so the engine is assembled afresh from the
+        // node's live components plus the loaded plugins and screened against
+        // that builder. Either way a workflow the handlers cannot dispatch is
+        // quarantined per channel rather than failing the reload, both halves
+        // are built before anything is published, and a failure here leaves
+        // the previous generation serving whole. Back when the channel estate
+        // was published first, this `?` could leave the node *permanently*
+        // mixed: new guards over old workflows, until some later reload
+        // happened to succeed.
+        let plugin_rows = state.repos.plugins.list_active().await?;
+        let plugins_changed =
+            crate::plugin::PluginSet::fingerprint_of(&plugin_rows) != current.plugins.fingerprint();
+        let (new_engine, functions, plugins, engine_issues) = if plugins_changed {
+            let plugins = Arc::new(
+                crate::plugin::load_active(
+                    plugin_rows,
+                    state.repos.plugins.as_ref(),
+                    state.plugins.as_ref(),
+                    &state.config.plugins,
+                )
+                .await,
+            );
+            let functions = Arc::new(
+                crate::engine::FunctionRegistry::builtin()
+                    .with_entries(plugins.entries())
+                    .map_err(|e| crate::errors::OrionError::Config {
+                        message: format!("plugin function registry: {e}"),
+                    })?,
+            );
+            let mut handlers = super::build_handlers(state);
+            for (name, handler) in plugins.handlers() {
+                handlers.insert(name, handler);
+            }
+            let builder = crate::engine::operators::with_orion_engine_defaults(
+                dataflow_rs::Engine::builder(),
+                &state.secrets,
+            )
+            .with_handlers(handlers);
+            let (workflows, mut engine_issues) =
+                crate::engine::build_engine_workflows(&channels, &active_workflows, &builder);
+            for issue in &mut engine_issues {
+                plugins.annotate(&mut issue.reason);
+            }
+            let engine = Arc::new(
+                builder
+                    .with_workflows(workflows)
+                    .build()
+                    .map_err(crate::errors::OrionError::Engine)?
+                    .with_observer(Arc::new(crate::engine::MetricsObserver)),
+            );
+            (engine, functions, plugins, engine_issues)
+        } else {
+            let (workflows, mut engine_issues) = crate::engine::build_engine_workflows(
+                &channels,
+                &active_workflows,
+                &*current.engine,
+            );
+            for issue in &mut engine_issues {
+                current.plugins.annotate(&mut issue.reason);
+            }
+            let engine = Arc::new(
+                current
+                    .engine
+                    .with_new_workflows(workflows)
+                    .map_err(crate::errors::OrionError::Engine)?,
+            );
+            (
+                engine,
+                current.functions.clone(),
+                current.plugins.clone(),
+                engine_issues,
+            )
+        };
 
         // Channels that fail to load are quarantined — refused at every
         // ingress — and the reload proceeds (F35). It used to abort here,
@@ -151,13 +216,10 @@ pub async fn reload_engine_with_opts(
         // before the Kafka restart below — and no window in which a request is
         // admitted by one generation and executed by another, which is what
         // two stores here could not avoid however they were ordered.
-        // The built-in registry until a generation loads plugin entries: the
-        // handlers `with_new_workflows` carried across are exactly these.
-        let generation = state.runtime.publish(
-            new_engine,
-            Arc::new(new_channels),
-            crate::engine::FunctionRegistry::builtin().clone(),
-        );
+        let generation =
+            state
+                .runtime
+                .publish(new_engine, Arc::new(new_channels), functions, plugins);
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

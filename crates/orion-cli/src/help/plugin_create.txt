@@ -1,0 +1,29 @@
+The definition is a plugin manifest (TOML). Its `component` key names the
+compiled WebAssembly component relative to the manifest; the CLI reads it,
+base64-encodes it and sends both to the server, which validates the manifest,
+hashes and compiles the component and probes every declared function before
+the draft exists.
+
+Examples:
+  orion-cli plugins create -f plugin.toml
+  orion-cli plugins create -f plugin.toml --component build/plugin.wasm
+  orion-cli plugins create -f plugin.toml --tag codecs --tag iso8583
+
+The manifest, at minimum:
+  abi = "orion:plugin@1.0.0"
+  name = "acme.iso8583"
+  version = "1.0.0"
+  component = "plugin.wasm"
+
+  [[functions]]
+  name = "acme.iso8583.parse"
+  output_default_root = "data"
+
+  [[functions.input_fields]]
+  name = "message"
+  kind = "string"
+  required = true
+  resolvable = true
+
+Activate it with `orion-cli plugins activate acme.iso8583`; its functions then
+appear in `orion-cli functions list` and workflows may call them.

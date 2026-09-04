@@ -32,6 +32,7 @@ use arc_swap::ArcSwap;
 
 use crate::channel::ChannelSnapshot;
 use crate::engine::FunctionRegistry;
+use crate::plugin::PluginSet;
 
 /// One complete, self-consistent generation of everything a request is served
 /// from.
@@ -51,6 +52,10 @@ pub struct RuntimeGeneration {
     /// what create-time validation and `GET /admin/functions` read, so a
     /// workflow is accepted against exactly the set this generation runs.
     pub functions: Arc<FunctionRegistry>,
+    /// The plugins this generation loaded, and the reasons any did not —
+    /// `/health` and `GET /plugins/{id}` read it, and a reload compares its
+    /// fingerprint to decide whether the engine must be rebuilt.
+    pub plugins: Arc<PluginSet>,
 }
 
 /// The live generation, swapped wholesale on reload.
@@ -97,6 +102,7 @@ impl RuntimeHandle {
                 engine,
                 channels,
                 functions,
+                plugins: Arc::new(PluginSet::empty()),
             }),
             published: AtomicU64::new(0),
         }
@@ -124,6 +130,7 @@ impl RuntimeHandle {
         engine: Arc<dataflow_rs::Engine>,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
+        plugins: Arc<PluginSet>,
     ) -> u64 {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
@@ -131,6 +138,7 @@ impl RuntimeHandle {
             engine,
             channels,
             functions,
+            plugins,
         }));
         id
     }
@@ -195,6 +203,7 @@ mod tests {
             next_engine.clone(),
             Arc::new(ChannelSnapshot::empty()),
             FunctionRegistry::builtin().clone(),
+            Arc::new(PluginSet::empty()),
         );
 
         assert_eq!(held.id, 0);
@@ -223,6 +232,7 @@ mod tests {
                 engine(),
                 Arc::new(ChannelSnapshot::empty()),
                 FunctionRegistry::builtin().clone(),
+                Arc::new(PluginSet::empty()),
             );
             assert_eq!(id, expected);
             assert_eq!(handle.load().id, expected);

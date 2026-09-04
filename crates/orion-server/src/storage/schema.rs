@@ -227,6 +227,34 @@ pub enum CurrentWorkflows {
     Table,
 }
 
+// ============================================================
+// Plugins: the versioned entity, and the content-addressed artifacts
+// ============================================================
+
+#[derive(Iden)]
+pub enum Plugins {
+    Table,
+    PluginId,
+    Version,
+    Status,
+    Digest,
+    ManifestJson,
+    TagsJson,
+    CreatedAt,
+    UpdatedAt,
+}
+
+/// Component bytes by digest. No `current_*` view and no iden for one: the
+/// entity was added after `versioned::is_current_version` replaced the views.
+#[derive(Iden)]
+pub enum PluginArtifacts {
+    Table,
+    Digest,
+    Bytes,
+    Size,
+    CreatedAt,
+}
+
 #[derive(Iden)]
 pub enum CurrentChannels {
     Table,

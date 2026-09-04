@@ -23,7 +23,7 @@ fn spec() -> VersionedSpec {
         id_col: Channels::ChannelId.into_iden(),
         version_col: Channels::Version.into_iden(),
         status_col: Channels::Status.into_iden(),
-        priority_col: Channels::Priority.into_iden(),
+        priority_col: Some(Channels::Priority.into_iden()),
         updated_at_col: Channels::UpdatedAt.into_iden(),
         label: "Channel",
         noun: "channel",

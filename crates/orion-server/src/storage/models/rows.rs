@@ -53,6 +53,38 @@ pub struct Workflow {
 }
 
 // ============================================================
+// Plugin
+// ============================================================
+
+/// One version of a plugin: the manifest it was uploaded with and the
+/// digest of the component it names. The bytes live in
+/// [`PluginArtifact`], keyed by that digest, so a version is small and an
+/// artifact is stored once however many versions name it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct Plugin {
+    pub plugin_id: String,
+    pub version: i64,
+    pub status: String,
+    /// `sha256:<hex>` of the component bytes, computed by the server.
+    pub digest: String,
+    /// The manifest as JSON — the parsed, validated form, not the TOML text.
+    pub manifest_json: String,
+    pub tags_json: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+/// A component's bytes, addressed by their digest. Immutable: a row is
+/// inserted once and deleted only when no plugin version names it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PluginArtifact {
+    pub digest: String,
+    pub bytes: Vec<u8>,
+    pub size: i64,
+    pub created_at: NaiveDateTime,
+}
+
+// ============================================================
 // Channel
 // ============================================================
 

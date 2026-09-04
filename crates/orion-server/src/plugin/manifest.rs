@@ -13,7 +13,7 @@
 //! contract the author reads back from the catalogue, and a key that was
 //! silently ignored is a promise the runtime never made.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::engine::functions::schema::{FieldKind, RetrySafety, Source, WriteShape};
 use crate::engine::{FieldSpec, FunctionEntry, PluginBinding};
@@ -46,7 +46,7 @@ fn output_field() -> FieldSpec {
 }
 
 /// A parsed, validated manifest.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     /// Must equal [`ABI`].
@@ -66,7 +66,7 @@ pub struct Manifest {
 }
 
 /// One exported function.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FunctionDecl {
     /// Must be `<plugin name>.<label>`: a plugin's functions live in its own
@@ -91,7 +91,7 @@ fn default_category() -> String {
 
 /// The context roots a default output may name — a closed set, so the
 /// registry's `WriteShape` keeps its `'static` spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputRoot {
     Data,
@@ -112,7 +112,7 @@ impl OutputRoot {
 /// One input field. `template_at` is deliberately absent: a plugin field is
 /// folded (`resolvable`) or literal until dataflow-rs's `compile_input` can
 /// see which manifest a handler compiles for — see `plugin.md`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDecl {
     pub name: String,
@@ -151,6 +151,17 @@ impl Manifest {
         let problems = manifest.problems();
         if problems.is_empty() {
             Ok(manifest)
+        } else {
+            Err(problems)
+        }
+    }
+
+    /// A manifest deserialized from JSON (a stored row, an import item),
+    /// checked against every rule the parse cannot express through the type.
+    pub fn validated(self) -> Result<Self, Vec<FieldError>> {
+        let problems = self.problems();
+        if problems.is_empty() {
+            Ok(self)
         } else {
             Err(problems)
         }

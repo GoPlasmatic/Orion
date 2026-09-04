@@ -174,6 +174,11 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet).await
         }
+        Commands::Plugins(cmd) => {
+            let client = build_client(&cli)?;
+            cmd.run(&client, &cli.output, cli.quiet, cli.verbose, cli.yes)
+                .await
+        }
         Commands::Dlq(cmd) => {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet, cli.yes).await

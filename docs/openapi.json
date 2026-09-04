@@ -2526,6 +2526,1081 @@
         ]
       }
     },
+    "/api/v1/admin/plugins": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "list_plugins",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: plugin_id (default), status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_artifacts",
+            "in": "query",
+            "description": "Export only: carry each component as base64 under `component`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of plugins",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "create_plugin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePluginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Plugin created as draft. The manifest was validated, the component hashed, compiled in the sandbox and every declared function probed before the row was written, so the draft is already known to load.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid manifest, component, or digest; or plugins are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Plugin id already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/export": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "export_plugins",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: plugin_id (default), status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_artifacts",
+            "in": "query",
+            "description": "Export only: carry each component as base64 under `component`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported plugins, importable as they are. With `?include_artifacts=true` each item also carries its component as base64 under `component`; without it the item names only the digest, which an import accepts when the target already holds the artifact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_PluginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/import": {
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "import_plugins",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "on_conflict",
+            "in": "query",
+            "description": "What an already-stored conflict key means: `fail` (default — the item\nis refused), `skip`, or `new_version` (upsert: update the draft in\nplace, or cut a new draft version over an active entity; identical\ncontent is a no-op). K2.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OnConflict"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreatePluginRequest"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently. An item may carry its component inline (base64) or name a digest this instance already holds — what an export produces with and without `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is replaced, an active plugin whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/validate": {
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "validate_plugin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePluginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result: `valid: true` means `POST /plugins` would accept this payload on this node — the manifest parses, the component compiles and every declared function answers a probe.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/{id}": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "get_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest version, with this node's load state under `health`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "update_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePluginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Draft plugin updated; an absent field keeps its stored value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found, or it has no draft version to update",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "delete_plugin",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Plugin deleted (all versions), and any component nothing names any more"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active workflow still calls one of its functions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/{id}/dependencies": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "plugin_dependencies",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The functions the latest version declares and the active workflows calling them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginDependencies"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/{id}/status": {
+      "patch": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "change_plugin_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, run the transition's gates and report findings without\nwriting. The response body is the `/validate` envelope, not the\nentity.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated. Activating supersedes the previously active version in the same transaction, so a function name resolves to one digest per generation. Archiving is refused while an active workflow calls one of the plugin's functions. `?dry_run=true` reports every gate without writing; `?reload=defer` commits without rebuilding the engine.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid status transition, or plugins are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active workflow still calls one of its functions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/plugins/{id}/versions": {
+      "get": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "list_plugin_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated version history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Plugins"
+        ],
+        "operationId": "create_new_plugin_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Plugin ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New draft version copied from the latest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PluginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Draft already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/trace-dlq": {
       "get": {
         "tags": [
@@ -5329,6 +6404,43 @@
           }
         }
       },
+      "CreatePluginRequest": {
+        "type": "object",
+        "description": "What `POST /plugins` and the import accept.\n\n`manifest` is either the TOML text (a string) or the manifest as a JSON\nobject — the CLI sends the file it read, an export round-trips the\nobject. `component` is the component bytes as base64; it may be omitted\nwhen `digest` names an artifact this instance already holds, which is\nwhat an export without `?include_artifacts=true` produces.",
+        "required": [
+          "manifest"
+        ],
+        "properties": {
+          "component": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The component, base64-encoded."
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`sha256:…` of a component already stored, when `component` is absent."
+          },
+          "manifest": {},
+          "plugin_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Must equal the manifest's `name` when given; the manifest is the\nsource of truth for the id."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "CreateWorkflowRequest": {
         "type": "object",
         "required": [
@@ -5898,6 +7010,127 @@
           }
         }
       },
+      "DataEnvelope_PluginDependencies": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "What depends on a plugin: the active workflows calling its functions.",
+            "required": [
+              "plugin_id",
+              "version",
+              "functions",
+              "workflows"
+            ],
+            "properties": {
+              "functions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "plugin_id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "workflows": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Active workflows whose tasks call any of `functions` — the ones an\narchive or delete is refused for."
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_PluginResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "One version of a plugin, as every plugin endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was uploaded, with\nnothing the server inferred added to it. `functions` is the list of\nnames it declares, repeated at the top level so a client need not walk\nthe manifest to learn what the plugin adds to the vocabulary. `health` is\npresent only on the single-entity read, and only when the serving node\nhas an opinion: it says whether *this node* loaded the digest.",
+            "required": [
+              "plugin_id",
+              "version",
+              "status",
+              "digest",
+              "abi",
+              "plugin_version",
+              "manifest",
+              "functions",
+              "tags",
+              "content_hash",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "abi": {
+                "type": "string",
+                "description": "The WIT package version the component was built against."
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "`sha256:…` over the importable content (manifest, digest, tags) — the\nsame projection the upsert import compares."
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "description": "`sha256:…` of the component bytes — the identity a generation, a\ntrace, a package and the catalogue all name the artifact by."
+              },
+              "functions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "health": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PluginHealth",
+                    "description": "This node's load state for the version, on the single-entity read."
+                  }
+                ]
+              },
+              "manifest": {},
+              "plugin_id": {
+                "type": "string"
+              },
+              "plugin_version": {
+                "type": "string",
+                "description": "The author's own version string from the manifest, informational."
+              },
+              "status": {
+                "type": "string"
+              },
+              "tags": {},
+              "updated_at": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        }
+      },
       "DataEnvelope_TraceDetail": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -6274,6 +7507,89 @@
                 "source": {
                   "type": "string",
                   "description": "`orion` for a handler Orion implements and input-schema validates,\n`engine` for a dataflow-rs built-in the engine executes itself."
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_PluginResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One version of a plugin, as every plugin endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was uploaded, with\nnothing the server inferred added to it. `functions` is the list of\nnames it declares, repeated at the top level so a client need not walk\nthe manifest to learn what the plugin adds to the vocabulary. `health` is\npresent only on the single-entity read, and only when the serving node\nhas an opinion: it says whether *this node* loaded the digest.",
+              "required": [
+                "plugin_id",
+                "version",
+                "status",
+                "digest",
+                "abi",
+                "plugin_version",
+                "manifest",
+                "functions",
+                "tags",
+                "content_hash",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "abi": {
+                  "type": "string",
+                  "description": "The WIT package version the component was built against."
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the importable content (manifest, digest, tags) — the\nsame projection the upsert import compares."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "`sha256:…` of the component bytes — the identity a generation, a\ntrace, a package and the catalogue all name the artifact by."
+                },
+                "functions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "health": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PluginHealth",
+                      "description": "This node's load state for the version, on the single-entity read."
+                    }
+                  ]
+                },
+                "manifest": {},
+                "plugin_id": {
+                  "type": "string"
+                },
+                "plugin_version": {
+                  "type": "string",
+                  "description": "The author's own version string from the manifest, informational."
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "updated_at": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
                 }
               }
             }
@@ -7278,6 +8594,105 @@
           }
         }
       },
+      "PaginatedEnvelope_PluginResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One version of a plugin, as every plugin endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was uploaded, with\nnothing the server inferred added to it. `functions` is the list of\nnames it declares, repeated at the top level so a client need not walk\nthe manifest to learn what the plugin adds to the vocabulary. `health` is\npresent only on the single-entity read, and only when the serving node\nhas an opinion: it says whether *this node* loaded the digest.",
+              "required": [
+                "plugin_id",
+                "version",
+                "status",
+                "digest",
+                "abi",
+                "plugin_version",
+                "manifest",
+                "functions",
+                "tags",
+                "content_hash",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "abi": {
+                  "type": "string",
+                  "description": "The WIT package version the component was built against."
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the importable content (manifest, digest, tags) — the\nsame projection the upsert import compares."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "`sha256:…` of the component bytes — the identity a generation, a\ntrace, a package and the catalogue all name the artifact by."
+                },
+                "functions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "health": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PluginHealth",
+                      "description": "This node's load state for the version, on the single-entity read."
+                    }
+                  ]
+                },
+                "manifest": {},
+                "plugin_id": {
+                  "type": "string"
+                },
+                "plugin_version": {
+                  "type": "string",
+                  "description": "The author's own version string from the manifest, informational."
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "updated_at": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
       "PaginatedEnvelope_TraceDlqSummaryResponse": {
         "type": "object",
         "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
@@ -7444,6 +8859,135 @@
             "type": "integer",
             "format": "int64",
             "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PluginDependencies": {
+        "type": "object",
+        "description": "What depends on a plugin: the active workflows calling its functions.",
+        "required": [
+          "plugin_id",
+          "version",
+          "functions",
+          "workflows"
+        ],
+        "properties": {
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plugin_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Active workflows whose tasks call any of `functions` — the ones an\narchive or delete is refused for."
+          }
+        }
+      },
+      "PluginHealth": {
+        "type": "object",
+        "description": "Whether the node answering loaded a plugin version, and if not, why.",
+        "properties": {
+          "compile_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Compile time in milliseconds when loaded.",
+            "minimum": 0
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stage and reason when `failed`."
+          },
+          "state": {
+            "type": "string",
+            "description": "`loaded`, `failed`, `disabled` (plugins are off on this node) or\n`inactive` (the version is not the one this node's generation carries)."
+          }
+        }
+      },
+      "PluginResponse": {
+        "type": "object",
+        "description": "One version of a plugin, as every plugin endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was uploaded, with\nnothing the server inferred added to it. `functions` is the list of\nnames it declares, repeated at the top level so a client need not walk\nthe manifest to learn what the plugin adds to the vocabulary. `health` is\npresent only on the single-entity read, and only when the serving node\nhas an opinion: it says whether *this node* loaded the digest.",
+        "required": [
+          "plugin_id",
+          "version",
+          "status",
+          "digest",
+          "abi",
+          "plugin_version",
+          "manifest",
+          "functions",
+          "tags",
+          "content_hash",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "abi": {
+            "type": "string",
+            "description": "The WIT package version the component was built against."
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the importable content (manifest, digest, tags) — the\nsame projection the upsert import compares."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "description": "`sha256:…` of the component bytes — the identity a generation, a\ntrace, a package and the catalogue all name the artifact by."
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "health": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PluginHealth",
+                "description": "This node's load state for the version, on the single-entity read."
+              }
+            ]
+          },
+          "manifest": {},
+          "plugin_id": {
+            "type": "string"
+          },
+          "plugin_version": {
+            "type": "string",
+            "description": "The author's own version string from the manifest, informational."
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {},
+          "updated_at": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -8017,6 +9561,34 @@
           }
         }
       },
+      "UpdatePluginRequest": {
+        "type": "object",
+        "description": "`PUT /plugins/{id}`: every field optional, absent means keep.",
+        "properties": {
+          "component": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manifest": {},
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "UpdateWorkflowRequest": {
         "type": "object",
         "properties": {
@@ -8279,6 +9851,10 @@
     {
       "name": "Functions",
       "description": "Engine function schemas"
+    },
+    {
+      "name": "Plugins",
+      "description": "WebAssembly plugins: sandboxed custom task functions"
     },
     {
       "name": "Audit",
