@@ -226,9 +226,9 @@ async fn the_catalogue_matches_what_the_engine_can_dispatch() {
 
 /// The create-time gate agrees with the runtime.
 ///
-/// `is_known_function` decides whether a workflow may *name* a function, and
-/// it has to answer without an engine — validation runs before one exists, and
-/// `CUSTOM_HANDLER_FUNCTIONS` is Orion's declaration of what it registers.
+/// `FunctionRegistry::contains` decides whether a workflow may *name* a
+/// function, and it has to answer without an engine — validation runs before
+/// one exists, and the registry is Orion's declaration of what it registers.
 /// dataflow-rs 3.7's `can_dispatch` answers the same question against a real
 /// registry, so the two can finally be checked against each other instead of
 /// only against themselves.
@@ -246,7 +246,7 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
     let generation = state.runtime.load();
     let engine = &generation.engine;
 
-    for name in orion::engine::known_functions() {
+    for name in orion::engine::FunctionRegistry::builtin().accepted_names() {
         assert!(
             engine.can_dispatch(name),
             "create accepts '{name}', but the serving engine would fail every \
@@ -254,10 +254,11 @@ async fn the_create_time_gate_agrees_with_the_running_engine() {
         );
     }
 
-    // The other way: aliases are excluded because `known_functions` yields the
-    // canonical spelling, which is the one a `BUILTIN_FUNCTION_NAMES` entry
-    // carries.
-    let declared: BTreeSet<&str> = orion::engine::known_functions().collect();
+    // The other way: every spelling the gate accepts, aliases included, so
+    // whichever one the engine reports as canonical is found.
+    let declared: BTreeSet<&str> = orion::engine::FunctionRegistry::builtin()
+        .accepted_names()
+        .collect();
     for f in engine.dispatchable_functions() {
         assert!(
             declared.contains(f.name),

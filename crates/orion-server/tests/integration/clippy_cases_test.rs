@@ -26,6 +26,7 @@ pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
         &compiled,
         &Boundary::default(),
         false,
+        orion::engine::FunctionRegistry::builtin(),
     ));
     let errors: Vec<_> = findings.iter().filter(|f| f.is_error()).collect();
     assert!(
@@ -38,7 +39,13 @@ pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
     let config = config_path
         .exists()
         .then(|| orion::config::load_config(Some(config_path.to_str().unwrap())).expect("config"));
-    let analysis = Analysis::new(&raw, &compiled, &report.shared, config.as_ref());
+    let analysis = Analysis::new(
+        &raw,
+        &compiled,
+        &report.shared,
+        config.as_ref(),
+        orion::engine::FunctionRegistry::builtin(),
+    );
     clippy::run(&analysis).diagnostics
 }
 

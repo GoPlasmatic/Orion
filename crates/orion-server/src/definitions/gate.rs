@@ -109,7 +109,12 @@ pub fn gate_directory(
     // same exit rules, and the loader's come first because a set that did not
     // resolve is what makes the check pass's findings hard to read.
     let mut findings = report.findings;
-    findings.extend(super::check(&set, boundary, opts.require_ids));
+    findings.extend(super::check(
+        &set,
+        boundary,
+        opts.require_ids,
+        crate::engine::FunctionRegistry::builtin(),
+    ));
 
     Ok(GateReport {
         set,

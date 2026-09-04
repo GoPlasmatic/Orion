@@ -109,7 +109,7 @@ impl TemplatedInput {
         };
         let mut compiled = HashMap::new();
         for (field, value) in object {
-            let at = super::schema::template_paths(handler, field);
+            let at = super::registry::FunctionRegistry::builtin().template_paths(handler, field);
             if at.contains(&"") {
                 let mut template = Template::from(value.clone());
                 template.compile(c, &format!("{handler}.{field}"))?;

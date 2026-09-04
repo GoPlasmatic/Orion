@@ -245,7 +245,11 @@ pub(crate) fn run_lint(
     // raised `engine.max_loop_iterations` — the safe direction for a
     // pre-flight tool (R20).
     let loop_cap = orion::config::EngineConfig::default().max_loop_iterations;
-    if let Err(err) = orion::validation::validate_create_workflow(&req, loop_cap) {
+    if let Err(err) = orion::validation::validate_create_workflow(
+        &req,
+        loop_cap,
+        orion::engine::FunctionRegistry::builtin(),
+    ) {
         return Err(format_lint_error(workflow_path, err).into());
     }
 
@@ -258,29 +262,35 @@ pub(crate) fn run_lint(
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
     let mut warnings: Vec<orion::definitions::Diagnostic> =
-        orion::validation::unresolvable_logic_warnings(&req.tasks)
-            .into_iter()
-            .map(|(path, message)| {
-                orion::definitions::Diagnostic::warning(
-                    "logic.unresolvable",
-                    format!("workflow '{}' {path}", req.name),
-                    message,
-                )
-            })
-            .collect();
+        orion::validation::unresolvable_logic_warnings(
+            &req.tasks,
+            orion::engine::FunctionRegistry::builtin(),
+        )
+        .into_iter()
+        .map(|(path, message)| {
+            orion::definitions::Diagnostic::warning(
+                "logic.unresolvable",
+                format!("workflow '{}' {path}", req.name),
+                message,
+            )
+        })
+        .collect();
     // The informational findings: a stripped `$`, and the two control-flow keys
     // that do nothing. `check_workflow` reports all three and `build` refuses
     // none, so this is the surface where an author still can act on one.
     warnings.extend(
-        orion::validation::engine_advisories(&req.tasks)
-            .into_iter()
-            .map(|advisory| {
-                orion::definitions::Diagnostic::warning(
-                    advisory.check,
-                    format!("workflow '{}' {}", req.name, advisory.path),
-                    advisory.message,
-                )
-            }),
+        orion::validation::engine_advisories(
+            &req.tasks,
+            orion::engine::FunctionRegistry::builtin(),
+        )
+        .into_iter()
+        .map(|advisory| {
+            orion::definitions::Diagnostic::warning(
+                advisory.check,
+                format!("workflow '{}' {}", req.name, advisory.path),
+                advisory.message,
+            )
+        }),
     );
     for finding in &warnings {
         eprintln!("{finding}");
@@ -1019,7 +1029,12 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
         );
         let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
         let compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
-        findings.extend(orion::definitions::check(&compiled, &req.boundary, false));
+        findings.extend(orion::definitions::check(
+            &compiled,
+            &req.boundary,
+            false,
+            orion::engine::FunctionRegistry::builtin(),
+        ));
         (raw, compiled, shared, findings)
     } else {
         eprintln!("error: '{}' is not a file or directory", req.path);
@@ -1033,8 +1048,13 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
     let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
     let mut skipped: Vec<&str> = Vec::new();
     if lint_errors == 0 {
-        let analysis =
-            orion::definitions::analysis::Analysis::new(&raw, &compiled, &shared, req.config);
+        let analysis = orion::definitions::analysis::Analysis::new(
+            &raw,
+            &compiled,
+            &shared,
+            req.config,
+            orion::engine::FunctionRegistry::builtin(),
+        );
         let report = orion::definitions::clippy::run(&analysis);
         diagnostics.extend(report.diagnostics);
         skipped = report.skipped;
@@ -1191,6 +1211,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     orion::validation::validate_create_workflow(
         &req,
         orion::config::EngineConfig::default().max_loop_iterations,
+        orion::engine::FunctionRegistry::builtin(),
     )
     .map_err(|e| format_lint_error(workflow_path, e))?;
 

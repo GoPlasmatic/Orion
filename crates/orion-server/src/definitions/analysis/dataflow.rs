@@ -8,6 +8,7 @@
 //! a read of *something* this walk cannot name, and every rule built on it
 //! must then stay silent rather than guess.
 
+use crate::engine::FunctionRegistry;
 use crate::engine::functions::schema::WriteShape;
 use serde_json::Value;
 
@@ -148,7 +149,7 @@ pub fn data_reads(value: &Value) -> Vec<String> {
 /// Context paths a task writes, for every function that writes one.
 ///
 /// The *shape* comes from the function registry
-/// ([`crate::engine::functions::schema::write_shape`]), not from a `match`
+/// ([`FunctionRegistry::write_shape`]), not from a `match`
 /// here. This function used to carry its own copy of every handler's output
 /// semantics — in a different file from the handlers, pinned by no test, which
 /// is the drift class the rest of this repo turns into build failures. Now the
@@ -185,12 +186,12 @@ impl Writes {
 }
 
 /// The literal destinations only — [`task_write_facts`] without the certainty.
-pub fn task_writes(task: &Value) -> Vec<String> {
-    task_write_facts(task).paths
+pub fn task_writes(task: &Value, functions: &FunctionRegistry) -> Vec<String> {
+    task_write_facts(task, functions).paths
 }
 
 /// Where a task writes, with the certainty flag.
-pub fn task_write_facts(task: &Value) -> Writes {
+pub fn task_write_facts(task: &Value, functions: &FunctionRegistry) -> Writes {
     let Some(function) = task.get("function") else {
         return Writes::default();
     };
@@ -198,7 +199,7 @@ pub fn task_write_facts(task: &Value) -> Writes {
     let Some(input) = function.get("input") else {
         return Writes::default();
     };
-    let Some(shape) = crate::engine::functions::schema::write_shape(name) else {
+    let Some(shape) = functions.write_shape(name) else {
         return Writes::default();
     };
 
@@ -305,13 +306,22 @@ mod tests {
     #[test]
     fn writes_by_function() {
         let parse = json!({"function": {"name": "parse_json", "input": {"source": "payload", "target": "order"}}});
-        assert_eq!(task_writes(&parse), ["data.order"]);
+        assert_eq!(
+            task_writes(&parse, FunctionRegistry::builtin()),
+            ["data.order"]
+        );
         let map = json!({"function": {"name": "map", "input": {"mappings": [{"path": "data.a", "logic": 1}, {"path": "temp_data.b", "logic": 2}]}}});
-        assert_eq!(task_writes(&map), ["data.a", "temp_data.b"]);
+        assert_eq!(
+            task_writes(&map, FunctionRegistry::builtin()),
+            ["data.a", "temp_data.b"]
+        );
         let call = json!({"function": {"name": "http_call", "input": {"connector": "c", "output": "data.resp"}}});
-        assert_eq!(task_writes(&call), ["data.resp"]);
+        assert_eq!(
+            task_writes(&call, FunctionRegistry::builtin()),
+            ["data.resp"]
+        );
         let query = json!({"function": {"name": "data_query", "input": {"connector": "c"}}});
-        assert_eq!(task_writes(&query), ["data"]);
+        assert_eq!(task_writes(&query, FunctionRegistry::builtin()), ["data"]);
     }
 
     /// A computed destination is an *unknown* write, not the absence of one.
@@ -327,7 +337,7 @@ mod tests {
                 "connector": "c", "key": "k",
                 "output": {"cat": ["data.by.", {"var": "data.t"}]}}}
         });
-        let facts = task_write_facts(&computed);
+        let facts = task_write_facts(&computed, FunctionRegistry::builtin());
         assert!(facts.paths.is_empty(), "{facts:?}");
         assert!(facts.uncertain(), "{facts:?}");
 
@@ -337,7 +347,7 @@ mod tests {
         let omitted = serde_json::json!({
             "function": {"name": "cache_read", "input": {"connector": "c", "key": "k"}}
         });
-        let facts = task_write_facts(&omitted);
+        let facts = task_write_facts(&omitted, FunctionRegistry::builtin());
         assert!(facts.paths.is_empty());
         assert!(
             !facts.uncertain(),
@@ -350,7 +360,7 @@ mod tests {
                 {"path": {"var": "data.where"}, "logic": 1},
                 {"path": "data.known", "logic": 2}]}}
         });
-        let facts = task_write_facts(&mapping);
+        let facts = task_write_facts(&mapping, FunctionRegistry::builtin());
         assert_eq!(facts.paths, ["data.known"]);
         assert!(facts.uncertain(), "{facts:?}");
     }

@@ -731,6 +731,7 @@ fn panicking_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
         Arc::new(engine),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
+        orion::engine::FunctionRegistry::builtin().clone(),
     ))
 }
 

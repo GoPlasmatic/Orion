@@ -119,14 +119,12 @@ pub mod utils;
 
 pub use error::{ErrorClass, HandlerError};
 pub use execute::{ExecOpts, Execution, RunOutcome, execute_admitted};
-pub use handlers::{
-    CONNECTOR_FUNCTIONS, HandlerDeps, build_custom_functions, is_known_function, known_functions,
-    register_kafka_publisher, required_connector_types, requires_mongo_database,
-    suggest_known_function,
+pub use functions::registry::{
+    CatalogueEntry, FieldSpec, FunctionEntry, FunctionRegistry, PluginBinding,
 };
-pub use loader::{
-    CUSTOM_HANDLER_FUNCTIONS, HandlerScreen, build_engine_workflows, build_single, filter_channels,
-};
+pub use functions::schema::ConnectorRule;
+pub use handlers::{HandlerDeps, build_custom_functions, register_kafka_publisher};
+pub use loader::{HandlerScreen, build_engine_workflows, build_single, filter_channels};
 pub use observer::MetricsObserver;
 pub use refs::{
     ConnectorFacts, ConnectorRef, RefProblem, channel_call_targets, check_connector_refs,

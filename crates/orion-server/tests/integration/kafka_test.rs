@@ -46,6 +46,7 @@ fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
     Arc::new(orion::runtime::RuntimeHandle::new(
         Arc::new(dataflow_rs::Engine::builder().build().unwrap()),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
+        orion::engine::FunctionRegistry::builtin().clone(),
     ))
 }
 

@@ -10,10 +10,12 @@
 
 use serde_json::Value;
 
+use super::FunctionRegistry;
+
 /// One task's connector reference, as authored.
 pub struct ConnectorRef<'a> {
-    /// The task's `function.name`, always one of
-    /// [`crate::engine::CONNECTOR_FUNCTIONS`].
+    /// The task's `function.name`, always a function whose registry entry
+    /// carries a [`ConnectorRule`](crate::engine::ConnectorRule).
     pub function: &'a str,
     pub connector: &'a str,
     /// The task's whole `function.input` object, for the cross-field rules.
@@ -21,7 +23,10 @@ pub struct ConnectorRef<'a> {
 }
 
 /// Every connector a workflow's tasks reference, in task order.
-pub fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
+///
+/// `functions` says which names take a connector — the serving generation's
+/// registry on the admin paths, the built-in one offline.
+pub fn connector_refs<'a>(tasks: &'a Value, functions: &FunctionRegistry) -> Vec<ConnectorRef<'a>> {
     // Flattened: since 3.6 a `tasks` element may be a group, and a connector
     // referenced only from inside one would otherwise pass closure checking.
     super::steps::leaf_tasks(tasks)
@@ -29,7 +34,7 @@ pub fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
         .filter_map(|task| {
             let function = task.get("function")?;
             let name = function.get("name")?.as_str()?;
-            if !crate::engine::CONNECTOR_FUNCTIONS.contains(&name) {
+            if !functions.takes_connector(name) {
                 return None;
             }
             let input = function.get("input")?;
@@ -84,29 +89,36 @@ pub enum RefProblem<'a> {
 /// offline check knew the first two problems and not the third, so `lint` and
 /// `package lint` passed a workflow whose `mongo_read` names no database and
 /// which the handler refuses at its first request.
-pub fn check_connector_refs<'a, F>(tasks: &'a Value, facts: F) -> Vec<RefProblem<'a>>
+pub fn check_connector_refs<'a, F>(
+    tasks: &'a Value,
+    functions: &FunctionRegistry,
+    facts: F,
+) -> Vec<RefProblem<'a>>
 where
     F: Fn(&str) -> Option<ConnectorFacts>,
 {
     let mut problems = Vec::new();
-    for r in connector_refs(tasks) {
+    for r in connector_refs(tasks, functions) {
         let Some(facts) = facts(r.connector) else {
             problems.push(RefProblem::Missing {
                 connector: r.connector,
             });
             continue;
         };
+        // Present by construction: `connector_refs` yields only functions whose
+        // entry carries a rule.
+        let Some(rule) = functions.get(r.function).and_then(|e| e.connector) else {
+            continue;
+        };
 
         // Type. The handler would refuse this at request time via the
         // connector target; saying so now costs one lookup.
-        if let Some(wanted) = super::required_connector_types(r.function)
-            && !wanted.contains(&facts.connector_type)
-        {
+        if !rule.types.contains(&facts.connector_type) {
             problems.push(RefProblem::WrongType {
                 function: r.function,
                 connector: r.connector,
                 actual: facts.connector_type,
-                wanted,
+                wanted: rule.types,
             });
             continue;
         }
@@ -118,7 +130,7 @@ where
         // marks it optional and the handler enforces it at request time.
         // Whether it applies is knowable here: the connector is resolved.
         if facts.is_mongo
-            && super::requires_mongo_database(r.function)
+            && rule.requires_mongo_database
             && !r
                 .input
                 .get("database")

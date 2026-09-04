@@ -74,44 +74,6 @@ fn glob_match(pattern: &str, name: &str) -> bool {
     pi == p.len()
 }
 
-/// Every function name registered by [`build_custom_functions`].
-///
-/// Orion's *declaration* of what it registers, for the two questions that must
-/// be answered before an engine exists: whether workflow creation may accept a
-/// name ([`is_known_function`]), and which handlers an offline run must supply
-/// a stub for. Neither has an engine to ask.
-///
-/// It is no longer the load-time screen — `screen_workflow` puts that
-/// question to the real handler registry — so a name missing from here is
-/// caught at create rather than reaching the engine. It is also no longer
-/// checked only against itself: `registered_handler_names_match_the_constant`
-/// pins it to [`build_custom_functions`], and
-/// `the_create_time_gate_agrees_with_the_running_engine` pins it to a live
-/// engine's `can_dispatch` in both directions.
-///
-/// [`build_custom_functions`]: super::handlers::build_custom_functions
-/// [`is_known_function`]: super::handlers::is_known_function
-pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
-    "cache_read",
-    "cache_write",
-    "channel_call",
-    "crypto",
-    "data_query",
-    "data_write",
-    "db_read",
-    "db_write",
-    "http_call",
-    "jwt_sign",
-    "jwt_verify",
-    "mongo_aggregate",
-    "mongo_read",
-    "mongo_write",
-    "publish_kafka",
-    "send_email",
-    "storage_head",
-    "storage_presign",
-];
-
 /// Something that can answer "will the handlers that run this workflow
 /// actually dispatch every task in it, and do their inputs parse?".
 ///
@@ -150,8 +112,8 @@ impl HandlerScreen for dataflow_rs::engine::EngineBuilder {
 /// is that one broken row must never stop the instance. Checking here turns it
 /// back into a `ChannelLoadIssue` (F41).
 ///
-/// This used to be a hand-written mirror: a `CUSTOM_HANDLER_FUNCTIONS`
-/// membership test, a `match` naming the one handler with a typed `Input`, and
+/// This used to be a hand-written mirror: a membership test against a
+/// hand-kept list of registered names, a `match` naming the one handler with a typed `Input`, and
 /// a locally-built datalogic engine standing in for the crate-private
 /// `TemplateCompiler`. dataflow-rs 3.7's `check_workflow` does all three
 /// against the real registry and the real compiler, so the mirror is gone and

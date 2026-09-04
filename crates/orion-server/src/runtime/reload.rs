@@ -151,7 +151,13 @@ pub async fn reload_engine_with_opts(
         // before the Kafka restart below — and no window in which a request is
         // admitted by one generation and executed by another, which is what
         // two stores here could not avoid however they were ordered.
-        let generation = state.runtime.publish(new_engine, Arc::new(new_channels));
+        // The built-in registry until a generation loads plugin entries: the
+        // handlers `with_new_workflows` carried across are exactly these.
+        let generation = state.runtime.publish(
+            new_engine,
+            Arc::new(new_channels),
+            crate::engine::FunctionRegistry::builtin().clone(),
+        );
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

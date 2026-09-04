@@ -235,16 +235,16 @@ pub fn run_documents(
 /// throughput to protect. A rule that does not compile records as authored,
 /// since the run's job at that point is to show the author what they wrote.
 fn resolved_input(function: &str, input: &Value, ctx: &TaskContext<'_>) -> Value {
-    use crate::engine::functions::schema;
+    let registry = crate::engine::FunctionRegistry::builtin();
     let Some(obj) = input.as_object() else {
         return input.clone();
     };
     Value::Object(
         obj.iter()
             .map(|(key, value)| {
-                let resolved = if schema::template_paths(function, key).contains(&"") {
+                let resolved = if registry.template_paths(function, key).contains(&"") {
                     evaluate_here(value, ctx)
-                } else if schema::is_resolvable_field(function, key) {
+                } else if registry.is_resolvable_field(function, key) {
                     super::connector_helpers::resolve_value(value, ctx)
                 } else {
                     value.clone()
@@ -302,11 +302,11 @@ pub fn parse_stub_value(root: &Value, path: &str) -> Result<StubTable, String> {
 
     let mut table = StubTable::new();
     for (function, targets) in object {
-        if !crate::engine::CUSTOM_HANDLER_FUNCTIONS.contains(&function.as_str()) {
+        if !stubbable_functions().any(|name| name == function) {
             return Err(format!(
                 "'{path}' stubs '{function}', which is not a connector-backed function. \
                  Stubbable functions: {}",
-                crate::engine::CUSTOM_HANDLER_FUNCTIONS.join(", ")
+                stubbable_functions().collect::<Vec<_>>().join(", ")
             ));
         }
         let Some(map) = targets.as_object() else {
@@ -598,13 +598,24 @@ impl AsyncFunctionHandler for ChannelCallStub {
     }
 }
 
+/// Every function an offline run must supply a handler for: the Orion
+/// handlers, which are the entries a real engine dispatches to code in this
+/// binary. An engine built-in needs nothing, and a plugin function is
+/// executed for real by the loaded component rather than stood in for.
+pub fn stubbable_functions() -> impl Iterator<Item = &'static str> {
+    crate::engine::FunctionRegistry::builtin()
+        .entries()
+        .filter(|e| e.source == super::schema::Source::Orion)
+        .map(crate::engine::FunctionEntry::label)
+}
+
 /// Register a stub for every connector-backed function, writing every call it
 /// answers into `log`.
 ///
-/// Every name in `CUSTOM_HANDLER_FUNCTIONS` gets one, whether or not the stub
-/// file mentions it: a workflow calling an unstubbed function should be told
-/// which stub to add, and that only happens if a handler is there to say so.
-/// Registering none would reproduce the `FunctionNotFound` the old dry run gave.
+/// Every Orion handler gets one, whether or not the stub file mentions it: a
+/// workflow calling an unstubbed function should be told which stub to add,
+/// and that only happens if a handler is there to say so. Registering none
+/// would reproduce the `FunctionNotFound` the old dry run gave.
 /// `every_stubbable_function_gets_a_handler` pins the coverage.
 ///
 /// A log is always passed rather than being optional: both offline callers
@@ -617,7 +628,7 @@ pub fn build_stub_functions_with_log(
     let stubs = Arc::new(stubs);
     let mut out: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
-    for &function in crate::engine::CUSTOM_HANDLER_FUNCTIONS {
+    for function in stubbable_functions() {
         // Deterministic and offline — dry-run executes these for real, so a
         // stub would only hide behavior. (An env:// key still resolves from
         // the local environment, and jwt_verify with a JWKS does fetch keys;
@@ -698,9 +709,15 @@ mod tests {
     #[test]
     fn every_stubbable_function_gets_a_handler() {
         let fns = build_stub_functions_with_log(StubTable::new(), Arc::new(CallLog::new()));
-        for name in crate::engine::CUSTOM_HANDLER_FUNCTIONS {
-            assert!(fns.contains_key(*name), "no stub handler for {name}");
+        let mut count = 0;
+        for name in stubbable_functions() {
+            assert!(fns.contains_key(name), "no stub handler for {name}");
+            count += 1;
         }
+        assert_eq!(
+            count, 18,
+            "every Orion handler is stubbable, and only those"
+        );
     }
 
     #[test]

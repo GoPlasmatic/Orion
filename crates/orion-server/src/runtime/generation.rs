@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arc_swap::ArcSwap;
 
 use crate::channel::ChannelSnapshot;
+use crate::engine::FunctionRegistry;
 
 /// One complete, self-consistent generation of everything a request is served
 /// from.
@@ -46,6 +47,10 @@ pub struct RuntimeGeneration {
     pub id: u64,
     pub engine: Arc<dataflow_rs::Engine>,
     pub channels: Arc<ChannelSnapshot>,
+    /// Every function the engine above dispatches, and what each declares —
+    /// what create-time validation and `GET /admin/functions` read, so a
+    /// workflow is accepted against exactly the set this generation runs.
+    pub functions: Arc<FunctionRegistry>,
 }
 
 /// The live generation, swapped wholesale on reload.
@@ -81,12 +86,17 @@ impl RuntimeHandle {
     /// handler is registered *on* that engine and holds this handle: the
     /// placeholder engine bootstrap builds for its datalogic is the same one
     /// that stands in here until the first real publish.
-    pub fn new(engine: Arc<dataflow_rs::Engine>, channels: Arc<ChannelSnapshot>) -> Self {
+    pub fn new(
+        engine: Arc<dataflow_rs::Engine>,
+        channels: Arc<ChannelSnapshot>,
+        functions: Arc<FunctionRegistry>,
+    ) -> Self {
         Self {
             current: ArcSwap::from_pointee(RuntimeGeneration {
                 id: 0,
                 engine,
                 channels,
+                functions,
             }),
             published: AtomicU64::new(0),
         }
@@ -105,16 +115,22 @@ impl RuntimeHandle {
 
     /// Publish the next generation. Returns its id.
     ///
-    /// The engine and the channels must be built from the same rows; taking
-    /// them together is what makes that the only way to say it. Readers
-    /// already holding a generation finish on it; every load after this
-    /// returns the new one.
-    pub fn publish(&self, engine: Arc<dataflow_rs::Engine>, channels: Arc<ChannelSnapshot>) -> u64 {
+    /// The engine, the channels and the function registry must be built from
+    /// the same rows; taking them together is what makes that the only way to
+    /// say it. Readers already holding a generation finish on it; every load
+    /// after this returns the new one.
+    pub fn publish(
+        &self,
+        engine: Arc<dataflow_rs::Engine>,
+        channels: Arc<ChannelSnapshot>,
+        functions: Arc<FunctionRegistry>,
+    ) -> u64 {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
             id,
             engine,
             channels,
+            functions,
         }));
         id
     }
@@ -137,6 +153,7 @@ pub(crate) fn test_handle() -> Arc<RuntimeHandle> {
                 .expect("an empty engine builds"),
         ),
         Arc::new(ChannelSnapshot::empty()),
+        FunctionRegistry::builtin().clone(),
     ))
 }
 
@@ -155,7 +172,11 @@ mod tests {
     fn handle() -> (RuntimeHandle, Arc<dataflow_rs::Engine>) {
         let boot = engine();
         (
-            RuntimeHandle::new(boot.clone(), Arc::new(ChannelSnapshot::empty())),
+            RuntimeHandle::new(
+                boot.clone(),
+                Arc::new(ChannelSnapshot::empty()),
+                FunctionRegistry::builtin().clone(),
+            ),
             boot,
         )
     }
@@ -170,7 +191,11 @@ mod tests {
         let held = handle.load();
 
         let next_engine = engine();
-        handle.publish(next_engine.clone(), Arc::new(ChannelSnapshot::empty()));
+        handle.publish(
+            next_engine.clone(),
+            Arc::new(ChannelSnapshot::empty()),
+            FunctionRegistry::builtin().clone(),
+        );
 
         assert_eq!(held.id, 0);
         assert!(
@@ -194,7 +219,11 @@ mod tests {
         assert_eq!(handle.load().id, 0);
 
         for expected in 1..=3 {
-            let id = handle.publish(engine(), Arc::new(ChannelSnapshot::empty()));
+            let id = handle.publish(
+                engine(),
+                Arc::new(ChannelSnapshot::empty()),
+                FunctionRegistry::builtin().clone(),
+            );
             assert_eq!(id, expected);
             assert_eq!(handle.load().id, expected);
             assert_eq!(handle.published_count(), expected);

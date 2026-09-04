@@ -25,6 +25,7 @@ use serde_json::Value;
 use crate::config::AppConfig;
 use crate::definitions::json::Document;
 use crate::definitions::{DefinitionSet, Entity, SharedDefinitions};
+use crate::engine::FunctionRegistry;
 
 pub use dataflow::Reads;
 pub use logic::{Evaluator, Expr};
@@ -46,6 +47,11 @@ pub struct Analysis<'a> {
     /// The serving instance's config, when `-c` named it. The rules that
     /// need it declare so and are skipped otherwise.
     pub config: Option<&'a AppConfig>,
+    /// Every function a workflow may name, and what each declares — the
+    /// built-in registry offline, extended by whatever manifests were given.
+    /// The write and expression facts below are read from it, so a rule never
+    /// consults a function table itself.
+    pub functions: &'a FunctionRegistry,
     pub evaluator: Evaluator,
     /// One entry per workflow of the compiled set, in set order.
     pub workflows: Vec<WorkflowFacts>,
@@ -138,11 +144,12 @@ impl<'a> Analysis<'a> {
         compiled: &'a DefinitionSet,
         shared: &'a SharedDefinitions,
         config: Option<&'a AppConfig>,
+        functions: &'a FunctionRegistry,
     ) -> Self {
         let evaluator = Evaluator::new();
         let workflows = compiled
             .iter(Entity::Workflow)
-            .map(|def| workflow_facts(&def.origin, &def.doc, &evaluator))
+            .map(|def| workflow_facts(&def.origin, &def.doc, &evaluator, functions))
             .collect();
         let channels = compiled
             .iter(Entity::Channel)
@@ -173,6 +180,7 @@ impl<'a> Analysis<'a> {
             compiled,
             shared,
             config,
+            functions,
             evaluator,
             workflows,
             channels,
@@ -189,7 +197,12 @@ impl<'a> Analysis<'a> {
     }
 }
 
-fn workflow_facts(origin: &str, doc: &Value, evaluator: &Evaluator) -> WorkflowFacts {
+fn workflow_facts(
+    origin: &str,
+    doc: &Value,
+    evaluator: &Evaluator,
+    functions: &FunctionRegistry,
+) -> WorkflowFacts {
     let condition = evaluator.expr(doc.get("condition").unwrap_or(&Value::Bool(true)));
     let loop_config = doc.get("loop").filter(|l| !l.is_null());
     let loop_counter = loop_config
@@ -198,7 +211,7 @@ fn workflow_facts(origin: &str, doc: &Value, evaluator: &Evaluator) -> WorkflowF
         .map(|c| format!("temp_data.{c}"));
     let mut steps = Vec::new();
     if let Some(tasks) = doc.get("tasks") {
-        walk(tasks, "tasks", None, true, evaluator, &mut steps);
+        walk(tasks, "tasks", None, true, evaluator, functions, &mut steps);
     }
     WorkflowFacts {
         origin: origin.to_string(),
@@ -227,6 +240,7 @@ fn walk(
     parent: Option<usize>,
     parent_certain: bool,
     evaluator: &Evaluator,
+    functions: &FunctionRegistry,
     out: &mut Vec<StepFacts>,
 ) {
     let Some(items) = tasks.as_array() else {
@@ -256,7 +270,7 @@ fn walk(
             .and_then(Value::as_str)
             .map(str::to_string);
         let expressions = match (&function, node.get("function").and_then(|f| f.get("input"))) {
-            (Some(name), Some(input)) => operators::input_expressions(name, input)
+            (Some(name), Some(input)) => operators::input_expressions(name, input, functions)
                 .into_iter()
                 .map(|(p, e)| (p, evaluator.expr(e)))
                 .collect(),
@@ -264,7 +278,7 @@ fn walk(
         };
         let (writes, writes_uncertain) = match kind {
             StepKind::Task => {
-                let facts = dataflow::task_write_facts(node);
+                let facts = dataflow::task_write_facts(node, functions);
                 (facts.paths, facts.computed)
             }
             // Filled in after the members are walked.
@@ -295,6 +309,7 @@ fn walk(
                 Some(me),
                 certain,
                 evaluator,
+                functions,
                 out,
             );
             let member_writes: Vec<String> = out[me + 1..]
@@ -315,7 +330,13 @@ mod tests {
     use serde_json::json;
 
     fn analysis_of(doc: Value) -> Vec<StepFacts> {
-        workflow_facts("wf.json", &doc, &Evaluator::new()).steps
+        workflow_facts(
+            "wf.json",
+            &doc,
+            &Evaluator::new(),
+            FunctionRegistry::builtin(),
+        )
+        .steps
     }
 
     #[test]
@@ -369,6 +390,7 @@ mod tests {
             "wf.json",
             &json!({"name": "w", "loop": {"counter": "i", "max": 3}, "tasks": []}),
             &Evaluator::new(),
+            FunctionRegistry::builtin(),
         );
         assert!(facts.has_loop);
         assert_eq!(facts.loop_counter.as_deref(), Some("temp_data.i"));

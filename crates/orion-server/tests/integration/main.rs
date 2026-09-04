@@ -66,6 +66,7 @@ mod fmt_cli_test;
 mod fmt_examples_test;
 mod fmt_invariants_test;
 mod fmt_style_drift_test;
+mod function_registry_test;
 mod function_schema_test;
 mod functions_docs_drift_test;
 mod http_retry_test;

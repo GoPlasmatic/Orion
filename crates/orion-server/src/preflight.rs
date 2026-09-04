@@ -228,15 +228,18 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // re-implementing the rules. Covers missing/duplicate task ids, unknown
     // function names, and missing required inputs (including `write`, now that
     // the pre-1.0 flat envelope is gone).
-    let mut findings: Vec<Diagnostic> = crate::validation::validate_workflow_tasks_schema(&tasks)
-        .into_iter()
-        .map(|e| {
-            Diagnostic::error("14", format!("workflow '{name}' {}", e.path), e.message).with_remedy(
-                "fix the task and PUT the workflow; it is refused at create and update until then"
-                    .to_string(),
-            )
-        })
-        .collect();
+    let mut findings: Vec<Diagnostic> = crate::validation::validate_workflow_tasks_schema(
+        &tasks,
+        crate::engine::FunctionRegistry::builtin(),
+    )
+    .into_iter()
+    .map(|e| {
+        Diagnostic::error("14", format!("workflow '{name}' {}", e.path), e.message).with_remedy(
+            "fix the task and PUT the workflow; it is refused at create and update until then"
+                .to_string(),
+        )
+    })
+    .collect();
 
     // The other refusal a *stored* workflow can carry unknowingly: a secret
     // reference in a field that resolves none. It is a create/update gate, not
@@ -244,7 +247,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // next edit is refused — which is precisely the shape of break this
     // command exists to find before an operator hits it from a pipeline.
     findings.extend(
-        crate::validation::secret_reference_errors(&tasks)
+        crate::validation::secret_reference_errors(&tasks, crate::engine::FunctionRegistry::builtin())
             .into_iter()
             .map(|(path, message)| Diagnostic::error(
             "14",
@@ -273,7 +276,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // same reason `lint` gives them one — `[14]` would send an operator to the
     // data-dialect row, which has nothing to do with either finding.
     findings.extend(
-        crate::validation::engine_advisories(&tasks)
+        crate::validation::engine_advisories(&tasks, crate::engine::FunctionRegistry::builtin())
             .into_iter()
             .map(|advisory| {
                 let entity = format!("workflow '{name}' {}", advisory.path);

@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::connector::ConnectorType;
+use crate::engine::FunctionRegistry;
 
 use super::diagnostic::Diagnostic;
 use super::set::Definition;
@@ -76,14 +77,22 @@ pub fn check(
     set: &DefinitionSet,
     boundary: &Boundary,
     require_explicit_ids: bool,
+    functions: &FunctionRegistry,
 ) -> Vec<Diagnostic> {
     let mut findings = Vec::new();
 
     let connectors = check_connectors(set, &mut findings);
-    let workflows = check_workflows(set, require_explicit_ids, &mut findings);
+    let workflows = check_workflows(set, require_explicit_ids, functions, &mut findings);
     let channels = check_channels(set, &workflows.ids, require_explicit_ids, &mut findings);
 
-    check_closure(&workflows, &connectors, &channels, boundary, &mut findings);
+    check_closure(
+        &workflows,
+        &connectors,
+        &channels,
+        boundary,
+        functions,
+        &mut findings,
+    );
     check_env_refs(set, &mut findings);
 
     findings
@@ -154,6 +163,7 @@ fn check_connectors(
 fn check_workflows(
     set: &DefinitionSet,
     require_explicit_ids: bool,
+    functions: &FunctionRegistry,
     findings: &mut Vec<Diagnostic>,
 ) -> Workflows {
     let loop_cap = crate::config::EngineConfig::default().max_loop_iterations;
@@ -171,7 +181,7 @@ fn check_workflows(
                 continue;
             }
         };
-        if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap) {
+        if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
             findings.extend(schema_diagnostics(
                 "schema.workflow",
                 &format!("workflow '{}'", req.name),
@@ -184,7 +194,7 @@ fn check_workflows(
         // separately from `schema.workflow` so a pipeline can see which of the
         // two refused the set. `validate_create_workflow` refuses the same
         // documents, so a set that passes here is one the admin API accepts.
-        for (path, message) in crate::validation::secret_reference_errors(&req.tasks) {
+        for (path, message) in crate::validation::secret_reference_errors(&req.tasks, functions) {
             findings.push(Diagnostic::error(
                 "env.unresolved",
                 format!("workflow '{}' {path}", req.name),
@@ -193,7 +203,8 @@ fn check_workflows(
         }
         // The advisory the single-file lint already emits, carried into set
         // mode so a directory gate is not weaker than the per-file one.
-        for (path, message) in crate::validation::unresolvable_logic_warnings(&req.tasks) {
+        for (path, message) in crate::validation::unresolvable_logic_warnings(&req.tasks, functions)
+        {
             findings.push(Diagnostic::warning(
                 "logic.unresolvable",
                 format!("workflow '{}' {path}", req.name),
@@ -204,7 +215,7 @@ fn check_workflows(
         // `$`-prefixed key that loses one `$` when it is emitted, a
         // `validation` whose failure changes nothing, and `continue_on_error`
         // on a group, which parses and is dropped.
-        for advisory in crate::validation::engine_advisories(&req.tasks) {
+        for advisory in crate::validation::engine_advisories(&req.tasks, functions) {
             findings.push(Diagnostic::warning(
                 advisory.check,
                 format!("workflow '{}' {}", req.name, advisory.path),
@@ -377,6 +388,7 @@ fn check_closure(
     connectors: &BTreeMap<String, crate::engine::ConnectorFacts>,
     channels: &[String],
     boundary: &Boundary,
+    functions: &FunctionRegistry,
     findings: &mut Vec<Diagnostic>,
 ) {
     for (workflow, tasks) in &workflows.tasks {
@@ -385,9 +397,9 @@ fn check_closure(
         // activation gate the admin API runs (`admin::services::workflows`).
         // Only the lookup differs: there a live registry, here the set's own
         // connector definitions.
-        for problem in
-            crate::engine::check_connector_refs(tasks, |name| connectors.get(name).copied())
-        {
+        for problem in crate::engine::check_connector_refs(tasks, functions, |name| {
+            connectors.get(name).copied()
+        }) {
             match problem {
                 crate::engine::RefProblem::Missing { connector } => {
                     if !boundary.allows_connector(connector) {
@@ -570,10 +582,15 @@ mod tests {
         });
         let set = DefinitionSet::from_entries([(Entity::Workflow, "wf.json".to_string(), doc)]);
 
-        let schema: Vec<_> = check(&set, &Boundary::default(), false)
-            .into_iter()
-            .filter(|d| d.check == "schema.workflow")
-            .collect();
+        let schema: Vec<_> = check(
+            &set,
+            &Boundary::default(),
+            false,
+            crate::engine::FunctionRegistry::builtin(),
+        )
+        .into_iter()
+        .filter(|d| d.check == "schema.workflow")
+        .collect();
 
         assert!(
             !schema.is_empty(),
@@ -614,10 +631,15 @@ mod tests {
         .expect("write");
 
         let (set, _report) = DefinitionSet::from_directory(&dir).expect("load");
-        let located: Vec<_> = check(&set, &Boundary::default(), false)
-            .into_iter()
-            .filter(|d| d.check == "schema.workflow")
-            .collect();
+        let located: Vec<_> = check(
+            &set,
+            &Boundary::default(),
+            false,
+            crate::engine::FunctionRegistry::builtin(),
+        )
+        .into_iter()
+        .filter(|d| d.check == "schema.workflow")
+        .collect();
 
         assert!(!located.is_empty(), "the workflow must be refused");
         for d in &located {

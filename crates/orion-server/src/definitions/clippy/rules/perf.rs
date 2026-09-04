@@ -13,10 +13,10 @@ const PURE_WRITERS: &[&str] = &["parse_json", "parse_xml", "publish_json", "publ
 /// Whether `step` might read the context in ways the walk cannot see: a
 /// connector or composition call resolves its inputs at run time through
 /// shapes this analysis does not model.
-fn opaque(step: &StepFacts) -> bool {
+fn opaque(functions: &crate::engine::FunctionRegistry, step: &StepFacts) -> bool {
     step.function
         .as_deref()
-        .is_some_and(|f| crate::engine::CONNECTOR_FUNCTIONS.contains(&f) || f == "channel_call")
+        .is_some_and(|f| functions.takes_connector(f) || f == "channel_call")
 }
 
 // ============================================================
@@ -82,7 +82,7 @@ impl Rule for ParseResultOverwritten {
                     // uncertain read does: there is no longer a proof.
                     if reads.uncertain()
                         || reads.touches(target)
-                        || opaque(later)
+                        || opaque(cx.functions, later)
                         || later.writes_uncertain
                     {
                         break;
@@ -315,9 +315,12 @@ mod tests {
     #[test]
     fn pure_writers_are_exactly_the_engine_builtins_that_take_a_target() {
         for f in PURE_WRITERS {
-            let writes = crate::definitions::analysis::dataflow::task_writes(&json!({
-                "function": {"name": f, "input": {"source": "payload", "target": "x"}}
-            }));
+            let writes = crate::definitions::analysis::dataflow::task_writes(
+                &json!({
+                    "function": {"name": f, "input": {"source": "payload", "target": "x"}}
+                }),
+                crate::engine::FunctionRegistry::builtin(),
+            );
             assert_eq!(writes, ["data.x"], "{f}");
         }
     }

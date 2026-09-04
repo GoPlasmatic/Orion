@@ -1,25 +1,28 @@
-//! Input-schema registry for engine functions.
+//! The static tables: what Orion's own handlers and the engine's built-ins
+//! declare about themselves.
 //!
-//! Each entry in the registry describes the JSON `function.input` object a
-//! workflow author must provide for a given function name. The schemas are
-//! consumed in two places:
+//! Each [`FunctionSchema`] describes the JSON `function.input` object a
+//! workflow author must provide for one Orion handler — its field table, where
+//! it writes, whether a retry repeats work, what connector it needs. The eight
+//! engine built-ins are declared beside them in `ENGINE_BUILTINS`.
 //!
-//!   1. Workflow create/update validation — `validate_input()` walks the
-//!      schema and emits structured `FieldError` items (via A3) so authors
-//!      see exactly which input key is missing or has the wrong type before
-//!      the workflow is ever activated.
-//!   2. `GET /api/v1/admin/functions` — surfaces the registry so external
-//!      tools (CLIs, IDEs, generated docs) know the shape of each function.
+//! **Nothing reads these tables directly except the formatter and the
+//! handlers' own runtime helpers.** Every other reader — create-time
+//! validation, the catalogue, the authoring analysis, the offline tools — goes
+//! through [`super::registry::FunctionRegistry`], which converts this file's
+//! `'static` rows into owned entries at construction and can hold entries these
+//! tables never will (a plugin's). `fmt` keeps reading the static form on
+//! purpose: one style everywhere is its whole value, so a plugin function's
+//! input keeps author order.
 //!
 //! Schemas are intentionally hand-rolled rather than derived: the dataflow-rs
 //! input structs use deserialize-time defaults that don't show up in derived
 //! schemas, and we want to keep the validator dependency-free.
 
-use dataflow_rs::engine::error::DataflowError;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::errors::FieldError;
+use crate::connector::ConnectorType;
 
 /// Coarse type tag for a function input field. Mirrors the JSON value kinds
 /// the validator can check without bringing in a full JSON-Schema engine.
@@ -48,7 +51,7 @@ impl FieldKind {
         }
     }
 
-    fn matches(self, v: &Value) -> bool {
+    pub(super) fn matches(self, v: &Value) -> bool {
         match self {
             FieldKind::String => v.is_string(),
             FieldKind::Number => v.is_number(),
@@ -254,6 +257,45 @@ impl RetrySafety {
     }
 }
 
+/// What a connector-bearing function requires of the connector it names.
+///
+/// Three questions used to be answered by three tables in `handlers.rs` —
+/// `CONNECTOR_FUNCTIONS` (does it take one?), `required_connector_types` (of
+/// which types?) and `requires_mongo_database` (must a MongoDB one be given a
+/// `database`?) — each keyed by function name in a file away from the schema
+/// that declares the `connector` field. A function in one table and not
+/// another was a check that silently skipped it (F52). One value on the
+/// function's own row cannot be half-filled.
+///
+/// `types` is non-empty and ordered as it should read in an error message.
+/// `requires_mongo_database` is true only for the functions that speak to
+/// MongoDB, which has no default database in its connection string: the
+/// `mongo_*` trio declares `database` required outright, and the portable
+/// dialect pair cannot — the same task shape is valid against SQL and
+/// Elasticsearch — so for those it is conditional on the connector actually
+/// being Mongo, checked at activation rather than at first request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorRule {
+    pub types: &'static [ConnectorType],
+    pub requires_mongo_database: bool,
+}
+
+impl ConnectorRule {
+    const fn of(types: &'static [ConnectorType]) -> Option<Self> {
+        Some(Self {
+            types,
+            requires_mongo_database: false,
+        })
+    }
+
+    const fn mongo(types: &'static [ConnectorType]) -> Option<Self> {
+        Some(Self {
+            types,
+            requires_mongo_database: true,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionSchema {
     pub name: &'static str,
@@ -269,6 +311,10 @@ pub struct FunctionSchema {
     /// implies it: `db_read` and `db_write` have the same shape and opposite
     /// answers.
     pub retry_safety: RetrySafety,
+    /// The connector this function's `connector` field must name, or `None`
+    /// for a function that takes no connector — see [`ConnectorRule`].
+    #[serde(skip)]
+    pub connector: Option<ConnectorRule>,
     /// Whether a key outside `input_fields` is an error rather than ignored.
     ///
     /// True for the functions dataflow-rs owns the config struct for
@@ -297,7 +343,7 @@ use super::cache_write::CACHE_WRITE_FIELDS;
 use super::channel_call::CHANNEL_CALL_FIELDS;
 use super::crypto::CRYPTO_FIELDS;
 use super::data_query::DATA_QUERY_FIELDS;
-use super::data_write::{DATA_WRITE_ENVELOPE_FIELDS, DATA_WRITE_FIELDS};
+use super::data_write::DATA_WRITE_FIELDS;
 use super::db_read::DB_READ_FIELDS;
 use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
@@ -319,6 +365,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: CACHE_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::of(&[ConnectorType::Cache]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -329,6 +376,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: CACHE_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::IdempotentWrite,
+        connector: ConnectorRule::of(&[ConnectorType::Cache]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -339,6 +387,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: DB_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::of(&[ConnectorType::Db]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -349,6 +398,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: DB_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "sql" },
+        connector: ConnectorRule::of(&[ConnectorType::Db]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -361,6 +411,7 @@ const REGISTRY: &[FunctionSchema] = &[
             default_root: Some("data"),
         },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::mongo(&[ConnectorType::Db, ConnectorType::Es]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -373,6 +424,7 @@ const REGISTRY: &[FunctionSchema] = &[
             default_root: Some("data"),
         },
         retry_safety: RetrySafety::DependsOn { input: "op" },
+        connector: ConnectorRule::mongo(&[ConnectorType::Db, ConnectorType::Es]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -383,6 +435,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: MONGO_READ_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
         deny_unknown: false,
         validate_static: None,
     },
@@ -395,6 +448,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: MONGO_WRITE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "op" },
+        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
         deny_unknown: true,
         validate_static: Some(super::mongo_write::validate_static_input),
     },
@@ -405,6 +459,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: MONGO_AGGREGATE_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::mongo(&[ConnectorType::Db]),
         deny_unknown: true,
         validate_static: Some(super::mongo_aggregate::validate_static_input),
     },
@@ -415,6 +470,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: CHANNEL_CALL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "channel" },
+        connector: None,
         deny_unknown: false,
         validate_static: None,
     },
@@ -428,6 +484,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: CRYPTO_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Pure,
+        connector: None,
         deny_unknown: true,
         validate_static: Some(super::crypto::validate_static_input),
     },
@@ -438,6 +495,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: JWT_SIGN_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Pure,
+        connector: None,
         deny_unknown: true,
         validate_static: Some(super::jwt_sign::validate_static_input),
     },
@@ -448,6 +506,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: JWT_VERIFY_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: None,
         deny_unknown: true,
         validate_static: Some(super::jwt_verify::validate_static_input),
     },
@@ -458,6 +517,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: HTTP_CALL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::DependsOn { input: "method" },
+        connector: ConnectorRule::of(&[ConnectorType::Http]),
         deny_unknown: true,
         validate_static: None,
     },
@@ -470,6 +530,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: SEND_EMAIL_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::UnsafeWrite,
+        connector: ConnectorRule::of(&[ConnectorType::Smtp]),
         deny_unknown: true,
         validate_static: Some(super::send_email::validate_static_input),
     },
@@ -480,6 +541,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: STORAGE_PRESIGN_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Pure,
+        connector: ConnectorRule::of(&[ConnectorType::Storage]),
         deny_unknown: true,
         validate_static: Some(super::storage_presign::validate_static_input),
     },
@@ -490,6 +552,7 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: STORAGE_HEAD_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::Read,
+        connector: ConnectorRule::of(&[ConnectorType::Storage]),
         deny_unknown: true,
         validate_static: None,
     },
@@ -500,20 +563,24 @@ const REGISTRY: &[FunctionSchema] = &[
         input_fields: PUBLISH_KAFKA_FIELDS,
         writes: WriteShape::OutputPath { default_root: None },
         retry_safety: RetrySafety::UnsafeWrite,
+        connector: ConnectorRule::of(&[ConnectorType::Kafka]),
         deny_unknown: true,
         validate_static: None,
     },
 ];
 
-/// Every function that has an input schema. Accepted function names
-/// without an entry here (e.g. `map`, `log`, `filter`) are still accepted
-/// by workflows — they just won't get input-schema checking.
+/// Every Orion handler's declaration, in implementation order.
+///
+/// The static half of [`super::registry::FunctionRegistry::builtin`], which is
+/// what every reader but the formatter consults. Accepted function names
+/// without an entry here (e.g. `map`, `log`, `filter`) are the engine's own,
+/// declared in `ENGINE_BUILTINS`.
 pub fn registry() -> &'static [FunctionSchema] {
     REGISTRY
 }
 
 // ============================================================
-// The catalogue: every name a workflow may use
+// The engine's built-ins, and who provides what
 // ============================================================
 
 /// Who provides a function's behaviour.
@@ -535,43 +602,21 @@ pub enum Source {
     Engine,
     /// An Orion handler, with a declared input schema.
     Orion,
+    /// A function loaded from a plugin: a declared input schema, executed in
+    /// the plugin sandbox. Absent from the static tables by construction — it
+    /// enters the registry from a loaded plugin set, never from this file.
+    Plugin,
 }
 
-/// One entry of `GET /api/v1/admin/functions`.
-///
-/// The endpoint used to serve the `REGISTRY` directly, which meant it listed only
-/// the functions Orion input-schema validates — 18 of the 27 valid names,
-/// omitting `map`, `filter`, `parse_json` and the rest. Those are the ones
-/// people actually type: in the deployment that reported it (#288) the nine
-/// omitted names were 425 of 631 tasks, `map` alone 310. A completion source
-/// offering the connector functions and none of those is not an incomplete
-/// catalogue, it is the wrong one.
-///
-/// So the catalogue is the union, and the schema registry stays what it was.
-/// Two lists rather than one overloaded list: `validate_input` and
-/// `is_resolvable_field` ask "what does this function declare", which is still
-/// the `REGISTRY`, and only the endpoint and the docs guard ask "what may a
-/// workflow name".
-#[derive(Debug, Clone, Serialize)]
-pub struct CatalogueEntry {
-    pub name: &'static str,
-    pub description: &'static str,
-    pub category: &'static str,
-    pub source: Source,
-    /// Other accepted spellings of this name. Serving an alias as its own
-    /// entry would tell a completion tool there are two functions.
-    #[serde(skip_serializing_if = "<[&str]>::is_empty")]
-    pub aliases: &'static [&'static str],
-    /// **Absent**, not null, when the function declares no input schema —
-    /// which is the honest JSON encoding of "there is nothing here", and what
-    /// a consumer branches on.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_fields: Option<&'static [FieldSchema]>,
-    /// What a second run of this function does — see [`RetrySafety`]. Served
-    /// for every entry, built-ins included: "is it safe to retry this task?"
-    /// is a question about every function a workflow can name, not only the
-    /// ones Orion declares an input schema for.
-    pub retry_safety: RetrySafety,
+impl Source {
+    /// The wire spelling, for messages that name where an entry came from.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Engine => "engine",
+            Self::Orion => "orion",
+            Self::Plugin => "plugin",
+        }
+    }
 }
 
 /// The dataflow-rs built-ins: valid in a workflow, executed by the engine,
@@ -581,7 +626,7 @@ pub struct CatalogueEntry {
 /// vary. Every
 /// entry is `category: "data"` (the fourth wire value, matching the grouping
 /// `reference/functions.md` already gives these in its summary table),
-/// `source: Engine`, and no input schema, so [`catalogue`] supplies those
+/// `source: Engine`, and no input schema, so the registry supplies those
 /// rather than each row restating them.
 /// Descriptions are the code's, and `functions_docs_drift_test` checks the
 /// page against them rather than the reverse.
@@ -590,13 +635,13 @@ pub struct CatalogueEntry {
 /// authoring analysis has to know where a built-in puts its output, and the
 /// only defensible place to say so is beside the row that declares the
 /// built-in. `retry_safety` is here on the same argument, and stated per row
-/// rather than supplied wholesale by [`catalogue`] even though all eight are
+/// rather than supplied wholesale by the registry even though all eight are
 /// currently [`RetrySafety::Pure`] — a built-in that one day reaches outside
 /// the message must be made to answer, not inherit a default that was true of
 /// its neighbours. (`log` writes only to this node's own observability output.
 /// A retry repeating a log line is not a duplicated effect in the sense this
 /// field is about.)
-const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape, RetrySafety)] = &[
+pub(super) const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape, RetrySafety)] = &[
     (
         "parse_json",
         "Parse the raw payload into the data context.",
@@ -656,427 +701,6 @@ const ENGINE_BUILTINS: &[(&str, &str, &[&str], WriteShape, RetrySafety)] = &[
     ),
 ];
 
-/// Where `function` writes its output, for any function a workflow may name —
-/// Orion's handlers and the engine's built-ins alike.
-///
-/// `None` for a name neither table knows, which is a function that does not
-/// exist: the analysis then reports no writes rather than guessing a shape for
-/// it. That is a deliberate change from the previous hand-written `match`,
-/// whose catch-all arm applied the `output`/`response_path` rule to *any*
-/// unrecognised name — so a typoed function silently contributed a write.
-pub fn write_shape(function: &str) -> Option<WriteShape> {
-    if let Some(schema) = REGISTRY.iter().find(|s| s.name == function) {
-        return Some(schema.writes);
-    }
-    ENGINE_BUILTINS
-        .iter()
-        .find(|(name, _, aliases, _, _)| *name == function || aliases.contains(&function))
-        .map(|(_, _, _, writes, _)| *writes)
-}
-
-/// Every function a workflow may name, sorted by name.
-///
-/// Sorted because a catalogue is browsed: the registry's own order groups by
-/// implementation concern, which is not what a reader or a completion list
-/// wants.
-pub fn catalogue() -> Vec<CatalogueEntry> {
-    let mut out: Vec<CatalogueEntry> = REGISTRY
-        .iter()
-        .map(|schema| CatalogueEntry {
-            name: schema.name,
-            description: schema.description,
-            category: schema.category,
-            source: Source::Orion,
-            aliases: &[],
-            input_fields: Some(schema.input_fields),
-            retry_safety: schema.retry_safety,
-        })
-        .chain(ENGINE_BUILTINS.iter().map(
-            |&(name, description, aliases, _writes, retry_safety)| CatalogueEntry {
-                name,
-                description,
-                category: "data",
-                source: Source::Engine,
-                aliases,
-                input_fields: None,
-                retry_safety,
-            },
-        ))
-        .collect();
-    out.sort_by_key(|e| e.name);
-    out
-}
-
-fn find(name: &str) -> Option<&'static FunctionSchema> {
-    REGISTRY.iter().find(|s| s.name == name)
-}
-
-/// Whether `field` is one this function folds `{"var": ..}` nodes in before
-/// use — i.e. whether the value the handler acts on differs from the value the
-/// author wrote.
-///
-/// The offline call recorder reads this to resolve a task's payload the same
-/// way the real handler will, so a recorded call shows what *would be sent*
-/// rather than what was typed. Driving it off the registry rather than a
-/// per-function list is what makes a new connector function's calls recordable
-/// as soon as it fills in the field table it already has to fill in.
-pub fn is_resolvable_field(function_name: &str, field: &str) -> bool {
-    find(function_name).is_some_and(|schema| {
-        schema
-            .input_fields
-            .iter()
-            .any(|f| f.resolvable && (f.name == field || f.alias == Some(field)))
-    })
-}
-
-/// Where inside `field` this function reads key material — the only paths
-/// where `env://NAME` or `vault://…` means anything other than itself.
-///
-/// Driven off the registry rather than a per-function list for the same reason
-/// [`is_resolvable_field`] is: a function that starts resolving references in a
-/// new field declares it in the field table it already maintains, and the
-/// authoring-time check follows automatically.
-///
-/// A function with no declared schema (an engine built-in) answers `&[]`: none
-/// of them resolves a reference, and treating an unknown function as permissive
-/// would make the check silently vacuous for the one case it cannot see into.
-pub fn secret_paths(function_name: &str, field: &str) -> &'static [&'static str] {
-    find(function_name)
-        .and_then(|schema| {
-            schema
-                .input_fields
-                .iter()
-                .find(|f| f.name == field || f.alias == Some(field))
-        })
-        .map(|f| f.secret_at)
-        .unwrap_or(&[])
-}
-
-/// Where inside `field` dataflow-rs evaluates JSONLogic — see
-/// [`FieldSchema::template_at`]. Driven off the registry for the same reason
-/// [`secret_paths`] is: the handler's own field table is the one declaration.
-pub fn template_paths(function_name: &str, field: &str) -> &'static [&'static str] {
-    find(function_name)
-        .and_then(|schema| {
-            schema
-                .input_fields
-                .iter()
-                .find(|f| f.name == field || f.alias == Some(field))
-        })
-        .map(|f| f.template_at)
-        .unwrap_or(&[])
-}
-
-/// Whether the field's own value is a `Template`, so its authored JSON may be
-/// an expression rather than a literal of its declared kind.
-fn is_template_field(field: &FieldSchema) -> bool {
-    field.template_at.contains(&"")
-}
-
-/// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
-/// place of a literal of its declared kind. Nodes nested deeper are not checked
-/// here: the declared kind still describes the field's own shape, and the
-/// resolver folds `{"var": ..}` at any depth inside it.
-fn is_var_node(v: &Value) -> bool {
-    v.as_object()
-        .is_some_and(|o| o.len() == 1 && o.contains_key("var"))
-}
-
-/// Whether this field's own value may be a `{"secret": ..}` node in place of a
-/// literal of its declared kind — true only when `secret_at` lists the field
-/// root, for the same reason and with the same depth rule as [`is_var_node`].
-/// The handler reads it through [`super::secret_ref`]; the declared kind still
-/// describes what the *resolved* value must be.
-///
-/// `jwt_verify.keys` reads key material two levels down rather than at the
-/// root, so it does **not** qualify: a bare `{"secret": …}` there is an object
-/// where an array belongs, and the handler would read no static key from it at
-/// all.
-fn takes_secret_node(field: &FieldSchema, v: &Value) -> bool {
-    field.secret_at.contains(&"") && super::secret_ref::secret_name(v).is_some()
-}
-
-/// Check one field list against one JSON object, reporting paths under
-/// `path_prefix`. Shared by the top-level input check and `data_write`'s
-/// nested `write` envelope.
-fn check_fields(
-    fields: &[FieldSchema],
-    input: &Value,
-    path_prefix: &str,
-    function_name: &str,
-) -> Vec<FieldError> {
-    let mut errors = Vec::new();
-    let Some(obj) = input.as_object() else {
-        return errors;
-    };
-    for field in fields {
-        // An aliased field may be supplied under either name — but not both.
-        // Upstream's alias makes that a `duplicate field` parse error, so
-        // there is no precedence to fall back on.
-        let alias_value = field.alias.and_then(|alias| obj.get(alias));
-        if let Some(alias) = field.alias
-            && obj.contains_key(field.name)
-            && alias_value.is_some()
-        {
-            errors.push(FieldError::new(
-                format!("{path_prefix}.{}", field.name),
-                "DUPLICATE_FIELD",
-                format!(
-                    "'{}' and its alias '{alias}' are both set; supply exactly one",
-                    field.name
-                ),
-            ));
-            continue;
-        }
-        match (obj.get(field.name).or(alias_value), field.required) {
-            (None, true) => errors.push(FieldError::new(
-                format!("{path_prefix}.{}", field.name),
-                "REQUIRED",
-                format!(
-                    "function '{function_name}' requires '{}' ({})",
-                    field.name,
-                    field.kind.as_str()
-                ),
-            )),
-            (Some(v), _)
-                if !field.kind.matches(v)
-                    // A `Template` field's kind describes the *resolved* value.
-                    // An object or array there may be an operator call, so only
-                    // a scalar — unambiguously itself in JSONLogic — is still
-                    // checked against the kind directly.
-                    && !(is_template_field(field) && (v.is_object() || v.is_array()))
-                    && !(field.resolvable && is_var_node(v))
-                    && !takes_secret_node(field, v) =>
-            {
-                errors.push(
-                    FieldError::new(
-                        format!("{path_prefix}.{}", field.name),
-                        "TYPE_MISMATCH",
-                        format!("expected {} for '{}'", field.kind.as_str(), field.name),
-                    )
-                    .with_expected(Value::String(field.kind.as_str().to_string()))
-                    .with_got(v.clone()),
-                );
-            }
-            _ => {}
-        }
-    }
-    errors
-}
-
-/// Report every key in `input` that the schema does not declare.
-///
-/// Only called for functions whose upstream config struct is
-/// `deny_unknown_fields` — see [`FunctionSchema::deny_unknown`]. Without this
-/// a typo like `outputs` passes create, activates, and then fails
-/// `Workflow::from_json` at engine build, taking its whole channel into
-/// quarantine with a message about a field the author cannot see from the API.
-fn check_unknown_fields(
-    fields: &[FieldSchema],
-    input: &Value,
-    path_prefix: &str,
-    function_name: &str,
-) -> Vec<FieldError> {
-    let Some(obj) = input.as_object() else {
-        return Vec::new();
-    };
-    obj.keys()
-        .filter(|key| {
-            !fields
-                .iter()
-                .any(|f| f.name == key.as_str() || f.alias == Some(key.as_str()))
-        })
-        .map(|key| {
-            FieldError::new(
-                format!("{path_prefix}.{key}"),
-                "UNKNOWN_FIELD",
-                format!(
-                    "function '{function_name}' has no input field '{key}' — \
-                     it would be rejected when the workflow is loaded"
-                ),
-            )
-        })
-        .collect()
-}
-
-/// Validate a function's `input` JSON against the registered schema for
-/// `function_name`. `task_path` is the dotted prefix used to build field
-/// paths (e.g. `"tasks[2]"`). Returns an empty `Vec` when the function
-/// has no registered schema or all checks pass.
-///
-/// At least one of `channel` / `channel_logic` is required for
-/// `channel_call`; that cross-field rule is enforced here in addition
-/// to the per-field schema checks.
-pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Vec<FieldError> {
-    let Some(schema) = find(function_name) else {
-        return Vec::new();
-    };
-
-    let mut errors = Vec::new();
-    let obj = match input.as_object() {
-        Some(o) => o,
-        None => {
-            errors.push(FieldError::new(
-                format!("{task_path}.function.input"),
-                "TYPE_MISMATCH",
-                format!("function '{function_name}' input must be a JSON object"),
-            ));
-            return errors;
-        }
-    };
-
-    let input_path = format!("{task_path}.function.input");
-    errors.extend(check_fields(
-        schema.input_fields,
-        input,
-        &input_path,
-        function_name,
-    ));
-    if schema.deny_unknown {
-        errors.extend(check_unknown_fields(
-            schema.input_fields,
-            input,
-            &input_path,
-            function_name,
-        ));
-    }
-
-    // Cross-field: data_write's mutation envelope. Nested under `write` since
-    // W7; the pre-1.0 flat form is still accepted, and whichever shape the
-    // task uses is checked against the same field list.
-    if function_name == "data_write" {
-        match obj.get("write") {
-            // A non-object `write` is already reported by the field loop above.
-            Some(w) if w.is_object() => errors.extend(check_fields(
-                DATA_WRITE_ENVELOPE_FIELDS,
-                w,
-                &format!("{input_path}.write"),
-                function_name,
-            )),
-            Some(_) => {}
-            // Legacy flat form: envelope keys sit alongside the handler keys.
-            None if obj.contains_key("op") => errors.extend(check_fields(
-                DATA_WRITE_ENVELOPE_FIELDS,
-                input,
-                &input_path,
-                function_name,
-            )),
-            None => errors.push(FieldError::new(
-                format!("{input_path}.write"),
-                "REQUIRED",
-                "function 'data_write' requires 'write' (object): the mutation \
-                 envelope { op, target, … }",
-            )),
-        }
-    }
-
-    // A connector must be named, not computed.
-    //
-    // dataflow-rs 3.9 made `http_call`/`publish_kafka`'s `connector` a
-    // `Template` like every other parameter, so the kind check above no longer
-    // refuses an object there — a template field's kind describes what it
-    // evaluates to. Orion needs this one to fold to a name it can read *without*
-    // a message, and not because the handler is lazy: the connector is looked up
-    // before the message is consulted (F58), and the same static name is what
-    // `GET /workflows/{id}/dependencies` reports, what the activation gate
-    // checks exists, what refuses a rename or delete of a connector still in
-    // use, and what a package's `requires` list is built from. A computed name
-    // is invisible to all five, so admitting one means teaching all five, not
-    // relaxing one check.
-    //
-    // Driven off the schema rather than a function list, so a connector handler
-    // added later inherits the rule with the field table it already fills in.
-    // A string is the test upstream's own `ConnectorName` uses to answer
-    // `Static` vs `Computed`, so the two agree by construction.
-    //
-    // Exactly the complement of what `check_fields` still checks: it reports a
-    // *scalar* of the wrong type itself, so this fires only for the object and
-    // array it now waves through, and one wrong connector is one error.
-    if let Some(field) = schema.input_fields.iter().find(|f| f.name == "connector")
-        && is_template_field(field)
-        && let Some(value) = obj.get(field.name)
-        && (value.is_object() || value.is_array())
-    {
-        errors.push(
-            FieldError::new(
-                format!("{input_path}.connector"),
-                "TYPE_MISMATCH",
-                format!(
-                    "function '{function_name}' needs a literal connector name — the \
-                     connector is resolved before the message is read, and the same name \
-                     is what the dependency list, the activation gate and the connector \
-                     rename guard are built from"
-                ),
-            )
-            .with_expected(Value::String("string".to_string()))
-            .with_got(value.clone()),
-        );
-    }
-
-    // Cross-field rules registered on the schema entry — each lives next to
-    // its handler as `validate_static_input` and shares the execution path's
-    // tables (#263 and friends), so the authoring-time rules and the runtime
-    // cannot drift, and a new function's rules are one registry field.
-    if let Some(validate) = schema.validate_static {
-        for (suffix, code, message) in validate(obj) {
-            let path = if suffix.is_empty() {
-                input_path.clone()
-            } else {
-                format!("{input_path}.{suffix}")
-            };
-            errors.push(FieldError::new(path, code, message));
-        }
-    }
-
-    // Cross-field: http_call's format axes. dataflow-rs carries `body_format`
-    // and `response_format` as uninterpreted strings, so the value table is
-    // enforced here — an unknown value is an authoring-time error, never a
-    // request-time surprise. A *static* `body` is shape-checked against the
-    // format too, by the same `encode_body` the request path runs, so the two
-    // layers cannot drift; a `body_logic` body only exists per message and
-    // gets that check at request time.
-    if function_name == "http_call" {
-        use super::http_common::{BodyFormat, ResponseFormat, encode_body};
-
-        // A non-string value is already a TYPE_MISMATCH from the field loop.
-        let body_format = match BodyFormat::parse(obj.get("body_format").and_then(Value::as_str)) {
-            Ok(f) => Some(f),
-            Err(msg) => {
-                errors.push(FieldError::new(
-                    format!("{input_path}.body_format"),
-                    "INVALID",
-                    msg,
-                ));
-                None
-            }
-        };
-        if let Err(msg) = ResponseFormat::parse(obj.get("response_format").and_then(Value::as_str))
-        {
-            errors.push(FieldError::new(
-                format!("{input_path}.response_format"),
-                "INVALID",
-                msg,
-            ));
-        }
-        if let (Some(format), Some(body)) = (body_format, obj.get("body"))
-            && format != BodyFormat::Json
-            && let Err(e) = encode_body(body, format)
-        {
-            let msg = match e {
-                DataflowError::Validation(m) => m,
-                other => other.to_string(),
-            };
-            errors.push(FieldError::new(
-                format!("{input_path}.body"),
-                "INVALID",
-                msg,
-            ));
-        }
-    }
-
-    errors
-}
-
 /// The `&'static str` spelling of `key` in `fields` — for the
 /// `validate_static_input` tuples, whose path suffixes must be static.
 /// `fallback` covers keys outside the table (unreachable for real inputs,
@@ -1091,388 +715,4 @@ pub(super) fn static_field_name(
         .map(|f| f.name)
         .find(|n| *n == key)
         .unwrap_or(fallback)
-}
-
-#[cfg(test)]
-mod write_shape_tests {
-    use super::*;
-
-    /// The guard this whole field exists for: a 19th handler cannot reach the
-    /// authoring analysis with its output semantics unknown.
-    ///
-    /// Both tables are checked, because `task_writes` reads both — a built-in
-    /// added upstream and mirrored here without a shape would be just as silent
-    /// as a new Orion handler without one.
-    #[test]
-    fn every_function_declares_where_it_writes() {
-        for schema in REGISTRY {
-            assert!(
-                write_shape(schema.name).is_some(),
-                "function '{}' has no WriteShape",
-                schema.name
-            );
-        }
-        for (name, _, aliases, _, _) in ENGINE_BUILTINS {
-            assert!(
-                write_shape(name).is_some(),
-                "built-in '{name}' has no WriteShape"
-            );
-            for alias in *aliases {
-                assert!(
-                    write_shape(alias).is_some(),
-                    "built-in alias '{alias}' has no WriteShape"
-                );
-            }
-        }
-    }
-
-    /// A name neither table knows contributes no writes, rather than being run
-    /// through the generic `output` rule. See `task_writes`.
-    #[test]
-    fn an_unknown_function_has_no_write_shape() {
-        assert!(write_shape("no_such_function").is_none());
-    }
-
-    /// The three shapes the analysis distinguishes, pinned to the functions
-    /// that motivated them.
-    #[test]
-    fn the_declared_shapes_match_the_handlers_they_describe() {
-        assert_eq!(write_shape("map"), Some(WriteShape::Mappings));
-        assert_eq!(write_shape("parse_json"), Some(WriteShape::Target));
-        assert_eq!(write_shape("filter"), Some(WriteShape::Nothing));
-        assert_eq!(
-            write_shape("data_query"),
-            Some(WriteShape::OutputPath {
-                default_root: Some("data")
-            }),
-            "data_query defaults its output to the data root"
-        );
-        assert_eq!(
-            write_shape("db_read"),
-            Some(WriteShape::OutputPath { default_root: None })
-        );
-    }
-}
-
-#[cfg(test)]
-mod resolvable_contract_tests {
-    use super::*;
-
-    /// §3.3: `FieldSchema::resolvable` is now the *only* declaration of which
-    /// input fields fold `{"var": ..}` against the message.
-    ///
-    /// Four surfaces read it, and before this they could each be right about a
-    /// different answer: the connector handlers decided per call site by
-    /// calling a resolve helper or not,
-    /// `validation::unresolvable_logic_warnings` warns about an expression in
-    /// a field it believes literal, `stub.rs` folds the declared set when
-    /// `dry-run` executes offline, and `analysis::operators` decides what a
-    /// clippy rule can see through. Every resolve helper in
-    /// `connector_helpers` now gates on this table, so the handler cannot be
-    /// the one that disagrees.
-    #[test]
-    fn the_table_is_what_decides_whether_a_field_folds() {
-        // Two fields of the same function, differing only in this flag.
-        assert!(
-            is_resolvable_field("db_read", "params"),
-            "bind parameters are the request-controlled half of a statement"
-        );
-        assert!(
-            !is_resolvable_field("db_read", "query"),
-            "the SQL text is literal by design — it is what makes `params` the \
-             *only* request-controlled part of the statement"
-        );
-        assert!(
-            !is_resolvable_field("db_read", "connector"),
-            "a connector name must not be chosen by the message"
-        );
-
-        // An unknown function declares nothing, so nothing folds — treating it
-        // as permissive would make the gate vacuous exactly where it cannot
-        // see.
-        assert!(!is_resolvable_field("no_such_function", "params"));
-    }
-
-    /// The same non-resolvable string field is refused at authoring time, so
-    /// the runtime gate is defence in depth rather than the only guard: a
-    /// `{"var": ..}` node is an object, and `query` is declared a `String`.
-    #[test]
-    fn an_expression_in_a_literal_field_is_refused_at_create_time() {
-        let errors = validate_input(
-            "db_read",
-            &serde_json::json!({
-                "connector": "orders",
-                "query": {"var": "data.req.sql"},
-            }),
-            "tasks[0]",
-        );
-        assert!(
-            errors.iter().any(|e| e.path.contains("query")),
-            "a message-derived `query` must be refused at authoring time: {errors:?}"
-        );
-    }
-
-    /// And the resolvable twin is accepted in the same position, so the test
-    /// above is about the flag and not about objects being refused generally.
-    #[test]
-    fn an_expression_in_a_resolvable_field_is_accepted_at_create_time() {
-        let errors = validate_input(
-            "db_read",
-            &serde_json::json!({
-                "connector": "orders",
-                "query": "SELECT 1 WHERE id = $1",
-                "params": [{"var": "data.req.id"}],
-            }),
-            "tasks[0]",
-        );
-        assert!(errors.is_empty(), "{errors:?}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn unknown_function_returns_no_errors() {
-        // Functions without registered schemas pass through — keeps the door
-        // open for ad-hoc dataflow-rs functions that haven't been catalogued.
-        let errs = validate_input("nope", &json!({}), "tasks[0]");
-        assert!(errs.is_empty());
-    }
-
-    #[test]
-    fn cache_read_missing_connector_is_required_error() {
-        let errs = validate_input("cache_read", &json!({"key": "k"}), "tasks[0]");
-        assert_eq!(errs.len(), 1);
-        assert_eq!(errs[0].path, "tasks[0].function.input.connector");
-        assert_eq!(errs[0].code, "REQUIRED");
-    }
-
-    #[test]
-    fn cache_read_full_input_validates() {
-        let errs = validate_input(
-            "cache_read",
-            &json!({"connector": "c", "key": "k", "output": "data.out"}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{:?}", errs);
-    }
-
-    #[test]
-    fn type_mismatch_reports_expected_and_got() {
-        let errs = validate_input(
-            "cache_read",
-            &json!({"connector": 42, "key": "k"}),
-            "tasks[1]",
-        );
-        assert_eq!(errs.len(), 1);
-        assert_eq!(errs[0].code, "TYPE_MISMATCH");
-        assert_eq!(errs[0].path, "tasks[1].function.input.connector");
-        assert_eq!(errs[0].expected.as_ref().expect("test"), &json!("string"));
-        assert_eq!(errs[0].got.as_ref().expect("test"), &json!(42));
-    }
-
-    /// A computed connector is refused, and refused *once*: the ordinary kind
-    /// check no longer sees it (a template field's kind describes what it
-    /// evaluates to), so the rule that needs it literal is the only reporter.
-    #[test]
-    fn a_computed_connector_is_refused_with_the_reason() {
-        let errs = validate_input(
-            "http_call",
-            &json!({"connector": {"var": "data.which"}}),
-            "tasks[0]",
-        );
-        let connector: Vec<_> = errs
-            .iter()
-            .filter(|e| e.path == "tasks[0].function.input.connector")
-            .collect();
-        assert_eq!(connector.len(), 1, "{errs:?}");
-        assert_eq!(connector[0].code, "TYPE_MISMATCH");
-        assert!(connector[0].message.contains("literal connector name"));
-    }
-
-    /// The other parameters of the same function stay computable — the limit is
-    /// the connector, not the config.
-    #[test]
-    fn the_other_http_call_parameters_stay_computable() {
-        let errs = validate_input(
-            "http_call",
-            &json!({
-                "connector": "api",
-                "path": {"cat": ["/o/", {"var": "data.id"}]},
-                "timeout_ms": {"var": "data.t"},
-                "headers": {"X": {"var": "data.h"}}
-            }),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{errs:?}");
-    }
-
-    #[test]
-    fn non_object_input_emits_single_type_error() {
-        let errs = validate_input("cache_read", &json!("not an object"), "tasks[0]");
-        assert_eq!(errs.len(), 1);
-        assert_eq!(errs[0].path, "tasks[0].function.input");
-        assert_eq!(errs[0].code, "TYPE_MISMATCH");
-    }
-
-    #[test]
-    fn mongo_read_collects_all_missing_required_at_once() {
-        let errs = validate_input("mongo_read", &json!({"connector": "c"}), "tasks[0]");
-        let paths: Vec<&str> = errs.iter().map(|e| e.path.as_str()).collect();
-        assert!(paths.contains(&"tasks[0].function.input.database"));
-        assert!(paths.contains(&"tasks[0].function.input.collection"));
-    }
-
-    /// One field carries both the literal and the computed spelling, so "name a
-    /// target" is the field's own `required` rather than a cross-field rule
-    /// over a pair — and the error points at the field instead of the input.
-    #[test]
-    fn channel_call_needs_a_channel() {
-        let errs = validate_input("channel_call", &json!({}), "tasks[0]");
-        assert!(errs.iter().any(|e| e.code == "REQUIRED"
-            && e.path == "tasks[0].function.input.channel"
-            && e.message.contains("channel_call")));
-    }
-
-    /// The pre-1.0 spelling is an alias of that field, so it satisfies it.
-    #[test]
-    fn the_pre_1_0_channel_logic_spelling_still_names_a_target() {
-        let errs = validate_input(
-            "channel_call",
-            &json!({"channel_logic": {"var": "data.target"}}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{errs:?}");
-    }
-
-    /// A computed channel is an expression, so its kind describes what it must
-    /// evaluate to and the authored object is not checked against it.
-    #[test]
-    fn a_computed_channel_is_not_type_checked_against_string() {
-        let errs = validate_input(
-            "channel_call",
-            &json!({"channel": {"cat": ["orders-", {"var": "data.region"}]}}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{errs:?}");
-    }
-
-    /// A non-string scalar still is: it is unambiguously itself in JSONLogic,
-    /// so it is a channel name that is not a string.
-    #[test]
-    fn a_scalar_channel_of_the_wrong_type_is_still_caught() {
-        let errs = validate_input("channel_call", &json!({"channel": 7}), "tasks[0]");
-        assert!(
-            errs.iter()
-                .any(|e| e.code == "TYPE_MISMATCH" && e.path.ends_with(".channel")),
-            "{errs:?}"
-        );
-    }
-
-    #[test]
-    fn channel_call_with_static_channel_is_ok() {
-        let errs = validate_input(
-            "channel_call",
-            &json!({"channel": "downstream"}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{:?}", errs);
-    }
-
-    #[test]
-    fn channel_call_with_dynamic_logic_is_ok() {
-        let errs = validate_input(
-            "channel_call",
-            &json!({"channel_logic": {"var": "data.target"}}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{:?}", errs);
-    }
-
-    #[test]
-    fn http_call_unknown_format_values_are_authoring_time_errors() {
-        let errs = validate_input(
-            "http_call",
-            &json!({"connector": "c", "body_format": "multipart", "response_format": "base64"}),
-            "tasks[0]",
-        );
-        assert_eq!(errs.len(), 2, "{errs:?}");
-        assert_eq!(errs[0].path, "tasks[0].function.input.body_format");
-        assert_eq!(errs[0].code, "INVALID");
-        assert_eq!(errs[1].path, "tasks[0].function.input.response_format");
-        assert_eq!(errs[1].code, "INVALID");
-    }
-
-    #[test]
-    fn http_call_known_format_values_validate() {
-        let errs = validate_input(
-            "http_call",
-            &json!({
-                "connector": "c",
-                "method": "POST",
-                "body_format": "form",
-                // Scalars, an array of scalars, a null, and a bracket-path
-                // key — the full supported form surface.
-                "body": {
-                    "grant_type": "refresh_token",
-                    "retries": 3,
-                    "to": ["+15551111111", "+15552222222"],
-                    "optional": null,
-                    "metadata[order_id]": "6735",
-                },
-                "response_format": "text",
-                "output": "temp_data.token",
-            }),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{errs:?}");
-    }
-
-    #[test]
-    fn http_call_static_body_is_shape_checked_against_the_format() {
-        // A nested value under 'form' is caught at authoring time by the same
-        // encoder the request path runs.
-        let errs = validate_input(
-            "http_call",
-            &json!({"connector": "c", "body_format": "form", "body": {"bad": {"nested": 1}}}),
-            "tasks[0]",
-        );
-        assert_eq!(errs.len(), 1, "{errs:?}");
-        assert_eq!(errs[0].path, "tasks[0].function.input.body");
-        assert_eq!(errs[0].code, "INVALID");
-        assert!(errs[0].message.contains("'bad'"), "{}", errs[0].message);
-
-        // 'text' requires a string body.
-        let errs = validate_input(
-            "http_call",
-            &json!({"connector": "c", "body_format": "text", "body": {"a": 1}}),
-            "tasks[0]",
-        );
-        assert_eq!(errs.len(), 1, "{errs:?}");
-        assert_eq!(errs[0].code, "INVALID");
-
-        // A body_logic body only exists per message — nothing to check here.
-        let errs = validate_input(
-            "http_call",
-            &json!({"connector": "c", "body_format": "form", "body_logic": {"var": "data.form"}}),
-            "tasks[0]",
-        );
-        assert!(errs.is_empty(), "{errs:?}");
-    }
-
-    #[test]
-    fn registry_is_non_empty_and_contains_all_known_connector_functions() {
-        let names: Vec<&str> = registry().iter().map(|s| s.name).collect();
-        assert!(names.contains(&"cache_read"));
-        assert!(names.contains(&"cache_write"));
-        assert!(names.contains(&"db_read"));
-        assert!(names.contains(&"db_write"));
-        assert!(names.contains(&"mongo_read"));
-        assert!(names.contains(&"channel_call"));
-        assert!(names.contains(&"http_call"));
-        assert!(names.contains(&"publish_kafka"));
-    }
 }

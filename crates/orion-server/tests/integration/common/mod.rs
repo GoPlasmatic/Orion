@@ -35,6 +35,7 @@ pub fn empty_runtime() -> Arc<orion::runtime::RuntimeHandle> {
                 .expect("empty engine"),
         ),
         Arc::new(orion::channel::ChannelSnapshot::empty()),
+        orion::engine::FunctionRegistry::builtin().clone(),
     ))
 }
 use orion::config::AppConfig;

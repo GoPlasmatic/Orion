@@ -110,11 +110,12 @@ async fn active_workflows_using(
     connector_name: &str,
 ) -> Result<Vec<String>, OrionError> {
     let mut users = Vec::new();
+    let generation = state.runtime.load();
     for workflow in state.repos.workflows.list_active().await? {
         let Ok(tasks) = serde_json::from_str::<serde_json::Value>(&workflow.tasks_json) else {
             continue;
         };
-        if super::workflows::connector_refs(&tasks)
+        if super::workflows::connector_refs(&tasks, &generation.functions)
             .iter()
             .any(|t| t.connector == connector_name)
         {

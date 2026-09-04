@@ -9,6 +9,8 @@
 
 use serde_json::Value;
 
+use crate::engine::FunctionRegistry;
+
 /// Operators whose arguments after the first are evaluated **per element**
 /// (or per error, for `try`), with `var` rebound to that element. A read
 /// inside one of those arguments is not a read of the message context, so
@@ -111,7 +113,11 @@ pub fn is_scoping(op: &str) -> bool {
 /// dataflow-rs 3.9 those were static strings, so a `{"var": "payload.x"}` in
 /// one was inert text and reporting it as a read would have been wrong; now it
 /// is evaluated, and a rule that could not see it was under-reporting.
-pub fn input_expressions<'a>(function: &str, input: &'a Value) -> Vec<(String, &'a Value)> {
+pub fn input_expressions<'a>(
+    function: &str,
+    input: &'a Value,
+    functions: &FunctionRegistry,
+) -> Vec<(String, &'a Value)> {
     let mut out = Vec::new();
     let Some(map) = input.as_object() else {
         return out;
@@ -148,12 +154,11 @@ pub fn input_expressions<'a>(function: &str, input: &'a Value) -> Vec<(String, &
         // through the same registry aliases.
         _ => {}
     }
-    use crate::engine::functions::schema;
     for (field, value) in map {
         if out.iter().any(|(p, _)| p == field) {
             continue;
         }
-        let template_at = schema::template_paths(function, field);
+        let template_at = functions.template_paths(function, field);
         // `""` — the field's own value is the expression. `"*"` — the field is
         // a map whose *values* are, so the map itself is not one.
         if template_at.contains(&"") {
@@ -164,7 +169,7 @@ pub fn input_expressions<'a>(function: &str, input: &'a Value) -> Vec<(String, &
                     out.push((format!("{field}.{name}"), expr));
                 }
             }
-        } else if schema::is_resolvable_field(function, field) {
+        } else if functions.is_resolvable_field(function, field) {
             out.push((field.clone(), value));
         }
     }

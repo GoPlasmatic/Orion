@@ -300,6 +300,7 @@ pub async fn build_engine_components(
     let runtime: Arc<crate::runtime::RuntimeHandle> = Arc::new(crate::runtime::RuntimeHandle::new(
         boot_engine,
         Arc::new(crate::channel::ChannelSnapshot::empty()),
+        crate::engine::FunctionRegistry::builtin().clone(),
     ));
 
     // Build cache pool (memory backend always available, redis always compiled)
@@ -481,9 +482,11 @@ impl EngineComponents {
         // flag is set by the caller afterwards — but publishing them as a pair
         // is what makes the boot path and the reload path the same shape, and
         // there is only one way to publish.
-        serving
-            .runtime
-            .publish(Arc::new(built_engine), Arc::new(channels_snapshot));
+        serving.runtime.publish(
+            Arc::new(built_engine),
+            Arc::new(channels_snapshot),
+            crate::engine::FunctionRegistry::builtin().clone(),
+        );
 
         Ok((serving, channels, active_workflows.len()))
     }

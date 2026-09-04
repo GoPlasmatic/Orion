@@ -64,18 +64,16 @@ impl ExecutionObserver for MetricsObserver {
     }
 }
 
-/// Map a borrowed function name onto the `&'static str` from Orion's own
-/// vocabulary.
+/// Map a borrowed function name onto the `&'static str` the registry interned
+/// it to.
 ///
 /// `metrics` labels want a `&'static str` or an owned `String`; borrowing from
-/// the known set avoids allocating per task, and it doubles as a cardinality
-/// bound — a name Orion does not recognise cannot mint a new label value. The
-/// scan is over ~20 entries and runs once per dispatched task, which is noise
-/// next to any task body.
+/// the registry's interned set avoids allocating per task, and it doubles as a
+/// cardinality bound — a name no registry ever held cannot mint a new label
+/// value. One hash lookup per dispatched task, which is noise next to any
+/// task body.
 fn interned_function_name(name: &str) -> &'static str {
-    super::known_functions()
-        .find(|known| *known == name)
-        .unwrap_or("other")
+    super::functions::registry::interned(name).unwrap_or("other")
 }
 
 #[cfg(test)]
@@ -84,15 +82,15 @@ mod tests {
 
     #[test]
     fn every_known_function_interns_to_itself() {
-        for name in super::super::known_functions() {
+        for name in super::super::FunctionRegistry::builtin().names() {
             assert_eq!(interned_function_name(name), name);
         }
     }
 
     /// An unrecognised name must not become a label value of its own. Nothing
-    /// can reach the engine under an unknown name today — `is_known_function`
-    /// gates workflow creation — but a metric label is the wrong place to find
-    /// that out.
+    /// can reach the engine under an unknown name today — the registry gates
+    /// workflow creation — but a metric label is the wrong place to find that
+    /// out.
     #[test]
     fn an_unknown_function_collapses_to_one_label() {
         assert_eq!(interned_function_name("enrich"), "other");

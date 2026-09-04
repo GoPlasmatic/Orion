@@ -108,7 +108,7 @@ cargo test --test integration rest_routing_test   # one module
   code.
 - `function_schema_test` — the two function lists Orion cannot derive, pinned
   against a **live engine**. Workflow creation is validated before an engine
-  exists, so `CUSTOM_HANDLER_FUNCTIONS` and the `/admin/functions` catalogue
+  exists, so `FunctionRegistry::builtin()` and the `/admin/functions` catalogue
   have to be declared; these assert set equality with the running engine's
   `can_dispatch` / `dispatchable_functions` in both directions. A name create
   accepts that nothing dispatches fails every request at runtime; a name the

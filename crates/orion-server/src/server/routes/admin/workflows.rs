@@ -65,7 +65,12 @@ pub(crate) async fn create_workflow(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    crate::validation::validate_create_workflow(&req, state.config.engine.max_loop_iterations)?;
+    let generation = state.runtime.load();
+    crate::validation::validate_create_workflow(
+        &req,
+        state.config.engine.max_loop_iterations,
+        &generation.functions,
+    )?;
     let workflow = state.repos.workflows.create(&req).await?;
     audit_log_draft_only(
         &state.audit_queue,
@@ -115,7 +120,12 @@ pub(crate) async fn update_workflow(
     Path(id): Path<String>,
     OrionJson(req): OrionJson<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    crate::validation::validate_update_workflow(&req, state.config.engine.max_loop_iterations)?;
+    let generation = state.runtime.load();
+    crate::validation::validate_update_workflow(
+        &req,
+        state.config.engine.max_loop_iterations,
+        &generation.functions,
+    )?;
     let workflow = state.repos.workflows.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_queue, &principal, "update", "workflow", &id);
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
@@ -226,6 +236,9 @@ pub(crate) async fn change_workflow_status(
 struct WorkflowLifecycle<'a> {
     workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
     connectors: &'a crate::connector::ConnectorRegistry,
+    /// The serving generation's registry, loaded once with the lifecycle so
+    /// the activation gate reads the same function set the engine dispatches.
+    functions: std::sync::Arc<crate::engine::FunctionRegistry>,
 }
 
 impl<'a> WorkflowLifecycle<'a> {
@@ -233,6 +246,7 @@ impl<'a> WorkflowLifecycle<'a> {
         Self {
             workflows: &*state.repos.workflows,
             connectors: &state.connector_registry,
+            functions: state.runtime.load().functions.clone(),
         }
     }
 }
@@ -259,7 +273,13 @@ impl super::VersionedLifecycle for WorkflowLifecycle<'_> {
     }
 
     async fn activation_gates(&self, draft: &Self::Row) -> Vec<OrionError> {
-        match super::services::workflows::ensure_connectors_exist(self.connectors, draft).await {
+        match super::services::workflows::ensure_connectors_exist(
+            self.connectors,
+            draft,
+            &self.functions,
+        )
+        .await
+        {
             Ok(()) => Vec::new(),
             Err(e) => vec![e],
         }
@@ -373,8 +393,9 @@ pub(crate) async fn workflow_dependencies(
         OrionError::internal_from(format!("Corrupt JSON in workflow {id} tasks_json"), e)
     })?;
 
+    let generation = state.runtime.load();
     let mut connectors: Vec<ConnectorDependency> = Vec::new();
-    for r in connector_refs(&tasks) {
+    for r in connector_refs(&tasks, &generation.functions) {
         if !connectors
             .iter()
             .any(|c| c.connector == r.connector && c.function == r.function)
@@ -675,6 +696,7 @@ pub(crate) async fn import_workflows(
     let probe = state.repos.workflows.clone();
     let upsert_repo = state.repos.workflows.clone();
     let loop_cap = state.config.engine.max_loop_iterations;
+    let generation = state.runtime.load();
     let outcome =
         super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _, _, _>(
             items,
@@ -682,7 +704,7 @@ pub(crate) async fn import_workflows(
             query.on_conflict,
             super::ImportOps {
                 validate: |w: &CreateWorkflowRequest| {
-                    crate::validation::validate_create_workflow(w, loop_cap)
+                    crate::validation::validate_create_workflow(w, loop_cap, &generation.functions)
                 },
                 conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
                 exists: |id: String| {
@@ -838,10 +860,16 @@ pub(crate) async fn validate_workflow(
 async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationEnvelope {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
+    // Loaded once for the whole validation, so every check below answers
+    // against one function set.
+    let generation = state.runtime.load();
+    let functions = &generation.functions;
 
-    if let Err(e) =
-        crate::validation::validate_create_workflow(req, state.config.engine.max_loop_iterations)
-    {
+    if let Err(e) = crate::validation::validate_create_workflow(
+        req,
+        state.config.engine.max_loop_iterations,
+        functions,
+    ) {
         errors.extend(issues_from_error(e));
     }
 
@@ -851,7 +879,15 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // compiles here exactly as it will on the serving engine.
     let dl = crate::engine::operators::add_to_datalogic(datalogic_rs::Engine::builder()).build();
 
-    validate_tasks(&req.tasks, &dl, state, &mut errors, &mut warnings).await;
+    validate_tasks(
+        &req.tasks,
+        &dl,
+        state,
+        functions,
+        &mut errors,
+        &mut warnings,
+    )
+    .await;
 
     validate_workflow_condition(&req.condition, &dl, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
@@ -862,7 +898,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // names overlap real field names, and a stored rule document is a legitimate
     // payload.
     warnings.extend(
-        crate::validation::unresolvable_logic_warnings(&req.tasks)
+        crate::validation::unresolvable_logic_warnings(&req.tasks, functions)
             .into_iter()
             .map(|(field, message)| ValidationIssue { field, message }),
     );
@@ -880,7 +916,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     // the engine reports the offending *key* and the step id, and inventing a
     // coordinate from those would be a second walk that could disagree with it.
     warnings.extend(
-        crate::validation::engine_advisories(&req.tasks)
+        crate::validation::engine_advisories(&req.tasks, functions)
             .into_iter()
             .map(|advisory| ValidationIssue {
                 field: advisory.path,
@@ -918,6 +954,7 @@ async fn validate_tasks(
     tasks: &Value,
     dl: &datalogic_rs::Engine,
     state: &AppState,
+    functions: &crate::engine::FunctionRegistry,
     errors: &mut Vec<ValidationIssue>,
     warnings: &mut Vec<ValidationIssue>,
 ) {
@@ -925,11 +962,11 @@ async fn validate_tasks(
     let mut written: Vec<String> = Vec::new();
 
     for (path, task) in crate::engine::walk_steps(tasks).tasks {
-        let (task_errors, task_warnings) = errors_for_task(&path, task, dl, state).await;
+        let (task_errors, task_warnings) = errors_for_task(&path, task, dl, state, functions).await;
         errors.extend(task_errors);
         warnings.extend(task_warnings);
 
-        warn_on_unwritten_reads(&path, task, &mut written, warnings);
+        warn_on_unwritten_reads(&path, task, functions, &mut written, warnings);
 
         // Cross-task check: duplicate task IDs.
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -970,6 +1007,7 @@ const MAX_UNWRITTEN_READ_WARNINGS: usize = 10;
 fn warn_on_unwritten_reads(
     path_prefix: &str,
     task: &Value,
+    functions: &crate::engine::FunctionRegistry,
     written: &mut Vec<String>,
     warnings: &mut Vec<ValidationIssue>,
 ) {
@@ -1035,7 +1073,7 @@ fn warn_on_unwritten_reads(
             }
         }
     }
-    written.extend(task_writes(task));
+    written.extend(task_writes(task, functions));
 }
 
 // `is_written`, `task_writes` and `data_reads` live in
@@ -1051,6 +1089,7 @@ async fn errors_for_task(
     task: &Value,
     dl: &datalogic_rs::Engine,
     state: &AppState,
+    functions: &crate::engine::FunctionRegistry,
 ) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -1104,7 +1143,7 @@ async fn errors_for_task(
     // function is left with only the checks create does not make.
 
     if !fn_name.is_empty()
-        && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
+        && functions.takes_connector(fn_name)
         && let Some(connector_name) = function
             .and_then(|f| f.get("input"))
             .and_then(|input| input.get("connector"))

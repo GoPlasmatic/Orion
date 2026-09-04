@@ -365,7 +365,12 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
     // the shared pass. `requires` is this container's boundary: names the
     // target instance is expected to already have.
     let (set, boundary) = artifact_as_set(&artifact);
-    let findings = orion::definitions::check(&set, &boundary, true);
+    let findings = orion::definitions::check(
+        &set,
+        &boundary,
+        true,
+        orion::engine::FunctionRegistry::builtin(),
+    );
 
     for finding in findings.iter().filter(|f| !f.is_error()) {
         eprintln!("{finding}");

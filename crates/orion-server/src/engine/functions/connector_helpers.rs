@@ -678,7 +678,7 @@ pub fn resolve_declared_field(
     raw: &Value,
     ctx: &TaskContext<'_>,
 ) -> Value {
-    if super::schema::is_resolvable_field(function, field) {
+    if super::registry::FunctionRegistry::builtin().is_resolvable_field(function, field) {
         resolve_value(raw, ctx)
     } else {
         raw.clone()

@@ -32,7 +32,27 @@
 
 use std::collections::BTreeSet;
 
-use orion::engine::functions::schema::{catalogue, registry};
+use orion::engine::functions::schema::Source;
+use orion::engine::{CatalogueEntry, FunctionEntry, FunctionRegistry};
+
+/// The built-in catalogue — what a binary with no plugins loaded serves. A
+/// plugin entry, when a generation carries one, is filtered on every side of
+/// these comparisons: the reference page documents what ships, not what an
+/// operator installed.
+fn catalogue() -> Vec<CatalogueEntry> {
+    FunctionRegistry::builtin()
+        .catalogue()
+        .into_iter()
+        .filter(|e| e.source != Source::Plugin)
+        .collect()
+}
+
+/// The Orion handlers' entries — the functions with a declared input schema.
+fn orion_entries() -> impl Iterator<Item = &'static FunctionEntry> {
+    FunctionRegistry::builtin()
+        .entries()
+        .filter(|e| e.source == Source::Orion)
+}
 
 const FUNCTIONS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -178,7 +198,7 @@ fn stated_total(doc: &str) -> Option<usize> {
 /// Functions the registry carries — the ones Orion implements and input-schema
 /// validates.
 fn registry_names() -> BTreeSet<String> {
-    registry().iter().map(|s| s.name.to_string()).collect()
+    orion_entries().map(|e| e.name.clone()).collect()
 }
 
 /// Every function a workflow may name — what `GET /admin/functions` serves.
@@ -266,6 +286,10 @@ fn the_catalogue_marks_which_entries_carry_a_schema() {
                  so serving one would claim a create-time check that does not run",
                 entry.name
             ),
+            Source::Plugin => panic!(
+                "'{}' is a plugin entry in the built-in catalogue",
+                entry.name
+            ),
         }
     }
     // The alias is expressed on its function, not as a second entry.
@@ -280,7 +304,7 @@ fn the_catalogue_marks_which_entries_carry_a_schema() {
     assert!(
         catalogue()
             .iter()
-            .any(|e| e.name == "validation" && e.aliases.contains(&"validate")),
+            .any(|e| e.name == "validation" && e.aliases.iter().any(|a| a == "validate")),
         "'validation' must carry 'validate' as an alias"
     );
 }
@@ -295,7 +319,8 @@ fn the_catalogue_matches_what_a_workflow_may_actually_name() {
         served.insert(entry.name.to_string());
         served.extend(entry.aliases.iter().map(|a| a.to_string()));
     }
-    let accepted: BTreeSet<String> = orion::engine::known_functions()
+    let accepted: BTreeSet<String> = FunctionRegistry::builtin()
+        .accepted_names()
         .map(|n| n.to_string())
         .collect();
     assert_eq!(
@@ -362,7 +387,7 @@ fn the_stated_counts_match_the_table() {
 
     assert_eq!(
         orion,
-        registry().len(),
+        orion_entries().count(),
         "the summary table's Connector/Composition rows and the schema registry \
          are different sizes"
     );
@@ -452,8 +477,7 @@ fn documented_retry_safety(doc: &str) -> std::collections::BTreeMap<String, Stri
 /// What the registry says, in the spelling the page uses.
 fn registry_retry_safety() -> std::collections::BTreeMap<String, String> {
     use orion::engine::functions::schema::RetrySafety;
-    registry()
-        .iter()
+    orion_entries()
         .map(|s| {
             let answer = match s.retry_safety {
                 RetrySafety::DependsOn { input } => format!("depends_on {input}"),

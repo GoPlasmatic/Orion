@@ -121,10 +121,11 @@ fn step_tables_match_the_workflow_reference() {
 
 #[test]
 fn every_builtin_input_table_names_an_engine_builtin_and_only_those() {
-    let builtins: BTreeSet<&str> = orion::engine::functions::schema::catalogue()
+    let catalogue = orion::engine::FunctionRegistry::builtin().catalogue();
+    let builtins: BTreeSet<&str> = catalogue
         .iter()
         .filter(|e| e.input_fields.is_none())
-        .flat_map(|e| std::iter::once(e.name).chain(e.aliases.iter().copied()))
+        .flat_map(|e| std::iter::once(e.name.as_str()).chain(e.aliases.iter().map(String::as_str)))
         .collect();
     let tabled: BTreeSet<&str> = style::BUILTIN_INPUT_KEYS.iter().map(|(n, _)| *n).collect();
     assert_eq!(

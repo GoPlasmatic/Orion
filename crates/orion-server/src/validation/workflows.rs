@@ -1,3 +1,4 @@
+use crate::engine::FunctionRegistry;
 use crate::errors::{FieldError, OrionError};
 use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkflowRequest};
 
@@ -6,6 +7,7 @@ use super::common::{uncompiled_source_errors, validate_description, validate_id,
 pub fn validate_create_workflow(
     req: &CreateWorkflowRequest,
     max_loop_iterations: i64,
+    functions: &FunctionRegistry,
 ) -> Result<(), OrionError> {
     if let Some(ref id) = req.workflow_id {
         validate_id(id, "workflow.workflow_id")?;
@@ -25,14 +27,14 @@ pub fn validate_create_workflow(
     if !source.is_empty() {
         return Err(uncompiled(source));
     }
-    let task_errors = validate_workflow_tasks_schema(&req.tasks);
+    let task_errors = validate_workflow_tasks_schema(&req.tasks, functions);
     if !task_errors.is_empty() {
         return Err(validation_with_details(
             "Workflow tasks contain invalid function inputs",
             task_errors,
         ));
     }
-    reject_stray_secret_references(&req.tasks)?;
+    reject_stray_secret_references(&req.tasks, functions)?;
     if let Some(loop_config) = &req.loop_config {
         let loop_errors = validate_workflow_loop_schema(loop_config, max_loop_iterations);
         if !loop_errors.is_empty() {
@@ -48,8 +50,11 @@ pub fn validate_create_workflow(
 /// Refuse a workflow carrying a secret reference in a field that resolves
 /// none — [`secret_reference_errors`] as the create/update paths' refusal, so
 /// both spell the code and the summary once.
-fn reject_stray_secret_references(tasks: &Value) -> Result<(), OrionError> {
-    let refs: Vec<FieldError> = secret_reference_errors(tasks)
+fn reject_stray_secret_references(
+    tasks: &Value,
+    functions: &FunctionRegistry,
+) -> Result<(), OrionError> {
+    let refs: Vec<FieldError> = secret_reference_errors(tasks, functions)
         .into_iter()
         .map(|(path, message)| FieldError::new(path, "UNRESOLVED_SECRET_REF", message))
         .collect();
@@ -65,6 +70,7 @@ fn reject_stray_secret_references(tasks: &Value) -> Result<(), OrionError> {
 pub fn validate_update_workflow(
     req: &UpdateWorkflowRequest,
     max_loop_iterations: i64,
+    functions: &FunctionRegistry,
 ) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
         validate_name(name, "workflow.name")?;
@@ -81,14 +87,14 @@ pub fn validate_update_workflow(
         return Err(uncompiled(source));
     }
     if let Some(ref tasks) = req.tasks {
-        let task_errors = validate_workflow_tasks_schema(tasks);
+        let task_errors = validate_workflow_tasks_schema(tasks, functions);
         if !task_errors.is_empty() {
             return Err(validation_with_details(
                 "Workflow tasks contain invalid function inputs",
                 task_errors,
             ));
         }
-        reject_stray_secret_references(tasks)?;
+        reject_stray_secret_references(tasks, functions)?;
     }
     // `null` clears the loop and needs no checking; anything else is a config
     // that has to hold up.
@@ -279,7 +285,10 @@ pub fn validate_workflow_loop_schema(
 /// every audit entry, trace step and metric label. `name` is left alone — an
 /// empty one is unhelpful in a log, but it loads, and refusing it would be
 /// Orion inventing a rule the engine does not have.
-pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
+pub fn validate_workflow_tasks_schema(
+    tasks: &serde_json::Value,
+    functions: &FunctionRegistry,
+) -> Vec<FieldError> {
     if tasks.as_array().is_none() {
         return Vec::new();
     }
@@ -367,8 +376,9 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             ));
             continue;
         }
-        if !crate::engine::is_known_function(fn_name) {
-            let suggestion = crate::engine::suggest_known_function(fn_name)
+        if !functions.contains(fn_name) {
+            let suggestion = functions
+                .suggest(fn_name)
                 .map(|closest| format!(" — did you mean '{closest}'?"))
                 .unwrap_or_default();
             errors.push(FieldError::new(
@@ -385,9 +395,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             .and_then(|f| f.get("input"))
             .cloned()
             .unwrap_or(serde_json::Value::Object(Default::default()));
-        errors.extend(crate::engine::functions::schema::validate_input(
-            fn_name, &input, path,
-        ));
+        errors.extend(functions.validate_input(fn_name, &input, path));
     }
 
     // Catch-all for the class the checks above mirror by hand: a dataflow-rs
@@ -593,7 +601,7 @@ use serde_json::Value;
 ///   second half: a custom handler's `input` is a config document to
 ///   dataflow-rs, not a template — which of its fields are templates is the
 ///   handler's business — so `check_workflow` skips it, and
-///   [`crate::engine::functions::schema::template_paths`], where that business
+///   [`FunctionRegistry::template_paths`], where that business
 ///   is declared, is what closes the gap.
 /// - `engine.unguarded_validation` — a `validation` task whose failure changes
 ///   nothing, because a failing rule records `400` and the executor's 4xx
@@ -620,7 +628,7 @@ use serde_json::Value;
 /// and no secret store changes the answer, and the other issues such a builder
 /// reports — an unregistered function, an undeclared secret — belong to checks
 /// that own them and would be reported twice with worse wording.
-pub fn engine_advisories(tasks: &Value) -> Vec<EngineAdvisory> {
+pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<EngineAdvisory> {
     // The synthetic wrapper `validate_workflow_tasks_schema` uses, for the same
     // reason: this function is given `tasks` alone.
     let synthetic = serde_json::json!({
@@ -656,7 +664,7 @@ pub fn engine_advisories(tasks: &Value) -> Vec<EngineAdvisory> {
         if dataflow_rs::is_builtin_function(function) {
             return;
         }
-        if !crate::engine::functions::schema::template_paths(function, field).contains(&"") {
+        if !functions.template_paths(function, field).contains(&"") {
             return;
         }
         out.extend(
@@ -829,10 +837,13 @@ fn is_accidental_escape(path: &str) -> bool {
 /// Returns `(field path, message)` pairs — the tuple shape
 /// [`crate::engine::functions::schema::StaticValidator`] already uses, because
 /// `ValidationIssue` belongs to the admin routes and the CLI cannot see it.
-pub fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
+pub fn unresolvable_logic_warnings(
+    tasks: &Value,
+    functions: &FunctionRegistry,
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
-        if crate::engine::functions::schema::is_resolvable_field(function, field) {
+        if functions.is_resolvable_field(function, field) {
             collect_unresolvable(value, path, function, &mut out);
         }
     });
@@ -893,10 +904,13 @@ fn for_each_input_field(tasks: &Value, mut visit: impl FnMut(&str, &str, &str, &
 ///
 /// Returns `(field path, message)` pairs, the shape the admin routes and the
 /// CLI both already consume.
-pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
+pub fn secret_reference_errors(
+    tasks: &Value,
+    functions: &FunctionRegistry,
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for_each_input_field(tasks, |function, field, path, value| {
-        let exempt = crate::engine::functions::schema::secret_paths(function, field);
+        let exempt = functions.secret_paths(function, field);
         // Whether a `{"secret": ..}` node in this field is a mistake — see the
         // branch it gates in [`collect_secret_references`]. Three cases, and
         // only the middle one is reportable:
@@ -910,8 +924,7 @@ pub fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
         // * A field read **literally** is opaque data, where a member named
         //   `secret` is a member named `secret` — and the engine would not have
         //   resolved it either, so there is nothing to warn about.
-        let inspects_nodes = crate::engine::functions::schema::is_resolvable_field(function, field)
-            || !exempt.is_empty();
+        let inspects_nodes = functions.is_resolvable_field(function, field) || !exempt.is_empty();
         collect_secret_references(value, path, "", exempt, function, inspects_nodes, &mut out);
     });
     out
@@ -1085,6 +1098,24 @@ fn collect_unresolvable(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The tests below predate the registry parameter; these shadow the glob
+    // import with the built-in registry so each case reads as it did.
+    fn registry() -> &'static FunctionRegistry {
+        FunctionRegistry::builtin()
+    }
+    fn validate_create_workflow(req: &CreateWorkflowRequest, cap: i64) -> Result<(), OrionError> {
+        super::validate_create_workflow(req, cap, registry())
+    }
+    fn validate_update_workflow(req: &UpdateWorkflowRequest, cap: i64) -> Result<(), OrionError> {
+        super::validate_update_workflow(req, cap, registry())
+    }
+    fn unresolvable_logic_warnings(tasks: &Value) -> Vec<(String, String)> {
+        super::unresolvable_logic_warnings(tasks, registry())
+    }
+    fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
+        super::secret_reference_errors(tasks, registry())
+    }
     use crate::validation::common::MAX_DESCRIPTION_LEN;
     use serde_json::json;
 
@@ -1560,7 +1591,9 @@ mod tests {
 
 #[cfg(test)]
 mod engine_advisory_tests {
-    use super::engine_advisories;
+    fn engine_advisories(tasks: &serde_json::Value) -> Vec<super::EngineAdvisory> {
+        super::engine_advisories(tasks, crate::engine::FunctionRegistry::builtin())
+    }
     use serde_json::json;
 
     /// #308's shape. A failing rule records 400, the executor's 4xx branch

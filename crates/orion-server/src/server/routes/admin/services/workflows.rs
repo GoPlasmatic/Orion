@@ -11,11 +11,12 @@ use serde_json::Value;
 /// activate, so the workflow failed at its first request instead (R5). The
 /// *type* stayed unchecked even then: pointing `cache_read` at a `db`
 /// connector activated cleanly and 500'd on first traffic, though
-/// `CONNECTOR_FUNCTIONS` already implied the required kind (F52). Both are
+/// the registry's connector rule already implied the required kind (F52). Both are
 /// fully determined at authoring time, so both are answered here.
 pub(crate) async fn ensure_connectors_exist(
     connectors: &crate::connector::ConnectorRegistry,
     workflow: &crate::storage::models::Workflow,
+    functions: &crate::engine::FunctionRegistry,
 ) -> Result<(), OrionError> {
     let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
         return Ok(()); // unparseable tasks are caught elsewhere
@@ -26,7 +27,7 @@ pub(crate) async fn ensure_connectors_exist(
     // with the offline set check (`definitions::check`).
     let mut facts: std::collections::HashMap<String, crate::engine::ConnectorFacts> =
         std::collections::HashMap::new();
-    for r in crate::engine::connector_refs(&tasks) {
+    for r in crate::engine::connector_refs(&tasks, functions) {
         if facts.contains_key(r.connector) {
             continue;
         }
@@ -43,7 +44,9 @@ pub(crate) async fn ensure_connectors_exist(
 
     let mut missing: Vec<String> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
-    for problem in crate::engine::check_connector_refs(&tasks, |name| facts.get(name).copied()) {
+    for problem in
+        crate::engine::check_connector_refs(&tasks, functions, |name| facts.get(name).copied())
+    {
         match problem {
             crate::engine::RefProblem::Missing { connector } => {
                 if !missing.iter().any(|m| m == connector) {
@@ -139,9 +142,10 @@ mod tests {
             "function": { "name": "db_read", "input": { "connector": "nope", "query": "SELECT 1" } }
         }]));
 
-        let err = ensure_connectors_exist(&registry, &wf)
-            .await
-            .expect_err("a workflow naming a connector that does not exist must not activate");
+        let err =
+            ensure_connectors_exist(&registry, &wf, crate::engine::FunctionRegistry::builtin())
+                .await
+                .expect_err("a workflow naming a connector that does not exist must not activate");
         assert!(
             err.to_string().contains("nope"),
             "the refusal must name the connector: {err}"
@@ -157,6 +161,10 @@ mod tests {
             "name": "log",
             "function": { "name": "log", "input": { "message": "hi" } }
         }]));
-        assert!(ensure_connectors_exist(&registry, &wf).await.is_ok());
+        assert!(
+            ensure_connectors_exist(&registry, &wf, crate::engine::FunctionRegistry::builtin())
+                .await
+                .is_ok()
+        );
     }
 }
