@@ -64,7 +64,7 @@ Follow the H1 with the page type and audience when the generated directory
 label is not specific enough. Tutorials also show:
 
 ```markdown
-**Tested with:** Orion 1.5.1 · **Last reviewed:** YYYY-MM-DD
+**Tested with:** Orion 1.6.0 · **Last reviewed:** YYYY-MM-DD
 ```
 
 The tested version must match the workspace version. Update the date only after

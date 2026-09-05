@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-05
+
 Two large additions, both additive: custom task functions as sandboxed
 WebAssembly components, and scheduled channels. Plugins are off by default
 (`plugins.enabled = false` preserves the previous behaviour exactly); the cron
@@ -4919,7 +4921,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/GoPlasmatic/Orion/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0

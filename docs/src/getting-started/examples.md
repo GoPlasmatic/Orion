@@ -1,7 +1,7 @@
 <!-- description: Ready-to-deploy Orion example packages — order classification, webhook transforms, Kafka events, IoT alerts — each with a step-by-step walkthrough. -->
 # Run the Examples
 
-**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
 
 The current repository ships ready-to-deploy services. Each is a **package**: the
 channels, workflows, and (when needed) connector that make up one service,

@@ -3,7 +3,7 @@
 
 **Page type:** Tutorial · **Audience:** Developers who completed the quickstart
 
-**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
 
 An Orion service consists of a **workflow** that says what to do and a
 **channel** that says where to reach it, plus optional connectors for external

@@ -3,7 +3,7 @@
 
 **Page type:** Tutorial · **Audience:** Developers taking Orion beyond the quickstart
 
-**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
 
 This tutorial follows one orders service from source files to a safe update. It
 validates input, writes to PostgreSQL through a restricted connector, reads the

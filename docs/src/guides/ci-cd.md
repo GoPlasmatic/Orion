@@ -1,7 +1,7 @@
 <!-- description: A three-stage Orion promotion pipeline: prove the logic offline, plan against the target with zero writes, then apply the same versioned artifact. -->
 # CI/CD with Packages
 
-**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
 
 A promotion pipeline for Orion has three jobs: prove the logic offline, check it
 against the target without writing, then apply it. Each maps to one command.

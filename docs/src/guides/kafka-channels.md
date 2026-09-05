@@ -1,7 +1,7 @@
 <!-- description: Run an Orion workflow for every record on a Kafka topic: how records arrive, what happens when one fails, and what processed-once does and does not mean. -->
 # Consume from Kafka
 
-**Tested with:** Orion 1.5.1 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
 
 A Kafka channel runs a workflow for every record on a topic. The workflow is the
 same shape as an HTTP channel's — what changes is how records arrive, what
