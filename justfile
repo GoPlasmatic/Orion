@@ -51,4 +51,4 @@ fmt:
 
 # Offline workflow regression tests (the examples' *.case.json suite).
 workflow-tests:
-    cargo run -- test examples/workflow-tests
+    cargo run -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement

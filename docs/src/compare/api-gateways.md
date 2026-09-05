@@ -103,9 +103,10 @@ The normal production shape: gateway at the edge, Orion behind it.
 - **No load balancing or health-based ejection across upstreams.** Orion is an
   upstream; something else spreads traffic across its replicas.
 - **No WAF, bot management or DDoS controls.**
-- **No plugin ecosystem.** Orion extends
-  [by configuration, not by code](../concepts/how-orion-works.md#what-you-can-extend) —
-  no filters, no Lua, no WASM.
+- **No plugin ecosystem.** Orion's [plugins](../concepts/plugins.md) are
+  WebAssembly task functions that transform a message and nothing else —
+  no request filters, no Lua, no hooks into the transport. It extends
+  [by configuration, and by pure code in a sandbox](../concepts/how-orion-works.md#what-you-can-extend).
 - **No ingress beyond REST, plain HTTP and Kafka.** No gRPC, no WebSockets, no
   streaming responses.
 

@@ -2,7 +2,7 @@
 # tests/benchmark/bench.sh — Performance benchmarking suite for Orion
 #
 # Uses `hey` HTTP load generator to measure throughput, latency, and
-# concurrency behaviour across 7 scenarios.
+# concurrency behaviour across 8 scenarios.
 #
 # Usage:
 #   ./tests/benchmark/bench.sh                        # Run all local scenarios
@@ -31,10 +31,11 @@ BENCH_OUTPUT_DIR="${BENCH_OUTPUT_DIR:-}"
 
 # Binary selection
 if [[ -n "${BENCH_RELEASE:-}" ]]; then
-    ORION_BIN="$PROJECT_ROOT/target/release/orion-server"
+    ORION_BIN="$PROJECT_ROOT/../../target/release/orion-server"
     BUILD_PROFILE="release"
 else
-    ORION_BIN="$PROJECT_ROOT/target/debug/orion-server"
+    # The crate builds into the workspace's target directory, two levels up.
+    ORION_BIN="$PROJECT_ROOT/../../target/debug/orion-server"
     BUILD_PROFILE="debug"
 fi
 
@@ -171,6 +172,10 @@ format = "pretty"
 
 [metrics]
 enabled = false
+
+# Scenario H uploads a plugin; everywhere else the sandbox is idle.
+[plugins]
+enabled = true
 TOMLEOF
 
     log_info "Starting Orion on port $BENCH_PORT ($BUILD_PROFILE mode)"
@@ -722,13 +727,62 @@ scenario_cluster() {
     BENCH_URL="$saved_url"
 }
 
+# H: A plugin on the hot path — the fixture's `identity` (one sandboxed
+# call: fresh store, instantiate, JSON in, JSON out) against the same rewrite
+# as a JSONLogic `map`. Both workflows are `parse_json` + one task, so the
+# difference between the two rows is what a plugin invocation costs per
+# request over an in-engine expression. The component is the test fixture,
+# uploaded through the admin API exactly as `orion-cli plugins create` does.
+create_and_activate_plugin() {
+    local manifest="$1"
+    local component
+    component="$(dirname "$manifest")/$(python3 -c 'import sys, tomllib
+print(tomllib.load(open(sys.argv[1], "rb"))["component"])' "$manifest")"
+    python3 -c 'import base64, json, sys
+manifest = open(sys.argv[1]).read()
+component = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
+json.dump({"manifest": manifest, "component": component}, sys.stdout)' "$manifest" "$component" \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/plugins" \
+            -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
+    local id
+    id=$(python3 -c 'import sys, tomllib
+print(tomllib.load(open(sys.argv[1], "rb"))["name"])' "$manifest")
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/plugins/${id}/status" \
+        -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || true
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/functions" 2>/dev/null \
+        | jq -e --arg id "$id" '.data[] | select(.plugin.id == $id)' >/dev/null || {
+        log_error "Plugin '$id' is not served — is plugins.enabled on?"
+        return 1
+    }
+}
+
+scenario_plugin() {
+    log_info "H: Plugin echo vs JSONLogic echo"
+
+    clear_workflows
+    create_and_activate_plugin "$PROJECT_ROOT/tests/fixtures/plugins/fixture-upload.toml" || return 1
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_plugin_echo.json")
+    create_and_activate_channel "bench-plugin" "$wf"
+    CURRENT_SCENARIO="H_plugin_echo"
+    run_hey POST "${BENCH_URL}/api/v1/data/bench-plugin" "$FIXTURES_DIR/data/simple_payload.json"
+    record_result "H: Plugin echo (test.fixture.identity)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+
+    clear_workflows
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_jsonlogic_echo.json")
+    create_and_activate_channel "bench-logic" "$wf"
+    CURRENT_SCENARIO="H_jsonlogic_echo"
+    run_hey POST "${BENCH_URL}/api/v1/data/bench-logic" "$FIXTURES_DIR/data/simple_payload.json"
+    record_result "H: JSONLogic echo (map)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # SCENARIO REGISTRY
 # ═══════════════════════════════════════════════════════════════════
 
 # `cluster` (G) is deliberately absent: it needs Docker and a running HA
 # stack, so it only runs when named explicitly.
-ALL_SCENARIOS=(baseline simple complex multi concurrency reload)
+ALL_SCENARIOS=(baseline simple complex multi concurrency reload plugin)
 
 run_scenario() {
     local name="$1"
@@ -739,6 +793,7 @@ run_scenario() {
         multi)       scenario_multi ;;
         concurrency) scenario_concurrency ;;
         reload)      scenario_reload ;;
+        plugin)      scenario_plugin ;;
         cluster)     scenario_cluster ;;
         *)
             log_error "Unknown scenario: $name"

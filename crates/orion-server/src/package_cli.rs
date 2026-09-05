@@ -28,6 +28,7 @@ use orion_client::{OrionClient, StatusCode, paths, query_string};
 use orion::storage::content;
 use orion::storage::repositories::channels::CreateChannelRequest;
 use orion::storage::repositories::connectors::CreateConnectorRequest;
+use orion::storage::repositories::plugins::CreatePluginRequest;
 use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
 type CliError = Box<dyn std::error::Error>;
@@ -41,12 +42,27 @@ pub(crate) struct PackageArtifact {
     pub(crate) package: PackageMeta,
     #[serde(default)]
     pub(crate) requires: Requires,
+    /// The fourth member: plugins, each in the shape `/plugins/import`
+    /// accepts — `plugin_id`, `manifest`, `digest`, `tags`, and the component
+    /// as base64 when the export carried it. Omitted from the document *and*
+    /// the hash when empty, so a package without plugins hashes exactly as it
+    /// did before plugins existed and every applied receipt stays valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) plugins: Vec<Value>,
     #[serde(default)]
     pub(crate) connectors: Vec<Value>,
     #[serde(default)]
     pub(crate) workflows: Vec<Value>,
     #[serde(default)]
     pub(crate) channels: Vec<Value>,
+}
+
+/// A plugin the package uses but does not carry: the target must hold this
+/// digest active under this id before the package can apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PluginRequirement {
+    pub(crate) id: String,
+    pub(crate) digest: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,6 +90,80 @@ pub(crate) struct Requires {
     pub(crate) channels: Vec<String>,
     #[serde(default)]
     pub(crate) connectors: Vec<String>,
+    /// Plugins the workflows call that the artifact does not carry, by id
+    /// and digest: `plan` checks the target serves exactly that digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) plugins: Vec<PluginRequirement>,
+}
+
+/// The importable content of one `plugins[]` entry — the projection the
+/// server hashes a stored row with (`plugin_content`), computed here from the
+/// import item: the manifest (TOML text or the object), the digest it names
+/// or the hash of the component it carries, and its tags.
+fn plugin_import_content(entry: &Value) -> Result<Value, CliError> {
+    let req: CreatePluginRequest = serde_json::from_value(entry.clone())
+        .map_err(|e| format!("plugin entry does not parse as an import item: {e}"))?;
+    let manifest = match &req.manifest {
+        Value::String(text) => orion::plugin::Manifest::parse(text),
+        other => serde_json::from_value::<orion::plugin::Manifest>(other.clone())
+            .map_err(|e| {
+                vec![orion::errors::FieldError::new(
+                    "manifest",
+                    "INVALID",
+                    e.to_string(),
+                )]
+            })
+            .and_then(orion::plugin::Manifest::validated),
+    }
+    .map_err(|errors| {
+        format!(
+            "plugin entry '{}': {}",
+            req.plugin_id.as_deref().unwrap_or("?"),
+            errors
+                .iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )
+    })?;
+    let digest = match (&req.digest, &req.component) {
+        (Some(digest), _) => digest.clone(),
+        (None, Some(component)) => {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(component.trim())
+                .map_err(|e| format!("plugin '{}': component is not base64: {e}", manifest.name))?;
+            orion::plugin::WasmRuntime::digest(&bytes)
+        }
+        (None, None) => {
+            return Err(format!(
+                "plugin '{}': the entry carries neither a component nor a digest",
+                manifest.name
+            )
+            .into());
+        }
+    };
+    Ok(content::plugin_request_content(
+        &serde_json::to_value(&manifest)?,
+        &digest,
+        &req.tags,
+    ))
+}
+
+/// A `plugins[]` entry as the set loader sees it: the parsed manifest and
+/// the digest the entry names or carries.
+fn plugin_definition(
+    index: usize,
+    entry: &Value,
+) -> Result<orion::definitions::PluginDefinition, CliError> {
+    let content = plugin_import_content(entry)?;
+    let manifest: orion::plugin::Manifest = serde_json::from_value(content["manifest"].clone())?;
+    Ok(orion::definitions::PluginDefinition {
+        origin: format!("plugins[{index}]"),
+        manifest,
+        digest: content["digest"].as_str().map(str::to_string),
+        component_path: None,
+    })
 }
 
 /// Project every entry of one entity array through its import shape. Fails on
@@ -98,14 +188,27 @@ fn project_entries<T: serde::de::DeserializeOwned>(
 /// through the shared importable-content canonicalization, then hashed as
 /// one document.
 pub(crate) fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError> {
-    Ok(content::content_hash(&json!({
+    let mut doc = json!({
         "connectors": project_entries::<CreateConnectorRequest>(
             &artifact.connectors, "connector", content::connector_request_content)?,
         "workflows": project_entries::<CreateWorkflowRequest>(
             &artifact.workflows, "workflow", content::workflow_request_content)?,
         "channels": project_entries::<CreateChannelRequest>(
             &artifact.channels, "channel", content::channel_request_content)?,
-    })))
+    });
+    // The key is present only when there is something under it: a package
+    // without plugins must hash exactly as it did before the member existed,
+    // or every applied receipt on every target would read as a conflict.
+    if !artifact.plugins.is_empty() {
+        doc["plugins"] = Value::Array(
+            artifact
+                .plugins
+                .iter()
+                .map(plugin_import_content)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    Ok(content::content_hash(&doc))
 }
 
 // ============================================================
@@ -152,10 +255,11 @@ fn receipt_path(artifact: &PackageArtifact) -> String {
     paths::package(&artifact.package.name)
 }
 
-/// The `/import` endpoint for one of the three entity kinds the artifact
+/// The `/import` endpoint for one of the four entity kinds the artifact
 /// carries. The kinds are a closed set spelled by this module's own loops.
 fn import_path_for(kind: &str) -> &'static str {
     match kind {
+        "plugins" => paths::PLUGINS_IMPORT,
         "connectors" => paths::CONNECTORS_IMPORT,
         "workflows" => paths::WORKFLOWS_IMPORT,
         _ => paths::CHANNELS_IMPORT,
@@ -165,9 +269,27 @@ fn import_path_for(kind: &str) -> &'static str {
 /// The `PATCH …/status` endpoint for an activation intent's kind.
 fn status_path_for(kind: &str, id: &str) -> String {
     match kind {
+        "plugins" => paths::plugin_status(id),
         "workflows" => paths::workflow_status(id),
         _ => paths::channel_status(id),
     }
+}
+
+/// The plugin functions an artifact's own plugins declare — what apply's
+/// ordering makes available before any workflow activates.
+fn provided_plugin_functions(artifact: &PackageArtifact) -> Vec<String> {
+    artifact
+        .plugins
+        .iter()
+        .enumerate()
+        .filter_map(|(i, entry)| plugin_definition(i, entry).ok())
+        .flat_map(|p| {
+            p.manifest
+                .function_names()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Collect the `name` field of every row in an exported entity array.
@@ -191,6 +313,7 @@ pub(crate) async fn run_export(
     name: &str,
     version: &str,
     output: Option<&str>,
+    include_artifacts: bool,
 ) -> Result<(), CliError> {
     if tag.is_none() && channel_ids.is_empty() {
         return Err("select the package's channels with --tag or --channels".into());
@@ -238,6 +361,7 @@ pub(crate) async fn run_export(
     let mut workflows = Vec::new();
     let mut connector_names: Vec<String> = Vec::new();
     let mut required_channels: Vec<String> = Vec::new();
+    let mut plugin_deps: Vec<PluginRequirement> = Vec::new();
     for id in &workflow_ids {
         workflows.push(client.get_data(&paths::workflow(id)).await?);
         // 3. The dependency closure, from the server's own walk (K9).
@@ -248,6 +372,32 @@ pub(crate) async fn run_export(
             {
                 connector_names.push(name.to_string());
             }
+        }
+        // The plugin closure: the version and digest each plugin function
+        // resolves to on the source, so the artifact carries — or requires —
+        // exactly the component the workflow was running against.
+        for p in deps["plugins"].as_array().into_iter().flatten() {
+            if let (Some(pid), Some(digest)) = (p["id"].as_str(), p["digest"].as_str()) {
+                let requirement = PluginRequirement {
+                    id: pid.to_string(),
+                    digest: digest.to_string(),
+                };
+                if !plugin_deps.contains(&requirement) {
+                    plugin_deps.push(requirement);
+                }
+            }
+        }
+        for function in deps["unresolved_functions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            eprintln!(
+                "warning: workflow '{id}' names function '{function}', which the source does \
+                 not dispatch — its plugin is archived or not loaded, so the artifact cannot \
+                 carry it and the workflow will not activate on the target"
+            );
         }
         for target in deps["channels"].as_array().into_iter().flatten() {
             if let Some(target) = target.as_str()
@@ -289,6 +439,59 @@ pub(crate) async fn run_export(
         }
     }
 
+    // 4b. The plugins those functions resolve to, from one export sweep of
+    //     the active rows — with the components inlined when asked, so the
+    //     artifact can install them on a target that has never seen them. A
+    //     dependency the sweep cannot match by id *and* digest goes to
+    //     `requires.plugins`: the target must already serve that exact
+    //     component, and `plan` checks that it does.
+    let mut plugins: Vec<Value> = Vec::new();
+    let mut required_plugins: Vec<PluginRequirement> = Vec::new();
+    if !plugin_deps.is_empty() {
+        let active: Value = client
+            .get_data(&format!(
+                "{}{}",
+                paths::PLUGINS_EXPORT,
+                query_string(&[
+                    ("status", Some(orion_api::STATUS_ACTIVE.to_string())),
+                    (
+                        "include_artifacts",
+                        include_artifacts.then(|| "true".to_string())
+                    ),
+                ])
+            ))
+            .await?;
+        for dep in &plugin_deps {
+            match active.as_array().into_iter().flatten().find(|p| {
+                p["plugin_id"].as_str() == Some(&dep.id)
+                    && p["digest"].as_str() == Some(&dep.digest)
+            }) {
+                Some(row) => {
+                    let mut entry = row.clone();
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("activate".to_string(), json!(true));
+                    }
+                    plugins.push(entry);
+                }
+                None => {
+                    eprintln!(
+                        "warning: plugin '{}' at {} is used but its active row on the source \
+                         does not match — recorded under requires.plugins",
+                        dep.id, dep.digest
+                    );
+                    required_plugins.push(dep.clone());
+                }
+            }
+        }
+        if !include_artifacts && !plugins.is_empty() {
+            eprintln!(
+                "note: {} plugin(s) recorded by manifest and digest only; the target must \
+                 already hold the component, or export with --include-artifacts",
+                plugins.len()
+            );
+        }
+    }
+
     // 5. Carry activation intent: DB-owned `status` does not survive import,
     //    so the artifact says what apply should activate.
     for entity in workflows.iter_mut().chain(channels.iter_mut()) {
@@ -311,7 +514,9 @@ pub(crate) async fn run_export(
         requires: Requires {
             channels: required_channels,
             connectors: required_connectors,
+            plugins: required_plugins,
         },
+        plugins,
         connectors,
         workflows,
         channels,
@@ -323,17 +528,31 @@ pub(crate) async fn run_export(
         Some(path) => {
             std::fs::write(path, rendered).map_err(|e| format!("write '{path}': {e}"))?;
             println!(
-                "wrote {}@{} ({} connectors, {} workflows, {} channels) to {path}",
+                "wrote {}@{} ({}) to {path}",
                 artifact.package.name,
                 artifact.package.version,
-                artifact.connectors.len(),
-                artifact.workflows.len(),
-                artifact.channels.len(),
+                member_counts(&artifact),
             );
         }
         None => println!("{rendered}"),
     }
     Ok(())
+}
+
+/// `N connectors, N workflows, N channels`, with the plugin count in front
+/// only when the artifact carries any — the pre-plugin line otherwise.
+pub(crate) fn member_counts(artifact: &PackageArtifact) -> String {
+    let base = format!(
+        "{} connectors, {} workflows, {} channels",
+        artifact.connectors.len(),
+        artifact.workflows.len(),
+        artifact.channels.len(),
+    );
+    if artifact.plugins.is_empty() {
+        base
+    } else {
+        format!("{} plugins, {base}", artifact.plugins.len())
+    }
 }
 
 // ============================================================
@@ -363,14 +582,20 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
 
     // Everything below the package envelope is a definition set, checked by
     // the shared pass. `requires` is this container's boundary: names the
-    // target instance is expected to already have.
-    let (set, boundary) = artifact_as_set(&artifact);
-    let findings = orion::definitions::check(
-        &set,
-        &boundary,
-        true,
-        orion::engine::FunctionRegistry::builtin(),
-    );
+    // target instance is expected to already have. The set's plugins are the
+    // artifact's own entries, so a workflow naming one of their functions is
+    // checked against the manifest that travels with it.
+    let (set, boundary, mut findings) = artifact_as_set(&artifact);
+    let registry = match set.function_registry() {
+        Ok(registry) => registry,
+        Err(reason) => {
+            errors.push(format!("plugins: {reason}"));
+            orion::engine::FunctionRegistry::builtin()
+                .with_entries(Vec::new())
+                .expect("the built-in registry extends by nothing")
+        }
+    };
+    findings.extend(orion::definitions::check(&set, &boundary, true, &registry));
 
     for finding in findings.iter().filter(|f| !f.is_error()) {
         eprintln!("{finding}");
@@ -383,12 +608,10 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
 
     if errors.is_empty() {
         println!(
-            "'{file}' is a valid package: {}@{} — {} connectors, {} workflows, {} channels",
+            "'{file}' is a valid package: {}@{} — {}",
             artifact.package.name,
             artifact.package.version,
-            artifact.connectors.len(),
-            artifact.workflows.len(),
-            artifact.channels.len(),
+            member_counts(&artifact),
         );
         Ok(())
     } else {
@@ -401,11 +624,16 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
 
 /// Project an artifact into the shared [`DefinitionSet`] shape, keeping the
 /// `channels[2]`-style origins the package surface has always reported.
+///
+/// The third member of the result is what the plugin entries could not
+/// give the set: an entry that does not parse as an import item is a finding
+/// here, in the same voice as an entity that does not.
 fn artifact_as_set(
     artifact: &PackageArtifact,
 ) -> (
     orion::definitions::DefinitionSet,
     orion::definitions::Boundary,
+    Vec<orion::definitions::Diagnostic>,
 ) {
     use orion::definitions::Entity;
     let mut entries = Vec::new();
@@ -422,10 +650,19 @@ fn artifact_as_set(
         channels: artifact.requires.channels.clone(),
         connectors: artifact.requires.connectors.clone(),
     };
-    (
-        orion::definitions::DefinitionSet::from_entries(entries),
-        boundary,
-    )
+    let mut set = orion::definitions::DefinitionSet::from_entries(entries);
+    let mut findings = Vec::new();
+    for (i, entry) in artifact.plugins.iter().enumerate() {
+        match plugin_definition(i, entry) {
+            Ok(plugin) => set.plugins.push(plugin),
+            Err(e) => findings.push(orion::definitions::Diagnostic::error(
+                "parse.plugin",
+                format!("plugins[{i}]"),
+                e.to_string(),
+            )),
+        }
+    }
+    (set, boundary, findings)
 }
 
 // ============================================================
@@ -521,9 +758,81 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             }
         }
     }
+    // Plugins, by digest: a required plugin must be active on the target at
+    // exactly the component the workflows ran against, and a carried plugin
+    // that names a digest without the bytes needs the target to hold them —
+    // an import of it would otherwise fail at write, after staging began.
+    if !artifact.requires.plugins.is_empty() || !artifact.plugins.is_empty() {
+        let stored: Value = client.get_data(paths::PLUGINS_EXPORT).await?;
+        let rows: Vec<&Value> = stored.as_array().into_iter().flatten().collect();
+        for req in &artifact.requires.plugins {
+            let active = rows.iter().any(|p| {
+                p["plugin_id"].as_str() == Some(&req.id)
+                    && p["digest"].as_str() == Some(&req.digest)
+                    && p["status"] == orion_api::STATUS_ACTIVE
+            });
+            if !active {
+                eprintln!(
+                    "error: required plugin '{}' is not active in the target at {} — install \
+                     and activate that version first, or export with --include-artifacts",
+                    req.id, req.digest
+                );
+                failures += 1;
+            }
+        }
+        for entry in &artifact.plugins {
+            if entry.get("component").is_some() {
+                continue;
+            }
+            let (id, digest) = (
+                entry["plugin_id"].as_str().unwrap_or("?"),
+                entry["digest"].as_str().unwrap_or("?"),
+            );
+            if !rows.iter().any(|p| p["digest"].as_str() == Some(digest)) {
+                eprintln!(
+                    "error: plugin '{id}' is carried by digest only and the target does not \
+                     hold {digest} — export with --include-artifacts"
+                );
+                failures += 1;
+            }
+        }
+    }
+
+    // A workflow's create-time gate validates function names against the
+    // target's *published* registry, so one calling a function of a plugin
+    // this package carries is refused by the dry-run import until apply has
+    // activated that plugin. That refusal is apply's ordering at work, not a
+    // blocking issue: reported as pending when every unknown function the
+    // workflow names is one the package's plugins provide.
+    let provided_functions = provided_plugin_functions(&artifact);
+    let target_functions: std::collections::HashSet<String> = if provided_functions.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        names_of(&client.get_data(paths::FUNCTIONS).await?, "name")
+    };
+    let pending_plugin_function = |item: &Value| -> bool {
+        let Some(tasks) = item.get("tasks") else {
+            return false;
+        };
+        let mut saw_one = false;
+        for task in orion::engine::leaf_tasks(tasks) {
+            let Some(name) = task
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if provided_functions.iter().any(|f| f == name) && !target_functions.contains(name) {
+                saw_one = true;
+            }
+        }
+        saw_one
+    };
 
     // Per-entity actions from the servers' own dry-runs (K2).
     for (kind, items) in [
+        ("plugins", &artifact.plugins),
         ("connectors", &artifact.connectors),
         ("workflows", &artifact.workflows),
         ("channels", &artifact.channels),
@@ -559,11 +868,20 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             println!("  {kind:<10} {id:<28} {action}{rollout_note}");
         }
         for error in outcome["errors"].as_array().into_iter().flatten() {
-            eprintln!(
-                "error: {kind}[{}]: {}",
-                error["index"],
-                error["error"].as_str().unwrap_or("?")
-            );
+            let index = error["index"].as_u64().unwrap_or(u64::MAX) as usize;
+            let message = error["error"].as_str().unwrap_or("?");
+            if kind == "workflows"
+                && let Some(item) = items.get(index)
+                && pending_plugin_function(item)
+            {
+                let id = item["workflow_id"].as_str().unwrap_or("(generated)");
+                println!(
+                    "  {kind:<10} {id:<28} gate pending apply order: {message} (a plugin \
+                     function this package installs first)"
+                );
+                continue;
+            }
+            eprintln!("error: {kind}[{index}]: {message}");
             failures += 1;
         }
     }
@@ -576,11 +894,15 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
     // findings qualify, and a referenced dependency must be one this package
     // provides *of the kind apply's ordering resolves* — a type mismatch or
     // route collision mentions package names too, and apply cannot fix those.
-    let provided_connectors: Vec<String> = artifact
+    // A workflow's activation gate names connectors *and* plugin functions,
+    // and apply stages and activates the package's plugins before any
+    // workflow, so a function one of them declares is resolved by order too.
+    let mut provided_connectors: Vec<String> = artifact
         .connectors
         .iter()
         .filter_map(|c| c["name"].as_str().map(str::to_string))
         .collect();
+    provided_connectors.extend(provided_plugin_functions(&artifact));
     let provided_workflows: Vec<String> = artifact
         .workflows
         .iter()
@@ -608,14 +930,22 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         };
         for finding in outcome["errors"].as_array().into_iter().flatten() {
             let message = finding["message"].as_str().unwrap_or("");
-            let existence = ["not found", "No draft version", "has no active version"]
-                .iter()
-                .any(|phrase| message.contains(phrase));
+            let existence = [
+                "not found",
+                "No draft version",
+                "has no active version",
+                // The workflow gate's spelling for a plugin function the
+                // generation does not dispatch yet.
+                "are not available on this node",
+            ]
+            .iter()
+            .any(|phrase| message.contains(phrase));
             let pending =
                 // The planned entity itself is absent or draft-less — staging
                 // creates it before activation runs.
                 message.starts_with(&format!("Workflow '{id}' not found"))
                     || message.starts_with(&format!("Channel '{id}' not found"))
+                    || message.starts_with(&format!("Plugin '{id}' not found"))
                     || message.contains("No draft version")
                     // A reference apply's ordering satisfies: quoted, and of
                     // the dependency kind activated before this entity.
@@ -658,6 +988,15 @@ fn verify_hash(artifact: &PackageArtifact) -> Result<(), CliError> {
 /// their spelling.
 fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, Option<i64>)> {
     let mut intents = Vec::new();
+    // Plugins first: a workflow's activation gate needs every plugin
+    // function it names to be dispatchable, and only an active plugin is.
+    for entry in &artifact.plugins {
+        if entry["activate"] == true
+            && let Some(id) = entry["plugin_id"].as_str()
+        {
+            intents.push(("plugins", id.to_string(), None));
+        }
+    }
     for entry in &artifact.workflows {
         if entry["activate"] == true
             && let Some(id) = entry["workflow_id"].as_str()
@@ -711,10 +1050,12 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         .await
         .map_err(|e| format!("could not claim the receipt: {e}"))?;
 
-    // Phase 2 — stage everything as drafts, in dependency order. Connector
-    // import reloads the connector registry server-side, so workflow
-    // activation's registry gate sees them.
+    // Phase 2 — stage everything as drafts, in dependency order. Plugins
+    // first, so their components are stored before anything names their
+    // functions; connector import reloads the connector registry
+    // server-side, so workflow activation's registry gate sees them.
     for (kind, items) in [
+        ("plugins", &artifact.plugins),
         ("connectors", &artifact.connectors),
         ("workflows", &artifact.workflows),
         ("channels", &artifact.channels),
@@ -747,12 +1088,50 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
                     .into(),
             );
         }
+        // Plugins activate as soon as they are staged, reload included: a
+        // workflow's create-time gate validates every function name against
+        // the *published* registry, so a workflow calling a plugin function
+        // cannot even be staged until the plugin is active and loaded. That
+        // is one extra reload per package that carries plugins, and the one
+        // place apply activates before all staging is done — a plugin that
+        // no workflow names yet is harmless to have active.
+        if kind == "plugins" {
+            for (_, id, _) in activation_intents(&artifact)
+                .into_iter()
+                .filter(|(k, _, _)| *k == "plugins")
+            {
+                match client
+                    .patch_data::<Value>(
+                        &status_path_for("plugins", &id),
+                        &json!({"status": orion_api::STATUS_ACTIVE}),
+                    )
+                    .await
+                {
+                    Ok(_) => println!("activated plugins '{id}'"),
+                    // Staged as `unchanged`: the version is already active.
+                    Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
+                        println!("plugins '{id}' is already active (unchanged)")
+                    }
+                    Err(e) => {
+                        eprintln!("error: activating plugins '{id}': {e}");
+                        return Err(format!(
+                            "activation stopped at plugins '{id}'. Nothing else was activated; \
+                             the receipt stays staged — fix the cause and re-run apply"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
     }
 
     // Phase 3 — activate in dependency order with the reload deferred (K4):
     // one engine rebuild and one cluster epoch bump at the end, not one per
-    // entity.
-    for (kind, id, rollout) in activation_intents(&artifact) {
+    // entity. Plugins were activated in phase 2, above.
+    for (kind, id, rollout) in activation_intents(&artifact)
+        .into_iter()
+        .filter(|(k, _, _)| *k != "plugins")
+    {
         let mut body = json!({"status": orion_api::STATUS_ACTIVE});
         if let Some(pct) = rollout {
             body["rollout_percentage"] = json!(pct);
@@ -848,6 +1227,12 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
     let mut rows: Vec<(String, &'static str)> = Vec::new();
     for (kind, entries, key_field, export_path) in [
         (
+            "plugin",
+            &artifact.plugins,
+            "plugin_id",
+            paths::PLUGINS_EXPORT,
+        ),
+        (
             "connector",
             &artifact.connectors,
             "name",
@@ -875,6 +1260,7 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
                 continue;
             };
             let expected = match kind {
+                "plugin" => content::content_hash(&plugin_import_content(entry)?),
                 "connector" => {
                     let req: CreateConnectorRequest = serde_json::from_value(entry.clone())?;
                     content::content_hash(&content::connector_request_content(&req))

@@ -100,6 +100,13 @@ jobs:
       - name: Run the drill
         run: deploy/ha/rolling-drill.sh
 
+      # The plugin half: a component activated on one node converges on the
+      # other through the config epoch, and a new version activated under
+      # load through the LB produces zero non-2xx. Runs after the rolling
+      # drill has restarted the victim, against the same two-node stack.
+      - name: Run the plugin drill
+        run: deploy/ha/plugin-drill.sh
+
       - name: Stack logs on failure
         if: failure()
         env:

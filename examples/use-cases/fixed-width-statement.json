@@ -1,0 +1,34 @@
+{
+  "name": "Fixed-Width Statement (plugin codec)",
+  "description": "Decode a fixed-width bank-statement line with the acme.fixedwidth plugin, then summarise it with a map",
+  "plugins": [{ "manifest": "../packages/fixed-width-statement/plugin.toml" }],
+  "workflows": [{ "file": "../packages/fixed-width-statement/workflow.json" }],
+  "tests": [
+    {
+      "name": "A statement line decodes into typed fields",
+      "channel": "statements",
+      "input": { "record": "ACC000123400001250099USD20260905" },
+      "expect": {
+        ".status": "ok",
+        ".data.statement.account": "ACC0001234",
+        ".data.statement.amount_minor": "1250099",
+        ".data.statement.currency": "USD",
+        ".data.statement.value_date": "2026-09-05",
+        ".data.statement.amount": "12500.99",
+        ".data.statement.summary": "ACC0001234 USD 12500.99 on 2026-09-05"
+      }
+    },
+    {
+      "name": "Blank numeric columns decode as null",
+      "channel": "statements",
+      "input": { "record": "ACC0009999           EUR20260101" },
+      "expect": {
+        ".status": "ok",
+        ".data.statement.account": "ACC0009999",
+        ".data.statement.amount_minor": "null",
+        ".data.statement.currency": "EUR",
+        ".data.statement.value_date": "2026-01-01"
+      }
+    }
+  ]
+}

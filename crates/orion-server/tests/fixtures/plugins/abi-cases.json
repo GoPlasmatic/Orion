@@ -1,0 +1,44 @@
+[
+  {
+    "name": "an empty input object comes back empty",
+    "function": "identity",
+    "input": {},
+    "expect": {}
+  },
+  {
+    "name": "unicode strings survive the boundary byte for byte",
+    "function": "identity",
+    "input": { "message": "héllo — ✓ 日本語 🚀 \"quoted\" \\ back\\slash \n newline" },
+    "expect": { "message": "héllo — ✓ 日本語 🚀 \"quoted\" \\ back\\slash \n newline" }
+  },
+  {
+    "name": "integers beyond 2^53 are not rounded",
+    "function": "identity",
+    "input": { "message": { "big": 9007199254740993, "negative": -9223372036854775808, "max": 18446744073709551615 } },
+    "expect": { "message": { "big": 9007199254740993, "negative": -9223372036854775808, "max": 18446744073709551615 } }
+  },
+  {
+    "name": "floats, booleans and nulls keep their types",
+    "function": "identity",
+    "input": { "message": { "f": 1.5, "e": 1e21, "t": true, "no": false, "n": null } },
+    "expect": { "message": { "f": 1.5, "e": 1e21, "t": true, "no": false, "n": null } }
+  },
+  {
+    "name": "nested nulls and empty containers are preserved",
+    "function": "identity",
+    "input": { "message": { "a": [null, [], {}, [null]], "b": { "c": { "d": null } }, "e": "" } },
+    "expect": { "message": { "a": [null, [], {}, [null]], "b": { "c": { "d": null } }, "e": "" } }
+  },
+  {
+    "name": "a caller-input error round-trips with its code and class",
+    "function": "caller-input-error",
+    "input": {},
+    "expect_error": { "code": "BAD_MESSAGE", "class": "caller-input" }
+  },
+  {
+    "name": "an internal error round-trips with its code and class",
+    "function": "internal-error",
+    "input": {},
+    "expect_error": { "code": "BOOM", "class": "internal" }
+  }
+]

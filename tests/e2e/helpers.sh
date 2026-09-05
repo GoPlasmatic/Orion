@@ -528,10 +528,23 @@ create_channel() {
     cli_quiet channels activate "$CLI_OUTPUT"
 }
 
+# clean_all_plugins — delete every plugin. After the workflows: a plugin
+# delete is refused while an active workflow calls one of its functions.
+clean_all_plugins() {
+    local ids
+    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color plugins list 2>/dev/null) || return 0
+
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color plugins delete "$id" 2>/dev/null || true
+    done <<< "$ids"
+}
+
 reset_server_state() {
     clean_all_workflows
     clean_all_channels
     clean_all_connectors
+    clean_all_plugins
     "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color engine reload 2>/dev/null || true
 }
 
@@ -706,10 +719,25 @@ run_case_file() {
         CASE_CONNECTOR_IDS+=("$CLI_OUTPUT")
     done
 
-    # Create workflows, activate them, store IDs
-    _CASE_RULE_IDS=()
     local case_dir
     case_dir="$(cd "$(dirname "$case_file")" && pwd)"
+
+    # Upload and activate plugins, before the workflows that call them: a
+    # workflow naming a plugin function is refused at create until the plugin
+    # is active. An entry is {"manifest": "<path>"}, relative to the case
+    # file, and the component is read beside the manifest as `plugins create`
+    # always reads it.
+    local plugin_count
+    plugin_count=$(jq '.plugins // [] | length' "$case_file")
+    for ((i=0; i<plugin_count; i++)); do
+        local manifest
+        manifest=$(jq -r ".plugins[$i].manifest" "$case_file")
+        cli_quiet plugins create -f "$case_dir/$manifest"
+        cli_quiet plugins activate "$CLI_OUTPUT"
+    done
+
+    # Create workflows, activate them, store IDs
+    _CASE_RULE_IDS=()
     local rule_count
     rule_count=$(jq '.workflows // [] | length' "$case_file")
     for ((i=0; i<rule_count; i++)); do

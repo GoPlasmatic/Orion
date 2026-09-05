@@ -1,20 +1,23 @@
 # The guest half of the plugin runtime tests: one component exporting the
 # `orion:plugin` world whose functions misbehave on request — trap, spin,
-# allocate without end, return the wrong shape. Built for
-# wasm32-unknown-unknown (no WASI, so the component imports nothing) and
-# turned into a component by `wasm-tools`; see build.sh. The built bytes are
-# committed beside this crate so `cargo test` needs no wasm toolchain.
+# allocate without end, return the wrong shape. Built on the shipped SDK, so
+# the fixture is also the SDK's proof: the `plugin-sdk` CI job rebuilds it
+# from this source and runs the ABI case suite against the fresh bytes.
+# Built for wasm32-unknown-unknown (no WASI, so the component imports
+# nothing) and turned into a component by `wasm-tools`; see build.sh. The
+# built bytes are committed beside this crate so `cargo test` needs no wasm
+# toolchain.
 [package]
 name = "orion-fixture-plugin"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "0.57"
+orion-plugin-sdk = { path = "../../../../../orion-plugin-sdk" }
 
 [profile.release]
 opt-level = "s"

@@ -31,6 +31,7 @@ rather than advisory: `admin_auth` disabled, an admin key too weak to be one, a
 | **Observability** | `metrics.enabled = true` with a dedicated `bind_addr`, `logging.format = "json"`, `tracing.enabled = true` pointed at a collector. | [Monitoring](./monitoring.md) |
 | **Alerts** | The five silent signals, not just error rate and latency. | [Monitoring › What to alert on](./monitoring.md#what-to-alert-on) |
 | **Kafka** | Managed broker? `[kafka.auth]` with `sasl_ssl`, and `kafka.dlq.enabled = true` so a poison message cannot stall a partition. | [Configuration](../reference/configuration.md#kafka) |
+| **Plugins** | Leave `plugins.enabled = false` unless you run one. If you do: name signing keys in `[plugins.trust]`, size the ceilings — the pooling allocator reserves `max_live_instances × max_memory_bytes` of **virtual** address space at startup (256 × 64 MiB = 16 GiB by default; count it where a container limits virtual memory), and `max_timeout_ms` bounds what one message can cost. | [Secure an Instance](./security.md#bound-what-a-plugin-can-do) · [Configuration › Plugins](../reference/configuration.md#plugins) |
 | **Shutdown** | Keep `shutdown_drain_secs + shutdown_force_timeout_secs` under your orchestrator's termination grace period. | [Failure Handling](./failure-handling.md#shut-down-without-dropping-requests) |
 | **Backups** | A backup that leaves the host, and a restore you have actually run once. | [Back Up & Restore](./backup-restore.md) |
 

@@ -1,0 +1,41 @@
+// The plugin ABI: what a plugin component exports, and nothing it imports.
+//
+// A plugin function is a pure JSON -> JSON transformation. Orion hands it the
+// task's evaluated `function.input` as a JSON string and writes the JSON value
+// it returns at the `output` path the workflow author chose. The world has no
+// imports on purpose: reads arrive only through the input, writes leave only
+// through the return value, and the type system states the security model.
+//
+// The package version is the ABI version, echoed as `abi` in a manifest. A
+// capability, if one ever earns a design, is an additive import interface
+// under this same package; nothing here needs replacing to add one.
+package orion:plugin@1.0.0;
+
+interface functions {
+    /// Whose fault a failure is. `caller-input` is the message: the input
+    /// was well-formed to the schema but wrong for this function, and a retry
+    /// with the same input cannot succeed. `internal` is the plugin's own
+    /// failure. Neither is retried.
+    enum error-class {
+        caller-input,
+        internal,
+    }
+
+    /// A refusal the guest chose to make. `code` is a stable identifier
+    /// (`^[A-Z][A-Z0-9_]{0,63}$`, refused otherwise); `message` is capped by
+    /// the host and prefixed with the function name before a client sees it.
+    record plugin-error {
+        code: string,
+        class: error-class,
+        message: string,
+    }
+
+    /// `function` is the registered name, so one component may export several
+    /// functions and dispatch on it. `input` is the evaluated `function.input`
+    /// as JSON. Returns the JSON value written at `output`.
+    invoke: func(function: string, input: string) -> result<string, plugin-error>;
+}
+
+world plugin {
+    export functions;
+}

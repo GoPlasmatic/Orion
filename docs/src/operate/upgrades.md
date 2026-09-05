@@ -74,6 +74,12 @@ supported-version window, the MSRV, and the platform matrix.
 
 ## Per-version guides
 
+- [Upgrading to 1.6.0](./upgrading-to-1.6.md): from 1.5.x. A minor release
+  that adds the plugin sandbox, off by default: three expand-only migrations,
+  a larger binary, and an MSRV rule that now follows Wasmtime's.
+- [Upgrading to 1.2.0](./upgrading-to-1.2.md): from 1.1.x. A minor release:
+  seven behaviour changes, two of them breaking for offline test suites and
+  the CLI's removed MCP server.
 - [Upgrading to 1.1.0](./upgrading-to-1.1.md): from 1.0.x. A minor release:
   five behaviour changes, no renames, no rewrites. One of them can start
   refusing traffic on a channel that appeared to work.

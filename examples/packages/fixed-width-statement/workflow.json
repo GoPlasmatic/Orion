@@ -1,0 +1,59 @@
+{
+  "workflow_id": "fixed-width-statement",
+  "name": "Fixed-Width Statement",
+  "tags": ["pkg:fixed-width-statement"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "decode",
+      "name": "Decode the statement line",
+      "function": {
+        "name": "acme.fixedwidth.parse",
+        "input": {
+          "record": { "var": "data.input.record" },
+          "spec": [
+            { "name": "account", "width": 10, "type": "string" },
+            { "name": "amount_minor", "width": 11, "type": "number" },
+            { "name": "currency", "width": 3, "type": "string" },
+            { "name": "value_date", "width": 8, "type": "date" }
+          ],
+          "output": "data.statement"
+        }
+      }
+    },
+    {
+      "id": "summarise",
+      "name": "Summarise",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "data.statement.amount",
+              "logic": { "/": [{ "var": "data.statement.amount_minor" }, 100] }
+            },
+            {
+              "path": "data.statement.summary",
+              "logic": {
+                "cat": [
+                  { "var": "data.statement.account" },
+                  " ",
+                  { "var": "data.statement.currency" },
+                  " ",
+                  { "/": [{ "var": "data.statement.amount_minor" }, 100] },
+                  " on ",
+                  { "var": "data.statement.value_date" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

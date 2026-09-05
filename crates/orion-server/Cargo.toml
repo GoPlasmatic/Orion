@@ -78,7 +78,7 @@ harness = true
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
 dataflow-rs = { version = "3.12.0", features = ["all-operators"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went
 # through `sqlx::Any`, whose `AnyTypeInfoKind` has nine variants and no way to
@@ -187,6 +187,9 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 # refuse to pick one on its own.
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+# Ed25519 for `[plugins.trust]` signature verification. The same provider
+# rustls already links, so this adds no second crypto implementation.
+aws-lc-rs = "1"
 
 # OpenTelemetry
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }

@@ -116,6 +116,11 @@ The minimum supported Rust version is **1.98**, declared as `rust-version` in
 `Cargo.toml` and enforced by a dedicated CI job. An MSRV bump is a **minor**
 release at most and is called out in the changelog. This matters only when
 building from source — the released binaries and images are self-contained.
+Since the plugin sandbox arrived, the MSRV also tracks
+[Wasmtime's](https://docs.wasmtime.dev/stability-release.html) (stable minus
+two), so a Wasmtime upgrade may move it. Wasmtime and Cranelift add roughly
+6 MB to a release binary; they are compiled in on every target, and off by
+default at runtime (`plugins.enabled = false` constructs no engine).
 
 ## Database backends
 

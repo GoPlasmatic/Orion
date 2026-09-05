@@ -6433,6 +6433,13 @@
             ],
             "description": "Must equal the manifest's `name` when given; the manifest is the\nsource of truth for the id."
           },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A detached Ed25519 signature over the digest string, base64. Required\nwhen the node's `[plugins.trust]` names public keys; ignored, but\nstored, when it does not."
+          },
           "tags": {
             "type": "array",
             "items": {
@@ -7116,6 +7123,13 @@
                 "type": "string",
                 "description": "The author's own version string from the manifest, informational."
               },
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The detached Ed25519 signature over `digest` the upload carried, base64,\nwhen there was one. Not part of the content hash: the digest is the\nidentity, and the signature only attests to it."
+              },
               "status": {
                 "type": "string"
               },
@@ -7580,6 +7594,13 @@
                   "type": "string",
                   "description": "The author's own version string from the manifest, informational."
                 },
+                "signature": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The detached Ed25519 signature over `digest` the upload carried, base64,\nwhen there was one. Not part of the content hash: the digest is the\nidentity, and the signature only attests to it."
+                },
                 "status": {
                   "type": "string"
                 },
@@ -7710,6 +7731,20 @@
               "has_dynamic_channel_calls": {
                 "type": "boolean",
                 "description": "True when a `channel_call` resolves its target with `channel_logic`\nat runtime — the static `channels` list is then incomplete by\nconstruction, and closure tooling must treat this workflow as having\nunknowable channel dependencies."
+              },
+              "plugins": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PluginDependency"
+                },
+                "description": "The plugins whose functions the tasks name, resolved against this\nnode's generation: the active version and digest each function\ncurrently comes from. A function this generation does not dispatch\nappears under `unresolved_functions` instead — a plugin archived since\nthe workflow was written, or one this node could not load."
+              },
+              "unresolved_functions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Function names the tasks call that this generation's registry does\nnot know. Empty for a workflow that would activate here."
               },
               "version": {
                 "type": "integer",
@@ -8664,6 +8699,13 @@
                   "type": "string",
                   "description": "The author's own version string from the manifest, informational."
                 },
+                "signature": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The detached Ed25519 signature over `digest` the upload carried, base64,\nwhen there was one. Not part of the content hash: the digest is the\nidentity, and the signature only attests to it."
+                },
                 "status": {
                   "type": "string"
                 },
@@ -8894,6 +8936,36 @@
           }
         }
       },
+      "PluginDependency": {
+        "type": "object",
+        "description": "One plugin a workflow depends on, as this generation serves it.",
+        "required": [
+          "id",
+          "version",
+          "digest",
+          "functions"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string",
+            "description": "`sha256:…` of the component the functions resolve to — what a\npackage records and a target is checked for."
+          },
+          "functions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The plugin's functions this workflow names, task order kept."
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PluginHealth": {
         "type": "object",
         "description": "Whether the node answering loaded a plugin version, and if not, why.",
@@ -8977,6 +9049,13 @@
           "plugin_version": {
             "type": "string",
             "description": "The author's own version string from the manifest, informational."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The detached Ed25519 signature over `digest` the upload carried, base64,\nwhen there was one. Not part of the content hash: the digest is the\nidentity, and the signature only attests to it."
           },
           "status": {
             "type": "string"
@@ -9578,6 +9657,12 @@
             ]
           },
           "manifest": {},
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "tags": {
             "type": [
               "array",
@@ -9712,6 +9797,20 @@
           "has_dynamic_channel_calls": {
             "type": "boolean",
             "description": "True when a `channel_call` resolves its target with `channel_logic`\nat runtime — the static `channels` list is then incomplete by\nconstruction, and closure tooling must treat this workflow as having\nunknowable channel dependencies."
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginDependency"
+            },
+            "description": "The plugins whose functions the tasks name, resolved against this\nnode's generation: the active version and digest each function\ncurrently comes from. A function this generation does not dispatch\nappears under `unresolved_functions` instead — a plugin archived since\nthe workflow was written, or one this node could not load."
+          },
+          "unresolved_functions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Function names the tasks call that this generation's registry does\nnot know. Empty for a workflow that would activate here."
           },
           "version": {
             "type": "integer",

@@ -660,6 +660,7 @@ async fn a_node_with_plugins_disabled_refuses_uploads_and_reports_it() {
         .expect("json"),
         digest: orion::plugin::WasmRuntime::digest(COMPONENT),
         tags_json: "[]".to_string(),
+        signature: None,
     };
     state
         .repos
@@ -718,4 +719,223 @@ async fn validate_answers_without_storing() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["valid"], false, "{body}");
+}
+
+/// An app whose node names trust keys: an upload must carry a signature over
+/// the digest by one of them.
+async fn trusting_app(keys: Vec<String>) -> (AppState, axum::Router) {
+    let mut config = config(true);
+    config.plugins.trust.public_keys = keys;
+    let state = test_state_with_config(config).await;
+    let router = orion::server::build_router(state.clone());
+    (state, router)
+}
+
+/// `[plugins.trust]` end to end: refused without a signature, refused with
+/// one by a key the node does not trust, accepted with a good one and echoed
+/// back; and the node that *loads* the version checks again with its own
+/// keys, so a row that verified where it was uploaded is still refused on a
+/// node whose policy differs.
+#[tokio::test]
+async fn a_trusting_node_requires_a_signature_over_the_digest_at_upload_and_at_load() {
+    use orion::plugin::trust::SigningKey;
+    let key = SigningKey::generate();
+    let stranger = SigningKey::generate();
+    let (state, app) = trusting_app(vec![key.public_key_base64()]).await;
+    let digest = orion::plugin::WasmRuntime::digest(COMPONENT);
+
+    let (status, body) = post(&app, "/api/v1/admin/plugins", upload()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "signature", "{body}");
+    assert_eq!(body["error"]["details"][0]["code"], "REQUIRED", "{body}");
+
+    let mut signed_by_stranger = upload();
+    signed_by_stranger["signature"] = json!(stranger.sign(&digest));
+    let (status, body) = post(&app, "/api/v1/admin/plugins", signed_by_stranger).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["details"][0]["code"], "INVALID", "{body}");
+    assert!(
+        body["error"]["details"][0]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("does not verify")),
+        "{body}"
+    );
+    // The same refusal from the pre-flight, so a pipeline learns before it uploads.
+    let (status, body) = post(&app, "/api/v1/admin/plugins/validate", upload()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], false, "{body}");
+
+    let mut signed = upload();
+    signed["signature"] = json!(key.sign(&digest));
+    let (status, body) = post(&app, "/api/v1/admin/plugins", signed).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["data"]["signature"],
+        json!(key.sign(&digest)),
+        "{body}"
+    );
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+    assert_eq!(body["data"]["health"]["state"], "loaded", "{body}");
+
+    // A new version keeps the digest, so it keeps the signature and activates.
+    let (status, body) = post(
+        &app,
+        "/api/v1/admin/plugins/test.fixture/versions",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["data"]["signature"],
+        json!(key.sign(&digest)),
+        "{body}"
+    );
+
+    // The load-time check: the same rows, loaded under a node that trusts
+    // only the stranger, are a `signature` load issue — never a served function.
+    let rows = state.repos.plugins.list_active().await.expect("rows");
+    let mut other_policy = state.config.plugins.clone();
+    other_policy.trust.public_keys = vec![stranger.public_key_base64()];
+    let set = orion::plugin::load_active(
+        rows,
+        state.repos.plugins.as_ref(),
+        state.plugins.as_ref(),
+        &other_policy,
+    )
+    .await;
+    assert!(
+        set.plugins.is_empty(),
+        "nothing loads under the other policy"
+    );
+    assert_eq!(set.issues.len(), 1, "{:?}", set.issues);
+    assert_eq!(set.issues[0].stage, "signature");
+    assert!(
+        set.unavailable
+            .iter()
+            .any(|(f, why)| f == "test.fixture.wrap" && why.contains("signature")),
+        "{:?}",
+        set.unavailable
+    );
+}
+
+/// `multipart/form-data` is the JSON upload in another shape: the same
+/// fields as parts, the component as raw bytes, folded into the same request
+/// — so the two forms cannot accept different things.
+#[tokio::test]
+async fn a_multipart_upload_is_the_json_upload_in_another_shape() {
+    let (_state, app) = app(true).await;
+    let boundary = "orion-test-boundary";
+    let mut body: Vec<u8> = Vec::new();
+    let part = |body: &mut Vec<u8>, name: &str, extra: &str, bytes: &[u8]| {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"{extra}\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    };
+    part(&mut body, "manifest", "", MANIFEST.as_bytes());
+    part(
+        &mut body,
+        "component",
+        "; filename=\"fixture.wasm\"\r\nContent-Type: application/wasm",
+        COMPONENT,
+    );
+    part(&mut body, "tags", "", b"[\"multipart\"]");
+    part(&mut body, "tags", "", b"second");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/plugins")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(axum::body::Body::from(body))
+        .expect("request");
+    let resp = app.clone().oneshot(request).await.expect("request");
+    let status = resp.status();
+    let created = body_json(resp).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(
+        created["data"]["digest"],
+        json!(orion::plugin::WasmRuntime::digest(COMPONENT)),
+        "the bytes arrived intact: {created}"
+    );
+    assert_eq!(created["data"]["tags"], json!(["multipart", "second"]));
+
+    // A part that is not an upload field is refused, not ignored.
+    let mut stray: Vec<u8> = Vec::new();
+    part(&mut stray, "manifest", "", MANIFEST.as_bytes());
+    part(&mut stray, "components", "", COMPONENT);
+    stray.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/plugins/validate")
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(axum::body::Body::from(stray))
+        .expect("request");
+    let resp = app.clone().oneshot(request).await.expect("request");
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.to_string().contains("'components'"), "{body}");
+}
+
+/// The dependency route names the plugin closure the package exporter
+/// records: which plugin, at which version and digest, for which functions
+/// — and which names this generation cannot resolve at all.
+#[tokio::test]
+async fn workflow_dependencies_name_the_plugin_version_and_digest() {
+    let (_state, app) = app(true).await;
+    let plugin = create_fixture(&app).await;
+    let digest = plugin["digest"].as_str().expect("digest").to_string();
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (status, body) = post(
+        &app,
+        "/api/v1/admin/workflows",
+        wrap_workflow("Wrap, for the dependency route"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let workflow_id = body["data"]["workflow_id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (status, deps) = get(
+        &app,
+        &format!("/api/v1/admin/workflows/{workflow_id}/dependencies"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{deps}");
+    assert_eq!(
+        deps["data"]["plugins"],
+        json!([{"id": "test.fixture", "version": 1, "digest": digest, "functions": ["test.fixture.wrap"]}]),
+        "{deps}"
+    );
+    assert!(deps["data"].get("unresolved_functions").is_none(), "{deps}");
+
+    // Once the plugin is gone from the generation, the same workflow's
+    // function is unresolved — what a package export must not silently omit.
+    let (status, body) = set_status(&app, "test.fixture", "archived").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, deps) = get(
+        &app,
+        &format!("/api/v1/admin/workflows/{workflow_id}/dependencies"),
+    )
+    .await;
+    assert_eq!(deps["data"]["plugins"], json!([]), "{deps}");
+    assert_eq!(
+        deps["data"]["unresolved_functions"],
+        json!(["test.fixture.wrap"]),
+        "{deps}"
+    );
 }

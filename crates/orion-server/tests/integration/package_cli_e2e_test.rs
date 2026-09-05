@@ -71,6 +71,8 @@ impl Server {
                 format!("sqlite:{}?mode=rwc", db.display()),
             )
             .env("ORION_SERVER__PORT", port.to_string())
+            // Plugins on: the promotion scenario below carries one.
+            .env("ORION_PLUGINS__ENABLED", "true")
             .env("ORION_LOGGING__LEVEL", "warn")
             .stdout(std::process::Stdio::from(out))
             .stderr(std::process::Stdio::from(err))
@@ -354,4 +356,214 @@ async fn package_promotes_between_real_instances() {
         !out.status.success(),
         "the superseded artifact must show drift"
     );
+}
+
+/// A package with a plugin in it: the fourth member travels with its
+/// component, installs on a target that has never seen it, and activates
+/// before the workflow that calls it — so the promoted channel serves
+/// through the plugin on the first request. Without the component the same
+/// package is refused by `plan`, naming the flag that carries it.
+#[tokio::test]
+async fn package_promotes_a_plugin_with_its_component() {
+    use base64::Engine as _;
+    let client = reqwest::Client::new();
+    let source = Server::start("plugin-source");
+    let target = Server::start("plugin-target");
+    source.wait_ready(&client).await;
+    target.wait_ready(&client).await;
+
+    let manifest = include_str!("../fixtures/plugins/fixture-upload.toml");
+    let component = base64::engine::general_purpose::STANDARD
+        .encode(include_bytes!("../fixtures/plugins/fixture.wasm"));
+    let base = source.url();
+    let resp = client
+        .post(format!("{base}/api/v1/admin/plugins"))
+        .json(&serde_json::json!({"manifest": manifest, "component": component}))
+        .send()
+        .await
+        .expect("create plugin");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/plugins/test.fixture/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate plugin");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .post(format!("{base}/api/v1/admin/workflows"))
+        .json(&serde_json::json!({
+            "workflow_id": "plugin-flow", "name": "Plugin Flow", "tags": ["pkg:plugin"],
+            "tasks": [
+                {"id": "parse", "name": "parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "input"}}},
+                {"id": "wrap", "name": "wrap", "function": {"name": "test.fixture.wrap",
+                    "input": {"message": {"var": "data.input.msg"}, "output": "data.result"}}}
+            ],
+        }))
+        .send()
+        .await
+        .expect("create workflow");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/workflows/plugin-flow/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate workflow");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .post(format!("{base}/api/v1/admin/channels"))
+        .json(&serde_json::json!({
+            "channel_id": "plugin-intake", "name": "plugin-intake", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/plugin-intake",
+            "workflow_id": "plugin-flow", "tags": ["pkg:plugin"],
+        }))
+        .send()
+        .await
+        .expect("create channel");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/channels/plugin-intake/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate channel");
+    assert_eq!(resp.status(), 200);
+
+    let dir = ScratchDir::new("plugin-artifacts");
+    let thin = dir.path().join("plugin-1.0.0-thin.json");
+    let thin = thin.to_str().expect("utf8 path");
+    let full = dir.path().join("plugin-1.0.0.json");
+    let full = full.to_str().expect("utf8 path");
+
+    // Exported by manifest and digest only, the package lints — the manifest
+    // is enough to check the workflow's input — but cannot install on a
+    // target that has never held the component, and `plan` says which flag
+    // would have carried it.
+    assert_ok(
+        &package_cmd(&[
+            "export",
+            "-s",
+            &source.url(),
+            "--tag",
+            "pkg:plugin",
+            "--name",
+            "plugin",
+            "--version",
+            "1.0.0",
+            "-o",
+            thin,
+        ]),
+        "thin export",
+    );
+    assert_ok(&package_cmd(&["lint", "-f", thin]), "thin lint");
+    let out = package_cmd(&["plan", "-s", &target.url(), "-f", thin]);
+    assert!(
+        !out.status.success(),
+        "a digest-only plugin cannot plan onto a fresh target"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--include-artifacts"), "{stderr}");
+
+    // With the component inlined it applies: the plugin is staged and
+    // activated before the workflow, and the channel serves through it.
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "export",
+            "-s",
+            &source.url(),
+            "--tag",
+            "pkg:plugin",
+            "--include-artifacts",
+            "--name",
+            "plugin",
+            "--version",
+            "1.0.0",
+            "-o",
+            full,
+        ]),
+        "full export",
+    );
+    assert!(stdout.contains("1 plugins"), "{stdout}");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(full).expect("artifact")).expect("json");
+    assert_eq!(artifact["plugins"][0]["plugin_id"], "test.fixture");
+    assert!(artifact["plugins"][0]["component"].is_string());
+    assert_eq!(artifact["plugins"][0]["activate"], true);
+    assert_ok(&package_cmd(&["lint", "-f", full]), "full lint");
+    assert_ok(
+        &package_cmd(&["plan", "-s", &target.url(), "-f", full]),
+        "full plan",
+    );
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", full]),
+        "apply",
+    );
+    assert!(
+        stdout.contains("activated plugins 'test.fixture'"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("applied plugin@1.0.0"), "{stdout}");
+
+    let resp = client
+        .post(format!("{}/api/v1/data/plugin-intake", target.url()))
+        .json(&serde_json::json!({"data": {"msg": "hi"}}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(body["data"]["result"]["wrapped"]["message"], "hi", "{body}");
+
+    // No drift, and the target's catalogue names the same digest the source did.
+    assert_ok(
+        &package_cmd(&["diff", "-s", &target.url(), "-f", full]),
+        "diff",
+    );
+    let functions: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/functions", target.url()))
+        .send()
+        .await
+        .expect("functions")
+        .json()
+        .await
+        .expect("json");
+    let entry = functions["data"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|f| f["name"] == "test.fixture.wrap")
+        .expect("the plugin function is served on the target");
+    assert_eq!(entry["plugin"]["digest"], artifact["plugins"][0]["digest"]);
 }

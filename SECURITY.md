@@ -45,8 +45,28 @@ Reports are especially welcome for Orion's security-relevant surfaces:
 - Connector secret storage, masking, and `env://` / `${VAR}` resolution
 - Input validation, payload limits, and deserialization of untrusted JSON
 - Rate limiting, backpressure, and other abuse-prevention mechanisms
+- The plugin sandbox: a WebAssembly component escaping its world (which
+  imports nothing), exceeding a configured ceiling (memory, wall clock, fuel,
+  input/output size, concurrency) without being stopped, reaching another
+  message's state, or getting guest-controlled text into a metric label or a
+  client response; and `[plugins.trust]` signature verification
 
 Dependency advisories are tracked automatically (`cargo deny check` runs in
 CI — advisories, licenses, bans, and sources per `deny.toml` — and Dependabot
 keeps crate and Actions versions current per `.github/dependabot.yml`) — no
 need to report those unless you can show Orion is exploitable through one.
+
+### Wasmtime update policy
+
+The plugin sandbox is [Wasmtime](https://wasmtime.dev) with Cranelift, and
+both are part of Orion's trusted computing base whenever `plugins.enabled`
+is on. Wasmtime publishes its own
+[security advisories](https://github.com/bytecodealliance/wasmtime/security/advisories)
+and supports its latest release plus the previous one. Orion tracks the
+current major: Dependabot raises the update, `cargo deny check` fails CI on an
+advisory against the pinned version, and a Wasmtime advisory that affects the
+component model, the pooling allocator, fuel or epoch interruption ships in
+the next Orion patch release rather than waiting for a minor. The MSRV moves
+with Wasmtime's when it has to (`CONTRIBUTING.md`). Operators who do not run
+plugins are unaffected: with `plugins.enabled = false` no Wasmtime engine is
+constructed and no component is ever compiled.

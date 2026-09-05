@@ -240,6 +240,8 @@ pub enum Plugins {
     Digest,
     ManifestJson,
     TagsJson,
+    /// Optional detached signature over `digest` (`[plugins.trust]`).
+    Signature,
     CreatedAt,
     UpdatedAt,
 }

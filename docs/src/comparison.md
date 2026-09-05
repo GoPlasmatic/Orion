@@ -63,8 +63,12 @@ Four words carry the last column:
   REST, plain HTTP, or a Kafka topic. There is no timer and no cron.
 - **You need gRPC, WebSockets, or a streaming response.** REST, plain HTTP and
   Kafka are the whole ingress surface.
-- **The logic needs a real programming language.** There is no plugin mechanism,
-  no scripting runtime and no WASM sandbox.
+- **The logic needs a real programming language *with I/O*.** A pure
+  transformation — a codec, a parser, a calculation — ships as a
+  [plugin](./concepts/plugins.md): a WebAssembly component that runs in a
+  sandbox with no filesystem, clock, network or secrets. Anything that has to
+  talk to another system stays an `http_call` to a service you write. There is
+  no scripting runtime and no general-purpose plugin API.
   [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)
   states the boundary exactly.
 - **You need full OIDC flows or mTLS at the data plane** with nothing in front.

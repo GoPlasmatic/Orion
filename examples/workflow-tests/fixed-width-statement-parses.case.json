@@ -1,0 +1,14 @@
+{
+  "name": "the fixed-width codec decodes a statement line into typed fields",
+  "workflow": "../packages/fixed-width-statement/workflow.json",
+  "input": { "record": "ACC000123400001250099USD20260905" },
+  "expect": {
+    "data.statement.account": "ACC0001234",
+    "data.statement.amount_minor": 1250099,
+    "data.statement.currency": "USD",
+    "data.statement.value_date": "2026-09-05",
+    "data.statement.amount": 12500.99,
+    "data.statement.summary": "ACC0001234 USD 12500.99 on 2026-09-05"
+  },
+  "expect_tasks": ["parse", "decode", "summarise"]
+}

@@ -214,10 +214,13 @@ Click a node to expand it; click a capability to open its page.
 | [Channel protocols](./reference/channel-config.md#routing--protocol) | REST with route patterns and path parameters, plain HTTP by channel name, and Kafka topics — each of them sync or async where the transport allows. |
 | [In-process composition](./reference/functions.md#channel_call) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
 
+| [Plugins](./reference/plugins.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
+
 > [!NOTE]
-> Orion extends **by configuration, not by code**. There is no plugin mechanism
-> and no way to register a task function at runtime — the set above is what a
-> release ships. [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)
+> Orion extends **by configuration, and by pure code in a sandbox**. A plugin
+> is the one way to add a task function at runtime, and it can only compute:
+> everything with I/O stays a connector or a service of your own.
+> [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)
 > states the boundary exactly.
 
 ## Availability

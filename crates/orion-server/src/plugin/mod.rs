@@ -16,6 +16,7 @@ pub mod loader;
 pub mod manifest;
 pub mod runtime;
 pub mod ticker;
+pub mod trust;
 
 pub use error::{Category, Failure};
 pub use handler::PluginFunctionHandler;

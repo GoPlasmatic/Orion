@@ -1,0 +1,30 @@
+# The guest half of Orion's plugin ABI: what a plugin author links against
+# to export the `orion:plugin` world. A library, not a binary — the author's
+# crate is the `cdylib` built for `wasm32-unknown-unknown` and turned into a
+# component with `wasm-tools`; this crate supplies the bindings, the JSON
+# boundary and the `export_plugin!` macro that wires a type to the export.
+#
+# A workspace member so it rides the shared version and publishes as a rider
+# beside `orion-api` and `orion-client` (see the root `Cargo.toml` on why the
+# riders share one version). It depends on nothing in the server: the WIT
+# file it carries is a copy of `crates/orion-server/wit/orion-plugin.wit`, and
+# `plugin_sdk_test.rs` in the server suite refuses to let the two drift.
+[package]
+name = "orion-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Guest SDK for Orion WebAssembly plugins: the orion:plugin world bindings, the JSON boundary, and the export macro"
+readme = "README.md"
+keywords = ["orion", "wasm", "plugin", "component-model"]
+categories = ["wasm", "api-bindings"]
+include = ["/src/**", "/wit/**", "/Cargo.toml", "/README.md"]
+
+[dependencies]
+# The same generator the server's own fixture guest was built with; the
+# generated export shims are what `wasm-tools component new` recognises.
+wit-bindgen = "0.57"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

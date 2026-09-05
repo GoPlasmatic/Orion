@@ -69,6 +69,10 @@ pub struct CreatePluginRequest {
     pub component: Option<String>,
     /// `sha256:…` of a component already stored, when `component` is absent.
     pub digest: Option<String>,
+    /// A detached Ed25519 signature over the digest string, base64. Required
+    /// when the node's `[plugins.trust]` names public keys; ignored, but
+    /// stored, when it does not.
+    pub signature: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -79,6 +83,7 @@ pub struct UpdatePluginRequest {
     pub manifest: Option<serde_json::Value>,
     pub component: Option<String>,
     pub digest: Option<String>,
+    pub signature: Option<String>,
     pub tags: Option<Vec<String>>,
 }
 
@@ -91,6 +96,9 @@ pub struct PluginDraft {
     pub manifest_json: String,
     pub digest: String,
     pub tags_json: String,
+    /// The detached signature over `digest`, already verified by the route
+    /// when `[plugins.trust]` names keys; stored so every load re-verifies.
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
@@ -189,6 +197,7 @@ fn build_insert(draft: &PluginDraft, version: i64) -> sea_query::InsertStatement
             Plugins::Digest,
             Plugins::ManifestJson,
             Plugins::TagsJson,
+            Plugins::Signature,
         ])
         .values_panic([
             Expr::val(draft.plugin_id.as_str()),
@@ -197,6 +206,7 @@ fn build_insert(draft: &PluginDraft, version: i64) -> sea_query::InsertStatement
             Expr::val(draft.digest.as_str()),
             Expr::val(draft.manifest_json.as_str()),
             Expr::val(draft.tags_json.as_str()),
+            Expr::val(draft.signature.clone()),
         ]);
     q
 }
@@ -210,6 +220,7 @@ fn build_update(draft: &PluginDraft) -> sea_query::UpdateStatement {
         .value(Plugins::Digest, draft.digest.as_str())
         .value(Plugins::ManifestJson, draft.manifest_json.as_str())
         .value(Plugins::TagsJson, draft.tags_json.as_str())
+        .value(Plugins::Signature, draft.signature.clone())
         .and_where(Expr::col(Plugins::PluginId).eq(draft.plugin_id.as_str()))
         .and_where(Expr::col(Plugins::Status).eq(EntityStatus::Draft.as_str()))
         .to_owned()
@@ -544,6 +555,8 @@ impl PluginRepository for SqlPluginRepository {
                 manifest_json: latest.manifest_json.clone(),
                 digest: latest.digest.clone(),
                 tags_json: latest.tags_json.clone(),
+                // The same digest, so the same signature still holds.
+                signature: latest.signature.clone(),
             };
             let mut insert = build_insert(&draft, new_version);
             versioned::write_returning_version(

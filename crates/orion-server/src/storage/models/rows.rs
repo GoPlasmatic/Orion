@@ -70,6 +70,10 @@ pub struct Plugin {
     /// The manifest as JSON — the parsed, validated form, not the TOML text.
     pub manifest_json: String,
     pub tags_json: String,
+    /// A detached signature over `digest`, base64, when the upload carried
+    /// one. Verified against `[plugins.trust]` at upload and again at every
+    /// load; `None` on a row uploaded to a node with no trust keys.
+    pub signature: Option<String>,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }

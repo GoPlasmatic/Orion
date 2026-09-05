@@ -72,6 +72,38 @@ active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
 workflow_files() { echo "$WF_FILE"; ls "$DIR"/workflow-*.json 2>/dev/null || true; }
 channel_files()  { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true; }
 
+# A package that ships a plugin (plugin.toml beside the component it names)
+# installs and activates it first: a workflow calling one of its functions is
+# refused at create until the plugin is active. The server must run with
+# `plugins.enabled = true`. The body is the same JSON `orion-cli plugins
+# create -f` sends — manifest text plus the component as base64.
+PLUGIN_FILE="$DIR/plugin.toml"
+if [[ -f "$PLUGIN_FILE" ]]; then
+  PLUGIN_ID=$(python3 -c 'import sys, tomllib
+print(tomllib.load(open(sys.argv[1], "rb"))["name"])' "$PLUGIN_FILE")
+  if have "$ADMIN/plugins/$PLUGIN_ID"; then
+    echo "==> Plugin '$PLUGIN_ID' already exists"
+  else
+    echo "==> Create plugin '$PLUGIN_ID'"
+    python3 -c 'import base64, json, os, sys, tomllib
+manifest_path = sys.argv[1]
+text = open(manifest_path).read()
+component = tomllib.loads(text)["component"]
+with open(os.path.join(os.path.dirname(manifest_path), component), "rb") as f:
+    encoded = base64.b64encode(f.read()).decode()
+json.dump({"manifest": text, "component": encoded}, sys.stdout)' "$PLUGIN_FILE" \
+      | curl --fail-with-body -sS -X POST "$ADMIN/plugins" \
+          -H 'Content-Type: application/json' --data @- > /dev/null
+  fi
+  if active "$ADMIN/plugins/$PLUGIN_ID"; then
+    echo "==> Plugin '$PLUGIN_ID' already active"
+  else
+    echo "==> Activate plugin '$PLUGIN_ID'"
+    curl --fail-with-body -sS -X PATCH "$ADMIN/plugins/$PLUGIN_ID/status" \
+      -H 'Content-Type: application/json' -d '{"status":"active"}' > /dev/null
+  fi
+fi
+
 if [[ -f "$CONN_FILE" ]]; then
   CONN_ID=$(json_field "$CONN_FILE" id)
   if have "$ADMIN/connectors/$CONN_ID"; then

@@ -270,6 +270,18 @@ produces numbers worse than none.
    — the base stack is hard-wired to two nodes, and the overlay carries the
    three-server nginx upstream). Scenario G compares against scenario B for
    per-node cluster overhead; compute scaling efficiency at N=2 and N=3.
+
+   While the stack is up, run the **plugin drill** too —
+   `deploy/ha/plugin-drill.sh` — and record its verdict beside the numbers:
+   a plugin activated on one node converges on the other, and a new version
+   activated under load through the LB produces zero non-2xx. At N=3 the
+   `CONSECUTIVE` window it uses to assert "every node" should be raised
+   (`CONSECUTIVE=30`).
+
+   Scenario H (`plugin`, in the default set since 1.6) is the plugin cost:
+   the fixture's `identity` on the hot path against the same rewrite as a
+   `map`. Publish both rows and their ratio in
+   `docs/src/reference/plugins.md` under "Performance".
 5. **Record:** commit the run outputs under
    `crates/orion-server/tests/benchmark/results/v<version>/` — one `.txt` per
    scenario plus a `SUMMARY.md` recording the hardware (CPU model, cores, RAM,

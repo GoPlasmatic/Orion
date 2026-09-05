@@ -59,6 +59,7 @@ impl TryFrom<&Plugin> for PluginResponse {
             content_hash: crate::storage::content::content_hash(
                 &crate::storage::content::plugin_content(plugin)?,
             ),
+            signature: plugin.signature.clone(),
             health: None,
             created_at: plugin.created_at,
             updated_at: plugin.updated_at,

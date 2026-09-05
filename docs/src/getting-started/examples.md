@@ -58,6 +58,7 @@ but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
 | [`postgres-orders`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 | [`channel-composition`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/channel-composition) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
 | [`kafka-order-events`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/kafka-order-events) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates — **needs `kafka.enabled = true` and a broker** |
+| [`fixed-width-statement`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/fixed-width-statement) | `POST /statements` | **Plugin-backed:** a fixed-width codec compiled to WebAssembly decodes the line, a `map` summarises it — **needs `plugins.enabled = true`**; the codec's source is in [`examples/plugins/fixed-width/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/plugins/fixed-width) |
 
 ## What is in a package directory
 
@@ -69,6 +70,7 @@ but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
 | `channel-<name>.json` *(optional)* | `POST /api/v1/admin/channels` | Additional channels |
 | `request.json` | `POST /api/v1/data/<route>` | A sample request to try it |
 | `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the package needs one |
+| `plugin.toml` + the component it names *(optional)* | `POST /api/v1/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them — needs `plugins.enabled = true` |
 
 Every entity carries a `tags: ["pkg:<name>"]` label. That label is what marks it
 as part of the package, and what package export selects on.

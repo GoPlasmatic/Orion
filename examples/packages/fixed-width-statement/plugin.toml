@@ -1,0 +1,49 @@
+# The acme.fixedwidth plugin: a fixed-width record codec, built from
+# examples/plugins/fixed-width/ with the orion-plugin-sdk. The component is
+# committed beside this manifest so the package deploys without a wasm
+# toolchain; `../../plugins/fixed-width/build.sh` rebuilds it.
+abi = "orion:plugin@1.0.0"
+name = "acme.fixedwidth"
+version = "0.1.0"
+component = "fixed-width.wasm"
+
+[[functions]]
+name = "acme.fixedwidth.parse"
+description = "Split a fixed-width record into typed fields, by a column spec"
+category = "transform"
+
+# The record is an expression: the workflow points it at the field of the
+# message that holds the line, and the engine evaluates it per message.
+[[functions.input_fields]]
+name = "record"
+description = "The fixed-width line to parse"
+kind = "string"
+required = true
+template_at = true
+
+# The spec is a literal: `[{name, width, type}]` in column order, `type` one
+# of string (trimmed), number (digits, optional sign or decimal point), date
+# (YYYYMMDD, emitted as YYYY-MM-DD).
+[[functions.input_fields]]
+name = "spec"
+description = "Column layout: an array of {name, width, type}"
+kind = "array"
+required = true
+
+[[functions]]
+name = "acme.fixedwidth.format"
+description = "Write typed fields back into a fixed-width record, by the same spec"
+category = "transform"
+
+[[functions.input_fields]]
+name = "fields"
+description = "The values to write, keyed by field name"
+kind = "object"
+required = true
+template_at = true
+
+[[functions.input_fields]]
+name = "spec"
+description = "Column layout: an array of {name, width, type}"
+kind = "array"
+required = true

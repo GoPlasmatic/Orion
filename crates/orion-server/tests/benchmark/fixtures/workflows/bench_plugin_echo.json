@@ -1,0 +1,20 @@
+{
+  "name": "bench-plugin-echo",
+  "workflow_id": "bench-plugin-echo",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "echo",
+      "name": "Echo through the plugin",
+      "function": {
+        "name": "test.fixture.identity",
+        "input": { "message": { "var": "data.input" }, "output": "data.echo" }
+      }
+    }
+  ]
+}

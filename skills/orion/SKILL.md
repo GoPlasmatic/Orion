@@ -179,6 +179,35 @@ Use `orion-cli <group> <command> --help` before relying on a flag not shown here
 - Channel guards differ by ingress. Do not assume HTTP authentication, caching,
   or origin checks apply to Kafka or `channel_call`.
 
+## Plugins: a pure function as a task
+
+A plugin is a WebAssembly component that adds a task function; its world
+imports nothing, so it can only transform the input it is given. Use one for
+a codec or calculation that already exists as code, never for anything with
+I/O (that stays `http_call` or a connector), and never for a field rewrite a
+`map` expresses.
+
+- Author with the `orion-plugin-sdk` crate: implement `Plugin::invoke(function,
+  input) -> Result<Value, PluginError>`, call `export_plugin!(Type)`, build for
+  `wasm32-unknown-unknown`, then `wasm-tools component new`.
+- Describe it in `plugin.toml` beside the component: `abi = "orion:plugin@1.0.0"`,
+  a reverse-domain `name`, and per function the `input_fields` in the same
+  vocabulary as built-ins (`kind`, `required`, `template_at` for an
+  engine-evaluated expression, `resolvable` for a `{"var": …}` fold). `output`
+  is implicit; a function name is `<plugin>.<label>`.
+- `orion-cli plugins create -f plugin.toml`, then `plugins activate`. The
+  functions then appear in `orion-cli functions list` with `source: "plugin"`;
+  discover their schemas there, never from memory.
+- Offline: `orion-server lint|clippy|compile|dry-run|test --plugin-dir <dir>`.
+  `dry-run` and `test` run the component for real; a function with no
+  component fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, and a function with no
+  manifest is reported unverifiable, not invalid.
+- Promotion: `package export --include-artifacts` carries the component;
+  `apply` installs and activates plugins before workflows. A `plugin.toml` in
+  a definition set compiles into the artifact.
+- A `{"secret": …}` node is refused anywhere in a plugin task's input; a
+  plugin never sees key material.
+
 ## Read only the reference needed
 
 - Workflow structure, task groups, fragments, context, loops, failures, and

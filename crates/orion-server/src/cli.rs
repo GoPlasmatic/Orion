@@ -225,6 +225,7 @@ pub(crate) fn run_lint(
     deny_warnings: bool,
     boundary: orion::definitions::Boundary,
     definitions: Option<&str>,
+    plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
@@ -232,25 +233,47 @@ pub(crate) fn run_lint(
     // the ones *between* files — which a per-file lint cannot see by
     // construction (#286).
     if std::path::Path::new(workflow_path).is_dir() {
-        return run_lint_set(workflow_path, deny_warnings, boundary);
+        return run_lint_set(workflow_path, deny_warnings, boundary, plugin_dirs);
     }
 
-    let catalog = Catalog::load_opt(definitions)?;
+    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
     let doc = read_expanded_workflow(workflow_path, catalog.as_ref())?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
+
+    // The registry: the built-ins, the functions of every manifest the
+    // catalog carries, and a schema-less placeholder for each plugin function
+    // no manifest here accounts for — those are unverifiable offline (the
+    // admin API checks them against the active plugin), and refusing the
+    // file for them would make `lint` unusable for a set whose plugins live
+    // elsewhere. They are reported as notes below.
+    let registry = offline_registry(catalog.as_ref())?;
+    let unverifiable = unverifiable_functions(&req.tasks, &registry);
+    let registry = registry.with_entries(placeholder_entries(&unverifiable))?;
 
     // No config here: `lint` reads a file, not a server. The default ceiling
     // is used, which can only make lint *stricter* than an instance that has
     // raised `engine.max_loop_iterations` — the safe direction for a
     // pre-flight tool (R20).
     let loop_cap = orion::config::EngineConfig::default().max_loop_iterations;
-    if let Err(err) = orion::validation::validate_create_workflow(
-        &req,
-        loop_cap,
-        orion::engine::FunctionRegistry::builtin(),
-    ) {
+    if let Err(err) = orion::validation::validate_create_workflow(&req, loop_cap, &registry) {
         return Err(format_lint_error(workflow_path, err).into());
+    }
+
+    for name in &unverifiable {
+        eprintln!(
+            "{}",
+            orion::definitions::Diagnostic::note(
+                "plugin.unverifiable",
+                format!("workflow '{}'", req.name),
+                format!(
+                    "names plugin function '{name}', and no manifest for its plugin was given, \
+                     so its input cannot be checked here; the admin API validates it against \
+                     the active plugin"
+                ),
+            )
+            .with_remedy("pass --plugin-dir <dir> with the plugin's plugin.toml")
+        );
     }
 
     // Advisory findings the create path does not refuse. On stderr so stdout
@@ -262,35 +285,29 @@ pub(crate) fn run_lint(
     // rule. Printing it as a bare string here would leave the most-used entry
     // point — one file — as the one that cannot be selected against.
     let mut warnings: Vec<orion::definitions::Diagnostic> =
-        orion::validation::unresolvable_logic_warnings(
-            &req.tasks,
-            orion::engine::FunctionRegistry::builtin(),
-        )
-        .into_iter()
-        .map(|(path, message)| {
-            orion::definitions::Diagnostic::warning(
-                "logic.unresolvable",
-                format!("workflow '{}' {path}", req.name),
-                message,
-            )
-        })
-        .collect();
+        orion::validation::unresolvable_logic_warnings(&req.tasks, &registry)
+            .into_iter()
+            .map(|(path, message)| {
+                orion::definitions::Diagnostic::warning(
+                    "logic.unresolvable",
+                    format!("workflow '{}' {path}", req.name),
+                    message,
+                )
+            })
+            .collect();
     // The informational findings: a stripped `$`, and the two control-flow keys
     // that do nothing. `check_workflow` reports all three and `build` refuses
     // none, so this is the surface where an author still can act on one.
     warnings.extend(
-        orion::validation::engine_advisories(
-            &req.tasks,
-            orion::engine::FunctionRegistry::builtin(),
-        )
-        .into_iter()
-        .map(|advisory| {
-            orion::definitions::Diagnostic::warning(
-                advisory.check,
-                format!("workflow '{}' {}", req.name, advisory.path),
-                advisory.message,
-            )
-        }),
+        orion::validation::engine_advisories(&req.tasks, &registry)
+            .into_iter()
+            .map(|advisory| {
+                orion::definitions::Diagnostic::warning(
+                    advisory.check,
+                    format!("workflow '{}' {}", req.name, advisory.path),
+                    advisory.message,
+                )
+            }),
     );
     for finding in &warnings {
         eprintln!("{finding}");
@@ -324,7 +341,7 @@ pub(crate) fn read_expanded_workflow(
     let mut doc: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
 
-    let Some(catalog) = definitions else {
+    let Some(catalog) = definitions.filter(|c| c.dir.is_some()) else {
         // Without a catalog an unexpanded `use` reaches validation as a task
         // with no `name` and no `function`, and is refused for *that* — an
         // error that describes the symptom and hides the cause. Say the cause.
@@ -349,7 +366,7 @@ pub(crate) fn read_expanded_workflow(
         // reaches the engine would be missing whatever the reference stood for.
         return Err(format!(
             "{errors} unresolved reference(s) expanding '{path}' against '{}'",
-            catalog.dir
+            catalog.dir.as_deref().unwrap_or_default()
         )
         .into());
     }
@@ -365,34 +382,237 @@ pub(crate) fn read_expanded_workflow(
 /// run does. The catalog is immutable once built, so one load serves every
 /// case.
 pub(crate) struct Catalog {
-    /// The directory it came from, for the message when a reference does not
-    /// resolve against it.
-    dir: String,
+    /// The `--definitions` directory, for the message when a reference does
+    /// not resolve against it. `None` when only `--plugin-dir` was given.
+    dir: Option<String>,
     shared: orion::definitions::SharedDefinitions,
+    /// The plugin manifests found under the definitions directory and every
+    /// `--plugin-dir`, with the component beside each when there is one.
+    /// What the registry validates against, and what an offline run loads.
+    plugins: Vec<orion::definitions::PluginDefinition>,
+    /// The sandbox over those components, built on first use: a `test` run
+    /// over many cases compiles each component once.
+    sandbox: std::sync::OnceLock<Result<OfflineSandbox, String>>,
+}
+
+/// The plugin components an offline run executes — for real, in the same
+/// sandbox the server uses, with the host's default ceilings.
+pub(crate) struct OfflineSandbox {
+    runtime: std::sync::Arc<orion::plugin::WasmRuntime>,
+    /// Plugin id → its compiled component. A manifest with no component
+    /// beside it is absent here, and a run naming one of its functions fails
+    /// as `PLUGIN_ARTIFACT_UNAVAILABLE` rather than being stubbed.
+    loaded: std::collections::HashMap<String, std::sync::Arc<orion::plugin::LoadedComponent>>,
+    config: orion::config::PluginsConfig,
 }
 
 impl Catalog {
     /// Load the catalog under `dir`, reporting what it found once.
-    pub(crate) fn load(dir: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let (shared, findings) =
-            orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+    pub(crate) fn load(
+        dir: Option<&str>,
+        plugin_dirs: &[String],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut findings = Vec::new();
+        let mut shared = orion::definitions::SharedDefinitions::default();
+        let mut set = orion::definitions::DefinitionSet::default();
+        if let Some(dir) = dir {
+            let (loaded, shared_findings) =
+                orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+            shared = loaded;
+            findings.extend(shared_findings);
+            // The manifests in the definitions tree are part of its catalog
+            // as much as its shared values are.
+            findings.extend(set.add_plugin_dirs(&[dir.to_string()])?);
+        }
+        findings.extend(set.add_plugin_dirs(plugin_dirs)?);
         let errors = findings.iter().filter(|f| f.is_error()).count();
         for finding in &findings {
             eprintln!("{finding}");
         }
         if errors > 0 {
-            return Err(format!("{errors} error(s) in the definitions under '{dir}'").into());
+            return Err(format!(
+                "{errors} error(s) in the definitions under '{}'",
+                dir.unwrap_or("--plugin-dir")
+            )
+            .into());
         }
         Ok(Self {
-            dir: dir.to_string(),
+            dir: dir.map(str::to_string),
             shared,
+            plugins: set.plugins,
+            sandbox: std::sync::OnceLock::new(),
         })
     }
 
-    /// [`Self::load`] for an optional `--definitions` argument.
-    pub(crate) fn load_opt(dir: Option<&str>) -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        dir.map(Self::load).transpose()
+    /// [`Self::load`] for the optional `--definitions` and `--plugin-dir`
+    /// arguments: `None` when neither was given.
+    pub(crate) fn load_opt(
+        dir: Option<&str>,
+        plugin_dirs: &[String],
+    ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        if dir.is_none() && plugin_dirs.is_empty() {
+            return Ok(None);
+        }
+        Self::load(dir, plugin_dirs).map(Some)
     }
+
+    /// The registry an offline command validates against: the built-ins plus
+    /// every function the catalog's manifests declare.
+    pub(crate) fn registry(
+        &self,
+    ) -> Result<orion::engine::FunctionRegistry, Box<dyn std::error::Error>> {
+        let set = orion::definitions::DefinitionSet {
+            definitions: Vec::new(),
+            plugins: self.plugins.clone(),
+        };
+        Ok(set.function_registry()?)
+    }
+
+    /// The compiled components, built once.
+    fn sandbox(&self) -> Result<&OfflineSandbox, Box<dyn std::error::Error>> {
+        self.sandbox
+            .get_or_init(|| {
+                let config = orion::config::PluginsConfig {
+                    enabled: true,
+                    ..orion::config::PluginsConfig::default()
+                };
+                let runtime = orion::plugin::WasmRuntime::new(&config)
+                    .map_err(|e| format!("the plugin sandbox could not be created: {e}"))?;
+                let mut loaded = std::collections::HashMap::new();
+                for plugin in &self.plugins {
+                    let Some(path) = &plugin.component_path else {
+                        continue;
+                    };
+                    let bytes = std::fs::read(path)
+                        .map_err(|e| format!("reading component '{}': {e}", path.display()))?;
+                    let component = runtime.load_blocking(&bytes).map_err(|e| {
+                        format!(
+                            "plugin '{}': component '{}' does not load: {e}",
+                            plugin.manifest.name,
+                            path.display()
+                        )
+                    })?;
+                    loaded.insert(plugin.manifest.name.clone(), component);
+                }
+                Ok(OfflineSandbox {
+                    runtime,
+                    loaded,
+                    config,
+                })
+            })
+            .as_ref()
+            .map_err(|e| e.clone().into())
+    }
+
+    /// One handler per function of every plugin whose component is here,
+    /// for an engine that runs them for real; and the functions of the
+    /// plugins whose component is *not* here, which such an engine must
+    /// refuse to build against rather than stub.
+    pub(crate) fn plugin_handlers(
+        &self,
+    ) -> Result<OfflinePluginHandlers, Box<dyn std::error::Error>> {
+        let mut out = OfflinePluginHandlers::default();
+        if self.plugins.is_empty() {
+            return Ok(out);
+        }
+        let sandbox = self.sandbox()?;
+        let handlers = &mut out.handlers;
+        let unavailable = &mut out.unavailable;
+        for plugin in &self.plugins {
+            match sandbox.loaded.get(&plugin.manifest.name) {
+                Some(component) => {
+                    let limits =
+                        orion::plugin::Limits::effective(&sandbox.config, &plugin.manifest.name);
+                    for entry in plugin.entries() {
+                        let name = entry.name.clone();
+                        let handler = orion::plugin::PluginFunctionHandler::new(
+                            std::sync::Arc::new(entry),
+                            component.clone(),
+                            sandbox.runtime.clone(),
+                            limits,
+                        );
+                        handlers.push((name, Box::new(handler)));
+                    }
+                }
+                None => {
+                    for name in plugin.manifest.function_names() {
+                        unavailable.push((name.to_string(), plugin.origin.clone()));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// What an offline run gets from the catalog's plugins.
+#[derive(Default)]
+pub(crate) struct OfflinePluginHandlers {
+    /// Function name → its handler, for every plugin whose component loaded.
+    pub(crate) handlers: Vec<(String, dataflow_rs::BoxedFunctionHandler)>,
+    /// Function name → the manifest's origin, for every plugin whose
+    /// component is not beside its manifest and so cannot run here.
+    pub(crate) unavailable: Vec<(String, String)>,
+}
+
+/// The registry an offline command reads: the catalog's when there is one,
+/// the built-ins otherwise.
+fn offline_registry(
+    catalog: Option<&Catalog>,
+) -> Result<orion::engine::FunctionRegistry, Box<dyn std::error::Error>> {
+    match catalog {
+        Some(catalog) => catalog.registry(),
+        None => Ok(orion::engine::FunctionRegistry::builtin()
+            .with_entries(Vec::new())
+            .expect("the built-in registry extends by nothing")),
+    }
+}
+
+/// Every plugin function `tasks` names that `registry` cannot account for —
+/// a dotted name with no manifest behind it. Registered as schema-less
+/// placeholders so the create-time validator does not refuse the workflow
+/// for a name only the serving instance can verify; the caller says so with
+/// a `plugin.unverifiable` note.
+fn unverifiable_functions(
+    tasks: &serde_json::Value,
+    registry: &orion::engine::FunctionRegistry,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for task in orion::engine::leaf_tasks(tasks) {
+        let Some(name) = task
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        if name.contains('.') && !registry.contains(name) && !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// [`unverifiable_functions`] as registry entries: no schema, so nothing
+/// about their input is checked, exactly like an engine built-in.
+fn placeholder_entries(names: &[String]) -> Vec<orion::engine::FunctionEntry> {
+    names
+        .iter()
+        .map(|name| orion::engine::FunctionEntry {
+            name: name.clone(),
+            description: "plugin function with no manifest in this run".to_string(),
+            category: "plugin".to_string(),
+            source: orion::engine::functions::schema::Source::Plugin,
+            aliases: Vec::new(),
+            input_fields: None,
+            writes: orion::engine::functions::schema::WriteShape::OutputPath { default_root: None },
+            retry_safety: orion::engine::functions::schema::RetrySafety::Pure,
+            deny_unknown: false,
+            validate_static: None,
+            connector: None,
+            plugin: None,
+        })
+        .collect()
 }
 
 /// `lint <dir>`: load a definition set and run the cross-reference pass.
@@ -405,12 +625,13 @@ fn run_lint_set(
     dir: &str,
     deny_warnings: bool,
     boundary: orion::definitions::Boundary,
+    plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // `false`: a directory being authored may hold a workflow with no id yet.
     // A package must carry explicit ids because channels reference them across
     // the artifact; a directory has no such contract, and refusing an id-less
     // draft would make the gate unusable exactly when it is most wanted.
-    load_and_gate(dir, boundary, false, deny_warnings)?;
+    load_and_gate(dir, boundary, false, deny_warnings, plugin_dirs)?;
     Ok(())
 }
 
@@ -425,6 +646,7 @@ fn load_and_gate(
     boundary: orion::definitions::Boundary,
     require_ids: bool,
     deny_warnings: bool,
+    plugin_dirs: &[String],
 ) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
     let report = orion::definitions::gate_directory(
         std::path::Path::new(dir),
@@ -433,6 +655,7 @@ fn load_and_gate(
             require_ids,
             want_raw: false,
         },
+        plugin_dirs,
     )?;
 
     // Say what was not read. A set lint that silently ignores a file reports
@@ -531,6 +754,8 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) boundary: orion::definitions::Boundary,
     pub(crate) deny_warnings: bool,
     pub(crate) no_activate: bool,
+    /// Directories of plugin manifests beyond the set's own tree.
+    pub(crate) plugin_dirs: &'a [String],
 }
 
 pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -557,7 +782,13 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
         channels: req.boundary.channels.clone(),
         connectors: req.boundary.connectors.clone(),
     };
-    let set = load_and_gate(req.dir, req.boundary, requires_ids, req.deny_warnings)?;
+    let set = load_and_gate(
+        req.dir,
+        req.boundary,
+        requires_ids,
+        req.deny_warnings,
+        req.plugin_dirs,
+    )?;
 
     match req.format {
         CompileFormat::Artifact => emit_artifact(
@@ -621,6 +852,8 @@ fn emit_artifact(
         }
     }
 
+    let plugins = plugin_import_entries(set, no_activate)?;
+
     let mut artifact = crate::package_cli::PackageArtifact {
         package: crate::package_cli::PackageMeta {
             name: name.to_string(),
@@ -633,7 +866,9 @@ fn emit_artifact(
         requires: crate::package_cli::Requires {
             channels: requires.channels,
             connectors: requires.connectors,
+            plugins: Vec::new(),
         },
+        plugins,
         connectors: collect(Entity::Connector),
         workflows,
         channels,
@@ -651,12 +886,10 @@ fn emit_artifact(
             }
             std::fs::write(path, rendered).map_err(|e| format!("write '{path}': {e}"))?;
             println!(
-                "wrote {}@{} ({} connectors, {} workflows, {} channels) to {path}",
+                "wrote {}@{} ({}) to {path}",
                 artifact.package.name,
                 artifact.package.version,
-                artifact.connectors.len(),
-                artifact.workflows.len(),
-                artifact.channels.len(),
+                crate::package_cli::member_counts(&artifact),
             );
         }
         None => println!("{rendered}"),
@@ -664,12 +897,51 @@ fn emit_artifact(
     Ok(())
 }
 
+/// The set's plugins as `/plugins/import` items, each with its component
+/// inlined: an artifact is what installs a plugin on a target that has never
+/// seen it, so a manifest with no component beside it cannot be compiled into
+/// one — that is a refusal here, not a digest-only entry the target will fail
+/// to import.
+fn plugin_import_entries(
+    set: &orion::definitions::DefinitionSet,
+    no_activate: bool,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    let mut plugins = Vec::with_capacity(set.plugins.len());
+    for plugin in &set.plugins {
+        let Some(path) = &plugin.component_path else {
+            return Err(format!(
+                "plugin '{}' ({}): no component beside the manifest, and an artifact must \
+                 carry the bytes — build it, or name it with `component = …`",
+                plugin.manifest.name, plugin.origin
+            )
+            .into());
+        };
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("reading '{}': {e}", path.display()))?;
+        let mut entry = serde_json::json!({
+            "plugin_id": plugin.manifest.name,
+            "manifest": serde_json::to_value(&plugin.manifest)?,
+            "component": base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "digest": orion::plugin::WasmRuntime::digest(&bytes),
+            "tags": [],
+        });
+        if !no_activate {
+            entry["activate"] = serde_json::Value::Bool(true);
+        }
+        plugins.push(entry);
+    }
+    Ok(plugins)
+}
+
 /// Mirror the input tree into `out`, compiled.
 ///
 /// One file in, one file out, at the same relative path — so a diff of the two
 /// trees is exactly what the compiler did, and nothing else. Shared documents
 /// are consumed rather than copied: they are the compiler's input, and an
-/// admin API sent one would refuse it as no entity at all.
+/// admin API sent one would refuse it as no entity at all. Plugin manifests
+/// and their components are copied as they are: they are already what
+/// `orion-cli plugins create -f` reads.
 fn emit_dir(
     set: &orion::definitions::DefinitionSet,
     dir: &str,
@@ -688,9 +960,35 @@ fn emit_dir(
         std::fs::write(&target, serde_json::to_string_pretty(&def.doc)?)
             .map_err(|e| format!("write '{}': {e}", target.display()))?;
     }
+    for plugin in &set.plugins {
+        let origin = std::path::Path::new(&plugin.origin);
+        let Ok(relative) = origin.strip_prefix(root) else {
+            // A manifest from `--plugin-dir` has no place in the mirrored
+            // tree; it is deployed from where it is.
+            continue;
+        };
+        let target = out_root.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create '{}': {e}", parent.display()))?;
+        }
+        std::fs::copy(origin, &target).map_err(|e| format!("copy '{}': {e}", target.display()))?;
+        if let (Some(component), Some(rel)) =
+            (&plugin.component_path, plugin.manifest.component.as_deref())
+            && let Some(parent) = target.parent()
+        {
+            std::fs::copy(component, parent.join(rel))
+                .map_err(|e| format!("copy '{}': {e}", component.display()))?;
+        }
+    }
     println!(
-        "wrote {} compiled definition(s) to {out}",
-        set.definitions.len()
+        "wrote {} compiled definition(s){} to {out}",
+        set.definitions.len(),
+        if set.plugins.is_empty() {
+            String::new()
+        } else {
+            format!(" and {} plugin manifest(s)", set.plugins.len())
+        }
     );
     Ok(())
 }
@@ -721,6 +1019,15 @@ fn emit_bulk(
             kind.as_str(),
             path.display()
         );
+    }
+    // The fourth body, only when there is one to send: `POST /plugins/import`
+    // takes the same items an artifact carries, component inlined.
+    if !set.plugins.is_empty() {
+        let entries = plugin_import_entries(set, true)?;
+        let path = std::path::Path::new(out).join("plugins.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
+            .map_err(|e| format!("write '{}': {e}", path.display()))?;
+        println!("wrote {} plugin(s) to {}", entries.len(), path.display());
     }
     Ok(())
 }
@@ -931,6 +1238,8 @@ pub(crate) struct ClippyRequest<'a> {
     /// Shared-definitions catalog for a single-file run (set mode has its
     /// own).
     pub(crate) definitions: Option<&'a str>,
+    /// Directories of plugin manifests beyond the set's own tree.
+    pub(crate) plugin_dirs: &'a [String],
     pub(crate) boundary: orion::definitions::Boundary,
     /// The serving instance's config when `-c` named one — the rules that
     /// need it are skipped otherwise, and say so.
@@ -988,6 +1297,7 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
                 require_ids: false,
                 want_raw: true,
             },
+            req.plugin_dirs,
         )?;
         for notice in report.notices() {
             eprintln!("{notice}");
@@ -1013,10 +1323,10 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             );
             return Ok(2);
         };
-        let catalog = Catalog::load_opt(req.definitions)?;
-        let shared = catalog
-            .map(|c| c.shared)
-            .unwrap_or_else(SharedDefinitions::default);
+        let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs)?;
+        let (shared, plugins) = catalog
+            .map(|c| (c.shared, c.plugins))
+            .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new()));
         let mut findings = Vec::new();
         let mut compiled_doc = doc.clone();
         orion::definitions::compile::compile(
@@ -1028,12 +1338,15 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             &mut findings,
         );
         let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
-        let compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+        let mut compiled =
+            DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+        compiled.plugins = plugins;
+        let registry = compiled.function_registry()?;
         findings.extend(orion::definitions::check(
             &compiled,
             &req.boundary,
             false,
-            orion::engine::FunctionRegistry::builtin(),
+            &registry,
         ));
         (raw, compiled, shared, findings)
     } else {
@@ -1048,12 +1361,12 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
     let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
     let mut skipped: Vec<&str> = Vec::new();
     if lint_errors == 0 {
+        // The same registry the gate read: the set's own manifests join the
+        // built-ins, so a plugin function's template fields are analysed
+        // exactly as the server would evaluate them.
+        let registry = compiled.function_registry()?;
         let analysis = orion::definitions::analysis::Analysis::new(
-            &raw,
-            &compiled,
-            &shared,
-            req.config,
-            orion::engine::FunctionRegistry::builtin(),
+            &raw, &compiled, &shared, req.config, &registry,
         );
         let report = orion::definitions::clippy::run(&analysis);
         diagnostics.extend(report.diagnostics);
@@ -1208,10 +1521,25 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     let doc = read_expanded_workflow(workflow_path, definitions)?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
+    // Validated against the catalog's manifests, so a plugin task's input is
+    // checked here as the server checks it. A plugin function no manifest
+    // accounts for cannot run offline at all — there is nothing to load —
+    // and is refused by name rather than reaching the engine as unknown.
+    let registry = offline_registry(definitions)?;
+    let unverifiable = unverifiable_functions(&req.tasks, &registry);
+    if let Some(name) = unverifiable.first() {
+        return Err(format!(
+            "PLUGIN_ARTIFACT_UNAVAILABLE: '{workflow_path}' names plugin function '{name}', \
+             and no manifest for its plugin was given — an offline run executes plugin \
+             functions for real, so pass --plugin-dir <dir> holding the plugin's plugin.toml \
+             and its component"
+        )
+        .into());
+    }
     orion::validation::validate_create_workflow(
         &req,
         orion::config::EngineConfig::default().max_loop_iterations,
-        orion::engine::FunctionRegistry::builtin(),
+        &registry,
     )
     .map_err(|e| format_lint_error(workflow_path, e))?;
 
@@ -1227,8 +1555,40 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // with no stub file: an unstubbed call then reports which stub to add,
     // rather than the `FunctionNotFound` an empty map used to give.
     let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
-    let functions =
+    let mut functions =
         orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
+    // Plugin functions are never stubbed: a plugin is capability-free, so the
+    // real component runs, exactly as `crypto` does. A manifest whose
+    // component is not beside it has functions this run cannot execute, and
+    // a workflow naming one fails here by name rather than as a missing
+    // handler at build.
+    if let Some(catalog) = definitions {
+        let OfflinePluginHandlers {
+            handlers,
+            unavailable,
+        } = catalog.plugin_handlers()?;
+        for task in orion::engine::leaf_tasks(&req.tasks) {
+            let Some(name) = task
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if let Some((_, origin)) = unavailable.iter().find(|(f, _)| f == name) {
+                return Err(format!(
+                    "PLUGIN_ARTIFACT_UNAVAILABLE: '{workflow_path}' names plugin function \
+                     '{name}', whose manifest ({origin}) has no component beside it — build \
+                     the component, or name it with `component = …`, so the run can execute \
+                     it rather than stub it"
+                )
+                .into());
+            }
+        }
+        for (name, handler) in handlers {
+            functions.insert(name, handler);
+        }
+    }
     // `build_single` registers the custom operators — a dry run must speak the
     // same expression vocabulary as the serving engine — and screens the
     // workflow against the handlers above, which is what makes a dry run's
@@ -1253,6 +1613,7 @@ pub(crate) async fn run_dry_run(
     metadata_path: Option<&str>,
     secrets_path: Option<&str>,
     definitions: Option<&str>,
+    plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input_raw = std::fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
@@ -1284,7 +1645,7 @@ pub(crate) async fn run_dry_run(
         None => orion::engine::ResolvedSecrets::empty(),
     };
 
-    let catalog = Catalog::load_opt(definitions)?;
+    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
     let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
@@ -1341,6 +1702,7 @@ pub(crate) async fn run_preflight(
     config: &config::AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::channels::SqlChannelRepository;
+    use orion::storage::repositories::plugins::SqlPluginRepository;
     use orion::storage::repositories::workflows::SqlWorkflowRepository;
 
     let pool = orion::storage::init_pool_no_migrate(&config.storage)
@@ -1351,8 +1713,12 @@ pub(crate) async fn run_preflight(
     eprintln!("Scanning stored channels and workflows ...");
 
     let channels = SqlChannelRepository::new(pool.clone());
-    let workflows = SqlWorkflowRepository::new(pool);
-    let findings = orion::preflight::scan(&channels, &workflows).await?;
+    let workflows = SqlWorkflowRepository::new(pool.clone());
+    // The active plugins' functions are part of the vocabulary the stored
+    // workflows were written against; scanned without them, every plugin
+    // task reads as a break.
+    let plugins = SqlPluginRepository::new(pool);
+    let findings = orion::preflight::scan_with(&channels, &workflows, &plugins).await?;
 
     // Split by severity, not merged into one count. A break is a row the
     // upgrade refuses; an advisory is a shape that keeps serving whatever the
@@ -1538,6 +1904,7 @@ struct CaseResult {
 pub(crate) async fn run_test(
     path: &str,
     definitions: Option<&str>,
+    plugin_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cases = collect_case_files(path)?;
     if cases.is_empty() {
@@ -1550,8 +1917,9 @@ pub(crate) async fn run_test(
 
     // Loaded once for the whole suite rather than per case: the catalog is
     // the same for all of them, and walking the tree per case was most of a
-    // run's work on any set of size.
-    let catalog = Catalog::load_opt(definitions)?;
+    // run's work on any set of size — and the plugin components it carries
+    // are compiled once for every case that runs them.
+    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
 
     let mut results = Vec::new();
     for case_path in &cases {

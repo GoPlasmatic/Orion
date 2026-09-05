@@ -115,6 +115,12 @@ enum Command {
         /// is the expanded form. Implicit when linting a directory.
         #[arg(long, value_name = "DIR")]
         definitions: Option<String>,
+        /// Directory of plugin manifests (`plugin.toml`) beyond the set's
+        /// own tree, so a workflow naming a plugin function is checked
+        /// against the manifest. Repeatable. Without one such a function is
+        /// reported as unverifiable, never as an error.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
     },
     /// Compile a definition set into files the admin API accepts.
     ///
@@ -157,6 +163,11 @@ enum Command {
         /// applies as drafts, for a promotion that activates separately.
         #[arg(long)]
         no_activate: bool,
+        /// Directory of plugin manifests (`plugin.toml`) beyond the set's
+        /// own tree. A manifest in the set compiles into the artifact with
+        /// its component inlined. Repeatable.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
@@ -200,6 +211,12 @@ enum Command {
         /// and run is the expanded form.
         #[arg(long, value_name = "DIR")]
         definitions: Option<String>,
+        /// Directory of plugin manifests and their components. A plugin
+        /// function runs for real in the sandbox, never stubbed; a workflow
+        /// naming one whose component is absent fails as
+        /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
     },
     /// Run a directory of workflow test cases (A6).
     ///
@@ -222,6 +239,12 @@ enum Command {
         /// and run is the expanded form.
         #[arg(long, value_name = "DIR")]
         definitions: Option<String>,
+        /// Directory of plugin manifests and their components, loaded once
+        /// for the whole suite. A plugin function runs for real; a case
+        /// naming one whose component is absent fails as
+        /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
     },
     /// Probe configured backends for reachability (A6).
     ///
@@ -288,6 +311,11 @@ enum Command {
         /// Repeatable.
         #[arg(long = "requires-connector", value_name = "NAME")]
         requires_connectors: Vec<String>,
+        /// Directory of plugin manifests beyond the set's own tree, so a
+        /// plugin function's template fields are analysed as the server
+        /// evaluates them. Repeatable.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
     },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
@@ -351,6 +379,12 @@ enum PackageCommand {
         /// Write the artifact here instead of stdout.
         #[arg(short, long)]
         output: Option<String>,
+        /// Inline each plugin's component as base64, so the artifact can
+        /// install plugins on a target that has never seen them. Without it
+        /// a plugin travels as manifest and digest, and the target must
+        /// already hold the component.
+        #[arg(long)]
+        include_artifacts: bool,
     },
     /// Validate an artifact offline: entity shapes (the same validators the
     /// POST endpoints run), closure completeness against `requires`, and the
@@ -452,12 +486,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_channels,
             requires_connectors,
             definitions,
+            plugin_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
             };
-            return cli::run_lint(&workflow, deny_warnings, boundary, definitions.as_deref());
+            return cli::run_lint(
+                &workflow,
+                deny_warnings,
+                boundary,
+                definitions.as_deref(),
+                &plugin_dirs,
+            );
         }
         Some(Command::Compile {
             dir,
@@ -469,6 +510,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_connectors,
             deny_warnings,
             no_activate,
+            plugin_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
@@ -483,6 +525,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 boundary,
                 deny_warnings,
                 no_activate,
+                plugin_dirs: &plugin_dirs,
             });
         }
         Some(Command::DryRun {
@@ -492,6 +535,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             metadata,
             secrets,
             definitions,
+            plugin_dirs,
         }) => {
             return cli::run_dry_run(
                 &workflow,
@@ -500,11 +544,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 metadata.as_deref(),
                 secrets.as_deref(),
                 definitions.as_deref(),
+                &plugin_dirs,
             )
             .await;
         }
-        Some(Command::Test { path, definitions }) => {
-            return cli::run_test(&path, definitions.as_deref()).await;
+        Some(Command::Test {
+            path,
+            definitions,
+            plugin_dirs,
+        }) => {
+            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs).await;
         }
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::Clippy {
@@ -516,6 +565,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             definitions,
             requires_channels,
             requires_connectors,
+            plugin_dirs,
         }) => {
             let code = if list {
                 cli::run_clippy_list()?
@@ -532,6 +582,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     deny_warnings,
                     format,
                     definitions: definitions.as_deref(),
+                    plugin_dirs: &plugin_dirs,
                     boundary: orion::definitions::Boundary {
                         channels: requires_channels,
                         connectors: requires_connectors,
@@ -559,6 +610,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     name,
                     version,
                     output,
+                    include_artifacts,
                 } => {
                     package_cli::run_export(
                         &server,
@@ -567,6 +619,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &name,
                         &version,
                         output.as_deref(),
+                        include_artifacts,
                     )
                     .await
                 }

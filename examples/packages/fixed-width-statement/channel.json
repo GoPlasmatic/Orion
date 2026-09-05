@@ -1,0 +1,10 @@
+{
+  "channel_id": "statements",
+  "name": "statements",
+  "tags": ["pkg:fixed-width-statement"],
+  "channel_type": "sync",
+  "protocol": "http",
+  "methods": ["POST"],
+  "route_pattern": "/statements",
+  "workflow_id": "fixed-width-statement"
+}

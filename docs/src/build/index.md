@@ -11,7 +11,9 @@ Use this section after the quickstart. A typical service-authoring sequence is:
    needed.
 4. [Test Workflows Offline](./testing.md): format, lint, dry-run, and add
    regression cases.
-5. [Version & Roll Out Changes](./versioning.md): activate, canary, promote,
+5. [Build a Plugin](./plugins.md): when a codec or calculation already exists
+   as code, ship it as a sandboxed WebAssembly task function.
+6. [Version & Roll Out Changes](./versioning.md): activate, canary, promote,
    and roll back changes.
 
 Looking for a complete example instead? Follow the [Orders API golden

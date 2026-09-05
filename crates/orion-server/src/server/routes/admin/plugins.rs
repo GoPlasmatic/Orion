@@ -74,9 +74,89 @@ async fn resolve_request(
         &req.manifest,
         req.component.as_deref(),
         req.digest.as_deref(),
+        req.signature.as_deref(),
         &req.tags,
     )?;
     svc::resolve(state, prepared).await
+}
+
+/// An upload body: JSON, or `multipart/form-data` for a component too large
+/// to base64 comfortably.
+///
+/// The multipart form carries the same fields as the JSON shape, one part
+/// each — `manifest` (the TOML text), `component` (the raw bytes),
+/// `plugin_id`, `digest`, `signature`, and `tags` as a JSON array or
+/// repeated once per tag. The parts are folded into the JSON shape and
+/// deserialised through it, so the two forms cannot accept different things.
+pub(crate) struct PluginUpload<T>(pub T);
+
+impl<T, S> axum::extract::FromRequest<S> for PluginUpload<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = OrionError;
+
+    async fn from_request(req: axum::extract::Request, state: &S) -> Result<Self, OrionError> {
+        let is_multipart = req
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("multipart/form-data"));
+        if !is_multipart {
+            let OrionJson(value) = OrionJson::<T>::from_request(req, state).await?;
+            return Ok(Self(value));
+        }
+        let mut multipart = axum::extract::Multipart::from_request(req, state)
+            .await
+            .map_err(|e| OrionError::validation(format!("multipart body: {e}")))?;
+        let mut body = serde_json::Map::new();
+        let mut tags: Vec<Value> = Vec::new();
+        while let Some(field) = multipart
+            .next_field()
+            .await
+            .map_err(|e| OrionError::validation(format!("multipart body: {e}")))?
+        {
+            let name = field.name().unwrap_or_default().to_string();
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| OrionError::validation(format!("multipart part '{name}': {e}")))?;
+            match name.as_str() {
+                "component" => {
+                    body.insert(
+                        name,
+                        json!(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                    );
+                }
+                "tags" => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    match serde_json::from_str::<Value>(&text) {
+                        Ok(Value::Array(items)) => tags.extend(items),
+                        _ => tags.push(json!(text.trim())),
+                    }
+                }
+                "manifest" | "plugin_id" | "digest" | "signature" => {
+                    let text = String::from_utf8(bytes.to_vec()).map_err(|_| {
+                        OrionError::validation(format!("multipart part '{name}' is not UTF-8"))
+                    })?;
+                    body.insert(name, json!(text));
+                }
+                other => {
+                    return Err(OrionError::validation(format!(
+                        "multipart part '{other}' is not a plugin upload field (expected \
+                         manifest, component, plugin_id, digest, signature or tags)"
+                    )));
+                }
+            }
+        }
+        if !tags.is_empty() {
+            body.insert("tags".to_string(), Value::Array(tags));
+        }
+        let value: T = serde_json::from_value(Value::Object(body))
+            .map_err(|e| OrionError::validation(format!("multipart upload: {e}")))?;
+        Ok(Self(value))
+    }
 }
 
 // ============================================================
@@ -118,7 +198,7 @@ pub(crate) async fn list_plugins(
 pub(crate) async fn create_plugin(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    OrionJson(req): OrionJson<CreatePluginRequest>,
+    PluginUpload(req): PluginUpload<CreatePluginRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let (draft, bytes) = resolve_request(&state, &req).await?;
     let plugin = state.repos.plugins.create(&draft, bytes.as_deref()).await?;
@@ -175,7 +255,7 @@ pub(crate) async fn update_plugin(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    OrionJson(req): OrionJson<UpdatePluginRequest>,
+    PluginUpload(req): PluginUpload<UpdatePluginRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let existing = state.repos.plugins.get_by_id(&id).await?;
     let manifest = match req.manifest {
@@ -193,12 +273,17 @@ pub(crate) async fn update_plugin(
         (None, Some(d)) => (None, Some(d)),
         (None, None) => (None, Some(existing.digest.clone())),
     };
+    // The stored signature carries over an edit that keeps the digest; one
+    // that changes the component needs a new signature, and a node with keys
+    // says so when the old one no longer verifies.
+    let signature = req.signature.or_else(|| existing.signature.clone());
     let prepared = svc::prepare(
         &state.config.plugins,
         Some(&id),
         &manifest,
         component.as_deref(),
         digest.as_deref(),
+        signature.as_deref(),
         &tags,
     )?;
     let (draft, bytes) = svc::resolve(&state, prepared).await?;
@@ -530,6 +615,7 @@ pub(crate) async fn import_plugins(
                     &p.manifest,
                     p.component.as_deref(),
                     p.digest.as_deref(),
+                    p.signature.as_deref(),
                     &p.tags,
                 )
                 .map(|_| ())
@@ -604,6 +690,9 @@ impl super::VersionedUpsert for PluginUpsert<'_> {
             &req.manifest,
             req.component.as_deref(),
             req.digest.as_deref(),
+            // Not checked here — the default config names no keys — and not
+            // part of the content either: the digest is the identity.
+            req.signature.as_deref(),
             &req.tags,
         )?;
         Ok(crate::storage::content::plugin_content(row)?
@@ -693,7 +782,7 @@ pub(crate) async fn export_plugins(
 #[tracing::instrument(skip(state, req))]
 pub(crate) async fn validate_plugin(
     State(state): State<AppState>,
-    OrionJson(req): OrionJson<CreatePluginRequest>,
+    PluginUpload(req): PluginUpload<CreatePluginRequest>,
 ) -> Result<Json<ValidationEnvelope>, OrionError> {
     let errors = match resolve_request(&state, &req).await {
         Ok(_) => Vec::new(),

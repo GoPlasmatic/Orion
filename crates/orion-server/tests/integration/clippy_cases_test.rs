@@ -21,12 +21,15 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/clip
 pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
     let (raw, _) = DefinitionSet::from_directory_raw(dir).expect("raw load");
     let (compiled, report) = DefinitionSet::from_directory(dir).expect("compiled load");
+    // The set's own registry, as the gate builds it: a `plugin.toml` in the
+    // tree makes its functions known, exactly as `clippy <dir>` sees them.
+    let registry = compiled.function_registry().expect("registry");
     let mut findings = report.findings;
     findings.extend(orion::definitions::check(
         &compiled,
         &Boundary::default(),
         false,
-        orion::engine::FunctionRegistry::builtin(),
+        &registry,
     ));
     let errors: Vec<_> = findings.iter().filter(|f| f.is_error()).collect();
     assert!(
@@ -39,13 +42,7 @@ pub fn run_over(dir: &Path) -> Vec<Diagnostic> {
     let config = config_path
         .exists()
         .then(|| orion::config::load_config(Some(config_path.to_str().unwrap())).expect("config"));
-    let analysis = Analysis::new(
-        &raw,
-        &compiled,
-        &report.shared,
-        config.as_ref(),
-        orion::engine::FunctionRegistry::builtin(),
-    );
+    let analysis = Analysis::new(&raw, &compiled, &report.shared, config.as_ref(), &registry);
     clippy::run(&analysis).diagnostics
 }
 

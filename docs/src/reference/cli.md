@@ -55,6 +55,9 @@ orion-server lint <workflow.json | dir> [--deny-warnings]
 | `--requires-channel` | Channel name that may be referenced without being in the set. Repeatable, directory mode only. |
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable, directory mode only. |
 | `--definitions` | Directory holding the set's shared `constants`, `errors` and `fragments`. Implicit when linting a directory. |
+| `--plugin-dir` | Directory of plugin manifests (`plugin.toml`) beyond the set's own tree, so a workflow naming a plugin function is checked against the manifest's field table. Repeatable. A `plugin.toml` inside the linted directory is found without it. |
+
+**A plugin function is checked against its manifest, or reported unverifiable.** A task naming `acme.codec.parse` is validated against the `acme.codec` manifest when the set (or a `--plugin-dir`) carries one — required fields, kinds, `template_at` and `resolvable` exactly as the admin API validates it against the active plugin. A function of a plugin the manifest *does* cover but does not declare is a `[closure.plugin]` error. A function of a plugin no manifest here accounts for is a `[plugin.unverifiable]` note: neither valid nor invalid offline, and the admin API decides when the workflow arrives. Each manifest in the set is listed as a `[plugin.manifest]` inventory note with its digest, or with the fact that no component sits beside it.
 
 **A directory is linted as a set.** Every channel, workflow and connector under it is validated, *and* the references between them are resolved — a `channel_call` target, a task's connector and its type, the `database` a task naming a MongoDB connector must set, a channel's `workflow_id`, duplicate ids, names and routes. Those are the errors a per-file lint cannot see, because the file that would disprove them is one it never opens.
 
@@ -109,6 +112,9 @@ orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable. |
 | `--deny-warnings` | Exit non-zero on advisory findings too, not just errors. |
 | `--no-activate` | Do not mark workflows and channels for activation, so the artifact applies as drafts. |
+| `--plugin-dir` | Directory of plugin manifests beyond the set's own tree. Repeatable. |
+
+**A `plugin.toml` in the set compiles into the artifact.** Its component — the file the manifest's `component` names, beside it — is inlined as base64 under `plugins[]`, digest included, so the artifact installs the plugin on a target that has never seen it and activates it before any workflow that calls it. A manifest with no component beside it is refused for `--format artifact`: the artifact is what carries the bytes, and one without them would fail at `apply`. `--format bulk` writes the same entries to `plugins.json`.
 
 **Why it exists.** References resolve when a *set* is loaded, and the admin API loads no set: it takes one document, with nothing to resolve names against. Without this step the only path from `definitions/` to a running instance was a deploy tool that reimplemented the expander, and a partial reimplementation shows up as `UNCOMPILED_SOURCE` on the POST, 62 workflows deep.
 
@@ -192,7 +198,7 @@ orion-server clippy --explain <rule>
 | `--format json` | One JSON object per diagnostic on stdout — `level`, `rule`, `entity`, `file`, `path`, `line`, `column`, `message`, `remedy` — and nothing else, for editors and pipelines. |
 | `--list` | Every rule with its level, scope and summary. |
 | `--explain RULE` | One rule's rationale, its proof and when it is silent. |
-| `--definitions`, `--requires-*` | As `lint` takes them. |
+| `--definitions`, `--requires-*`, `--plugin-dir` | As `lint` takes them. A plugin function's `template_at` fields are analysed as the server evaluates them once its manifest is in the set. |
 | `-c FILE` (global) | The serving instance's config. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
 
 | Exit code | Meaning |
@@ -227,6 +233,7 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [
 | `-i, --input` | Path to a JSON file used as the message payload. |
 | `-s, --stubs` | Path to a JSON file of canned connector responses. The inner key is the task's `connector` (or `channel` for `channel_call`); `"*"` matches any. |
 | `--definitions` | Directory holding the set's shared definitions, resolved before validation. |
+| `--plugin-dir` | Directory of plugin manifests and their components. A plugin function runs **for real** in the sandbox — it is capability-free, like `crypto` — never stubbed. A workflow naming a plugin function whose manifest is given but whose component is not beside it fails as `PLUGIN_ARTIFACT_UNAVAILABLE`; one naming a function no manifest covers is refused by name. Repeatable. |
 | `-m, --metadata` | Path to a JSON file used as the message metadata — `headers`, `params`, `query`, `cookies`, `auth.claims`, `channel`, `vars`. Header keys are lowercased and credential headers masked, as at the HTTP ingress. |
 | `--secrets` | Path to a JSON object of stand-in values for the `{"secret": "name"}` references the workflow reads: `{"partner_hmac": "test-key"}`. Offline there is no `[secrets]` config to resolve, and an engine with no store refuses a workflow that names one. Values are used verbatim — use throwaway ones. |
 
@@ -246,6 +253,7 @@ orion-server test <path>
 |----------|-------------|
 | `path` | A directory of `*.case.json` files, or a single case file. Paths inside a case resolve relative to the case file. |
 | `--definitions` | Directory holding the set's shared definitions, resolved before each case's workflow is validated and run. |
+| `--plugin-dir` | Directory of plugin manifests and their components, loaded and compiled once for the whole suite. Plugin functions run for real, never stubbed; a case naming one whose component is absent fails as `PLUGIN_ARTIFACT_UNAVAILABLE`, never as a silently passing stub. Repeatable. |
 
 Example: `orion-server test examples/workflow-tests`
 
@@ -260,6 +268,8 @@ Example: `orion-server -c config.toml test-connectivity`
 Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema`. Read-only. Config-file problems are `validate-config`'s job — this reads what only the database knows.
 
 The report has two sections and only the first gates. **Breaks** are numbered by their [checklist row](../operate/upgrading-to-1.0.md) and are what make the command exit non-zero, so `orion-server preflight || exit 1` is a deploy gate. **Advisories** carry the same ids `lint` uses — `[engine.unguarded_validation]`, `[engine.group_continue_on_error]`, and name a stored workflow that serves correctly and says less than its author meant it to; they never change the exit code.
+
+Stored workflows are checked against the functions the estate actually serves: the built-ins plus every function the **active** plugins declare, read from the same database. A workflow calling a function of an archived plugin is therefore a break — it would not activate — and one calling an active plugin's function is not.
 
 Example: `orion-server -c config.toml preflight`
 
@@ -294,8 +304,11 @@ orion-server package <export|lint|plan|apply|diff> [flags]
 | `--name <name>` | `export` | Package name. |
 | `--version <ver>` | `export` | Package version. Applied versions are immutable; any content change needs a bump. |
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
+| `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
 
-Example: `orion-server package export -s https://dev.orion.internal --tag payments --name payments --version 1.4.0 -o pkg.json`
+**Plugins are the fourth member.** `export` resolves every plugin function a selected workflow calls to the active version and digest serving it on the source (`GET /workflows/{id}/dependencies` reports them under `plugins`), and carries each under `plugins[]` — manifest, digest, tags, and the component when `--include-artifacts` is set. A plugin the source no longer serves at that digest is recorded under `requires.plugins` instead, and `plan` checks the target has it active. `apply` stages plugins before connectors and activates them before workflows, so a promoted channel never quarantines for a function that arrived in the same package. `plugins` is omitted from the document and the content hash when a package carries none, so every receipt applied before plugins existed stays valid.
+
+Example: `orion-server package export -s https://dev.orion.internal --tag payments --name payments --version 1.4.0 --include-artifacts -o pkg.json`
 
 ## orion-cli
 

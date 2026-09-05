@@ -96,25 +96,37 @@ pub fn gate_directory(
     dir: &Path,
     boundary: &Boundary,
     opts: GateOpts,
+    plugin_dirs: &[String],
 ) -> Result<GateReport, String> {
     let raw = if opts.want_raw {
         Some(DefinitionSet::from_directory_raw(dir)?.0)
     } else {
         None
     };
-    let (set, report) = DefinitionSet::from_directory(dir)?;
+    let (mut set, report) = DefinitionSet::from_directory(dir)?;
 
     // The loader's findings first — an unresolvable `$from`, a missing
     // fragment, a name defined twice — then the check pass's. Same class,
     // same exit rules, and the loader's come first because a set that did not
     // resolve is what makes the check pass's findings hard to read.
     let mut findings = report.findings;
-    findings.extend(super::check(
-        &set,
-        boundary,
-        opts.require_ids,
-        crate::engine::FunctionRegistry::builtin(),
-    ));
+    // Manifests from outside the tree (`--plugin-dir`) join the ones the walk
+    // found, before the registry every check reads is built from them.
+    findings.extend(set.add_plugin_dirs(plugin_dirs)?);
+    let registry = match set.function_registry() {
+        Ok(registry) => registry,
+        Err(reason) => {
+            findings.push(Diagnostic::error(
+                "duplicate.plugin_function",
+                "plugins",
+                format!("{reason} — the set's plugins could not all be active at once"),
+            ));
+            crate::engine::FunctionRegistry::builtin()
+                .with_entries(Vec::new())
+                .expect("the built-in registry extends by nothing")
+        }
+    };
+    findings.extend(super::check(&set, boundary, opts.require_ids, &registry));
 
     Ok(GateReport {
         set,

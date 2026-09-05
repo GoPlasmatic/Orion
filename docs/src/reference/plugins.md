@@ -131,4 +131,98 @@ see [Metrics › Plugins](./metrics.md#plugins).
 the one this node's generation carries). `/health` carries a `plugins`
 component that is `ok`, `degraded` when an active plugin did not load, or
 `disabled`; the admin-only detail lists every loaded version and every
-failure.
+failure. The stages a failure names are `manifest`, `signature`, `artifact`,
+`compile`, `link`, `size` and `self_test`.
+
+## Trust
+
+Installing a plugin needs the admin credential — the one that already reads
+and writes connector secrets — so a plugin adds no new principal. The
+optional hardening on top is a **detached Ed25519 signature over the
+component digest**, configured under
+[`[plugins.trust]`](./configuration.md#plugins):
+
+```toml
+[plugins.trust]
+public_keys = ["MCowBQYDK2VwAyEA…"]   # raw 32-byte keys, base64
+```
+
+When any key is configured, an upload must carry `signature`: the base64
+Ed25519 signature over the ASCII digest string (`sha256:<64 hex>`) by one of
+those keys. The digest is what is signed, not the bytes, so a release
+pipeline signs the identity every other surface already names and never needs
+the component in memory. An upload with no signature is refused at
+`signature` with `REQUIRED`; one that does not verify, with `INVALID`. The
+signature is stored on the version and **verified again by every node that
+loads it** — a row that arrived through an import on a node without keys, or
+a peer's activation, is checked by the node that runs it, and one that fails
+is a `signature` load issue that quarantines the workflows naming its
+functions. A node with no keys configured checks nothing and stores whatever
+the upload sent.
+
+Signing with OpenSSL, given an Ed25519 private key in `signer.pem`:
+
+```bash
+digest=$(printf 'sha256:%s' "$(sha256sum plugin.wasm | cut -d' ' -f1)")
+printf '%s' "$digest" | openssl pkeyutl -sign -rawin -inkey signer.pem | base64 -w0 > plugin.sig
+openssl pkey -in signer.pem -pubout -outform DER | tail -c 32 | base64 -w0   # the value for public_keys
+orion-cli plugins create -f plugin.toml --signature plugin.sig
+```
+
+`orion-cli plugins create --signature <file>` reads the base64 text from a
+file; over the API, `signature` is a field of the JSON body or a part of the
+multipart form.
+
+## Packages and offline tooling
+
+A plugin is the fourth member of a [package](../concepts/packages.md).
+`package export` resolves every plugin function a selected workflow calls to
+the active version and digest serving it — `GET /workflows/{id}/dependencies`
+reports them under `plugins` — and carries each under `plugins[]`; with
+`--include-artifacts` the component travels inline, so `apply` installs and
+activates it on a target that has never seen it before any workflow that
+calls it. Without the component the target must already hold the digest, and
+`plan` says so. A plugin the source no longer serves at that digest goes to
+`requires.plugins`, which `plan` checks the target has active.
+[`compile`](./cli.md#compile) does the same for a `plugin.toml` in a
+definition set, inlining the component beside it.
+
+Offline, [`lint`](./cli.md#lint), `clippy` and `compile` read the manifests in
+the set and in every `--plugin-dir`, and validate a plugin task's input
+against the manifest's field table exactly as the admin API validates it
+against the active plugin. A function of a plugin no manifest accounts for is
+reported as unverifiable — a note, never an error — because only the serving
+instance can answer for it. [`dry-run`](./cli.md#dry-run) and
+[`test`](./cli.md#test) go further: given `--plugin-dir` with the components
+beside the manifests, plugin functions **run for real** in the same sandbox
+the server uses, under the host's default ceilings. They are never stubbed —
+a plugin is capability-free, so the real answer is always available — and a
+case naming a function whose component is absent fails as
+`PLUGIN_ARTIFACT_UNAVAILABLE` rather than passing on a stand-in.
+
+`fmt` reads no manifest: one style everywhere is its whole value, so a plugin
+task's `input` keeps its author order. `clippy` has no plugin-specific rule;
+a plugin's writes are proven structurally through `output`, as `crypto`'s are.
+
+## Performance
+
+What a plugin invocation costs per request is a fresh store, an
+instantiation from the pre-linked component, one JSON serialisation in and
+one parse out. Scenario H of the [benchmark
+suite](https://github.com/GoPlasmatic/Orion/tree/main/crates/orion-server/tests/benchmark)
+measures exactly that: the test fixture's `identity` function on the hot path
+against the same rewrite as a JSONLogic `map`, both behind `parse_json`, so
+the difference between the two rows is the sandboxed call. It runs in the
+default set (`bench.sh plugin` runs it alone) and its rows are recorded with
+every release's benchmark record under
+`crates/orion-server/tests/benchmark/results/`, on the dedicated hardware
+`RELEASING.md` requires for published numbers. On a development build the two
+rows are within a few percent of each other; treat that as the shape of the
+answer, not the answer — the release record is.
+
+Two things move the number more than the sandbox does. A component compiles
+**once per digest per process**, on a blocking thread, when its version
+loads; that cost never sits on a request. And `max_live_instances` bounds
+how many invocations can be in flight at once across every function, so a
+pool sized below the concurrency the node actually sees surfaces as
+instantiation failures under load rather than as latency.

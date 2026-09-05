@@ -93,13 +93,14 @@ Nothing about the artifacts changes between the two. A workflow authored against
 
 ## What you can extend
 
-Orion is configurable in three places, and closed everywhere else. Being plain about that is more useful than a feature list:
+Orion is configurable in four places, and closed everywhere else. Being plain about that is more useful than a feature list:
 
 - **Expressions.** Conditions and mappings are [JSONLogic](../reference/expressions.md), evaluated by the engine.
 - **Connectors.** New external systems are reached by configuring a connector of a supported type — HTTP, SQL, cache, MongoDB, Elasticsearch, Kafka.
 - **Composition.** `channel_call` runs another channel's workflow in-process, so services compose without a network hop.
+- **Plugins.** A pure JSON → JSON transformation you already have as code — a codec, a parser, a calculation — ships as a [plugin](./plugins.md): a WebAssembly component that runs in a sandbox importing nothing, versioned and promoted like any other definition, and callable from a task like any built-in function.
 
-There is **no plugin mechanism, no scripting runtime, and no WASM sandbox**. A task function you need but Orion does not have is either a `http_call` to a service you write, or a feature request.
+There is **no scripting runtime and no general-purpose plugin API**: a plugin cannot open a socket, read a file, tell the time or reach a connector or a secret, by construction. A task function you need that has to talk to another system is either a `http_call` to a service you write, or a feature request.
 
 ## Next steps
 

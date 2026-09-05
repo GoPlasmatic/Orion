@@ -105,9 +105,11 @@ where it can be changed without a deploy.
 
 ## What Orion cannot do here
 
-- **No custom task functions.** [The set that ships](../reference/functions.md)
-  is the set. There is no plugin
-  mechanism, no scripting runtime and no WASM sandbox. See
+- **No custom task functions with I/O.** A dataflow-rs handler can do
+  anything Rust can; an Orion [plugin](../concepts/plugins.md) is a
+  WebAssembly component that runs in a sandbox importing nothing, so it can
+  compute but not connect. The handler that needs a socket, a file or a
+  clock stays in your binary. See
   [what you can extend](../concepts/how-orion-works.md#what-you-can-extend).
 - **No control over engine construction.** Orion decides when the engine
   rebuilds and what goes into it.

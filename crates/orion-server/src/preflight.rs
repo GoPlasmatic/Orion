@@ -68,8 +68,51 @@ pub async fn scan(
     channels: &dyn ChannelRepository,
     workflows: &dyn WorkflowRepository,
 ) -> Result<Vec<Diagnostic>, OrionError> {
+    scan_with_registry(
+        channels,
+        workflows,
+        crate::engine::FunctionRegistry::builtin(),
+    )
+    .await
+}
+
+/// [`scan`] against the registry the stored estate actually serves: the
+/// built-ins plus the functions of every active plugin. Without the plugin
+/// rows a workflow calling a plugin function reads as naming an unknown
+/// function — a break that is not one.
+pub async fn scan_with(
+    channels: &dyn ChannelRepository,
+    workflows: &dyn WorkflowRepository,
+    plugins: &dyn crate::storage::repositories::plugins::PluginRepository,
+) -> Result<Vec<Diagnostic>, OrionError> {
+    let mut entries = Vec::new();
+    for row in plugins.list_active().await? {
+        let Ok(manifest) = serde_json::from_str::<crate::plugin::Manifest>(&row.manifest_json)
+        else {
+            // A stored manifest that no longer parses is the loader's finding
+            // (a `manifest` load issue); the scan does not repeat it.
+            continue;
+        };
+        entries.extend(manifest.entries(&crate::engine::PluginBinding {
+            id: row.plugin_id.clone(),
+            version: row.version,
+            digest: row.digest.clone(),
+            abi: manifest.abi.clone(),
+        }));
+    }
+    let registry = crate::engine::FunctionRegistry::builtin()
+        .with_entries(entries)
+        .map_err(|e| OrionError::validation(format!("stored plugins: {e}")))?;
+    scan_with_registry(channels, workflows, &registry).await
+}
+
+async fn scan_with_registry(
+    channels: &dyn ChannelRepository,
+    workflows: &dyn WorkflowRepository,
+    functions: &crate::engine::FunctionRegistry,
+) -> Result<Vec<Diagnostic>, OrionError> {
     let mut findings = scan_channels(channels).await?;
-    findings.extend(scan_workflows(workflows).await?);
+    findings.extend(scan_workflows(workflows, functions).await?);
     Ok(findings)
 }
 
@@ -127,7 +170,10 @@ fn duplicate_name_findings(
         .collect()
 }
 
-async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Diagnostic>, OrionError> {
+async fn scan_workflows(
+    repo: &dyn WorkflowRepository,
+    functions: &crate::engine::FunctionRegistry,
+) -> Result<Vec<Diagnostic>, OrionError> {
     let mut findings = Vec::new();
     let mut offset = 0i64;
     loop {
@@ -140,7 +186,11 @@ async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Diagnostic>
             .await?;
         let page_len = page.len() as i64;
         for workflow in &page {
-            findings.extend(check_workflow_tasks(&workflow.name, &workflow.tasks_json));
+            findings.extend(check_workflow_tasks(
+                &workflow.name,
+                &workflow.tasks_json,
+                functions,
+            ));
         }
         if page_len < PAGE_SIZE {
             return Ok(findings);
@@ -211,7 +261,11 @@ fn pick_config_remedy(config_json: &str) -> String {
 
 /// Checklist rows 14 and the `data_write` envelope row, plus everything the
 /// shared task validator already knows.
-pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
+pub fn check_workflow_tasks(
+    name: &str,
+    tasks_json: &str,
+    functions: &crate::engine::FunctionRegistry,
+) -> Vec<Diagnostic> {
     let Ok(tasks) = serde_json::from_str::<Value>(tasks_json) else {
         return vec![
             Diagnostic::error(
@@ -229,8 +283,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // function names, and missing required inputs (including `write`, now that
     // the pre-1.0 flat envelope is gone).
     let mut findings: Vec<Diagnostic> = crate::validation::validate_workflow_tasks_schema(
-        &tasks,
-        crate::engine::FunctionRegistry::builtin(),
+        &tasks, functions,
     )
     .into_iter()
     .map(|e| {
@@ -247,7 +300,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // next edit is refused — which is precisely the shape of break this
     // command exists to find before an operator hits it from a pipeline.
     findings.extend(
-        crate::validation::secret_reference_errors(&tasks, crate::engine::FunctionRegistry::builtin())
+        crate::validation::secret_reference_errors(&tasks, functions)
             .into_iter()
             .map(|(path, message)| Diagnostic::error(
             "14",
@@ -276,7 +329,7 @@ pub fn check_workflow_tasks(name: &str, tasks_json: &str) -> Vec<Diagnostic> {
     // same reason `lint` gives them one — `[14]` would send an operator to the
     // data-dialect row, which has nothing to do with either finding.
     findings.extend(
-        crate::validation::engine_advisories(&tasks, crate::engine::FunctionRegistry::builtin())
+        crate::validation::engine_advisories(&tasks, functions)
             .into_iter()
             .map(|advisory| {
                 let entity = format!("workflow '{name}' {}", advisory.path);
@@ -361,7 +414,11 @@ mod tests {
                 "connector": "crm", "path": "env://API_BASE"
             }}
         }]);
-        let found = check_workflow_tasks("orders-wf", &tasks.to_string());
+        let found = check_workflow_tasks(
+            "orders-wf",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
         assert_eq!(found.len(), 1, "got {found:?}");
         assert!(
             found[0].entity.contains("input.path"),
@@ -389,7 +446,14 @@ mod tests {
                 "op": "hmac", "key": "env://PARTNER_KEY", "data": {"var": "data.body"}
             }}
         }]);
-        assert!(check_workflow_tasks("signer", &tasks.to_string()).is_empty());
+        assert!(
+            check_workflow_tasks(
+                "signer",
+                &tasks.to_string(),
+                crate::engine::FunctionRegistry::builtin()
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -473,7 +537,11 @@ mod tests {
                 "connector": "db", "query": { "source": "orders" }, "output": "data.o"
             }}
         }]);
-        let found = check_workflow_tasks("orders-wf", &tasks.to_string());
+        let found = check_workflow_tasks(
+            "orders-wf",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].check, "14");
         assert!(found[0].entity.contains("read"));
@@ -499,7 +567,14 @@ mod tests {
                 "output": "data.o"
             }}
         }]);
-        assert!(check_workflow_tasks("orders-wf", &tasks.to_string()).is_empty());
+        assert!(
+            check_workflow_tasks(
+                "orders-wf",
+                &tasks.to_string(),
+                crate::engine::FunctionRegistry::builtin()
+            )
+            .is_empty()
+        );
     }
 
     /// The explicit opt-in is a declaration, not an omission — it restores the
@@ -515,7 +590,14 @@ mod tests {
                 "output": "data.o"
             }}
         }]);
-        assert!(check_workflow_tasks("orders-wf", &tasks.to_string()).is_empty());
+        assert!(
+            check_workflow_tasks(
+                "orders-wf",
+                &tasks.to_string(),
+                crate::engine::FunctionRegistry::builtin()
+            )
+            .is_empty()
+        );
     }
 
     /// Non-dialect tasks have no `schema` input at all and must not be swept
@@ -538,7 +620,11 @@ mod tests {
                 "function": { "name": "log", "input": { "message": "noted" } }
             },
         ]);
-        let found = check_workflow_tasks("wf", &tasks.to_string());
+        let found = check_workflow_tasks(
+            "wf",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
         assert!(found.is_empty(), "{found:?}");
     }
 
@@ -550,7 +636,11 @@ mod tests {
             { "id": "a", "name": "A", "function": { "name": "log", "input": {} } },
             { "id": "a", "name": "B", "function": { "name": "log", "input": {} } },
         ]);
-        let found = check_workflow_tasks("dupes", &tasks.to_string());
+        let found = check_workflow_tasks(
+            "dupes",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
         assert!(
             found
                 .iter()
@@ -572,7 +662,11 @@ mod tests {
                 "output": "data.w"
             }}
         }]);
-        let found = check_workflow_tasks("writer", &tasks.to_string());
+        let found = check_workflow_tasks(
+            "writer",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
         assert!(
             found.iter().any(|f| f.message.contains("write")),
             "the missing envelope must be reported: {found:?}"

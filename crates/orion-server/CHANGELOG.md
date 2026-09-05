@@ -5,6 +5,74 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Custom task functions, as sandboxed WebAssembly components. Off by default;
+`plugins.enabled = false` preserves the previous behaviour exactly, and no
+existing definition, config key, API path or metric changes meaning.
+
+### Added
+
+- **Plugins: custom task functions in a WebAssembly sandbox.** A plugin is a
+  versioned entity beside channels, workflows and connectors — uploaded and
+  activated through `/api/v1/admin/plugins`, promoted in packages, synced
+  across a cluster by the config epoch, served from the same runtime
+  generation as everything else. A plugin function is a pure JSON → JSON
+  transformation: it receives the task's evaluated `function.input`, returns
+  one value, and Orion writes it at the `output` path the author chose. The
+  component's world (`orion:plugin@1.0.0`) imports nothing — no filesystem,
+  clock, randomness, sockets, connectors or secrets — and every invocation
+  runs in a fresh instance under operator ceilings (`[plugins]`: memory, wall
+  clock, input and output size, concurrency, a fuel backstop). Every plugin
+  function enters the one `FunctionRegistry` that validation, `GET
+  /admin/functions`, dry-run, the test engine and the serving engine all
+  read, so a workflow is accepted only against the schema its plugin's active
+  version declares, and a version whose schema an active dependant no longer
+  satisfies is refused activation with a `409`. dataflow-rs 3.12's
+  receiver-taking handler hooks are what let one handler type validate and
+  compile per registration; a manifest field may be `template_at = true`.
+- **`orion-plugin-sdk`**, the guest crate: the `orion:plugin` bindings, a
+  `Plugin` trait over `serde_json::Value`, `PluginError` with the two ABI
+  classes, and `export_plugin!`. Built for `wasm32-unknown-unknown` and
+  componentised with `wasm-tools`. The test fixture and the shipped example
+  are built on it, and the `plugin-sdk` CI job rebuilds both from source.
+- **`examples/packages/fixed-width-statement`** and
+  `examples/plugins/fixed-width/`: a fixed-width record codec as a plugin,
+  with its workflow, channel, offline cases and live e2e case.
+- **Packages carry plugins.** `package export` resolves each workflow's plugin
+  functions to the version and digest serving them (`GET
+  /workflows/{id}/dependencies` gained `plugins` and `unresolved_functions`),
+  `--include-artifacts` inlines the components, `plan` refuses a target that
+  lacks a required digest, and `apply` installs and activates plugins before
+  the workflows that call them. `compile` does the same for a `plugin.toml`
+  in a definition set. `plugins` is omitted from the artifact and its hash
+  when empty, so every existing receipt stays valid.
+- **Offline tooling reads manifests.** `lint`, `clippy`, `compile`, `dry-run`
+  and `test` take `--plugin-dir`; a `plugin.toml` in a definition tree is
+  found without it. A plugin task's input is validated against the manifest
+  as the admin API validates it; a function no manifest covers is a
+  `[plugin.unverifiable]` note, never an error. `dry-run` and `test` run
+  plugin functions for real — never stubbed — and fail a case whose component
+  is absent as `PLUGIN_ARTIFACT_UNAVAILABLE`. `preflight` scans stored
+  workflows against the active plugins' functions.
+- **`[plugins.trust]`**: optional Ed25519 signatures over the component
+  digest, required at upload when keys are configured and verified again by
+  every node that loads the version. `orion-cli plugins create --signature`.
+- **Multipart upload**: `POST /plugins` (and `PUT`, `validate`) accept
+  `multipart/form-data` with the component as raw bytes.
+- `orion-cli plugins` — list, get, create, update, delete, activate, archive,
+  versions, new-version, dependencies, validate, export, import.
+- Metrics `orion_plugin_*`, audit actions on `resource_type = "plugin"`,
+  `/health` `plugins` component, `EpochScope::Plugins`.
+
+### Changed
+
+- **The MSRV now tracks Wasmtime's** (stable minus two); it is 1.98 in this
+  release, unchanged. The release binary grows by roughly 6 MB for Cranelift.
+- Three migrations, one per backend, named `plugins` and `plugin_signatures`.
+  Expand-only: two new tables and one nullable column; nothing existing
+  changes.
+
 ## [1.5.1] - 2026-09-01
 
 A maintenance release. No behaviour in the server changes; what moves is the

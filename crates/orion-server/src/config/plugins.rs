@@ -120,6 +120,18 @@ impl PluginsConfig {
             "plugins.max_live_instances",
         )?;
         require_nonzero(self.fuel_backstop, "plugins.fuel_backstop")?;
+        // A key that does not decode would make every upload fail to verify
+        // with a message about the signature, when the mistake is in the
+        // config; refused here, where it can be named.
+        for (i, key) in self.trust.public_keys.iter().enumerate() {
+            if let Err(reason) = crate::plugin::trust::parse_public_key(key) {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "plugins.trust.public_keys[{i}] is not an Ed25519 public key: {reason}"
+                    ),
+                });
+            }
+        }
         if self.max_live_instances < self.max_concurrency_per_function {
             return Err(OrionError::Config {
                 message: format!(

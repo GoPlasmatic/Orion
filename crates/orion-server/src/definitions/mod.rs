@@ -53,5 +53,7 @@ pub use compile::{Cx, Pass, Residue};
 pub use diagnostic::{Diagnostic, Severity};
 pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
-pub use set::{Boundary, DefinitionSet, Entity, LoadReport, json_files};
+pub use set::{
+    Boundary, DefinitionSet, Entity, LoadReport, PluginDefinition, is_plugin_manifest, json_files,
+};
 pub use shared::{Fragment, SharedDefinitions, first_reference};

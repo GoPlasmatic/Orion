@@ -254,7 +254,7 @@ before the draft exists.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/plugins` | Upload a plugin as a draft: `{ "manifest": …, "component": "<base64>", "tags": [] }`. `400` on a bad manifest, component or digest, or when plugins are disabled on this node |
+| POST | `/api/v1/admin/plugins` | Upload a plugin as a draft: `{ "manifest": …, "component": "<base64>", "signature": "<base64>", "tags": [] }`, or the same fields as a `multipart/form-data` form with the component as a raw binary part. `signature` is required when the node's `[plugins.trust]` names keys ([Trust](./plugins.md#trust)). `400` on a bad manifest, component, digest or signature, or when plugins are disabled on this node |
 | GET | `/api/v1/admin/plugins` | List plugins. Filter with `?tag=`, `?status=` |
 | GET | `/api/v1/admin/plugins/{id}` | Get the latest version, with this node's load state under `health` |
 | PUT | `/api/v1/admin/plugins/{id}` | Update the draft: any of `manifest`, `component`, `digest`, `tags`; an absent field keeps its value |
@@ -273,6 +273,10 @@ jq -n --rawfile manifest plugin.toml --arg component "$(base64 < component.wasm)
   '{manifest: $manifest, component: $component}' \
   | curl -s -X POST http://localhost:8080/api/v1/admin/plugins \
       -H 'Content-Type: application/json' --data @-
+
+# The same upload as a multipart form — no base64, the component streams as bytes
+curl -s -X POST http://localhost:8080/api/v1/admin/plugins \
+  -F manifest=@plugin.toml -F component=@component.wasm -F tags=codecs
 
 # Activate; the engine reloads and the functions appear in GET /admin/functions
 curl -s -X PATCH http://localhost:8080/api/v1/admin/plugins/acme.iso8583/status \

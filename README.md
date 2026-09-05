@@ -171,7 +171,9 @@ Choose another runtime, or pair one with Orion, when:
 - work must survive restarts at an intermediate step or wait hours or days;
 - jobs must start on a timer or cron schedule;
 - ingress requires gRPC, WebSockets, or streaming responses;
-- business logic requires arbitrary code, plugins, scripting, or WASM;
+- business logic requires arbitrary code with I/O, or a scripting runtime — a
+  pure transformation ships as a sandboxed WebAssembly plugin, anything that
+  has to reach another system does not;
 - image processing, model inference, or large in-memory joins sit on the hot
   path; or
 - full OIDC flows or mutual TLS must terminate inside the data plane. JWT

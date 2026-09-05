@@ -191,7 +191,10 @@ as a `pre-install`/`pre-upgrade` Job, and `docker-compose.ha.yml` has a one-shot
 - **`docker-compose.ha.yml`** (repository root) — the reference topology for one
   host or a smoke test of the production shape: nginx → 2× Orion in cluster mode
   → shared Postgres + Redis, plus the one-shot `migrate` service.
-  `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against it.
+  `deploy/ha/rolling-drill.sh` drives a zero-5xx rolling deploy against it,
+  and `deploy/ha/plugin-drill.sh` activates a [plugin](../concepts/plugins.md)
+  on one node, waits for it to converge on the other, then activates a new
+  version under load and asserts zero non-2xx.
 
 ## Backups change shape in a cluster
 

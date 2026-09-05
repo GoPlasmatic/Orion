@@ -27,8 +27,8 @@ pub struct PluginLoadIssue {
     pub plugin: String,
     pub version: i64,
     pub digest: String,
-    /// `disabled`, `manifest`, `artifact`, `compile`, `link`, `size`,
-    /// `self_test`.
+    /// `disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,
+    /// `size`, `self_test`.
     pub stage: &'static str,
     pub reason: String,
 }
@@ -229,6 +229,17 @@ async fn load_one(
             "plugins are disabled on this node (plugins.enabled = false)".to_string(),
         ));
     };
+    // The upload's check, repeated by the node that will run the version:
+    // a row can reach the database through an import on a node with no
+    // keys, or a peer's activation, and this node's `[plugins.trust]` is the
+    // policy that applies here. Checked before the bytes are fetched — a
+    // signature that fails needs no compile to fail.
+    super::trust::verify(
+        &config.trust.public_keys,
+        &row.digest,
+        row.signature.as_deref(),
+    )
+    .map_err(|reason| ("signature", reason))?;
     let loaded = match runtime.cached(&row.digest) {
         Some(loaded) => loaded,
         None => {

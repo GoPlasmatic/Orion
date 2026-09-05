@@ -125,10 +125,91 @@ impl Definition {
     }
 }
 
+/// A plugin manifest that travels with a set — a `plugin.toml` in the tree, a
+/// `--plugin-dir`, or a `plugins[]` entry of an artifact.
+///
+/// The fourth kind, with its own walk rather than a fourth shape: a manifest
+/// is TOML, not a JSON entity, and what the set needs from it is the field
+/// tables its functions declare. Those go into the registry every check
+/// reads, so a workflow naming a plugin function is validated against the
+/// manifest exactly as the admin API validates it against the active row.
+#[derive(Debug, Clone)]
+pub struct PluginDefinition {
+    /// How to name the manifest in a finding — its path, or `plugins[2]`.
+    pub origin: String,
+    pub manifest: crate::plugin::Manifest,
+    /// `sha256:…` of the component, when known: read from the file beside a
+    /// manifest on disk, or carried by an artifact entry. `None` when the
+    /// manifest names a component that is not there — the set still
+    /// validates against the manifest, and only running the function needs
+    /// the bytes.
+    pub digest: Option<String>,
+    /// The component file, when the manifest was read from disk and names
+    /// one that exists. What `dry-run` and `test` load into the sandbox.
+    pub component_path: Option<PathBuf>,
+}
+
+impl PluginDefinition {
+    /// The manifest read from `path`, with the component beside it hashed
+    /// when it is there.
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let manifest = crate::plugin::Manifest::parse(&text).map_err(|errors| {
+            errors
+                .iter()
+                .map(|e| format!("{}: {}", e.path, e.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        let component_path = manifest
+            .component
+            .as_deref()
+            .map(|rel| path.parent().unwrap_or_else(|| Path::new(".")).join(rel))
+            .filter(|p| p.is_file());
+        let digest = match &component_path {
+            Some(p) => Some(crate::plugin::WasmRuntime::digest(
+                &std::fs::read(p).map_err(|e| format!("reading '{}': {e}", p.display()))?,
+            )),
+            None => None,
+        };
+        Ok(Self {
+            origin: path.display().to_string(),
+            manifest,
+            digest,
+            component_path,
+        })
+    }
+
+    /// The registry entries this manifest declares, bound to the digest the
+    /// set knows — or to none, which the catalogue shows as an empty digest.
+    pub fn entries(&self) -> Vec<crate::engine::FunctionEntry> {
+        let binding = crate::engine::PluginBinding {
+            id: self.manifest.name.clone(),
+            version: 0,
+            digest: self.digest.clone().unwrap_or_default(),
+            abi: self.manifest.abi.clone(),
+        };
+        self.manifest.entries(&binding)
+    }
+}
+
+/// Whether a TOML document is a plugin manifest — by shape, like an entity:
+/// an `abi` string under the `orion:plugin` package. A `config.toml` sitting
+/// in a definitions tree is not one and is not reported.
+pub fn is_plugin_manifest(text: &str) -> bool {
+    toml::from_str::<toml::Value>(text).is_ok_and(|doc| {
+        doc.get("abi")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|abi| abi.starts_with("orion:plugin@"))
+    })
+}
+
 /// Channels, workflows and connectors that must be consistent with each other.
 #[derive(Debug, Default, Clone)]
 pub struct DefinitionSet {
     pub definitions: Vec<Definition>,
+    /// The plugin manifests the set carries, in origin order.
+    pub plugins: Vec<PluginDefinition>,
 }
 
 /// What a directory load skipped, so the caller can say so.
@@ -168,6 +249,90 @@ impl DefinitionSet {
         self.iter(kind).count()
     }
 
+    /// The registry every check over this set reads: the built-ins plus the
+    /// functions the set's manifests declare.
+    ///
+    /// `Err` names a function two manifests both declare, or one that shadows
+    /// a built-in — the same refusal the loader makes, so a set that lints
+    /// clean is one whose plugins can all be active at once.
+    pub fn function_registry(&self) -> Result<crate::engine::FunctionRegistry, String> {
+        crate::engine::FunctionRegistry::builtin().with_entries(
+            self.plugins
+                .iter()
+                .flat_map(PluginDefinition::entries)
+                .collect(),
+        )
+    }
+
+    /// The plugin id a function name belongs to, when a manifest in the set
+    /// declares that plugin — `acme.codec.parse` is `acme.codec`'s whether or
+    /// not the manifest declares `parse`. `None` for a name no manifest here
+    /// could account for.
+    pub fn plugin_of(&self, function: &str) -> Option<&PluginDefinition> {
+        self.plugins
+            .iter()
+            .find(|p| function.starts_with(&format!("{}.", p.manifest.name)))
+    }
+
+    /// Add every manifest under each of `dirs` — the `--plugin-dir` flag.
+    /// Problems reading one are returned as findings rather than refusing
+    /// the whole set, like an unreadable entity file.
+    pub fn add_plugin_dirs(
+        &mut self,
+        dirs: &[String],
+    ) -> Result<Vec<super::diagnostic::Diagnostic>, String> {
+        let mut findings = Vec::new();
+        for dir in dirs {
+            let dir = Path::new(dir);
+            if dir.is_file() {
+                self.add_manifest_file(dir, &mut findings);
+                continue;
+            }
+            let mut paths = Vec::new();
+            walk_paths(dir, "toml", &mut |p| paths.push(p))?;
+            paths.sort();
+            for path in paths {
+                self.add_manifest_file(&path, &mut findings);
+            }
+        }
+        Ok(findings)
+    }
+
+    fn add_manifest_file(
+        &mut self,
+        path: &Path,
+        findings: &mut Vec<super::diagnostic::Diagnostic>,
+    ) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        if !is_plugin_manifest(&text) {
+            return;
+        }
+        match PluginDefinition::from_file(path) {
+            Ok(plugin) => {
+                if let Some(existing) = self
+                    .plugins
+                    .iter()
+                    .find(|p| p.manifest.name == plugin.manifest.name)
+                {
+                    findings.push(super::diagnostic::Diagnostic::error(
+                        "duplicate.plugin",
+                        format!("plugin '{}'", plugin.manifest.name),
+                        format!("declared twice: {} and {}", existing.origin, path.display()),
+                    ));
+                    return;
+                }
+                self.plugins.push(plugin);
+            }
+            Err(reason) => findings.push(super::diagnostic::Diagnostic::error(
+                "parse.plugin",
+                path.display().to_string(),
+                format!("not a valid plugin manifest: {reason}"),
+            )),
+        }
+    }
+
     /// Build a set from already-parsed documents — the artifact loader's entry
     /// point, and the one unit tests use.
     ///
@@ -187,6 +352,7 @@ impl DefinitionSet {
                     spans: None,
                 })
                 .collect(),
+            plugins: Vec::new(),
         }
     }
 
@@ -324,6 +490,13 @@ pub fn json_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
 /// two sets that link to each other, would otherwise walk forever; a
 /// symlinked *file* is fine and is visited through the link.
 fn walk_json_paths(dir: &Path, visit: &mut impl FnMut(PathBuf)) -> Result<(), String> {
+    walk_paths(dir, "json", visit)
+}
+
+/// The traversal for one file extension. `json` is the entities and shared
+/// documents; `toml` is the plugin manifests, walked by the same rules so the
+/// two kinds of file in one tree are found by one decision.
+fn walk_paths(dir: &Path, ext: &str, visit: &mut impl FnMut(PathBuf)) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot read '{}': {e}", dir.display()))?;
     for entry in entries.filter_map(Result::ok) {
@@ -337,13 +510,13 @@ fn walk_json_paths(dir: &Path, visit: &mut impl FnMut(PathBuf)) -> Result<(), St
             continue;
         };
         if file_type.is_dir() {
-            walk_json_paths(&path, visit)?;
+            walk_paths(&path, ext, visit)?;
             continue;
         }
         if file_type.is_symlink() && path.is_dir() {
             continue;
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if path.extension().and_then(|e| e.to_str()) != Some(ext) {
             continue;
         }
         visit(path);
@@ -357,6 +530,15 @@ fn walk(
     report: &mut LoadReport,
     shared_docs: &mut Vec<(String, Value)>,
 ) -> Result<(), String> {
+    // The plugin manifests in the tree, before the entities: a workflow is
+    // checked against the registry the manifests build, so they have to be
+    // known first. Sorted, like everything else, so two machines agree.
+    let mut manifests = Vec::new();
+    walk_paths(dir, "toml", &mut |p| manifests.push(p))?;
+    manifests.sort();
+    for path in manifests {
+        set.add_manifest_file(&path, &mut report.findings);
+    }
     walk_json_files(dir, &mut |path, parsed, spans| {
         let doc = match parsed {
             Ok(doc) => doc,

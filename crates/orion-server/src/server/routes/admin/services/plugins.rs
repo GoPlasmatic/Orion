@@ -25,6 +25,10 @@ pub(crate) struct Prepared {
     pub bytes: Option<Vec<u8>>,
     pub digest: String,
     pub tags: Vec<String>,
+    /// Verified against `[plugins.trust]` when keys are configured; carried
+    /// as sent otherwise, so a node without keys still stores what a signing
+    /// pipeline produced and a node with keys can check it at load.
+    pub signature: Option<String>,
 }
 
 fn refused(message: &str, details: Vec<FieldError>) -> OrionError {
@@ -43,6 +47,7 @@ pub(crate) fn prepare(
     manifest: &Value,
     component: Option<&str>,
     digest: Option<&str>,
+    signature: Option<&str>,
     tags: &[String],
 ) -> Result<Prepared, OrionError> {
     let parsed = match manifest {
@@ -155,12 +160,35 @@ pub(crate) fn prepare(
             ));
         }
     };
+    // The signature is over the digest — the identity the server just
+    // computed or verified — so it is checked last, and only where the node
+    // has keys to check it against. Its absence is a missing field, a bad one
+    // is invalid; both name `signature`.
+    if let Err(reason) = crate::plugin::trust::verify(&config.trust.public_keys, &digest, signature)
+    {
+        return Err(refused(
+            "the component signature does not verify",
+            vec![FieldError::new(
+                "signature",
+                if signature.is_none() {
+                    "REQUIRED"
+                } else {
+                    "INVALID"
+                },
+                reason,
+            )],
+        ));
+    }
     Ok(Prepared {
         manifest: parsed,
         manifest_json,
         bytes,
         digest,
         tags: tags.to_vec(),
+        signature: signature
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -239,6 +267,7 @@ pub(crate) async fn resolve(
         manifest_json: serde_json::to_string(&prepared.manifest_json)?,
         digest: prepared.digest,
         tags_json: serde_json::to_string(&prepared.tags)?,
+        signature: prepared.signature,
     };
     // Bytes that came from the store need no second write.
     let keep = if bytes.is_empty() { None } else { Some(bytes) };

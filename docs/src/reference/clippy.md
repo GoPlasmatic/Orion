@@ -103,6 +103,7 @@ reported without sometimes being wrong.
 | A number compared to a string | JSONLogic coerces; the comparison works |
 | A connector task's `output` overwritten unread | the call still happened — a `data_write` wrote to the database |
 | A `channel_call` cycle with a conditional edge | bounded recursion with a base case is a legal pattern; the depth cap exists for it |
+| Anything about a [plugin](./plugins.md) function beyond what its manifest declares | a plugin's writes are already proven structurally through `output`, exactly as `crypto`'s are, and its reads arrive only through declared fields — there is no second proof source to add; a plugin function no manifest covers is unverifiable, and an unverifiable fact is not a certain one |
 
 ## Each rule
 

@@ -88,8 +88,13 @@ reading once:
 1. **Claim the receipt as `staged`.** This is the atomic immutability check — a
    reused applied version with different content is refused here, and it
    doubles as the guard against two applies running at once.
-2. **Stage every entity as a draft**, in dependency order: connectors, then
-   workflows, then channels. Connector import reloads the connector registry
+2. **Stage every entity as a draft**, in dependency order: plugins, then
+   connectors, then workflows, then channels. A package that carries
+   [plugins](../concepts/plugins.md) **activates them here**, reload included,
+   before anything else is staged: a workflow's create-time gate validates
+   every function it names against the registry the engine is serving, so a
+   workflow calling a plugin function cannot be staged until the plugin is
+   active and loaded. Connector import reloads the connector registry
    server-side, so workflow activation later sees them.
 3. **Activate in dependency order, with the reload deferred.** Each activation
    is marked in the database but the engine is not rebuilt yet.
@@ -97,10 +102,19 @@ reading once:
 5. **Flip the receipt to `applied`.**
 
 Two properties fall out of that ordering. However many entities the package
-carries, the running engine rebuilds **once**: every replica converges on the
-whole package, never on a half-applied one. And every call is stamped with
-`X-Orion-Change-Context: package=<name>@<version>`, so the
-[audit trail](./audit-logs.md) filters back into the promotion that caused it.
+carries, the running engine rebuilds **once** — twice for a package that
+brings plugins, once to admit them and once for everything else — and every
+replica converges on the whole package, never on a half-applied one. And
+every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`,
+so the [audit trail](./audit-logs.md) filters back into the promotion that
+caused it.
+
+A plugin travels with its component only when the export was run with
+`--include-artifacts`; otherwise it travels as manifest and digest, and `plan`
+refuses a target that does not already hold that digest, naming the flag. A
+plugin the source itself no longer serves at the digest the workflows ran
+against is recorded under `requires.plugins`, which `plan` checks the target
+has active — the same boundary a `channel_call` outside the selection makes.
 
 ## When an apply fails midway
 

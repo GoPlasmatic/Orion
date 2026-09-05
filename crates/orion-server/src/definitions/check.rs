@@ -95,6 +95,27 @@ pub fn check(
     );
     check_env_refs(set, &mut findings);
 
+    // The plugins the set carries, as inventory: which manifest, how many
+    // functions, and whether the component was there to hash — the line an
+    // operator reads to know what a promotion of this set will need.
+    for plugin in &set.plugins {
+        let functions = plugin.manifest.functions.len();
+        let component = match &plugin.digest {
+            Some(digest) => format!("component {digest}"),
+            None => "no component beside the manifest — its functions validate here but cannot \
+                     run offline"
+                .to_string(),
+        };
+        findings.push(Diagnostic::note(
+            "plugin.manifest",
+            format!("plugin '{}'", plugin.manifest.name),
+            format!(
+                "{} declares {functions} function(s); {component}",
+                plugin.origin
+            ),
+        ));
+    }
+
     findings
 }
 
@@ -181,13 +202,74 @@ fn check_workflows(
                 continue;
             }
         };
+        // Plugin functions the set cannot vouch for. A plugin function is
+        // `<plugin>.<label>` under a reverse-domain plugin id, so a dotted
+        // name the registry does not know is one of two things: a function of
+        // a plugin whose manifest *is* in the set but does not declare it — an
+        // error, the manifest is the authority — or a function of a plugin
+        // the set carries no manifest for, which is neither valid nor invalid
+        // here: it is unverifiable, reported as a note, and the admin API
+        // validates it against the active plugin when the workflow arrives.
+        let mut unverifiable: Vec<String> = Vec::new();
+        let mut undeclared: Vec<(String, String, String)> = Vec::new();
+        for task in crate::engine::leaf_tasks(&req.tasks) {
+            let Some(name) = task
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            if functions.contains(name) || !name.contains('.') {
+                continue;
+            }
+            match set.plugin_of(name) {
+                Some(plugin) => undeclared.push((
+                    name.to_string(),
+                    plugin.manifest.name.clone(),
+                    plugin.origin.clone(),
+                )),
+                None if !unverifiable.iter().any(|f| f == name) => {
+                    unverifiable.push(name.to_string());
+                }
+                None => {}
+            }
+        }
         if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
-            findings.extend(schema_diagnostics(
-                "schema.workflow",
-                &format!("workflow '{}'", req.name),
-                def,
-                &e,
-            ));
+            let entity = format!("workflow '{}'", req.name);
+            for d in schema_diagnostics("schema.workflow", &entity, def, &e) {
+                let unknown =
+                    |name: &str| d.message.starts_with(&format!("Unknown function '{name}'"));
+                if let Some(name) = unverifiable.iter().find(|n| unknown(n)) {
+                    findings.push(
+                        Diagnostic::note(
+                            "plugin.unverifiable",
+                            &entity,
+                            format!(
+                                "names plugin function '{name}', and the set carries no manifest \
+                                 for its plugin, so its input cannot be checked here; the admin \
+                                 API validates it against the active plugin"
+                            ),
+                        )
+                        .with_remedy(
+                            "add the plugin's plugin.toml to the set, or pass --plugin-dir",
+                        ),
+                    );
+                } else if let Some((name, plugin, origin)) =
+                    undeclared.iter().find(|(n, _, _)| unknown(n))
+                {
+                    findings.push(Diagnostic::error(
+                        "closure.plugin",
+                        &entity,
+                        format!(
+                            "names '{name}', which the manifest for plugin '{plugin}' ({origin}) \
+                             does not declare"
+                        ),
+                    ));
+                } else {
+                    findings.push(d);
+                }
+            }
         }
         // An error, not a warning: unlike an operator name, `env://` at the
         // head of a string has no reading in which it is data. Reported

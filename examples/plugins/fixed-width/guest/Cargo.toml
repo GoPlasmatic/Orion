@@ -1,0 +1,28 @@
+# The source of the `acme.fixedwidth` example plugin: a fixed-width record
+# codec, the class of function plugins exist for — compiled, pure, and run on
+# every message. Built on `orion-plugin-sdk` for wasm32-unknown-unknown and
+# turned into a component by `wasm-tools` (see ../build.sh); the built bytes
+# are committed beside the manifest in
+# examples/packages/fixed-width-statement/ so the example deploys without a
+# wasm toolchain.
+[package]
+name = "acme-fixedwidth"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orion-plugin-sdk = { path = "../../../../crates/orion-plugin-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
+
+# Its own workspace, so cargo does not try to fold it into Orion's.
+[workspace]

@@ -38,6 +38,7 @@ Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
 | [`high-value-order`](packages/high-value-order/) | `POST /high-value-orders` | Flag orders over a threshold; build an alert string with `cat` |
 | [`order-classification`](packages/order-classification/) | `POST /order-tiers` | Tiered classification driven by task-level conditions |
 | [`iot-sensor-alert`](packages/iot-sensor-alert/) | `POST /sensors` | Range-based severity with `and` / `or` |
+| [`fixed-width-statement`](packages/fixed-width-statement/) | `POST /statements` | **Plugin-backed:** a fixed-width codec compiled to WebAssembly ([source](plugins/fixed-width/)) decodes the line — needs `plugins.enabled = true` |
 | [`webhook-transform`](packages/webhook-transform/) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
 | [`notification-routing`](packages/notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](packages/postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |

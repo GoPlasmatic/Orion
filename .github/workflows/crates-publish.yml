@@ -77,8 +77,9 @@ jobs:
             echo "::notice::${GITHUB_REF_NAME} is a CLI-only tag and orion-cli is not published to crates.io — nothing to do."
           fi
 
-      # The shared library crates (orion-api, orion-client) have no release
-      # cycle of their own — no tag ever names them. They ride along here:
+      # The shared library crates (orion-api, orion-client, orion-plugin-sdk)
+      # have no release cycle of their own — no tag ever names them. They ride
+      # along here:
       # crates.io refuses a crate whose dependency isn't on crates.io, so the
       # server tag that first carries a not-yet-published version publishes it
       # in passing. Each is skipped when its version already exists (see
@@ -87,17 +88,20 @@ jobs:
       # the index has the crate, so each subsequent publish can resolve it
       # immediately. Listed in dependency order: orion-client depends on
       # orion-api. Both are dependencies of orion-server, so they are still
-      # required even though the CLI no longer publishes.
+      # required even though the CLI no longer publishes. orion-plugin-sdk
+      # depends on neither and nothing in the workspace depends on it — it is
+      # what a plugin author links against — but it shares the version and
+      # ships by the same rule.
       #
       # Skip-if-present would be a hazard if a rider could change without its
       # version changing — the binary would publish against older crates.io
       # content while the repo builds the newer local content. It cannot: all
-      # four crates share `workspace.package.version`, so a release moves every
+      # five crates share `workspace.package.version`, so a release moves every
       # rider's version too. (This used to be a hand-maintained rule with a CI
       # step diffing the rider directories; see RELEASING.md.)
       - name: Publish rider crates (only unpublished versions)
         if: ${{ steps.pkg.outputs.packages != '' }}
-        run: .github/scripts/publish-crates.sh orion-api orion-client
+        run: .github/scripts/publish-crates.sh orion-api orion-client orion-plugin-sdk
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 

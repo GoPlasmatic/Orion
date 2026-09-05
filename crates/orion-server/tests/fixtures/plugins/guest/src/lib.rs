@@ -1,22 +1,30 @@
 //! A plugin that does what its function name says. The dispatch is on the
 //! last label of the registered name, so the same component serves under
 //! any plugin id the manifest gives it.
+//!
+//! Written against `orion-plugin-sdk`, so the fixture that proves the host
+//! is also the component that proves the SDK. `invoke_raw` is overridden
+//! rather than `invoke`, because several functions here exist to return what
+//! the JSON boundary would never let through — text that is not JSON, a
+//! result too large to be worth parsing — and the host must refuse those.
 
-wit_bindgen::generate!({
-    world: "plugin",
-    path: "../../../../wit",
-});
-
-use exports::orion::plugin::functions::{ErrorClass, Guest, PluginError};
+use orion_plugin_sdk::{Plugin, PluginError, export_plugin};
 
 struct Fixture;
 
-impl Guest for Fixture {
-    fn invoke(function: String, input: String) -> Result<String, PluginError> {
+impl Plugin for Fixture {
+    fn invoke(
+        _function: &str,
+        _input: orion_plugin_sdk::Value,
+    ) -> Result<orion_plugin_sdk::Value, PluginError> {
+        unreachable!("the raw boundary is overridden")
+    }
+
+    fn invoke_raw(function: &str, input: &str) -> Result<String, PluginError> {
         let label = function.rsplit('.').next().unwrap_or("");
         match label {
             // The well-behaved ones.
-            "identity" => Ok(input),
+            "identity" => Ok(input.to_string()),
             "wrap" => Ok(format!("{{\"wrapped\":{input},\"len\":{}}}", input.len())),
             "upper" => Ok(input.to_uppercase()),
 
@@ -48,40 +56,40 @@ impl Guest for Fixture {
                     .split("\"size\":")
                     .nth(1)
                     .map(|rest| rest.trim_start())
-                    .map(|rest| rest.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+                    .map(|rest| {
+                        rest.chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect::<String>()
+                    })
                     .and_then(|digits| digits.parse().ok())
                     .unwrap_or(1024);
                 let mut s = String::with_capacity(size + 2);
                 s.push('"');
-                s.extend(core::iter::repeat('x').take(size));
+                s.extend(core::iter::repeat_n('x', size));
                 s.push('"');
                 Ok(s)
             }
 
             // Bad results.
             "bad-json" => Ok("not json".to_string()),
-            "bad-code" => Err(PluginError {
-                code: "lowercase code".to_string(),
-                class: ErrorClass::Internal,
-                message: "a code outside the grammar".to_string(),
-            }),
-            "caller-input-error" => Err(PluginError {
-                code: "BAD_MESSAGE".to_string(),
-                class: ErrorClass::CallerInput,
-                message: "the message is not ISO 8583".to_string(),
-            }),
-            "internal-error" => Err(PluginError {
-                code: "BOOM".to_string(),
-                class: ErrorClass::Internal,
-                message: "the guest failed\nwith a newline".to_string(),
-            }),
-            other => Err(PluginError {
-                code: "UNKNOWN_FUNCTION".to_string(),
-                class: ErrorClass::CallerInput,
-                message: format!("this component exports no '{other}'"),
-            }),
+            "bad-code" => Err(PluginError::internal(
+                "lowercase code",
+                "a code outside the grammar",
+            )),
+            "caller-input-error" => Err(PluginError::caller_input(
+                "BAD_MESSAGE",
+                "the message is not ISO 8583",
+            )),
+            "internal-error" => Err(PluginError::internal(
+                "BOOM",
+                "the guest failed\nwith a newline",
+            )),
+            other => Err(PluginError::caller_input(
+                "UNKNOWN_FUNCTION",
+                format!("this component exports no '{other}'"),
+            )),
         }
     }
 }
 
-export!(Fixture);
+export_plugin!(Fixture);

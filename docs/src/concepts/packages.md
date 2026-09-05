@@ -50,7 +50,10 @@ in two, or absorbed into another — by changing labels.
 
 Export selects **channels**, by tag or by id, and works outward from there. The
 **closure** is what it collects: each selected channel, the workflow that
-channel names, and every connector those workflows reference.
+channel names, every connector those workflows reference, and every
+[plugin](./plugins.md) whose functions they call — at the exact version and
+component digest serving them on the source, with the component itself
+inlined when the export is asked to carry artifacts.
 
 The channel is the unit of selection because each channel names exactly one
 workflow. Selecting the endpoints selects the service.

@@ -1,0 +1,22 @@
+{
+  "name": "bench-jsonlogic-echo",
+  "workflow_id": "bench-jsonlogic-echo",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "echo",
+      "name": "Echo through a map",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [{ "path": "data.echo.message", "logic": { "var": "data.input" } }]
+        }
+      }
+    }
+  ]
+}

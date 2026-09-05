@@ -369,6 +369,17 @@ pub(crate) struct WorkflowDependencies {
     /// construction, and closure tooling must treat this workflow as having
     /// unknowable channel dependencies.
     has_dynamic_channel_calls: bool,
+    /// The plugins whose functions the tasks name, resolved against this
+    /// node's generation: the active version and digest each function
+    /// currently comes from. A function this generation does not dispatch
+    /// appears under `unresolved_functions` instead — a plugin archived since
+    /// the workflow was written, or one this node could not load.
+    #[serde(default)]
+    plugins: Vec<PluginDependency>,
+    /// Function names the tasks call that this generation's registry does
+    /// not know. Empty for a workflow that would activate here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unresolved_functions: Vec<String>,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -376,6 +387,18 @@ pub(crate) struct ConnectorDependency {
     connector: String,
     /// The task function that uses it (`db_read`, `http_call`, …).
     function: String,
+}
+
+/// One plugin a workflow depends on, as this generation serves it.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct PluginDependency {
+    id: String,
+    version: i64,
+    /// `sha256:…` of the component the functions resolve to — what a
+    /// package records and a target is checked for.
+    digest: String,
+    /// The plugin's functions this workflow names, task order kept.
+    functions: Vec<String>,
 }
 
 #[utoipa::path(
@@ -417,12 +440,53 @@ pub(crate) async fn workflow_dependencies(
     }
     let (channels, has_dynamic_channel_calls) = channel_call_targets(&tasks);
 
+    // The plugin closure, from the same registry the activation gate reads:
+    // every function name the tasks call, resolved to the plugin version and
+    // digest this generation dispatches it to. Grouped by plugin, task order
+    // kept, so a package records one requirement per plugin.
+    let mut plugins: Vec<PluginDependency> = Vec::new();
+    let mut unresolved_functions: Vec<String> = Vec::new();
+    for task in crate::engine::leaf_tasks(&tasks) {
+        let Some(name) = task
+            .get("function")
+            .and_then(|f| f.get("name"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        match generation.functions.get(name) {
+            Some(entry) => {
+                if let Some(binding) = &entry.plugin {
+                    match plugins.iter_mut().find(|p| p.id == binding.id) {
+                        Some(p) => {
+                            if !p.functions.iter().any(|f| f == name) {
+                                p.functions.push(name.to_string());
+                            }
+                        }
+                        None => plugins.push(PluginDependency {
+                            id: binding.id.clone(),
+                            version: binding.version,
+                            digest: binding.digest.clone(),
+                            functions: vec![name.to_string()],
+                        }),
+                    }
+                }
+            }
+            None if !unresolved_functions.iter().any(|f| f == name) => {
+                unresolved_functions.push(name.to_string());
+            }
+            None => {}
+        }
+    }
+
     Ok(data_response(WorkflowDependencies {
         workflow_id: workflow.workflow_id,
         version: workflow.version,
         connectors,
         channels: channels.into_iter().map(str::to_string).collect(),
         has_dynamic_channel_calls,
+        plugins,
+        unresolved_functions,
     }))
 }
 

@@ -235,16 +235,20 @@ jobs:
             ./target/debug/orion-server lint "$f"
           done
 
-      - name: Run example workflow tests (offline, stubbed connectors)
-        run: ./target/debug/orion-server test examples/workflow-tests
+      # `--plugin-dir`: the fixed-width-statement cases run the example's
+      # codec for real, so its manifest and component are handed to the run.
+      - name: Run example workflow tests (offline, stubbed connectors, real plugin)
+        run: ./target/debug/orion-server test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
 
       - name: Start Postgres (postgres-orders package)
         run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
 
+      # Plugins on: the fixed-width-statement package uploads one.
       - name: Start Orion
         run: |
           ORION_STORAGE__URL="sqlite:/tmp/orion-examples.db?mode=rwc" \
           ORDERS_DB_URL="postgres://orion:orion@localhost:5432/orion_orders" \
+          ORION_PLUGINS__ENABLED=true \
           ./target/debug/orion-server > /tmp/orion-examples.log 2>&1 &
           for i in $(seq 1 30); do
             curl -fsS http://localhost:8080/healthz > /dev/null 2>&1 && exit 0
@@ -271,6 +275,60 @@ jobs:
       - name: Server log on failure
         if: failure()
         run: cat /tmp/orion-examples.log || true
+
+  # The plugin SDK, proven rather than claimed: the test fixture and the
+  # example codec are rebuilt from their Rust sources on the shipped
+  # `orion-plugin-sdk`, and the suites that pin the ABI run against the fresh
+  # components rather than the committed bytes. A byte-for-byte diff against
+  # the committed files would break on every rustc release; behavioural
+  # equivalence is the contract. Path-filtered by the `changes` job's
+  # plugin-surface output would be tidier, but the job is a minute on top of
+  # a warm cache, so it runs with the rest.
+  plugin-sdk:
+    name: Plugin SDK
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: linux-stable
+          save-if: false
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --locked
+
+      - name: Rebuild the test fixture from source on the SDK
+        run: crates/orion-server/tests/fixtures/plugins/build.sh
+
+      - name: Rebuild the example codec from source on the SDK
+        run: examples/plugins/fixed-width/build.sh
+
+      # The fixture was rebuilt in place, so the committed-bytes path and the
+      # fresh path are the same file; naming it explicitly keeps the suite's
+      # override path exercised.
+      - name: Run the ABI cases and the sandbox suites against the fresh fixture
+        env:
+          ORION_PLUGIN_FIXTURE: crates/orion-server/tests/fixtures/plugins/fixture.wasm
+        run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
+
+      - name: Run the example's offline cases against the fresh codec
+        run: cargo run -p orion-server -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
+
+      - name: The SDK's own tests
+        run: cargo test -p orion-plugin-sdk
 
   # The full default suite on its own job (proposal T8): unit and integration
   # signal must not ride the coverage job, whose hand-rolled swapfile and

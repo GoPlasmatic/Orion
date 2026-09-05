@@ -89,6 +89,10 @@ enum PluginsSubcommand {
         /// Path to the component; overrides the manifest's `component`
         #[arg(long)]
         component: Option<String>,
+        /// Path to a file holding the base64 Ed25519 signature over the
+        /// component digest — required by a server with `[plugins.trust]` keys
+        #[arg(long, value_name = "PATH")]
+        signature: Option<String>,
         /// Selection labels, repeatable
         #[arg(long = "tag")]
         tags: Vec<String>,
@@ -103,6 +107,10 @@ enum PluginsSubcommand {
         /// Path to the component; overrides the manifest's `component`
         #[arg(long)]
         component: Option<String>,
+        /// Path to a file holding the base64 Ed25519 signature over the new
+        /// component's digest; the stored one is kept when the digest is unchanged
+        #[arg(long, value_name = "PATH")]
+        signature: Option<String>,
         /// Selection labels, repeatable (replaces the stored tags when given)
         #[arg(long = "tag")]
         tags: Vec<String>,
@@ -148,6 +156,10 @@ enum PluginsSubcommand {
         /// Path to the component; overrides the manifest's `component`
         #[arg(long)]
         component: Option<String>,
+        /// Path to a file holding the base64 Ed25519 signature over the
+        /// component digest, when the server requires one
+        #[arg(long, value_name = "PATH")]
+        signature: Option<String>,
     },
     /// List version history for a plugin
     Versions {
@@ -243,18 +255,20 @@ impl PluginsCmd {
             PluginsSubcommand::Create {
                 file,
                 component,
+                signature,
                 tags,
             } => {
-                let body = upload_body(file, component.as_deref(), tags)?;
+                let body = upload_body(file, component.as_deref(), signature.as_deref(), tags)?;
                 utils::create_entity(client, &KIND, format, quiet, &body).await
             }
             PluginsSubcommand::Update {
                 id,
                 file,
                 component,
+                signature,
                 tags,
             } => {
-                let mut body = upload_body(file, component.as_deref(), tags)?;
+                let mut body = upload_body(file, component.as_deref(), signature.as_deref(), tags)?;
                 // `PUT` keeps an absent field; the tags are replaced only when
                 // the caller named some.
                 if tags.is_empty() {
@@ -304,8 +318,12 @@ impl PluginsCmd {
                 .await
             }
             PluginsSubcommand::Dependencies { id } => dependencies(client, format, quiet, id).await,
-            PluginsSubcommand::Validate { file, component } => {
-                let body = upload_body(file, component.as_deref(), &[])?;
+            PluginsSubcommand::Validate {
+                file,
+                component,
+                signature,
+            } => {
+                let body = upload_body(file, component.as_deref(), signature.as_deref(), &[])?;
                 utils::validate_entity(client, &KIND, format, quiet, &body).await
             }
             PluginsSubcommand::Versions { id, limit, offset } => {
@@ -363,9 +381,23 @@ impl PluginsCmd {
 /// the server's offline tooling applies — and refused if it would leave the
 /// manifest's directory, so a manifest cannot make the CLI read an arbitrary
 /// file.
-fn upload_body(manifest_path: &str, component: Option<&str>, tags: &[String]) -> Result<Value> {
+fn upload_body(
+    manifest_path: &str,
+    component: Option<&str>,
+    signature: Option<&str>,
+    tags: &[String],
+) -> Result<Value> {
     let manifest_text = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading manifest '{manifest_path}'"))?;
+    // The signature file holds the base64 text a signing tool wrote — read
+    // as text and trimmed, so a trailing newline is not part of the value.
+    let signature = signature
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .with_context(|| format!("reading signature '{path}'"))
+                .map(|s| s.trim().to_string())
+        })
+        .transpose()?;
     let manifest: toml::Value = toml::from_str(&manifest_text)
         .with_context(|| format!("'{manifest_path}' is not valid TOML"))?;
     let manifest_dir = Path::new(manifest_path)
@@ -400,11 +432,15 @@ fn upload_body(manifest_path: &str, component: Option<&str>, tags: &[String]) ->
     };
     let bytes = std::fs::read(&component_path)
         .with_context(|| format!("reading component '{}'", component_path.display()))?;
-    Ok(json!({
+    let mut body = json!({
         "manifest": manifest_text,
         "component": base64::engine::general_purpose::STANDARD.encode(bytes),
         "tags": tags,
-    }))
+    });
+    if let Some(signature) = signature {
+        body["signature"] = json!(signature);
+    }
+    Ok(body)
 }
 
 async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool, qs: &str) -> Result<i32> {
@@ -610,8 +646,13 @@ mod tests {
         std::fs::create_dir(dir.path().join("build")).expect("mkdir");
         std::fs::write(dir.path().join("build/x.wasm"), b"\0asm").expect("write");
 
-        let body =
-            upload_body(manifest.to_str().expect("utf8"), None, &["a".to_string()]).expect("body");
+        let body = upload_body(
+            manifest.to_str().expect("utf8"),
+            None,
+            None,
+            &["a".to_string()],
+        )
+        .expect("body");
         assert_eq!(
             body["component"],
             base64::engine::general_purpose::STANDARD.encode(b"\0asm")
@@ -624,7 +665,8 @@ mod tests {
             "abi = \"orion:plugin@1.0.0\"\nname = \"acme.x\"\nversion = \"1\"\ncomponent = \"../x.wasm\"\n",
         )
         .expect("write");
-        let err = upload_body(manifest.to_str().expect("utf8"), None, &[]).expect_err("escape");
+        let err =
+            upload_body(manifest.to_str().expect("utf8"), None, None, &[]).expect_err("escape");
         assert!(err.to_string().contains("beneath the manifest"), "{err}");
     }
 }

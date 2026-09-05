@@ -35,7 +35,8 @@ Three principles shape the setup:
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all four crates share `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
-| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server |
+| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement`) |
+| Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
@@ -168,11 +169,17 @@ The examples are executable and CI treats them as a gate (`examples` job):
 
 - **Offline:** every package workflow passes `orion-server lint`, and the
   [`examples/workflow-tests/`](examples/workflow-tests/) cases run each
-  workflow through the real engine with stubbed connectors
-  (`just workflow-tests`).
-- **Live:** CI boots a real server (plus Postgres for `postgres-orders`),
-  runs `quickstart.sh` twice and `deploy.sh` for **every** package twice —
-  deployability and idempotency are both asserted.
+  workflow through the real engine with stubbed connectors and the
+  `fixed-width-statement` plugin running for real (`just workflow-tests`,
+  which passes `--plugin-dir`).
+- **Live:** CI boots a real server with plugins enabled (plus Postgres for
+  `postgres-orders`), runs `quickstart.sh` twice and `deploy.sh` for
+  **every** package twice — deployability and idempotency are both asserted,
+  and `deploy.sh` uploads and activates a package's `plugin.toml` first.
+- **From source:** the `plugin-sdk` CI job rebuilds the test fixture and the
+  example codec from their Rust sources on the shipped `orion-plugin-sdk`,
+  runs the ABI case suite against the fresh fixture and the example cases
+  against the fresh codec — so "supported SDK" is a job, not a claim.
 
 ## Layer 6 — meta-suites (quality of the tests themselves)
 
@@ -199,7 +206,8 @@ The examples are executable and CI treats them as a gate (`examples` job):
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm / Book | `docker-build`, `helm`, `book` jobs | Image builds; chart lints, renders, and rejects misspelled values; book builds |
 | CodeQL | `codeql.yml` | Static security analysis |
-| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx |
+| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`): a plugin activated on one node converges on the other through the config epoch, and a new version activated under load through the LB produces zero non-2xx |
+| Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and the example codec rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the example's offline cases pass against the fresh components |
 
 ## Layer 8 — benchmarks (manual, recorded per release)
 

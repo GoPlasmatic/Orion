@@ -134,6 +134,11 @@ pub struct PluginResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub content_hash: String,
+    /// The detached Ed25519 signature over `digest` the upload carried, base64,
+    /// when there was one. Not part of the content hash: the digest is the
+    /// identity, and the signature only attests to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
     /// This node's load state for the version, on the single-entity read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<PluginHealth>,
