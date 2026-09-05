@@ -116,6 +116,13 @@ The minimum supported Rust version is **1.98**, declared as `rust-version` in
 `Cargo.toml` and enforced by a dedicated CI job. An MSRV bump is a **minor**
 release at most and is called out in the changelog. This matters only when
 building from source — the released binaries and images are self-contained.
+
+Since 1.6.0 the MSRV also tracks
+[Wasmtime's policy](https://docs.wasmtime.dev/stability-release.html) (stable
+minus two), because the [plugin sandbox](./plugins.md) links it. The number is
+unchanged by that — Wasmtime's floor is currently below Orion's — but a
+Wasmtime upgrade in a future minor can move it even when nothing in Orion's own
+code needs a newer language feature.
 Since the plugin sandbox arrived, the MSRV also tracks
 [Wasmtime's](https://docs.wasmtime.dev/stability-release.html) (stable minus
 two), so a Wasmtime upgrade may move it. Wasmtime and Cranelift add roughly

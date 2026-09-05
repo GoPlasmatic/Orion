@@ -75,7 +75,7 @@ persistence); workflows never handle the token.
 {
   "channel_id": "orders", "name": "orders",
   "channel_type": "sync",              // sync | async
-  "protocol": "rest",                  // rest | http | kafka
+  "protocol": "rest",                  // rest | http | kafka | cron
   "route_pattern": "/orders",          // REST; supports /orders/{id} params
   "methods": ["POST"],
   "workflow_id": "kebab-case-id",

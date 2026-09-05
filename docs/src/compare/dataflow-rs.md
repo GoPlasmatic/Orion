@@ -49,8 +49,8 @@ decision: library, or runtime.
 Everything between "the engine can run a pipeline" and "this is a service you
 can operate":
 
-- [Channels](../concepts/channels.md): REST routes, plain HTTP, and Kafka
-  topics, each with ingress guards.
+- [Channels](../concepts/channels.md): REST routes, plain HTTP, Kafka topics
+  and cron schedules, each with the ingress guards its transport can carry.
 - [Connectors](../concepts/connectors.md): pooled, credential-holding
   connections with circuit breakers, referenced by name.
 - Storage and [lifecycle](../concepts/lifecycle.md): draft, active, archived,

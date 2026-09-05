@@ -24,10 +24,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Scripts that treated a JSON-mode `1` as "timed out or failed" will now see 2
   for the timeout half.
 
+- **A present `plugin.toml` answers for its plugin's functions.** With a
+  manifest in the tree, a workflow naming one of its functions is checked
+  against it instead of being reported as naming an unknown function.
+
 ### Added
 
+- **`orion-cli plugins`** — the plugin entity end to end: `list`, `get`,
+  `create` (from a `plugin.toml`, with the component read beside it, and
+  `--signature` where `[plugins.trust]` requires one), `update`, `delete`,
+  `activate`, `archive`, `versions`, `new-version`, `dependencies`,
+  `validate`, `export` and `import`.
+- **`orion-cli cron`** — the durable occurrence ledger: `status` (what is
+  scheduled, when it next fires, how it last went), `list`, `get`, and `retry`
+  (another attempt at the same occurrence — same id, same `scheduled_for`).
+- **`orion-cli channels trigger`** — a manual run of a cron channel, through
+  the same claim and singleton path a scheduled occurrence takes.
 - **`send --wait` accepts `--interval`**, the poll spacing `traces wait` has
   always had; it was hard-coded to one second. Default unchanged.
+
+## [1.5.1] - 2026-09-01
+
+`orion-cli` and `orion-server` release in lockstep. 1.5.1 is a maintenance
+release: the CLI's published image moves with the server's to a current
+Debian base, and the crate itself has no change of its own beyond the shared
+workspace version. See the server changelog.
+
+## [1.5.0] - 2026-09-01
+
+`orion-cli` and `orion-server` release in lockstep. 1.5.0 is server-side
+only — the CLI's one-line crates.io description was shortened, and nothing
+else in the crate changed. See the server changelog.
 
 ## [1.4.0] - 2026-08-29
 
@@ -320,7 +347,9 @@ Initial release.
 [#271]: https://github.com/GoPlasmatic/Orion/issues/271
 [#282]: https://github.com/GoPlasmatic/Orion/issues/282
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/GoPlasmatic/Orion/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/GoPlasmatic/Orion/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.1...v1.3.1
 [1.2.1]: https://github.com/GoPlasmatic/Orion/compare/v1.2.0...v1.2.1

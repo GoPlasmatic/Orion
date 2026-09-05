@@ -105,7 +105,7 @@ Click a node to expand it; click a capability to open its page.
         { "name": "Portable data dialect", "link": "reference/data-dialect.html",
           "children": ["One filter syntax", "Lowered to SQL", "Lowered to MongoDB", "Lowered to Query DSL"] },
         { "name": "Channel protocols", "link": "reference/channel-config.html#routing--protocol",
-          "children": ["REST with route patterns", "Plain HTTP by name", "Kafka topics", "Sync or async"] },
+          "children": ["REST with route patterns", "Plain HTTP by name", "Kafka topics", "Cron schedules", "Sync or async"] },
         { "name": "In-process composition", "link": "reference/functions.html#channel_call",
           "children": ["No network hop", "No serialization", "Callee guards still apply"] }
       ]
@@ -211,7 +211,7 @@ Click a node to expand it; click a capability to open its page.
 | [Connector types](./reference/connectors.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (Redis or in-memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
 | [Task functions](./reference/functions.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; Kafka publish. |
 | [Portable data dialect](./reference/data-dialect.md) | One filter-and-envelope syntax lowered to SQL, MongoDB, or an Elasticsearch Query DSL body, so the same task reads from any of them. |
-| [Channel protocols](./reference/channel-config.md#routing--protocol) | REST with route patterns and path parameters, plain HTTP by channel name, and Kafka topics — each of them sync or async where the transport allows. |
+| [Channel protocols](./reference/channel-config.md#routing--protocol) | REST with route patterns and path parameters, plain HTTP by channel name, Kafka topics, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](./reference/functions.md#channel_call) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
 
 | [Plugins](./reference/plugins.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |

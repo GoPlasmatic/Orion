@@ -17,7 +17,7 @@ name refs explicitly rather than relying on the current branch.
 The workspace has two releasable packages, `orion-server` and `orion-cli`,
 **versioned in lockstep** — as is everything else in the workspace. There is
 one version number, `workspace.package.version` in the root `Cargo.toml`, and
-all four crates inherit it with `version.workspace = true`. A bare `v*` tag
+all five crates inherit it with `version.workspace = true`. A bare `v*` tag
 (e.g. `v1.0.0`, `v1.0.0-rc.1`) is the joint release: dist announces every
 dist-able package sitting at the tagged version, so one tag yields one GitHub
 release carrying both sets of archives, both installers and both tap formulae,
@@ -65,11 +65,14 @@ version disagrees with `crates/orion-cli/Cargo.toml`. A prefixed
 `orion-cli-v*` tag that disagrees is still a hard error — that one is a
 mistake, not a server-only release.
 
-The two shared library crates (`orion-api`,
-`orion-client`) are never tagged: crates-publish publishes them automatically
-as riders — in dependency order, skipping versions already on crates.io —
-right before `orion-server`, since crates.io refuses a crate whose
-dependency it doesn't host.
+The three shared library crates (`orion-api`,
+`orion-client`, `orion-plugin-sdk`) are never tagged: crates-publish publishes
+them automatically as riders — in dependency order, skipping versions already
+on crates.io — right before `orion-server`, since crates.io refuses a crate
+whose dependency it doesn't host. `orion-plugin-sdk` depends on nothing else
+in the workspace and is a rider for a different reason: it is what a plugin
+author links against, so it has to be on crates.io for the SDK to be usable
+at all.
 
 **Lockstep is what makes the riders safe, and it is why there is nothing to
 remember here.** Skip-if-present means a rider whose contents changed without
@@ -105,7 +108,7 @@ pipelines, all gated on a successful CI run for the tagged commit (T10):
   (`latest=auto`), so an rc never becomes `latest`. The Helm chart publishes
   after the manifest exists.
 - **`crates-publish.yml`**: runs `.github/scripts/publish-crates.sh` —
-  `cargo publish --locked` to crates.io for the rider crates and
+  `cargo publish --locked` to crates.io for the three rider crates and
   `orion-server` (not `orion-cli` — see above), skipping any version that is
   already live so the job is safe to re-run. Presence is read from the sparse
   index (`index.crates.io`), never the crates.io JSON API: the API rate-limits
@@ -166,6 +169,15 @@ is what proves it independently of the runner that produced the artifact.
    three CI jobs (Test, Test Coverage and MSRV all run the suite) until the
    spec is regenerated. This applies to **each** bump — the one here and the
    one back to `1.0.0` in step 8.
+
+   **Re-stamp the tutorial pages in the same commit**, for the same reason.
+   Twelve pages under `docs/src/` carry
+   `**Tested with:** Orion <version> · **Last reviewed:** <date>`, and
+   `docs/lint.sh` (the `book` CI job) fails when that version is not the
+   workspace version — `bash docs/lint.sh` names every page that is behind.
+   The version is mechanical; the date is not. Move it only for a page whose
+   documented path you actually re-ran, so a stale date stays visible rather
+   than being laundered by the bump.
 2. **Tag and push:**
 
    ```bash
@@ -234,17 +246,23 @@ is what proves it independently of the runner that produced the artifact.
 
 ## The benchmark session (C13)
 
-**Done for 1.0.0, and outstanding for 1.1.0.** The 1.0.0 record is committed at
+**Done for 1.0.0, and outstanding ever since.** The 1.0.0 record is committed at
 [`crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)
 and the README's Performance section cites it — including the cluster scenario,
 which was skipped in the original session and captured separately on
-2026-08-15, so the N=2 and N=3 scaling numbers are published. There is **no
-1.1.0 record yet**: run the session below at the 1.1.0 tag (or its rc) and land
-the numbers, or make an explicit decision to keep citing the 1.0.0 figures.
-Citing 1.0.0 numbers under a 1.1.0 release is defensible — the release adds
-capability rather than reworking the request path — but it should be a decision,
-not an omission, and the README's "measured on v1.0.0" framing has to stay
-accurate either way.
+2026-08-15, so the N=2 and N=3 scaling numbers are published. **No record has
+been captured since**: 1.1.0 through 1.5.1 all shipped citing the 1.0.0
+figures, which was defensible each time — those releases added capability
+rather than reworking the request path — but it has to stay a decision rather
+than become an omission, and the README's "measured on v1.0.0" framing has to
+stay accurate either way.
+
+**1.6.0 is where that stops being defensible**, for two reasons. The runtime
+generation is now one published value rather than two, which touches the hot
+path of every request; and scenario H (`plugin`) is new, so there is no
+published number for the sandbox at all — `docs/src/reference/plugins.md`
+says as much under "Performance" and points here. Run the session below at
+the 1.6.0 tag (or its rc) and land the numbers.
 
 Numbers must come from **dedicated hardware** — a laptop running other work
 produces numbers worse than none.
@@ -288,8 +306,9 @@ produces numbers worse than none.
    OS) and the scaling-efficiency numbers, following the tracked
    `results/v1.0.0/` layout. `.gitignore` ignores scratch runs under
    `results/` and re-includes each release directory explicitly, so **add the
-   new release's line before committing** — the `v0.2.0`, `v1.0.0` and
-   `v1.1.0` lines are already there.
+   new release's line before committing**. The `v0.2.0`, `v1.0.0` and `v1.1.0`
+   lines are already there — `v1.1.0` speculatively, for a session that was
+   never run, so it re-includes a directory that does not exist.
 6. **Publish:** regenerate `docs/media/benchmark-light.svg` /
    `docs/media/benchmark-dark.svg` from the new numbers (same style, both color
    schemes), and replace the README's Performance section numbers — table,

@@ -98,6 +98,35 @@ open http://localhost:8080/docs
 `terminationGracePeriodSeconds` is derived as drain + force timeout + 10 so
 SIGTERM always completes the graceful sequence.
 
+## Plugins and schedules
+
+Neither has a value of its own — both are ordinary `ORION_*` overrides through
+`extraEnv` — but each has a consequence a chart install has to plan for.
+
+```yaml
+extraEnv:
+  - name: ORION_PLUGINS__ENABLED
+    value: "true"
+  - name: ORION_CRON__ENABLED
+    value: "false"
+```
+
+**Plugins are off by default, and turning them on costs virtual address
+space.** The sandbox's pooling allocator reserves
+`max_live_instances × max_memory_bytes` at startup — 16 GiB with the defaults.
+That is virtual, not resident, so it does not belong in `resources.requests`;
+it does matter wherever a container limits *virtual* memory. Signing keys go
+in `[plugins.trust]`; see the
+[production checklist](https://docs.goplasmatic.io/operate/production-checklist.html).
+
+**The cron scheduler is on by default, and every replica must agree.** With
+`replicaCount > 1`, a mixed setting quarantines an active cron channel on the
+replicas that have it off and runs it on the rest — visible on `/health` as
+`components.cron: degraded`, but not what anyone meant. Set it in `extraEnv`,
+which every replica shares, rather than per-pod. No coordination value is
+needed beyond that: occurrence identity, claim leases and singletons all live
+in the shared database.
+
 ## Metrics
 
 Metrics are served by a **dedicated listener** on `metrics.port`, not on the

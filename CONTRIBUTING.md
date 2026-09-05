@@ -40,12 +40,14 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ## Project Structure
 
-The repo is a cargo workspace of four crates: `crates/orion-server` (the
-runtime), `crates/orion-cli` (the CLI — see its own
-`CLAUDE.md`), and two shared library crates — `crates/orion-api` (the wire
-contract) and `crates/orion-client` (the HTTP transport). The end-to-end
-suite that drives the server with the CLI lives at the repo root
-(`tests/e2e/`). Bare cargo commands target the server via `default-members`.
+The repo is a cargo workspace of five crates: `crates/orion-server` (the
+runtime), `crates/orion-cli` (the CLI — see its own `CLAUDE.md`), two shared
+library crates — `crates/orion-api` (the wire contract) and
+`crates/orion-client` (the HTTP transport) — and `crates/orion-plugin-sdk`
+(the guest crate a plugin author links against; it depends on nothing else
+here). The end-to-end suite that drives the server with the CLI lives at the
+repo root (`tests/e2e/`). Bare cargo commands target the server via
+`default-members`.
 
 ```
 crates/orion-server/
@@ -58,14 +60,19 @@ crates/orion-server/
   package_cli.rs       # `orion-server package`: export/lint/plan/apply/diff promotion CLI
   channel/             # Channel registry, config, routing, deduplication, auth guards
   cluster/             # Cluster mode: config-epoch watcher, background-job leases
+  cron/                # Scheduled channels: reconciler, workers, occurrence ledger
   config/              # Configuration loading (TOML + ORION_SECTION__KEY env overrides)
   connector/           # Connector types, registry, circuit breakers, pool caching
+  definitions/         # Definition sets: the JSON front end, analysis, fmt, clippy, compile
   engine/              # Dataflow engine & custom function handlers (functions/)
   errors.rs            # OrionError enum -> HTTP response mapping
+  jwt/                 # Shared JWT core: verify, sign, JWKS cache
   kafka/               # Kafka producer & consumer
   metrics.rs           # Prometheus metrics collection
+  plugin/              # WebAssembly plugins: Wasmtime sandbox, manifest, handler, limits
   query/               # Portable data dialect (data_query / data_write -> SQL/Mongo/ES)
   queue/               # Async trace processing, DLQ retry
+  runtime/             # The published generation (engine + channel estate), reload, task supervisor
   server/              # Axum routes (routes/), middleware, AppState
   storage/             # Database abstraction, models, repositories (repositories/)
   validation/          # Input validation, SSRF protection
@@ -83,8 +90,9 @@ crates/orion-cli/
  src/commands/         # clap subcommands (one file per command group)
 crates/orion-api/      # Shared wire contract (DTOs, enums, error envelope)
 crates/orion-client/   # Shared HTTP transport (OrionClient, endpoint paths)
+crates/orion-plugin-sdk/ # Guest SDK for plugin authors (WIT bindings, export macro)
 tests/e2e/             # Shell end-to-end suites: orion-cli against orion-server (`just e2e`)
-examples/              # Deployable packages, offline workflow tests, e2e use cases
+examples/              # Deployable packages, plugin sources, offline workflow tests, e2e use cases
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
 docs/                  # mdBook documentation (published to docs.goplasmatic.io)
 ```
@@ -134,7 +142,8 @@ code.
 
 The shipped migration files are **checksum-frozen** once released (sqlx records
 a checksum per applied migration), so never edit an existing `NNN_*.sql` — add
-a new numbered file to **each** of `migrations/{sqlite,postgres,mysql}/`.
+a new numbered file to **each** of
+`crates/orion-server/migrations/{sqlite,postgres,mysql}/`.
 To bootstrap the migration set for a new backend, copy the newest existing
 backend's `001_initial.sql` and adapt the dialect by hand (types, triggers,
 view syntax) — that is how the shipped sets were produced; there is no
@@ -147,7 +156,7 @@ those two — so the same number means different things per backend (`004` is
 `active_immutability` on MySQL). Never assume the numbers line up, and **name
 migrations rather than number them** in commit messages, runbooks and docs.
 `orion-server migrate --dry-run` prints backend, number and name together for
-exactly this reason. `tests/schema_parity.rs` is what catches a change applied
+exactly this reason. `crates/orion-server/tests/schema_parity.rs` is what catches a change applied
 to two backends out of three.
 
 Write migrations **expand/contract** style: during a rolling deploy, old and
@@ -297,14 +306,14 @@ rider crates only — `orion-cli` ships through the installers, the Homebrew
 tap and GHCR, because its crates.io name belongs to an unrelated crate. The
 secrets they need and the full procedure are in `RELEASING.md`.
 
-1. **Version bump.** All four crates share `workspace.package.version` in the
+1. **Version bump.** All five crates share `workspace.package.version` in the
    root `Cargo.toml`; `cargo release <level>` rewrites it and the two
    `[workspace.dependencies]` requirements together, then tags. A bare
    `v`-prefixed tag (`v1.0.0`) releases every package at that version, and
-   lockstep is what keeps the rider crates (`orion-api`, `orion-client`)
-   publishable — their version always moves with a release, so the
-   skip-if-present rider publish can never leave `orion-server` resolving
-   older crates.io content. The Helm chart needs **no** manual bump —
+   lockstep is what keeps the rider crates (`orion-api`, `orion-client`,
+   `orion-plugin-sdk`) publishable — their version always moves with a
+   release, so the skip-if-present rider publish can never leave
+   `orion-server` resolving older crates.io content. The Helm chart needs **no** manual bump —
    `docker-release.yml` stamps both the chart version and `appVersion` from
    the tag at publish time; the in-tree `Chart.yaml` value is a development
    placeholder.
@@ -312,9 +321,11 @@ secrets they need and the full procedure are in `RELEASING.md`.
    `## [X.Y.Z] - YYYY-MM-DD` heading (merge per category), leave an empty
    `[Unreleased]` on top, and check the compare links at the foot of the file
    name the new tag.
-3. **Tag and push.** Push the tag by its full `refs/tags/` name — release
-   branches are named after their version, so a bare `git push origin vX.Y.Z`
-   can match both a branch and a tag and fails as an ambiguous refspec.
+3. **Tag and push.** Push the tag by its full `refs/tags/` name. Releases are
+   cut from `main` and no release branch exists today, but the form is
+   unambiguous whatever a branch is called — and a branch named after its
+   version, which is how the `v1.0.0` branch worked, makes a bare
+   `git push origin vX.Y.Z` fail as an ambiguous refspec.
    ```bash
    git tag vX.Y.Z && git push origin refs/tags/vX.Y.Z
    ```

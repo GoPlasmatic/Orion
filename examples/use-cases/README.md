@@ -39,6 +39,7 @@ order.
 {
   "name": "E-Commerce Order Classification",
   "description": "What the scenario demonstrates",
+  "plugins":    [ { "manifest": "../packages/…/plugin.toml" } ],  // optional
   "connectors": [ { /* connector create body */ } ],           // optional
   "workflows":  [ { "file": "../packages/order-classification/workflow.json" } ],
   "tests": [
@@ -60,11 +61,23 @@ relative to the case file; use this for anything that exists as a package —
 or an inline workflow create body, for throwaway workflows only a behaviour
 test needs.
 
+A `plugins` entry names a `plugin.toml` relative to the case file; the runner
+uploads and activates each one **before** the workflows, because a workflow
+naming a plugin function cannot activate until the plugin serving it is
+active. The component is read beside the manifest, as `plugins create` does.
+The server must have `plugins.enabled = true` — the e2e harness sets it.
+
 An optional case-level `"channel_config": { … }` is applied as the `config` of
 every channel the case creates — how a case exercises a config-dependent
 ingress such as `request.body_mode`. It is case-level because the channels are
-all bound to the case's first workflow; a case needing channels to differ from
-each other declares them explicitly instead (see `"channels"` in helpers.sh).
+all bound to the case's first workflow.
+
+A case whose channels must *not* all bind to the first workflow declares them
+explicitly instead, which is what a `channel_call` composition needs:
+
+```jsonc
+"channels": [ { "name": "customer-lookup", "workflow_id": "customer-lookup" } ]
+```
 
 Each test sends `input` to `channel` and checks every `expect` entry: the
 key is a `jq` expression evaluated against the JSON response, the value is
@@ -96,3 +109,4 @@ Instead of the default sync send, a test can set one of:
 | `webhook-transformation.json` | [`webhook-transform`](../packages/webhook-transform/) | Payload normalization via null-safe `var` mapping |
 | `notification-routing.json` | [`notification-routing`](../packages/notification-routing/) | Progressive routing (log / email / SMS) by severity |
 | `channel-composition.json` | [`channel-composition`](../packages/channel-composition/) | One service calling another in-process via `channel_call` |
+| `fixed-width-statement.json` | [`fixed-width-statement`](../packages/fixed-width-statement/) | A plugin function on the serving path: the case uploads and activates the codec before its workflow |

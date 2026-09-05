@@ -38,7 +38,7 @@ ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 # E2E_KEEP_SERVER=1    Don't stop server after tests
 ```
 
-E2E tests are shell-based (not `cargo test`). 16 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); suite 13 is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behaviour cases in `tests/e2e/cases/` — and suite 14 smoke-covers the read-only command groups the lifecycle suites never reach. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
+E2E tests are shell-based (not `cargo test`). 17 test suites in `tests/e2e/suites/` and fixtures in `tests/e2e/fixtures/` (both at the repo root); suite 13 is data-driven — scenario cases in `examples/use-cases/` (referencing the example packages' workflows by file) plus runtime-behaviour cases in `tests/e2e/cases/` — and suite 14 smoke-covers the read-only command groups the lifecycle suites never reach. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
 
 ## Architecture
 
@@ -70,6 +70,7 @@ E2E tests are shell-based (not `cargo test`). 16 test suites in `tests/e2e/suite
 | `backups.rs` | Create and list database backups (SQLite) |
 | `packages.rs` | Package promotion receipts: list, get (v1.0) |
 | `plugins.rs` | WebAssembly plugins: list, get, create/update from a `plugin.toml` (the component read relative to it and sent as base64), delete, activate, archive, versions, dependencies, validate, export, import |
+| `cron.rs` | The scheduled-run ledger: `status` (per-channel cursor, next fire, last result), `list` (filterable by `--channel-id`/`--status`), `get`, and `retry` — another attempt at the same occurrence, keeping its id and `scheduled_for`. A new run *now* is `channels trigger` instead |
 | `dlq.rs` | Trace dead-letter queue: list, get, requeue, purge (v1.0) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell/elvish) |

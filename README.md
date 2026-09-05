@@ -114,6 +114,8 @@ boundaries in one page.
   messages to a dead-letter topic.
 - **AI-agent tools:** expose governed HTTP operations that an assistant can
   draft, dry-run, activate, and roll back using the Orion CLI and agent skill.
+- **Scheduled jobs:** run a workflow on a cron expression instead of on a
+  request, with every scheduled instant recorded as a durable occurrence.
 - **Composable services:** call another channel in-process with `channel_call`,
   while preserving the callee's guards and preventing cycles.
 
@@ -125,10 +127,10 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 
 | Area | Included capability |
 |---|---|
-| **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, Kafka ingress |
+| **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, Kafka ingress, cron schedules |
 | **Safety** | Payload validation, API-key/HMAC/JWT channel auth, rate limiting, backpressure, CORS controls |
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
-| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages |
+| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
 | **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Redis, Kafka, HTTP, SMTP, S3-compatible storage |
 | **Operations** | Embedded SQLite for one node; PostgreSQL/MySQL and Redis for clustered replicas |
@@ -256,8 +258,8 @@ for its structure and editorial conventions.
 
 - [Orion UI](https://github.com/GoPlasmatic/Orion-ui) provides the browser-based
   operations console.
-- [`orion-cli`](crates/orion-cli/) manages workflows, channels, and connectors
-  from a terminal.
+- [`orion-cli`](crates/orion-cli/) manages workflows, channels, connectors,
+  plugins and schedules from a terminal.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) covers development setup, tests, and pull
   requests.
 - Use [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions) for

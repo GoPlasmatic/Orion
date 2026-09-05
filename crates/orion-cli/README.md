@@ -3,12 +3,12 @@
 
   # Orion
 
-  **The command-line interface for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, and data pipelines from your terminal.**
+  **The command-line interface for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, plugins, schedules, and data pipelines from your terminal.**
 
   Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Pair it with the [Orion agent skill](../../skills/orion/) to let an AI assistant drive the same commands.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-  [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org)
+  [![Rust](https://img.shields.io/badge/rust-1.98+-orange.svg)](https://www.rust-lang.org)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion?filter=orion-cli-v*)](https://github.com/GoPlasmatic/Orion/releases)
 </div>
 
@@ -82,6 +82,8 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `workflows` | Manage workflows — create, update, delete, test, import/export, diff |
 | `channels` | Manage channels — create, update, delete, activate/archive, versioning, bulk import |
 | `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
+| `plugins` | Manage WebAssembly plugins — create from a manifest, activate/archive, versioning, dependencies, import/export |
+| `cron` | The scheduled-run ledger — status, list, get, retry an occurrence |
 | `send` | Send data through channels (sync or async; `--profile` for timing breakdown) |
 | `traces` | View and monitor execution traces |
 | `engine` | View engine status and trigger reloads |
@@ -265,6 +267,35 @@ orion-cli send orders --async-mode --wait --timeout 30 -d '{"amount":100}'
 
 ---
 
+## Plugins
+
+A plugin adds a custom task function as a sandboxed WebAssembly component. It
+is a versioned entity, so it follows the same draft → activate path:
+
+```bash
+orion-cli plugins create -f plugin.toml     # the component is read beside it
+orion-cli plugins activate <ID>
+orion-cli plugins dependencies <ID>         # what would break on archive
+orion-cli plugins export --include-artifacts -o plugins.json
+```
+
+Activate a plugin before the workflows that call its functions. The server
+needs `plugins.enabled = true`, and `--signature` where it configures
+`[plugins.trust]`.
+
+## Scheduled runs
+
+A `protocol: "cron"` channel has no caller, so `send` cannot reach it. Its runs
+land in a durable occurrence ledger:
+
+```bash
+orion-cli cron status                      # what is scheduled, next fire, last result
+orion-cli cron list --status failed
+orion-cli cron get <OCCURRENCE_ID>
+orion-cli cron retry <OCCURRENCE_ID>       # same occurrence, same scheduled_for
+orion-cli channels trigger <CHANNEL_ID>    # a new manual occurrence, now
+```
+
 ## Traces
 
 View and monitor execution traces:
@@ -287,7 +318,8 @@ Exit codes: `0` completed, `1` failed, `2` timeout.
 # View engine status — version, uptime, workflow counts, channels
 orion-cli engine status
 
-# Hot-reload workflows and channels (zero downtime)
+# Hot-reload workflows, channels and plugins (zero downtime)
+orion-cli engine reload
 ```
 
 ---
@@ -406,7 +438,7 @@ brew install GoPlasmatic/tap/orion-cli
 cargo install --git https://github.com/GoPlasmatic/Orion orion-cli
 ```
 
-Verify with `orion-cli --version`. Requires Rust 1.88+ for source builds.
+Verify with `orion-cli --version`. Requires Rust 1.98+ for source builds.
 
 ---
 

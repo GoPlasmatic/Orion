@@ -547,8 +547,8 @@ curl -X POST http://localhost:8080/api/v1/admin/channels/nightly-rollup/trigger 
 
 ## Packages
 
-A **package** is the channels, workflows, and connectors of one service,
-promoted between instances as a versioned unit
+A **package** is the channels, workflows, connectors and plugins of one
+service, promoted between instances as a versioned unit
 ([Promote Between Environments](../operate/promotion.md)). This is the single
 package-aware surface of the admin API.
 

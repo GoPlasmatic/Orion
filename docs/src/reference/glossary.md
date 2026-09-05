@@ -8,8 +8,8 @@ meaning.
 bounds all ingresses together, so `max_concurrent_per_node` limits the
 channel's total. See [Channel Configuration](./channel-config.md).
 
-**Channel**: a named service endpoint that receives requests over HTTP or Kafka
-and hands them to a workflow. See
+**Channel**: a named service endpoint that receives work — over HTTP, from a
+Kafka topic, or from its own cron schedule — and hands it to a workflow. See
 [Channel Configuration](./channel-config.md).
 
 **channel_call**: the built-in function that invokes another channel's workflow
@@ -21,8 +21,9 @@ to a repeatedly failing backend until a recovery timeout elapses. See
 [Connectors](./connectors.md).
 
 **Closure (of a package)**: the selected channels, their workflows, and every
-connector those workflows reference — what `package export` computes and
-ships. See [Promote Between Environments](../operate/promotion.md).
+connector and plugin those workflows reference — what `package export`
+computes and ships. See
+[Promote Between Environments](../operate/promotion.md).
 
 **Config epoch**: a shared counter in the database, advanced by every mutation;
 cluster replicas poll it and resync when it moves.
@@ -30,6 +31,11 @@ cluster replicas poll it and resync when it moves.
 **Connector**: a named, reusable connection definition (`http`, `kafka`, `db`,
 `cache`, or `es`) that workflow functions reference by name. See
 [Connectors](./connectors.md).
+
+**Cron channel**: a channel whose `protocol` is `cron`. It has no caller: it
+declares a six-field schedule and a fixed payload in `transport_config`,
+registers no route and no topic, and is unreachable over HTTP and by
+`channel_call`. See [Cron transport](./channel-config.md#cron-transport).
 
 **Data context**: the JSON document a workflow's tasks read and write; its top
 level is exactly `data`, `metadata`, and `temp_data`. See
@@ -47,19 +53,20 @@ Elasticsearch. See [Portable Data Dialect](./data-dialect.md).
 active versions are immutable and served, archived versions are retired. See
 [Admin API](./admin-api.md).
 
-**Engine**: the compiled runtime built from every active channel and workflow;
-a reload rebuilds and swaps it as a whole. See
-[Design Notes](./design-notes.md).
+**Engine**: the compiled runtime built from every active channel, workflow and
+plugin; a reload rebuilds and swaps it as a whole, together with the channel
+estate it is published beside. See [Design Notes](./design-notes.md).
 
-**Estate**: everything one instance stores — its channels, workflows, and
-connectors, across all versions. See [Admin API](./admin-api.md).
+**Estate**: everything one instance stores — its channels, workflows,
+connectors and plugins, across all versions. See [Admin API](./admin-api.md).
 
 **Hot reload**: replacing the engine inside a running process; admin mutations
 and `POST /api/v1/admin/engine/reload` take effect without a restart. See
 [Admin API](./admin-api.md).
 
-**Ingress**: any path a request enters a channel — a synchronous request, an
-`/async` submission, a Kafka record, or a `channel_call`.
+**Ingress**: any path work enters a channel — a synchronous request, an
+`/async` submission, a Kafka record, a `channel_call`, or a claimed cron
+occurrence.
 
 **Ingress guards**: the per-channel checks — rate limit, validation, dedup,
 response cache, backpressure, timeout — that run on every ingress before the
@@ -68,13 +75,24 @@ workflow. See [Channel Configuration](./channel-config.md).
 **Modular monolith**: one Orion instance running many independently shipped
 services side by side. See [Promote Between Environments](../operate/promotion.md).
 
+**Occurrence**: one scheduled instant of a cron channel, written to a durable
+ledger before the work starts and kept after it finishes — so "did last
+night's job run?" has an answer. Identified by `(channel_id, scheduled_for)`.
+See [Cron occurrences](./admin-api.md#cron-occurrences).
+
 **Operation gates**: per-connector booleans under `operations` that permit or
 refuse each data operation (`read`, `insert`, `update`, `delete`, `upsert`,
 `raw_write`). See [Connectors](./connectors.md).
 
-**Package**: the channels, workflows, and connectors of one service, versioned
+**Package**: the channels, workflows, connectors and plugins of one service,
+versioned
 as a unit and promoted between instances. See
 [Promote Between Environments](../operate/promotion.md).
+
+**Plugin**: a versioned entity carrying a WebAssembly component that adds task
+functions, named `<plugin>.<label>`. Its world imports nothing, so a plugin
+function is a pure JSON → JSON transformation. See
+[Plugins](./plugins.md).
 
 **Promotion**: moving a package between instances through `export`, `plan`,
 and `apply`. See [Promote Between Environments](../operate/promotion.md).

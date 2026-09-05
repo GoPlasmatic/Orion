@@ -25,7 +25,7 @@ needs to reach an external system.
 
 | Primitive | Description | Examples |
 |-----------|-------------|----------|
-| **[Channel](./channels.md)** | Service entry point (synchronous HTTP/REST or asynchronous Kafka consumer) | `POST /orders`, `GET /users/{id}`, topic `order.placed` |
+| **[Channel](./channels.md)** | Service entry point (synchronous HTTP/REST, an asynchronous Kafka consumer, or a cron schedule) | `POST /orders`, `GET /users/{id}`, topic `order.placed`, `0 15 2 * * *` |
 | **[Workflow](./workflows.md)** | Sequential task pipeline defining the business logic | Parse input → validate → enrich → transform → return response |
 | **[Connector](./connectors.md)** | Reusable client connection to an external data store or service | PostgreSQL, Redis, MongoDB, Elasticsearch, Kafka cluster, REST API |
 
@@ -67,11 +67,13 @@ Sync     POST /api/v1/data/{channel}         → immediate JSON response
 Async    POST /api/v1/data/{channel}/async   → returns a trace_id for polling
 REST     GET  /api/v1/data/orders/{id}       → matched by route pattern
 Kafka    topic: order.placed                 → consumed automatically
+Cron     schedule: 0 15 2 * * *              → run on its own, no caller
 ```
 
 - **Use sync channels for** request/response APIs where the caller waits for the answer.
 - **Use async channels for** submissions the caller should not block on. The caller gets a `trace_id` immediately and polls `GET /api/v1/admin/traces/{id}` for the result.
 - **Use Kafka channels for** event streams, where the topic is the ingress.
+- **Use [cron channels](../guides/scheduled-workflows.md) for** work with no caller at all. There is nothing to route to and nothing to authenticate; every scheduled instant becomes a durable occurrence you can read back.
 
 Bridging between them is a pattern, not a feature: a sync workflow can `publish_kafka` and return immediately, and an async channel picks the message up from there.
 

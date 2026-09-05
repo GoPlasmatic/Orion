@@ -9,13 +9,16 @@ Orion is a declarative services runtime. A service is described by JSON rather
 than application code:
 
 - a **workflow** is ordered business logic;
-- a **channel** exposes a REST/HTTP route or Kafka consumer and binds it to a
-  workflow;
-- a **connector** names an external dependency and its policy.
+- a **channel** exposes a REST/HTTP route, a Kafka consumer, or a cron
+  schedule, and binds it to a workflow;
+- a **connector** names an external dependency and its policy;
+- a **plugin** adds a custom task function as a sandboxed WebAssembly
+  component.
 
-Workflows and channels are versioned (`draft -> active -> archived`). Connectors
-are unversioned and update in place. A **package** is the deployable closure of
-the workflows, channels, and connectors that make up one service.
+Workflows, channels, and plugins are versioned (`draft -> active -> archived`).
+Connectors are unversioned and update in place. A **package** is the deployable
+closure of the workflows, channels, connectors, and plugins that make up one
+service.
 
 Use `orion-server` for local/offline authoring and package operations. Use
 `orion-cli` for a running instance. Treat `--help`, the instance's function
@@ -30,6 +33,8 @@ orion-cli health
 orion-cli engine status
 orion-cli workflows list
 orion-cli channels list
+orion-cli plugins list
+orion-cli cron status
 orion-cli traces list
 ```
 
@@ -178,6 +183,62 @@ Use `orion-cli <group> <command> --help` before relying on a flag not shown here
   results before deployment.
 - Channel guards differ by ingress. Do not assume HTTP authentication, caching,
   or origin checks apply to Kafka or `channel_call`.
+
+## Cron: a workflow started by a clock
+
+A `cron` channel has no caller. It declares a schedule and a fixed payload in
+`transport_config` — ordinary definition content, versioned and promoted like
+everything else — and registers no route and no topic. It must be
+`channel_type: "async"`.
+
+```json
+{
+  "channel_id": "nightly-order-rollup",
+  "name": "Nightly order rollup",
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "order-rollup",
+  "transport_config": {
+    "schedule": "0 15 2 * * *",
+    "timezone": "Asia/Kolkata",
+    "payload": { "window": "previous_day" },
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid" }
+  }
+}
+```
+
+- **The expression always has six fields** — second, minute, hour, day-of-month,
+  month, day-of-week. Five- and seven-field forms are refused rather than
+  guessed at, because `0 15 2 * * *` read as five fields would mean something
+  entirely different. `timezone` is an IANA name; abbreviations are refused.
+- **The payload arrives where a request body does.** The workflow reads it with
+  `parse_json` from `payload`, so a workflow is portable between a route and a
+  schedule with no change. What the schedule adds is a reserved,
+  platform-stamped `metadata.trigger`: `type`, `occurrence_id`,
+  `scheduled_for`, `started_at`, `timezone`, `attempt`, `singleton_key`. Use
+  `scheduled_for` as the idempotency key — it is immutable across retries and
+  unique per occurrence.
+- **Everything caller-shaped is refused at authoring**, not stored and ignored:
+  `methods`, `route_pattern`, `topic`, `consumer_group`, `config.auth`,
+  `origin_allow_list`, `rate_limit`, `deduplication`, `cache`, `request`,
+  `response`, `oauth2_login`. Only `validation_logic`, `backpressure`,
+  `timeout_ms` and `tracing` still mean anything.
+- **A cron channel is unreachable over HTTP and by `channel_call`.** Running it
+  either way would execute the workflow outside the ledger and outside its
+  lock. `orion-cli channels trigger <id>` is the deliberate manual path and
+  takes the same claim and singleton.
+- **Every scheduled instant is a durable occurrence.** Read them with
+  `orion-cli cron status|list|get`; `cron retry` is another attempt at the same
+  occurrence, keeping its id and `scheduled_for`.
+- `misfire_policy` is `skip`, `latest` (default) or `catch_up` (which requires
+  `max_catch_up`). `concurrency.policy = "forbid"` makes the schedule
+  non-overlapping across the cluster; contending occurrences are recorded
+  `skipped_singleton`, not dropped. Non-overlap is not exactly-once — work that
+  must not be applied twice still needs an idempotent destination.
+- The node must have `cron.enabled` (the default). An active cron channel on a
+  node with it off is quarantined and `components.cron` degrades; activation is
+  refused outright.
 
 ## Plugins: a pure function as a task
 

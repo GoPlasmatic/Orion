@@ -12,7 +12,8 @@ orion-cli functions list --output json \
 
 Do this before writing an unfamiliar input. The catalog reports names,
 categories, descriptions, typed fields, expression-capable fields, accepted
-secret references, and defaults for the installed release.
+secret references, defaults, `source` (`builtin` or `plugin`), and
+`retry_safety` for the installed release.
 
 ## Select the right family
 
@@ -31,6 +32,7 @@ secret references, and defaults for the installed release.
 | Object metadata/presigning | `storage_head`, `storage_presign` |
 | Call another Orion service | `channel_call` |
 | Cryptography or JWT | `crypto`, `jwt_sign`, `jwt_verify` |
+| A codec or calculation that already exists as code | a plugin function, named `<plugin>.<label>` |
 
 Prefer the portable data dialect unless the operation genuinely requires raw
 SQL or native MongoDB. It is parameterized, backend-neutral, and checked against
@@ -135,7 +137,40 @@ cannot be read where its result would be persisted, such as a map result or log
 field.
 
 `crypto` and JWT functions perform no external I/O, so offline dry-runs can
-execute them rather than stub them.
+execute them rather than stub them. A `{"secret": ...}` node is refused
+anywhere in a plugin task's input; a plugin never sees key material.
+
+## Plugin functions
+
+A plugin function appears in the catalog with `source: "plugin"` once its
+plugin's version is active, and is named `<plugin>.<label>`. Discover its
+schema there, never from memory — a workflow is accepted only against the
+schema the plugin's *active* version declares.
+
+Its world imports nothing: no filesystem, clock, randomness, sockets,
+connectors or secrets. It is a pure JSON → JSON transformation, so use one for
+a codec or calculation that already exists as code, never for anything with
+I/O (that stays `http_call` or a connector), and never for a field rewrite a
+`map` expresses.
+
+Because it is pure, `dry-run` and `test` run it for real rather than stubbing
+it — pass `--plugin-dir <dir>`, or keep the `plugin.toml` in the definition
+tree. A missing component fails as `PLUGIN_ARTIFACT_UNAVAILABLE`.
+
+## Retry safety
+
+`retry_safety` on each catalog entry answers what a *second* run costs — not
+whether an error was transient. It matters because Orion retries in places an
+author may not have in mind: the trace DLQ replays a failed async delivery, a
+Kafka redelivery re-runs everything after an uncommitted offset, `http_call`
+retries its own transport failures, and a cron occurrence can be retried by
+hand.
+
+Roughly a third of the set has `depends_on`, naming the input field that
+decides — `data_write` is idempotent with `op: "upsert"` and not with
+`op: "insert"`; `http_call` depends on its method. Read the field rather than
+guessing from the function name, and design a workflow whose non-idempotent
+steps have an idempotent destination or an idempotency key.
 
 ## Offline egress behavior
 

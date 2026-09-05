@@ -212,6 +212,55 @@ reached first makes new submissions answer `503`. Then check
 stuck at `pending` with nothing in the DLQ usually means the queue is saturated,
 not that the work failed.
 
+## A cron channel is active but nothing ever runs
+
+**Why.** Almost always `cron.enabled = false` on the node — or on *some* of
+them. An active cron channel on a node with the scheduler off is quarantined
+rather than ignored, precisely so this is visible: a stored schedule that
+silently never fires is the one failure an operator cannot see.
+
+**What to do.** Read the component and the quarantine reason:
+
+```bash
+curl -s -H "Authorization: Bearer $ORION_ADMIN_TOKEN" http://localhost:8080/health \
+  | jq '{cron: .components.cron, quarantined: .channels.quarantined}'
+orion-cli cron status
+```
+
+`components.cron: degraded` means this node has schedules it will not run. In
+a cluster, check **every** replica — a mixed setting quarantines the channel
+on some and runs it on the rest.
+
+If the scheduler is on and occurrences are simply piling up as `pending`, the
+node is behind rather than off: compare `cron.workers` against how much work
+each run does, and look for a `forbid` singleton whose previous occurrence is
+still running.
+
+If they are appearing as `skipped_misfire`, the schedule's time passed while
+nothing healthy could start it. That is `misfire_policy` doing its job; the
+row carries the count and the range.
+
+## A workflow naming a plugin function is quarantined
+
+**Why.** Three causes, distinguishable from the load issue: `plugins.enabled`
+is `false` on this node (every stored plugin becomes a `disabled` load issue),
+the plugin has no active version, or its active version no longer declares
+that function.
+
+**What to do.**
+
+```bash
+orion-cli plugins list
+orion-cli plugins dependencies <plugin-id>   # what a change would break
+orion-cli functions list | grep '^<plugin>\.'
+```
+
+The function catalogue is the authority: a plugin function only appears there
+once its plugin's version is active on this node, and a workflow is validated
+against the schema that version declares. Activating a plugin version whose
+schema an active dependant no longer satisfies is refused with a `409` rather
+than allowed to quarantine the dependant later.
+
 ## A workflow runs but the data context is empty
 
 **Why.** The raw request payload is **not** in the JSONLogic context.

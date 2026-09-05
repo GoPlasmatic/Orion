@@ -86,7 +86,7 @@ whole loop rather than once per sweep.
 
 ## What to alert on
 
-Five signals are easy to miss because nothing fails loudly when they fire.
+Seven signals are easy to miss because nothing fails loudly when they fire.
 
 - **Background jobs stall silently.** Trace cleanup and DLQ retry swallow
   per-tick errors by design. Alert on
@@ -104,6 +104,19 @@ Five signals are easy to miss because nothing fails loudly when they fire.
   `orion_errors_total` means channel guards are throttling the topic. Offsets
   stay uncommitted and records retry, so this shows up as lag rather than
   errors.
+- **A schedule falling behind fails no liveness check.** Every component is
+  working; occurrences are simply produced faster than they are run. Alert on
+  the high quantiles of `orion_cron_schedule_lag_seconds`, and on
+  `orion_cron_pending_occurrences` growing monotonically — the same signal
+  seen from the other side. `orion_cron_lease_renewal_failures_total` is worth
+  alerting on at any value: work was cancelled mid-run, and whether its side
+  effects landed is unknowable from the metric.
+- **A deprecated trace-token form is invisible until you look.**
+  `orion_trace_token_query_reads_total` counts trace reads authorised by the
+  `?token=` query parameter, which leaks into logs, history and `Referer`
+  headers. It is usage, not guessing — a sustained zero is what makes the
+  parameter safe to remove, so alert on it being non-zero if you have already
+  migrated your callers.
 
 Beyond these, alert on what every service needs: error rate by channel, P99
 latency, and `/readyz` failures.

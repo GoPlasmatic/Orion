@@ -7,12 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Two additions, both additive: custom task functions as sandboxed WebAssembly
-components, and scheduled channels. No existing definition, config key, API
-path or metric changes meaning. Plugins are off by default
+Two large additions, both additive: custom task functions as sandboxed
+WebAssembly components, and scheduled channels. Plugins are off by default
 (`plugins.enabled = false` preserves the previous behaviour exactly); the cron
 scheduler is on, and costs one indexed query per poll on an instance with no
-schedules.
+schedules. No config key was renamed or removed, no API path moved, and no
+metric was renamed.
+
+Three changes can alter what an existing deployment does, and the
+[1.6.0 upgrade guide](https://docs.goplasmatic.io/operate/upgrading-to-1.6.html)
+walks each one: `db_read` now refuses a statement that is not a read, so a
+connector's write gates finally bound what they advertised; `validate-config`
+now checks the `storage.url` scheme on single-node deployments, where a
+short-circuited condition had been skipping it; and the `?token=` query
+parameter on trace reads is deprecated in favour of the `x-trace-token`
+header.
+
+Alongside those, the release closes a run of correctness work on the data
+path — SQL connectors now run on the concrete driver instead of `sqlx::Any`,
+which is what made ten PostgreSQL column types fail with a 500 — and on the
+runtime, where the engine and the channel estate are now published as one
+generation rather than two.
 
 ### Added
 
@@ -106,14 +121,83 @@ schedules.
   versions, new-version, dependencies, validate, export, import.
 - Metrics `orion_plugin_*`, audit actions on `resource_type = "plugin"`,
   `/health` `plugins` component, `EpochScope::Plugins`.
+- **Inbound OAuth2 sign-in.** A channel can now complete a browser
+  authorization-code grant instead of only calling an OAuth2-protected API.
+  `config.oauth2_login` owns the halves that are the same for every provider —
+  the `302`, the state cookie, the CSRF binding, the nonce, PKCE, the code
+  exchange and OIDC `id_token` verification with nonce binding — and the
+  workflow keeps the application half, receiving the grant at
+  `metadata.oauth`. Assembled from primitives it took two channels, two
+  workflows and thirteen tasks, and three of its properties were
+  inexpressible: the CSRF binding has to run *before* the workflow is entered
+  (as a `validation` rule it stopped nothing), the nonce needs 32 CSPRNG bytes
+  (`jwt_sign` produced byte-identical state tokens twice in one second), and
+  PKCE cannot be added when the state travels in both the cookie and the query
+  parameter. State is a stateless HS256 JWT in an `HttpOnly` cookie, so a
+  sign-in that begins on one node and returns to another needs no
+  coordination. `metadata.oauth` is platform-reserved and named in
+  `redact_paths`, so the access token never reaches a caller envelope or a
+  persisted step snapshot. (#307)
+- **`env://` references in the config file.** Any value in `config.toml` may
+  now be `env://NAME`, resolved after the parse so the value keeps its JSON
+  type — `[storage] url`, `kafka.auth.sasl_password`, `cluster.redis_url` and
+  `storage.connector_encryption_key` included. Previously a connector could
+  name a database this way and the server's own state database could not, so
+  a deployment carried the same credential in two shapes. `${VAR}` still
+  rewrites *text* before the parse, so it can still build a value out of
+  parts. An unset variable is a hard error naming both the variable and the
+  field; `vault://` and the reserved cloud schemes are refused here by name,
+  because resolving them is an HTTP call and the config is what tells the
+  process how to make one. (#311)
+- **`halt_on` on a task** (dataflow-rs 3.10): `"halt_on": "failure"` ends the
+  workflow when that task failed — a status of `400` or above, which covers a
+  `validation` rule that did not pass. It is the outcome axis to `terminal`'s
+  position axis; the two compose by `or`, and the task keeps its own status on
+  the audit trail rather than the `299` a `filter` halt records. (#308)
+- **`"count": true` in the query envelope.** `data_query` answers
+  `{"count": n}` on all five backends (`SELECT COUNT(*)`, `count_documents`,
+  `POST {index}/_count`), with `filter` meaning what it means for a row query
+  — so a list and its total are one predicate written once. Answering "how
+  many orders are pending?" previously meant reaching for `db_read` (SQL only)
+  or `mongo_aggregate` (Mongo only), abandoning the portable dialect and its
+  schema allowlist for one number.
+- **`binary_as` and `numeric_as` on a SQL read.** `binary_as`
+  (`auto`/`hex`/`base64`/`text`) fixes a binary column's *shape* instead of
+  letting the value decide it — `blob_to_json` rendered a `bytea`, `blob` or
+  `varbinary` as text when the bytes happened to be valid UTF-8 and as
+  lowercase hex when they did not, so two rows of one column could disagree.
+  `numeric_as` (`number`/`string`) is the same choice for arbitrary-precision
+  decimals, where the default JSON number is what an author reaching for
+  `SELECT price` expects and `string` is what a money column needs.
+- **`db_write` reports `last_insert_id`**, as `data_write` already did on
+  MySQL and SQLite. Only for an `INSERT`/`REPLACE`: SQLite's
+  `last_insert_rowid` is a property of the *connection*, so after an `UPDATE`
+  it reports whatever an earlier insert left on that pooled connection.
+- **`retry_safety` on every function in the registry**, served by
+  `GET /admin/functions`. Orion retries tasks in more places than an author
+  necessarily has in mind — the trace DLQ replays a failed async delivery, a
+  Kafka redelivery re-runs everything after an uncommitted offset, `http_call`
+  retries its own transport failures — and nothing said which functions those
+  retries were safe over. Not the same question as whether an *error* was
+  transient: this one asks what a second run costs. Its `depends_on` variant
+  is load-bearing, because a third of the set has no fixed answer
+  (`data_write` with `op: "upsert"` is idempotent and with `op: "insert"` is
+  not), so the field names the input that decides rather than collapsing to a
+  boolean that would be wrong half the time.
+- **The data dialect's name errors suggest the name you meant.** An unknown
+  query- or write-envelope key, an unknown `on_conflict` key, an undeclared
+  entity and an undeclared column now carry an edit-distance suggestion, the
+  way unknown `ORION_*` variables and unknown task function names have since
+  1.0.
 
 ### Changed
 
 - **The MSRV now tracks Wasmtime's** (stable minus two); it is 1.98 in this
   release, unchanged. The release binary grows by roughly 6 MB for Cranelift.
-- Three migrations, one per backend, named `plugins` and `plugin_signatures`.
+- Two migrations per backend, named `plugins` and `plugin_signatures`.
   Expand-only: two new tables and one nullable column; nothing existing
-  changes.
+  changes. With `cron_scheduling` that is nine new migration files across the
+  three backends.
 - **`orion-server test` can express a refusal.** A case that names codes in
   `expect_errors` is asserting the failure, so the run halting on them is the
   pass rather than a failure of its own — previously the run's error was
@@ -122,6 +206,190 @@ schedules.
   credits a task that ran and failed: the engine records a trace step only
   after a task's result is handled, so a task that halted the workflow was
   reported as never having run.
+- **`db_read` refuses a statement that is not a read.** It gated on the
+  connector's `read` operation and then handed the statement to `fetch`, which
+  executes whatever it is given and merely streams back whatever rows appear.
+  `DELETE FROM audit_log RETURNING id` therefore ran on PostgreSQL and SQLite,
+  and a bare `DELETE`/`UPDATE`/`INSERT` ran on all three, with
+  `raw_write: false` and `delete: false` set on the connector — so the
+  operation gates advertised more than they enforced, and "delete-proof
+  connector" was a convention authors were asked to keep rather than a
+  property of the connector. A statement must now open with `SELECT`, `WITH`,
+  `VALUES` or `TABLE`; `EXPLAIN` is not admitted (`EXPLAIN ANALYZE DELETE …`
+  executes the delete) and neither is `PRAGMA`, which writes on SQLite. A
+  `WITH` carrying a data-modifying CTE is refused by shape. The scan strips
+  comments and every quoted form first, so it reads syntax rather than data:
+  `WHERE note = 'delete me'` is an ordinary read and `SELECT … FOR UPDATE` an
+  ordinary locking read. The statement was always a workflow-authored literal
+  with bound `params`, so this was never an injection route.
+- **SQL connectors run on the concrete driver, not `sqlx::Any`.**
+  `AnyTypeInfoKind` has nine variants and `sqlx-postgres` errors converting
+  anything it cannot spell, so ten PostgreSQL types — `uuid`, `numeric`,
+  `timestamptz`, `timestamp`, `date`, `json`, `jsonb`, arrays, enums and
+  `inet` — failed with "An internal engine error occurred" before Orion's own
+  decoder ran. The conversion is per row, so the failure was data-dependent:
+  `SELECT '{"a":1}'::json … WHERE false` returned `200 []` and the same query
+  with one row returned `500`. `db_read`, `data_query` and `data_write`'s
+  `returning` share the decoder and all three inherited it. Connector pools
+  now dispatch to PostgreSQL, MySQL or SQLite the way `storage::DbPool` has
+  for Orion's own database since 1.0; `install_default_drivers()` is gone.
+  (#309)
+- **`validate-config` checks the `storage.url` scheme on every deployment.**
+  The check sat inside `if config.cluster.enabled && …`, so `&&`
+  short-circuited it away for single-node deployments — which is nearly all of
+  them. `validate-config` exited `0` on
+  `[storage] url = "env://ORION_STATE_DB_URL"` and the server then died at
+  boot with "Unsupported database URL scheme". The check belongs to
+  `[storage]`, and the cross-section check keeps only the SQLite-vs-cluster
+  question it is actually about. (#311)
+- **dataflow-rs 3.10 → 3.12.** 3.11's `IssueCode::severity()` replaces the
+  hand-kept list of informational codes that `screen_workflow` used to decide
+  which of `check_workflow`'s findings were fatal. That list could only ever
+  be wrong in one direction, silently, on upgrade — it took a code edit for
+  3.9 and another for 3.10 to keep working channels serving, because a new
+  advisory (`UNGUARDED_VALIDATION` fires on a `validation` that collects
+  errors and carries on, which is what the built-in is documented to do) was
+  read as fatal and quarantined the channel at every ingress. Severity is now
+  a match with no wildcard arm upstream, so a code a later minor adds is
+  classified before it can reach a host. `Defect` (`MISSING_HANDLER`) is the
+  class that matters in the other direction: it builds cleanly and then fails
+  every message, so it still quarantines.
+- **`preflight` no longer fails a deploy over an advisory.** `run_preflight`
+  returned `Err` whenever the finding list was non-empty, so
+  `orion-server preflight || exit 1` failed on the very shape 3.10 went out of
+  its way not to quarantine. The report now has two sections and only the
+  first gates; advisories carry the engine's own `check` id so a pipeline can
+  grandfather one without silencing the rest, and the escaped template key
+  stays a break with its remedy.
+- **Trace reads answer `Cache-Control: no-store`.** Nothing previously stopped
+  a shared cache from storing the body, which is the submission's full result.
+  RFC 9111 lets a shared cache treat a response as private when the request
+  carried `Authorization`; `x-trace-token` is not that header, so the
+  protection never applied.
+
+### Deprecated
+
+- **The `?token=` query parameter on trace reads.** It reaches browser
+  history, reverse proxy and CDN access logs, analytics, the `Referer` of
+  whatever the page loads next, and every chat window a support ticket is
+  pasted into. The `x-trace-token` header reaches none of them. Removing it
+  outright would break a documented surface on a 1.x server, so it is still
+  accepted, answered with `Deprecation: true`, and counted by
+  `orion_trace_token_query_reads_total` — a deprecation nobody can measure is
+  one nobody can ever act on, and a sustained zero is what makes the removal
+  safe to schedule. Counted only when the token actually authorised, so
+  guessing does not inflate it, and a caller sending both forms is recorded as
+  using the header.
+
+### Fixed
+
+- **The engine and the channel estate are published as one generation.** A
+  reload rebuilt the two halves and stored them separately. Each store was
+  atomic and the *pair* was not, so a request arriving between them was
+  admitted against one generation and executed by the other; with the estate
+  published first, a just-activated channel was routable while the old engine
+  had no workflow for it, so the request matched zero workflows and came back
+  `200` carrying the caller's own input. `RuntimeGeneration { id, engine,
+  channels }` is now one value behind one `ArcSwap`, `publish` takes both
+  halves, and every ingress loads it exactly once per unit of work.
+- **Every response cap is enforced while streaming, not after.** `http_call`
+  and Elasticsearch (the connector's `max_response_size`), JWKS (256 KiB) and
+  an OAuth2 token response (64 KiB) enforced their caps by calling
+  `Response::bytes()` and measuring what came back — which reads to the end of
+  the body first, so a chunked response, or one with a missing or dishonest
+  `Content-Length`, was already resident before the check ran. The cap bounded
+  the value the caller received, not the memory spent refusing it.
+- **A panicking trace no longer permanently shrinks the queue.** The
+  dispatcher decremented the active-worker count and released the byte
+  reservation only *after* `process_trace` returned, so a panic skipped both.
+  `memory_bytes` is the admission authority in `TraceQueue::enqueue`, which
+  made the damage cumulative and permanent.
+- **Two backups in one second are two backups, not one `500`.** The filename
+  named a backup by the second it started in and `VACUUM INTO` refuses an
+  existing destination, so a double-click, a retry or a scheduler firing on a
+  boundary produced a `500`. Milliseconds narrow the window and a `_N`
+  collision suffix closes it; concurrent backups no longer race the retention
+  prune over the same files.
+- **An OAuth2 connector's 401 invalidation can no longer be dropped.**
+  `invalidate` attempted `try_lock` and silently did nothing when another task
+  held it — which is exactly when it matters, because that task is usually the
+  one about to publish a token. The rejected access token stayed eligible on
+  the lock-free fast path until its refresh margin came round, so the
+  connector answered 401 after 401 with a good refresh one call away.
+- **One slow JWKS issuer no longer stalls every other issuer.** The
+  single-flight lock was one `Mutex<()>` for every URL, held across a DNS
+  resolution plus a request bounded only by the 5 s fetch timeout, on the
+  request path a token verification is waiting on.
+- **`/health` no longer reports a background task as stopped before it
+  started.** On `trace_storage.mode = "async"` or `"batch"`, `/health`
+  reported `degraded` and `trace_persistence` `failed` for the life of the
+  process while the workers ran normally. (#310)
+- **A connector's audit row commits with the change.** Create, update and
+  delete committed the row and then queued the audit event, the window
+  `orion_audit_events_dropped_total` counts. A connector holds credentials, so
+  a delete landing with no audit row is a credential removed with no record of
+  who removed it.
+- **`data_write`'s `returning` set was the one unbounded read.**
+  `write.max_rows` caps the rows going in and nothing capped the rows coming
+  back, so an acknowledged unfiltered `update … returning` read a whole table
+  into memory inside a transaction. Capped at `query.max_limit` and streamed,
+  with the same reject-never-truncate rule `db_read` uses.
+- **A `data_query` with `include`s multiplied its query timeout.** Each
+  include leg started a fresh `QueryBudget`, so a query with three includes
+  could run for four times its connector's configured bound — on a degraded
+  database, the difference between a request that fails and one that outlives
+  its caller.
+- **An `include`'s parent keys are batched instead of one unbounded `IN`
+  list.** One bind parameter per parent key is fine at the default
+  `query.max_limit` of 1000 and stops being fine the moment an operator raises
+  it: PostgreSQL's protocol caps a statement at 65535 parameters and SQLite
+  builds before 3.32 at 999, and what the author saw was a driver error naming
+  neither the knob they turned nor the relation it broke. Batched at 1000, so
+  a default deployment issues exactly the query it always did.
+- **An Elasticsearch `_id` could be written but never read back.** ES keeps
+  `_id` outside `_source` and a search returns only `_source`; the write path
+  knew this and the read path did not, so a schema declaring the `id` → `_id`
+  rename got `{}` back for every hit — not an error, an empty object. That
+  made insert-then-update-by-id the single pattern Elasticsearch could not
+  express while every other backend could.
+- **A MySQL upsert with `action: "nothing"` emitted invalid SQL.** sea-query
+  renders the bare `do_nothing()` as `ON DUPLICATE KEY IGNORE`, which is not
+  MySQL syntax, so every such `data_write` failed at first traffic —
+  `resolve_write` is backend-neutral and `render_write` only rejected
+  `returning` for MySQL, so nothing caught it earlier.
+- **MongoDB write errors keep their classification, and a duplicate key is no
+  longer a `500`.** `data_write`'s Mongo branch stringified a `DataflowError`
+  that had already been shaped, routing every failure through
+  `QueryFailure::Backend` and discarding the classification one line after it
+  was built.
+- **A MongoDB document that would not serialize no longer vanishes from the
+  result.** `filter_map(|d| to_value(d).ok())` dropped it, so the caller got a
+  shorter array with nothing saying so and the row count silently disagreed
+  with the database. It is now a named error carrying the offending index, the
+  answer the SQL side already gave.
+- **Four SQL decode arms were keyed on type names sqlx does not agree with**,
+  so an ordinary column answered `400` on every row through `db_read`,
+  `data_query` (nested `include` rows included) and `data_write`'s
+  `RETURNING`. MySQL `BOOLEAN`/`BOOL`/`TINYINT(1)` — the standard MySQL
+  boolean — was among them.
+- **OAuth2 sign-in hardening**, found while building it: the `return_to` open
+  redirect is closed, a spent state cookie is retired on every outcome, the
+  key a failed sign-in never used is handed back, sign-in routing is checked
+  on every channel update rather than only at create, and the authorize leg is
+  traced.
+- **`orion-client` sends a channel name as one path segment.** Path values
+  were interpolated verbatim into a string reqwest then parses as a URL, so a
+  `/`, `?` or `#` inside a value restructured the request instead of
+  travelling inside it. Entity ids are constrained server-side and were safe;
+  a channel *name* is not, so a channel named `orders/v2` was reachable over
+  plain HTTP and unreachable from `orion-cli` and `orion-server package`.
+- **`orion-cli`: one trace wait, and a timeout a caller can actually detect.**
+  `traces wait` and `send --async-mode --wait` polled the same endpoint
+  through the same states from two implementations, and had drifted on the
+  rendering and exit code of every outcome that separates them — which hurt
+  exactly the callers most likely to be scripting against them.
+- **`orion-cli`: a present plugin manifest answers for its plugin's
+  functions**, rather than reporting them as unknown.
 
 ## [1.5.1] - 2026-09-01
 

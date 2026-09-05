@@ -128,7 +128,7 @@ When a workflow, channel, or connector fails strict validation on create or upda
     "details": [
       { "path": "tasks[0].function.input.connector", "code": "REQUIRED", "message": "is required" },
       { "path": "channel.protocol", "code": "INVALID", "message": "unknown protocol",
-        "expected": ["rest", "http", "kafka"], "got": "grpc" }
+        "expected": ["rest", "http", "kafka", "cron"], "got": "grpc" }
     ]
   }
 }

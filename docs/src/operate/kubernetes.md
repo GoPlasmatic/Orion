@@ -181,6 +181,34 @@ it off with `metrics.enabled=false` — the alerts in
 [Monitoring › What to alert on](./monitoring.md#what-to-alert-on) then have no
 scrape target.
 
+### Plugins and schedules
+
+Neither has a chart value; both are `ORION_*` overrides through `extraEnv`,
+which every replica shares. Each has one consequence worth planning for.
+
+```yaml
+extraEnv:
+  - name: ORION_PLUGINS__ENABLED
+    value: "true"
+  - name: ORION_CRON__ENABLED
+    value: "false"
+```
+
+[Plugins](../concepts/plugins.md) are **off** by default. Turning them on makes
+the sandbox's pooling allocator reserve
+`max_live_instances × max_memory_bytes` of address space at startup — 16 GiB
+with the defaults. It is *virtual*, not resident, so it does not belong in
+`resources.requests`; it does matter wherever a container limits virtual
+memory.
+
+The [cron scheduler](../guides/scheduled-workflows.md) is **on** by default,
+and every replica must agree. A mixed setting quarantines an active cron
+channel on the replicas that have it off and runs it on the rest — visible as
+`components.cron: degraded` on `/health`, but not what anyone meant. Nothing
+else needs configuring for a multi-replica install: occurrence identity, claim
+leases and singletons all live in the shared database, and there is no leader
+to elect.
+
 ## Upgrades
 
 ```bash

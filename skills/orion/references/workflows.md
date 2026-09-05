@@ -50,6 +50,13 @@ only to the engine's supported maximum depth; lint reports violations.
 completes. Use it for explicit successful exits. Use a halting `filter` when
 termination depends on a predicate evaluated as a task.
 
+`halt_on: "failure"` is the outcome axis to `terminal`'s position axis: it ends
+the workflow when *that step failed* — a status of 400 or above, which includes
+a `validation` rule that did not pass. The two compose by `or`, and a step that
+halts this way keeps its own status on the audit trail rather than the 299 a
+halting `filter` records. Reach for it when a check must actually stop the
+pipeline; a bare `validation` collects its messages and carries on by design.
+
 ## Fragments and shared values
 
 Definition directories may contain shared values referenced by `$from` and

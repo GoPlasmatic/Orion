@@ -75,8 +75,11 @@ supported-version window, the MSRV, and the platform matrix.
 ## Per-version guides
 
 - [Upgrading to 1.6.0](./upgrading-to-1.6.md): from 1.5.x. A minor release
-  that adds the plugin sandbox, off by default: three expand-only migrations,
-  a larger binary, and an MSRV rule that now follows Wasmtime's.
+  that adds the plugin sandbox (off by default) and cron channels (the
+  scheduler is on): nine expand-only migrations, three behaviour changes to
+  check — a stricter `db_read`, a `validate-config` check that no longer
+  short-circuits, and a deprecated trace token parameter — a larger binary,
+  and an MSRV rule that now follows Wasmtime's.
 - [Upgrading to 1.2.0](./upgrading-to-1.2.md): from 1.1.x. A minor release:
   seven behaviour changes, two of them breaking for offline test suites and
   the CLI's removed MCP server.

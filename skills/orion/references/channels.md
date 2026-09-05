@@ -20,10 +20,11 @@ A channel names one workflow and one ingress shape:
 }
 ```
 
-`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, or
-`kafka`; it is immutable across versions. HTTP channels require methods and a
+`channel_type` is `sync` or `async`. Protocol is `rest`, `http`, `kafka`, or
+`cron`; it is immutable across versions. HTTP channels require methods and a
 route pattern. Kafka channels use a topic and optional consumer group. Route
-parameters arrive in `metadata.params`.
+parameters arrive in `metadata.params`. A `cron` channel declares none of those
+routing fields and must be `async` — see [Cron channels](#cron-channels).
 
 The workflow must be active before its channel can activate. Use channel
 activation `--dry-run` because it verifies route collisions, workflow
@@ -49,17 +50,21 @@ Unknown channel config keys are rejected. Important blocks are:
 
 Guard applicability differs by ingress:
 
-| Guard | Sync HTTP | Async HTTP | Kafka | `channel_call` |
-|---|:---:|:---:|:---:|:---:|
-| rate limit | yes | yes | yes | yes |
-| auth / origin | yes | yes | no | no |
-| validation | yes | yes | yes | yes |
-| deduplication | yes | yes | yes | no |
-| response cache | yes | no | no | no |
-| backpressure / timeout | yes | yes | yes | yes |
+| Guard | Sync HTTP | Async HTTP | Kafka | `channel_call` | Cron |
+|---|:---:|:---:|:---:|:---:|:---:|
+| rate limit | yes | yes | yes | yes | no |
+| auth / origin | yes | yes | no | no | no |
+| validation | yes | yes | yes | yes | yes |
+| deduplication | yes | yes | yes | no | no |
+| response cache | yes | no | no | no | no |
+| backpressure / timeout | yes | yes | yes | yes | yes |
+| `oauth2_login` | yes | no | no | no | no |
 
 The order is rate limit, authentication, origin, validation, deduplication,
-cache lookup, then backpressure. This affects accounting and failure behavior.
+cache lookup, backpressure, then `oauth2_login`. This affects accounting and
+failure behavior. Cron is mostly No because that ingress has no caller at all;
+what it refuses, it refuses at authoring time rather than storing and
+ignoring.
 
 Admin authentication protects admin routes only. A data channel without its own
 `auth` block is unauthenticated to anyone who can reach the data-plane port.
@@ -108,6 +113,64 @@ strings manually.
 
 Shaping is sync-only. Async ingress always returns an acknowledgement and the
 final result belongs to its trace.
+
+## Cron channels
+
+A `cron` channel is started by a clock. It must be `channel_type: "async"`, and
+its schedule lives in `transport_config` beside `config`:
+
+```json
+{
+  "channel_id": "nightly-rollup",
+  "name": "nightly-rollup",
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "order-rollup",
+  "transport_config": {
+    "schedule": "0 15 2 * * *",
+    "timezone": "Asia/Kolkata",
+    "payload": { "window": "previous_day" },
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid" }
+  }
+}
+```
+
+The expression has **six** fields (second first). Five- and seven-field forms
+are refused rather than guessed at, as are time-zone abbreviations and an
+expression with no occurrence in the next five years. Unknown
+`transport_config` keys are refused, so a misspelled `misfire_polcy` is an
+error rather than a default left in place forever.
+
+The payload arrives where a request body does — read it with `parse_json` from
+`payload` — so a workflow is portable between a route and a schedule. The
+schedule adds a reserved `metadata.trigger`: `type` (`cron` or `manual`),
+`occurrence_id`, `scheduled_for`, `started_at`, `timezone`, `attempt`,
+`singleton_key`. `scheduled_for` is the idempotency key: immutable across
+retries, unique per occurrence.
+
+`misfire_policy` is `skip`, `latest` (default) or `catch_up` (which requires
+`max_catch_up`, 1–1000); whatever the policy, misses are recorded as one
+`skipped_misfire` row carrying the count and range, not one row per instant.
+`concurrency.policy = "forbid"` admits one occurrence per `key` (default: the
+channel id) at a time across the whole cluster, recording contenders as
+`skipped_singleton`. Non-overlap is not exactly-once — a worker that loses its
+lease cancels but cannot prove a connector call did not land, so work that must
+not be applied twice still needs an idempotent destination.
+
+Everything caller-shaped is refused at authoring: the routing fields,
+`config.auth`, `origin_allow_list`, `rate_limit`, `deduplication`, `cache`,
+`request`, `response` and `oauth2_login`. The channel is also unreachable over
+HTTP and by `channel_call` — running it either way would execute the workflow
+outside the ledger and outside its lock. Use `orion-cli channels trigger` for a
+manual run; it takes the same claim and singleton. Read the ledger with
+`orion-cli cron status|list|get`, and `cron retry` for another attempt at the
+same occurrence.
+
+The node must have `cron.enabled` (the default). An active cron channel on a
+node with the scheduler off is quarantined, `components.cron` degrades, and
+activation is refused outright — a stored schedule that silently never fires is
+the failure an operator cannot see.
 
 ## Stored configuration values
 

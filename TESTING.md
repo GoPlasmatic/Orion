@@ -34,24 +34,25 @@ Three principles shape the setup:
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
-| Touched a **rider crate** (`orion-api`, `orion-client`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all four crates share `workspace.package.version` and a release moves it |
-| Touched the MSRV surface (new language features) | `cargo +1.88.0 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
+| Touched a **rider crate** (`orion-api`, `orion-client`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all five crates share `workspace.package.version` and a release moves it |
+| Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
 
-Inline `#[cfg(test)]` modules across all four crates: `orion-server`
+Inline `#[cfg(test)]` modules across all five crates: `orion-server`
 (config parsing, error mapping, validation/SSRF, query lowering, the
 definition-set loader and its cross-reference pass, the shared-definition
 `$from`/fragment resolver, the step flattener, …),
 `orion-cli` (string helpers and benchmark statistics only — see Known gaps),
 `orion-api` (wire-contract serde: envelope shapes, skew-tolerant defaults,
-enum round-trips), and `orion-client` (path builders, error classification).
+enum round-trips), `orion-client` (path builders, error classification), and
+`orion-plugin-sdk` (the JSON boundary and the error classes of the guest ABI).
 
 ```bash
-cargo test --workspace          # what CI runs (server + CLI + both lib crates)
+cargo test --workspace          # what CI runs (server + CLI + the three lib crates)
 cargo test -p orion-api         # one crate
 ```
 
@@ -140,12 +141,12 @@ just test-containers    # all of the below, in CI's exact invocations
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
 
-*Needs Docker. CI: `integration-containers` job — kept drift-free by
-`ci_filter_drift_test`.*
+*Needs Docker. CI: `integration-containers` job, a seven-leg matrix (one
+runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
 
-The workspace-level suite at the repo root: 14 shell suites drive a real
+The workspace-level suite at the repo root: 17 shell suites drive a real
 `orion-server` binary over HTTP with the `orion-cli` binary, both built from
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.
@@ -212,7 +213,7 @@ The examples are executable and CI treats them as a gate (`examples` job):
 
 ## Layer 8 — benchmarks (manual, recorded per release)
 
-`crates/orion-server/tests/benchmark/bench.sh` (six `hey` scenarios, plus a
+`crates/orion-server/tests/benchmark/bench.sh` (seven `hey` scenarios, plus a
 `cluster` mode against the HA compose stack). Not in CI — numbers from
 shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
@@ -221,9 +222,10 @@ each release's record is committed under `crates/orion-server/tests/benchmark/re
 ## CI at a glance
 
 Push/PR: `changes`, `fmt`, `lint`, `msrv`, `test`, `cli-e2e`, `examples`,
-`integration-containers` (a six-leg matrix, one runner per container suite),
+`integration-containers` (a seven-leg matrix, one runner per container suite),
 `coverage`, `deny`, `package`, `book`, `helm`, `docker-build` — plus
-`mutants` on PRs and `ha-drill`/`cross-os-build` when their paths change.
+`mutants` on PRs, `plugin-sdk` and `ha-drill`/`cross-os-build` when their
+paths change.
 `changes` is the path gate for `package`; a weekly `schedule` run does the
 whole lot unconditionally, including the two checks trimmed on the push path
 (`msrv`'s full suite, `package`). Release tags gate on a green CI run for the
@@ -241,13 +243,13 @@ recompiled from cold.
   `commands/benchmark/stats.rs`); output formatting and error hints are
   exercised only indirectly, through the e2e suite's assertions on command
   output.
-- **The e2e suite invokes 15 of the CLI's 16 command groups.** The seven the
+- **The e2e suite invokes 17 of the CLI's 18 command groups.** The nine the
   lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
-  `send`, `traces`, `engine`, `health`) plus eight covered at smoke depth by
-  `suites/14_read_only_commands.sh` (`functions`, `metrics`, `audit-logs`,
-  `backups`, `packages`, `dlq`, `completions`, `config`) — enough to catch a
-  broken output shape or envelope, not enough to call them tested. `benchmark`
-  is never invoked.
+  `send`, `traces`, `engine`, `health`, `plugins`, `cron`) plus eight covered
+  at smoke depth by `suites/14_read_only_commands.sh` (`functions`, `metrics`,
+  `audit-logs`, `backups`, `packages`, `dlq`, `completions`, `config`) —
+  enough to catch a broken output shape or envelope, not enough to call them
+  tested. `benchmark` is never invoked.
 - **The e2e suite runs SQLite only.** Backend variance is covered at the
   integration layer (layer 3); duplicating the shell suite per backend was
   judged not worth the CI cost.

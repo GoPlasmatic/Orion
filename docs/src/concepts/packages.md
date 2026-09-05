@@ -1,4 +1,4 @@
-<!-- description: A package is one Orion service versioned as a unit — its channels, workflows and connectors, and the boundary along which a service ships between instances. -->
+<!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors and plugins — and the boundary along which a service ships. -->
 # Packages
 
 A **package** is one service, named and versioned as a unit: the channels it

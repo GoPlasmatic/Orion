@@ -79,15 +79,19 @@ via `crate::common::…`, and add `mod <name>_test;` to
 
 ### What's Covered
 
-Thematically: admin API CRUD/versioning/lifecycle for workflows, channels and
-connectors; data-plane routing and pipelines; the portable
-`data_query`/`data_write` dialects; resilience (rate limiting, dedup,
-response caching, circuit breakers, backpressure, drain/shutdown); async
-traces and the DLQ; security (auth, secret masking, SSRF, trace redaction);
-TLS (certificates are generated in-process with `rcgen`, so these always
-run); CLI subcommands; the authoring layer (compiling a definition set, and
-the admin API's refusal of uncompiled source form); OpenAPI; and end-to-end
-scenario walks. For the full module-by-module list:
+Thematically: admin API CRUD/versioning/lifecycle for workflows, channels,
+connectors and plugins; data-plane routing and pipelines; the portable
+`data_query`/`data_write` dialects; the cron scheduler (the reconciler, the
+claim/settle loop, the DST and misfire rules, the occurrence ledger);
+resilience (rate limiting, dedup, response caching, circuit breakers,
+backpressure, drain/shutdown); async traces and the DLQ; security (auth,
+secret masking, SSRF, trace redaction); the plugin sandbox (the Wasmtime
+runtime, the manifest, the ABI cases, the SDK's copy of the WIT); TLS
+(certificates are generated in-process with `rcgen`, so these always run);
+CLI subcommands; the authoring layer (compiling a definition set, and the
+admin API's refusal of uncompiled source form); the formatter and the clippy
+rule registry; OpenAPI; and end-to-end scenario walks. For the full
+module-by-module list:
 
 ```bash
 cargo test --test integration -- --list
@@ -111,7 +115,7 @@ are `#[ignore]`d so the default run stays Docker-free:
 # raw-SQL backends, the column-type matrix and the portable-dialect
 # round-trips on the first line; Mongo/ES connectors, Redis cache/dedup,
 # dynamic inputs and Vault on the second; Kafka channels on its own.
-cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test
+cargo test --test integration -- --ignored postgres_test mysql_test db_column_types_test data_roundtrip_test data_parity_test integrity_errors_test
 cargo test --test integration -- --ignored mongodb_test es_test connector_redis_test dynamic_inputs_test vault_test
 cargo test --test integration -- --ignored kafka_test
 
@@ -128,13 +132,13 @@ cargo test --test cluster -- --ignored --test-threads=1
 
 CI runs exactly these invocations in the `integration-containers` job
 (`.github/workflows/ci.yml`), one runner per invocation: the job is a
-`fail-fast: false` matrix whose `run:` values are the six commands above, in
+`fail-fast: false` matrix whose `run:` values are the seven commands above, in
 this order. Kafka has a leg of its own because sharing one invocation with
 the other containers starves the brokers. Running them as separate legs
 rather than sequential steps is also what keeps a flaky broker from hiding a
 real Postgres or schema-parity failure — the property the old steps got from
 `if: !cancelled()` — and it costs the wall clock of the slowest leg instead
-of the sum of all six (20.6 minutes, measured 2026-08-29).
+of the sum of them all (20.6 minutes, measured 2026-08-29).
 
 Because those filters are the only thing that ever selects an `#[ignore]`d
 test, a module missing from them runs **nowhere** — not locally (ignored) and
@@ -181,6 +185,6 @@ Each run writes a `SUMMARY.md` plus raw per-scenario `hey` output to
 `tests/benchmark/results/`. Scratch runs stay local — `.gitignore` ignores
 the directory — but each release's record is committed to a
 `results/vX.Y.Z/` directory that `.gitignore` re-includes explicitly (see
-the tracked `results/v0.2.0/`, and `RELEASING.md` for the release-session
-procedure). The headline numbers live in the README's
+the tracked `results/v0.2.0/` and `results/v1.0.0/`, and `RELEASING.md` for
+the release-session procedure). The headline numbers live in the README's
 [Performance](../README.md#performance) section.

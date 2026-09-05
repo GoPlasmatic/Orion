@@ -43,6 +43,13 @@ orion-server test ./workflow-tests
 - `validate-config`, `preflight`, and `test-connectivity` are operator
   workflows; inspect help because they may load config or contact dependencies.
 - `dump-openapi` emits the built server's API contract.
+- All five offline commands take `--plugin-dir <dir>` (and find a
+  `plugin.toml` already in the tree without it). With a manifest in hand,
+  plugin task inputs are validated as the admin API validates them and
+  `dry-run` / `test` run the component for real — plugin functions are never
+  stubbed. A function no manifest covers is reported unverifiable, not
+  invalid; a function whose component is absent fails as
+  `PLUGIN_ARTIFACT_UNAVAILABLE`.
 
 Assert trace/task state and intermediate context, not only final output.
 
@@ -57,8 +64,9 @@ orion-server compile ./definitions \
 ```
 
 Compilation resolves `$from` and `use`, validates the expanded set, and emits
-a deployable artifact. The admin API refuses unresolved source syntax. Other
-output formats exist for per-file/bulk import; inspect `compile --help`.
+a deployable artifact — inlining any `plugin.toml` in the tree together with
+its component. The admin API refuses unresolved source syntax. Other output
+formats exist for per-file/bulk import; inspect `compile --help`.
 
 ## Live lifecycle
 
@@ -74,8 +82,20 @@ orion-cli workflows activate order-processing --dry-run
 orion-cli workflows activate order-processing
 ```
 
-For a new ID, use `create`. Channels follow the same draft/version/activation
-model. Activate their workflow first.
+For a new ID, use `create`. Channels and plugins follow the same
+draft/version/activation model. Activate a channel's workflow first, and a
+workflow's plugins before the workflow:
+
+```bash
+orion-cli plugins create -f plugin.toml      # the component is read beside it
+orion-cli plugins activate <plugin-id>
+orion-cli plugins dependencies <plugin-id>   # what would break on archive
+```
+
+A plugin version whose schema an active dependant no longer satisfies is
+refused activation with a `409`. `plugins create --signature` is required when
+the server configures `[plugins.trust]`. All of it answers `400` when
+`plugins.enabled` is off.
 
 Transition dry-runs return findings in HTTP 200; the CLI maps invalid findings
 to exit code 1, so gate automation on the exit code.
@@ -124,6 +144,27 @@ make a trace ID unavailable, so handle null/missing IDs.
 DLQ retry repeats external effects. Inspect the failure and idempotency
 guarantees before retrying and honor confirmation prompts.
 
+## Scheduled work
+
+A cron channel has no caller, so `send` cannot reach it. Its runs are read from
+the occurrence ledger and started, when started by hand, through the channel:
+
+```bash
+orion-cli cron status                  # what is scheduled, next fire, last result
+orion-cli cron list --channel-id nightly-rollup --status failed
+orion-cli cron get <occurrence-id>
+orion-cli cron retry <occurrence-id>   # same occurrence: same id, same scheduled_for
+orion-cli channels trigger nightly-rollup   # a new manual occurrence
+```
+
+`retry` and `trigger` answer different questions: `retry` is another attempt at
+work that was due at a past instant, `trigger` is new work now. Both take the
+same claim and singleton a scheduled run takes, so neither can run beside a
+`forbid` schedule's live occurrence.
+
+A backlog of `pending` occurrences means the scheduler is behind or off; check
+`components.cron` on `/health` and the node's `cron.enabled`.
+
 ## Packages and promotion
 
 Packages compute dependency closure, plan conflicts, apply in dependency order,
@@ -163,6 +204,11 @@ Common causes:
 - unexpected object output: check operator spelling/template behavior.
 - unavailable channel: inspect workflow activity, rollout partition, connector
   references, and quarantine findings.
+- a cron channel never fires: check `cron.enabled` on every node,
+  `components.cron` on `/health`, and the channel's quarantine finding.
+- a workflow naming a plugin function is quarantined: check `plugins.enabled`,
+  the plugin's status, and that its active version still declares that
+  function.
 - imported connector fails: supply secrets masked from the export.
 - stored state differs from traffic: finish the deferred reload.
 

@@ -107,8 +107,8 @@ The normal production shape: gateway at the edge, Orion behind it.
   WebAssembly task functions that transform a message and nothing else —
   no request filters, no Lua, no hooks into the transport. It extends
   [by configuration, and by pure code in a sandbox](../concepts/how-orion-works.md#what-you-can-extend).
-- **No ingress beyond REST, plain HTTP and Kafka.** No gRPC, no WebSockets, no
-  streaming responses.
+- **No ingress beyond REST, plain HTTP, Kafka and a cron schedule.** No gRPC,
+  no WebSockets, no streaming responses.
 
 ## Related
 

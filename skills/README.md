@@ -39,6 +39,10 @@ system prompt or project instruction.
 ## What the agent needs beside it
 
 - `orion-cli` on `PATH` ([install](https://docs.goplasmatic.io/getting-started/install.html)).
+- `orion-server` on `PATH` too, for the offline half — `fmt`, `lint`,
+  `clippy`, `dry-run`, `test`, `compile` and `package` all run locally against
+  files, with no instance involved. The skill leads with them, because a
+  finding is cheapest before a server write.
 - A reachable instance: `orion-cli config set-server http://localhost:8080`,
   or `ORION_SERVER_URL`.
 - An API key if the instance has admin auth on — `ORION_API_KEY`.
@@ -54,10 +58,10 @@ orion/
 ├── SKILL.md                    # loaded first: concepts, lifecycle, and operating path
 └── references/
     ├── workflows.md            # workflow JSON, task groups, fragments, data context, loops
-    ├── functions.md            # function selection, schemas, expression-capable inputs
+    ├── functions.md            # function selection, schemas, plugin functions, retry safety
     ├── expressions.md          # JSONLogic evaluation and silent-failure edges
-    ├── channels.md             # ingress guards, responses, stored config, connectors
-    └── cli.md                  # offline checks, lifecycle, packages, troubleshooting
+    ├── channels.md             # ingress guards, cron schedules, responses, stored config, connectors
+    └── cli.md                  # offline checks, lifecycle, plugins, cron, packages, troubleshooting
 ```
 
 `SKILL.md` is what enters the agent's context up front; the `references/` files

@@ -1,8 +1,8 @@
 # Orion
 
-> Orion is a high-performance declarative runtime for microservices, AI agent tools, business rules, event processing, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST endpoints or Kafka topics) via an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
+> Orion is a declarative services runtime for microservices, AI agent tools, business rules, event processing, scheduled jobs, and webhook data ingestion. Logic is declared as JSON specifications and exposed through channels (REST routes, plain HTTP, Kafka topics, or a cron schedule) via an administrative REST API, which orion-cli drives from the terminal. Rate limiting, circuit breaking, caching, payload validation, versioning, and observability are managed directly by the runtime. Written in Rust; single executable binary with embedded SQLite by default (PostgreSQL/MySQL optional).
 
-Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested via dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka) referenced from tasks by name. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
+Key facts: workflows are pipelines of tasks using JSONLogic; everything is created as a draft, tested via dry-run, then activated (the engine hot-reloads); active versions are immutable; connectors are named connections to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka) referenced from tasks by name; a plugin adds a custom task function as a sandboxed WebAssembly component. The full documentation concatenated into one file is at https://docs.goplasmatic.io/llms-full.txt
 
 
 ## Getting started
@@ -77,8 +77,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Back Up & Restore](https://docs.goplasmatic.io/operate/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
 - [Audit Logs](https://docs.goplasmatic.io/operate/audit-logs.html): filtering, change context, retention, dropped-event alerting
 - [Upgrades](https://docs.goplasmatic.io/operate/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
-- [Upgrading to 1.7.0](https://docs.goplasmatic.io/operate/upgrading-to-1.7.html): the 1.6.x → 1.7.0 behaviour changes — cron channels, three expand-only migrations, the new [cron] section
-- [Upgrading to 1.6.0](https://docs.goplasmatic.io/operate/upgrading-to-1.6.html): the 1.5.x → 1.6.0 behaviour changes — plugins off by default, three migrations, a new MSRV
+- [Upgrading to 1.6.0](https://docs.goplasmatic.io/operate/upgrading-to-1.6.html): the 1.5.x → 1.6.0 behaviour changes — plugins off by default, the cron scheduler on by default, nine migrations, a stricter `db_read` and `validate-config`, a deprecated trace token parameter
 - [Upgrading to 1.2.0](https://docs.goplasmatic.io/operate/upgrading-to-1.2.html): the six 1.1.x → 1.2.0 behaviour changes, including the breaking `expect` path root and the two that can turn a green CI gate red
 - [Upgrading to 1.1.0](https://docs.goplasmatic.io/operate/upgrading-to-1.1.html): the five 1.0.x → 1.1.0 behaviour changes, including the rate-limit key that now refuses instead of collapsing every caller into one bucket
 - [Upgrading to 1.0.0](https://docs.goplasmatic.io/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
