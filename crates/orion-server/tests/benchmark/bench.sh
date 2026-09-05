@@ -733,11 +733,28 @@ scenario_cluster() {
 # difference between the two rows is what a plugin invocation costs per
 # request over an in-engine expression. The component is the test fixture,
 # uploaded through the admin API exactly as `orion-cli plugins create` does.
+# One top-level string from a plugin manifest. Not `tomllib`: that is Python
+# 3.11+, and this script should run wherever `python3` does — 22.04 LTS still
+# ships 3.10. `name` and `component` are bare assignments above the first
+# `[[functions]]` table, so reading that much of the grammar is enough.
+manifest_field() {
+    python3 -c 'import re,sys
+path, want = sys.argv[1], sys.argv[2]
+for line in open(path, encoding="utf-8"):
+    line = line.strip()
+    if line.startswith("["):
+        break
+    m = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\"([^\"]*)\"", line)
+    if m and m.group(1) == want:
+        print(m.group(2))
+        sys.exit(0)
+sys.exit(f"{path}: no top-level {want} = \"...\"")' "$1" "$2"
+}
+
 create_and_activate_plugin() {
     local manifest="$1"
     local component
-    component="$(dirname "$manifest")/$(python3 -c 'import sys, tomllib
-print(tomllib.load(open(sys.argv[1], "rb"))["component"])' "$manifest")"
+    component="$(dirname "$manifest")/$(manifest_field "$manifest" component)"
     python3 -c 'import base64, json, sys
 manifest = open(sys.argv[1]).read()
 component = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
@@ -745,8 +762,7 @@ json.dump({"manifest": manifest, "component": component}, sys.stdout)' "$manifes
         | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/plugins" \
             -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
     local id
-    id=$(python3 -c 'import sys, tomllib
-print(tomllib.load(open(sys.argv[1], "rb"))["name"])' "$manifest")
+    id=$(manifest_field "$manifest" name)
     curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/plugins/${id}/status" \
         -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || true
     curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/functions" 2>/dev/null \

@@ -64,6 +64,26 @@ v = d.get(sys.argv[2])
 print("" if v is None else v)' "$1" "$2"
 }
 
+# One top-level string from a plugin manifest. Deliberately not `tomllib`:
+# that is Python 3.11+, and this script promises to run on `python3` — which
+# is still 3.10 on Ubuntu 22.04 LTS, and was the CI runner that caught it.
+# The two keys it is ever asked for (`name`, `component`) are bare top-level
+# assignments above the first `[[functions]]` table, so reading exactly that
+# much of the grammar is enough and stays honest about its limits.
+manifest_field() {
+  python3 -c 'import re,sys
+path, want = sys.argv[1], sys.argv[2]
+for line in open(path, encoding="utf-8"):
+    line = line.strip()
+    if line.startswith("["):
+        break            # a table header ends the top-level block
+    m = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\"([^\"]*)\"", line)
+    if m and m.group(1) == want:
+        print(m.group(2))
+        sys.exit(0)
+sys.exit(f"{path}: no top-level {want} = \"...\"")' "$1" "$2"
+}
+
 have()   { curl -fsS "$1" > /dev/null 2>&1; }
 active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
 
@@ -79,19 +99,19 @@ channel_files()  { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true
 # create -f` sends — manifest text plus the component as base64.
 PLUGIN_FILE="$DIR/plugin.toml"
 if [[ -f "$PLUGIN_FILE" ]]; then
-  PLUGIN_ID=$(python3 -c 'import sys, tomllib
-print(tomllib.load(open(sys.argv[1], "rb"))["name"])' "$PLUGIN_FILE")
+  PLUGIN_ID=$(manifest_field "$PLUGIN_FILE" name)
+  PLUGIN_COMPONENT=$(manifest_field "$PLUGIN_FILE" component)
   if have "$ADMIN/plugins/$PLUGIN_ID"; then
     echo "==> Plugin '$PLUGIN_ID' already exists"
   else
     echo "==> Create plugin '$PLUGIN_ID'"
-    python3 -c 'import base64, json, os, sys, tomllib
-manifest_path = sys.argv[1]
-text = open(manifest_path).read()
-component = tomllib.loads(text)["component"]
+    python3 -c 'import base64, json, os, sys
+manifest_path, component = sys.argv[1], sys.argv[2]
+text = open(manifest_path, encoding="utf-8").read()
 with open(os.path.join(os.path.dirname(manifest_path), component), "rb") as f:
     encoded = base64.b64encode(f.read()).decode()
-json.dump({"manifest": text, "component": encoded}, sys.stdout)' "$PLUGIN_FILE" \
+json.dump({"manifest": text, "component": encoded}, sys.stdout)' \
+        "$PLUGIN_FILE" "$PLUGIN_COMPONENT" \
       | curl --fail-with-body -sS -X POST "$ADMIN/plugins" \
           -H 'Content-Type: application/json' --data @- > /dev/null
   fi
