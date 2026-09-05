@@ -46,6 +46,8 @@ use dataflow_rs::{Template, TemplateCompiler};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
+use super::registry::FieldSpec;
+
 /// A task's `input` as authored, plus one compiled [`Template`] per field the
 /// registry marks as an expression.
 #[derive(Debug, Default)]
@@ -104,12 +106,41 @@ impl TemplatedInput {
         handler: &'static str,
         c: &TemplateCompiler,
     ) -> dataflow_rs::Result<()> {
+        let fields = super::registry::FunctionRegistry::builtin()
+            .get(handler)
+            .and_then(|e| e.input_fields.as_deref())
+            .unwrap_or(&[]);
+        self.compile_fields(handler, fields, c)
+    }
+
+    /// Compile every field `fields` declares an expression.
+    ///
+    /// The table itself rather than a name to look one up by, for a handler
+    /// whose table is per-registration data: a plugin function's comes from
+    /// its manifest, and one handler type serves every function a manifest
+    /// declares, so only the instance knows which table applies. That handler
+    /// passes its own from `compile_input_with(&self, …)`; [`Self::compile`]
+    /// is the same call with the static table looked up by name.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::compile`].
+    pub fn compile_fields(
+        &mut self,
+        handler: &str,
+        fields: &[FieldSpec],
+        c: &TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
         let Some(object) = self.raw.as_object() else {
             return Ok(());
         };
         let mut compiled = HashMap::new();
         for (field, value) in object {
-            let at = super::registry::FunctionRegistry::builtin().template_paths(handler, field);
+            let at = fields
+                .iter()
+                .find(|f| f.answers_to(field))
+                .map(|f| f.template_at)
+                .unwrap_or(&[]);
             if at.contains(&"") {
                 let mut template = Template::from(value.clone());
                 template.compile(c, &format!("{handler}.{field}"))?;
@@ -134,6 +165,28 @@ impl TemplatedInput {
     /// The authored input, for the fields read as written.
     pub fn raw(&self) -> &Value {
         &self.raw
+    }
+
+    /// This field's value for this message when it was compiled as an
+    /// expression, else `None` — the caller's cue to read the field as
+    /// written, or to fold it if its table says `resolvable`.
+    ///
+    /// For a handler that walks its own table rather than asking
+    /// [`Self::value_of`] per field: it already knows which fields are
+    /// templates, and this is the one lookup that does not consult the static
+    /// registry on the way.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::value_of`].
+    pub fn template_value(
+        &self,
+        field: &str,
+        ctx: &TaskContext<'_>,
+    ) -> Option<Result<Value, DataflowError>> {
+        self.templates
+            .get(field)
+            .map(|template| template.resolve(ctx).map(|v| Value::from(&v)))
     }
 
     /// The authored value of one field, as written. Never evaluated — use

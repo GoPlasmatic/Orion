@@ -6,7 +6,8 @@
 //! [`FunctionEntry`](crate::engine::FunctionEntry) values and
 //! `AsyncFunctionHandler` implementations for a generation to carry, and
 //! names nothing above them but the task supervisor it hands the ticker to.
-//! See `plugin.md` for the design.
+//! See `docs/src/concepts/plugins.md` for the design and
+//! `docs/src/reference/plugins.md` for the manifest, ABI and limits.
 
 pub mod error;
 pub mod handler;

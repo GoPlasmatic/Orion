@@ -46,13 +46,23 @@ required = true
 | `functions[].output_default_root` | `data`, `temp_data` or `metadata`: where the result lands when a task names no `output`. Absent means a task must name one. |
 | `functions[].input_fields[].kind` | `string`, `number`, `bool`, `object`, `array` or `any`. |
 | `functions[].input_fields[].required` | Refused at create time when absent. |
-| `functions[].input_fields[].resolvable` | `{"var": …}` nodes in the field are folded against the message before the guest sees it. |
+| `functions[].input_fields[].template_at` | `true` makes the field's value a JSONLogic expression: compiled once when the workflow loads, evaluated per message, and the guest receives the result — the same `template_at: [""]` a built-in's field declares in the catalogue. |
+| `functions[].input_fields[].resolvable` | `{"var": …}` nodes in the field are folded against the message before the guest sees it. Not combinable with `template_at`, which already evaluates `var`. |
 
 Unknown keys, an unsupported `abi`, an invalid kind, a reserved name and a
 declared `output` all reject the upload, with a path into the document.
 `output` is implicit on every function: a task may always name where its
-result goes. `template_at` and `secret_at` are not accepted — a plugin never
-sees key material, and a plugin field is folded or literal.
+result goes. A field is evaluated (`template_at`), folded (`resolvable`) or
+literal; `secret_at` does not exist, and a `{"secret": …}` node is refused at
+create time anywhere in a plugin task's input — a plugin never sees key
+material.
+
+Activating a version checks every active workflow that calls its functions
+against the schema it declares: a field renamed or newly required between
+versions is refused with a `409` naming the workflow, while the previous
+version keeps serving. (A workflow that reaches the engine with an input its
+plugin's table refuses — through an import, say — is quarantined when it
+loads, with the mismatch in the reason.)
 
 ## ABI
 

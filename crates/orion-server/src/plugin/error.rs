@@ -1,6 +1,6 @@
 //! How a plugin failure becomes a task error.
 //!
-//! Two sources, one table (`plugin.md`, "Execution and errors"):
+//! Two sources, one table (`docs/src/reference/plugins.md`, "Errors"):
 //!
 //! | Source | Condition | Class | Retryable |
 //! |---|---|---|---|

@@ -2,16 +2,26 @@
 //! `AsyncFunctionHandler` whose body is a sandboxed call.
 //!
 //! The steps are the design's, in order: validate the task's input against
-//! the entry's own table and fold `{"var": …}` in its resolvable fields;
-//! refuse anything over `max_request_bytes` before entering WASM; take the
-//! function's concurrency permit within the deadline; invoke under a fresh
-//! store; validate the result and write it at `output`. A failure at any step
-//! writes nothing.
+//! the entry's own table, evaluate its template fields and fold `{"var": …}`
+//! in its resolvable ones; refuse anything over `max_request_bytes` before
+//! entering WASM; take the function's concurrency permit within the deadline;
+//! invoke under a fresh store; validate the result and write it at `output`.
+//! A failure at any step writes nothing.
+//!
+//! One type, one instance per function a manifest declares. The two
+//! receiver-taking hooks dataflow-rs 3.12 added — `parse_input_with` and
+//! `compile_input_with` — are what let an instance answer for its own
+//! registration: the authored input is checked against *this* function's
+//! table when the workflow loads, and *this* function's template fields are
+//! the ones compiled. Before 3.12 the hooks had no `&self`, so a plugin field
+//! could only be folded or literal.
 
 use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use dataflow_rs::TemplateCompiler;
+use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
@@ -34,6 +44,12 @@ pub struct PluginFunctionHandler {
     pub loaded: Arc<LoadedComponent>,
     pub runtime: Arc<WasmRuntime>,
     pub limits: Limits,
+    /// The entry as the guest sees it: every field literal. The authored
+    /// input is validated against `entry`, whose template and resolvable
+    /// fields may hold an expression in place of a value of their kind; the
+    /// *resolved* input is validated against this one, where an expression
+    /// that produced the wrong kind has nothing left to hide behind.
+    resolved: Arc<FunctionEntry>,
     /// The function's concurrency permits, shared by every clone.
     permits: Arc<Semaphore>,
     /// The plugin id, for metric labels: a registered name, never a guest
@@ -53,11 +69,19 @@ impl PluginFunctionHandler {
             .as_ref()
             .map(|p| p.id.clone())
             .unwrap_or_default();
+        let mut resolved = (*entry).clone();
+        if let Some(fields) = resolved.input_fields.as_mut() {
+            for field in fields {
+                field.resolvable = false;
+                field.template_at = &[];
+            }
+        }
         Self {
             entry,
             loaded,
             runtime,
             limits,
+            resolved: Arc::new(resolved),
             permits: Arc::new(Semaphore::new(limits.max_concurrency as usize)),
             plugin_id,
         }
@@ -99,27 +123,38 @@ impl PluginFunctionHandler {
         };
 
         // Only declared fields reach the guest, `output` excluded — it is the
-        // host's — and a resolvable field is folded against the message.
+        // host's. A template field is evaluated by the engine (compiled once
+        // at load, in `compile_input_with`), a resolvable field is folded
+        // against the message, and anything else is the literal it was
+        // written as.
         let mut guest = Map::new();
         for field in self.entry.input_fields.as_deref().unwrap_or(&[]) {
             if field.name == OUTPUT_FIELD {
                 continue;
             }
-            if let Some(value) = obj.get(&field.name) {
-                let value = if field.resolvable {
-                    resolve_value(value, ctx)
-                } else {
-                    value.clone()
-                };
-                guest.insert(field.name.clone(), value);
-            }
+            let Some(value) = obj.get(&field.name) else {
+                continue;
+            };
+            let value = match input.template_value(&field.name, ctx) {
+                Some(Ok(evaluated)) => evaluated,
+                Some(Err(e)) => {
+                    return Err(Failure::host(
+                        Category::CallerInput,
+                        format!("'{}' did not evaluate: {e}", field.name),
+                    ));
+                }
+                None if field.resolvable => resolve_value(value, ctx),
+                None => value.clone(),
+            };
+            guest.insert(field.name.clone(), value);
         }
         let guest = Value::Object(guest);
 
-        // The schema again, over the resolved values: a `{"var": …}` that
-        // resolved to the wrong kind, or to nothing where a field is
-        // required, is the caller's error and is refused before WASM.
-        let problems = self.entry.validate_input(&guest, "task");
+        // The schema again, over the resolved values and with every field
+        // read as literal: an expression that evaluated to the wrong kind,
+        // or to nothing where a field is required, is the caller's error and
+        // is refused before WASM.
+        let problems = self.resolved.validate_input(&guest, "task");
         if !problems.is_empty() {
             let text = problems
                 .iter()
@@ -185,6 +220,44 @@ impl PluginFunctionHandler {
 #[async_trait]
 impl AsyncFunctionHandler for PluginFunctionHandler {
     type Input = TemplatedInput;
+
+    /// The authored input against this registration's own table, when the
+    /// workflow loads. `check_workflow` and `build` both run it, so a
+    /// workflow whose input no longer matches the schema its plugin's active
+    /// version declares — a field renamed between versions, say — is
+    /// quarantined with the mismatch named, rather than every message
+    /// failing at the same check below. The same rules the create-time gate
+    /// applies, so what create accepted this accepts, and what a later
+    /// version's schema refuses the screen refuses too.
+    fn parse_input_with(&self, input: &Value) -> dataflow_rs::Result<TemplatedInput> {
+        let problems = self.entry.validate_input(input, "task");
+        if !problems.is_empty() {
+            return Err(DataflowError::Validation(
+                problems
+                    .iter()
+                    .map(|p| format!("{} ({})", p.message, p.code))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        Ok(TemplatedInput::from(input.clone()))
+    }
+
+    /// Compile this function's template fields — the ones its manifest marks
+    /// `template_at` — against the engine's compiler, once at load. A
+    /// malformed expression fails here and quarantines the workflow, the
+    /// same stance every built-in's template fields take.
+    fn compile_input_with(
+        &self,
+        input: &mut TemplatedInput,
+        c: &TemplateCompiler,
+    ) -> dataflow_rs::Result<()> {
+        input.compile_fields(
+            &self.entry.name,
+            self.entry.input_fields.as_deref().unwrap_or(&[]),
+            c,
+        )
+    }
 
     async fn execute(
         &self,

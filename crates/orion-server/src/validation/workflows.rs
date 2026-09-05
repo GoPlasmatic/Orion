@@ -924,8 +924,28 @@ pub fn secret_reference_errors(
         // * A field read **literally** is opaque data, where a member named
         //   `secret` is a member named `secret` — and the engine would not have
         //   resolved it either, so there is nothing to warn about.
-        let inspects_nodes = functions.is_resolvable_field(function, field) || !exempt.is_empty();
-        collect_secret_references(value, path, "", exempt, function, inspects_nodes, &mut out);
+        //
+        // A plugin function is the exception to the third case: every one of
+        // its fields is looked inside. Its world has no way to use key
+        // material and every byte it receives it may return, so a
+        // `{"secret": ..}` anywhere in its input is refused — and in a
+        // `template_at` field, where the engine *would* evaluate the node,
+        // this refusal is what keeps the secret out of the guest's input.
+        let plugin = functions
+            .get(function)
+            .is_some_and(|e| e.source == crate::engine::functions::schema::Source::Plugin);
+        let inspects_nodes =
+            plugin || functions.is_resolvable_field(function, field) || !exempt.is_empty();
+        collect_secret_references(
+            value,
+            path,
+            "",
+            exempt,
+            function,
+            inspects_nodes,
+            plugin,
+            &mut out,
+        );
     });
     out
 }
@@ -937,6 +957,7 @@ pub fn secret_reference_errors(
 /// element, `".name"` for an object member. A node whose `rel` is listed in
 /// `exempt` is where the handler resolves key material, so it and everything
 /// under it is left alone.
+#[allow(clippy::too_many_arguments)]
 fn collect_secret_references(
     value: &Value,
     path: &str,
@@ -944,9 +965,25 @@ fn collect_secret_references(
     exempt: &[&str],
     function: &str,
     inspects_nodes: bool,
+    plugin: bool,
     out: &mut Vec<(String, String)>,
 ) {
     if exempt.contains(&rel) {
+        return;
+    }
+    // A plugin function: the node is refused for a different reason than the
+    // one below — not that it would be sent on unresolved, but that in a
+    // template field it *would* be resolved, into the input of a guest that
+    // must never hold key material.
+    if plugin && let Some(name) = crate::engine::functions::secret_ref::secret_name(value) {
+        out.push((
+            path.to_string(),
+            format!(
+                "'{function}' is a plugin function, and a plugin never sees key material: \
+                 {{\"secret\": \"{name}\"}} is refused anywhere in its input. Read the secret \
+                 in a built-in that takes one, or pass the plugin a value derived from it."
+            ),
+        ));
         return;
     }
     // A `{"secret": "name"}` node in a field that does not read key material.
@@ -1016,6 +1053,7 @@ fn collect_secret_references(
                     exempt,
                     function,
                     inspects_nodes,
+                    plugin,
                     out,
                 );
             }
@@ -1029,6 +1067,7 @@ fn collect_secret_references(
                     exempt,
                     function,
                     inspects_nodes,
+                    plugin,
                     out,
                 );
             }
@@ -1115,6 +1154,85 @@ mod tests {
     }
     fn secret_reference_errors(tasks: &Value) -> Vec<(String, String)> {
         super::secret_reference_errors(tasks, registry())
+    }
+
+    /// A plugin never sees key material, so a `{"secret": ..}` node is
+    /// refused in every one of its fields — and in the template field it is
+    /// the refusal that matters, because the engine would otherwise evaluate
+    /// the node straight into the guest's input. A built-in's literal field
+    /// stays silent for the same node: nothing there would resolve it.
+    #[test]
+    fn a_plugin_function_refuses_a_secret_node_in_every_field() {
+        use crate::engine::functions::schema::{FieldKind, RetrySafety, Source, WriteShape};
+        use crate::engine::{FieldSpec, FunctionEntry, PluginBinding};
+
+        let field =
+            |name: &str, template_at: &'static [&'static str], resolvable: bool| FieldSpec {
+                name: name.to_string(),
+                description: String::new(),
+                kind: FieldKind::Any,
+                required: false,
+                resolvable,
+                secret_at: &[],
+                template_at,
+                alias: None,
+            };
+        let registry = FunctionRegistry::builtin()
+            .with_entries(vec![FunctionEntry {
+                name: "acme.codec.parse".to_string(),
+                description: String::new(),
+                category: "transform".to_string(),
+                source: Source::Plugin,
+                aliases: Vec::new(),
+                input_fields: Some(vec![
+                    field("template", &[""], false),
+                    field("folded", &[], true),
+                    field("literal", &[], false),
+                    field("output", &[], false),
+                ]),
+                writes: WriteShape::OutputPath { default_root: None },
+                retry_safety: RetrySafety::Pure,
+                deny_unknown: true,
+                validate_static: None,
+                connector: None,
+                plugin: Some(PluginBinding {
+                    id: "acme.codec".to_string(),
+                    version: 1,
+                    digest: "sha256:00".to_string(),
+                    abi: "orion:plugin@1.0.0".to_string(),
+                }),
+            }])
+            .expect("extends");
+
+        let found = super::secret_reference_errors(
+            &json!([{
+                "id": "t", "name": "t",
+                "function": {"name": "acme.codec.parse", "input": {
+                    "template": {"cat": ["k=", {"secret": "api_key"}]},
+                    "folded": {"secret": "api_key"},
+                    "literal": {"nested": [{"secret": "api_key"}]},
+                    "output": "data.out"
+                }}
+            }]),
+            &registry,
+        );
+        let mut paths: Vec<&str> = found.iter().map(|(p, _)| p.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "tasks[0].function.input.folded",
+                "tasks[0].function.input.literal.nested[0]",
+                "tasks[0].function.input.template.cat[1]",
+            ],
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .all(|(_, m)| m.contains("never sees key material")),
+            "{found:?}"
+        );
     }
     use crate::validation::common::MAX_DESCRIPTION_LEN;
     use serde_json::json;

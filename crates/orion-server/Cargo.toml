@@ -77,7 +77,7 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.11.0", features = ["all-operators"] }
+dataflow-rs = { version = "3.12.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went
@@ -147,7 +147,7 @@ dashmap = "6"
 # Wait-free publication of the ChannelRegistry snapshot: every data-plane
 # request reads it, and the only writer stores a finished value (N17).
 arc-swap = "1"
-# The plugin sandbox (`plugin.md`): WebAssembly Components behind the
+# The plugin sandbox (docs/src/concepts/plugins.md): WebAssembly Components behind the
 # `orion:plugin` WIT world. Exactly the features the runtime needs and no
 # default: `runtime` + `cranelift` to compile and run, `component-model` for
 # the world, `async` so a guest call is a future the executor can cancel,

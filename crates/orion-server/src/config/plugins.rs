@@ -20,7 +20,7 @@ pub struct PluginsConfig {
     pub enabled: bool,
     /// Reserved for an on-disk cache of compiled artifacts. Not supported
     /// yet: a non-empty value is refused at startup, so nothing is silently
-    /// ignored (design decision 4 in `plugin-plan.md`).
+    /// ignored (in-memory only until an on-disk cache is measured worth its lifecycle).
     pub cache_dir: String,
     /// Largest component an upload may carry.
     pub max_component_bytes: usize,

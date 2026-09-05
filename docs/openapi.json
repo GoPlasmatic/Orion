@@ -3355,7 +3355,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated. Activating supersedes the previously active version in the same transaction, so a function name resolves to one digest per generation. Archiving is refused while an active workflow calls one of the plugin's functions. `?dry_run=true` reports every gate without writing; `?reload=defer` commits without rebuilding the engine.",
+            "description": "Status updated. Activating supersedes the previously active version in the same transaction, so a function name resolves to one digest per generation; it is refused while an active workflow calls one of the version's functions with an input its schema does not accept. Archiving is refused while an active workflow calls one of the plugin's functions. `?dry_run=true` reports every gate without writing; `?reload=defer` commits without rebuilding the engine.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3405,7 +3405,7 @@
             }
           },
           "409": {
-            "description": "An active workflow still calls one of its functions",
+            "description": "An active workflow still calls one of its functions, or calls one with an input the version being activated does not accept",
             "content": {
               "application/json": {
                 "schema": {

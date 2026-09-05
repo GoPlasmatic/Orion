@@ -31,10 +31,11 @@ any other function:
 }
 ```
 
-The function receives the task's evaluated `input` as one JSON object, with
-`{"var": …}` folded in the fields its manifest marks `resolvable`, and returns
-one JSON value, which Orion writes at the `output` path the workflow author
-chose. It has no other way in and no other way out: the WebAssembly world it
+The function receives the task's evaluated `input` as one JSON object — the
+fields its manifest marks `template_at` evaluated as JSONLogic by the engine,
+`{"var": …}` folded in the ones it marks `resolvable`, the rest as written —
+and returns one JSON value, which Orion writes at the `output` path the
+workflow author chose. It has no other way in and no other way out: the WebAssembly world it
 implements imports nothing — no filesystem, clock, randomness, sockets,
 logging, connectors or secrets.
 

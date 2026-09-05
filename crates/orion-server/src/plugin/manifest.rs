@@ -5,8 +5,9 @@
 //! function in the vocabulary of [`FieldSchema`](crate::engine::functions::schema::FieldSchema)
 //! and nothing more. JSON-Schema-shaped syntax would promise a validation
 //! `validate_input` does not do, so the manifest declares exactly the facts the
-//! registry can act on: a field's name, kind, whether it is required and
-//! whether the handler folds `{"var": …}` in it.
+//! registry can act on: a field's name, kind, whether it is required, and
+//! whether the engine evaluates it as an expression (`template_at`) or the
+//! handler folds `{"var": …}` in it (`resolvable`).
 //!
 //! Parsing is strict on purpose. An unknown key, an unsupported `abi`, an
 //! invalid kind or a reserved name rejects the upload — a manifest is a
@@ -109,9 +110,18 @@ impl OutputRoot {
     }
 }
 
-/// One input field. `template_at` is deliberately absent: a plugin field is
-/// folded (`resolvable`) or literal until dataflow-rs's `compile_input` can
-/// see which manifest a handler compiles for — see `plugin.md`.
+/// One input field.
+///
+/// `template_at` marks the field's own value as a JSONLogic expression: the
+/// engine compiles it once when the workflow loads and evaluates it per
+/// message, exactly as a built-in's `template_at: [""]` field. `resolvable`
+/// is the narrower `{"var": …}` fold the handler does itself. A field is one
+/// or the other — a template already evaluates `var` — and `secret_at` does
+/// not exist here: a plugin never sees key material.
+///
+/// The template form needs the engine to compile against *this* function's
+/// table, and one handler type serves every function a manifest declares; it
+/// became possible when dataflow-rs 3.12 gave the compile hook a receiver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldDecl {
@@ -123,6 +133,8 @@ pub struct FieldDecl {
     pub required: bool,
     #[serde(default)]
     pub resolvable: bool,
+    #[serde(default)]
+    pub template_at: bool,
 }
 
 impl<'de> Deserialize<'de> for FieldKind {
@@ -243,6 +255,17 @@ impl Manifest {
                         format!("field '{}' is declared twice", field.name),
                     ));
                 }
+                if field.template_at && field.resolvable {
+                    out.push(FieldError::new(
+                        format!("{path}.input_fields[{j}].template_at"),
+                        "INVALID",
+                        format!(
+                            "field '{}' is both template_at and resolvable — a template already \
+                             evaluates {{\"var\": …}}, so declare one of the two",
+                            field.name
+                        ),
+                    ));
+                }
                 fields.push(&field.name);
             }
         }
@@ -276,7 +299,10 @@ impl Manifest {
                             required: d.required,
                             resolvable: d.resolvable,
                             secret_at: &[],
-                            template_at: &[],
+                            // The field's own value is the expression — the
+                            // one position a plugin field can be evaluated at,
+                            // since the guest receives the resolved value.
+                            template_at: if d.template_at { &[""] } else { &[] },
                             alias: None,
                         })
                         .chain(std::iter::once(output_field()))
@@ -544,7 +570,7 @@ required = true
     }
 
     #[test]
-    fn an_unknown_kind_and_an_unsupported_template_key_are_refused() {
+    fn an_unknown_kind_is_refused() {
         let err = Manifest::parse(&GOOD.replace(
             "kind = \"string\"\nrequired = true\n",
             "kind = \"text\"\nrequired = true\n",
@@ -555,9 +581,34 @@ required = true
             "{}",
             err[0].message
         );
-        let err = Manifest::parse(&GOOD.replace("resolvable = true", "template_at = true"))
-            .expect_err("template_at");
-        assert!(err[0].message.contains("template_at"), "{}", err[0].message);
+    }
+
+    /// `template_at = true` is the field's own value as an expression — the
+    /// registry spelling a built-in uses — and it excludes `resolvable`,
+    /// because a template already evaluates `{"var": …}`.
+    #[test]
+    fn a_template_field_is_an_expression_and_not_also_resolvable() {
+        let manifest = Manifest::parse(&GOOD.replace("resolvable = true", "template_at = true"))
+            .expect("template_at parses");
+        let entries = manifest.entries(&binding());
+        let fields = entries[0].input_fields.as_deref().expect("fields");
+        assert_eq!(fields[0].name, "message");
+        assert_eq!(fields[0].template_at, [""]);
+        assert!(!fields[0].resolvable);
+        assert_eq!(fields[1].template_at, [] as [&str; 0], "spec stays literal");
+
+        let err = Manifest::parse(
+            &GOOD.replace("resolvable = true", "resolvable = true\ntemplate_at = true"),
+        )
+        .expect_err("both");
+        assert_eq!(
+            codes_at(&err),
+            [(
+                "functions[0].input_fields[0].template_at".to_string(),
+                "INVALID".to_string()
+            )]
+        );
+        assert!(err[0].message.contains("declare one"), "{}", err[0].message);
     }
 
     #[test]

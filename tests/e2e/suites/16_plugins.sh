@@ -18,6 +18,13 @@ _wrap_workflow() {
     ]}'
 }
 
+_upper_workflow() {
+    echo '{"name":"Upper via plugin","condition":true,"tasks":[
+      {"id":"parse","name":"parse","function":{"name":"parse_json","input":{"source":"payload","target":"input"}}},
+      {"id":"up","name":"up","function":{"name":"test.fixture.upper","input":{"text":{"cat":["hello ",{"var":"data.input.who"}]},"output":"data.up"}}}
+    ]}'
+}
+
 test_plugin_upload_and_get() {
     reset_server_state
     cli_quiet plugins create -f "$PLUGIN_FIXTURES/fixture-upload.toml" --tag e2e
@@ -65,6 +72,20 @@ test_plugin_serves_a_workflow_and_gates_archive() {
     assert_exit_code 0 "$CLI_EXIT" "send: $CLI_STDERR"
     assert_json_eq "$CLI_OUTPUT" ".data.result.wrapped.message" "hi"
     assert_json_eq "$CLI_OUTPUT" ".data.result.len" "16"
+
+    # A `template_at` field: the engine evaluates the expression and the
+    # guest receives the result. `upper` upper-cases the JSON it is given.
+    cli_quiet workflows create -d "$(_upper_workflow)"
+    assert_exit_code 0 "$CLI_EXIT" "upper workflow create: $CLI_STDERR"
+    local upper_wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$upper_wf"
+    assert_exit_code 0 "$CLI_EXIT" "upper workflow activate: $CLI_STDERR"
+    create_channel "plugin-upper" "$upper_wf"
+    cli send plugin-upper -d '{"who":"world"}'
+    assert_exit_code 0 "$CLI_EXIT" "send upper: $CLI_STDERR"
+    assert_json_eq "$CLI_OUTPUT" ".data.up.TEXT" "HELLO WORLD"
+    cli_quiet workflows archive "$upper_wf"
+    assert_exit_code 0 "$CLI_EXIT"
 
     cli plugins dependencies test.fixture
     assert_exit_code 0 "$CLI_EXIT"

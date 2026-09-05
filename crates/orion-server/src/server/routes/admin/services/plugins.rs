@@ -332,3 +332,77 @@ pub(crate) fn ensure_functions_available(
             .join(", ")
     )))
 }
+
+/// A plugin version activates only if every active workflow calling its
+/// functions still satisfies the schema *this* version declares.
+///
+/// The other half of the workflow gate above. That one keeps a workflow from
+/// activating against a function the generation lacks; this one keeps a
+/// plugin from activating a schema its dependants no longer match — a field
+/// renamed between versions, a new required one. Without it the activation
+/// succeeds and the next reload quarantines every dependant, because the
+/// handler checks the authored input against its table when the workflow
+/// loads (`parse_input_with`). Refusing here says which workflow and which
+/// field, while the previous version is still serving. A `409`, like the
+/// archive gate: the conflict is with other rows' state.
+///
+/// Computed on function names, like the dependants list, against the entries
+/// the row's manifest declares — the same table the create-time gate and the
+/// handler read.
+pub(crate) async fn ensure_dependants_accept(
+    workflows: &dyn crate::storage::repositories::workflows::WorkflowRepository,
+    draft: &crate::storage::models::Plugin,
+) -> Result<(), OrionError> {
+    let manifest: crate::plugin::Manifest = serde_json::from_str(&draft.manifest_json)
+        .map_err(|e| OrionError::validation(format!("stored manifest does not parse: {e}")))?;
+    let binding = crate::engine::PluginBinding {
+        id: draft.plugin_id.clone(),
+        version: draft.version,
+        digest: draft.digest.clone(),
+        abi: manifest.abi.clone(),
+    };
+    let entries = manifest.entries(&binding);
+    let functions: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    let registry = FunctionRegistry::builtin()
+        .with_entries(entries.clone())
+        .map_err(OrionError::validation)?;
+
+    let mut problems: Vec<String> = Vec::new();
+    for workflow in workflows.list_active().await? {
+        let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+            continue;
+        };
+        for (path, task) in crate::engine::walk_steps(&tasks).tasks {
+            let Some(function) = task.get("function") else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !functions.contains(&name) {
+                continue;
+            }
+            let input = function
+                .get("input")
+                .cloned()
+                .unwrap_or_else(|| Value::Object(Default::default()));
+            for e in registry.validate_input(name, &input, &path) {
+                problems.push(format!(
+                    "workflow '{}' at {}: {} ({})",
+                    workflow.workflow_id, e.path, e.message, e.code
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::Conflict(format!(
+        "Cannot activate plugin '{}' version {}: active workflow(s) call its functions with \
+         inputs this version's schema does not accept, and would be quarantined at the next \
+         reload — {}. Update those workflows first, or keep the previous version.",
+        draft.plugin_id,
+        draft.version,
+        problems.join("; ")
+    )))
+}

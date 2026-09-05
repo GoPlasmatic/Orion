@@ -1288,6 +1288,14 @@ composition, and utility functions (the data functions are provided by
 dataflow-rs and are not cataloged there). The [Orion agent skill](../ai/skills.md) points an assistant at
 the same schemas to AI assistants so generated workflows use correct field names.
 
+**Plugin functions.** The functions of every active
+[plugin](./plugins.md) appear in the same catalogue with `source: "plugin"`
+and a `plugin` block naming the plugin id, version and component digest.
+Their field tables come from the plugin's manifest rather than this page,
+which documents only the functions built into the binary; the vocabulary is
+the same (`kind`, `required`, `resolvable`, `template_at`), and workflow
+validation reads it the same way.
+
 ## Related
 
 - [Workflow Reference](./workflows.md): the workflow schema, the data context,

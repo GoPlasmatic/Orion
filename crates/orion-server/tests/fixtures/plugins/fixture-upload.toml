@@ -34,6 +34,14 @@ resolvable = true
 name = "test.fixture.upper"
 description = "Upper-case the input text"
 
+# A template field: the engine evaluates the expression the task wrote here
+# and the guest receives the result.
+[[functions.input_fields]]
+name = "text"
+kind = "string"
+required = true
+template_at = true
+
 [[functions]]
 name = "test.fixture.big-output"
 description = "Return a string of the requested length"
@@ -41,6 +49,7 @@ description = "Return a string of the requested length"
 [[functions.input_fields]]
 name = "size"
 kind = "number"
+template_at = true
 
 [[functions]]
 name = "test.fixture.bad-json"

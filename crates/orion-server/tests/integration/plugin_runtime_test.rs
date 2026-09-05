@@ -1,8 +1,9 @@
 //! The plugin sandbox, exercised end to end through a real engine over the
 //! fixture component in `tests/fixtures/plugins/`.
 //!
-//! One component, ten functions, each doing what its name says: the
-//! well-behaved ones prove the ABI round trip and the output contract; the
+//! One component, eleven functions, each doing what its name says: the
+//! well-behaved ones prove the ABI round trip, the output contract and the
+//! three ways a field reaches the guest (evaluated, folded, literal); the
 //! rest prove that a guest which traps, spins, allocates without end or
 //! returns the wrong shape cannot touch the task context and fails as the
 //! category the design's error table names.
@@ -168,7 +169,7 @@ async fn the_fixture_manifest_registers_beside_the_builtins() {
     assert!(registry.contains("map") && registry.contains("crypto"));
     let entry = registry.get("test.fixture.identity").expect("entry");
     assert_eq!(entry.plugin.as_ref().expect("bound").id, "test.fixture");
-    assert_eq!(f.handlers.len(), 10);
+    assert_eq!(f.handlers.len(), 11);
 }
 
 #[tokio::test]
@@ -217,6 +218,8 @@ async fn a_task_without_output_writes_at_the_functions_default_root() {
 #[tokio::test]
 async fn the_input_is_validated_against_the_entry_before_wasm() {
     let f = fixture(&config());
+    // A required field missing from the authored input: refused when the
+    // engine is built (`parse_input_with`), before any message.
     let err = run(
         &f.handlers["test.fixture.identity"],
         json!({"output": "data.x"}),
@@ -230,7 +233,8 @@ async fn the_input_is_validated_against_the_entry_before_wasm() {
         "the error names the function: {err}"
     );
 
-    // A resolvable field that resolved to the wrong kind is refused too.
+    // A field that resolved to the wrong kind per message is refused too —
+    // at execution, after the fold, and still before WASM.
     let err = run(
         &f.handlers["test.fixture.big-output"],
         json!({"size": {"var": "data.size"}, "output": "data.x"}),
@@ -239,6 +243,92 @@ async fn the_input_is_validated_against_the_entry_before_wasm() {
     .await
     .expect_err("resolved to the wrong kind");
     assert!(err.contains("TYPE_MISMATCH"), "{err}");
+}
+
+/// A `template_at` field is a JSONLogic expression the engine compiles at
+/// load and evaluates per message; the guest receives the result. `upper`
+/// upper-cases the JSON text it is given, so the evaluated field comes back
+/// visibly transformed.
+#[tokio::test]
+async fn a_template_field_is_evaluated_by_the_engine_before_the_guest_sees_it() {
+    let f = fixture(&config());
+    let data = run(
+        &f.handlers["test.fixture.upper"],
+        json!({
+            "text": {"cat": ["hello ", {"var": "data.who"}]},
+            "output": "data.up"
+        }),
+        json!({"who": "world"}),
+    )
+    .await
+    .expect("upper succeeds");
+    assert_eq!(data["up"], json!({"TEXT": "HELLO WORLD"}));
+
+    // A literal in a template position folds to itself.
+    let data = run(
+        &f.handlers["test.fixture.upper"],
+        json!({"text": "plain", "output": "data.up"}),
+        json!({}),
+    )
+    .await
+    .expect("literal template");
+    assert_eq!(data["up"], json!({"TEXT": "PLAIN"}));
+}
+
+/// The kind check runs again over the *evaluated* value, with every field
+/// read as literal: an expression that produced the wrong kind is refused
+/// before WASM, where at create time an object in a template position was
+/// admitted as an operator call.
+#[tokio::test]
+async fn a_template_that_evaluates_to_the_wrong_kind_is_refused_before_wasm() {
+    let f = fixture(&config());
+    let err = run(
+        &f.handlers["test.fixture.big-output"],
+        json!({"size": {"var": "data.size"}, "output": "data.x"}),
+        json!({"size": "not a number"}),
+    )
+    .await
+    .expect_err("evaluated to the wrong kind");
+    assert!(err.contains("TYPE_MISMATCH"), "{err}");
+    assert!(err.contains("test.fixture.big-output"), "{err}");
+}
+
+/// The receiver-taking hooks dataflow-rs 3.12 added: the authored input is
+/// checked against *this registration's* table, and its template fields are
+/// compiled, when the engine is built — so an input the schema refuses fails
+/// `Engine::new` naming the function rather than failing the first message.
+/// That is what lets the serving screen quarantine a workflow whose plugin
+/// changed its schema underneath it.
+#[tokio::test]
+async fn the_authored_input_is_checked_against_the_registration_at_engine_build() {
+    let f = fixture(&config());
+    let err = run(
+        &f.handlers["test.fixture.upper"],
+        json!({"txt": "x", "output": "data.x"}),
+        json!({}),
+    )
+    .await
+    .expect_err("an undeclared field");
+    assert!(err.contains("UNKNOWN_FIELD"), "{err}");
+    assert!(
+        err.contains("REQUIRED"),
+        "and the declared one is missing: {err}"
+    );
+    assert!(err.contains("test.fixture.upper"), "{err}");
+
+    // An object in a template position is admitted at build — it may be an
+    // operator call — and judged per message by what it evaluates to. This
+    // one is not an operator, so it evaluates to itself: an object where the
+    // table wants a string, refused before the guest sees it.
+    let err = run(
+        &f.handlers["test.fixture.upper"],
+        json!({"text": {"no_such_operator": [1]}, "output": "data.x"}),
+        json!({}),
+    )
+    .await
+    .expect_err("evaluated to an object");
+    assert!(err.contains("TYPE_MISMATCH"), "{err}");
+    assert!(err.contains("test.fixture.upper"), "{err}");
 }
 
 #[tokio::test]

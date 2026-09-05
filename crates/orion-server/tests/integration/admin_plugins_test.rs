@@ -1,7 +1,7 @@
 //! The plugin entity through the admin API, and a plugin function serving a
 //! request through the data plane.
 //!
-//! Uses the fixture component in `tests/fixtures/plugins/` — ten functions
+//! Uses the fixture component in `tests/fixtures/plugins/` — eleven functions
 //! under the plugin id `test.fixture`, one of which (`wrap`) returns its
 //! input inside an object, which is what the data-plane round trip asserts.
 
@@ -333,6 +333,156 @@ async fn activation_publishes_the_functions_and_a_workflow_serves_through_one() 
             .artifact_exists(&digest)
             .await
             .expect("query")
+    );
+}
+
+/// A workflow calling the fixture's `upper` with an expression in its
+/// template field.
+fn upper_workflow(name: &str, text: Value) -> Value {
+    json!({
+        "name": name,
+        "condition": true,
+        "tasks": [
+            {"id": "parse", "name": "parse", "function": {"name": "parse_json",
+                "input": {"source": "payload", "target": "input"}}},
+            {"id": "up", "name": "up", "function": {"name": "test.fixture.upper",
+                "input": {"text": text, "output": "data.up"}}}
+        ]
+    })
+}
+
+/// The manifest's `template_at` field end to end: catalogued as the
+/// registry spelling, evaluated by the engine on the data plane, refused a
+/// secret at create time, and — the schema gate — a new version whose table
+/// an active dependant no longer satisfies cannot activate under it.
+#[tokio::test]
+async fn a_template_field_serves_refuses_secrets_and_gates_a_schema_change() {
+    let (_state, app) = app(true).await;
+    create_fixture(&app).await;
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let entry = catalogued(&app, "test.fixture.upper")
+        .await
+        .expect("served");
+    let text = entry["input_fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .find(|f| f["name"] == "text")
+        .expect("text field")
+        .clone();
+    assert_eq!(text["template_at"], json!([""]), "{entry}");
+    assert_eq!(text["resolvable"], json!(false));
+
+    let (channel, workflow_id) = create_and_activate_channel_with_config(
+        &app,
+        "plugin-upper",
+        upper_workflow(
+            "Upper via plugin",
+            json!({"cat": ["hello ", {"var": "data.input.who"}]}),
+        ),
+        json!({}),
+    )
+    .await;
+    let (status, body) = post(
+        &app,
+        &format!("/api/v1/data/{channel}"),
+        json!({"data": {"who": "world"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["up"]["TEXT"], "HELLO WORLD", "{body}");
+
+    // A secret node in the template field is refused at create time: the
+    // engine would evaluate it, and a plugin never sees key material.
+    let (status, body) = post(
+        &app,
+        "/api/v1/admin/workflows",
+        upper_workflow("Upper with a secret", json!({"secret": "api_key"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body.to_string().contains("never sees key material"),
+        "{body}"
+    );
+
+    // A new version renames the field. Activating it would quarantine the
+    // active workflow, so the gate refuses with the workflow and the
+    // mismatch named — and `?dry_run=true` reports the same finding.
+    let (status, body) = post(
+        &app,
+        "/api/v1/admin/plugins/test.fixture/versions",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let renamed = MANIFEST.replace("name = \"text\"", "name = \"payload\"");
+    assert_ne!(renamed, MANIFEST);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/plugins/test.fixture",
+            Some(json!({"manifest": renamed})),
+        ))
+        .await
+        .expect("request");
+    assert_eq!(resp.status(), StatusCode::OK, "{}", body_json(resp).await);
+    let (status, body) = patch(
+        &app,
+        "/api/v1/admin/plugins/test.fixture/status?dry_run=true",
+        json!({"status": "active"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], false, "{body}");
+    assert!(body.to_string().contains(&workflow_id), "{body}");
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let message = body["error"]["message"].as_str().expect("message");
+    assert!(message.contains(&workflow_id), "{message}");
+    assert!(
+        message.contains("'text'") && message.contains("UNKNOWN_FIELD"),
+        "{message}"
+    );
+    assert!(
+        message.contains("'payload'") && message.contains("REQUIRED"),
+        "{message}"
+    );
+
+    // Version 1 kept serving throughout.
+    let (status, body) = post(
+        &app,
+        &format!("/api/v1/data/{channel}"),
+        json!({"data": {"who": "still"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["up"]["TEXT"], "HELLO STILL", "{body}");
+
+    // Once the dependant is gone, the new schema activates.
+    let (status, body) = patch(
+        &app,
+        &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+        json!({"status": "archived"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["version"], 2);
+    let entry = catalogued(&app, "test.fixture.upper")
+        .await
+        .expect("served");
+    assert!(
+        entry["input_fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .any(|f| f["name"] == "payload"),
+        "{entry}"
     );
 }
 

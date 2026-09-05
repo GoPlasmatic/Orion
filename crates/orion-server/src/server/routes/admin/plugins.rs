@@ -263,12 +263,15 @@ pub(crate) async fn delete_plugin(
     responses(
         (status = 200, description = "Status updated. Activating supersedes the previously active \
             version in the same transaction, so a function name resolves to one digest per \
-            generation. Archiving is refused while an active workflow calls one of the plugin's \
-            functions. `?dry_run=true` reports every gate without writing; `?reload=defer` \
-            commits without rebuilding the engine.", body = DataEnvelope<PluginResponse>),
+            generation; it is refused while an active workflow calls one of the version's \
+            functions with an input its schema does not accept. Archiving is refused while an \
+            active workflow calls one of the plugin's functions. `?dry_run=true` reports every \
+            gate without writing; `?reload=defer` commits without rebuilding the engine.",
+            body = DataEnvelope<PluginResponse>),
         (status = 400, description = "Invalid status transition, or plugins are disabled on this node"),
         (status = 404, description = "Plugin not found"),
-        (status = 409, description = "An active workflow still calls one of its functions"),
+        (status = 409, description = "An active workflow still calls one of its functions, or calls \
+            one with an input the version being activated does not accept"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
@@ -282,6 +285,7 @@ pub(crate) async fn change_plugin_status(
     let action = StatusAction::parse(req.status)?;
     let lifecycle = PluginLifecycle {
         plugins: state.repos.plugins.as_ref(),
+        workflows: state.repos.workflows.as_ref(),
         sandbox: state.plugins.is_some(),
     };
     // Archiving has a gate of its own: the dependants. Checked before the
@@ -339,6 +343,7 @@ pub(crate) async fn change_plugin_status(
 /// names must be stored. Compiling and probing happened at upload.
 struct PluginLifecycle<'a> {
     plugins: &'a dyn PluginRepository,
+    workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
     sandbox: bool,
 }
 
@@ -380,6 +385,11 @@ impl super::VersionedLifecycle for PluginLifecycle<'_> {
                 draft.plugin_id, draft.digest
             ))),
             Err(e) => gates.push(e),
+        }
+        // The dependants must still fit this version's schema — checked
+        // last, because it is the one gate whose failure names other rows.
+        if let Err(e) = svc::ensure_dependants_accept(self.workflows, draft).await {
+            gates.push(e);
         }
         gates
     }
