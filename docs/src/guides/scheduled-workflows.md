@@ -1,4 +1,4 @@
-<!-- description: Run a workflow on a schedule with a cron channel — the six-field expression, time zones and DST, misfire policies, non-overlapping runs, and how to see what ran. -->
+<!-- description: Run a workflow on a schedule with a cron channel — the six-field expression, time zones and DST, misfire policies, non-overlapping runs, and seeing what ran. -->
 # Run work on a schedule
 
 **Page type:** Guide · **Audience:** Developers and platform operators
