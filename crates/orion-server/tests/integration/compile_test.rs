@@ -445,3 +445,159 @@ fn compilation_is_reproducible() {
     };
     assert_eq!(hash("a.json"), hash("b.json"));
 }
+
+/// The fixture plugin's upload manifest and component, as a set carries them:
+/// `plugin.toml` beside the component it names.
+const PLUGIN_MANIFEST: &str = include_str!("../fixtures/plugins/fixture-upload.toml");
+const PLUGIN_COMPONENT: &[u8] = include_bytes!("../fixtures/plugins/fixture.wasm");
+
+/// A set whose workflow calls a plugin function, with the plugin's manifest
+/// in the tree. `with_component` leaves the bytes out to model a manifest
+/// whose component was never built.
+fn plugin_set(label: &str, with_component: bool) -> ScratchDir {
+    let scratch = ScratchDir::new(label);
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("codec")).unwrap();
+    std::fs::write(dir.join("codec/plugin.toml"), PLUGIN_MANIFEST).unwrap();
+    if with_component {
+        std::fs::write(dir.join("codec/fixture.wasm"), PLUGIN_COMPONENT).unwrap();
+    }
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "wrap", "name": "Wrap", "tasks": [
+             { "id": "parse", "name": "Parse", "function": { "name": "parse_json",
+               "input": { "source": "payload", "target": "input" } } },
+             { "id": "wrap", "name": "Wrap", "function": { "name": "test.fixture.wrap",
+               "input": { "message": { "var": "data.input.msg" }, "output": "data.result" } } } ] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ch.json"),
+        r#"{ "channel_id": "wrap-api", "name": "wrap-api", "channel_type": "sync",
+             "protocol": "rest", "methods": ["POST"], "route_pattern": "/wrap",
+             "workflow_id": "wrap" }"#,
+    )
+    .unwrap();
+    scratch
+}
+
+/// A `plugin.toml` in the set compiles into the artifact with its component
+/// inlined and its digest computed, marked for activation like the workflow
+/// that calls it — and `package lint` accepts the result, validating the
+/// workflow's input against the manifest that travels with it.
+#[test]
+fn a_plugin_in_the_set_compiles_into_the_artifact_with_its_component() {
+    use base64::Engine as _;
+    let scratch = plugin_set("compile-plugin", true);
+    let dir = scratch.path();
+    let out = dir.join("dist/package.json");
+
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "codec",
+        "--version",
+        "1.0.0",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("[plugin.manifest] plugin 'test.fixture'"),
+        "the manifest is inventoried: {report}"
+    );
+    assert!(report.contains("1 plugins,"), "{report}");
+
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).expect("artifact")).expect("json");
+    let plugin = &artifact["plugins"][0];
+    assert_eq!(plugin["plugin_id"], "test.fixture");
+    assert_eq!(plugin["activate"], true);
+    assert_eq!(
+        plugin["digest"],
+        serde_json::json!(orion::plugin::WasmRuntime::digest(PLUGIN_COMPONENT))
+    );
+    let carried = base64::engine::general_purpose::STANDARD
+        .decode(plugin["component"].as_str().expect("component inlined"))
+        .expect("base64");
+    assert_eq!(carried, PLUGIN_COMPONENT, "the bytes travel intact");
+    assert_eq!(plugin["manifest"]["name"], "test.fixture");
+
+    let (ok, report) = run(&["package", "lint", "-f", out.to_str().unwrap()]);
+    assert!(ok, "{report}");
+    assert!(report.contains("1 plugins,"), "{report}");
+
+    // `--no-activate` leaves the plugin a draft too.
+    let drafts = dir.join("dist/drafts.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "codec",
+        "--version",
+        "1.0.1",
+        "--no-activate",
+        "-o",
+        drafts.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&drafts).expect("artifact")).expect("json");
+    assert!(
+        artifact["plugins"][0].get("activate").is_none(),
+        "{artifact}"
+    );
+
+    // The bulk form writes the same items to plugins.json.
+    let bulk = dir.join("dist/bulk");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "bulk",
+        "-o",
+        bulk.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let items: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(bulk.join("plugins.json")).expect("bulk"))
+            .expect("json");
+    assert_eq!(items[0]["plugin_id"], "test.fixture");
+    assert!(items[0]["component"].is_string());
+}
+
+/// A manifest with no component beside it lints — the workflow is checked
+/// against the manifest — but cannot become an artifact: the artifact is
+/// what carries the bytes, and one without them would fail at apply.
+#[test]
+fn an_artifact_refuses_a_manifest_whose_component_is_missing() {
+    let scratch = plugin_set("compile-plugin-no-component", false);
+    let dir = scratch.path();
+
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(ok, "the manifest alone validates the set: {report}");
+    assert!(
+        report.contains("no component beside the manifest"),
+        "{report}"
+    );
+
+    let out = dir.join("dist/package.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "codec",
+        "--version",
+        "1.0.0",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!ok, "an artifact must carry the bytes: {report}");
+    assert!(report.contains("test.fixture"), "{report}");
+    assert!(
+        report.contains("no component beside the manifest"),
+        "{report}"
+    );
+    assert!(!out.exists(), "nothing is written on refusal");
+}

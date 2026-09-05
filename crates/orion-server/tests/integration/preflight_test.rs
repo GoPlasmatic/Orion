@@ -297,3 +297,121 @@ async fn duplicate_channel_names_are_found() {
     assert!(findings[0].entity.contains("orders"), "{findings:?}");
     assert!(findings[0].message.contains("2 channels"), "{findings:?}");
 }
+
+/// The scan reads the vocabulary the estate actually serves: a stored
+/// workflow calling an *active* plugin's function is not a break, one calling
+/// a plugin that is only a draft is — and the registry-only `scan` (no plugin
+/// rows) reports the active one as unknown, which is why the CLI uses
+/// `scan_with`.
+#[tokio::test]
+async fn the_scan_checks_stored_workflows_against_the_active_plugins() {
+    use orion::storage::repositories::plugins::{
+        PluginDraft, PluginRepository, SqlPluginRepository,
+    };
+
+    let pool = pool().await;
+    let channels = SqlChannelRepository::new(pool.clone());
+    let workflows = SqlWorkflowRepository::new(pool.clone());
+    let plugins = SqlPluginRepository::new(pool.clone());
+
+    // The fixture plugin, stored and activated; the manifest declares
+    // `test.fixture.wrap` with a required `message`.
+    let manifest_text = include_str!("../fixtures/plugins/fixture-upload.toml");
+    let component = include_bytes!("../fixtures/plugins/fixture.wasm");
+    let manifest = orion::plugin::Manifest::parse(manifest_text).expect("manifest");
+    let draft = PluginDraft {
+        plugin_id: manifest.name.clone(),
+        manifest_json: serde_json::to_string(&manifest).expect("json"),
+        digest: orion::plugin::WasmRuntime::digest(component),
+        tags_json: "[]".to_string(),
+        signature: None,
+    };
+    plugins
+        .create(&draft, Some(component))
+        .await
+        .expect("create plugin");
+    plugins.activate("test.fixture").await.expect("activate");
+
+    // A second plugin left as a draft: its functions are not served.
+    let mut sleeping = manifest.clone();
+    sleeping.name = "test.sleeping".to_string();
+    for f in &mut sleeping.functions {
+        f.name = f.name.replace("test.fixture.", "test.sleeping.");
+    }
+    plugins
+        .create(
+            &PluginDraft {
+                plugin_id: sleeping.name.clone(),
+                manifest_json: serde_json::to_string(&sleeping).expect("json"),
+                digest: draft.digest.clone(),
+                tags_json: "[]".to_string(),
+                signature: None,
+            },
+            None,
+        )
+        .await
+        .expect("create draft plugin");
+
+    // Rows written straight into the store, as an import on another node
+    // would leave them: one calls the active plugin correctly, one calls it
+    // with a missing required field, one calls the draft plugin.
+    let wf_ok = create_workflow(&workflows, "plugin-ok").await;
+    set_workflow_tasks(
+        &pool,
+        &wf_ok,
+        r#"[{"id":"t","name":"t","function":{"name":"test.fixture.wrap",
+             "input":{"message":{"var":"data.msg"},"output":"data.r"}}}]"#,
+    )
+    .await;
+    let wf_bad_input = create_workflow(&workflows, "plugin-bad-input").await;
+    set_workflow_tasks(
+        &pool,
+        &wf_bad_input,
+        r#"[{"id":"t","name":"t","function":{"name":"test.fixture.wrap",
+             "input":{"output":"data.r"}}}]"#,
+    )
+    .await;
+    let wf_draft = create_workflow(&workflows, "plugin-draft").await;
+    set_workflow_tasks(
+        &pool,
+        &wf_draft,
+        r#"[{"id":"t","name":"t","function":{"name":"test.sleeping.wrap",
+             "input":{"message":"x","output":"data.r"}}}]"#,
+    )
+    .await;
+
+    let findings = preflight::scan_with(&channels, &workflows, &plugins)
+        .await
+        .expect("scan");
+    let breaks: Vec<String> = findings
+        .iter()
+        .filter(|f| f.is_error())
+        .map(|f| format!("{} — {}", f.entity, f.message))
+        .collect();
+    assert!(
+        !breaks.iter().any(|b| b.contains("plugin-ok")),
+        "a correct call to an active plugin is not a break: {breaks:?}"
+    );
+    assert!(
+        breaks
+            .iter()
+            .any(|b| b.contains("plugin-bad-input") && b.contains("message")),
+        "the manifest's required field is enforced: {breaks:?}"
+    );
+    assert!(
+        breaks
+            .iter()
+            .any(|b| b.contains("plugin-draft") && b.contains("test.sleeping.wrap")),
+        "a draft plugin's function is not served, so calling it is a break: {breaks:?}"
+    );
+
+    // Without the plugin rows every plugin call is an unknown function — the
+    // false break `scan_with` exists to remove.
+    let registry_only = preflight::scan(&channels, &workflows).await.expect("scan");
+    assert!(
+        registry_only
+            .iter()
+            .any(|f| f.is_error() && f.entity.contains("plugin-ok")),
+        "{registry_only:?}"
+    );
+}

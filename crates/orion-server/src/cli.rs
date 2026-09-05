@@ -248,7 +248,11 @@ pub(crate) fn run_lint(
     // file for them would make `lint` unusable for a set whose plugins live
     // elsewhere. They are reported as notes below.
     let registry = offline_registry(catalog.as_ref())?;
-    let unverifiable = unverifiable_functions(&req.tasks, &registry);
+    let manifests = catalog
+        .as_ref()
+        .map(|c| c.plugins.as_slice())
+        .unwrap_or(&[]);
+    let unverifiable = unverifiable_functions(&req.tasks, &registry, manifests);
     let registry = registry.with_entries(placeholder_entries(&unverifiable))?;
 
     // No config here: `lint` reads a file, not a server. The default ceiling
@@ -573,9 +577,15 @@ fn offline_registry(
 /// placeholders so the create-time validator does not refuse the workflow
 /// for a name only the serving instance can verify; the caller says so with
 /// a `plugin.unverifiable` note.
+///
+/// A name under a plugin one of `manifests` *does* describe is not
+/// unverifiable: the manifest is the authority, and a function it does not
+/// declare stays an unknown function — the same distinction the set-mode
+/// check draws with `closure.plugin`.
 fn unverifiable_functions(
     tasks: &serde_json::Value,
     registry: &orion::engine::FunctionRegistry,
+    manifests: &[orion::definitions::PluginDefinition],
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for task in orion::engine::leaf_tasks(tasks) {
@@ -586,7 +596,14 @@ fn unverifiable_functions(
         else {
             continue;
         };
-        if name.contains('.') && !registry.contains(name) && !out.iter().any(|n| n == name) {
+        let covered = manifests
+            .iter()
+            .any(|p| name.starts_with(&format!("{}.", p.manifest.name)));
+        if name.contains('.')
+            && !covered
+            && !registry.contains(name)
+            && !out.iter().any(|n| n == name)
+        {
             out.push(name.to_string());
         }
     }
@@ -1526,7 +1543,8 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // accounts for cannot run offline at all — there is nothing to load —
     // and is refused by name rather than reaching the engine as unknown.
     let registry = offline_registry(definitions)?;
-    let unverifiable = unverifiable_functions(&req.tasks, &registry);
+    let manifests = definitions.map(|c| c.plugins.as_slice()).unwrap_or(&[]);
+    let unverifiable = unverifiable_functions(&req.tasks, &registry, manifests);
     if let Some(name) = unverifiable.first() {
         return Err(format!(
             "PLUGIN_ARTIFACT_UNAVAILABLE: '{workflow_path}' names plugin function '{name}', \

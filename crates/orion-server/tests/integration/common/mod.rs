@@ -812,13 +812,20 @@ pub struct ScratchDir(std::path::PathBuf);
 
 impl ScratchDir {
     pub fn new(label: &str) -> Self {
+        // A process-wide counter beside the clock: the test binary runs its
+        // cases in parallel, and on macOS the clock has microsecond
+        // resolution, so two tests that reach here in the same microsecond
+        // used to share one directory — one test's `Drop` deleted the other's
+        // files mid-run, or its lint read the other's workflows.
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "orion_test_{label}_{}_{}",
+            "orion_test_{label}_{}_{}_{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
-                .unwrap_or(0)
+                .unwrap_or(0),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&path).expect("create scratch dir");
         Self(path)
