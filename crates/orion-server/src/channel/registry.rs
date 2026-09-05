@@ -167,6 +167,13 @@ pub struct ChannelRuntimeConfig {
     /// The compiled inbound sign-in flow (#307), secrets resolved and both key
     /// sets built. `None` for every channel that declares no `oauth2_login`.
     pub oauth2_login: Option<Arc<crate::channel::CompiledOAuth2Login>>,
+    /// The compiled schedule, for `protocol: "cron"` channels only.
+    ///
+    /// Compiled here, at load, for the same reason every other guard is: a
+    /// schedule that no longer parses must quarantine its channel rather than
+    /// surface at the first fire, in a background task with no caller to answer.
+    /// `None` for every other protocol.
+    pub cron: Option<Arc<crate::channel::CronDescriptor>>,
 }
 
 /// A channel the registry refused to load, and why.
@@ -272,6 +279,11 @@ impl ChannelRow {
 struct DepsFingerprint {
     connectors: u64,
     trace_storage: TraceStorageConfig,
+    /// `[cron] enabled`. Part of the fingerprint because it decides whether a
+    /// cron channel compiles at all: without it, a node restarted with the
+    /// scheduler turned off would carry over the descriptors it built while it
+    /// was on, and keep serving schedules it can no longer run.
+    cron_enabled: bool,
 }
 
 /// One immutable generation of the channel estate: the serving map, the route
@@ -326,6 +338,7 @@ impl ChannelSnapshot {
             deps: DepsFingerprint {
                 connectors: u64::MAX,
                 trace_storage: TraceStorageConfig::default(),
+                cron_enabled: false,
             },
         }
     }
@@ -352,6 +365,50 @@ impl ChannelSnapshot {
                 reason: reason.clone(),
             })
             .collect()
+    }
+
+    /// Every serviceable cron channel's compiled schedule, in a stable order.
+    ///
+    /// The reconciler's whole view of what is scheduled. Read from the
+    /// generation it already loaded, so the schedules it plans against and the
+    /// engine that will run them are one build — the same rule every ingress
+    /// follows, and the reason the descriptor lives on the snapshot rather than
+    /// in a table of its own.
+    ///
+    /// Quarantined channels are absent by construction: `by_name` has already
+    /// had them removed, so a channel whose schedule stopped compiling stops
+    /// being materialised rather than materialising occurrences nothing can run.
+    pub fn cron_descriptors(&self) -> Vec<Arc<crate::channel::CronDescriptor>> {
+        let mut out: Vec<Arc<crate::channel::CronDescriptor>> = self
+            .by_name
+            .values()
+            .filter_map(|runtime| runtime.cron.clone())
+            .collect();
+        // By stable identity, not by hash order: two nodes planning the same
+        // pass should walk the same schedules in the same order, and a log line
+        // naming "the first channel" should mean the same one twice.
+        out.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+        out
+    }
+
+    /// One serviceable cron channel by its **stable id**, for a worker settling
+    /// an occurrence.
+    ///
+    /// By `channel_id` rather than by name because an occurrence outlives the
+    /// name it was materialised under: a channel renamed between materialisation
+    /// and execution is the same channel, and a name lookup would fail as though
+    /// it had been deleted.
+    pub fn cron_by_channel_id(&self, channel_id: &str) -> Option<Arc<ChannelRuntimeConfig>> {
+        self.by_name
+            .values()
+            .find(|runtime| runtime.cron.is_some() && runtime.channel.channel_id == channel_id)
+            .cloned()
+    }
+
+    /// Whether this generation has any cron channel at all — what `/health` and
+    /// the reconciler's idle path ask before doing anything more expensive.
+    pub fn has_cron_channels(&self) -> bool {
+        self.by_name.values().any(|runtime| runtime.cron.is_some())
     }
 
     /// Look up a channel's runtime config, refusing quarantined channels.
@@ -429,6 +486,9 @@ pub struct ReloadDeps<'a> {
     /// `[oauth2_login] allow_private_token_urls`.
     pub allow_private_token_urls: bool,
     pub global_trace_storage: &'a TraceStorageConfig,
+    /// `[cron] enabled`. A cron channel loaded on a node with the scheduler off
+    /// is quarantined rather than served as a schedule that never fires.
+    pub cron_enabled: bool,
 }
 
 /// Everything [`ChannelLoader::build_runtime`] needs beyond the channel row.
@@ -449,6 +509,7 @@ struct RuntimeDeps<'a> {
     allow_private_token_urls: bool,
     global_trace_storage: &'a TraceStorageConfig,
     cluster_redis: Option<redis::aio::ConnectionManager>,
+    cron_enabled: bool,
 }
 
 /// Refuse an object with more than one key anywhere inside a channel
@@ -939,6 +1000,53 @@ impl ChannelLoader {
             None => None,
         };
 
+        // Same posture again, with one addition: a cron channel on a node whose
+        // scheduler is off is quarantined too. `cron.enabled = false` with an
+        // active schedule is the one configuration whose failure an operator
+        // cannot see — the channel would sit in every listing looking healthy
+        // and simply never run — so it is refused loudly here and named on
+        // `/health`, exactly as an active plugin row is on a node with the
+        // sandbox off.
+        let cron = match channel.protocol.as_str() {
+            p if p == crate::storage::models::ChannelProtocol::Cron.as_str() => {
+                if !deps.cron_enabled {
+                    tracing::error!(
+                        channel = %channel.name,
+                        "Refusing to load channel: cron.enabled is false on this node"
+                    );
+                    return Err(issue(
+                        "cron scheduler disabled on this node (cron.enabled = false): \
+                         the schedule would never fire"
+                            .to_string(),
+                    ));
+                }
+                Some(Arc::new(
+                    crate::channel::cron::compile_from_json(
+                        &channel.transport_config_json,
+                        crate::channel::CronIdentity {
+                            channel_id: channel.channel_id.clone(),
+                            channel_name: channel.name.clone(),
+                            version: channel.version,
+                            workflow_id: channel.workflow_id.clone(),
+                        },
+                    )
+                    .map_err(|errors| {
+                        let reasons: Vec<String> = errors
+                            .iter()
+                            .map(|e| format!("{}: {}", e.path, e.message))
+                            .collect();
+                        tracing::error!(
+                            channel = %channel.name,
+                            errors = %reasons.join("; "),
+                            "Refusing to load channel: cron transport_config does not compile"
+                        );
+                        issue(format!("cron schedule: {}", reasons.join("; ")))
+                    })?,
+                ))
+            }
+            _ => None,
+        };
+
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
             parsed_config,
@@ -953,6 +1061,7 @@ impl ChannelLoader {
             trace_storage,
             auth,
             oauth2_login,
+            cron,
         }))
     }
 
@@ -1005,6 +1114,7 @@ impl ChannelLoader {
             http_client,
             allow_private_token_urls,
             global_trace_storage,
+            cron_enabled,
         } = deps;
         let deps = RuntimeDeps {
             vars,
@@ -1016,10 +1126,12 @@ impl ChannelLoader {
             allow_private_token_urls,
             global_trace_storage,
             cluster_redis: self.cluster.as_ref().and_then(|c| c.redis.clone()),
+            cron_enabled,
         };
         let fingerprint = DepsFingerprint {
             connectors: connector_registry.config_generation(),
             trace_storage: global_trace_storage.clone(),
+            cron_enabled,
         };
 
         // N6/N17: the outgoing generation is both the cache (an unchanged
@@ -1244,6 +1356,110 @@ mod tests {
         }
     }
 
+    /// A cron channel carrying `transport_config`, so it compiles a descriptor
+    /// and registers nowhere else.
+    fn cron_channel(name: &str, transport_config_json: &str) -> Channel {
+        Channel {
+            protocol: "cron".to_string(),
+            channel_type: "async".to_string(),
+            transport_config_json: transport_config_json.to_string(),
+            workflow_id: Some("wf".to_string()),
+            ..test_channel(name, "{}")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cron_channel_compiles_a_descriptor_and_claims_no_route() {
+        let registry = TestRegistry::new();
+        let channel = cron_channel(
+            "nightly",
+            r#"{"schedule": "0 15 2 * * *", "timezone": "Asia/Kolkata"}"#,
+        );
+        TestDeps::new().reload(&registry, &[channel]).await;
+        assert!(registry.quarantined().is_empty());
+
+        let runtime = registry.get_by_name("nightly").expect("loaded");
+        let cron = runtime.cron.as_ref().expect("a compiled descriptor");
+        assert_eq!(cron.timezone, chrono_tz::Tz::Asia__Kolkata);
+        assert_eq!(cron.channel_id, "ch_nightly");
+        // The singleton key defaults to the stable id, not the name.
+        assert_eq!(cron.singleton_key, "ch_nightly");
+
+        let snapshot = registry.snapshot();
+        assert!(snapshot.has_cron_channels());
+        assert_eq!(snapshot.cron_descriptors().len(), 1);
+        assert!(snapshot.cron_by_channel_id("ch_nightly").is_some());
+        // Registers no route: a cron channel is started by its schedule, and a
+        // route table entry would make it reachable by request.
+        assert!(
+            matches!(snapshot.match_route("POST", "/nightly"), Ok(None)),
+            "a cron channel must not enter the route table"
+        );
+    }
+
+    /// N3's posture applied to the schedule: a `transport_config` that no longer
+    /// compiles refuses the channel rather than loading it with the schedule
+    /// silently absent — which, for this protocol, would be a channel that
+    /// simply never runs.
+    #[tokio::test]
+    async fn a_schedule_that_does_not_compile_quarantines_its_channel() {
+        let registry = TestRegistry::new();
+        let channel = cron_channel("broken", r#"{"schedule": "not a cron expression"}"#);
+        TestDeps::new().reload(&registry, &[channel]).await;
+
+        let issues = registry.quarantined();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].reason.contains("cron schedule"),
+            "the reason must name the schedule: {}",
+            issues[0].reason
+        );
+        assert!(registry.get_by_name("broken").is_none());
+        assert!(registry.snapshot().cron_descriptors().is_empty());
+    }
+
+    /// D3: the one configuration whose failure an operator cannot otherwise
+    /// see. The channel is refused loudly rather than sitting in every listing
+    /// looking active and never firing.
+    #[tokio::test]
+    async fn a_cron_channel_is_quarantined_when_the_scheduler_is_off() {
+        let registry = TestRegistry::new();
+        let channel = cron_channel("nightly", r#"{"schedule": "0 15 2 * * *"}"#);
+        let mut deps = TestDeps::new();
+        deps.cron_enabled = false;
+        deps.reload(&registry, &[channel]).await;
+
+        let issues = registry.quarantined();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].reason.contains("cron.enabled = false"),
+            "the reason must name the setting: {}",
+            issues[0].reason
+        );
+    }
+
+    /// The flag is part of the dependency fingerprint, so flipping it rebuilds
+    /// rather than carrying over descriptors compiled under the old answer.
+    #[tokio::test]
+    async fn turning_the_scheduler_off_does_not_reuse_a_compiled_descriptor() {
+        let registry = TestRegistry::new();
+        let channel = cron_channel("nightly", r#"{"schedule": "0 15 2 * * *"}"#);
+
+        TestDeps::new()
+            .reload(&registry, std::slice::from_ref(&channel))
+            .await;
+        assert!(registry.get_by_name("nightly").is_some());
+
+        let mut off = TestDeps::new();
+        off.cron_enabled = false;
+        off.reload(&registry, &[channel]).await;
+        assert!(
+            registry.get_by_name("nightly").is_none(),
+            "a carried-over descriptor would keep a schedule alive that this node \
+             can no longer run"
+        );
+    }
+
     /// A REST channel that claims `route_pattern`, so it lands in the route
     /// table as well as the serving map.
     fn rest_channel(name: &str, route_pattern: &str) -> Channel {
@@ -1267,6 +1483,9 @@ mod tests {
         jwks: std::sync::Arc<crate::jwt::jwks::JwksCache>,
         http_client: reqwest::Client,
         trace_storage: TraceStorageConfig,
+        /// `[cron] enabled` as this harness's node sees it. Default `true`;
+        /// the D3 quarantine test flips it.
+        cron_enabled: bool,
     }
 
     impl TestDeps {
@@ -1280,6 +1499,7 @@ mod tests {
                 jwks: test_jwks(),
                 http_client: reqwest::Client::new(),
                 trace_storage: TraceStorageConfig::default(),
+                cron_enabled: true,
             }
         }
 
@@ -1309,6 +1529,7 @@ mod tests {
                         http_client: &self.http_client,
                         allow_private_token_urls: false,
                         global_trace_storage: &self.trace_storage,
+                        cron_enabled: self.cron_enabled,
                     },
                     engine_issues,
                 )
@@ -1398,6 +1619,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
+                    cron_enabled: true,
                 },
                 Vec::new(),
             )
@@ -1434,6 +1656,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
+                    cron_enabled: true,
                 },
                 Vec::new(),
             )
@@ -1468,6 +1691,7 @@ mod tests {
                     http_client: &reqwest::Client::new(),
                     allow_private_token_urls: false,
                     global_trace_storage: &TraceStorageConfig::default(),
+                    cron_enabled: true,
                 },
                 Vec::new(),
             )

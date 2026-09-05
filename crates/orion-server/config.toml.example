@@ -207,6 +207,41 @@
                                      # leases are re-claimable, which is how a crashed node's
                                      # work is recovered in cluster mode
 
+[cron]                               # Scheduler capacity for `protocol = "cron"` channels.
+                                     # The schedules themselves are definition content and live
+                                     # in each channel's transport_config, not here.
+# enabled = true                     # Whether this node schedules and runs occurrences. With
+                                     # `false`, an ACTIVE cron channel is quarantined and
+                                     # /health reports `cron: degraded` — activating one is
+                                     # refused outright. Accepting a schedule that silently
+                                     # never fires is the one failure an operator cannot see.
+                                     # Drafts, imports and exports are unaffected.
+# poll_interval_ms = 1000            # How often the reconciler looks for due instants and the
+                                     # workers look for claimable occurrences. This is the floor
+                                     # on how late a run can be under normal operation.
+# workers = 4                        # Occurrences this node runs concurrently. Separate from
+                                     # trace_queue.workers so a large catch-up cannot starve
+                                     # externally submitted /async work.
+# claim_batch_size = 20              # Occurrences claimed per poll
+# claim_lease_secs = 60              # How long a claim is good for before another node may take
+                                     # the occurrence over. A running attempt extends its own
+                                     # claim past this to cover its timeout, so this governs the
+                                     # window between a node dying and its work being recovered.
+# heartbeat_interval_secs = 15       # How often a running attempt renews its claim and its
+                                     # singleton. Must be BELOW claim_lease_secs, or a healthy
+                                     # attempt races its own expiry every beat.
+# misfire_grace_secs = 5             # How late an occurrence may start before it counts as a
+                                     # misfire rather than as ordinary polling delay. Must cover
+                                     # poll_interval_ms, or every occurrence looks missed.
+# max_catch_up = 100                 # This instance's ceiling on a `catch_up` replay. The
+                                     # effective bound is min(channel.max_catch_up, this).
+# default_timeout_ms = 3600000       # Deadline for an occurrence whose channel sets no
+                                     # timeout_ms. A default, not a ceiling — a cron worker holds
+                                     # only its own slot, so a channel may ask for longer. Finite
+                                     # because the singleton lease is sized from it.
+# shutdown_timeout_secs = 30         # How long shutdown waits for in-flight occurrences before
+                                     # cancelling them and leaving their claims to expire
+
 [audit]                              # Admin audit-log retention
 # retention_days = 90                # Delete admin audit-log rows older than this (0 = keep
                                      # forever). Every admin mutation writes one and nothing

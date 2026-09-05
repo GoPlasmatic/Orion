@@ -449,6 +449,94 @@ pub fn record_engine_reload(status: &'static str) {
     counter!("orion_engine_reloads_total", "status" => status).increment(1);
 }
 
+// ---------------------------------------------------------------------------
+// Cron scheduling
+// ---------------------------------------------------------------------------
+
+/// One occurrence reaching a status.
+///
+/// Labelled by status alone. Channel is deliberately absent: the label set has
+/// to stay bounded (O1), and "which schedule is failing?" is a question the
+/// occurrence ledger answers precisely, with the reason attached — which a
+/// counter never could.
+pub fn record_cron_occurrence(status: &str) {
+    record_cron_occurrences(status, 1);
+}
+
+/// [`record_cron_occurrence`] for a run of them at once.
+///
+/// The misfire path needs this: a day of downtime on a per-second schedule is
+/// recorded as *one* `skipped_misfire` row, and the metric must still say
+/// 86 400 — the row count is a storage decision, the counter is a fact about
+/// the work.
+pub fn record_cron_occurrences(status: &str, count: u64) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_cron_occurrences_total", "status" => status.to_owned()).increment(count);
+}
+
+/// Wall time of one occurrence's execution.
+pub fn record_cron_execution_duration(channel: &str, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!("orion_cron_execution_duration_seconds", "channel" => channel.to_owned())
+        .record(secs);
+}
+
+/// How late an occurrence started: `started_at - scheduled_for`.
+///
+/// The scheduler's core service-level signal. Under normal operation this is
+/// bounded by `cron.poll_interval_ms`; a rising value means occurrences are
+/// being produced faster than they are run, which no liveness check catches
+/// because every part of the system is working.
+pub fn record_cron_schedule_lag(secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!("orion_cron_schedule_lag_seconds").record(secs);
+}
+
+/// Occurrences waiting for a worker, across the instance.
+pub fn set_cron_pending_occurrences(count: f64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_cron_pending_occurrences").set(count);
+}
+
+/// An occurrence refused admission because its singleton key was held.
+///
+/// Not an error — under `forbid` it is the policy working. A *sustained* rate
+/// means the schedule fires faster than the work takes, which is a definition
+/// problem rather than a runtime one.
+pub fn record_cron_singleton_contention() {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_cron_singleton_contention_total").increment(1);
+}
+
+/// A running attempt failed to renew its lease and was cancelled.
+///
+/// Always worth alerting on: work was stopped mid-flight, and whether its side
+/// effects landed is unknowable from here.
+pub fn record_cron_lease_renewal_failure() {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_cron_lease_renewal_failures_total").increment(1);
+}
+
+/// How long one reconciliation pass took.
+pub fn record_cron_reconcile_duration(secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!("orion_cron_reconcile_duration_seconds").record(secs);
+}
+
 /// Record a rate-limit rejection. `scope` must come from a bounded set — a
 /// registry-confirmed channel name or a route-group label, never
 /// client-controlled input like the client IP, which spoofed
@@ -512,7 +600,7 @@ pub fn record_cache_miss(channel: &str) {
 /// `time() - orion_job_last_success_timestamp_seconds{job="…"} > threshold`.
 ///
 /// `job` is one of `trace_cleanup`, `audit_cleanup`, `dlq_retry`,
-/// `epoch_watcher`, `kafka_lag`. Called once per fully successful tick;
+/// `epoch_watcher`, `kafka_lag`, `cron_reconcile`, `cron_cleanup`. Called once per fully successful tick;
 /// a tick skipped because another node holds the job lease does not count —
 /// on that node the gauge honestly goes stale, and the holder keeps it fresh.
 pub fn record_job_success(job: &'static str) {

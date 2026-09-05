@@ -477,3 +477,157 @@ async fn mysql_satisfies_the_repository_contract() {
     let (_container, pool) = mysql_pool().await;
     contract::run_all("mysql", &pool).await;
 }
+
+/// The cron claim under real concurrency on the backend whose locking actually
+/// matters.
+///
+/// SQLite serialises writers by construction, so a single-winner claim there
+/// proves nothing about Postgres, where two transactions can select the same
+/// rows unless `FOR UPDATE SKIP LOCKED` says otherwise. This is the test that
+/// makes the `skip_locked` argument in `claim_update_query` load-bearing.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_cron_claim_single_winner() {
+    use orion::storage::repositories::cron::{
+        ClaimRequest, CronRepository, NewOccurrence, SqlCronRepository, status, trigger,
+    };
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = std::sync::Arc::new(SqlCronRepository::new(pool.clone()));
+
+    let due = repo.db_now().await.expect("db now") - chrono::Duration::seconds(30);
+    assert!(
+        repo.insert_occurrence(NewOccurrence {
+            id: "occ-1",
+            channel_id: "ch",
+            channel_name: "nightly",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::CRON,
+            scheduled_for: due,
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert")
+    );
+
+    // Two nodes claim concurrently. Exactly one may win the single row.
+    let (a, b) = tokio::join!(
+        repo.claim_due(ClaimRequest {
+            claimant: "node-a",
+            limit: 10,
+            lease_secs: 60,
+        }),
+        repo.claim_due(ClaimRequest {
+            claimant: "node-b",
+            limit: 10,
+            lease_secs: 60,
+        }),
+    );
+    let a = a.expect("claim a");
+    let b = b.expect("claim b");
+    assert_eq!(
+        a.len() + b.len(),
+        1,
+        "exactly one node may claim an occurrence"
+    );
+
+    // And the identity index holds against a concurrent double-materialisation,
+    // which is what lets the reconciler run on every node with no lease.
+    let scheduled = due + chrono::Duration::seconds(1);
+    let make = || NewOccurrence {
+        id: "",
+        channel_id: "ch",
+        channel_name: "nightly",
+        channel_version: 1,
+        workflow_id: Some("wf"),
+        trigger: trigger::CRON,
+        scheduled_for: scheduled,
+        status: status::PENDING,
+        error_message: None,
+    };
+    let (first, second) = tokio::join!(
+        repo.insert_occurrence(NewOccurrence {
+            id: "occ-a",
+            ..make()
+        }),
+        repo.insert_occurrence(NewOccurrence {
+            id: "occ-b",
+            ..make()
+        }),
+    );
+    let winners = [first.expect("insert a"), second.expect("insert b")]
+        .into_iter()
+        .filter(|created| *created)
+        .count();
+    assert_eq!(
+        winners, 1,
+        "two reconcilers must produce exactly one occurrence per instant"
+    );
+}
+
+/// Singleton acquisition across two concurrent claimants on a real backend:
+/// the row is the lock, and only one occurrence may hold it.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_cron_singleton_admits_one_occurrence() {
+    use orion::storage::repositories::cron::{
+        AttemptStart, ClaimRequest, CronRepository, NewOccurrence, SingletonRequest,
+        SqlCronRepository, status, trigger,
+    };
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = std::sync::Arc::new(SqlCronRepository::new(pool.clone()));
+    let now = repo.db_now().await.expect("db now");
+
+    for (i, id) in ["first", "second"].iter().enumerate() {
+        repo.insert_occurrence(NewOccurrence {
+            id,
+            channel_id: "ch",
+            channel_name: "nightly",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::CRON,
+            scheduled_for: now - chrono::Duration::seconds(30 - i as i64),
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert");
+    }
+
+    let claimed = repo
+        .claim_due(ClaimRequest {
+            claimant: "node-a",
+            limit: 10,
+            lease_secs: 60,
+        })
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 2);
+
+    let singleton = |occurrence_id: &str| {
+        let _ = occurrence_id;
+        Some(SingletonRequest {
+            key: "shared-key",
+            holder: "node-a",
+            lease_secs: 60,
+        })
+    };
+    let first = repo
+        .start_attempt(&claimed[0], "node-a", 1, singleton(&claimed[0].id), 60)
+        .await
+        .expect("start first");
+    let second = repo
+        .start_attempt(&claimed[1], "node-a", 1, singleton(&claimed[1].id), 60)
+        .await
+        .expect("start second");
+
+    assert!(matches!(first, AttemptStart::Started { .. }));
+    assert_eq!(
+        second,
+        AttemptStart::SingletonBusy,
+        "a live singleton key must refuse a second occurrence"
+    );
+}

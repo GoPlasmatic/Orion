@@ -113,6 +113,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+# Cron channels (docs/src/guides/scheduled-workflows.md): the six-field
+# expression parser, and the IANA time-zone table the local calendar times it
+# produces are resolved against.
+#
+# `cron` enumerates *wall-clock* instants and Orion resolves local -> UTC
+# itself (`channel::cron::CronDescriptor::fires_between`), so the documented
+# DST rules — a nonexistent local time does not fire, a repeated one fires
+# twice — are Orion's code rather than a dependency's behaviour.
+#
+# `chrono-tz` is already in the tree via datalogic-rs's `datetime` operators,
+# so the version must track the one dataflow-rs links or the lock file grows a
+# second copy of a 400 kB zone table.
+cron = "0.17"
+chrono-tz = "0.10"
 # The shared wire contract (DTOs, enums, error envelope, import report). The
 # server enables `utoipa` so the shared types publish in its OpenAPI document.
 orion-api = { workspace = true, features = ["utoipa"] }

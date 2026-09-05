@@ -55,14 +55,15 @@ pub mod error;
 pub mod import;
 
 pub use dto::{
-    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, PackageReceiptResponse,
+    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
     TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,
-    PackageState, STATUS_ACTIVE, STATUS_ARCHIVED, STATUS_DRAFT, TRACE_MODE_ASYNC, TRACE_MODE_KAFKA,
-    TRACE_MODE_SYNC, TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED, TRACE_STATUS_PENDING,
-    TRACE_STATUS_RUNNING, VALID_CHANNEL_TYPES,
+    PackageState, STATUS_ACTIVE, STATUS_ARCHIVED, STATUS_DRAFT, TRACE_MODE_ASYNC, TRACE_MODE_CRON,
+    TRACE_MODE_KAFKA, TRACE_MODE_SYNC, TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED,
+    TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING, VALID_CHANNEL_TYPES,
 };
 pub use envelope::{Data, Paginated, TracePage};
 pub use error::{ErrorBody, ErrorEnvelope, FieldError, codes, field_codes};

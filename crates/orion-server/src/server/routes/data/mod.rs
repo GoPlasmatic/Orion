@@ -237,6 +237,23 @@ pub(crate) async fn dynamic_handler(
     // config-less — serving it here would apply none of its guards.
     let channel_runtime = generation.channels.require_serviceable(&channel)?;
 
+    // D6: a cron channel is reachable by name — every channel is — and must not
+    // be reachable *here*. Running it over HTTP would execute the workflow
+    // outside the occurrence ledger and outside its singleton: no row recording
+    // that it ran, and nothing stopping it overlapping the scheduled run it was
+    // configured to never overlap. The manual-trigger endpoint exists for this,
+    // and goes through the same claim path the schedule does.
+    if let Some(runtime) = channel_runtime.as_ref()
+        && runtime.cron.is_some()
+    {
+        return Err(OrionError::MethodNotAllowed(format!(
+            "channel '{channel}' is a cron channel: it runs on its schedule, not on \
+             request. To run it now, POST /api/v1/admin/channels/{}/trigger — that \
+             records an occurrence and respects the channel's concurrency policy.",
+            runtime.channel.channel_id
+        )));
+    }
+
     let request_config = channel_runtime
         .as_ref()
         .and_then(|rt| rt.parsed_config.request.as_ref());

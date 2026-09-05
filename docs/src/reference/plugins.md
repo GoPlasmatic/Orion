@@ -1,3 +1,4 @@
+<!-- description: The plugin manifest, the WebAssembly component ABI, the limits every invocation runs under, and what a plugin failure looks like. -->
 # Plugins Reference
 
 The manifest a plugin is uploaded with, the ABI its component implements, how

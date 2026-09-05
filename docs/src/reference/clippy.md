@@ -103,6 +103,8 @@ reported without sometimes being wrong.
 | A number compared to a string | JSONLogic coerces; the comparison works |
 | A connector task's `output` overwritten unread | the call still happened — a `data_write` wrote to the database |
 | A `channel_call` cycle with a conditional edge | bounded recursion with a base case is a legal pattern; the depth cap exists for it |
+| A cron `payload` key the bound workflow never reads | the payload reaches the workflow through `parse_json` into a target the rule would have to guess at, and a workflow may branch on a key only some occurrences carry — the same uncertain-reads problem the first row records |
+| A cron schedule that fires faster than its work takes | knowable only at run time, and visible where it is knowable: `skipped_singleton` occurrences and `orion_cron_schedule_lag_seconds` |
 | Anything about a [plugin](./plugins.md) function beyond what its manifest declares | a plugin's writes are already proven structurally through `output`, exactly as `crypto`'s are, and its reads arrive only through declared fields — there is no second proof source to add; a plugin function no manifest covers is unverifiable, and an unverifiable fact is not a certain one |
 
 ## Each rule

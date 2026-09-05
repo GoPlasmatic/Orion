@@ -167,6 +167,17 @@ map, failed connector loads, quarantined channel names — are served only when
 admin auth is disabled or the caller presents a valid admin key. A monitor can
 therefore see *that* something is degraded without learning *what*.
 
+`components.cron` appears only when this node has something to say about
+schedules: the scheduler is on, or it is off while an active cron channel is
+quarantined. It is `degraded` when the reconciler has not completed a pass for
+long enough that occurrences are now being missed, or when the scheduler is off
+while cron channels are stored active — both states in which every liveness
+signal is green and the declared schedules are simply not running. Like
+`config_propagation` it does not fail `/readyz`: the node still serves every
+request correctly, and removing it from the load balancer would not make a
+single occurrence run. See
+[Cron occurrences](../reference/admin-api.md#cron-occurrences).
+
 `components.kafka` appears only when `kafka.enabled` is true. `components.engine`
 is a constant `"ok"`, kept for response-shape stability: the engine snapshot
 cannot be unavailable once the process serves.

@@ -2103,7 +2103,14 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
 
     let mut failures = Vec::new();
     if let Some(e) = run_error {
-        failures.push(format!("workflow failed: {e}"));
+        // A case that names the codes it expects is asserting the failure, and
+        // a task error that halts the workflow is exactly how a refusal looks
+        // from here — reporting the run's `Err` on top of that would make the
+        // negative path unwritable. The codes are still matched below, so a
+        // case cannot pass by declaring the wrong ones (or none at all).
+        if case.expect_errors.is_empty() {
+            failures.push(format!("workflow failed: {e}"));
+        }
     }
 
     let roots = serde_json::Value::Object(orion::engine::functions::stub::run_documents(
@@ -2133,7 +2140,7 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     failures.extend(check_expected_calls(&case.expect_calls, &run.log));
 
     if let Some(ref expected) = case.expect_tasks {
-        let actual = executed_task_ids(&trace);
+        let actual = executed_task_ids(&trace, &message);
         if &actual != expected {
             failures.push(format!("tasks: expected {expected:?}, ran {actual:?}"));
         }
@@ -2154,19 +2161,36 @@ async fn run_case(case_path: &std::path::Path, definitions: Option<&Catalog>) ->
     CaseResult { name, failures }
 }
 
-/// The ids of the tasks that executed, in step order.
+/// The ids of the tasks that ran, in step order.
 ///
 /// Read from the execution trace rather than the audit trail: a
 /// `TaskOutcome::Skip` returns before the audit entry is pushed, so the trail
 /// cannot tell "skipped by condition" from "not in the workflow" — and which
 /// branch ran is the whole question `expect_tasks` exists to answer.
-fn executed_task_ids(trace: &dataflow_rs::ExecutionTrace) -> Vec<String> {
-    trace
+///
+/// The message's errors are a second source because the trace alone answers
+/// that question wrongly for a failing task: the engine records a step only
+/// *after* the task's result is handled, so a task that halted the workflow
+/// never reaches the trace even though it ran. Its error names it, and it
+/// halted the run, so appending in error order puts it where it ran. A task
+/// that failed under `continue_on_error` is already in the trace and keeps its
+/// recorded position.
+fn executed_task_ids(
+    trace: &dataflow_rs::ExecutionTrace,
+    message: &dataflow_rs::Message,
+) -> Vec<String> {
+    let mut ids: Vec<String> = trace
         .steps
         .iter()
         .filter(|step| matches!(step.result, dataflow_rs::StepResult::Executed))
         .filter_map(|step| step.task_id.clone())
-        .collect()
+        .collect();
+    for id in message.errors().iter().filter_map(|e| e.task_id.as_ref()) {
+        if !ids.iter().any(|seen| seen == id) {
+            ids.push(id.clone());
+        }
+    }
+    ids
 }
 
 /// The failure text for an `expect` path with no root, suggesting the fix.

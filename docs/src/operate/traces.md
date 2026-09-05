@@ -91,6 +91,14 @@ without limit — load shedding, not queueing forever.
 
 A message consumed from Kafka runs the same admission guards and the same
 workflow dispatch as an HTTP request, and it produces a `traces` row like one.
+A scheduled run writes `mode = "cron"`, with the channel's authored
+`transport_config.payload` as its `input_json` and the occurrence's id in the
+[ledger](../reference/admin-api.md#cron-occurrences) linking the two. It follows
+the `/async` contract rather than the sync one: `trace_storage.mode = "off"`
+is upgraded to `sync` and sampling is forced, because the occurrence is the only
+thing that observes the run and a run nobody can debug is worth less than the
+storage it saves. `errors_only` still applies as documented.
+
 The row's `mode` is `kafka`, so it can be told apart from the two HTTP paths:
 
 ```bash

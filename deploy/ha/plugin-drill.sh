@@ -15,6 +15,13 @@
 # "every node" is asserted as a run of consecutive LB reads that all agree —
 # with two upstreams, 20 in a row missing a node is a 2^-20 event.
 #
+# That argument holds only while every node is *in rotation*. nginx retries
+# the survivor when an upstream refuses a connection, so a booting node is
+# invisible to every read here: the convergence loops below would agree
+# against the survivor alone, and then the returning node's catch-up window
+# (it serves the estate it booted with until its first epoch tick) would land
+# inside the measured traffic as refusals. So the stack is waited for first.
+#
 # Usage:
 #   deploy/ha/plugin-drill.sh              # assumes the stack is already up
 #   START_STACK=1 deploy/ha/plugin-drill.sh
@@ -27,6 +34,8 @@ COMPOSE=(docker compose -f docker-compose.ha.yml)
 LB_URL="${LB_URL:-http://localhost:8080}"
 DURATION_SECS="${DURATION_SECS:-20}"
 CONSECUTIVE="${CONSECUTIVE:-20}"
+NODES=(${NODES:-orion-a orion-b})
+HEALTH_TIMEOUT_SECS="${HEALTH_TIMEOUT_SECS:-60}"
 
 cd "$(dirname "$0")/../.."
 
@@ -43,6 +52,22 @@ if [[ "${START_STACK:-0}" == "1" ]]; then
     echo "==> Starting the HA stack..."
     "${COMPOSE[@]}" up -d --wait
 fi
+
+# Every node in rotation before anything is measured (see the header): a
+# node still booting is one the LB hides rather than one this drill can see.
+echo "==> Waiting for every node to be healthy: ${NODES[*]}"
+for node in "${NODES[@]}"; do
+    for ((i = 0; i < HEALTH_TIMEOUT_SECS; i++)); do
+        id=$("${COMPOSE[@]}" ps -q "$node" 2>/dev/null || true)
+        if [[ -n "$id" ]] &&
+            [[ "$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null || true)" == "healthy" ]]; then
+            continue 2
+        fi
+        sleep 1
+    done
+    echo "FAIL: $node did not become healthy within ${HEALTH_TIMEOUT_SECS}s"
+    exit 1
+done
 
 echo "==> Baseline check via LB: $LB_URL/health"
 curl -fsS -o /dev/null "$LB_URL/health" || {
@@ -134,7 +159,12 @@ done
 # version, and activating it is a full engine rebuild on every node.
 echo "==> Driving traffic for ${DURATION_SECS}s while activating version 2..."
 codes_file="$(mktemp)"
-trap 'rm -f "$codes_file"' EXIT
+# The refusals themselves, not just their count: a bare "36 non-2xx" says
+# nothing about which refusal it was, and the body distinguishes every one
+# this drill can provoke — an unknown channel from a quarantined one from a
+# workflow that failed. Kept to the first few; they are all the same shape.
+refusals_file="$(mktemp)"
+trap 'rm -f "$codes_file" "$refusals_file"' EXIT
 end=$((SECONDS + DURATION_SECS))
 (
     sleep 4
@@ -145,9 +175,14 @@ end=$((SECONDS + DURATION_SECS))
 activator=$!
 total=0
 while ((SECONDS < end)); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST "$LB_URL/api/v1/data/plugin-drill" \
-        -H 'Content-Type: application/json' -d '{"data":{"msg":"hi"}}' || echo "000")
+    response=$(curl -s -w '\n%{http_code}' --max-time 5 -X POST "$LB_URL/api/v1/data/plugin-drill" \
+        -H 'Content-Type: application/json' -d '{"data":{"msg":"hi"}}' || printf '\n000')
+    code=${response##*$'\n'}
     echo "$code" >>"$codes_file"
+    if [[ "$code" != 2* ]] && [[ "$(wc -l <"$refusals_file")" -lt 3 ]]; then
+        printf '%s %s\n' "$code" "$(printf '%s' "${response%$'\n'*}" | tr -d '\n' | cut -c1-300)" \
+            >>"$refusals_file"
+    fi
     total=$((total + 1))
 done
 wait "$activator" || true
@@ -155,6 +190,9 @@ wait "$activator" || true
 non2xx=$(grep -cv '^2' "$codes_file" || true)
 echo "==> $total requests during the activation, $non2xx non-2xx"
 sort "$codes_file" | uniq -c | sed 's/^/    /'
+if [[ -s "$refusals_file" ]]; then
+    sed 's/^/    refused: /' "$refusals_file"
+fi
 
 v2=$(curl -fsS "${auth[@]}" "$ADMIN/plugins/test.fixture" | jq -r '.data.version')
 echo "==> Waiting for every node to serve version $v2"

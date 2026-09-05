@@ -1,3 +1,4 @@
+<!-- description: A plugin is a custom task function compiled to WebAssembly and sandboxed: what it can and cannot do, its lifecycle, and when to write one. -->
 # Plugins
 
 A plugin is a custom task function compiled to WebAssembly and run inside

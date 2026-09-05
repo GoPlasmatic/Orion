@@ -132,7 +132,7 @@ pub fn start_trace_cleanup(
 /// attempt clones them instead.
 ///
 /// [`TaskRegistry::supervise`]: crate::runtime::TaskRegistry::supervise
-fn supervise_retention_job<F, Fut, R>(
+pub(crate) fn supervise_retention_job<F, Fut, R>(
     tasks: &crate::runtime::TaskRegistry,
     job: &'static str,
     interval_secs: u64,

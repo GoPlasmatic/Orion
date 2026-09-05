@@ -98,6 +98,15 @@ pub fn merge_kafka_topics(
 ) -> Vec<crate::config::TopicMapping> {
     let mut all_topics = config.topics.clone();
     for ch in channels {
+        // A cron channel is `channel_type: "async"`, which is the other half of
+        // the condition below — so it has to be excluded explicitly or a stored
+        // row carrying a stray `topic` would be subscribed as a Kafka consumer
+        // *and* scheduled. Validation refuses `topic` on this protocol, so the
+        // row cannot be written through the API; this is what makes the rule
+        // hold for one written any other way.
+        if ch.protocol == crate::storage::models::ChannelProtocol::Cron.as_str() {
+            continue;
+        }
         if (ch.protocol == crate::storage::models::ChannelProtocol::Kafka.as_str()
             || ch.channel_type == "async")
             && let Some(ref topic) = ch.topic
@@ -145,6 +154,58 @@ mod tests {
         "sasl.password",
         "ssl.ca.location",
     ];
+
+    /// A cron channel subscribes to nothing, even though it shares
+    /// `channel_type: "async"` with the channels that do.
+    #[test]
+    fn a_cron_channel_contributes_no_kafka_topic() {
+        let now = chrono::Utc::now().naive_utc();
+        let channel = crate::storage::models::Channel {
+            tags_json: "[]".to_string(),
+            channel_id: "ch_nightly".to_string(),
+            version: 1,
+            name: "nightly".to_string(),
+            description: None,
+            channel_type: "async".to_string(),
+            protocol: "cron".to_string(),
+            methods_json: None,
+            route_pattern: None,
+            // Not reachable through the API — validation refuses it — which is
+            // exactly why the exclusion must not depend on it being absent.
+            topic: Some("orders".to_string()),
+            consumer_group: None,
+            transport_config_json: r#"{"schedule": "0 15 2 * * *"}"#.to_string(),
+            workflow_id: Some("wf".to_string()),
+            config_json: "{}".to_string(),
+            status: "active".to_string(),
+            priority: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let merged = merge_kafka_topics(
+            &crate::config::KafkaIngestConfig::default(),
+            std::slice::from_ref(&channel),
+        );
+        assert!(
+            merged.is_empty(),
+            "a cron channel must not be subscribed: {merged:?}"
+        );
+
+        // The same row as a plain async channel is subscribed, so the test is
+        // pinning the protocol exclusion rather than an unrelated condition.
+        let async_channel = crate::storage::models::Channel {
+            protocol: "http".to_string(),
+            ..channel
+        };
+        assert_eq!(
+            merge_kafka_topics(
+                &crate::config::KafkaIngestConfig::default(),
+                &[async_channel]
+            )
+            .len(),
+            1
+        );
+    }
 
     #[test]
     fn test_sasl_ssl_scram_sets_exact_keys() {

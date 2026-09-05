@@ -78,6 +78,16 @@ enum ChannelsSubcommand {
         /// Channel ID
         id: String,
     },
+    /// Run an active cron channel now, without waiting for its schedule
+    ///
+    /// Creates an occurrence at the current instant and returns immediately.
+    /// It goes through the same claim, concurrency and execution path a
+    /// scheduled run does — so on a `forbid` channel whose scheduled run is
+    /// already in flight, it is recorded as skipped rather than run alongside.
+    Trigger {
+        /// Channel ID of an active cron channel
+        id: String,
+    },
     /// Create a new channel from JSON
     #[command(after_help = crate::help::CHANNEL_CREATE)]
     Create {
@@ -192,6 +202,43 @@ enum ChannelsSubcommand {
     },
 }
 
+/// Run a cron channel now.
+///
+/// A channel verb rather than a `cron` one, because it names a channel and is
+/// audited as a channel mutation — the `cron` command group is the *ledger*.
+async fn trigger(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
+    let resp: Value = client
+        .post(&paths::channel_trigger(id), &Value::Null)
+        .await?;
+    let occurrence = &resp["data"];
+
+    if quiet {
+        println!("{}", occurrence["id"].as_str().unwrap_or(""));
+        return Ok(0);
+    }
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+    println!(
+        "{} Occurrence {} created for '{}'",
+        "✓".green(),
+        occurrence["id"].as_str().unwrap_or(""),
+        occurrence["channel_name"].as_str().unwrap_or(id)
+    );
+    println!(
+        "  {} orion-cli cron get {}",
+        "Follow it with:".dimmed(),
+        occurrence["id"].as_str().unwrap_or("")
+    );
+    Ok(0)
+}
+
 #[derive(Tabled)]
 struct ChannelRow {
     #[tabled(rename = "ID")]
@@ -242,6 +289,7 @@ impl ChannelsCmd {
                 list(client, format, quiet, &qs).await
             }
             ChannelsSubcommand::Get { id } => get_channel(client, format, quiet, id).await,
+            ChannelsSubcommand::Trigger { id } => trigger(client, format, quiet, id).await,
             ChannelsSubcommand::Create { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 utils::create_entity(client, &KIND, format, quiet, &body).await

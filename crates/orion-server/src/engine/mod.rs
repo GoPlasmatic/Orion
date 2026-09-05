@@ -53,6 +53,18 @@ pub fn clear_error_context(metadata: &mut serde_json::Value) {
     }
 }
 
+/// The metadata key describing what started a scheduled run.
+///
+/// Lives here beside [`VARS_KEY`] and [`ERROR_CONTEXT_KEY`] rather than in
+/// `cron`, because it is a *reserved metadata key* and this is where the
+/// reserved namespace is declared — and because the offline metadata validator
+/// in `engine::utils` has to know the name, which it could not if the name
+/// lived a layer above.
+///
+/// Platform-owned: the cron worker stamps it from the occurrence being run, and
+/// nothing else may supply it. See `cron::metadata` for the object's shape.
+pub const TRIGGER_KEY: &str = "trigger";
+
 /// The metadata key the `[vars]` config section is stamped under.
 ///
 /// Platform-reserved, in the same sense as `channel` and `cookies`: an

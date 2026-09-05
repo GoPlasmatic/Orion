@@ -543,6 +543,81 @@ where
     }
 }
 
+/// [`insert_if_absent`] over a **composite** conflict target.
+///
+/// The occurrence ledger needs this: its uniqueness is
+/// `(channel_id, scheduled_for)`, not its primary key — the id is minted fresh
+/// on every attempt to materialise, so a duplicate is only ever detectable by
+/// the identity index.
+pub async fn insert_if_absent_on<I>(
+    pool: &DbPool,
+    mut insert: sea_query::InsertStatement,
+    conflict_cols: I,
+) -> Result<u64, OrionError>
+where
+    I: IntoIterator,
+    I::Item: sea_query::IntoIden,
+{
+    use crate::storage::{DbBackend, build_sqlx};
+
+    let backend = pool.backend();
+    match backend {
+        DbBackend::Sqlite | DbBackend::Postgres => {
+            insert.on_conflict(
+                sea_query::OnConflict::columns(conflict_cols)
+                    .do_nothing()
+                    .to_owned(),
+            );
+            let (sql, values) = build_sqlx(backend, &mut insert);
+            pool.execute_query(&sql, values)
+                .await
+                .map_err(OrionError::Storage)
+        }
+        DbBackend::Mysql => {
+            let (sql, values) = build_sqlx(backend, &mut insert);
+            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+            pool.execute_query(&sql, values)
+                .await
+                .map_err(OrionError::Storage)
+        }
+    }
+}
+
+/// [`insert_if_absent_on`] inside a transaction.
+///
+/// Needed where the insert's *outcome* is the decision and the surrounding
+/// writes must commit or roll back with it — singleton acquisition, where "the
+/// row already existed" means another occurrence holds the key.
+pub async fn insert_if_absent_tx<I>(
+    tx: &mut crate::storage::DbTransaction,
+    mut insert: sea_query::InsertStatement,
+    conflict_cols: I,
+) -> Result<u64, OrionError>
+where
+    I: IntoIterator,
+    I::Item: sea_query::IntoIden,
+{
+    use crate::storage::{DbBackend, build_sqlx};
+
+    let backend = tx.backend();
+    match backend {
+        DbBackend::Sqlite | DbBackend::Postgres => {
+            insert.on_conflict(
+                sea_query::OnConflict::columns(conflict_cols)
+                    .do_nothing()
+                    .to_owned(),
+            );
+            let (sql, values) = build_sqlx(backend, &mut insert);
+            tx.execute_query(&sql, values).await.map_err(Into::into)
+        }
+        DbBackend::Mysql => {
+            let (sql, values) = build_sqlx(backend, &mut insert);
+            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+            tx.execute_query(&sql, values).await.map_err(Into::into)
+        }
+    }
+}
+
 /// Rows deleted per statement by [`delete_chunked`].
 ///
 /// Small enough that one statement is short on any backend, large enough that

@@ -190,6 +190,7 @@ async fn test_state_inner(
     ready.store(true, std::sync::atomic::Ordering::Release);
 
     let tasks = Arc::new(orion::runtime::TaskRegistry::new());
+    let cron_status = Arc::new(orion::cron::CronStatus::new());
     let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
         orion::bootstrap::start_background_tasks(
             &config,
@@ -197,6 +198,11 @@ async fn test_state_inner(
             components.runtime.clone(),
             &repos,
             &cluster,
+            orion::bootstrap::CronComponents {
+                datalogic: components.datalogic.clone(),
+                vars: components.vars.clone(),
+                status: cron_status.clone(),
+            },
         );
     // None unless the test's config carries `[kafka.topics]` mappings (the
     // DB is empty at boot, so DB-driven topics never contribute); wired for
@@ -250,6 +256,7 @@ async fn test_state_inner(
         kafka_consumer_handle,
         cluster,
         tasks,
+        cron_status,
     });
     (state, task_handles, pool_handle)
 }
@@ -562,6 +569,27 @@ pub async fn start_failing_server() -> std::net::SocketAddr {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 axum::Json(serde_json::json!({"error": "boom"})),
             )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    addr
+}
+
+/// A server that answers `GET /slow` after `delay`.
+///
+/// For the cron singleton tests, which need work that reliably outlasts the
+/// interval between two occurrences — a condition to observe rather than a
+/// sleep to guess at.
+pub async fn start_slow_server(delay: std::time::Duration) -> std::net::SocketAddr {
+    let mock_app = axum::Router::new().route(
+        "/slow",
+        axum::routing::get(move || async move {
+            tokio::time::sleep(delay).await;
+            axum::Json(serde_json::json!({"slept_ms": delay.as_millis() as u64}))
         }),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2,6 +2,7 @@ pub(crate) mod audit;
 pub(crate) mod backups;
 pub(crate) mod channels;
 pub(crate) mod connectors;
+pub(crate) mod cron;
 pub(crate) mod engine;
 pub(crate) mod functions;
 pub(crate) mod packages;
@@ -923,6 +924,7 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
                 .delete(channels::delete_channel),
         )
         .route("/{id}/status", patch(channels::change_channel_status))
+        .route("/{id}/trigger", post(cron::trigger_channel))
         .route(
             "/{id}/versions",
             get(channels::list_channel_versions).post(channels::create_new_channel_version),
@@ -998,6 +1000,12 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .route("/status", get(engine::engine_status))
         .route("/reload", post(engine::engine_reload));
 
+    let cron_routes = Router::new()
+        .route("/status", get(cron::cron_status))
+        .route("/occurrences", get(cron::list_occurrences))
+        .route("/occurrences/{id}", get(cron::get_occurrence))
+        .route("/occurrences/{id}/retry", post(cron::retry_occurrence));
+
     let audit_routes = Router::new().route("/", get(audit::list_audit_logs));
 
     let function_routes = Router::new().route("/", get(functions::list_functions));
@@ -1038,6 +1046,7 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)
+        .nest("/cron", cron_routes)
         .nest("/audit-logs", audit_routes)
         .nest("/traces", trace_routes)
         .nest("/trace-dlq", trace_dlq_routes)

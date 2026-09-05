@@ -621,6 +621,9 @@ mod tests {
         for (protocol, pattern) in [
             // Kafka registers no HTTP route at all.
             ("kafka", Some("/orders")),
+            // Nor does cron: it is started by its schedule, and a route would
+            // make it reachable by request.
+            ("cron", Some("/orders")),
             // REST with no pattern claims nothing, callback or not.
             ("rest", None),
         ] {

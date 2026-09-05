@@ -45,6 +45,7 @@
 - [Worked Examples: Prompt to Service](./guides/worked-examples.md)
 - [Common Workflow Patterns](./guides/workflow-patterns.md)
 - [Consume from Kafka](./guides/kafka-channels.md)
+- [Run work on a schedule](./guides/scheduled-workflows.md)
 - [CI/CD with Packages](./guides/ci-cd.md)
 
 # Operate
@@ -62,6 +63,7 @@
 - [Back Up & Restore](./operate/backup-restore.md)
 - [Audit Logs](./operate/audit-logs.md)
 - [Upgrades](./operate/upgrades.md)
+  - [Upgrading to 1.7.0](./operate/upgrading-to-1.7.md)
   - [Upgrading to 1.6.0](./operate/upgrading-to-1.6.md)
   - [Upgrading to 1.2.0](./operate/upgrading-to-1.2.md)
   - [Upgrading to 1.1.0](./operate/upgrading-to-1.1.md)

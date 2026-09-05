@@ -39,6 +39,7 @@ pub mod channel;
 pub mod cluster;
 pub mod config;
 pub mod connector;
+pub mod cron;
 pub mod crypto;
 pub mod definitions;
 pub mod engine;

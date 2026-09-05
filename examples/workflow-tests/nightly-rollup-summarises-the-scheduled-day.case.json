@@ -1,0 +1,23 @@
+{
+  "name": "the rollup summarises the day its occurrence was due, not today",
+  "workflow": "../packages/nightly-rollup/workflow.json",
+  "input": { "window": "previous_day" },
+  "metadata": {
+    "channel": "nightly-order-rollup",
+    "trigger": {
+      "type": "cron",
+      "occurrence_id": "01a070e1-5e6a-7552-99d3-66dd70c1feff",
+      "scheduled_for": "2026-09-04T20:45:00+00:00",
+      "started_at": "2026-09-05T06:12:03+00:00",
+      "timezone": "Asia/Kolkata",
+      "attempt": 2
+    }
+  },
+  "expect": {
+    "data.summary.window": "previous_day",
+    "data.summary.covers": "2026-09-04T20:45:00+00:00",
+    "data.summary.ran_at": "2026-09-05T06:12:03+00:00",
+    "data.summary.attempt": 2,
+    "data.summary.status": "built"
+  }
+}

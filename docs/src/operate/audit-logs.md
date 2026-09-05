@@ -56,6 +56,8 @@ the vocabulary behind it. This is all of it:
 | `purge`, `requeue` | `trace_dlq` | The [trace DLQ](../reference/admin-api.md#trace-dlq) endpoints |
 | `package_staged`, `package_applied` | `package` | `PUT /packages/{name}`, named for the receipt state |
 | `reload` | `engine` | `POST /engine/reload` |
+| `retry` | `cron_occurrence` | `POST /cron/occurrences/{id}/retry` |
+| `trigger` | `channel` | `POST /channels/{id}/trigger` — a manual run of a cron channel |
 
 Reads are not recorded — only mutations, and the two `test` calls that behave
 like one.

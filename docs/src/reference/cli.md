@@ -434,6 +434,7 @@ Manages channels. Alias: `ch`.
 | `validate` | Validate a definition without creating it. Exits `1` when invalid. |
 | `export` | Export channels as JSON; filter with `--status`, `--tag`, `--channel-type`, `--protocol`. |
 | `import -f <file>` | Bulk-import from a JSON array file; `--dry-run` previews, `--on-conflict` sets the collision rule. |
+| `trigger <id>` | Run an active [cron channel](./channel-config.md#cron-transport) now. Creates an occurrence at the current instant and returns `202`; it takes the same claim and the same singleton a scheduled run does. |
 
 `--dry-run` earns its keep most on channels: activation requires an active
 workflow, a route pattern that collides with nothing already serving, and a
@@ -613,6 +614,29 @@ Inspects and drains the trace dead-letter queue.
 nothing will pick up again, and the only ones `purge` deletes.
 
 Example: `orion-cli dlq purge --older-than-hours 168`
+
+### `cron`
+
+Inspects scheduled runs. Every scheduled instant of a
+[cron channel](./channel-config.md#cron-transport) becomes a durable
+occurrence, so this is the record of what ran — kept whatever the trace-storage
+settings are.
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | What is scheduled, when it next fires, its last run and its backlog — one row per active cron channel. |
+| `list` | List occurrences, newest first; filter with `--channel-id` and `--status`. |
+| `get <id>` | Show one occurrence: both instants, the attempt, the singleton it held, its trace, and why it failed. |
+| `retry <id>` | Attempt a `failed`, `skipped_misfire` or `skipped_singleton` occurrence again. |
+
+`retry` keeps the occurrence's identity and its scheduled time — it is another
+attempt at the work that was due *then*, which is what lets a workflow use
+`metadata.trigger.scheduled_for` as an idempotency key. To run a schedule again
+*now*, use `channels trigger`, which mints a new occurrence at the current
+instant. `completed` occurrences are refused with a `409` for exactly that
+reason.
+
+Example: `orion-cli cron list --channel-id nightly-order-rollup --status failed`
 
 ### `benchmark`
 

@@ -348,6 +348,78 @@ fn calls_channel_workflow(name: &str, target: &str) -> serde_json::Value {
     })
 }
 
+/// D6: a cron channel is not callable. Its workflow is meant to run once per
+/// occurrence, recorded in the ledger and serialised by its singleton key. A
+/// `channel_call` would run it with none of that — no occurrence row, and no
+/// lock, so a caller could overlap a `forbid` schedule with itself at will.
+///
+/// The refusal is a task failure rather than a guard refusal, because it is
+/// about what the target *is* rather than about which guards this transport
+/// applies.
+#[tokio::test]
+async fn a_cron_channel_is_not_callable() {
+    let app = common::test_app().await;
+
+    // The target: an active cron channel.
+    let target_wf =
+        common::create_and_activate_workflow(&app, common::simple_log_workflow("Scheduled Work"))
+            .await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "scheduled-target",
+                "channel_type": "async",
+                "protocol": "cron",
+                "workflow_id": target_wf,
+                "transport_config": {"schedule": "0 15 2 * * *"},
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let channel_id = common::body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .expect("channel id")
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The caller: an ordinary channel whose workflow calls it.
+    common::create_and_activate_channel(
+        &app,
+        "cron-caller",
+        calls_channel_workflow("Cron Caller", "scheduled-target"),
+    )
+    .await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/cron-caller",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "calling a cron channel must fail the task, not run it"
+    );
+    let body = common::body_json(resp).await;
+    assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+}
+
 /// A channel whose workflow calls itself must be refused by cycle detection,
 /// not recurse until the stack or the engine gives out. The entry channel is
 /// not part of the recorded chain, so the cycle is caught on the second hop:

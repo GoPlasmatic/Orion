@@ -33,9 +33,27 @@ struct ExpectedError {
     class: String,
 }
 
+/// A relative `ORION_PLUGIN_FIXTURE` is resolved against the **workspace
+/// root**, not the process's working directory: cargo runs a test binary from
+/// the package directory, so the repo-relative path a CI step (or anyone
+/// standing at the repo root) writes would otherwise resolve under
+/// `crates/orion-server/` and miss.
+fn fixture_override(path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(path)
+}
+
 fn component() -> Vec<u8> {
     match std::env::var("ORION_PLUGIN_FIXTURE") {
-        Ok(path) => std::fs::read(&path).unwrap_or_else(|e| panic!("reading {path}: {e}")),
+        Ok(path) => {
+            let path = fixture_override(&path);
+            std::fs::read(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+        }
         Err(_) => include_bytes!("../fixtures/plugins/fixture.wasm").to_vec(),
     }
 }

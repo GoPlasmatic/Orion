@@ -399,6 +399,175 @@ pub struct TraceDlqSummaryResponse {
     pub updated_at: NaiveDateTime,
 }
 
+/// One row of `GET /api/v1/admin/cron/occurrences`.
+///
+/// The list projection: what happened and when, without the diagnostic detail.
+/// Narrower than [`CronOccurrenceResponse`] for readability rather than for
+/// cost — an occurrence carries no payload column, unlike a trace — so a page
+/// of a hundred reads as a schedule's history instead of as a wall of lease
+/// bookkeeping.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CronOccurrenceSummaryResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_id: String,
+    /// The channel's name when this occurrence was materialised, not its name
+    /// now — renaming a channel does not rewrite what already ran.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_name: String,
+    /// `cron` or `manual`.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub trigger: String,
+    /// The immutable UTC instant this occurrence was due.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub scheduled_for: NaiveDateTime,
+    /// `pending`, `claimed`, `running`, `completed`, `failed`,
+    /// `skipped_misfire` or `skipped_singleton`. An open string on the wire:
+    /// tolerate a value you do not know.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub attempt: i64,
+    #[serde(default)]
+    pub started_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub completed_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub created_at: NaiveDateTime,
+}
+
+/// One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.
+///
+/// Adds what the summary leaves out — the failure reason, the trace to read the
+/// run in, and the lease bookkeeping that answers "which node has it, and until
+/// when?".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CronOccurrenceResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_name: String,
+    /// The channel version that materialised this occurrence…
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_version: i64,
+    /// …and the one that claimed it. They differ when the channel gained a
+    /// version between the two, which is expected: a pending occurrence follows
+    /// the active generation at claim time, exactly as a queued async trace
+    /// does. `null` until claimed.
+    #[serde(default)]
+    pub executing_version: Option<i64>,
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub trigger: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub scheduled_for: NaiveDateTime,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub status: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub attempt: i64,
+    /// The instance holding this occurrence, and until when. Both `null` unless
+    /// an attempt is in flight.
+    #[serde(default)]
+    pub claimed_by: Option<String>,
+    #[serde(default)]
+    pub claimed_until: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub singleton_key: Option<String>,
+    /// The acquisition generation this attempt holds its key under. Diagnostic:
+    /// Orion's connectors do not accept a fencing token, so it bounds Orion's
+    /// own writes rather than a downstream side effect.
+    #[serde(default)]
+    pub fencing_token: Option<i64>,
+    /// The trace this attempt wrote, readable at
+    /// `GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace
+    /// storage dropped the row — the occurrence is kept either way, because it
+    /// is scheduling correctness state rather than optional observability.
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub completed_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub created_at: NaiveDateTime,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
+    pub updated_at: NaiveDateTime,
+}
+
+/// One channel's schedule as the runtime sees it right now:
+/// `GET /api/v1/admin/cron/status`.
+///
+/// Deliberately a separate response rather than fields on the channel. The
+/// channel row is an immutable authored definition; where its cursor has got to
+/// is runtime state that changes every minute, and writing it into the active
+/// row would make an immutable record mutable.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct CronScheduleStatusResponse {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub channel_name: String,
+    /// The authored expression and zone, echoed so a status read answers
+    /// "what is scheduled?" without a second request.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub schedule: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub timezone: String,
+    /// The next UTC instant this schedule will materialise. `null` when the
+    /// reconciler has not yet seen the channel — it appears within one poll
+    /// interval of activation.
+    #[serde(default)]
+    pub next_fire_at: Option<NaiveDateTime>,
+    /// Set when the channel has left the active set. Its history is kept; it
+    /// simply stops producing occurrences.
+    #[serde(default)]
+    pub paused_at: Option<NaiveDateTime>,
+    /// The most recent occurrence's status and instant, so one read answers
+    /// "is this schedule healthy?".
+    #[serde(default)]
+    pub last_status: Option<String>,
+    #[serde(default)]
+    pub last_scheduled_for: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub last_completed_at: Option<NaiveDateTime>,
+    /// Occurrences waiting for a worker. A number that only grows is the signal
+    /// that this schedule is producing work faster than the instance runs it.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub pending: i64,
+}
+
 /// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
 ///
 /// The narrower sibling of the single-trace read, for the same reason

@@ -498,6 +498,7 @@ impl EngineComponents {
                     http_client: &serving.http_client,
                     allow_private_token_urls: config.oauth2_login.allow_private_token_urls,
                     global_trace_storage: &config.trace_storage,
+                    cron_enabled: config.cron.enabled,
                 },
                 engine_issues,
             )
@@ -787,6 +788,7 @@ pub fn start_background_tasks(
     runtime: Arc<crate::runtime::RuntimeHandle>,
     repos: &Repositories,
     cluster: &crate::cluster::ClusterRuntime,
+    cron: CronComponents,
 ) -> (
     crate::queue::TracePersistenceQueue,
     crate::queue::TraceQueue,
@@ -835,6 +837,9 @@ pub fn start_background_tasks(
         buffer = config.trace_queue.buffer_size,
         "Trace queue started"
     );
+
+    // Cloned before the DLQ retry consumer takes ownership of `runtime`.
+    let runtime_for_cron = runtime.clone();
 
     // Cluster-mode single-flight gate for background jobs (None on a single node).
     let job_lease_gate = cluster.enabled.then(|| {
@@ -885,6 +890,38 @@ pub fn start_background_tasks(
         );
     }
 
+    // The scheduler, after the queues it writes traces through and before the
+    // Kafka consumer, for the same reason the consumer comes last: both produce
+    // work that lands in the trace pipeline, so the pipeline has to exist first.
+    crate::cron::start(
+        tasks,
+        crate::cron::CronDeps {
+            runtime: runtime_for_cron,
+            repo: repos.cron.clone(),
+            trace_repo: repos.traces.clone(),
+            persistence_queue: trace_persistence_queue.clone(),
+            global_trace_storage: config.trace_storage.clone(),
+            datalogic: cron.datalogic,
+            vars: cron.vars,
+            instance_id: cluster.instance_id.clone(),
+            status: cron.status,
+            config: config.cron.clone(),
+            max_result_size_bytes: config.trace_queue.max_result_size_bytes,
+            lease_gate: job_lease_gate.clone(),
+        },
+    );
+
+    // Occurrence retention, on the same cadence and the same knob as trace
+    // cleanup: an occurrence and the trace it produced age out together, so an
+    // operator has one retention decision to make rather than two.
+    crate::cron::start_cleanup(
+        tasks,
+        config.trace_queue.retention_hours,
+        config.trace_queue.cleanup_interval_secs,
+        repos.cron.clone(),
+        job_lease_gate,
+    );
+
     (
         trace_persistence_queue,
         trace_queue,
@@ -895,6 +932,16 @@ pub fn start_background_tasks(
             audit_writer_handle,
         },
     )
+}
+
+/// The pieces the cron scheduler needs that the trace pipeline does not.
+///
+/// A struct rather than three more positional parameters on
+/// [`start_background_tasks`], two of which are `Arc`s of unrelated things.
+pub struct CronComponents {
+    pub datalogic: Arc<dataflow_rs::datalogic_rs::Engine>,
+    pub vars: Option<Arc<serde_json::Value>>,
+    pub status: Arc<crate::cron::CronStatus>,
 }
 
 /// Inputs to [`build_app_state`] that aren't already carried by
@@ -919,6 +966,8 @@ pub struct AppStateParams {
     /// The supervisor the background tasks registered with, so the probes can
     /// read their liveness.
     pub tasks: Arc<crate::runtime::TaskRegistry>,
+    /// The scheduler's own view of itself, for `/health`.
+    pub cron_status: Arc<crate::cron::CronStatus>,
 }
 
 /// Assemble `AppState` from the bootstrap products — the single place the
@@ -941,6 +990,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         kafka_consumer_handle,
         cluster,
         tasks,
+        cron_status,
     } = params;
     let ServingComponents {
         connector_registry,
@@ -1000,6 +1050,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         trace_persistence_queue,
         cluster,
         tasks,
+        cron_status,
         plugins,
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),

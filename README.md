@@ -83,7 +83,7 @@ cleanup instructions, follow the
 
 ```mermaid
 flowchart LR
-    Request["HTTP request or Kafka record"] --> Channel
+    Request["HTTP request, Kafka record, or schedule"] --> Channel
     Channel["Channel<br/>route + ingress policy"] --> Workflow
     Workflow["Workflow<br/>ordered business logic"] --> Connector
     Connector["Connector<br/>external system"]
@@ -92,7 +92,7 @@ flowchart LR
 
 | Primitive | Purpose | Example |
 |---|---|---|
-| **Channel** | Receives traffic and applies ingress policy | `POST /orders`, Kafka topic `order.placed` |
+| **Channel** | Receives traffic and applies ingress policy | `POST /orders`, Kafka topic, `0 15 2 * * *` `order.placed` |
 | **Workflow** | Runs the business logic as an ordered task pipeline | Parse → validate → enrich → respond |
 | **Connector** | Provides a reusable connection to an external system | PostgreSQL, Redis, Kafka, REST API |
 
@@ -169,7 +169,6 @@ the same operational and governance foundation.
 Choose another runtime, or pair one with Orion, when:
 
 - work must survive restarts at an intermediate step or wait hours or days;
-- jobs must start on a timer or cron schedule;
 - ingress requires gRPC, WebSockets, or streaming responses;
 - business logic requires arbitrary code with I/O, or a scripting runtime — a
   pure transformation ships as a sandboxed WebAssembly plugin, anything that

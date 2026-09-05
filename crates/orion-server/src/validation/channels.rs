@@ -18,6 +18,7 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     // the full list of what to fix instead of one round-trip per issue.
     check_protocol_required_fields(&ProtocolFields {
         protocol: req.protocol,
+        channel_type: Some(req.channel_type.as_str()),
         methods: req.methods.as_deref(),
         route_pattern: req.route_pattern.as_deref(),
         topic: req.topic.as_deref(),
@@ -41,7 +42,44 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     // before an upgrade.
     validate_channel_config_blob(&req.config)?;
     validate_oauth2_login_routing(&req.config, req.protocol, req.route_pattern.as_deref())?;
+    check_cron_channel(
+        req.protocol,
+        &req.transport_config,
+        &req.config,
+        req.channel_id.as_deref(),
+    )?;
     Ok(())
+}
+
+/// The cron half of channel validation: the compiled schedule and the guards a
+/// schedule cannot use.
+///
+/// Runs on create and on update alike, against the *effective* documents, so an
+/// update that replaces only `transport_config` is checked against the config
+/// it will actually serve with.
+fn check_cron_channel(
+    protocol: ChannelProtocol,
+    transport_config: &serde_json::Value,
+    config: &serde_json::Value,
+    channel_id: Option<&str>,
+) -> Result<(), OrionError> {
+    if protocol != ChannelProtocol::Cron {
+        return Ok(());
+    }
+    let mut details = super::cron::cron_transport_errors(transport_config, channel_id);
+    details.extend(super::cron::cron_config_errors(config));
+    if details.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::Validation {
+        code: "VALIDATION_ERROR",
+        message: format!(
+            "Cron channel has {} problem(s): a schedule that does not compile would \
+             be quarantined at load rather than serving",
+            details.len()
+        ),
+        details,
+    })
 }
 
 /// R3: mirror the create-time checks on `PUT /channels/{id}`, which
@@ -71,6 +109,7 @@ pub fn validate_update_channel(
     if let Some(protocol) = stored_protocol {
         check_protocol_required_fields(&ProtocolFields {
             protocol,
+            channel_type: Some(stored.channel_type.as_str()),
             methods: req.methods.as_deref().or(stored_methods.as_deref()),
             route_pattern: req
                 .route_pattern
@@ -111,6 +150,29 @@ pub fn validate_update_channel(
                     .or(stored.route_pattern.as_deref()),
             )?;
         }
+    }
+    if let Some(protocol) = stored_protocol {
+        // The merged view, for the same reason the routing checks above use
+        // one: a request replacing only `transport_config` still has to be
+        // checked against the `config` it will serve with, and vice versa. A
+        // stored blob that no longer parses contributes nothing rather than
+        // blocking an unrelated update.
+        let stored_transport =
+            serde_json::from_str::<serde_json::Value>(&stored.transport_config_json).ok();
+        let stored_config = serde_json::from_str::<serde_json::Value>(&stored.config_json).ok();
+        let empty = serde_json::Value::Object(serde_json::Map::new());
+        check_cron_channel(
+            protocol,
+            req.transport_config
+                .as_ref()
+                .or(stored_transport.as_ref())
+                .unwrap_or(&empty),
+            req.config
+                .as_ref()
+                .or(stored_config.as_ref())
+                .unwrap_or(&empty),
+            Some(stored.channel_id.as_str()),
+        )?;
     }
     Ok(())
 }
@@ -177,6 +239,9 @@ fn validate_oauth2_login_routing(
 /// update time.
 struct ProtocolFields<'a> {
     protocol: ChannelProtocol,
+    /// `None` where the caller has no view of it — the update path, whose
+    /// request cannot change it. Only the cron arm reads it.
+    channel_type: Option<&'a str>,
     methods: Option<&'a [String]>,
     route_pattern: Option<&'a str>,
     topic: Option<&'a str>,
@@ -403,6 +468,17 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
                 ));
             }
         }
+        // A cron channel is the one protocol with nothing *required* here: its
+        // trigger lives entirely in `transport_config`, which
+        // `cron_transport_errors` compiles. What this arm contributes is the
+        // other half — the routing fields of the protocols it is not.
+        ChannelProtocol::Cron => out.extend(super::cron::cron_routing_errors(
+            fields.channel_type,
+            fields.methods,
+            fields.route_pattern,
+            fields.topic,
+            fields.consumer_group,
+        )),
     }
     // D29: the varchar(255) caps are deliberately outside the protocol match —
     // all three fields are optional on the request and persist whatever the

@@ -34,6 +34,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Understand Workflows](https://docs.goplasmatic.io/concepts/workflows.html): task pipelines, the data context, conditions, how a version is selected
 - [Understand Connectors](https://docs.goplasmatic.io/concepts/connectors.html): named external connections, secrets by reference, operation gates, circuit breakers
 - [Packages](https://docs.goplasmatic.io/concepts/packages.html): the module boundary — tags, closure, artifacts, receipts, rollback
+- [Plugins](https://docs.goplasmatic.io/concepts/plugins.html): custom task functions as sandboxed WebAssembly — what a plugin may do, its lifecycle, when to write one
 - [The Entity Lifecycle](https://docs.goplasmatic.io/concepts/lifecycle.html): draft/active/archived, immutability, what reloads the engine, quarantine
 
 ## Build with AI
@@ -49,6 +50,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Configure Channels](https://docs.goplasmatic.io/build/channels.html): routes, async, auth, rate limits, validation, dedup, cache, backpressure, timeouts
 - [Connect Databases & APIs](https://docs.goplasmatic.io/build/connectors.html): creating connectors, env:// secrets, operation gates, data_query vs db_read
 - [Test Workflows Offline](https://docs.goplasmatic.io/build/testing.html): lint one file or a whole definition set, dry-run, connector stubs, *.case.json suites with request metadata and recorded-call assertions, validate-config, preflight
+- [Build a Plugin](https://docs.goplasmatic.io/build/plugins.html): a JSON → JSON function in Rust on the plugin SDK — manifest, offline tests, upload, promotion
 - [Version & Roll Out Changes](https://docs.goplasmatic.io/build/versioning.html): new versions, dry_run activation, reload=defer, canary rollout, import/export
 
 ## Guides
@@ -74,6 +76,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Back Up & Restore](https://docs.goplasmatic.io/operate/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
 - [Audit Logs](https://docs.goplasmatic.io/operate/audit-logs.html): filtering, change context, retention, dropped-event alerting
 - [Upgrades](https://docs.goplasmatic.io/operate/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
+- [Upgrading to 1.6.0](https://docs.goplasmatic.io/operate/upgrading-to-1.6.html): the 1.5.x → 1.6.0 behaviour changes — plugins off by default, three migrations, a new MSRV
 - [Upgrading to 1.2.0](https://docs.goplasmatic.io/operate/upgrading-to-1.2.html): the six 1.1.x → 1.2.0 behaviour changes, including the breaking `expect` path root and the two that can turn a green CI gate red
 - [Upgrading to 1.1.0](https://docs.goplasmatic.io/operate/upgrading-to-1.1.html): the five 1.0.x → 1.1.0 behaviour changes, including the rate-limit key that now refuses instead of collapsing every caller into one bucket
 - [Upgrading to 1.0.0](https://docs.goplasmatic.io/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
@@ -90,6 +93,7 @@ Key facts: workflows are pipelines of tasks using JSONLogic; everything is creat
 - [Workflow JSON Schema](https://docs.goplasmatic.io/reference/workflows.html): workflow & task JSON schema, the data context, matching, rollout
 - [Expression Language (JSONLogic)](https://docs.goplasmatic.io/reference/expressions.html): the operator catalogue, its silent-failure edges, and why connector payloads fold only {"var": ..}
 - [Task Functions](https://docs.goplasmatic.io/reference/functions.html): every task function's exact input schema
+- [Plugins](https://docs.goplasmatic.io/reference/plugins.html): the manifest, the component ABI, the limits an invocation runs under, and the shape of a failure
 - [Connector Types](https://docs.goplasmatic.io/reference/connectors.html): per-type field tables, secret references, operation gates, retries, masking, breakers
 - [Portable Data Dialect](https://docs.goplasmatic.io/reference/data-dialect.html): backend-neutral query/write envelope across SQL, MongoDB, Elasticsearch
 - [Configuration Reference](https://docs.goplasmatic.io/reference/configuration.html): every setting, default, and ORION_* environment variable

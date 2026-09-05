@@ -206,6 +206,17 @@ where
     ov!(storage.connect_retry_secs: u64);
 
     // Cluster
+    ov!(cron.enabled: bool);
+    ov!(cron.poll_interval_ms: u64);
+    ov!(cron.workers: usize);
+    ov!(cron.claim_batch_size: i64);
+    ov!(cron.claim_lease_secs: u64);
+    ov!(cron.heartbeat_interval_secs: u64);
+    ov!(cron.misfire_grace_secs: u64);
+    ov!(cron.max_catch_up: u32);
+    ov!(cron.default_timeout_ms: u64);
+    ov!(cron.shutdown_timeout_secs: u64);
+
     ov!(cluster.enabled: bool);
     ov!(cluster.redis_url: String);
     ov!(cluster.epoch_poll_interval_ms: u64);

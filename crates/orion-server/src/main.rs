@@ -739,6 +739,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // `AppState` so `/health` and `/readyz` can report their liveness, and
     // `main` keeps its own handle so shutdown can stop them.
     let tasks = Arc::new(orion::runtime::TaskRegistry::new());
+    // Shared with `AppState` so `/health` can report what the two scheduler
+    // loops are actually achieving, which their liveness does not say.
+    let cron_status = Arc::new(orion::cron::CronStatus::new());
     let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
         bootstrap::start_background_tasks(
             &config,
@@ -746,6 +749,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             components.runtime.clone(),
             &repos,
             &cluster,
+            bootstrap::CronComponents {
+                datalogic: components.datalogic.clone(),
+                vars: components.vars.clone(),
+                status: cron_status.clone(),
+            },
         );
 
     // The plugin epoch ticker: the clock every plugin deadline is measured
@@ -801,6 +809,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kafka_consumer_handle,
         cluster,
         tasks: tasks.clone(),
+        cron_status: cron_status.clone(),
     });
 
     // Cluster background tasks (epoch watcher). None when disabled.

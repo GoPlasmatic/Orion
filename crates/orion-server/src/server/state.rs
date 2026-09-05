@@ -167,6 +167,11 @@ pub struct AppStateInner {
     /// worker or DLQ retry consumer was invisible to every probe while the
     /// data plane kept answering 200s.
     pub tasks: Arc<crate::runtime::TaskRegistry>,
+
+    /// What the cron scheduler is actually achieving, as distinct from whether
+    /// its two loops are alive — which the task registry above already reports.
+    /// A reconciler erroring on every pass is alive and doing nothing.
+    pub cron_status: Arc<crate::cron::CronStatus>,
     /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
     /// plugin a load issue on this node rather than a running function.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,

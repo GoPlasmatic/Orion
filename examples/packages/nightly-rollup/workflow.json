@@ -1,0 +1,29 @@
+{
+  "workflow_id": "order-rollup",
+  "name": "Order rollup",
+  "description": "Summarise a day of orders. Runs on a schedule; the day it summarises comes from the occurrence, not from the clock.",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Read the scheduled payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "request" } }
+    },
+    {
+      "id": "summarise",
+      "name": "Build the summary",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.summary.window", "logic": { "var": "data.request.window" } },
+            { "path": "data.summary.covers", "logic": { "var": "metadata.trigger.scheduled_for" } },
+            { "path": "data.summary.ran_at", "logic": { "var": "metadata.trigger.started_at" } },
+            { "path": "data.summary.attempt", "logic": { "var": "metadata.trigger.attempt" } },
+            { "path": "data.summary.status", "logic": "built" }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -2,6 +2,7 @@ pub mod audit_logs;
 pub mod channels;
 pub mod cluster;
 pub mod connectors;
+pub mod cron;
 pub mod helpers;
 pub mod packages;
 pub mod plugins;
@@ -33,6 +34,8 @@ pub struct Repositories {
     pub trace_dlq: Arc<dyn trace_dlq::TraceDlqRepository>,
     pub packages: Arc<dyn packages::PackageRepository>,
     pub plugins: Arc<dyn plugins::PluginRepository>,
+    /// The cron ledger: cursors, occurrences and singletons.
+    pub cron: Arc<dyn cron::CronRepository>,
 }
 
 impl Repositories {
@@ -65,6 +68,7 @@ impl Repositories {
             trace_dlq: Arc::new(trace_dlq::SqlTraceDlqRepository::new(pool.clone())),
             packages: Arc::new(packages::SqlPackageRepository::new(pool.clone())),
             plugins: Arc::new(plugins::SqlPluginRepository::new(pool.clone())),
+            cron: Arc::new(cron::SqlCronRepository::new(pool.clone())),
         })
     }
 

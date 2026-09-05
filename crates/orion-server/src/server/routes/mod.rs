@@ -209,6 +209,11 @@ pub(crate) async fn health_check(
     // 200s while no message is consumed. Absent entirely when Kafka is off.
     let kafka_state = kafka_component(&state);
 
+    // The same class of silence for schedules: a node whose reconciler errors
+    // on every pass is alive, restarts nothing, and simply stops firing. The
+    // supervisor cannot see it, because nothing crashed.
+    let cron_state = cron_component(&state, &generation);
+
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
@@ -226,6 +231,7 @@ pub(crate) async fn health_check(
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && kafka_state != Some("error")
+        && cron_state != Some("degraded")
         && tasks_state == "ok"
         && !reload_degraded
         && !(state.cluster.enabled && state.cluster.propagation_degraded());
@@ -281,6 +287,9 @@ pub(crate) async fn health_check(
     if let Some(kafka) = kafka_state {
         body["components"]["kafka"] = json!(kafka);
     }
+    if let Some(cron) = cron_state {
+        body["components"]["cron"] = json!(cron);
+    }
     // Cluster mode only: outside it there are no peers to propagate to.
     // `degraded`, not `error`, and absent from `/readyz` on purpose — this
     // node is serving the change correctly; it is the peers that have not
@@ -318,6 +327,15 @@ pub(crate) async fn health_check(
         // O9: task names are internal topology, so the per-task breakdown
         // rides with the other admin-only detail. The coarse
         // `components.background_tasks` above is what a monitor keys on.
+        if cron_state.is_some() {
+            body["cron"] = json!({
+                "last_reconcile_at": state.cron_status.last_reconcile_ok(),
+                "reconcile_age_secs": state.cron_status.reconcile_age_secs(),
+                "oldest_pending_age_secs": state.cron_status.oldest_pending_secs(),
+                "lease_renewal_failures": state.cron_status.renewal_failures(),
+                "scheduled_channels": generation.channels.cron_descriptors().len(),
+            });
+        }
         body["background_tasks"] = json!(
             task_reports
                 .iter()
@@ -454,6 +472,61 @@ fn kafka_component(state: &AppState) -> Option<&'static str> {
         Err(_) => false,
     };
     Some(if consumer_dead { "error" } else { "ok" })
+}
+
+/// Coarse state of the cron scheduler, or `None` when this node has nothing to
+/// say about schedules.
+///
+/// Three answers, and the middle one is the whole reason this exists:
+///
+/// * `None` — the scheduler is off *and* no cron channel is loaded. Nothing to
+///   report; a node that does not schedule is not a broken node.
+/// * `"degraded"` — either the scheduler is off while active cron channels
+///   exist (they are quarantined, so their schedules will never fire), or the
+///   reconciler has not completed a pass in long enough that occurrences are
+///   now being missed. Both are states in which every liveness signal on the
+///   instance is green and the declared schedules are simply not running.
+/// * `"ok"` — schedules are being reconciled.
+///
+/// Unlike `background_tasks`, this is not derived from whether a task is
+/// alive: the loops swallow per-tick errors on purpose, so a reconciler failing
+/// against an unreachable database stays `Running` forever. What is reported
+/// here is whether it is *achieving* anything.
+///
+/// It degrades `/health` but does **not** fail `/readyz`, for the reason
+/// `config_propagation` does not: this node still serves every request
+/// correctly, and taking it out of the load balancer would remove capacity
+/// without making a single occurrence run.
+fn cron_component(
+    state: &AppState,
+    generation: &crate::runtime::RuntimeGeneration,
+) -> Option<&'static str> {
+    let has_channels = generation.channels.has_cron_channels();
+    if !state.config.cron.enabled {
+        // Quarantined active cron channels are already in
+        // `channels.quarantined`, so `has_cron_channels` is false here — the
+        // signal has to come from the stored estate instead, which the
+        // quarantine list carries.
+        let quarantined_cron = generation
+            .channels
+            .quarantined()
+            .iter()
+            .any(|issue| issue.reason.contains("cron.enabled = false"));
+        return quarantined_cron.then_some("degraded");
+    }
+    if !has_channels {
+        return Some("ok");
+    }
+    Some(
+        if state
+            .cron_status
+            .is_degraded(state.config.cron.poll_interval())
+        {
+            "degraded"
+        } else {
+            "ok"
+        },
+    )
 }
 
 /// Coarse state of the node's supervised background tasks (the trace

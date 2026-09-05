@@ -118,6 +118,24 @@ land well inside one `epoch_poll_interval_ms`. Peers pay one wide resync for
 the burst rather than one per change, and the narrow scope does its work where
 it matters — a fleet at rest, where each change arrives on its own.
 
+### A node that has just started
+
+A booting node reads the epoch *before* it loads channels and workflows, so
+anything committed while it was starting is picked up by its first poll rather
+than missed — it is at most one `epoch_poll_interval_ms` behind, exactly like
+every other node. What is worth knowing is that it is behind **while serving**:
+`/healthz` and `/readyz` are green as soon as the first generation is
+published, so a load balancer sends it traffic immediately, and a channel
+activated during that window answers `404` there and `200` on its peers until
+the tick lands.
+
+That is normal eventual consistency, not a fault, and it is invisible at rest.
+It shows up when a deploy and a configuration change overlap: roll a node and
+activate a channel in the same couple of seconds and a few requests meet the
+node that has not caught up yet. If that matters for a particular rollout,
+either let the restarted node settle for one poll interval before making the
+change, or make the change first and roll afterwards.
+
 ### When a change does not propagate
 
 The bump happens after the mutation is committed and live on the node that
@@ -139,6 +157,19 @@ bump — any mutation will do, because a resync re-reads everything from the
 database rather than applying a delta. `/readyz` is deliberately unaffected:
 this node is correct, and taking it out of rotation would not tell the others.
 Alert on the component, and on `orion_errors_total{reason="config_epoch_bump"}`.
+
+### Scheduled runs
+
+Cron channels coordinate entirely through three shared tables and need no leader.
+An occurrence's identity is `(channel_id, scheduled_for)`, so two reconcilers
+racing the same pass produce one row; claims are leased against the database
+clock, so a node that dies has its work recovered by a peer after the lease; and
+a `forbid` singleton is a row exactly one occurrence holds at a time, acquired in
+the same transaction that marks it running.
+
+Every node should agree on `cron.enabled`. A node with it off quarantines the
+active cron channels rather than ignoring them, so a mixed cluster is visible on
+`/health` rather than silently half-scheduling.
 
 ## What stays per node
 

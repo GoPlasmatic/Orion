@@ -5,6 +5,7 @@ pub mod channels;
 pub mod completions;
 pub mod config;
 pub mod connectors;
+pub mod cron;
 pub mod data;
 pub mod dlq;
 pub mod engine;
@@ -80,4 +81,7 @@ pub enum Commands {
 
     /// Inspect and drain the trace dead-letter queue
     Dlq(dlq::DlqCmd),
+
+    /// Inspect scheduled runs of cron channels
+    Cron(cron::CronCmd),
 }

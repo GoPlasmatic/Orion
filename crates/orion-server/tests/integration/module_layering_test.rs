@@ -43,6 +43,14 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // The plugin sandbox produces registry entries and handlers for a
     // generation to carry; it names nothing above `engine`.
     ("plugin", &["crate::server::", "crate::bootstrap::"]),
+    // The cron scheduler sits beside `queue` and `kafka`: it consumes the
+    // engine, the channel estate and the storage layer, and nothing below it
+    // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
+    // ended up in the wrong module.
+    ("cron", &["crate::server::", "crate::bootstrap::"]),
+    ("engine", &["crate::cron::"]),
+    ("channel", &["crate::cron::"]),
+    ("queue", &["crate::cron::"]),
     // Storage and config are below everything that serves.
     (
         "storage",

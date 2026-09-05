@@ -42,6 +42,32 @@ pub(crate) async fn ensure_workflow_is_active(
     }
     Ok(())
 }
+/// D3: a cron channel does not activate on a node whose scheduler is off.
+///
+/// The load-time quarantine already refuses to *serve* it, so this gate adds
+/// no safety — it adds an answer. Without it the activation succeeds, the
+/// channel reports `active` in every listing and export, and the only signal
+/// that it will never fire is a `degraded` component on `/health` and a line in
+/// a log. An operator who has just turned a schedule on deserves to be told at
+/// the moment they turn it on.
+///
+/// In cluster mode every node reads the same config, so refusing here is not a
+/// guess about the other nodes; a mixed cluster is a misconfiguration this
+/// makes visible at the first activation rather than at the first missed run.
+pub(crate) fn ensure_cron_is_enabled(
+    config: &crate::config::AppConfig,
+    draft: &crate::storage::models::Channel,
+) -> Result<(), OrionError> {
+    let is_cron = draft.protocol == crate::storage::models::ChannelProtocol::Cron.as_str();
+    if !is_cron || config.cron.enabled {
+        return Ok(());
+    }
+    Err(OrionError::validation(format!(
+        "Cannot activate channel '{}': it is a cron channel and this instance has          cron.enabled = false, so its schedule would never fire. Set cron.enabled          (or ORION_CRON__ENABLED=true) and restart, or leave the channel as a draft.",
+        draft.name
+    )))
+}
+
 /// K7: the activation half of the unique-name rule — a name held by another
 /// **active** channel loses the registry slot to the incumbent, so the
 /// activation is refused. The write-time gate (`ensure_name_unclaimed` in the

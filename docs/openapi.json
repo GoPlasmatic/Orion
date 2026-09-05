@@ -1103,6 +1103,95 @@
         ]
       }
     },
+    "/api/v1/admin/channels/{id}/trigger": {
+      "post": {
+        "tags": [
+          "Cron"
+        ],
+        "operationId": "trigger_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel id of an active cron channel",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "An occurrence was created; a worker picks it up on its next poll. It runs through the same claim, singleton and execution path a scheduled occurrence does",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_CronOccurrenceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an active cron channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An occurrence already exists for this instant — retry in a second",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/channels/{id}/versions": {
       "get": {
         "tags": [
@@ -2107,6 +2196,318 @@
           },
           "404": {
             "description": "Connector not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/cron/occurrences": {
+      "get": {
+        "tags": [
+          "Cron"
+        ],
+        "operationId": "list_occurrences",
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "query",
+            "description": "Stable channel id, not the name — an occurrence outlives the name it was\nmaterialised under.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "One status, spelled as the column stores it.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Inclusive lower bound on `scheduled_for`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Inclusive upper bound on `scheduled_for`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated occurrences, newest first. Summaries only — fetch one by id for the failure reason, the trace id and the lease detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_CronOccurrenceSummaryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/cron/occurrences/{id}": {
+      "get": {
+        "tags": [
+          "Cron"
+        ],
+        "operationId": "get_occurrence",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Occurrence id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One occurrence in full",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_CronOccurrenceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such occurrence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/cron/occurrences/{id}/retry": {
+      "post": {
+        "tags": [
+          "Cron"
+        ],
+        "operationId": "retry_occurrence",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Occurrence id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Occurrence reset to `pending`; the next worker poll picks it up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_CronOccurrenceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such occurrence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The occurrence is not in a retryable state — `completed` work is re-run by triggering the channel, not by retrying a finished occurrence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/cron/status": {
+      "get": {
+        "tags": [
+          "Cron"
+        ],
+        "operationId": "cron_status",
+        "responses": {
+          "200": {
+            "description": "One row per active cron channel: its schedule, where its cursor has got to, its most recent occurrence and its backlog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_CronScheduleStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5933,7 +6334,8 @@
         "enum": [
           "rest",
           "http",
-          "kafka"
+          "kafka",
+          "cron"
         ]
       },
       "ChannelResponse": {
@@ -6490,6 +6892,253 @@
           }
         }
       },
+      "CronOccurrenceResponse": {
+        "type": "object",
+        "description": "One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
+        "required": [
+          "id",
+          "channel_id",
+          "channel_name",
+          "channel_version",
+          "trigger",
+          "scheduled_for",
+          "status",
+          "attempt",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "channel_name": {
+            "type": "string"
+          },
+          "channel_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The channel version that materialised this occurrence…"
+          },
+          "claimed_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The instance holding this occurrence, and until when. Both `null` unless\nan attempt is in flight."
+          },
+          "claimed_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executing_version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "…and the one that claimed it. They differ when the channel gained a\nversion between the two, which is expected: a pending occurrence follows\nthe active generation at claim time, exactly as a queued async trace\ndoes. `null` until claimed."
+          },
+          "fencing_token": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The acquisition generation this attempt holds its key under. Diagnostic:\nOrion's connectors do not accept a fencing token, so it bounds Orion's\nown writes rather than a downstream side effect."
+          },
+          "id": {
+            "type": "string"
+          },
+          "scheduled_for": {
+            "type": "string"
+          },
+          "singleton_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The trace this attempt wrote, readable at\n`GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
+          },
+          "trigger": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CronOccurrenceSummaryResponse": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
+        "required": [
+          "id",
+          "channel_id",
+          "channel_name",
+          "trigger",
+          "scheduled_for",
+          "status",
+          "attempt",
+          "created_at"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "channel_name": {
+            "type": "string",
+            "description": "The channel's name when this occurrence was materialised, not its name\nnow — renaming a channel does not rewrite what already ran."
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "scheduled_for": {
+            "type": "string",
+            "description": "The immutable UTC instant this occurrence was due."
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending`, `claimed`, `running`, `completed`, `failed`,\n`skipped_misfire` or `skipped_singleton`. An open string on the wire:\ntolerate a value you do not know."
+          },
+          "trigger": {
+            "type": "string",
+            "description": "`cron` or `manual`."
+          }
+        }
+      },
+      "CronScheduleStatusResponse": {
+        "type": "object",
+        "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v1/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
+        "required": [
+          "channel_id",
+          "channel_name",
+          "schedule",
+          "timezone",
+          "pending"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "channel_name": {
+            "type": "string"
+          },
+          "last_completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_scheduled_for": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "last_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The most recent occurrence's status and instant, so one read answers\n\"is this schedule healthy?\"."
+          },
+          "next_fire_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The next UTC instant this schedule will materialise. `null` when the\nreconciler has not yet seen the channel — it appears within one poll\ninterval of activation."
+          },
+          "paused_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Set when the channel has left the active set. Its history is kept; it\nsimply stops producing occurrences."
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Occurrences waiting for a worker. A number that only grows is the signal\nthat this schedule is producing work faster than the instance runs it."
+          },
+          "schedule": {
+            "type": "string",
+            "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+          },
+          "timezone": {
+            "type": "string"
+          }
+        }
+      },
       "DataEnvelope_BackupFile": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -6754,6 +7403,135 @@
               },
               "updated_at": {
                 "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_CronOccurrenceResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "One occurrence in full: `GET /api/v1/admin/cron/occurrences/{id}`.\n\nAdds what the summary leaves out — the failure reason, the trace to read the\nrun in, and the lease bookkeeping that answers \"which node has it, and until\nwhen?\".",
+            "required": [
+              "id",
+              "channel_id",
+              "channel_name",
+              "channel_version",
+              "trigger",
+              "scheduled_for",
+              "status",
+              "attempt",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "attempt": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "channel_id": {
+                "type": "string"
+              },
+              "channel_name": {
+                "type": "string"
+              },
+              "channel_version": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The channel version that materialised this occurrence…"
+              },
+              "claimed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The instance holding this occurrence, and until when. Both `null` unless\nan attempt is in flight."
+              },
+              "claimed_until": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "completed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "error_message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "executing_version": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "…and the one that claimed it. They differ when the channel gained a\nversion between the two, which is expected: a pending occurrence follows\nthe active generation at claim time, exactly as a queued async trace\ndoes. `null` until claimed."
+              },
+              "fencing_token": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "The acquisition generation this attempt holds its key under. Diagnostic:\nOrion's connectors do not accept a fencing token, so it bounds Orion's\nown writes rather than a downstream side effect."
+              },
+              "id": {
+                "type": "string"
+              },
+              "scheduled_for": {
+                "type": "string"
+              },
+              "singleton_key": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "status": {
+                "type": "string"
+              },
+              "trace_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The trace this attempt wrote, readable at\n`GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace\nstorage dropped the row — the occurrence is kept either way, because it\nis scheduling correctness state rather than optional observability."
+              },
+              "trigger": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              },
+              "workflow_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           }
@@ -7464,6 +8242,86 @@
                 },
                 "tags": {
                   "description": "Selection labels (K6); filter the export with `?tag=`."
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_CronScheduleStatusResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One channel's schedule as the runtime sees it right now:\n`GET /api/v1/admin/cron/status`.\n\nDeliberately a separate response rather than fields on the channel. The\nchannel row is an immutable authored definition; where its cursor has got to\nis runtime state that changes every minute, and writing it into the active\nrow would make an immutable record mutable.",
+              "required": [
+                "channel_id",
+                "channel_name",
+                "schedule",
+                "timezone",
+                "pending"
+              ],
+              "properties": {
+                "channel_id": {
+                  "type": "string"
+                },
+                "channel_name": {
+                  "type": "string"
+                },
+                "last_completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "last_scheduled_for": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "last_status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The most recent occurrence's status and instant, so one read answers\n\"is this schedule healthy?\"."
+                },
+                "next_fire_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "The next UTC instant this schedule will materialise. `null` when the\nreconciler has not yet seen the channel — it appears within one poll\ninterval of activation."
+                },
+                "paused_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time",
+                  "description": "Set when the channel has left the active set. Its history is kept; it\nsimply stops producing occurrences."
+                },
+                "pending": {
+                  "type": "integer",
+                  "format": "int64",
+                  "description": "Occurrences waiting for a worker. A number that only grows is the signal\nthat this schedule is producing work faster than the instance runs it."
+                },
+                "schedule": {
+                  "type": "string",
+                  "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+                },
+                "timezone": {
+                  "type": "string"
                 }
               }
             }
@@ -8542,6 +9400,93 @@
                 },
                 "updated_at": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_CronOccurrenceSummaryResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row of `GET /api/v1/admin/cron/occurrences`.\n\nThe list projection: what happened and when, without the diagnostic detail.\nNarrower than [`CronOccurrenceResponse`] for readability rather than for\ncost — an occurrence carries no payload column, unlike a trace — so a page\nof a hundred reads as a schedule's history instead of as a wall of lease\nbookkeeping.",
+              "required": [
+                "id",
+                "channel_id",
+                "channel_name",
+                "trigger",
+                "scheduled_for",
+                "status",
+                "attempt",
+                "created_at"
+              ],
+              "properties": {
+                "attempt": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "channel_id": {
+                  "type": "string"
+                },
+                "channel_name": {
+                  "type": "string",
+                  "description": "The channel's name when this occurrence was materialised, not its name\nnow — renaming a channel does not rewrite what already ran."
+                },
+                "completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "scheduled_for": {
+                  "type": "string",
+                  "description": "The immutable UTC instant this occurrence was due."
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending`, `claimed`, `running`, `completed`, `failed`,\n`skipped_misfire` or `skipped_singleton`. An open string on the wire:\ntolerate a value you do not know."
+                },
+                "trigger": {
+                  "type": "string",
+                  "description": "`cron` or `manual`."
                 }
               }
             }
@@ -9966,6 +10911,10 @@
     {
       "name": "Trace DLQ",
       "description": "Dead-letter queue inspection, replay, and purge"
+    },
+    {
+      "name": "Cron",
+      "description": "Scheduled runs: the durable occurrence ledger, per-schedule status, and manual triggers"
     },
     {
       "name": "Backups",

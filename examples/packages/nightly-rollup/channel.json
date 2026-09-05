@@ -1,0 +1,17 @@
+{
+  "channel_id": "nightly-order-rollup",
+  "name": "nightly-order-rollup",
+  "description": "Builds yesterday's order summary at 02:15 India time",
+  "tags": ["orders", "scheduled"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "order-rollup",
+  "transport_config": {
+    "schedule": "0 15 2 * * *",
+    "timezone": "Asia/Kolkata",
+    "payload": { "window": "previous_day" },
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid" }
+  },
+  "config": { "timeout_ms": 1800000, "tracing": { "mode": "sync", "task_details": true } }
+}

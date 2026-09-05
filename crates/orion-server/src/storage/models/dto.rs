@@ -11,16 +11,61 @@ use serde_json::Value;
 
 use super::enums::parse_json_field;
 use super::rows::{
-    AuditLogEntry, Channel, Connector, PackageReceipt, Plugin, TraceDlqEntry, TraceDlqSummary,
-    TraceListRow, Workflow,
+    AuditLogEntry, Channel, Connector, CronOccurrence, PackageReceipt, Plugin, TraceDlqEntry,
+    TraceDlqSummary, TraceListRow, Workflow,
 };
 use crate::errors::OrionError;
 
 pub use orion_api::dto::{
-    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, PackageReceiptResponse,
+    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
     PluginHealth, PluginResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
     TraceListItemResponse, WorkflowResponse,
 };
+
+impl From<&CronOccurrence> for CronOccurrenceSummaryResponse {
+    fn from(row: &CronOccurrence) -> Self {
+        Self {
+            id: row.id.clone(),
+            channel_id: row.channel_id.clone(),
+            channel_name: row.channel_name.clone(),
+            trigger: row.trigger.clone(),
+            scheduled_for: row.scheduled_for,
+            status: row.status.clone(),
+            attempt: row.attempt,
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            created_at: row.created_at,
+        }
+    }
+}
+
+impl From<&CronOccurrence> for CronOccurrenceResponse {
+    fn from(row: &CronOccurrence) -> Self {
+        Self {
+            id: row.id.clone(),
+            channel_id: row.channel_id.clone(),
+            channel_name: row.channel_name.clone(),
+            channel_version: row.channel_version,
+            executing_version: row.executing_version,
+            workflow_id: row.workflow_id.clone(),
+            trigger: row.trigger.clone(),
+            scheduled_for: row.scheduled_for,
+            status: row.status.clone(),
+            attempt: row.attempt,
+            claimed_by: row.claimed_by.clone(),
+            claimed_until: row.claimed_until,
+            singleton_key: row.singleton_key.clone(),
+            fencing_token: row.fencing_token,
+            trace_id: row.trace_id.clone(),
+            error_message: row.error_message.clone(),
+            started_at: row.started_at,
+            completed_at: row.completed_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        }
+    }
+}
 
 impl TryFrom<&Plugin> for PluginResponse {
     type Error = OrionError;

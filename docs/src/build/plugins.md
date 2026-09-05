@@ -1,4 +1,4 @@
-<!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, upload it, and promote it in a package. -->
+<!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, upload it, and promote it. -->
 # Build a Plugin
 
 **Page type:** How-to · **Audience:** Service authors with a codec, parser or calculation that already exists as code

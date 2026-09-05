@@ -1,5 +1,6 @@
 mod admin_auth;
 mod cluster;
+mod cron;
 mod engine;
 mod env_overrides;
 pub(crate) mod env_substitute;
@@ -24,6 +25,7 @@ mod write;
 // Re-export all types so `use crate::config::Foo` keeps working.
 pub use admin_auth::{AdminAuthConfig, constant_time_eq};
 pub use cluster::ClusterConfig;
+pub use cron::CronConfig;
 pub use engine::EngineConfig;
 pub use env_overrides::known_env_override_keys;
 pub use jwt::JwtConfig;
@@ -88,6 +90,8 @@ pub struct AppConfig {
     /// egress rule).
     pub oauth2_login: OAuth2LoginConfig,
     pub cluster: ClusterConfig,
+    /// Scheduler capacity for cron channels — see [`CronConfig`].
+    pub cron: CronConfig,
     /// Deployment values stamped into `metadata.vars` on every message, and
     /// therefore visible in traces. Free-form, so no env override — `${VAR}`
     /// in the value covers that.
@@ -128,6 +132,7 @@ impl Default for AppConfig {
             jwt: JwtConfig::default(),
             oauth2_login: OAuth2LoginConfig::default(),
             cluster: ClusterConfig::default(),
+            cron: CronConfig::default(),
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),
             plugins: PluginsConfig::default(),

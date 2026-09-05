@@ -124,6 +124,11 @@ pub enum ChannelProtocol {
     Rest,
     Http,
     Kafka,
+    /// A schedule rather than a caller: the channel declares a cron expression
+    /// in its `transport_config` and a supervised reconciler materialises
+    /// durable occurrences the workers execute. Registers no HTTP route and no
+    /// Kafka subscription, and must be `channel_type: "async"`.
+    Cron,
 }
 
 impl ChannelProtocol {
@@ -132,6 +137,7 @@ impl ChannelProtocol {
             Self::Rest => "rest",
             Self::Http => "http",
             Self::Kafka => "kafka",
+            Self::Cron => "cron",
         }
     }
 }
@@ -150,9 +156,10 @@ impl<'de> Deserialize<'de> for ChannelProtocol {
             "rest" => Ok(Self::Rest),
             "http" => Ok(Self::Http),
             "kafka" => Ok(Self::Kafka),
+            "cron" => Ok(Self::Cron),
             other => Err(serde::de::Error::unknown_variant(
                 other,
-                &["rest", "http", "kafka"],
+                &["rest", "http", "kafka", "cron"],
             )),
         }
     }
@@ -174,6 +181,11 @@ pub const TRACE_MODE_ASYNC: &str = "async";
 /// A message consumed from Kafka. Unlike the two HTTP modes, its row carries
 /// no `channel_id` and no `input_json`.
 pub const TRACE_MODE_KAFKA: &str = "kafka";
+/// One occurrence of a cron channel's schedule. The row's `input_json` is the
+/// channel's authored `transport_config.payload`, and the occurrence ledger
+/// (`GET /api/v1/admin/cron/occurrences`) carries the scheduling detail the
+/// trace itself does not: the scheduled instant, the attempt and the singleton.
+pub const TRACE_MODE_CRON: &str = "cron";
 
 #[cfg(test)]
 mod tests {
@@ -223,6 +235,7 @@ mod tests {
         assert_eq!(ChannelProtocol::Rest.as_str(), "rest");
         assert_eq!(ChannelProtocol::Http.as_str(), "http");
         assert_eq!(ChannelProtocol::Kafka.as_str(), "kafka");
+        assert_eq!(ChannelProtocol::Cron.as_str(), "cron");
     }
 
     #[test]
@@ -230,6 +243,7 @@ mod tests {
         assert_eq!(ChannelProtocol::Rest.to_string(), "rest");
         assert_eq!(ChannelProtocol::Http.to_string(), "http");
         assert_eq!(ChannelProtocol::Kafka.to_string(), "kafka");
+        assert_eq!(ChannelProtocol::Cron.to_string(), "cron");
     }
 
     #[test]
@@ -240,6 +254,11 @@ mod tests {
         assert_eq!(http, ChannelProtocol::Http);
         let kafka: ChannelProtocol = serde_json::from_str(r#""kafka""#).expect("test");
         assert_eq!(kafka, ChannelProtocol::Kafka);
+        let cron: ChannelProtocol = serde_json::from_str(r#""cron""#).expect("test");
+        assert_eq!(cron, ChannelProtocol::Cron);
+        // Case-insensitive, like every other enum on this wire.
+        let upper: ChannelProtocol = serde_json::from_str(r#""CRON""#).expect("test");
+        assert_eq!(upper, ChannelProtocol::Cron);
         // Invalid protocol should fail
         assert!(serde_json::from_str::<ChannelProtocol>(r#""grpc""#).is_err());
     }
@@ -265,5 +284,6 @@ mod tests {
         assert_eq!(TRACE_MODE_SYNC, "sync");
         assert_eq!(TRACE_MODE_ASYNC, "async");
         assert_eq!(TRACE_MODE_KAFKA, "kafka");
+        assert_eq!(TRACE_MODE_CRON, "cron");
     }
 }

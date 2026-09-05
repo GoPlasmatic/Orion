@@ -35,7 +35,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_response_drops_total` | Counter | `channel`, `kind` | Declarations a [shaped response](./channel-config.md#response-shaping) made and did not get: `RESPONSE_COOKIE_DROPPED`, `RESPONSE_HEADER_DROPPED`, `RESPONSE_HEADER_NOT_ALLOWED`, `RESPONSE_COOKIES_DISABLED`. The request still ships — an authoring slip should not be an outage — but the declaration did not happen, so any non-zero rate is a bug in a definition. Alert on it rather than dashboard it. |
 | `orion_response_cache_hits_total` | Counter | `channel` | Response-cache hits. |
 | `orion_response_cache_misses_total` | Counter | `channel` | Response-cache misses. |
-| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `kafka_lag`. |
+| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `kafka_lag`, `cron_reconcile`, `cron_cleanup`. |
 
 > [!NOTE]
 > `orion_errors_total{reason="channel_quarantined"}` fires only on the Kafka and async-queue delivery paths. A synchronous call to a quarantined channel returns an error but increments no counter.
@@ -58,6 +58,20 @@ or `bad_result`.
 | `orion_plugin_loads_total` | Counter | `plugin`, `outcome` | Components compiled for a plugin; `outcome` is `ok` or `error`. |
 | `orion_plugin_compile_duration_seconds` | Histogram | `plugin` | Cranelift compile time of one component. Paid once per digest per process. |
 | `orion_plugin_live_instances` | Gauge | — | Plugin instances alive right now, across every function. Bounded by `plugins.max_live_instances`. |
+
+## Scheduling
+
+Cron channels: what the reconciler and the workers are doing. See [Cron transport](./channel-config.md#cron-transport) for the schedules themselves and [Cron occurrences](./admin-api.md#cron-occurrences) for the ledger these summarise.
+
+| Metric | Type | Labels | Notes |
+|---|---|---|---|
+| `orion_cron_occurrences_total` | Counter | `status` | Occurrences reaching a status: `pending` when materialised, then `completed`, `failed`, `skipped_misfire` or `skipped_singleton`. Deliberately unlabelled by channel — the label set has to stay bounded, and "which schedule is failing?" is answered precisely, with the reason attached, by the occurrence ledger. A day of downtime increments `skipped_misfire` by every occurrence missed, though it writes only one row. |
+| `orion_cron_execution_duration_seconds` | Histogram | `channel` | Wall time of one occurrence's execution. |
+| `orion_cron_schedule_lag_seconds` | Histogram | — | `started_at - scheduled_for`: how late an occurrence began. The scheduler's core service-level signal. Bounded by `cron.poll_interval_ms` under normal operation; a rising value means occurrences are produced faster than they are run, which no liveness check catches because every component is working. Alert on the high quantiles. |
+| `orion_cron_pending_occurrences` | Gauge | — | Occurrences waiting for a worker, refreshed each reconciliation pass. A number that only grows is the same signal as the lag, seen from the other side. |
+| `orion_cron_singleton_contention_total` | Counter | — | Occurrences skipped because their `concurrency.key` was held. Under `policy: "forbid"` this is the policy working, not an error — but a *sustained* rate means the schedule fires faster than the work takes, which is a definition problem. |
+| `orion_cron_lease_renewal_failures_total` | Counter | — | Running attempts that lost their lease and were cancelled mid-run. Always worth alerting on: work was stopped in flight, and whether its side effects landed is unknowable from here. |
+| `orion_cron_reconcile_duration_seconds` | Histogram | — | Wall time of one reconciliation pass. |
 
 ## Trace pipeline
 

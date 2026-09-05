@@ -98,6 +98,9 @@ pub enum Transport {
     Kafka,
     /// In-process `channel_call` from another channel's workflow.
     ChannelCall,
+    /// One occurrence of a cron channel's schedule, claimed from the durable
+    /// ledger by a worker.
+    Cron,
 }
 
 /// The guards one transport applies.
@@ -174,6 +177,25 @@ impl Transport {
     ///   no grant at `metadata.oauth` — a sign-in that appears to succeed and
     ///   established nothing. The data route refuses `…/callback/async`
     ///   outright rather than letting it through as a grant-less run.
+    /// * **almost everything off `Cron`.** This transport has no caller at all,
+    ///   which is a stronger statement than Kafka's "the caller authenticated
+    ///   elsewhere". There is nobody to authenticate, no origin, no response to
+    ///   cache or shape, and no redirect to follow. Rate limiting is off for a
+    ///   different reason than the rest: a limit would be a second, contradictory
+    ///   answer to the question the cron expression already answers, and the
+    ///   loser would be silent. **Deduplication is off because the durable
+    ///   ledger does its job better**: `UNIQUE(channel_id, scheduled_for)` makes
+    ///   an occurrence unique by construction, for all time rather than for a
+    ///   window, and a retry of an occurrence is *meant* to run. What is left on
+    ///   is what a schedule can still mean: `validation` (a payload that no
+    ///   longer satisfies the channel's own rule should fail visibly, not run)
+    ///   and `backpressure` (the permit is per channel, so scheduled work draws
+    ///   from the same budget as everything else rather than around it).
+    ///
+    ///   Every `false` here is refused at authoring time by
+    ///   `validation::cron`, so an author cannot write a guard this row will
+    ///   silently ignore. `cron_guards_and_validation_agree` below pins the two
+    ///   lists to each other.
     pub const fn guards(self) -> GuardSet {
         match self {
             Transport::HttpSync => GuardSet {
@@ -210,6 +232,16 @@ impl Transport {
                 auth: false,
                 origin_allow_list: false,
                 rate_limit: true,
+                validation: true,
+                deduplication: false,
+                response_cache: false,
+                backpressure: true,
+                oauth2_login: false,
+            },
+            Transport::Cron => GuardSet {
+                auth: false,
+                origin_allow_list: false,
+                rate_limit: false,
                 validation: true,
                 deduplication: false,
                 response_cache: false,
@@ -1051,6 +1083,7 @@ mod tests {
                     created_at: now,
                     updated_at: now,
                 },
+                cron: None,
                 parsed_config: self.parsed_config,
                 rate_limiter: self.rate_limiter,
                 rate_limit_key_logic: self.rate_limit_key_logic,
@@ -1147,25 +1180,73 @@ mod tests {
         let submit = Transport::HttpAsync.guards();
         let kafka = Transport::Kafka.guards();
         let call = Transport::ChannelCall.guards();
+        let cron = Transport::Cron.guards();
 
         // Universal guards: every transport, no exceptions. Kafka lacked the
         // rate limit, dedup and backpressure; channel_call lacked the rate
         // limit (N16).
-        for set in [sync, submit, kafka, call] {
-            assert!(set.rate_limit);
+        for set in [sync, submit, kafka, call, cron] {
             assert!(set.validation);
             assert!(set.backpressure);
         }
+        // Rate limiting is universal among the transports that have a *caller*.
+        // Cron is the exception, and the only one: its schedule already fixes
+        // how often it runs.
+        for set in [sync, submit, kafka, call] {
+            assert!(set.rate_limit);
+        }
+        assert!(!cron.rate_limit);
 
         // Deliberate exclusions.
         assert!(sync.origin_allow_list && submit.origin_allow_list);
-        assert!(!kafka.origin_allow_list && !call.origin_allow_list);
+        assert!(!kafka.origin_allow_list && !call.origin_allow_list && !cron.origin_allow_list);
         assert!(sync.deduplication && submit.deduplication && kafka.deduplication);
-        assert!(!call.deduplication);
+        assert!(!call.deduplication && !cron.deduplication);
         assert!(sync.response_cache);
-        assert!(!submit.response_cache && !kafka.response_cache && !call.response_cache);
+        assert!(
+            !submit.response_cache
+                && !kafka.response_cache
+                && !call.response_cache
+                && !cron.response_cache
+        );
         assert!(sync.auth && submit.auth);
-        assert!(!kafka.auth && !call.auth);
+        assert!(!kafka.auth && !call.auth && !cron.auth);
+        assert!(sync.oauth2_login);
+        assert!(!cron.oauth2_login);
+    }
+
+    /// The refused-config list and the guard row are two statements of one
+    /// decision, and a disagreement between them is a config Orion accepts and
+    /// silently ignores — which is exactly what refusing the keys was for.
+    ///
+    /// Only one direction can be checked mechanically from here: every guard
+    /// this row switches **off** must be a key authoring refuses. The reverse
+    /// (a refused key whose guard is on) would be a key an author cannot set,
+    /// which is harmless and is covered by the validation module's own tests.
+    #[test]
+    fn cron_guards_and_validation_agree() {
+        let cron = Transport::Cron.guards();
+        let refused = |key: &str| {
+            !crate::validation::cron_config_errors_for_test(&serde_json::json!({ key: {} }))
+                .is_empty()
+        };
+        for (guard_on, key) in [
+            (cron.auth, "auth"),
+            (cron.origin_allow_list, "origin_allow_list"),
+            (cron.rate_limit, "rate_limit"),
+            (cron.deduplication, "deduplication"),
+            (cron.response_cache, "cache"),
+            (cron.oauth2_login, "oauth2_login"),
+        ] {
+            assert!(
+                guard_on || refused(key),
+                "Transport::Cron leaves `{key}` off, so authoring must refuse it — \
+                 otherwise a cron channel can declare it and Orion ignores it"
+            );
+        }
+        // And the two that stay on are settable.
+        assert!(cron.validation && cron.backpressure);
+        assert!(!refused("validation_logic") && !refused("backpressure"));
     }
 
     /// Authentication is enforced on both HTTP ingresses, not just the one a
@@ -1201,17 +1282,18 @@ mod tests {
         }
     }
 
-    /// The two transports whose row leaves `auth` off carry no credential to
-    /// present, and are authenticated by the layer that delivered them — the
-    /// broker for Kafka, the originating ingress for `channel_call`. Enforcing
-    /// here would break composition rather than tighten anything.
+    /// The transports whose row leaves `auth` off carry no credential to
+    /// present. Kafka and `channel_call` are authenticated by the layer that
+    /// delivered them — the broker, and the originating ingress; a cron
+    /// occurrence has no caller in the first place. Enforcing here would break
+    /// composition rather than tighten anything.
     #[tokio::test]
     async fn authentication_does_not_apply_to_kafka_or_channel_call() {
         let dl = engine();
         let data = json!({});
         let metadata = json!({});
 
-        for transport in [Transport::Kafka, Transport::ChannelCall] {
+        for transport in [Transport::Kafka, Transport::ChannelCall, Transport::Cron] {
             let runtime = Runtime::new().api_key("s3cret").await.build();
             let req = request(transport, &runtime, &dl, &data, &metadata);
             assert!(

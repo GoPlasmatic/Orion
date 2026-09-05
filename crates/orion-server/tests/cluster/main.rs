@@ -181,6 +181,12 @@ async fn cluster_nodes_with(
 /// fingerprint, load the artifact from the shared database and rebuild its
 /// engine with the new handler — no request to B's admin API, no shared
 /// filesystem.
+///
+/// Then the same claim under load: activating a *new version* through A
+/// refuses nothing on B, whose engine is rebuilt whole for the changed
+/// fingerprint. This is `deploy/ha/plugin-drill.sh`'s second assertion
+/// without the containers — the drill measures it through a load balancer
+/// across two processes, and this pins it per run of the cluster suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
 async fn plugin_activation_propagates_across_nodes() {
@@ -268,6 +274,76 @@ async fn plugin_activation_propagates_across_nodes() {
     })
     .await;
     assert!(served, "node B must serve the plugin-backed channel");
+
+    // The plugin drill's second claim, in process: activating a NEW version
+    // under steady load produces no refusal on a peer. The peer's whole
+    // engine is rebuilt for a changed plugin fingerprint, so this is the
+    // window where a request could be admitted against one generation and
+    // executed against another — or meet an estate that has neither version.
+    let hammering = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let load = {
+        let router = h.node_b.clone();
+        let hammering = hammering.clone();
+        tokio::spawn(async move {
+            let mut codes = Vec::new();
+            while hammering.load(std::sync::atomic::Ordering::Relaxed) {
+                let resp = router
+                    .clone()
+                    .oneshot(json_request(
+                        "POST",
+                        "/api/v1/data/plugin-prop",
+                        Some(json!({"data": {"msg": "hi"}})),
+                    ))
+                    .await
+                    .unwrap();
+                codes.push(resp.status());
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            codes
+        })
+    };
+
+    // The same bytes under a new draft: the digest is what a generation
+    // names, so a re-upload is a legitimate new version and activating it
+    // rebuilds the engine on every node.
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/plugins/test.fixture/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/plugins/test.fixture/status",
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let on_v2 = eventually(h.poll, async || {
+        h.state_b.runtime.load().plugins.fingerprint()
+            == h.state_a.runtime.load().plugins.fingerprint()
+    })
+    .await;
+    hammering.store(false, std::sync::atomic::Ordering::Relaxed);
+    let codes = load.await.unwrap();
+    assert!(on_v2, "node B must reach the new version");
+
+    let refused: Vec<StatusCode> = codes.iter().copied().filter(|c| !c.is_success()).collect();
+    assert!(
+        refused.is_empty(),
+        "a version activation must not refuse a request on a peer: {refused:?} of {} were non-2xx",
+        codes.len()
+    );
 }
 
 /// A2: a channel activated through node A is served by node B within a few
@@ -1937,4 +2013,261 @@ async fn backups_refused_in_cluster_mode() {
             "error should explain the cluster-mode restriction: {body}"
         );
     }
+}
+
+// ============================================================
+// Cron: the multi-node contracts
+// ============================================================
+
+/// Activate a cron channel on node A and return its `channel_id`.
+async fn activate_cluster_cron_channel(
+    node: &axum::Router,
+    name: &str,
+    workflow: serde_json::Value,
+    transport_config: serde_json::Value,
+) -> String {
+    let workflow_id = common::create_and_activate_workflow(node, workflow).await;
+    let resp = node
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": name,
+                "channel_type": "async",
+                "protocol": "cron",
+                "workflow_id": workflow_id,
+                "transport_config": transport_config,
+            })),
+        ))
+        .await
+        .expect("create");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let channel_id = common::body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .expect("channel id")
+        .to_string();
+
+    let resp = node
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .expect("activate");
+    assert_eq!(resp.status(), StatusCode::OK);
+    channel_id
+}
+
+/// Every occurrence in the shared ledger, read through either node.
+async fn cluster_occurrences(node: &axum::Router) -> Vec<serde_json::Value> {
+    let resp = node
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v1/admin/cron/occurrences?limit=200",
+            None,
+        ))
+        .await
+        .expect("list");
+    common::body_json(resp).await["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The property the whole reconciler design rests on, under real concurrency:
+/// two nodes reconciling the same schedule against one database produce one
+/// occurrence per scheduled instant, not two.
+///
+/// Both nodes run their own reconciler on the same second. The `JobLeaseGate`
+/// makes a duplicate pass *unlikely*; `UNIQUE(channel_id, scheduled_for)` makes
+/// a duplicate row *impossible*, and it is the second one this checks — which
+/// is why the test does not disable the gate to force the race. Either way the
+/// ledger must agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn cron_occurrences_are_materialised_once_across_nodes() {
+    let h = two_nodes_with(|config| {
+        config.cron.poll_interval_ms = 100;
+        config.cron.heartbeat_interval_secs = 1;
+        config.cron.claim_lease_secs = 30;
+    })
+    .await;
+
+    activate_cluster_cron_channel(
+        &h.node_a,
+        "cluster-cron",
+        common::simple_log_workflow("Cluster Cron WF"),
+        json!({"schedule": "* * * * * *"}),
+    )
+    .await;
+
+    // Let both nodes converge on the channel and run a few passes each.
+    let produced = eventually(h.poll, async || {
+        cluster_occurrences(&h.node_a).await.len() >= 3
+    })
+    .await;
+    assert!(
+        produced,
+        "the schedule must produce occurrences in a cluster"
+    );
+
+    let occurrences = cluster_occurrences(&h.node_a).await;
+    let mut instants: Vec<&str> = occurrences
+        .iter()
+        .filter_map(|o| o["scheduled_for"].as_str())
+        .collect();
+    instants.sort_unstable();
+    let unique = instants.iter().collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        instants.len(),
+        unique.len(),
+        "two reconcilers produced duplicate occurrences for one instant: {instants:?}"
+    );
+
+    // Both nodes read the same ledger — it is shared state, not per-node.
+    assert_eq!(
+        cluster_occurrences(&h.node_b).await.len(),
+        occurrences.len(),
+        "the occurrence ledger is shared, so both nodes must see the same rows"
+    );
+}
+
+/// Non-overlap across the cluster, which is the guarantee that cannot be made
+/// with an in-process lock.
+///
+/// Both nodes claim from one ledger, and work that outlasts the interval
+/// between occurrences guarantees contention. Under `forbid`, at most one
+/// occurrence may be `running` at any instant *whichever node is running it* —
+/// and the losers are recorded rather than dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn cron_singleton_holds_across_nodes() {
+    let addr = common::start_slow_server(std::time::Duration::from_millis(1500)).await;
+    let h = two_nodes_with(|config| {
+        config.cron.poll_interval_ms = 100;
+        config.cron.heartbeat_interval_secs = 1;
+        config.cron.claim_lease_secs = 30;
+    })
+    .await;
+
+    common::create_http_connector(&h.node_a, "slow-endpoint", addr).await;
+    activate_cluster_cron_channel(
+        &h.node_a,
+        "cluster-singleton",
+        common::workflow_with_tasks(
+            "Cluster Slow WF",
+            json!([{
+                "id": "slow",
+                "name": "A call that takes a while",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "slow-endpoint",
+                        "method": "GET",
+                        "path": "/slow",
+                        "response_path": "data.called",
+                        "timeout_ms": 5000
+                    }
+                }
+            }]),
+        ),
+        json!({
+            "schedule": "* * * * * *",
+            "concurrency": {"policy": "forbid"},
+        }),
+    )
+    .await;
+
+    // Sample the ledger repeatedly: the invariant is about every instant, not
+    // about the end state.
+    let mut max_running = 0usize;
+    let contended = eventually(h.poll, async || {
+        let occurrences = cluster_occurrences(&h.node_a).await;
+        let running = occurrences
+            .iter()
+            .filter(|o| o["status"] == "running")
+            .count();
+        max_running = Ord::max(max_running, running);
+        occurrences
+            .iter()
+            .any(|o| o["status"] == "skipped_singleton")
+            && occurrences.iter().any(|o| o["status"] == "completed")
+    })
+    .await;
+    assert!(
+        contended,
+        "a 1.5s workflow on a per-second schedule must contend within the window"
+    );
+    assert!(
+        max_running <= 1,
+        "two occurrences of one singleton key were running at once across the \
+         cluster (saw {max_running})"
+    );
+}
+
+/// A schedule change on one node reaches the other through the config epoch,
+/// like every other definition change — the reconciler has no watcher of its
+/// own and needs none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn cron_schedule_changes_propagate_across_nodes() {
+    let h = two_nodes_with(|config| {
+        config.cron.poll_interval_ms = 100;
+    })
+    .await;
+
+    let channel_id = activate_cluster_cron_channel(
+        &h.node_a,
+        "propagating-cron",
+        common::simple_log_workflow("Propagating Cron WF"),
+        json!({"schedule": "* * * * * *"}),
+    )
+    .await;
+
+    // Node B learns about the schedule through the epoch, not through a
+    // cron-specific mechanism.
+    let seen = eventually(h.poll, async || {
+        h.state_b
+            .runtime
+            .load()
+            .channels
+            .cron_by_channel_id(&channel_id)
+            .is_some()
+    })
+    .await;
+    assert!(
+        seen,
+        "node B must load the cron channel within a few epochs"
+    );
+
+    // Archiving it on A stops both: the cursor is paused once, in shared state.
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            Some(json!({"status": "archived"})),
+        ))
+        .await
+        .expect("archive");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let stopped = eventually(h.poll, async || {
+        h.state_b
+            .runtime
+            .load()
+            .channels
+            .cron_by_channel_id(&channel_id)
+            .is_none()
+    })
+    .await;
+    assert!(
+        stopped,
+        "node B must stop scheduling an archived channel within a few epochs"
+    );
 }

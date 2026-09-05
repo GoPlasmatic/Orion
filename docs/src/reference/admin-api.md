@@ -505,6 +505,39 @@ put an entry back in line, or clear out entries that will never succeed.
 | POST | `/api/v1/admin/trace-dlq/{id}/requeue` | Reset the entry to `retry_count = 0` and schedule it for immediate retry — including one already exhausted |
 | POST | `/api/v1/admin/trace-dlq/purge` | Delete **exhausted** entries (retries used up). Body: `{"older_than_hours": N}` (required; `0` purges every exhausted entry). Live entries are never purged |
 
+## Cron occurrences
+
+Every scheduled instant of a [cron channel](./channel-config.md#cron-transport) becomes a durable **occurrence** — created before anything runs, kept after it finishes. It is the answer to "did last night's job run?", and it is deliberately not the trace: traces are observability and may be sampled, filtered or switched off, while the ledger is scheduling correctness state and is always written.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?offset=`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
+| GET | `/api/v1/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the executing version and the lease detail |
+| POST | `/api/v1/admin/cron/occurrences/{id}/retry` | Another attempt at the same occurrence. `409` unless it is `failed`, `skipped_misfire` or `skipped_singleton` |
+| GET | `/api/v1/admin/cron/status` | One row per active cron channel: its schedule, its next fire time, its last run and its backlog |
+| POST | `/api/v1/admin/channels/{id}/trigger` | Run an active cron channel now. `202` with the new occurrence |
+
+```bash
+# What has this schedule been doing?
+curl "http://localhost:8080/api/v1/admin/cron/occurrences?channel_id=nightly-rollup&limit=20" \
+  -H "x-api-key: $ORION_API_KEY"
+
+# What is scheduled, and when does it next fire?
+curl http://localhost:8080/api/v1/admin/cron/status -H "x-api-key: $ORION_API_KEY"
+
+# Run it now, without waiting for the schedule.
+curl -X POST http://localhost:8080/api/v1/admin/channels/nightly-rollup/trigger \
+  -H "x-api-key: $ORION_API_KEY"
+```
+
+**Statuses.** `pending` (materialised, waiting for a worker), `claimed`, `running`, `completed`, `failed`, `skipped_misfire` (its time passed while nothing was scheduling — one row summarises a run of them, with the count and range in `error_message`), `skipped_singleton` (its `concurrency.key` was held by a running occurrence under `policy: "forbid"`). The field is an open string: tolerate a value you do not know.
+
+**Retry keeps the identity.** The occurrence id and its `scheduled_for` are unchanged and `attempt` increments, because a retry is another attempt at the work that was due *then*. That is what lets a workflow use `metadata.trigger.scheduled_for` as an idempotency key — two attempts at one occurrence agree on it. Re-running finished work is a different thing and has a different endpoint: trigger the channel, which mints a new occurrence at the current instant.
+
+**Triggering is not a side door.** A manual occurrence goes through the same claim, singleton and execution path a scheduled one does, so triggering a `forbid` channel while its scheduled run is in flight is recorded as `skipped_singleton` rather than running alongside it. It is an admin mutation: authenticated, rate limited and audited as `trigger` / `channel`.
+
+**Failed occurrences are not retried automatically** and never enter the [trace DLQ](#trace-dlq). The next scheduled occurrence is the natural retry, and a deterministically-failing job that retried itself would spin. What *is* automatic is crash recovery: an occurrence whose worker died is re-claimed once its lease expires, as a second attempt on the same row.
+
 ## Backups
 
 | Method | Path | Description |

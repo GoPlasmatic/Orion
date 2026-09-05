@@ -7,12 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Custom task functions, as sandboxed WebAssembly components. Off by default;
-`plugins.enabled = false` preserves the previous behaviour exactly, and no
-existing definition, config key, API path or metric changes meaning.
+Two additions, both additive: custom task functions as sandboxed WebAssembly
+components, and scheduled channels. No existing definition, config key, API
+path or metric changes meaning. Plugins are off by default
+(`plugins.enabled = false` preserves the previous behaviour exactly); the cron
+scheduler is on, and costs one indexed query per poll on an instance with no
+schedules.
 
 ### Added
 
+- **Cron channels: run a workflow on a schedule.** `protocol: "cron"` is a
+  fourth channel protocol that binds a six-field cron expression and a fixed
+  payload to a workflow, in `transport_config` — so a schedule is versioned,
+  content-hashed and promoted like any other definition, with no new entity
+  and no new top-level field. Every scheduled instant becomes a durable
+  **occurrence**: a row written before the work starts and kept after it
+  finishes, which makes "did last night's job run?" a question with an answer
+  rather than an inference from whatever traces survive. A supervised
+  reconciler materialises occurrences and supervised workers claim and run
+  them through the same guards, engine and runtime generation every other
+  ingress uses.
+
+  Calendar times are read in an IANA zone and stored as UTC instants, with the
+  two DST rules stated and tested: a local time that does not exist does not
+  fire, and one that happens twice fires twice. Downtime is governed by
+  `misfire_policy` (`skip`, `latest`, `catch_up` with a mandatory bound), and
+  the misses are recorded as one summary row rather than one per missed
+  instant. `concurrency.policy = "forbid"` makes a schedule non-overlapping
+  across the whole cluster, with contending occurrences recorded
+  `skipped_singleton` rather than dropped; the singleton is acquired in the
+  same transaction that marks an occurrence running, so there is no instant at
+  which one executes without holding its key.
+
+  A cron channel is the one protocol with no caller, and everything
+  caller-shaped is refused at authoring rather than stored and ignored:
+  `auth`, `origin_allow_list`, `rate_limit`, `deduplication`, `cache`,
+  `request`, `response`, `oauth2_login`, and the routing fields of the other
+  protocols. It is also not reachable over HTTP or by `channel_call` —
+  running it either way would execute the workflow outside the ledger and
+  outside its lock. `POST /admin/channels/{id}/trigger` is the deliberate
+  manual path and goes through the same claim and singleton.
+
+  Three migrations, one per backend, named `cron_scheduling`. Expand-only:
+  three new tables, nothing existing changes. New `[cron]` section (enabled by
+  default; an *active* cron channel on a node with it off is quarantined and
+  `components.cron` degrades, because a stored schedule that silently never
+  fires is the one failure an operator cannot see). New `mode = "cron"` on
+  traces, `GET/POST /admin/cron/*`, seven `orion_cron_*` metrics, and
+  `orion-cli cron` / `orion-cli channels trigger`.
 - **Plugins: custom task functions in a WebAssembly sandbox.** A plugin is a
   versioned entity beside channels, workflows and connectors — uploaded and
   activated through `/api/v1/admin/plugins`, promoted in packages, synced
@@ -72,6 +114,14 @@ existing definition, config key, API path or metric changes meaning.
 - Three migrations, one per backend, named `plugins` and `plugin_signatures`.
   Expand-only: two new tables and one nullable column; nothing existing
   changes.
+- **`orion-server test` can express a refusal.** A case that names codes in
+  `expect_errors` is asserting the failure, so the run halting on them is the
+  pass rather than a failure of its own — previously the run's error was
+  reported however well the codes matched, which left no way to test a task
+  that refuses. The codes are still matched exactly. `expect_tasks` now also
+  credits a task that ran and failed: the engine records a trace step only
+  after a task's result is handled, so a task that halted the workflow was
+  reported as never having run.
 
 ## [1.5.1] - 2026-09-01
 

@@ -309,6 +309,73 @@ pub struct AuditLogEntry {
     pub created_at: NaiveDateTime,
 }
 
+// ============================================================
+// Cron scheduling rows
+// ============================================================
+
+/// Where one channel's schedule has got to.
+///
+/// Keyed by `channel_id` alone: the cursor is the schedule's position in time
+/// and follows the *channel*, not the version. `config_hash` is what decides
+/// whether a new version inherits it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CronScheduleState {
+    pub channel_id: String,
+    pub channel_version: i64,
+    pub config_hash: String,
+    pub next_fire_at: NaiveDateTime,
+    /// Set when the channel left the active set. A paused cursor resumes from
+    /// the reactivation moment rather than filling in the gap.
+    pub paused_at: Option<NaiveDateTime>,
+    pub updated_at: NaiveDateTime,
+}
+
+/// One scheduled instant of one channel: the durable record that it was due,
+/// and of what happened to it.
+///
+/// Read whole — unlike a trace, there is no payload column to keep off a list
+/// page, so the listing DTO narrows for readability rather than for cost.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CronOccurrence {
+    pub id: String,
+    pub channel_id: String,
+    /// The channel name as it was when this was materialised, like
+    /// [`Trace::channel`]: an immutable snapshot, not a lookup key.
+    pub channel_name: String,
+    /// The version that materialised it…
+    pub channel_version: i64,
+    /// …and the version that claimed it, which may differ. `None` until
+    /// claimed.
+    pub executing_version: Option<i64>,
+    pub workflow_id: Option<String>,
+    /// `cron` or `manual`.
+    pub trigger: String,
+    pub scheduled_for: NaiveDateTime,
+    pub status: String,
+    pub attempt: i64,
+    pub claimed_by: Option<String>,
+    pub claimed_until: Option<NaiveDateTime>,
+    pub singleton_key: Option<String>,
+    pub fencing_token: Option<i64>,
+    pub trace_id: Option<String>,
+    pub error_message: Option<String>,
+    pub started_at: Option<NaiveDateTime>,
+    pub completed_at: Option<NaiveDateTime>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+/// One held singleton key. The row's *existence* is the lock.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CronSingleton {
+    pub singleton_key: String,
+    pub occurrence_id: String,
+    pub holder: String,
+    pub fencing_token: i64,
+    pub lease_until: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
 #[cfg(test)]
 mod tests {
     /// The module rule, checked against the module (D27, D28).

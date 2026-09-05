@@ -32,7 +32,7 @@ picks the service.
 
 ## Protocols
 
-Three protocols, set once and immutable across a channel's versions:
+Four protocols, set once and immutable across a channel's versions:
 
 - **`rest`**: a method and a path pattern, for example `POST /orders` or
   `GET /orders/{id}`. Path parameters reach the workflow as request metadata.
@@ -40,10 +40,15 @@ Three protocols, set once and immutable across a channel's versions:
   name at `/api/v1/data/{name}`.
 - **`kafka`**: the channel declares a topic; Orion registers a consumer for it
   at startup and on every engine reload.
+- **`cron`**: the channel declares a schedule and a fixed payload; Orion
+  materialises a durable occurrence per scheduled instant and runs it. The one
+  protocol with no caller, so it registers no route, no topic, and is not
+  reachable by name either.
 
 ## Sync or async
 
-`channel_type` decides whether the caller waits.
+`channel_type` decides whether the caller waits. A `cron` channel is always
+`async`: nothing is waiting for it.
 
 | | `sync` | `async` |
 |---|---|---|
@@ -57,6 +62,19 @@ caller should not block on, where a trace id and a later poll are enough.
 
 Any REST or HTTP channel serves its async form at `/{route_pattern}/async`, so
 the same endpoint can be called either way.
+
+## Scheduled work
+
+A cron channel binds a schedule to a workflow the way a REST channel binds a
+route to one. That makes a schedule an *ingress*, not part of the workflow: one
+workflow can carry an hourly trigger and a nightly one with different payloads,
+and changing when something runs does not create a new version of what it does.
+
+Occurrences are durable rows, so a schedule survives a restart, a rolling
+deploy and a node failure — and a run that was missed is visible rather than
+merely absent. A `forbid` concurrency policy makes a schedule non-overlapping
+across the whole cluster. See
+[Cron transport](../reference/channel-config.md#cron-transport).
 
 ## Traffic controls
 

@@ -147,6 +147,62 @@ pub enum TraceDlq {
 }
 
 // ============================================================
+// Cron scheduling tables
+// ============================================================
+
+/// The per-channel cursor: where a schedule has got to.
+#[derive(Iden, Clone, Copy)]
+pub enum CronScheduleState {
+    Table,
+    ChannelId,
+    ChannelVersion,
+    ConfigHash,
+    NextFireAt,
+    PausedAt,
+    UpdatedAt,
+}
+
+/// The durable run ledger and work queue.
+#[derive(Iden, Clone, Copy)]
+pub enum CronOccurrences {
+    Table,
+    Id,
+    ChannelId,
+    ChannelName,
+    ChannelVersion,
+    ExecutingVersion,
+    WorkflowId,
+    /// Quoted by sea-query on every backend, which matters here: `trigger` is a
+    /// reserved word in MySQL.
+    Trigger,
+    ScheduledFor,
+    Status,
+    Attempt,
+    ClaimedBy,
+    ClaimedUntil,
+    SingletonKey,
+    FencingToken,
+    TraceId,
+    ErrorMessage,
+    StartedAt,
+    CompletedAt,
+    CreatedAt,
+    UpdatedAt,
+}
+
+/// One row per held singleton key.
+#[derive(Iden, Clone, Copy)]
+pub enum CronSingletons {
+    Table,
+    SingletonKey,
+    OccurrenceId,
+    Holder,
+    FencingToken,
+    LeaseUntil,
+    UpdatedAt,
+}
+
+// ============================================================
 // Cluster coordination tables
 // ============================================================
 
@@ -344,6 +400,91 @@ mod tests {
             Iden::to_string(&Channels::UpdatedAt),
         ]
         .to_vec();
+        let occurrences = [
+            Iden::to_string(&CronOccurrences::Id),
+            Iden::to_string(&CronOccurrences::ChannelId),
+            Iden::to_string(&CronOccurrences::ChannelName),
+            Iden::to_string(&CronOccurrences::ChannelVersion),
+            Iden::to_string(&CronOccurrences::ExecutingVersion),
+            Iden::to_string(&CronOccurrences::WorkflowId),
+            Iden::to_string(&CronOccurrences::Trigger),
+            Iden::to_string(&CronOccurrences::ScheduledFor),
+            Iden::to_string(&CronOccurrences::Status),
+            Iden::to_string(&CronOccurrences::Attempt),
+            Iden::to_string(&CronOccurrences::ClaimedBy),
+            Iden::to_string(&CronOccurrences::ClaimedUntil),
+            Iden::to_string(&CronOccurrences::SingletonKey),
+            Iden::to_string(&CronOccurrences::FencingToken),
+            Iden::to_string(&CronOccurrences::TraceId),
+            Iden::to_string(&CronOccurrences::ErrorMessage),
+            Iden::to_string(&CronOccurrences::StartedAt),
+            Iden::to_string(&CronOccurrences::CompletedAt),
+            Iden::to_string(&CronOccurrences::CreatedAt),
+            Iden::to_string(&CronOccurrences::UpdatedAt),
+        ]
+        .to_vec();
+        assert_eq!(
+            occurrences,
+            [
+                "id",
+                "channel_id",
+                "channel_name",
+                "channel_version",
+                "executing_version",
+                "workflow_id",
+                "trigger",
+                "scheduled_for",
+                "status",
+                "attempt",
+                "claimed_by",
+                "claimed_until",
+                "singleton_key",
+                "fencing_token",
+                "trace_id",
+                "error_message",
+                "started_at",
+                "completed_at",
+                "created_at",
+                "updated_at",
+            ]
+        );
+
+        assert_eq!(
+            [
+                Iden::to_string(&CronSingletons::SingletonKey),
+                Iden::to_string(&CronSingletons::OccurrenceId),
+                Iden::to_string(&CronSingletons::Holder),
+                Iden::to_string(&CronSingletons::FencingToken),
+                Iden::to_string(&CronSingletons::LeaseUntil),
+            ]
+            .to_vec(),
+            [
+                "singleton_key",
+                "occurrence_id",
+                "holder",
+                "fencing_token",
+                "lease_until",
+            ]
+        );
+
+        assert_eq!(
+            [
+                Iden::to_string(&CronScheduleState::ChannelId),
+                Iden::to_string(&CronScheduleState::ChannelVersion),
+                Iden::to_string(&CronScheduleState::ConfigHash),
+                Iden::to_string(&CronScheduleState::NextFireAt),
+                Iden::to_string(&CronScheduleState::PausedAt),
+            ]
+            .to_vec(),
+            [
+                "channel_id",
+                "channel_version",
+                "config_hash",
+                "next_fire_at",
+                "paused_at",
+            ]
+        );
+
         assert_eq!(
             channels,
             [

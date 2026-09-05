@@ -43,6 +43,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.rate_limit.validate()?;
     config.kafka.validate()?;
     config.cluster.validate()?;
+    config.cron.validate()?;
     config.vars.validate()?;
     config.secrets.validate()?;
     config.plugins.validate()?;

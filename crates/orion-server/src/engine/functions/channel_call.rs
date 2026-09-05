@@ -226,6 +226,24 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                     None,
                 ));
             }
+            // D6: a cron channel is not callable. Its workflow is meant to run
+            // once per occurrence, recorded in the ledger and serialised by its
+            // singleton key; a `channel_call` would run it with none of that —
+            // no occurrence row, and no lock, so a caller could trivially
+            // overlap a `forbid` schedule with itself. The refusal is here
+            // rather than in the guard matrix because it is about *what the
+            // channel is*, not about which guards this transport applies.
+            if target_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.cron.is_some())
+            {
+                return Err(DataflowError::function_execution(
+                    format!(
+                        "channel_call to '{target_channel}': it is a cron channel, which                          runs only on its own schedule. Call the workflow it names                          directly, or give the shared work a channel of its own."
+                    ),
+                    None,
+                ));
+            }
             // The header view is the metadata inherited from the originating
             // request, so a target whose `rate_limit.key_logic` reads a
             // header still resolves one on this path. Credential headers

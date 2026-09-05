@@ -141,6 +141,25 @@ pub fn trace_dlq_requeue(id: &str) -> String {
 }
 
 // -- Admin: the rest --
+// -- Cron occurrences --
+
+pub const CRON_OCCURRENCES: &str = "/api/v1/admin/cron/occurrences";
+pub const CRON_STATUS: &str = "/api/v1/admin/cron/status";
+
+pub fn cron_occurrence(id: &str) -> String {
+    format!("{CRON_OCCURRENCES}/{id}")
+}
+
+pub fn cron_occurrence_retry(id: &str) -> String {
+    format!("{CRON_OCCURRENCES}/{id}/retry")
+}
+
+/// A manual run of a cron channel. On the *channel* route, not under `/cron`,
+/// because it names a channel and is audited as a channel mutation.
+pub fn channel_trigger(id: &str) -> String {
+    format!("{CHANNELS}/{id}/trigger")
+}
+
 pub const AUDIT_LOGS: &str = "/api/v1/admin/audit-logs";
 pub const BACKUPS: &str = "/api/v1/admin/backups";
 pub const ENGINE_STATUS: &str = "/api/v1/admin/engine/status";

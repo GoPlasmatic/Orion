@@ -107,6 +107,13 @@ jobs:
       - name: Run the plugin drill
         run: deploy/ha/plugin-drill.sh
 
+      # The cron half: two reconcilers against one database produce one
+      # occurrence per scheduled instant, and a `forbid` singleton stays
+      # non-overlapping across a node restart — the lease-expiry takeover path
+      # the in-process cluster tests cannot reach.
+      - name: Run the cron drill
+        run: deploy/ha/cron-drill.sh
+
       - name: Stack logs on failure
         if: failure()
         env:

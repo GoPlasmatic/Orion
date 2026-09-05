@@ -29,6 +29,7 @@ Three principles shape the setup:
 | Touched server ⇄ CLI interaction, `orion-api`, or `orion-client` | `just e2e` |
 | Touched migrations or storage | `just test-containers` (needs Docker) |
 | Touched workflow functions / engine | `cargo test --test integration` + `just workflow-tests` |
+| Touched the cron scheduler, the ledger, or a cron channel's validation | `cargo test --test integration cron_` + `cargo test -p orion-server --lib cron:: channel::cron storage::repositories::cron` — the DST rules, the misfire policies and the claim/singleton SQL are unit-tested where they are pure; the integration tests drive the real loops against a per-second schedule |
 | Touched anything that walks a workflow's `tasks` | `cargo test -p orion-server --lib engine::steps` — a walk that misses task groups fails nothing else |
 | Touched what a workflow may name, or how one is screened at load | `cargo test --test integration function_schema_test channel_load_refusal_test` — the create-time gate and the load-time screen are checked against a real engine, not against each other |
 | Touched the authoring layer (`$from`, `use`, a `compile` pass) | `cargo test --test integration compile_test source_form_refusal_test` — a pass's `residue()` is read three ways (empty after compiling, `compile`'s report, the admin API's refusal), so a pass that only satisfies one of them is a passing test away from shipping |
@@ -134,7 +135,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL/Mongo/ES, raw-SQL backends, Redis cache/dedup, column-type matrix, dynamic inputs, Kafka channels |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
-| `cluster` | Multi-node contracts: two AppStates over shared Postgres + Redis, epoch watching, job leases (`--test-threads=1`) |
+| `cluster` | Multi-node contracts: two AppStates over shared Postgres + Redis, epoch watching, job leases, and the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes (`--test-threads=1`) |
 
 `metrics_exposition` (in-memory, no Docker) asserts the rendered `/metrics`
 body from its own process, where the recorder race can't occur.
@@ -206,7 +207,7 @@ The examples are executable and CI treats them as a gate (`examples` job):
 | Packaging | `package` CI job | `cargo package --locked --workspace` verify-builds the crates.io tarballs (riders included). Gated by the `changes` job: it runs when a manifest moves or a file is added/renamed under `crates/`, the only two ways an `include` allowlist can drop a needed file, and on the weekly sweep |
 | Docker / Helm / Book | `docker-build`, `helm`, `book` jobs | Image builds; chart lints, renders, and rejects misspelled values; book builds |
 | CodeQL | `codeql.yml` | Static security analysis |
-| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`): a plugin activated on one node converges on the other through the config epoch, and a new version activated under load through the LB produces zero non-2xx |
+| HA rolling drill | `ha-drill.yml` (path-filtered + weekly) | SIGTERM one of two replicas under load through the LB → zero non-2xx; then the plugin drill (`deploy/ha/plugin-drill.sh`): a plugin activated on one node converges on the other through the config epoch, and a new version activated under load through the LB produces zero non-2xx; then the cron drill (`deploy/ha/cron-drill.sh`): two reconcilers against one database produce one occurrence per scheduled instant, and a `forbid` singleton stays non-overlapping across a node restart — the lease-expiry takeover path the in-process cluster tests cannot reach |
 | Plugin SDK | `plugin-sdk` CI job (path-filtered) | The test fixture and the example codec rebuild from source on the shipped `orion-plugin-sdk`; the ABI case suite and the example's offline cases pass against the fresh components |
 
 ## Layer 8 — benchmarks (manual, recorded per release)

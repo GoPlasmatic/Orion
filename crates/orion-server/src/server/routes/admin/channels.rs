@@ -229,6 +229,9 @@ struct ChannelLifecycle<'a> {
     channels: &'a dyn crate::storage::repositories::channels::ChannelRepository,
     workflows: &'a dyn crate::storage::repositories::workflows::WorkflowRepository,
     data_mounts: &'a [String],
+    /// The whole config, for the gates that ask what this *instance* can run —
+    /// currently only whether its cron scheduler is on (D3).
+    config: &'a crate::config::AppConfig,
 }
 
 impl<'a> ChannelLifecycle<'a> {
@@ -237,6 +240,7 @@ impl<'a> ChannelLifecycle<'a> {
             channels: &*state.repos.channels,
             workflows: &*state.repos.workflows,
             data_mounts: &state.config.server.data_mounts,
+            config: &state.config,
         }
     }
 }
@@ -292,6 +296,13 @@ impl super::VersionedLifecycle for ChannelLifecycle<'_> {
         if let Err(e) =
             super::services::channels::ensure_name_is_unclaimed(self.channels, draft).await
         {
+            refusals.push(e);
+        }
+        // D3: and a cron channel on a node that cannot run one. The load-time
+        // quarantine already refuses to serve it; this is what tells the person
+        // activating it, instead of leaving them a healthy-looking channel that
+        // silently never fires.
+        if let Err(e) = super::services::channels::ensure_cron_is_enabled(self.config, draft) {
             refusals.push(e);
         }
         refusals

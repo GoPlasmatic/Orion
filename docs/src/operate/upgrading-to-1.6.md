@@ -1,4 +1,4 @@
-<!-- description: Upgrading Orion 1.5.x to 1.6.0 — what changes behaviour: plugins are off by default, three new migrations, a larger binary, and an MSRV that now tracks Wasmtime. -->
+<!-- description: Upgrading Orion 1.5.x to 1.6.0 — what changes behaviour: plugins are off by default, three new migrations, a larger binary, and an MSRV that tracks Wasmtime. -->
 # Upgrading to 1.6.0
 
 This page is for operators upgrading an existing Orion deployment from

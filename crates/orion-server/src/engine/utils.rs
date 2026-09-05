@@ -244,6 +244,21 @@ pub fn prepare_offline_metadata(metadata: Value) -> Result<Value, String> {
         ));
     }
 
+    // A cron occurrence's `trigger`, named here for the same reason `oauth` is:
+    // it is platform-stamped at run time — the cron worker writes it from the
+    // ledger row — and an offline case has to be able to supply it, because
+    // there is no scheduler to get it from and testing the workflow *behind* a
+    // schedule is the point. The shape is checked and the value passes through.
+    if let Some(trigger) = metadata.get(crate::engine::TRIGGER_KEY)
+        && !trigger.is_object()
+    {
+        return Err(format!(
+            "'metadata.trigger' must be an object — the cron worker stamps it as one \
+             from the occurrence being run, got {}",
+            json_kind(trigger)
+        ));
+    }
+
     if let Some(auth) = metadata.get("auth") {
         let Some(map) = auth.as_object() else {
             return Err(format!(

@@ -720,6 +720,51 @@ fn unexpected_task_errors_fail_a_case() {
     );
 }
 
+/// The other half of that contract: a case that *names* the codes is asserting
+/// the failure, so the run halting on them is the pass. Without this a refusal
+/// has no test — the run's `Err` failed the case however well the codes matched
+/// — and the failing task is credited to `expect_tasks`, since it ran.
+#[test]
+fn an_expected_task_error_is_the_pass_and_names_the_task_that_failed() {
+    let scratch = temp_suite();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("refused.case.json"),
+        r#"{
+            "name": "the missing stub is refused, and nothing downstream runs",
+            "workflow": "wf.json",
+            "input": {"id": "ORD-1"},
+            "expect": {"data.order.customer_name": null},
+            "expect_errors": ["FUNCTION_ERROR", "WORKFLOW_ERROR"],
+            "expect_tasks": ["parse", "lookup"]
+        }"#,
+    )
+    .unwrap();
+
+    let (ok, out) = run_suite(dir);
+    assert!(ok, "a case that expects the failure must pass: {out}");
+
+    // And it cannot pass by naming any codes at all: the match stays exact.
+    std::fs::write(
+        dir.join("refused.case.json"),
+        r#"{
+            "name": "the wrong codes",
+            "workflow": "wf.json",
+            "input": {"id": "ORD-1"},
+            "expect": {},
+            "expect_errors": ["VALIDATION_ERROR"]
+        }"#,
+    )
+    .unwrap();
+
+    let (ok, out) = run_suite(dir);
+    assert!(!ok, "the wrong codes must still fail the case: {out}");
+    assert!(
+        out.contains("task errors: expected [\"VALIDATION_ERROR\"]"),
+        "the diff must name the codes: {out}"
+    );
+}
+
 /// T7: the one subcommand with no test through the binary. Its *content* is
 /// drift-guarded by `committed_openapi_json_is_up_to_date`, but that test
 /// generates the spec in-process — nothing proved the subcommand itself exits

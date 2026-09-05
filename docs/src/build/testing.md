@@ -180,6 +180,26 @@ workflows and fixtures beside them:
 starts failing its tasks cannot pass silently. `expect_tasks` cannot work that
 way — every workflow runs tasks, so omitting it means unchecked.
 
+## Testing the refusal
+
+A case that names codes in `expect_errors` is asserting the failure, so the run
+ending on that error is the pass rather than a failure of its own — which is how
+a refusal gets a test. The codes are still matched exactly, so a case cannot
+pass by expecting the wrong ones. A task that ran and failed is listed in
+`expect_tasks` like any other; the tasks after it are not, because the workflow
+halted there.
+
+```json
+{
+  "name": "a record shorter than the spec is refused, not half-parsed",
+  "workflow": "../packages/fixed-width-statement/workflow.json",
+  "input": { "record": "ACC0001234" },
+  "expect": { "data.statement": null },
+  "expect_errors": ["VALIDATION_ERROR", "WORKFLOW_ERROR"],
+  "expect_tasks": ["parse", "decode"]
+}
+```
+
 ## Every `expect` path names its root
 
 **Since:** Orion 1.2
