@@ -858,6 +858,131 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // `after` — keyset paging, rendered from the shared `Cond`
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_after_on_an_ascending_key_is_one_comparison() {
+        let sql = sqlite(json!({
+            "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 }, "limit": 20
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "t" WHERE "id" > 7 ORDER BY "id" ASC NULLS FIRST LIMIT 20"#
+        );
+    }
+
+    /// Nulls sort last on `desc` (W8), so the page after a real value still has
+    /// to reach them. Without the `IS NULL` arm the final page silently drops
+    /// every null-valued row.
+    #[test]
+    fn test_after_on_a_descending_key_reaches_the_nulls() {
+        let sql = sqlite(json!({
+            "source": "t", "sort": [{ "score": "desc" }], "after": { "score": 10 }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "t" WHERE "score" < 10 OR "score" IS NULL ORDER BY "score" DESC NULLS LAST LIMIT 100"#
+        );
+    }
+
+    /// `score DESC, id ASC` — an ordinary leaderboard — has no row-value form
+    /// at all: `(a, b) < (x, y)` requires one direction for every key. The
+    /// OR-expansion is the general shape, and it is also the one MySQL turns
+    /// into an index range scan (see `storage::repositories::traces`).
+    #[test]
+    fn test_after_with_mixed_directions_is_an_or_expansion_not_a_row_comparison() {
+        let sql = sqlite(json!({
+            "source": "t",
+            "sort": [{ "score": "desc" }, { "id": "asc" }],
+            "after": { "score": 10, "id": 5 }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "t" WHERE "score" < 10 OR "score" IS NULL OR ("score" = 10 AND "id" > 5) ORDER BY "score" DESC NULLS LAST, "id" ASC NULLS FIRST LIMIT 100"#
+        );
+        assert!(!sql.contains(") < ("), "no row-value constructor: {sql}");
+        // sea-query flattens the nested `Or` (disjunction is associative) and
+        // keeps the tie-break `And` parenthesised, which is the grouping that
+        // actually carries meaning here.
+    }
+
+    /// A filterless keyset page must render exactly as it did before `after`
+    /// existed — no `1 = 1 AND` prefix from an `And([True, seek])`.
+    #[test]
+    fn test_after_composes_with_a_filter_and_adds_nothing_without_one() {
+        let sql = sqlite(json!({
+            "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 },
+            "filter": { "==": [{ "field": "status" }, "active"] }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "t" WHERE "status" = 'active' AND "id" > 7 ORDER BY "id" ASC NULLS FIRST LIMIT 100"#
+        );
+        assert!(
+            !sqlite(json!({
+                "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 }
+            }))
+            .contains("1 = 1")
+        );
+    }
+
+    /// MySQL emits no `NULLS` clause (its native order already realises W8), so
+    /// its seek still has to carry the `IS NULL` arm itself.
+    #[test]
+    fn test_after_renders_on_every_dialect() {
+        let query = json!({
+            "source": "t", "sort": [{ "score": "desc" }], "after": { "score": 10 }
+        });
+        for dialect in [SqlDialect::Sqlite, SqlDialect::Postgres, SqlDialect::Mysql] {
+            let sql = sql_for(query.clone(), dialect);
+            assert!(sql.contains("< 10"), "{dialect:?}: {sql}");
+            assert!(sql.contains("IS NULL"), "{dialect:?}: {sql}");
+        }
+    }
+
+    /// The seek column and the `ORDER BY` column are one resolution: `after`
+    /// carries no names of its own, so a rename cannot move one without the
+    /// other.
+    #[test]
+    fn test_after_over_a_renamed_column_seeks_on_the_physical_name() {
+        let reg = EntityRegistry::from_json(&json!({
+            "entities": { "users": { "columns": {
+                "handle": { "name": "nickname" }, "id": {} } } }
+        }))
+        .expect("schema parses");
+        let stmt = plan_stmt(
+            &json!({
+                "source": "users", "fields": ["handle", "id"],
+                "sort": [{ "handle": "asc" }], "after": { "handle": "cee" }
+            }),
+            &reg,
+            SqlDialect::Sqlite,
+            &limits(),
+        )
+        .expect("translates");
+        let sql = stmt.to_string(SqliteQueryBuilder);
+        assert!(sql.contains(r#""nickname" > 'cee'"#), "{sql}");
+        assert!(sql.contains(r#"ORDER BY "nickname""#), "{sql}");
+        assert!(!sql.contains("handle"), "{sql}");
+    }
+
+    /// Cursor values are caller data and go out bound, not inlined.
+    #[test]
+    fn test_after_values_are_bound_not_inlined() {
+        let stmt = plan_stmt(
+            &json!({ "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 } }),
+            &EntityRegistry::identity(),
+            SqlDialect::Postgres,
+            &limits(),
+        )
+        .expect("translates");
+        let (sql, values) = build_for(SqlDialect::Postgres, &stmt);
+        assert!(sql.contains("$1"), "{sql}");
+        assert!(!values.0.0.is_empty(), "the cursor value is bound");
+    }
+
     #[test]
     fn test_sort_and_paging() {
         let sql = sqlite(json!({

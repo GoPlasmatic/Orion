@@ -82,6 +82,11 @@ Two decisions inside the cursor:
 
 The cursor encodes `<microseconds since the epoch>.<trace id>` today. Treat it as opaque: the encoding is not part of the API contract and may change.
 
+The same shape applies to a page read through the portable dialect, where
+`after` derives the comparison from the sort — including the null arm above —
+and to a raw `db_read`, where you write it yourself. See
+[Paging](./data-dialect.md#paging).
+
 Stated normatively in: [Data API](./data-api.md#paging-a-large-traces-table).
 
 ## How hot reload swaps the runtime generation

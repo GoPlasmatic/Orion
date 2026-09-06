@@ -18,6 +18,15 @@ pub struct QuerySpec {
     pub sort: Vec<SortKey>,
     pub limit: Option<u64>,
     pub skip: Option<u64>,
+    /// Keyset cursor (`"after"`): the previous page's last row, one value per
+    /// `sort` key. `None` means the first page.
+    ///
+    /// Kept as raw JSON here, exactly like [`QuerySpec::filter`] and for the
+    /// same reason: the whole cursor may be written `{"param": "…"}`, and
+    /// parsing has no `Params` to fold it against. [`crate::query::keyset`]
+    /// pairs it with `sort` during lowering, while both are still the caller's
+    /// own names.
+    pub after: Option<Json>,
     pub include: Vec<IncludeSpec>,
     /// Answer *how many rows match* instead of returning them.
     ///
@@ -68,12 +77,12 @@ fn invalid(msg: impl Into<String>) -> QueryError {
 
 /// The complete key set of the query envelope. Anything else is a typo, and a
 /// typo here is a filter/projection/limit silently not applying (W6).
-const ENVELOPE_KEYS: [&str; 8] = [
-    "source", "filter", "fields", "sort", "limit", "skip", "include", "count",
+const ENVELOPE_KEYS: [&str; 9] = [
+    "source", "filter", "fields", "sort", "limit", "skip", "after", "include", "count",
 ];
 
 /// The keys that shape a row set, and so cannot travel with `count`.
-const ROW_SHAPE_KEYS: [&str; 5] = ["fields", "sort", "limit", "skip", "include"];
+const ROW_SHAPE_KEYS: [&str; 6] = ["fields", "sort", "limit", "skip", "after", "include"];
 
 /// Parse the `query` object into a [`QuerySpec`].
 pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
@@ -88,8 +97,8 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
             .map(|k| format!(" — did you mean \"{k}\"?"))
             .unwrap_or_default();
         return Err(invalid(format!(
-            "unknown key '{unknown}' in query envelope (expected \
-             source/filter/fields/sort/limit/skip/include){suggestion}"
+            "unknown key '{unknown}' in query envelope (expected {expected}){suggestion}",
+            expected = ENVELOPE_KEYS.join("/")
         )));
     }
 
@@ -139,6 +148,8 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
         )));
     }
 
+    let after = parse_after(obj.get("after"), &sort, &fields, skip)?;
+
     Ok(QuerySpec {
         source,
         filter,
@@ -146,9 +157,77 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
         sort,
         limit,
         skip,
+        after,
         include,
         count,
     })
+}
+
+/// Validate `after`'s coexistence with the rest of the envelope and hand the
+/// raw node on.
+///
+/// Only the rules that need no `Params` live here. The cursor's *contents* —
+/// its key set against `sort`, and each value — are checked in
+/// [`crate::query::keyset::pair`], because the whole cursor may be spelled
+/// `{"param": "…"}` and cannot be read until the params are folded. That is the
+/// same split `filter` already has, and the same reason `include`'s sort rule
+/// lives in `plan_sql` rather than here.
+fn parse_after(
+    v: Option<&Json>,
+    sort: &[SortKey],
+    fields: &[String],
+    skip: Option<u64>,
+) -> Result<Option<Json>, QueryError> {
+    let node = match v {
+        None | Some(Json::Null) => return Ok(None),
+        Some(node @ Json::Object(_)) => node,
+        Some(_) => {
+            return Err(invalid(
+                "'after' must be an object of sort key → value, like \
+                 {\"created_at\": \"2026-01-01T00:00:00Z\", \"id\": 42}",
+            ));
+        }
+    };
+
+    // A cursor is a position in an order. Without one, "the rows after this"
+    // names nothing — the same argument F27 makes for `include`, which the root
+    // page has never had. `skip` is left permissive because refusing it would
+    // break envelopes that are legal today; a new key carries the rule for free.
+    if sort.is_empty() {
+        return Err(invalid(
+            "'after' requires a 'sort' — a keyset cursor is a position in an \
+             order, and without one \"the rows after this\" has no meaning \
+             (e.g. \"sort\": [{\"id\": \"asc\"}], \"after\": {\"id\": 42})",
+        ));
+    }
+
+    if skip.is_some() {
+        return Err(invalid(
+            "'after' and 'skip' are two different pagination models — pass one. \
+             'skip' counts rows from the start of the order; 'after' resumes \
+             from the last row of the previous page, which is why it does not \
+             drift when rows are inserted",
+        ));
+    }
+
+    // The next page's cursor is read out of the last row returned, so a sort key
+    // the projection drops cannot supply one. Left unchecked, the caller reads
+    // `null`, sends it back, and pages forever on a boundary that means
+    // something else — W6's rule that a key which cannot apply is an error
+    // rather than a no-op. An empty `fields` returns everything and is exempt.
+    if !fields.is_empty()
+        && let Some(key) = sort.iter().find(|k| !fields.contains(&k.field))
+    {
+        return Err(invalid(format!(
+            "'fields' does not project '{}', which 'sort' orders by and \
+             'after' seeks on — the next page's cursor is read out of the last \
+             row returned, and a row that does not carry the key cannot supply \
+             one. Add '{}' to 'fields', or drop 'after'",
+            key.field, key.field
+        )));
+    }
+
+    Ok(Some(node.clone()))
 }
 
 fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
@@ -281,6 +360,12 @@ impl QuerySpec {
     ///
     /// Applied once per translation, before any backend sees the spec, so no
     /// renderer can receive a logical name.
+    ///
+    /// `after` is deliberately absent: a cursor carries values, not names. Its
+    /// keys are matched against `sort` in [`crate::query::keyset::pair`] before
+    /// this runs, and the seek predicate is then built from the physical
+    /// columns resolved here — so the seek column and the `ORDER BY` column are
+    /// one resolution rather than two that could drift apart under a rename.
     pub fn resolve_names(mut self, reg: &crate::query::EntityRegistry) -> Result<Self, QueryError> {
         if self.fields.is_empty() {
             self.fields = reg.default_projection(&self.source, "fields")?;
@@ -415,11 +500,12 @@ mod tests {
     /// is refused by name rather than ignored.
     #[test]
     fn count_refuses_the_row_shaping_keys() {
-        for key in ["fields", "sort", "limit", "skip", "include"] {
+        for key in ["fields", "sort", "limit", "skip", "after", "include"] {
             let mut envelope = serde_json::json!({ "source": "users", "count": true });
             envelope[key] = match key {
                 "fields" => serde_json::json!(["id"]),
                 "sort" => serde_json::json!([{ "id": "asc" }]),
+                "after" => serde_json::json!({ "id": 1 }),
                 "include" => serde_json::json!({ "orders": {} }),
                 _ => serde_json::json!(10),
             };
@@ -447,5 +533,105 @@ mod tests {
             .expect_err("must be refused")
             .to_string();
         assert!(err.contains("boolean"), "{err}");
+    }
+    // -----------------------------------------------------------------
+    // `after` — the keyset cursor's envelope rules
+    // -----------------------------------------------------------------
+
+    /// Every envelope written before `after` existed parses exactly as it did.
+    #[test]
+    fn after_defaults_absent() {
+        let spec = parse(&json!({ "source": "users" })).expect("parses");
+        assert!(spec.after.is_none());
+    }
+
+    /// A sibling of [`the_full_envelope_still_parses`] rather than an edit to
+    /// it: that one carries `"skip": 20`, and the two pagination models are
+    /// refused together.
+    #[test]
+    fn the_full_envelope_still_parses_with_a_cursor() {
+        let spec = parse(&json!({
+            "source": "users",
+            "filter": { "==": [{ "field": "id" }, 1] },
+            "fields": ["id", "name"],
+            "sort": [{ "name": "asc" }],
+            "limit": 10,
+            "after": { "name": "Bob" },
+            "include": { "orders": { "fields": ["total"], "sort": [{ "id": "asc" }], "limit": 5 } }
+        }))
+        .expect("every documented key must be known");
+        assert_eq!(spec.after, Some(json!({ "name": "Bob" })));
+        assert!(spec.skip.is_none());
+    }
+
+    /// A position in an order needs the order. This is the rule `include` has
+    /// carried since F27, applied where the root page equally needs it — and it
+    /// costs nothing to add, because `after` is new.
+    #[test]
+    fn after_without_a_sort_is_refused() {
+        let err = parse(&json!({ "source": "users", "after": { "id": 1 } }))
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("'after' requires a 'sort'"), "{err}");
+    }
+
+    #[test]
+    fn after_and_skip_are_refused_together() {
+        for skip in [json!(20), json!(0)] {
+            let err = parse(&json!({
+                "source": "users", "sort": [{ "id": "asc" }],
+                "after": { "id": 1 }, "skip": skip
+            }))
+            .expect_err("must be refused")
+            .to_string();
+            assert!(err.contains("two different pagination models"), "{err}");
+        }
+    }
+
+    /// The next page's cursor is read out of the last row returned, so a sort
+    /// key the projection drops cannot supply one — and the caller would find
+    /// out by reading `null` and paging forever on a boundary that means
+    /// something else.
+    #[test]
+    fn after_requires_the_sort_keys_to_be_projected() {
+        let envelope = |fields: serde_json::Value| {
+            json!({
+                "source": "users", "fields": fields,
+                "sort": [{ "created_at": "desc" }, { "id": "asc" }],
+                "after": { "created_at": "2026-01-01T00:00:00Z", "id": 1 }
+            })
+        };
+        let err = parse(&envelope(json!(["name", "id"])))
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("'created_at'"), "{err}");
+        assert!(err.contains("'fields'"), "{err}");
+
+        parse(&envelope(json!(["name", "id", "created_at"]))).expect("every sort key projected");
+
+        // An empty projection returns every column, so it always carries them.
+        let mut all = envelope(json!([]));
+        all.as_object_mut().expect("object").remove("fields");
+        parse(&all).expect("no projection is every column");
+    }
+
+    #[test]
+    fn after_must_be_an_object() {
+        let err = parse(&json!({ "source": "users", "sort": [{ "id": "asc" }], "after": 5 }))
+            .expect_err("must be refused")
+            .to_string();
+        assert!(err.contains("'after' must be an object"), "{err}");
+    }
+
+    /// The message used to be a hand-copied list and had already fallen a key
+    /// behind — `count` shipped in 1.6 and never reached it.
+    #[test]
+    fn the_unknown_key_message_lists_every_envelope_key() {
+        let err = parse(&json!({ "source": "users", "cursor": 1 }))
+            .expect_err("must be refused")
+            .to_string();
+        for key in ENVELOPE_KEYS {
+            assert!(err.contains(key), "{key} missing from: {err}");
+        }
     }
 }

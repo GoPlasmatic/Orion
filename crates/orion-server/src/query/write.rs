@@ -285,8 +285,8 @@ pub fn resolve_write(
             .map(|k| format!(" — did you mean \"{k}\"?"))
             .unwrap_or_default();
         return Err(WriteError::invalid_envelope(format!(
-            "unknown key '{unknown}' in write envelope (expected \
-             op/target/values/set/filter/on_conflict/returning/all){suggestion}"
+            "unknown key '{unknown}' in write envelope (expected {expected}){suggestion}",
+            expected = ENVELOPE_KEYS.join("/")
         )));
     }
 

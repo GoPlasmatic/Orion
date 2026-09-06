@@ -588,6 +588,71 @@ mod tests {
         QueryConfig::default()
     }
 
+    /// Rendered in filter context like every other predicate — no
+    /// `search_after`. ES's own keyset mode needs a total sort (a `_shard_doc`
+    /// or `_id` tiebreaker appended), which is exactly the "second, invisible
+    /// sort key" the dialect promises not to add, and it would make one
+    /// envelope order differently here than on SQL.
+    #[test]
+    fn test_after_renders_in_filter_context_without_search_after() {
+        // A single ascending key is one bounded range and nothing else — the
+        // null arm is unnecessary when nulls already sort first.
+        let eq = es(json!({
+            "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 }
+        }));
+        assert_eq!(eq.body["query"], json!({ "range": { "id": { "gt": 7 } } }));
+        assert_eq!(eq.body["from"], json!(0));
+
+        // A tie-break key brings the disjunction, still in filter context.
+        let body = es(json!({
+            "source": "t",
+            "sort": [{ "score": "desc" }, { "id": "asc" }],
+            "after": { "score": 10, "id": 7 }
+        }))
+        .body
+        .to_string();
+        assert!(body.contains("\"should\""), "{body}");
+        assert!(body.contains("minimum_should_match"), "{body}");
+        assert!(!body.contains("search_after"), "{body}");
+    }
+
+    /// The envelope that is a deep-pagination capability error as `skip` is
+    /// answerable as `after`: a keyset page never sets `from`, so `from + size`
+    /// cannot reach the result window however deep the walk goes.
+    #[test]
+    fn test_after_sidesteps_the_result_window() {
+        let deep = json!({ "source": "t", "sort": [{ "id": "asc" }], "skip": 9990, "limit": 100 });
+        let err = crate::query::translate_es(
+            &deep,
+            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
+            &limits(),
+        )
+        .expect_err("offset paging past the window is refused");
+        assert!(
+            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+            "{err}"
+        );
+
+        let seeking = es(json!({
+            "source": "t", "sort": [{ "id": "asc" }], "after": { "id": 7 }, "limit": 100
+        }));
+        assert_eq!(seeking.body["from"], json!(0));
+    }
+
+    /// Nulls sort last on `desc`, and a missing field is a null here, so the
+    /// seek has to reach documents that do not carry the key at all.
+    #[test]
+    fn test_after_desc_reaches_missing_fields() {
+        let body = es(json!({
+            "source": "t", "sort": [{ "score": "desc" }], "after": { "score": 10 }
+        }))
+        .body
+        .to_string();
+        assert!(body.contains("must_not"), "{body}");
+        assert!(body.contains("exists"), "{body}");
+    }
+
     /// #263: the tagged BSON values have no Elasticsearch form and refuse with
     /// the standard capability error (an ISO date is already expressible as a
     /// plain string; the wrapper is BSON's *typed* date).
@@ -611,17 +676,12 @@ mod tests {
     }
 
     /// Local translate helper (mirrors crate::query::translate_es).
+    /// Go through the real entry point rather than reassembling `prepare`
+    /// here (W23, the same correction `backend::sql`'s helper carries): a local
+    /// copy skips `resolve_names` and every step added to the shared prologue
+    /// since, so the goldens stopped describing the path the handler takes.
     fn translate(query: &Json, reg: &EntityRegistry) -> EsQuery {
-        let spec = crate::query::spec::parse(query).expect("spec");
-        let cond = match &spec.filter {
-            Some(f) => {
-                crate::query::lower::lower_with(f, &serde_json::Map::new(), reg, &spec.source)
-                    .expect("lower")
-            }
-            None => crate::query::ir::Cond::True,
-        };
-        let index = reg.physical_table(&spec.source).expect("validated");
-        render(&spec, &cond, &index, &limits()).expect("render")
+        crate::query::translate_es(query, &serde_json::Map::new(), reg, &limits()).expect("render")
     }
 
     #[test]

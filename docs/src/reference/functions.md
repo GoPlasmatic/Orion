@@ -456,7 +456,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
-| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include` — see the [query envelope](./data-dialect.md#query-envelope-data_query) |
+| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `after`, `include`, `count` — see the [query envelope](./data-dialect.md#query-envelope-data_query) |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
 | `schema` | object | yes | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected; `{"unmapped": "identity"}` accepts undeclared names as physical ones |
 | `database` | string | conditional | — | Database name; required when the connector is MongoDB (checked at workflow activation), unused otherwise |
@@ -481,7 +481,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
         { "==": [{ "field": "customer_id" }, { "param": "cid" }] },
         { ">":  [{ "field": "total" }, 100] }
       ] },
-      "sort": [{ "created_at": "desc" }],
+      "sort": [{ "created_at": "desc" }, { "id": "asc" }],
       "limit": 20
     },
     "params": { "cid": { "var": "data.customer_id" } },
@@ -501,8 +501,10 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 ```
 
 Page sizes are bounded by the [`[query]` config section](./configuration.md)
-(`default_limit` / `max_limit`); a query asking for more than the cap is
-rejected, never clamped.
+(`default_limit` / `max_limit`), and `skip` by `max_skip`; a query asking for
+more than a cap is rejected, never clamped. To read past `max_skip`, or to page
+a list whose rows move, use the `after` cursor — see
+[Paging](./data-dialect.md#paging).
 
 ### `data_write`
 
@@ -646,6 +648,52 @@ cannot write.
   }
 }
 ```
+
+#### Paging a raw read
+
+`db_read` has **no pagination surface** — no `limit`, `skip`, `after` or
+`cursor` field — and will not gain one: Orion does not parse the statement, so
+it cannot inject a bound into it. Note that a field this table does not declare
+is *silently ignored*, so a `"limit": 10` written beside `query` does nothing at
+all.
+
+What still applies is `query.max_limit`, as a tripwire rather than a page: the
+rows are counted as they stream, and a result exceeding the cap fails the task
+with a `400` rather than coming back truncated. Paging is part of the SQL you
+write.
+
+Raw SQL is also where a keyset cursor is *easiest*, because the statement can
+branch on an absent cursor — something the [portable dialect's
+`after`](./data-dialect.md#paging) handles for you but a hand-written filter
+cannot:
+
+```json
+{
+  "name": "db_read",
+  "input": {
+    "connector": "arena-db",
+    "query": "SELECT m.model_id, s.conservative FROM ratings s JOIN models m ON m.id = s.model_id WHERE $1::float8 IS NULL OR s.conservative < $1 OR (s.conservative = $1 AND m.model_id > $2) ORDER BY s.conservative DESC, m.model_id ASC LIMIT 20",
+    "params": [
+      { "var": "data.req.cursor.conservative" },
+      { "var": ["data.req.cursor.model_id", ""] }
+    ],
+    "output": "data.page"
+  }
+}
+```
+
+Two things to get right. The comparison **mirrors the sort key by key** — a
+`desc` key compares `<`, an `asc` key compares `>`, and each later key is
+reached only under equality of every key before it. Spell it out as clauses
+rather than a row-value `(a, b) < ($1, $2)`: the row form needs every key to
+share a direction, which a leaderboard does not, and MySQL does not turn it into
+an index range scan. And `params` is **positional**, so on SQLite and MySQL —
+which spell placeholders `?` rather than `$n` — a cursor value used twice must
+be passed twice.
+
+If a sort key is nullable, add the null arm the dialect adds for you: nulls sort
+last on `desc`, and `s.conservative < $1` is unknown for them, so without
+`OR s.conservative IS NULL` the final page drops every null-valued row.
 
 #### Decimal columns
 

@@ -553,9 +553,12 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "query",
-        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include/count. \
+        description: "Backend-neutral query envelope: \
+                      source/filter/fields/sort/limit/skip/after/include/count. \
                       An include selection is {fields, sort, limit}; `sort` is required because \
-                      the per-parent page is cut in the database. \"count\": true answers \
+                      the per-parent page is cut in the database. \"after\" is a keyset cursor — \
+                      the previous page's last row, one value per sort key — which pages without \
+                      an offset and so is not bounded by query.max_skip. \"count\": true answers \
                       {\"count\": n} instead of rows, and refuses the keys that shape a row set.",
         kind: FieldKind::Object,
         required: true,

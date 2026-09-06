@@ -139,7 +139,8 @@ not-representable, exactly as before.
 | `filter` | JSONLogic | Condition from the operator vocabulary below; omit for "match all" |
 | `fields` | array | Projection; omit for all columns/fields |
 | `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]`. A null (or missing) value sorts as the smallest value — first on `asc`, last on `desc` — on every backend |
-| `limit` / `skip` | number | Pagination. A missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
+| `limit` / `skip` | number | Offset pagination. A missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
+| `after` | object | Keyset cursor: the previous page's last row, one value per `sort` key. Requires a `sort`, refuses `skip`, and every sort key must be in `fields`. Values spell exactly as filter values. See [Paging](#paging) |
 | `include` | object | Relation name → `{ "fields": [..], "sort": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
 | `count` | boolean | Answer `{ "count": n }` — how many rows match — instead of returning them. See [Counting](#counting) |
 
@@ -147,6 +148,77 @@ Null-first ordering is the native order of SQLite, MySQL, and MongoDB;
 PostgreSQL and Elasticsearch receive an explicit `NULLS FIRST` / `missing`
 clause to match. No hidden sort key is added, so a page containing nulls comes
 back in the same order on every backend.
+
+### Paging
+
+Two modes, and they mean different things by "where the page starts".
+
+`limit` / `skip` is **offset paging**: the database walks and discards `skip`
+rows to find the page start, so a page costs more the deeper it is, and the
+position is a row *count* — insert a row ahead of the cursor and every later
+page shifts by one, so a row is served twice or skipped entirely. `skip` is
+capped at `query.max_skip` for that reason, and on Elasticsearch `skip + limit`
+beyond the 10 000-document result window is refused outright.
+
+`after` is **keyset paging**: the position is the previous page's last row, one
+value per `sort` key. It never counts, so it is not bounded by `query.max_skip`
+and never reaches Elasticsearch's result window — a keyset walk sets no offset
+at all, however deep it goes. It is the way to read a large table.
+
+```json
+{ "name": "data_query", "input": {
+    "connector": "arena_db", "output": "data.page",
+    "params": { "cursor": { "var": "data.req.cursor" } },
+    "query": {
+      "source": "leaderboard",
+      "fields": ["model_id", "conservative", "games"],
+      "sort":   [{ "conservative": "desc" }, { "model_id": "asc" }],
+      "after":  { "param": "cursor" },
+      "limit":  20 } } }
+```
+
+The first page passes no cursor: `after` resolving to `null` means "from the
+beginning", so **one task serves every page**. For the next page, read the sort
+keys out of the last row returned and send them back — which is why every sort
+key must be in `fields`, and why a projection that drops one is refused rather
+than silently handing back a cursor that cannot be built. There is no
+`next_cursor` in the response: the answer is a row array, and the position is
+already in it. A page shorter than `limit` is the last one.
+
+A cursor value spells exactly as a filter value, so a value read out of one page
+binds into the next unchanged — including `{"$oid": …}` and `{"$date": …}`, and
+`{"param": …}` per key if you would rather carry them separately.
+
+Three things `after` cannot check for you:
+
+- **The sort must be unique per row.** End it with a key that is — a primary key
+  is the usual answer, as in `[{"created_at": "desc"}, {"id": "asc"}]`. This
+  dialect adds no hidden sort key, so on a non-unique sort a keyset page *skips*
+  the rows tying with the cursor row on every key — silently, with no error,
+  even with no concurrent writes. It never returns one twice; the position is
+  strictly after the whole tuple. (Offset paging on the same query degrades
+  worse: it can both skip *and* repeat.) A schema declares column names, types
+  and permissions, not keys, so Orion cannot detect this.
+- **Do not seek on a column that is rewritten in place.** A cursor is a position
+  in an ordering, and a position only means something if rows hold still. A
+  status column that is updated on every change lets a row cross the cursor
+  between two fetches; `created_at` and an id do not. The same argument, at
+  length, is in [Design Notes › Cursor paging](./design-notes.md#cursor-paging).
+- **The value has to round-trip.** This is the one place in the dialect where a
+  value a result returned becomes a value in the next filter. Seek on a column
+  whose rendered value spells back as itself. In particular `"numeric_as":
+  "string"` on a numeric sort key turns the seek into a string comparison, and
+  the default `"number"` rounds a `numeric` column beyond 2^53 — so for a
+  decimal score, seek on an exact column (an integer id, `float8`) instead.
+
+Nulls need no special care from the caller: a null sorts as the smallest value
+(above), and `after` derives the matching comparison from the sort direction —
+including reaching the null group at the end of a `desc` key, which is a clause
+a hand-written filter has to remember.
+
+`after` behaves identically on all five backends and adds no row to the
+divergence table below; the walk is asserted equal across them in
+`data_parity_test`.
 
 ### Counting
 
@@ -166,7 +238,7 @@ The result is `{ "count": 12 }` — one object, one key, on every backend.
 `filter` means exactly what it means for a row query, so a list endpoint and
 its total are the same predicate written once.
 
-Every key that shapes a row set — `fields`, `sort`, `limit`, `skip`,
+Every key that shapes a row set — `fields`, `sort`, `limit`, `skip`, `after`,
 `include` — is **rejected** alongside `count`, naming the key. `{"count": true,
 "limit": 10}` has two readings ("count the first ten" and "count them all, and
 also give me ten"), a projection over a single number has none, and choosing

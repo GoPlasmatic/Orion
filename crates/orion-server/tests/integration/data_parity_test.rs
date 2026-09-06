@@ -393,6 +393,77 @@ fn cases() -> Vec<Case> {
             &[],
         )
         .erroring_on(EVERY_BACKEND),
+        // -- keyset paging (`after`) ------------------------------------------
+        // Offset paging re-counts from the start and is capped; `after` resumes
+        // from a position and is not. Both must mean the same thing everywhere.
+        Case::new(
+            "after_on_a_unique_key",
+            json!({ "source": "users", "sort": by_name(), "after": { "name": "Bob" } }),
+            &["Carol", "Dave"],
+        ),
+        // The load-bearing row. `nickname` is null for Alice and Bob, and nulls
+        // sort last on `desc` (W8), so the page after Dave has to reach them.
+        // Without the `OR nickname IS NULL` arm this returns `["Carol"]` — the
+        // *same wrong answer on all five backends*, which is exactly why it
+        // belongs in the matrix rather than in a per-backend golden.
+        Case::new(
+            "after_on_a_descending_key_reaches_the_nulls",
+            json!({ "source": "users",
+                    "sort": [{ "nickname": "desc" }, { "name": "asc" }],
+                    "after": { "nickname": "dee", "name": "Dave" } }),
+            &["Carol", "Alice", "Bob"],
+        ),
+        // A cursor sitting *inside* the null group still walks the tie-break.
+        Case::new(
+            "after_at_a_null_still_walks_the_tie_break",
+            json!({ "source": "users",
+                    "sort": [{ "nickname": "desc" }, { "name": "asc" }],
+                    "after": { "nickname": null, "name": "Alice" } }),
+            &["Bob"],
+        ),
+        // `status asc, name desc` has no row-value form at all — the directions
+        // disagree — so this is the shape the OR-expansion exists for.
+        Case::new(
+            "after_with_mixed_directions",
+            json!({ "source": "users",
+                    "sort": [{ "status": "asc" }, { "name": "desc" }],
+                    "after": { "status": "active", "name": "Bob" } }),
+            &["Alice", "Carol"],
+        ),
+        Case::new(
+            "after_past_the_last_row_is_an_empty_page",
+            json!({ "source": "users", "sort": by_name(), "after": { "name": "Dave" } }),
+            &[],
+        ),
+        // The counterpart to `deep_pagination_is_rejected_on_es_only`: the same
+        // page size that ES refuses behind a `skip` is answered everywhere
+        // behind a cursor, because a keyset page never sets `from`.
+        Case::new(
+            "after_is_not_deep_pagination_on_es",
+            json!({ "source": "users", "sort": by_name(),
+                    "after": { "name": "Bob" }, "limit": 100 }),
+            &["Carol", "Dave"],
+        ),
+        // "Refuses identically" is itself a parity claim.
+        Case::new(
+            "after_without_a_sort_is_rejected_everywhere",
+            json!({ "source": "users", "after": { "name": "Bob" } }),
+            &[],
+        )
+        .erroring_on(EVERY_BACKEND),
+        Case::new(
+            "after_with_skip_is_rejected_everywhere",
+            json!({ "source": "users", "sort": by_name(),
+                    "after": { "name": "Bob" }, "skip": 1 }),
+            &[],
+        )
+        .erroring_on(EVERY_BACKEND),
+        Case::new(
+            "after_that_does_not_match_the_sort_keys_is_rejected_everywhere",
+            json!({ "source": "users", "sort": by_name(), "after": { "age": 20 } }),
+            &[],
+        )
+        .erroring_on(EVERY_BACKEND),
         Case::new(
             "an_unknown_envelope_key_is_rejected_everywhere",
             json!({ "source": "users", "sort": by_name(), "fileds": ["name"] }),
@@ -710,6 +781,169 @@ async fn upsert_parity_postgres() {
 #[ignore]
 async fn upsert_parity_mysql() {
     assert_upsert_parity(Backend::Mysql).await;
+}
+
+/// Walk a whole result set with `after`, one page at a time, on one backend.
+///
+/// Kept out of the row matrix because a walk is not one envelope: [`Case`]
+/// carries a single query and its rows, and the point here is the *sequence* —
+/// the cursor for page two is read out of page one. That feedback is the only
+/// place in the dialect where a value returned by a result becomes a value in
+/// the next filter, so it is where a driver's rendering of a column has to
+/// spell back as the same value (the hazard `GroupKey` documents for include
+/// join keys).
+///
+/// One channel serves every page. `"after": {"param": "cursor"}` resolving to
+/// `null` is the first page, which is the whole reason the cursor may be one
+/// param rather than one per key: `query` is deliberately not a template, so
+/// without it a workflow needs a second task for page one.
+async fn assert_keyset_parity(backend: Backend) {
+    let app = common::test_app().await;
+    let label = backend.label();
+    let h = common::backends::start(backend, &format!("seek_{label}")).await;
+    h.prepare().await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    let seed_channel = format!("ch-seek-{label}-seed");
+    common::create_and_activate_channel(
+        &app,
+        &seed_channel,
+        common::workflow_with_tasks("seed", json!(seed_tasks(&h))),
+    )
+    .await;
+    let (status, body) = dsl::post(&app, &seed_channel, json!({ "data": {} })).await;
+    assert_eq!(
+        body["status"], "ok",
+        "[{label}] seeding failed ({status}): {body}"
+    );
+
+    // Two orders: one over a unique-per-row pair, and one whose leading key is
+    // null for half the fixture, so the walk has to cross the null group.
+    for (what, sort, keys, expected) in [
+        (
+            "a page boundary inside a tie",
+            json!([{ "status": "asc" }, { "name": "desc" }]),
+            ["status", "name"],
+            vec!["Dave", "Bob", "Alice", "Carol"],
+        ),
+        (
+            "a leading key that is null for half the rows",
+            json!([{ "nickname": "desc" }, { "name": "asc" }]),
+            ["nickname", "name"],
+            vec!["Dave", "Carol", "Alice", "Bob"],
+        ),
+    ] {
+        let channel = format!("ch-seek-{label}-{}", keys[0]);
+        let input = h.with_db(json!({
+            "connector": h.connector_name,
+            "query": {
+                "source": "users",
+                "sort": sort,
+                "after": { "param": "cursor" },
+                "limit": 2
+            },
+            "params": { "cursor": { "var": "data.req.cursor" } },
+            "schema": parity_schema(),
+            "output": "data.result"
+        }));
+        common::create_and_activate_channel(
+            &app,
+            &channel,
+            common::workflow_with_tasks(
+                "seek",
+                json!([
+                    // The Orion convention for reaching request data: land the
+                    // payload in `data.req`, then read the cursor out of it.
+                    { "id": "t_parse", "name": "parse payload",
+                      "function": { "name": "parse_json",
+                                    "input": { "source": "payload", "target": "req" } } },
+                    { "id": "q", "name": "q",
+                      "function": { "name": "data_query", "input": input } }
+                ]),
+            ),
+        )
+        .await;
+
+        let mut cursor = Value::Null;
+        let mut walked: Vec<String> = Vec::new();
+        let mut pages = 0;
+        loop {
+            // A predicate that is not *strictly* after the cursor walks the same
+            // page forever, which is the failure mode a keyset bug actually has.
+            pages += 1;
+            assert!(
+                pages <= 5,
+                "[{label}] {what}: the cursor walk is not terminating (saw {walked:?})"
+            );
+
+            let (status, body) =
+                dsl::post(&app, &channel, json!({ "data": { "cursor": cursor } })).await;
+            assert_eq!(
+                body["status"], "ok",
+                "[{label}] {what} page {pages} failed ({status}): {body}"
+            );
+            let rows = body["data"]["result"].clone();
+            let page = names(&rows);
+            if page.is_empty() {
+                break;
+            }
+            walked.extend(page);
+
+            // Build the next position out of the page, exactly as an author
+            // would. `Value::get` answers `None` for a column a document store
+            // omitted rather than stored as null, so the null is restated here —
+            // a cursor carries one value per sort key, always.
+            let last = rows
+                .as_array()
+                .and_then(|r| r.last())
+                .expect("a non-empty page has a last row")
+                .clone();
+            cursor = Value::Object(
+                keys.iter()
+                    .map(|k| {
+                        (
+                            (*k).to_string(),
+                            last.get(*k).cloned().unwrap_or(Value::Null),
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        assert_eq!(
+            walked, expected,
+            "[{label}] {what}: the walk must return every row exactly once, in order"
+        );
+    }
+}
+
+#[tokio::test]
+async fn keyset_parity_sqlite() {
+    assert_keyset_parity(Backend::Sqlite).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn keyset_parity_postgres() {
+    assert_keyset_parity(Backend::Postgres).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn keyset_parity_mysql() {
+    assert_keyset_parity(Backend::Mysql).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn keyset_parity_mongo() {
+    assert_keyset_parity(Backend::Mongo).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn keyset_parity_es() {
+    assert_keyset_parity(Backend::Es).await;
 }
 
 #[tokio::test]

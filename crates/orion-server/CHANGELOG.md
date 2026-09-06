@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **PostgreSQL parameters bind to the type the query declares, not the shape of
+  the JSON value.** `db_read`/`db_write` chose a parameter's SQL type from the
+  value — a string as `text`, a number as `int8` — while PostgreSQL types its
+  parameters at `Parse` and sqlx caches the prepared statement by SQL text
+  alone. The first call through a given statement froze its parameter types, and
+  every later call sent bytes encoded for *its* value into a slot the server
+  still read with the first call's type; a `($1)::int` cast in the query never
+  got a say. The visible half was `insufficient data left in message`. The
+  silent half was worse: `int8recv` validates length rather than meaning, so
+  `SELECT $1` bound `42` and then `"12345678"` answered `3544952156018063160`
+  with no error at all. Parameters are now coerced to the types the server
+  infers from the query text, which is idempotent with respect to `Parse` — a
+  cache miss cannot change the outcome. A type outside the mapped set degrades
+  to the old value-shaped bind rather than refusing. MySQL and SQLite were never
+  affected.
+
 - **`oauth2_login` takes per-environment values, as its documentation said.**
   Create-time validation dropped every `var://` member from a channel config
   before the shape check, so a required field holding one — every field of an
@@ -53,6 +69,44 @@ runtime, where the engine and the channel estate are now published as one
 generation rather than two.
 
 ### Added
+
+- **`after`: keyset paging for the portable dialect.** The query envelope
+  offered `limit`/`skip` and nothing else, so a paginated endpoint had exactly
+  one way to page and it was the one that drifts: `skip` is a row *count*, so a
+  row inserted ahead of the cursor shifts every later page and a row is served
+  twice or skipped entirely. It is also capped — `query.max_skip` (10 000), and
+  on Elasticsearch a `skip + limit` past the 10 000-document result window is
+  refused outright. Reading a large table meant leaving the dialect for
+  `db_read`, and its schema allowlist with it.
+
+  `"after": {"<sort key>": <value>, …}` carries the previous page's last row,
+  one value per `sort` key, and resumes strictly after it. It sets no offset, so
+  neither `max_skip` nor the ES result window applies however deep the walk
+  goes. The whole cursor may be written `{"param": "…"}`, and one resolving to
+  `null` is the first page — so a single task serves every page, which matters
+  because `query` is deliberately not a template and the predicate's shape is
+  therefore fixed per task.
+
+  It lowers into the same condition IR the three renderers already walk, inside
+  the shared prologue, so all five backends answer it identically with no
+  renderer change and no fifth chance to disagree; `data_parity_test` asserts
+  the pages and a whole walk equal across SQLite, PostgreSQL, MySQL, MongoDB and
+  Elasticsearch. The comparison is the OR-expansion rather than a row-value
+  `(a, b) < (x, y)`: mixed directions — `score DESC, id ASC`, an ordinary
+  leaderboard — have no row-comparison form at all, and MySQL does not turn the
+  row form into an index range scan.
+
+  Null placement is derived from the sort plan rather than restated, so the
+  clause a hand-written filter forgets is not optional here: nulls sort last on
+  a `desc` key, and without the `OR … IS NULL` arm the final page silently drops
+  every null-valued row on every backend.
+
+  `after` requires a `sort` (a position needs an ordering), refuses `skip` (two
+  models of what a position is), refuses `count` like every row-shaping key, and
+  requires the projection to carry every sort key — otherwise the next cursor
+  cannot be built and the caller finds out by reading `null`. What it cannot
+  check is documented: the sort must be unique per row, the sort key must not be
+  rewritten in place, and the value has to round-trip.
 
 - **Cron channels: run a workflow on a schedule.** `protocol: "cron"` is a
   fourth channel protocol that binds a six-field cron expression and a fixed

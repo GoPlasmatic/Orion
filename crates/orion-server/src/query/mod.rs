@@ -13,6 +13,7 @@ pub mod backend;
 pub mod bulk;
 pub mod error;
 pub mod ir;
+mod keyset;
 pub mod lower;
 pub mod schema;
 pub mod spec;
@@ -188,7 +189,13 @@ fn prepare(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
+    // The cursor is paired with `sort` while both still carry the caller's own
+    // names, so a mismatch names what they wrote; the predicate is then built
+    // from the resolved physical columns, so the seek column and the `ORDER BY`
+    // column cannot drift apart.
+    let after = keyset::pair(&spec, params)?;
     let spec = spec.resolve_names(reg)?;
+    let cond = keyset::seek(&spec.sort, &after, cond);
     Ok((spec, cond, table))
 }
 

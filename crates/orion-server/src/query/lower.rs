@@ -441,6 +441,42 @@ fn rel_name(node: &Json, at: &str) -> Result<String, QueryError> {
         })
 }
 
+/// Resolve one *scalar* value node exactly as a filter operand resolves one: a
+/// `{"param": name}` folds to the named param first, the extended-JSON wrappers
+/// (`$oid` / `$date`) are recognised, and anything else is the literal.
+///
+/// The list case [`literal_operand`] admits — `in`'s haystack — is refused
+/// here, because the only caller ([`crate::query::keyset`]) carries one value
+/// per sort key. It exists so a cursor value spells identically to a filter
+/// value by construction rather than by a second implementation, which is what
+/// makes a value read out of one page bind into the next unchanged.
+pub(crate) fn scalar_value(node: &Json, params: &Params, at: &str) -> Result<Value, QueryError> {
+    if let Json::Object(map) = node
+        && let Some(pv) = map.get("param")
+    {
+        if map.len() != 1 {
+            return Err(not_representable("param reference with extra keys", at));
+        }
+        let name = pv.as_str().ok_or_else(|| {
+            QueryError::InvalidEnvelope("param name must be a string".to_string())
+        })?;
+        // One level, matching `parse_operand`: a param's *value* is data, not
+        // another reference to fold.
+        return scalar_literal(ctx_param(params, name, at)?, params, at);
+    }
+    scalar_literal(node, params, at)
+}
+
+fn scalar_literal(j: &Json, params: &Params, at: &str) -> Result<Value, QueryError> {
+    if j.is_array() {
+        return Err(not_representable(
+            "list value where one value was expected",
+            at,
+        ));
+    }
+    json_to_value(j, params, at)
+}
+
 fn json_to_value(j: &Json, params: &Params, at: &str) -> Result<Value, QueryError> {
     Ok(match j {
         Json::Null => Value::Null,

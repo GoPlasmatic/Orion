@@ -637,6 +637,31 @@ mod tests {
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
     }
 
+    /// BSON type-bracketing means `{k: {$lt: v}}` matches neither a null nor a
+    /// missing field, so on a descending key the `IS NULL` arm is not
+    /// belt-and-braces — it is the correctness of the last page.
+    #[test]
+    fn test_after_on_a_descending_key_reaches_the_nulls() {
+        let mq = mongo(json!({
+            "source": "t", "sort": [{ "score": "desc" }], "after": { "score": 10 }
+        }));
+        assert_eq!(
+            mq.filter,
+            doc! { "$or": [ { "score": { "$lt": 10_i64 } }, { "score": { "$eq": null } } ] }
+        );
+    }
+
+    #[test]
+    fn test_after_leaves_sort_skip_and_limit_untouched() {
+        let plain = mongo(json!({ "source": "t", "sort": [{ "id": "asc" }], "limit": 20 }));
+        let seeking = mongo(json!({
+            "source": "t", "sort": [{ "id": "asc" }], "limit": 20, "after": { "id": 7 }
+        }));
+        assert_eq!(seeking.sort, plain.sort);
+        assert_eq!(seeking.limit, plain.limit);
+        assert!(seeking.skip.is_none(), "a keyset page never skips");
+    }
+
     /// W11: a `through` relation predicate used to render as a plain
     /// `$elemMatch` on the relation name — wrong results, no error.
     #[test]
