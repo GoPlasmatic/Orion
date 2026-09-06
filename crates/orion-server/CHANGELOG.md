@@ -22,7 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beside `client_id`, and the `https` rule is applied to what a reference
   resolved to rather than to the reference: a secret reference in a field
   nothing resolves is refused at create, and one still unresolved at load
-  quarantines the channel.
+  quarantines the channel. A `var://` in a required field of a closed type —
+  `auth.mode`, say, which no stand-in fits — defers its enclosing block to
+  load rather than being refused, and `orion-server preflight` no longer
+  reports a stored config holding a non-string var as one that fails to
+  parse.
 
 ## [1.6.0] - 2026-09-05
 

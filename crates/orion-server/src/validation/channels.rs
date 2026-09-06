@@ -574,15 +574,17 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
     // reference wherever a string belongs and stands a placeholder in
     // elsewhere, so a required field holding one is present rather than
     // missing — see `parse_with_unresolved_vars`.
-    let parsed: crate::channel::ChannelConfig =
-        crate::config::vars::parse_with_unresolved_vars(config, &|key| key.ends_with("_logic"))
-            .map_err(|e| {
-                OrionError::invalid_field(
-                    "channel.config",
-                    "INVALID",
-                    format!("channel.config does not match the ChannelConfig shape: {e}"),
-                )
-            })?;
+    let parsed: crate::channel::ChannelConfig = crate::config::vars::parse_with_unresolved_vars(
+        config,
+        &crate::channel::registry::is_expression_field,
+    )
+    .map_err(|e| {
+        OrionError::invalid_field(
+            "channel.config",
+            "INVALID",
+            format!("channel.config does not match the ChannelConfig shape: {e}"),
+        )
+    })?;
 
     // #264: the structural half of auth compilation runs here, so a broken
     // auth config — missing keys/secret, bad template, unknown preset, half a

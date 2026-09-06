@@ -227,7 +227,14 @@ pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Diagnostic> {
         return Vec::new();
     }
 
-    match serde_json::from_value::<crate::channel::ChannelConfig>(value) {
+    // The typed parse the admin API runs at create. A `var://` in a stored
+    // config is resolved at load and cannot be here, so the shape is checked
+    // around it rather than the reference reported as a config that no longer
+    // parses.
+    match crate::config::vars::parse_with_unresolved_vars::<crate::channel::ChannelConfig>(
+        &value,
+        &crate::channel::registry::is_expression_field,
+    ) {
         Ok(_) => Vec::new(),
         Err(e) => vec![
             Diagnostic::error(
@@ -467,6 +474,20 @@ mod tests {
             .is_empty()
         );
         assert!(check_channel_config("empty", "{}").is_empty());
+    }
+
+    /// A stored `var://` is resolved at load, not here. A var standing in for
+    /// a number, or for a mode, used to read as a config that no longer parses.
+    #[test]
+    fn a_var_reference_in_a_stored_config_is_not_a_parse_failure() {
+        assert!(
+            check_channel_config(
+                "vars",
+                r#"{"cache": {"enabled": true, "ttl_secs": "var://ttl"},
+                    "auth": {"mode": "var://auth_mode", "keys": ["k"]}}"#
+            )
+            .is_empty()
+        );
     }
 
     #[test]

@@ -542,7 +542,7 @@ struct RuntimeDeps<'a> {
 /// every channel expression already follows (`validation_logic`,
 /// `authorization_logic`, and the rate-limit and cache `key_logic`), so one
 /// added later is covered without anyone remembering to add it.
-fn is_expression_field(key: &str) -> bool {
+pub fn is_expression_field(key: &str) -> bool {
     key.ends_with("_logic")
 }
 

@@ -108,12 +108,20 @@ pub fn resolve_var_references(
 /// So the deserializer is asked. The document is typed as written, and each
 /// time the parse stops at a reference — naming its path — that one reference
 /// is replaced by a placeholder of the kind the field wants (`1`, `true`, `[]`,
-/// `{}`, and finally nothing at all, for an optional member) and the parse is
-/// run again. A reference the shape wants as a string is kept as the string it
-/// is, so a required string field holding one is present. Nothing else in the
-/// document is touched, and an error anywhere else — a type the author got
-/// wrong, a key the shape does not have (even one whose value is a reference)
-/// — is theirs, reported with its path.
+/// `{}`, and finally nothing at all) and the parse is run again. A reference
+/// the shape wants as a string is kept as the string it is, so a required
+/// string field holding one is present. Nothing else in the document is
+/// touched, and an error anywhere else — a type the author got wrong, a key
+/// the shape does not have (even one whose value is a reference) — is theirs,
+/// reported with its path.
+///
+/// "Nothing at all" means the member, when the field is optional. When it is
+/// required — a field of a closed type, `auth.mode` say, which no stand-in
+/// fits — the smallest enclosing optional block is deferred instead, and that
+/// block is checked as a whole at load. Its keys and the types of its other
+/// members have still been checked by then: the parse visits every member
+/// before it reports one missing, so a typo beside the reference is still the
+/// author's. Only the checks that read the typed block wait for the value.
 ///
 /// What comes back is a *shape*, not the configuration that will serve: a
 /// placeholder stands wherever a var was not a string, so a check reading such
@@ -131,9 +139,10 @@ pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
     let mut doc = value.clone();
     // How many placeholders each reference has been through.
     let mut tried: HashMap<Vec<Seg>, usize> = HashMap::new();
-    // Members dropped after every placeholder was refused, so a "missing
-    // field" that follows is told apart from an author's omission.
-    let mut dropped: Vec<Vec<Seg>> = Vec::new();
+    // Members dropped after every placeholder was refused, each with the
+    // reference that caused it, so a "missing field" that follows is told
+    // apart from an author's omission and the error can name the reference.
+    let mut dropped: Vec<(Vec<Seg>, Vec<Seg>)> = Vec::new();
     loop {
         let err = match serde_path_to_error::deserialize::<_, T>(doc.clone()) {
             Ok(typed) => return Ok(typed),
@@ -147,21 +156,33 @@ pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
         // holds; trying placeholders there would end by dropping the member
         // and hiding the typo.
         if !sites.contains(&at) || is_unknown_field(err.inner()) {
-            if let Some(site) = dropped.iter().find(|site| {
-                let (Some(Seg::Key(key)), parent) = (site.last(), &site[..site.len() - 1]) else {
-                    return false;
+            let Some(site) = dropped.iter().find_map(|(member, site)| {
+                let (Some(Seg::Key(key)), parent) = (member.last(), &member[..member.len() - 1])
+                else {
+                    return None;
                 };
-                parent == at.as_slice() && names_missing_field(err.inner(), key)
-            }) {
-                return Err(format!(
-                    "{} holds '{}', and no value of any kind fits there without the value it \
-                     stands for; use a literal here, or a var where the field takes a string, \
-                     number, boolean, list or object",
-                    display_path(site),
-                    reference_at(value, site)
-                ));
+                (parent == at.as_slice() && names_missing_field(err.inner(), key))
+                    .then(|| site.clone())
+            }) else {
+                return Err(err.to_string());
+            };
+            // The dropped member was required. Its enclosing block is the
+            // smallest thing that can be typed without the value, so defer
+            // that whole block to load — unless there is none to defer.
+            if matches!(at.last(), Some(Seg::Key(_)))
+                && !dropped.iter().any(|(member, _)| *member == at)
+            {
+                remove_at(&mut doc, &at);
+                dropped.push((at, site));
+                continue;
             }
-            return Err(err.to_string());
+            return Err(format!(
+                "{} holds '{}', and no value of any kind fits there without the value it \
+                 stands for; use a literal here, or a var where the field takes a string, \
+                 number, boolean, list or object",
+                display_path(&site),
+                reference_at(value, &site)
+            ));
         }
         let n = tried.entry(at.clone()).or_insert(0);
         match placeholder(*n) {
@@ -169,11 +190,13 @@ pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
             None => {
                 // Every placeholder refused. Drop the member if it is one —
                 // the field may be optional — and let the next parse say.
-                if !matches!(at.last(), Some(Seg::Key(_))) || dropped.contains(&at) {
+                if !matches!(at.last(), Some(Seg::Key(_)))
+                    || dropped.iter().any(|(member, _)| *member == at)
+                {
                     return Err(err.to_string());
                 }
                 remove_at(&mut doc, &at);
-                dropped.push(at.clone());
+                dropped.push((at.clone(), at.clone()));
             }
         }
         *n += 1;
@@ -636,6 +659,52 @@ mod parse_tests {
         let doc = json!({ "count": 1 });
         let err = parse_with_unresolved_vars::<Shape>(&doc, &|_| false).expect_err("omitted");
         assert!(err.contains("name"), "{err}");
+    }
+
+    #[derive(Debug, serde::Deserialize, PartialEq)]
+    #[serde(rename_all = "snake_case")]
+    enum Mode {
+        ApiKey,
+        Hmac,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Guard {
+        #[allow(dead_code)]
+        mode: Mode,
+        #[serde(default)]
+        #[allow(dead_code)]
+        keys: Option<Vec<String>>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Guarded {
+        #[serde(default)]
+        guard: Option<Guard>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        note: Option<String>,
+    }
+
+    /// A required field of a closed type — no stand-in is one of the names —
+    /// defers its enclosing block: the block is absent from the shape and is
+    /// checked as a whole at load. The rest of the document is still typed.
+    #[test]
+    fn a_required_closed_field_defers_its_enclosing_block() {
+        let doc = json!({ "guard": { "mode": "var://mode", "keys": ["k"] }, "note": "n" });
+        let shape: Guarded = parse_with_unresolved_vars(&doc, &|_| false).expect("types");
+        assert!(shape.guard.is_none(), "the block is deferred to load");
+        assert_eq!(shape.note.as_deref(), Some("n"));
+
+        // Everything beside the reference was still checked on the way.
+        let doc = json!({ "guard": { "mode": "var://mode", "keyz": ["k"] } });
+        let err = parse_with_unresolved_vars::<Guarded>(&doc, &|_| false).expect_err("typo");
+        assert!(err.contains("keyz"), "{err}");
+        let doc = json!({ "guard": { "mode": "var://mode", "keys": "k" } });
+        let err = parse_with_unresolved_vars::<Guarded>(&doc, &|_| false).expect_err("type");
+        assert!(err.contains("keys"), "{err}");
     }
 
     /// A required member no stand-in fits names itself and the reference,

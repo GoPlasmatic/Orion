@@ -1938,3 +1938,43 @@ async fn an_unknown_key_holding_a_var_is_still_refused() {
     let body = body_json(resp).await;
     assert!(body.to_string().contains("ttl_sec"), "{body}");
 }
+
+/// A var in a required field of a closed type: `auth.mode` can only be one of
+/// three names, and no stand-in is one of them. The shape check defers the
+/// `auth` block as a whole to load, where the var resolves and the guard is
+/// built for real — deferred is not skipped.
+#[tokio::test]
+async fn a_var_in_a_closed_typed_field_defers_the_block_to_load() {
+    let mut config = config_with_vars_and_secrets();
+    config.vars.0.insert(
+        "auth_mode".to_string(),
+        toml::Value::String("api_key".to_string()),
+    );
+    let app = common::test_app_with_config(config).await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "enum-var-ch",
+        common::simple_log_workflow("enum var wf"),
+        json!({ "auth": { "mode": "var://auth_mode", "header": "x-api-key", "keys": ["k-1"] } }),
+    )
+    .await;
+
+    let (status, body) = post(&app, "enum-var-ch", json!({ "data": {} })).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the guard was built from the resolved mode, so no key is refused: {body}"
+    );
+
+    let mut req = json_request(
+        "POST",
+        "/api/v1/data/enum-var-ch",
+        Some(json!({ "data": {} })),
+    );
+    req.headers_mut()
+        .insert("x-api-key", "k-1".parse().expect("header"));
+    let resp = app.clone().oneshot(req).await.expect("request");
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "the right key serves: {body}");
+}
