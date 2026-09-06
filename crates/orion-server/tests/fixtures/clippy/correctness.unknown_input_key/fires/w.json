@@ -1,0 +1,24 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "page",
+      "name": "Page",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT id, name FROM customers ORDER BY id",
+          "limit": 10,
+          "output": "data.rows"
+        }
+      }
+    }
+  ]
+}

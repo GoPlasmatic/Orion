@@ -39,6 +39,7 @@ item.
 | `correctness.metadata_var_undeclared` | deny | workflow | a read of `metadata.vars.<name>` that the config given with -c does not declare |
 | `correctness.secret_undeclared` | deny | set | a {"secret": name} that the config given with -c does not declare |
 | `correctness.response_cookie_type` | warn | workflow | a response cookie attribute is a literal of the wrong type, so the cookie is always dropped |
+| `correctness.unknown_input_key` | deny | workflow | a task input key the function does not declare, which is silently ignored |
 | `perf.parse_result_overwritten` | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | `perf.redundant_step_condition` | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |
 | `perf.group_condition_repeated` | warn | workflow | a group member repeats the group's own condition, which was already true on entry |
@@ -173,6 +174,21 @@ declared status. A dropped session cookie therefore presents to a browser
 exactly like the browser having refused it. Silent when the value is an
 expression, which can be either type per request; those are reported at runtime
 in the response envelope's `errors` and in `orion_response_drops_total`.
+
+### `correctness.unknown_input_key`
+
+A key in a task's `function.input` that the named function does not declare.
+Orion's own connector handlers — `db_read`, `db_write`, `data_query`,
+`data_write`, `cache_read`, `cache_write`, `mongo_read`, `channel_call` — read
+freeform JSON rather than a struct, so an unknown key is not refused at create,
+not reported at load, and does nothing at run time: `"limit": 10` written beside
+a `db_read` `query` reads as enforced and enforces nothing. This is the rule the
+query envelope already applies one level down, where an unknown key is an error
+because "a key that cannot apply is a filter, a projection or a limit silently
+not applying". Aliases count as declared, and a close miss is offered as a
+suggestion. Silent when the function declares no field table (an engine
+built-in) or declares `deny_unknown`, where the key is already refused at create
+with a located error.
 
 ### `perf.parse_result_overwritten`
 

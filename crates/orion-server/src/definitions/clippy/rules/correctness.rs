@@ -836,3 +836,120 @@ fn wrong_literal(field: &str, value: &Value) -> Option<&'static str> {
     }
     None
 }
+
+// ============================================================
+// correctness.unknown_input_key
+// ============================================================
+
+pub struct UnknownInputKey;
+
+impl Rule for UnknownInputKey {
+    fn id(&self) -> &'static str {
+        "correctness.unknown_input_key"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Deny
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn summary(&self) -> &'static str {
+        "a task input key the function does not declare, which is silently ignored"
+    }
+    fn explain(&self) -> &'static str {
+        "Orion's own connector handlers take freeform JSON input and ignore a key outside \
+         their field table — `deny_unknown` is false for them, deliberately, because the \
+         handler reads a `serde_json::Value` rather than a struct. So a misspelled or \
+         invented key is not refused at create, not reported at load, and does nothing at \
+         run time: `\"limit\": 10` written beside a `db_read` `query` reads as enforced and \
+         enforces nothing.\n\n\
+         This is the rule the query envelope already has one level down — an unknown key \
+         there is an error, because \"a key that cannot apply is a filter, a projection or \
+         a limit silently not applying\". The same argument holds for the task input that \
+         carries it.\n\n\
+         Proof: the function registry — the handler's own declared field table, aliases \
+         included.\n\n\
+         Silent when: the function declares no table (an engine built-in), or declares \
+         `deny_unknown` (the key is already refused at create, with a located error)."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                let Some(function) = step.function.as_deref() else {
+                    continue;
+                };
+                let Some(entry) = cx.functions.get(function) else {
+                    // An unknown function is `lint`'s finding, not this rule's.
+                    continue;
+                };
+                // A declared table is the whole proof. An engine built-in has
+                // none, and a `deny_unknown` function already refuses the key
+                // where the error can carry a field path.
+                let Some(fields) = entry.input_fields.as_deref() else {
+                    continue;
+                };
+                if entry.deny_unknown {
+                    continue;
+                }
+                let Some(input) = step
+                    .node
+                    .get("function")
+                    .and_then(|f| f.get("input"))
+                    .and_then(Value::as_object)
+                else {
+                    continue;
+                };
+                for key in input.keys() {
+                    if fields.iter().any(|f| f.answers_to(key)) {
+                        continue;
+                    }
+                    let suggestion = nearest_field(key, fields)
+                        .map(|f| format!(" — did you mean `{f}`?"))
+                        .unwrap_or_default();
+                    out.push(
+                        Diagnostic::on_workflow(
+                            self,
+                            cx,
+                            wf,
+                            Some(&format!("{}.function.input.{key}", step.path)),
+                            format!(
+                                "`{function}` has no input field `{key}`, so it is ignored \
+                                 — the task runs as if it were not written{suggestion}"
+                            ),
+                        )
+                        .with_remedy(format!(
+                            "remove `{key}`, or replace it with one of: {}",
+                            list_ids(&fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>())
+                        )),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The declared field a misspelling is closest to, when it is close enough to
+/// be one. The same edit-distance bound the registry uses for function names,
+/// so a key that is simply not a field of this function suggests nothing
+/// rather than the least-distant of an unrelated table.
+fn nearest_field<'a>(
+    key: &str,
+    fields: &'a [crate::engine::functions::registry::FieldSpec],
+) -> Option<&'a str> {
+    let lowered = key.to_lowercase();
+    fields
+        .iter()
+        .map(|f| {
+            (
+                crate::text::edit_distance(&lowered, &f.name.to_lowercase()),
+                f,
+            )
+        })
+        .filter(|(distance, f)| *distance <= f.name.len().div_ceil(3).max(1))
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, f)| f.name.as_str())
+}
