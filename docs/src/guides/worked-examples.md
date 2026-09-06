@@ -1,7 +1,7 @@
 <!-- description: Four Orion services, each described in a sentence and deployed as JSON — with every block pulled from the example packages CI actually deploys and tests. -->
 # Worked Examples: Prompt to Service
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 Four services, each described in a sentence, generated as JSON, and deployed. The
 JSON in this page is pulled from the repository's example packages, so every

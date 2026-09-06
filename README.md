@@ -187,7 +187,7 @@ engines, and embedded `dataflow-rs`.
 
 ## Install
 
-The current workspace release is **1.6.0** and requires Rust **1.98** when built
+The current workspace release is **1.7.0** and requires Rust **1.98** when built
 from source. The server and CLI are released in lockstep; use matching versions.
 
 ```bash

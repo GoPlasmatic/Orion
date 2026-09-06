@@ -1,7 +1,7 @@
 <!-- description: Prove an Orion workflow offline with lint, dry-run and regression cases, then export, plan and apply it to a second instance as one versioned package. -->
 # Test & Promote a Service
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 A service you can call is not yet a service you can ship. This tutorial takes a
 working workflow, proves it offline, and moves it to a second instance as one

@@ -3,7 +3,7 @@
 
 **Page type:** Tutorial · **Audience:** Developers evaluating Orion
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 This is the shortest path from an empty machine to a working Orion service. You
 will start Orion, inspect and run a tested setup script, then call the endpoint

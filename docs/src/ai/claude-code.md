@@ -1,7 +1,7 @@
 <!-- description: A ten-minute session: install the Orion agent skill, describe a service in English, and watch Claude Code draft, dry-run, activate and roll it back safely. -->
 # Orion + Claude Code
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 The fastest way to experience "AI writes services, not code": install the
 [Orion agent skill](./skills.md), then describe the service you want. Claude

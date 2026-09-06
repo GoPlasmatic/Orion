@@ -1,7 +1,7 @@
 <!-- description: Connect Orion to PostgreSQL and build a service that writes an order and reads back the customer's history, using the portable, injection-safe data dialect. -->
 # Your First Connector
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 [Your first service](./first-service.md) transformed data in process. Real
 services talk to databases. This tutorial connects Orion to PostgreSQL and

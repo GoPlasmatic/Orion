@@ -1,7 +1,7 @@
 <!-- description: Orion UI is the operations console over the admin API: live dashboards, a channel to workflow to connector system map, trace drill-downs and a data console. -->
 # Orion Console
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 Orion itself is API-first — everything in these docs is plain HTTP. [**Orion UI**](https://github.com/GoPlasmatic/Orion-ui)
 is the operations console on top of that API: live dashboards, a system map of every

@@ -1,7 +1,7 @@
 <!-- description: Install Orion on macOS, Linux, Windows or Docker, start its embedded database, and verify the server and optional CLI locally. -->
 # Install & Run
 
-**Tested with:** Orion 1.6.0 · **Last reviewed:** 2026-09-04
+**Tested with:** Orion 1.7.0 · **Last reviewed:** 2026-09-04
 
 Orion is a single binary with an embedded database. This guide installs it,
 starts it locally, and verifies that it is ready. The time required depends on
