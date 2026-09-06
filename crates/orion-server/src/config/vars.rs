@@ -28,7 +28,7 @@
 //! its way into metadata, so an `env://` there would reach a workflow as the
 //! nine characters `env://` and its name.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -92,35 +92,211 @@ pub fn resolve_var_references(
     }
 }
 
-/// Drop every object member whose value is a `var://` reference, so what is
-/// left can be shape-checked.
+/// Type a definition whose `var://` references cannot be resolved here.
 ///
 /// Authoring-time validation runs where the deployment's values are not:
 /// `POST /channels`, `orion-server lint` and `package lint` all have to pass on
 /// a CI runner that declares no vars and holds no secrets. A secret reference
-/// survives that because it is a string sitting in a string field — but a var
-/// can stand in for a *number*, and `"var://ttl"` where a `u64` belongs fails
-/// to type.
+/// survives that because it is a string sitting in a string field. A var can
+/// stand in for anything — a `u64` TTL, a bool, a list — and the field it
+/// stands in may be required, so neither keeping the reference nor dropping it
+/// types every document: `"ttl_secs": "var://ttl"` where a `u64` belongs fails
+/// to parse, and dropping `"client_id": "var://id"` reports a required field
+/// as missing, which is how the book's own `oauth2_login` example came to be
+/// refused at create.
 ///
-/// So a referenced field is not shape-checked at authoring, for the same reason
-/// a secret reference is not resolved there: its value is not knowable here.
-/// The load path checks it, against the instance that declares it, and refuses
-/// the row if it does not fit.
-pub fn strip_var_references(value: &mut serde_json::Value, skip: &dyn Fn(&str) -> bool) {
+/// So the deserializer is asked. The document is typed as written, and each
+/// time the parse stops at a reference — naming its path — that one reference
+/// is replaced by a placeholder of the kind the field wants (`1`, `true`, `[]`,
+/// `{}`, and finally nothing at all, for an optional member) and the parse is
+/// run again. A reference the shape wants as a string is kept as the string it
+/// is, so a required string field holding one is present. Nothing else in the
+/// document is touched, and an error anywhere else — a type the author got
+/// wrong, a key the shape does not have (even one whose value is a reference)
+/// — is theirs, reported with its path.
+///
+/// What comes back is a *shape*, not the configuration that will serve: a
+/// placeholder stands wherever a var was not a string, so a check reading such
+/// a field is reading `1`. The load path substitutes the real value into the
+/// JSON before typing it ([`resolve_var_references`]) and refuses the row if
+/// it does not fit, against the instance that declares it. `skip` is consulted
+/// for every object key and stops the walk descending into it, as it does
+/// there.
+pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+    skip: &dyn Fn(&str) -> bool,
+) -> Result<T, String> {
+    let mut sites = Vec::new();
+    collect_var_sites(value, skip, &mut Vec::new(), &mut sites);
+    let mut doc = value.clone();
+    // How many placeholders each reference has been through.
+    let mut tried: HashMap<Vec<Seg>, usize> = HashMap::new();
+    // Members dropped after every placeholder was refused, so a "missing
+    // field" that follows is told apart from an author's omission.
+    let mut dropped: Vec<Vec<Seg>> = Vec::new();
+    loop {
+        let err = match serde_path_to_error::deserialize::<_, T>(doc.clone()) {
+            Ok(typed) => return Ok(typed),
+            Err(err) => err,
+        };
+        let at: Option<Vec<Seg>> = err.path().iter().map(Seg::from_segment).collect();
+        let Some(at) = at else {
+            return Err(err.to_string());
+        };
+        // A key the shape does not have is the author's whatever its value
+        // holds; trying placeholders there would end by dropping the member
+        // and hiding the typo.
+        if !sites.contains(&at) || is_unknown_field(err.inner()) {
+            if let Some(site) = dropped.iter().find(|site| {
+                let (Some(Seg::Key(key)), parent) = (site.last(), &site[..site.len() - 1]) else {
+                    return false;
+                };
+                parent == at.as_slice() && names_missing_field(err.inner(), key)
+            }) {
+                return Err(format!(
+                    "{} holds '{}', and no value of any kind fits there without the value it \
+                     stands for; use a literal here, or a var where the field takes a string, \
+                     number, boolean, list or object",
+                    display_path(site),
+                    reference_at(value, site)
+                ));
+            }
+            return Err(err.to_string());
+        }
+        let n = tried.entry(at.clone()).or_insert(0);
+        match placeholder(*n) {
+            Some(candidate) => set_at(&mut doc, &at, candidate),
+            None => {
+                // Every placeholder refused. Drop the member if it is one —
+                // the field may be optional — and let the next parse say.
+                if !matches!(at.last(), Some(Seg::Key(_))) || dropped.contains(&at) {
+                    return Err(err.to_string());
+                }
+                remove_at(&mut doc, &at);
+                dropped.push(at.clone());
+            }
+        }
+        *n += 1;
+    }
+}
+
+/// One step of a path into a JSON document.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Seg {
+    Key(String),
+    Index(usize),
+}
+
+impl Seg {
+    /// `None` for an enum variant or an untracked step: neither addresses a
+    /// value in the document, so an error there is nobody's reference.
+    fn from_segment(segment: &serde_path_to_error::Segment) -> Option<Self> {
+        match segment {
+            serde_path_to_error::Segment::Map { key } => Some(Self::Key(key.clone())),
+            serde_path_to_error::Segment::Seq { index } => Some(Self::Index(*index)),
+            _ => None,
+        }
+    }
+}
+
+fn collect_var_sites(
+    value: &serde_json::Value,
+    skip: &dyn Fn(&str) -> bool,
+    path: &mut Vec<Seg>,
+    sites: &mut Vec<Vec<Seg>>,
+) {
     match value {
+        serde_json::Value::String(s) if s.starts_with(VAR_SCHEME) => sites.push(path.clone()),
         serde_json::Value::Object(map) => {
-            map.retain(|key, v| {
-                skip(key) || !matches!(v, serde_json::Value::String(s) if s.starts_with(VAR_SCHEME))
-            });
-            map.iter_mut()
-                .filter(|(key, _)| !skip(key))
-                .for_each(|(_, v)| strip_var_references(v, skip));
+            for (key, v) in map {
+                if skip(key) {
+                    continue;
+                }
+                path.push(Seg::Key(key.clone()));
+                collect_var_sites(v, skip, path, sites);
+                path.pop();
+            }
         }
         serde_json::Value::Array(items) => {
-            items.iter_mut().for_each(|v| strip_var_references(v, skip));
+            for (index, v) in items.iter().enumerate() {
+                path.push(Seg::Index(index));
+                collect_var_sites(v, skip, path, sites);
+                path.pop();
+            }
         }
         _ => {}
     }
+}
+
+/// The stand-ins tried, in order, where the shape refused the reference as a
+/// string. `1` rather than `0` because a count or a rate of zero is what a
+/// domain check refuses.
+fn placeholder(n: usize) -> Option<serde_json::Value> {
+    match n {
+        0 => Some(serde_json::json!(1)),
+        1 => Some(serde_json::json!(true)),
+        2 => Some(serde_json::json!([])),
+        3 => Some(serde_json::json!({})),
+        _ => None,
+    }
+}
+
+fn is_unknown_field(err: &serde_json::Error) -> bool {
+    err.to_string().starts_with("unknown field")
+}
+
+fn names_missing_field(err: &serde_json::Error, key: &str) -> bool {
+    let message = err.to_string();
+    message.starts_with("missing field") && message.contains(&format!("`{key}`"))
+}
+
+fn slot_at<'a>(doc: &'a mut serde_json::Value, path: &[Seg]) -> Option<&'a mut serde_json::Value> {
+    path.iter().try_fold(doc, |current, seg| match seg {
+        Seg::Key(key) => current.get_mut(key.as_str()),
+        Seg::Index(index) => current.get_mut(*index),
+    })
+}
+
+fn set_at(doc: &mut serde_json::Value, path: &[Seg], candidate: serde_json::Value) {
+    if let Some(slot) = slot_at(doc, path) {
+        *slot = candidate;
+    }
+}
+
+fn remove_at(doc: &mut serde_json::Value, path: &[Seg]) {
+    let Some((Seg::Key(key), parent)) = path.split_last() else {
+        return;
+    };
+    if let Some(serde_json::Value::Object(map)) = slot_at(doc, parent) {
+        map.remove(key);
+    }
+}
+
+fn reference_at(doc: &serde_json::Value, path: &[Seg]) -> String {
+    path.iter()
+        .try_fold(doc, |current, seg| match seg {
+            Seg::Key(key) => current.get(key.as_str()),
+            Seg::Index(index) => current.get(*index),
+        })
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn display_path(path: &[Seg]) -> String {
+    let mut out = String::new();
+    for seg in path {
+        match seg {
+            Seg::Key(key) => {
+                if !out.is_empty() {
+                    out.push('.');
+                }
+                out.push_str(key);
+            }
+            Seg::Index(index) => out.push_str(&format!("[{index}]")),
+        }
+    }
+    out
 }
 
 /// The scheme prefix `[vars]` values are referenced by, alongside `env://` and
@@ -382,5 +558,100 @@ mod tests {
         vars("cutover = 1979-05-27T07:32:00Z")
             .validate()
             .expect_err("TOML datetimes have no JSON form");
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::parse_with_unresolved_vars;
+    use serde_json::json;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Shape {
+        name: String,
+        count: u32,
+        #[serde(default)]
+        on: Option<bool>,
+        #[serde(default)]
+        tags: Option<Vec<String>>,
+        #[serde(default)]
+        inner: Option<Inner>,
+        #[serde(default)]
+        select_logic: Option<serde_json::Value>,
+        #[serde(default)]
+        list: Vec<u32>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Inner {
+        #[allow(dead_code)]
+        needed: String,
+    }
+
+    /// A required string field keeps its reference; a field of any other type
+    /// gets a stand-in of that type. Neither is reported missing, and an
+    /// expression is not walked.
+    #[test]
+    fn a_reference_is_kept_as_a_string_or_stood_in_for_by_type() {
+        let doc = json!({
+            "name": "var://name",
+            "count": "var://count",
+            "on": "var://on",
+            "tags": "var://tags",
+            "list": [1, "var://two", 3],
+            "select_logic": { "==": ["var://x", 1] },
+        });
+        let shape: Shape =
+            parse_with_unresolved_vars(&doc, &|key| key.ends_with("_logic")).expect("types");
+        assert_eq!(shape.name, "var://name");
+        assert_eq!(shape.count, 1);
+        assert_eq!(shape.on, Some(true));
+        assert_eq!(shape.tags, Some(Vec::new()));
+        assert_eq!(shape.list, vec![1, 1, 3]);
+        assert_eq!(shape.select_logic, Some(json!({ "==": ["var://x", 1] })));
+    }
+
+    /// A member no stand-in fits is dropped when the shape lets it be.
+    #[test]
+    fn an_optional_block_reference_is_dropped() {
+        let doc = json!({ "name": "n", "count": 2, "inner": "var://inner" });
+        let shape: Shape = parse_with_unresolved_vars(&doc, &|_| false).expect("types");
+        assert!(shape.inner.is_none());
+    }
+
+    /// Errors that are the author's stay the author's, path and all — a key
+    /// the shape does not have included, whatever its value holds.
+    #[test]
+    fn the_authors_errors_are_reported_with_their_path() {
+        let doc = json!({ "name": "n", "count": "var://count", "cuont": "var://typo" });
+        let err = parse_with_unresolved_vars::<Shape>(&doc, &|_| false).expect_err("unknown key");
+        assert!(err.contains("cuont"), "{err}");
+
+        let doc = json!({ "name": "n", "count": "twelve" });
+        let err = parse_with_unresolved_vars::<Shape>(&doc, &|_| false).expect_err("wrong type");
+        assert!(err.contains("count"), "{err}");
+
+        let doc = json!({ "count": 1 });
+        let err = parse_with_unresolved_vars::<Shape>(&doc, &|_| false).expect_err("omitted");
+        assert!(err.contains("name"), "{err}");
+    }
+
+    /// A required member no stand-in fits names itself and the reference,
+    /// rather than reading as an omission.
+    #[test]
+    fn a_required_member_nothing_fits_is_named() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Needs {
+            #[allow(dead_code)]
+            inner: Inner,
+        }
+        let doc = json!({ "inner": "var://inner" });
+        let err = parse_with_unresolved_vars::<Needs>(&doc, &|_| false).expect_err("nothing fits");
+        assert!(
+            err.contains("inner") && err.contains("var://inner"),
+            "{err}"
+        );
     }
 }

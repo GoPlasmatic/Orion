@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`oauth2_login` takes per-environment values, as its documentation said.**
+  Create-time validation dropped every `var://` member from a channel config
+  before the shape check, so a required field holding one — every field of an
+  `oauth2_login` block, and `rate_limit.requests_per_second` — was reported
+  missing, and the book's one complete sign-in example (`client_id` and
+  `redirect_uri` as `var://`) could not be deployed. The check now keeps a
+  reference wherever the shape wants a string and stands a placeholder in
+  wherever it does not, so the rest of the document is still checked and the
+  real value is checked at load. `redirect_uri`, `authorize_url` and
+  `token_url` also accept `env://` and the vault schemes, resolved at load
+  beside `client_id`, and the `https` rule is applied to what a reference
+  resolved to rather than to the reference: a secret reference in a field
+  nothing resolves is refused at create, and one still unresolved at load
+  quarantines the channel.
+
 ## [1.6.0] - 2026-09-05
 
 Two large additions, both additive: custom task functions as sandboxed

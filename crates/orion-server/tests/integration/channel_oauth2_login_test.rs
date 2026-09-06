@@ -1504,3 +1504,165 @@ async fn a_successful_callback_still_holds_the_idempotency_key() {
         "a replay of a delivery that succeeded is still a duplicate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Per-environment values
+// ---------------------------------------------------------------------------
+
+/// The book's own example: `client_id` and `redirect_uri` as `var://`, the
+/// secrets as `env://`. Create-time validation used to drop every `var://`
+/// member before the shape check and then report both as missing fields, so
+/// the one complete sign-in example in the reference could not be deployed.
+#[tokio::test]
+async fn the_documented_example_deploys_from_vars_and_env() {
+    // SAFETY: names no other test reads, set before the channel loads.
+    unsafe {
+        std::env::set_var("ORION_TEST_OAUTH2_DOC_CLIENT_SECRET", "the-client-secret");
+        std::env::set_var("ORION_TEST_OAUTH2_DOC_STATE_SECRET", STATE_SECRET);
+    }
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let mut config = app_config();
+    config.vars = orion::config::VarsConfig(
+        [
+            (
+                "idp_client_id".to_string(),
+                toml::Value::String("client-from-vars".to_string()),
+            ),
+            (
+                "app_redirect_uri".to_string(),
+                toml::Value::String("https://app.example.com/v1/auth/idp/callback".to_string()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let app = common::test_app_with_config(config).await;
+    let mut login = login_config(&url);
+    login["client_id"] = json!("var://idp_client_id");
+    login["client_secret"] = json!("env://ORION_TEST_OAUTH2_DOC_CLIENT_SECRET");
+    login["redirect_uri"] = json!("var://app_redirect_uri");
+    login["state_secret"] = json!("env://ORION_TEST_OAUTH2_DOC_STATE_SECRET");
+    deploy(&app, login, echo_grant_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .await
+        .expect("authorize");
+    assert_eq!(resp.status(), StatusCode::FOUND);
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("a Location")
+        .to_string();
+    assert_eq!(
+        query_param(&location, "client_id").as_deref(),
+        Some("client-from-vars")
+    );
+    assert_eq!(
+        query_param(&location, "redirect_uri").as_deref(),
+        Some("https://app.example.com/v1/auth/idp/callback")
+    );
+
+    // The exchange carries the same resolved value, as RFC 6749 §4.1.3
+    // requires of the two legs.
+    let (state, cookie) = begin(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        idp.form("redirect_uri").as_deref(),
+        Some("https://app.example.com/v1/auth/idp/callback")
+    );
+}
+
+/// `redirect_uri` resolves a secret reference at load, like `client_id`. It
+/// used to be refused at create as a non-`https` URL — the scheme check ran
+/// on the reference rather than on what it resolves to.
+#[tokio::test]
+async fn redirect_uri_resolves_an_env_reference_at_load() {
+    // SAFETY: a name no other test reads, set before the channel loads.
+    unsafe {
+        std::env::set_var(
+            "ORION_TEST_OAUTH2_REDIRECT_URI",
+            "https://app.example.com/v1/auth/idp/callback",
+        );
+    }
+    let idp = Idp::new();
+    let url = start_idp(Arc::clone(&idp)).await;
+    let app = common::test_app_with_config(app_config()).await;
+    let mut login = login_config(&url);
+    login["redirect_uri"] = json!("env://ORION_TEST_OAUTH2_REDIRECT_URI");
+    deploy(&app, login, echo_grant_workflow()).await;
+
+    let (state, cookie) = begin(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(get(
+            &format!("/api/v1/data/v1/auth/idp/callback?code=good-code&state={state}"),
+            Some(&cookie),
+        ))
+        .await
+        .expect("callback");
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        idp.form("redirect_uri").as_deref(),
+        Some("https://app.example.com/v1/auth/idp/callback")
+    );
+}
+
+/// Deferring the check to load is not skipping it: a reference that resolves
+/// to plain `http` fails the same rule there, and the channel is quarantined
+/// rather than served with a redirect the secret would travel over.
+#[tokio::test]
+async fn a_reference_that_resolves_to_plain_http_quarantines_the_channel() {
+    // SAFETY: a name no other test reads, set before the channel loads.
+    unsafe {
+        std::env::set_var(
+            "ORION_TEST_OAUTH2_REDIRECT_URI_HTTP",
+            "http://app.example.com/v1/auth/idp/callback",
+        );
+    }
+    let app = common::test_app_with_config(app_config()).await;
+    let mut login = login_config("https://idp.example.com");
+    login["redirect_uri"] = json!("env://ORION_TEST_OAUTH2_REDIRECT_URI_HTTP");
+    deploy(&app, login, echo_grant_workflow()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get("/api/v1/data/v1/auth/idp", None))
+        .await
+        .expect("authorize");
+    assert_ne!(
+        resp.status(),
+        StatusCode::FOUND,
+        "a quarantined channel must not redirect"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request("GET", "/health", None))
+        .await
+        .expect("health");
+    let body = common::body_json(resp).await;
+    let quarantined = body["channels"]["quarantined"]
+        .as_array()
+        .expect("array")
+        .clone();
+    let entry = quarantined
+        .iter()
+        .find(|q| q["channel"] == "signin")
+        .unwrap_or_else(|| panic!("health must list the channel: {quarantined:?}"));
+    assert!(
+        entry.to_string().contains("https"),
+        "the reason names the rule: {entry}"
+    );
+}

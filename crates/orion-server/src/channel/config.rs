@@ -689,13 +689,15 @@ pub struct DeduplicationConfig {
 pub struct OAuth2LoginConfig {
     /// The IdP's authorization endpoint. The browser is redirected here; Orion
     /// never fetches it, so SSRF does not apply — but it is an open-redirect
-    /// surface, so it must be `https`.
+    /// surface, so it must be `https`. Literal, `var://name`, or `env://NAME`
+    /// / `vault://…` resolved at load; the rule applies to what it resolves to.
     pub authorize_url: String,
 
     /// The IdP's token endpoint. Orion POSTs the code here with the client
     /// secret, so this one *is* server-side egress: `https` only, and checked
     /// against the private-address ranges unless
     /// `[oauth2_login] allow_private_token_urls` is set instance-wide.
+    /// Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load.
     pub token_url: String,
 
     /// The OAuth2 client identifier. Public by design — it travels in the
@@ -714,7 +716,9 @@ pub struct OAuth2LoginConfig {
 
     /// The absolute redirect URI registered with the IdP. Sent on both legs —
     /// the authorize request and the token exchange — because RFC 6749 §4.1.3
-    /// requires the two to match.
+    /// requires the two to match. It is the one value that differs on every
+    /// environment, so `var://name` (or `env://NAME` / `vault://…`, resolved
+    /// at load) is the usual spelling; `https` is required of the result.
     pub redirect_uri: String,
 
     /// The path the IdP redirects back to, as a second route on this channel.

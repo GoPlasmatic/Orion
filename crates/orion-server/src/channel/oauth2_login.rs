@@ -182,12 +182,23 @@ impl CompiledOAuth2Login {
         channel: &str,
         deps: &LoginDeps<'_>,
     ) -> Result<Self, String> {
-        validate_shape(cfg)?;
-
+        // Resolve before the shape check, so the check runs on what will
+        // serve. A `var://` was substituted into the JSON before this block
+        // was typed; the secret schemes resolve here, field by field, and the
+        // three URLs are among those fields because they are what differs
+        // between environments — `redirect_uri` most of all, which must still
+        // match the provider's registration byte for byte.
         let client_id = resolve_secret(&cfg.client_id, "oauth2_login.client_id").await?;
         let client_secret =
             resolve_secret(&cfg.client_secret, "oauth2_login.client_secret").await?;
         let state_secret = resolve_secret(&cfg.state_secret, "oauth2_login.state_secret").await?;
+        let cfg = OAuth2LoginConfig {
+            authorize_url: resolve_secret(&cfg.authorize_url, "oauth2_login.authorize_url").await?,
+            token_url: resolve_secret(&cfg.token_url, "oauth2_login.token_url").await?,
+            redirect_uri: resolve_secret(&cfg.redirect_uri, "oauth2_login.redirect_uri").await?,
+            ..cfg.clone()
+        };
+        validate_shape(&cfg, ShapeCheck::Serving)?;
 
         // `encoding_key` enforces RFC 7518 §3.2's ≥32-byte floor for HS256, so
         // a short secret fails here rather than signing a forgeable state.
@@ -221,7 +232,7 @@ impl CompiledOAuth2Login {
         };
 
         Ok(Self {
-            cfg: cfg.clone(),
+            cfg,
             channel: channel.to_string(),
             client_id,
             client_secret,
@@ -634,29 +645,88 @@ impl CompiledOAuth2Login {
 /// factor, so the bound refuses nothing an operator meant.
 const MAX_STATE_COOKIE_MAX_AGE_SECS: u64 = 86_400;
 
-pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
+/// Where [`validate_shape`] runs, which decides what a reference string means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeCheck {
+    /// `POST /channels`, `orion-server lint`, `package lint`: the deployment's
+    /// values are not at hand, so a reference is accepted where a value would
+    /// be checked. It is checked at load, against the instance that resolves
+    /// it — by this same function, in the other mode.
+    Authoring,
+    /// [`CompiledOAuth2Login::compile`], on the block the channel will serve
+    /// with. Every `var://` was substituted before the block was typed and
+    /// [`SECRET_RESOLVED_FIELDS`] were resolved, so a reference still present
+    /// is one nothing resolves — refused, or its text would reach the
+    /// provider.
+    Serving,
+}
+
+/// The fields `compile` hands to the secret resolver. A `var://` may sit in
+/// any field of the block — the loader substitutes it into the JSON before
+/// typing — but `env://` and the vault schemes resolve field by field, and
+/// only in these.
+pub const SECRET_RESOLVED_FIELDS: &[&str] = &[
+    "client_id",
+    "client_secret",
+    "state_secret",
+    "authorize_url",
+    "token_url",
+    "redirect_uri",
+];
+
+/// Whether `value` is a reference rather than a value.
+///
+/// `Ok(true)`: deferred — the load path resolves it and checks the result.
+/// `Ok(false)`: a value; check it. `Err`: a reference nothing resolves in this
+/// field, or one that survived resolution.
+fn deferred(mode: ShapeCheck, field: &str, value: &str) -> Result<bool, String> {
+    let is_var = value.starts_with(crate::config::vars::VAR_SCHEME);
+    if !is_var && !crate::connector::secrets::is_resolvable_reference(value) {
+        return Ok(false);
+    }
+    match mode {
+        ShapeCheck::Serving => Err(format!(
+            "oauth2_login.{field} still holds '{value}' after resolution; nothing resolves a \
+             reference in this field, so its text would reach the identity provider"
+        )),
+        ShapeCheck::Authoring if is_var || SECRET_RESOLVED_FIELDS.contains(&field) => Ok(true),
+        ShapeCheck::Authoring => Err(format!(
+            "oauth2_login.{field} holds '{value}', but a secret reference is resolved only in \
+             {}; for a per-environment value here use var://name",
+            SECRET_RESOLVED_FIELDS.join(", ")
+        )),
+    }
+}
+
+pub fn validate_shape(cfg: &OAuth2LoginConfig, mode: ShapeCheck) -> Result<(), String> {
     for (field, value) in [
         ("authorize_url", &cfg.authorize_url),
         ("token_url", &cfg.token_url),
         ("redirect_uri", &cfg.redirect_uri),
     ] {
-        require_https(field, value)?;
+        if !deferred(mode, field, value)? {
+            require_https(field, value)?;
+        }
     }
 
-    if cfg.callback_path.trim().is_empty() || !cfg.callback_path.starts_with('/') {
-        return Err("oauth2_login.callback_path must be an absolute path, e.g. \
-                    /v1/auth/github/callback"
-            .to_string());
-    }
-    if cfg.callback_path.contains('{') {
-        return Err(format!(
-            "oauth2_login.callback_path '{}' carries a path parameter; the callback is a \
-             fixed URL registered with the identity provider, so it must be static",
-            cfg.callback_path
-        ));
+    if !deferred(mode, "callback_path", &cfg.callback_path)? {
+        if cfg.callback_path.trim().is_empty() || !cfg.callback_path.starts_with('/') {
+            return Err("oauth2_login.callback_path must be an absolute path, e.g. \
+                        /v1/auth/github/callback"
+                .to_string());
+        }
+        if cfg.callback_path.contains('{') {
+            return Err(format!(
+                "oauth2_login.callback_path '{}' carries a path parameter; the callback is a \
+                 fixed URL registered with the identity provider, so it must be static",
+                cfg.callback_path
+            ));
+        }
     }
 
-    if crate::connector::OAuth2ClientAuth::parse(&cfg.client_auth).is_none() {
+    if !deferred(mode, "client_auth", &cfg.client_auth)?
+        && crate::connector::OAuth2ClientAuth::parse(&cfg.client_auth).is_none()
+    {
         return Err(format!(
             "oauth2_login.client_auth '{}' is not supported — expected {}",
             cfg.client_auth,
@@ -698,26 +768,28 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
     // One match, so the set this field actually accepts — `lax` or `none` — is
     // stated once. Spelling `strict` as a valid value and then refusing it in a
     // second `if` advertised a setting no configuration can hold.
-    match cfg.state_cookie.same_site.to_ascii_lowercase().as_str() {
-        "lax" | "none" => {}
-        // Not merely unusual: the callback is a top-level cross-site GET from
-        // the IdP, and a `Strict` cookie is withheld on exactly that request,
-        // so every sign-in would fail the state check with nothing to see in
-        // the logs but a missing cookie.
-        "strict" => {
-            return Err(
-                "oauth2_login.state_cookie.same_site = \"strict\" would withhold the \
+    if !deferred(mode, "state_cookie.same_site", &cfg.state_cookie.same_site)? {
+        match cfg.state_cookie.same_site.to_ascii_lowercase().as_str() {
+            "lax" | "none" => {}
+            // Not merely unusual: the callback is a top-level cross-site GET
+            // from the IdP, and a `Strict` cookie is withheld on exactly that
+            // request, so every sign-in would fail the state check with
+            // nothing to see in the logs but a missing cookie.
+            "strict" => {
+                return Err(
+                    "oauth2_login.state_cookie.same_site = \"strict\" would withhold the \
                     cookie on the callback, which is a top-level cross-site GET from the \
                     identity provider — every sign-in would fail the state check. Use \
                     \"lax\"."
-                    .to_string(),
-            );
-        }
-        _ => {
-            return Err(format!(
-                "oauth2_login.state_cookie.same_site '{}' is not valid — Lax or None",
-                cfg.state_cookie.same_site
-            ));
+                        .to_string(),
+                );
+            }
+            _ => {
+                return Err(format!(
+                    "oauth2_login.state_cookie.same_site '{}' is not valid — Lax or None",
+                    cfg.state_cookie.same_site
+                ));
+            }
         }
     }
 
@@ -734,13 +806,17 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
             );
         }
         for prefix in &rt.allow_list {
-            require_https("return_to.allow_list entry", prefix)?;
+            if !deferred(mode, "return_to.allow_list", prefix)? {
+                require_https("return_to.allow_list entry", prefix)?;
+            }
         }
     }
 
     if let Some(ref id) = cfg.id_token {
-        crate::jwt::validate_jwks_url(&id.jwks_url)
-            .map_err(|e| format!("oauth2_login.id_token.jwks_url: {e}"))?;
+        if !deferred(mode, "id_token.jwks_url", &id.jwks_url)? {
+            crate::jwt::validate_jwks_url(&id.jwks_url)
+                .map_err(|e| format!("oauth2_login.id_token.jwks_url: {e}"))?;
+        }
         if id.issuer.is_empty() {
             return Err(
                 "oauth2_login.id_token.issuer must list at least one accepted \
@@ -753,8 +829,10 @@ pub fn validate_shape(cfg: &OAuth2LoginConfig) -> Result<(), String> {
             return Err("oauth2_login.id_token.algorithms must not be empty".to_string());
         }
         for alg in &id.algorithms {
-            crate::jwt::parse_algorithm(alg)
-                .map_err(|e| format!("oauth2_login.id_token.algorithms: {e}"))?;
+            if !deferred(mode, "id_token.algorithms", alg)? {
+                crate::jwt::parse_algorithm(alg)
+                    .map_err(|e| format!("oauth2_login.id_token.algorithms: {e}"))?;
+            }
         }
     }
     Ok(())
@@ -1126,7 +1204,7 @@ mod tests {
         let mut cfg = config();
         cfg.extra_authorize_params
             .insert("state".to_string(), "attacker-chosen".to_string());
-        let err = validate_shape(&cfg).expect_err("must refuse");
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("must refuse");
         assert!(err.contains("state"), "{err}");
     }
 
@@ -1156,7 +1234,7 @@ mod tests {
                 "token_url" => cfg.token_url = value,
                 _ => cfg.redirect_uri = value,
             }
-            let err = validate_shape(&cfg).expect_err(field);
+            let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err(field);
             assert!(err.contains("https"), "{field}: {err}");
         }
     }
@@ -1168,13 +1246,101 @@ mod tests {
         for host in ["localhost", "127.0.0.1", "[::1]", "app.localhost"] {
             let mut cfg = config();
             cfg.token_url = format!("http://{host}:8080/token");
-            assert!(validate_shape(&cfg).is_ok(), "{host} should be accepted");
+            assert!(
+                validate_shape(&cfg, ShapeCheck::Authoring).is_ok(),
+                "{host} should be accepted"
+            );
         }
         for host in ["localhost.evil.test", "127.0.0.1.evil.test", "10.0.0.1"] {
             let mut cfg = config();
             cfg.token_url = format!("http://{host}/token");
-            assert!(validate_shape(&cfg).is_err(), "{host} should be refused");
+            assert!(
+                validate_shape(&cfg, ShapeCheck::Authoring).is_err(),
+                "{host} should be refused"
+            );
         }
+    }
+
+    /// A reference is not a value. At authoring it is deferred — the load
+    /// path resolves it and runs this same check on the result — and a secret
+    /// reference in a field nothing resolves is refused up front, because its
+    /// text would otherwise reach the provider.
+    #[test]
+    fn a_reference_is_deferred_at_authoring_and_refused_when_serving() {
+        for value in [
+            "var://redirect",
+            "env://OAUTH_REDIRECT_URI",
+            "vault://kv/app#redirect",
+        ] {
+            let mut cfg = config();
+            cfg.redirect_uri = value.to_string();
+            assert!(
+                validate_shape(&cfg, ShapeCheck::Authoring).is_ok(),
+                "{value} is deferred at authoring"
+            );
+            let err = validate_shape(&cfg, ShapeCheck::Serving).expect_err(value);
+            assert!(err.contains("redirect_uri"), "{value}: {err}");
+        }
+
+        // A var may stand in any field of the block; a secret reference only
+        // where `compile` resolves one.
+        let mut cfg = config();
+        cfg.callback_path = "var://callback".to_string();
+        cfg.client_auth = "var://client_auth".to_string();
+        cfg.state_cookie.same_site = "var://same_site".to_string();
+        assert!(validate_shape(&cfg, ShapeCheck::Authoring).is_ok());
+        let mut cfg = config();
+        cfg.callback_path = "env://CALLBACK_PATH".to_string();
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("nothing resolves it");
+        assert!(
+            err.contains("callback_path") && err.contains("var://"),
+            "{err}"
+        );
+    }
+
+    /// `compile` resolves the URLs beside the credentials and checks what
+    /// they resolved to: a reference is not a way past the `https` rule.
+    #[tokio::test]
+    async fn compile_resolves_the_redirect_uri_and_checks_the_result() {
+        // SAFETY: names no other test reads, set before anything resolves them.
+        unsafe {
+            std::env::set_var(
+                "ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTPS",
+                "https://app.example.com/v1/auth/idp/callback",
+            );
+            std::env::set_var(
+                "ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP",
+                "http://app.example.com/v1/auth/idp/callback",
+            );
+        }
+        let mut cfg = config();
+        cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTPS".to_string();
+        let login = compiled(&cfg).await;
+        let redirect = login.begin(None, None).expect("a redirect");
+        let q = params(&redirect.location);
+        assert_eq!(
+            q.get("redirect_uri").map(String::as_str),
+            Some("https://app.example.com/v1/auth/idp/callback")
+        );
+
+        let mut cfg = config();
+        cfg.redirect_uri = "env://ORION_TEST_OAUTH2_UNIT_REDIRECT_HTTP".to_string();
+        let jwks = std::sync::Arc::new(crate::jwt::jwks::JwksCache::new(
+            reqwest::Client::new(),
+            false,
+        ));
+        let err = CompiledOAuth2Login::compile(
+            &cfg,
+            "signin",
+            &LoginDeps {
+                http_client: &reqwest::Client::new(),
+                jwks: &jwks,
+                allow_private_token_urls: false,
+            },
+        )
+        .await
+        .expect_err("plain http after resolution");
+        assert!(err.contains("https"), "{err}");
     }
 
     /// Not a style preference: `Strict` withholds the cookie on the callback,
@@ -1184,7 +1350,7 @@ mod tests {
     fn a_strict_state_cookie_is_refused_with_the_reason() {
         let mut cfg = config();
         cfg.state_cookie.same_site = "strict".to_string();
-        let err = validate_shape(&cfg).expect_err("must refuse");
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("must refuse");
         assert!(err.contains("cross-site"), "{err}");
     }
 
@@ -1192,11 +1358,14 @@ mod tests {
     fn a_parameterised_or_self_referencing_callback_is_refused() {
         let mut cfg = config();
         cfg.callback_path = "/v1/auth/{provider}/callback".to_string();
-        assert!(validate_shape(&cfg).is_err());
+        assert!(validate_shape(&cfg, ShapeCheck::Authoring).is_err());
 
         let mut cfg = config();
         cfg.callback_path = "v1/auth/idp/callback".to_string();
-        assert!(validate_shape(&cfg).is_err(), "must be absolute");
+        assert!(
+            validate_shape(&cfg, ShapeCheck::Authoring).is_err(),
+            "must be absolute"
+        );
     }
 
     #[tokio::test]
@@ -1234,13 +1403,14 @@ mod tests {
         let mut cfg = config();
 
         cfg.state_cookie.max_age = 0;
-        let err = validate_shape(&cfg).expect_err("zero must be refused");
+        let err = validate_shape(&cfg, ShapeCheck::Authoring).expect_err("zero must be refused");
         assert!(err.contains("greater than zero"), "{err}");
 
         // The values that used to wrap.
         for absurd in [u64::MAX, u64::MAX / 2, MAX_STATE_COOKIE_MAX_AGE_SECS + 1] {
             cfg.state_cookie.max_age = absurd;
-            let err = validate_shape(&cfg).expect_err("{absurd} must be refused");
+            let err =
+                validate_shape(&cfg, ShapeCheck::Authoring).expect_err("{absurd} must be refused");
             assert!(err.contains("max_age"), "{err}");
             assert!(err.contains("ceiling"), "{err}");
         }
@@ -1248,7 +1418,10 @@ mod tests {
         // The ceiling itself, and the default, are accepted.
         for ok in [1, 600, MAX_STATE_COOKIE_MAX_AGE_SECS] {
             cfg.state_cookie.max_age = ok;
-            assert!(validate_shape(&cfg).is_ok(), "{ok} should be accepted");
+            assert!(
+                validate_shape(&cfg, ShapeCheck::Authoring).is_ok(),
+                "{ok} should be accepted"
+            );
         }
     }
 

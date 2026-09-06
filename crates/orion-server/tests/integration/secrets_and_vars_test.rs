@@ -1889,3 +1889,52 @@ fn an_offline_secret_must_be_a_string() {
         "the failure must name the entry and the kind it needed: {combined}"
     );
 }
+
+/// A var in a *required* field. The shape check used to drop every `var://`
+/// member before typing the config, so a required field holding one was
+/// reported missing and the channel refused at create: `rate_limit` needs its
+/// `requests_per_second`, and an `oauth2_login` block needs nearly everything.
+#[tokio::test]
+async fn a_var_in_a_required_field_passes_create_and_serves() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "required-var-ch",
+        common::simple_log_workflow("required var wf"),
+        json!({ "rate_limit": { "requests_per_second": "var://max_retries" } }),
+    )
+    .await;
+
+    let (status, body) = post(&app, "required-var-ch", json!({ "data": {} })).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a channel whose required field resolves a var must serve: {body}"
+    );
+}
+
+/// Deferring a reference must not hide a key the shape does not have: a typo
+/// whose value happens to be a `var://` is still the author's typo.
+#[tokio::test]
+async fn an_unknown_key_holding_a_var_is_still_refused() {
+    let app = common::test_app_with_config(config_with_vars_and_secrets()).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "typo-var-ch",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": "/typo-var",
+                "config": { "cache": { "enabled": true, "ttl_sec": "var://max_retries" } }
+            })),
+        ))
+        .await
+        .expect("create");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(body.to_string().contains("ttl_sec"), "{body}");
+}

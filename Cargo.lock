@@ -3614,6 +3614,7 @@ dependencies = [
  "sea-query-sqlx",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "similar",

@@ -677,12 +677,12 @@ This is *establishment*, not verification, which is why it is a `config` block r
 
 | Field | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `authorize_url` | string | yes | — | The provider's authorization endpoint. `https` only. |
-| `token_url` | string | yes | — | The provider's token endpoint. `https` only, and address-checked on every exchange unless [`oauth2_login.allow_private_token_urls`](./configuration.md#inbound-oauth2-sign-in) is set. |
-| `client_id` | string | yes | — | The OAuth2 client identifier. Literal, or `var://name` for a per-environment value. |
+| `authorize_url` | string | yes | — | The provider's authorization endpoint. `https` only. Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
+| `token_url` | string | yes | — | The provider's token endpoint. `https` only, and address-checked on every exchange unless [`oauth2_login.allow_private_token_urls`](./configuration.md#inbound-oauth2-sign-in) is set. Literal, `var://name`, or `env://NAME` / `vault://…` resolved at load. |
+| `client_id` | string | yes | — | The OAuth2 client identifier. Literal, `var://name` for a per-environment value, or `env://NAME`. |
 | `client_secret` | string | yes | — | The client secret. `env://NAME` or `vault://…`; a literal works but puts the secret in the stored definition. |
 | `client_auth` | string | no | `basic` | How credentials are presented at the token endpoint: `basic` (RFC 6749 §2.3.1) or `body`. |
-| `redirect_uri` | string | yes | — | The absolute redirect URI registered with the provider. Sent on both legs, because RFC 6749 §4.1.3 requires them to match. |
+| `redirect_uri` | string | yes | — | The absolute redirect URI registered with the provider, `https` only. Sent on both legs, because RFC 6749 §4.1.3 requires them to match. It differs on every environment, so `var://name` (or `env://NAME` / `vault://…`, resolved at load) is the usual spelling. |
 | `callback_path` | string | yes | — | The callback route, as a second path on this channel. Static — no `{param}` segments — and must differ from `route_pattern`. |
 | `scopes` | array of strings | no | `[]` | Requested scopes, space-joined. Empty sends no `scope` parameter. |
 | `extra_authorize_params` | object | no | `{}` | Extra query parameters on the authorize URL (`prompt`, `hd`, `allow_signup`). Naming a reserved parameter is a create-time error — see below. |
@@ -696,6 +696,8 @@ This is *establishment*, not verification, which is why it is a `config` block r
 `state_cookie` fields: `name` (default `orion_oauth_state`), `secure` (default `true`), `same_site` (default `lax`), `path` (default `/`), and `max_age` in seconds (default `600`), which is also the state token's expiry — the window a user has to finish the consent screen. `max_age` must be between `1` and `86400` (24 hours); it sizes one consent screen, not a session, and a long one keeps a replayable state token valid for as long as it lasts.
 
 `id_token` fields: `issuer` (required, accepted `iss` values), `jwks_url` (required, `https`), `audience` (defaults to `[client_id]`, per OIDC Core §3.1.3.7), `algorithms` (default `["RS256"]`), `required` (default `true`), and `nonce` (default `true`).
+
+**Per-environment values.** Any value in the block may be `var://name`, substituted from the instance's `[vars]` when the channel loads. `env://NAME` and the vault schemes are resolved in `client_id`, `client_secret`, `state_secret`, `authorize_url`, `token_url` and `redirect_uri` only; a secret reference anywhere else is refused at create, because nothing would resolve it and its text would reach the provider. Create-time validation checks what it can see and defers a reference it cannot; the `https` rule and the rest of the shape are applied to the resolved value at load, and a value that fails them quarantines the channel rather than serving it.
 
 ### A complete channel
 

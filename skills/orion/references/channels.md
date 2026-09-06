@@ -179,8 +179,10 @@ Use one mechanism for each kind of value:
 - `var://name` substitutes a non-secret value declared in server `[vars]`
   into a stored connector or channel config at load time and preserves its
   JSON type.
-- `env://NAME` or `vault://...` supplies credentials to connector config and
-  the explicitly secret-bearing channel auth fields.
+- `env://NAME` or `vault://...` supplies credentials to connector config,
+  the explicitly secret-bearing channel auth fields, and an `oauth2_login`
+  block's `client_id`, `client_secret`, `state_secret`, `authorize_url`,
+  `token_url` and `redirect_uri`.
 - `{"var":"metadata.vars.name"}` reads a declared var inside runtime logic.
 - `{"secret":"name"}` reads a declared secret in permitted expressions.
 
