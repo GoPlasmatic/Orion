@@ -618,7 +618,49 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
                 )
             })?;
         }
-        validate_rate_limit(rl)?;
+        validate_rate_limit(rl, "rate_limit")?;
+    }
+    if let Some(ref rl) = parsed.principal_rate_limit {
+        // Required, not defaulted. The address limiter falls back to the
+        // caller identity when no `key_logic` is given; a principal has no
+        // such fallback, and inventing one — the address — would silently
+        // turn a per-user quota into a per-address one.
+        let Some(ref logic) = rl.key_logic else {
+            return Err(OrionError::invalid_field(
+                "channel.config.principal_rate_limit.key_logic",
+                "REQUIRED",
+                "principal_rate_limit requires a 'key_logic' naming the claim that identifies \
+                 the principal (e.g. {\"var\": \"auth.sub\"}); there is no address to fall \
+                 back to"
+                    .to_string(),
+            ));
+        };
+        dl.compile(logic).map_err(|e| {
+            OrionError::invalid_field(
+                "channel.config.principal_rate_limit.key_logic",
+                "INVALID",
+                format!("principal_rate_limit.key_logic is not a valid JSONLogic expression: {e}"),
+            )
+        })?;
+        // `jwt` is the one mode that exposes claims; every other returns
+        // `None`, so the key expression would have nothing to read and every
+        // request on the channel would be refused for an uncomputable key.
+        // Refuse the config instead of shipping a channel that 429s everything.
+        let jwt = matches!(
+            parsed.auth.as_ref().map(|a| a.mode),
+            Some(crate::channel::config::AuthMode::Jwt)
+        );
+        if !jwt {
+            return Err(OrionError::invalid_field(
+                "channel.config.principal_rate_limit",
+                "INVALID",
+                "principal_rate_limit needs a verified principal, which only \
+                 auth.mode = \"jwt\" provides — the other modes expose no claims, so the \
+                 key could never be computed and every request would be refused"
+                    .to_string(),
+            ));
+        }
+        validate_rate_limit(rl, "principal_rate_limit")?;
     }
     if let Some(ref cache) = parsed.cache {
         validate_cache_key_fields(cache)?;
@@ -724,10 +766,13 @@ fn validate_cookies_to_metadata(
 /// header can never populate the key context, leaving `key_logic` to resolve to
 /// `null` and every request refused. Create/update/import, `POST
 /// /channels/validate` and `package apply` all funnel through here.
-fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<(), OrionError> {
+fn validate_rate_limit(
+    rl: &crate::channel::ChannelRateLimitConfig,
+    block: &str,
+) -> Result<(), OrionError> {
     if rl.requests_per_second == 0 {
         return Err(OrionError::invalid_field(
-            "channel.config.rate_limit.requests_per_second",
+            format!("channel.config.{block}.requests_per_second"),
             "INVALID",
             "requests_per_second must be at least 1; 0 is silently treated as 1 by the \
              limiter, so it can never mean 'admit nothing'. Archive the channel or remove \
@@ -741,7 +786,7 @@ fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<()
     };
     if names.is_empty() {
         return Err(OrionError::invalid_field(
-            "channel.config.rate_limit.key_headers",
+            format!("channel.config.{block}.key_headers"),
             "INVALID",
             "key_headers must not be empty; omit the field to use the built-in header set"
                 .to_string(),
@@ -752,7 +797,7 @@ fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<()
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(OrionError::invalid_field(
-                "channel.config.rate_limit.key_headers",
+                format!("channel.config.{block}.key_headers"),
                 "INVALID",
                 "key_headers entries must not be blank".to_string(),
             ));
@@ -762,7 +807,7 @@ fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<()
         // carrying one would silently never populate that key.
         if axum::http::HeaderName::from_bytes(trimmed.as_bytes()).is_err() {
             return Err(OrionError::invalid_field(
-                "channel.config.rate_limit.key_headers",
+                format!("channel.config.{block}.key_headers"),
                 "INVALID",
                 format!("key_headers entry '{name}' is not a valid HTTP header name"),
             ));
@@ -770,7 +815,7 @@ fn validate_rate_limit(rl: &crate::channel::ChannelRateLimitConfig) -> Result<()
         let lowered = trimmed.to_ascii_lowercase();
         if seen.contains(&lowered) {
             return Err(OrionError::invalid_field(
-                "channel.config.rate_limit.key_headers",
+                format!("channel.config.{block}.key_headers"),
                 "INVALID",
                 format!(
                     "key_headers entry '{name}' is a duplicate; header names are \

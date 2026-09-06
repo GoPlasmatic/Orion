@@ -84,7 +84,7 @@ pub use response_cache::CacheStoreCtx;
 
 use admission::{acquire_backpressure, check_allowed_origin, check_auth, validate_input};
 use dedup::check_deduplication;
-use rate_limit::check_rate_limit;
+use rate_limit::{check_principal_rate_limit, check_rate_limit};
 use response_cache::{CacheLookup, check_response_cache};
 
 /// Which ingress carried a message to a channel. Selects the [`GuardSet`].
@@ -492,6 +492,26 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     } else {
         None
     };
+    // The quota, keyed on who the caller turned out to be. It runs here rather
+    // than beside the address limit because the principal does not exist until
+    // `check_auth` has returned, and it runs before everything below for the
+    // same reason that one does: a caller over its quota must not reach the
+    // dedup store or the response cache.
+    // Gated on `auth`, not on `rate_limit`: the principal only exists where
+    // authentication ran. Kafka and `channel_call` carry no credential, so a
+    // quota keyed on claims there could never compute a key and would refuse
+    // every message — the transport matrix answers this, not the config.
+    if set.auth {
+        check_principal_rate_limit(
+            req.channel,
+            req.runtime,
+            req.datalogic,
+            req.caller_identity,
+            req.header,
+            auth_claims.as_ref(),
+        )
+        .await?;
+    }
     if set.origin_allow_list {
         check_allowed_origin(req.channel, req.runtime, req.origin)?;
     }
@@ -941,6 +961,8 @@ mod tests {
         rate_limiter: Option<Arc<dyn crate::channel::RateLimitBackend>>,
         rate_limit_key_logic: Option<datalogic_rs::Logic>,
         rate_limit_key_headers: Option<Arc<[String]>>,
+        principal_rate_limiter: Option<Arc<dyn crate::channel::RateLimitBackend>>,
+        principal_rate_limit_key_logic: Option<datalogic_rs::Logic>,
         validation_logic: Option<datalogic_rs::Logic>,
         backpressure_semaphore: Option<Arc<tokio::sync::Semaphore>>,
         dedup_store: Option<Arc<dyn CacheBackend>>,
@@ -955,6 +977,8 @@ mod tests {
                 rate_limiter: None,
                 rate_limit_key_logic: None,
                 rate_limit_key_headers: None,
+                principal_rate_limiter: None,
+                principal_rate_limit_key_logic: None,
                 validation_logic: None,
                 backpressure_semaphore: None,
                 auth: None,
@@ -993,6 +1017,27 @@ mod tests {
                 on_backend_error: policy,
             });
             self.rate_limiter = Some(backend);
+            self
+        }
+
+        /// The post-auth quota: its own backend and a required key.
+        fn principal_limiter(
+            mut self,
+            engine: &datalogic_rs::Engine,
+            backend: Arc<dyn crate::channel::RateLimitBackend>,
+            logic: serde_json::Value,
+        ) -> Self {
+            self.parsed_config.principal_rate_limit =
+                Some(crate::channel::ChannelRateLimitConfig {
+                    requests_per_second: 1,
+                    burst: Some(1),
+                    key_logic: Some(logic.clone()),
+                    key_headers: None,
+                    on_backend_error: BackendErrorPolicy::default(),
+                });
+            self.principal_rate_limiter = Some(backend);
+            self.principal_rate_limit_key_logic =
+                Some(engine.compile(&logic).expect("test logic compiles"));
             self
         }
 
@@ -1087,6 +1132,8 @@ mod tests {
                 parsed_config: self.parsed_config,
                 rate_limiter: self.rate_limiter,
                 rate_limit_key_logic: self.rate_limit_key_logic,
+                principal_rate_limiter: self.principal_rate_limiter,
+                principal_rate_limit_key_logic: self.principal_rate_limit_key_logic,
                 cache_key_logic: None,
                 rate_limit_key_headers: self.rate_limit_key_headers,
                 validation_logic: self.validation_logic,
@@ -1603,6 +1650,98 @@ mod tests {
         assert!(matches!(
             apply_guards(req).await,
             Err(OrionError::RateLimited(_))
+        ));
+    }
+
+    /// G6: the address limit runs before `check_auth` and therefore cannot know
+    /// who the caller is. The principal limit is the second bucket, and it is a
+    /// separate one — two callers sharing an address are metered apart, which is
+    /// the whole point of a quota.
+    #[tokio::test]
+    async fn the_principal_limit_is_a_second_bucket_after_the_address_limit() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            // Generous on the address, so any refusal below is the quota's.
+            .limiter(
+                Arc::new(crate::channel::LocalRateLimitBackend::new(100, 100)),
+                BackendErrorPolicy::Allow,
+            )
+            .principal_limiter(
+                &dl,
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1, 1)),
+                json!({"var": "headers.x-tenant-id"}),
+            )
+            .build();
+        let (data, meta) = (json!({}), json!({}));
+        let acme = |name: &str| (name == "x-tenant-id").then(|| "acme".to_string());
+        let globex = |name: &str| (name == "x-tenant-id").then(|| "globex".to_string());
+
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
+        req.header = &acme;
+        assert!(apply_guards(req).await.is_ok());
+
+        // A different principal from the same address has its own bucket.
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
+        req.header = &globex;
+        assert!(apply_guards(req).await.is_ok());
+
+        // The first principal's is now spent, though the address limit is not.
+        let mut req = request(Transport::HttpAsync, &runtime, &dl, &data, &meta);
+        req.header = &acme;
+        assert!(matches!(
+            apply_guards(req).await,
+            Err(OrionError::RateLimited(_))
+        ));
+    }
+
+    /// The claims `check_auth` verified reach the key expression at `auth`,
+    /// which is the identity the address limiter could never see.
+    #[tokio::test]
+    async fn the_principal_key_reads_the_verified_claims() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .principal_limiter(
+                &dl,
+                Arc::new(crate::channel::LocalRateLimitBackend::new(1, 1)),
+                json!({"var": "auth.sub"}),
+            )
+            .build();
+        let none = |_: &str| None;
+        let claims = json!({"sub": "user-1", "scope": "read"});
+        let other = json!({"sub": "user-2"});
+
+        let check = async |claims: Option<&serde_json::Value>| {
+            super::check_principal_rate_limit("ch", &runtime, &dl, "10.0.0.1", &none, claims).await
+        };
+
+        assert!(check(Some(&claims)).await.is_ok());
+        // A different subject from the same address is a different bucket.
+        assert!(check(Some(&other)).await.is_ok());
+        // The first subject is spent.
+        assert!(matches!(
+            check(Some(&claims)).await,
+            Err(OrionError::RateLimited(_))
+        ));
+    }
+
+    /// No claims means no principal, so the key cannot be computed. Refused as
+    /// its own condition rather than falling back to the address, which would
+    /// silently turn a per-user quota into a per-address one. Validation keeps
+    /// this state off a stored channel; the guard does not rely on that.
+    #[tokio::test]
+    async fn a_principal_key_with_no_claims_refuses_rather_than_falling_back() {
+        let dl = engine();
+        let runtime = Runtime::new()
+            .principal_limiter(
+                &dl,
+                Arc::new(crate::channel::LocalRateLimitBackend::new(100, 100)),
+                json!({"var": "auth.sub"}),
+            )
+            .build();
+        let none = |_: &str| None;
+        assert!(matches!(
+            super::check_principal_rate_limit("ch", &runtime, &dl, "10.0.0.1", &none, None).await,
+            Err(OrionError::RateLimitKeyUnavailable(_))
         ));
     }
 

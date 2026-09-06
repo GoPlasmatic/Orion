@@ -70,6 +70,34 @@ generation rather than two.
 
 ### Added
 
+- **`principal_rate_limit`: a quota keyed on the authenticated caller.**
+  `rate_limit` runs *before* `check_auth` — deliberately, so a refusal costs the
+  least work and credential-stuffing is metered like any other traffic — and so
+  it cannot know who the caller is. The only identities available to it are the
+  address and a request header, and a header is caller-supplied: a key derived
+  from one bounds an honest client, which is a burst control and not a quota.
+  There was no way to meter per user.
+
+  The new block runs straight after authentication, keyed on the verified
+  claims, which reach its `key_logic` at `auth` alongside everything the address
+  limiter sees. Both limits apply and keep separate buckets; the address limit
+  stays the cheap outer guard. It takes the same fields as `rate_limit`, with
+  two rules enforced at create rather than at run time: `key_logic` is
+  **required** (the address limiter can fall back to the caller identity, a
+  principal cannot, and inventing one would silently turn a per-user quota into
+  a per-address one), and `auth.mode` must be `jwt`, the one mode that exposes
+  claims. It runs on the ingresses that authenticate — HTTP sync and async —
+  because Kafka and `channel_call` carry no credential for it to key on.
+
+- **Two `clippy` rules.** `correctness.unknown_input_key` reports a task input
+  key the named function does not declare. Eight connector handlers read
+  freeform JSON and ignore such a key, so `"limit": 10` beside a `db_read`
+  `query` reads as enforced and enforces nothing; the proof is the registry's
+  own field table. `correctness.unordered_page` reports a `skip` with no `sort`,
+  where the rows come back in whatever the plan emitted and two calls need not
+  agree — the rule an `include` has carried since F27, which the root page never
+  had.
+
 - **`after`: keyset paging for the portable dialect.** The query envelope
   offered `limit`/`skip` and nothing else, so a paginated endpoint had exactly
   one way to page and it was the one that drifts: `skip` is a row *count*, so a

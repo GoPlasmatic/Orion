@@ -6,6 +6,7 @@ use datalogic_rs::{Engine as DatalogicEngine, Logic};
 use tokio::sync::Semaphore;
 
 use super::config::ChannelConfig;
+use super::config::ChannelRateLimitConfig;
 use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 use super::routing::{RouteMatch, RouteTable};
 
@@ -140,6 +141,13 @@ pub struct ChannelRuntimeConfig {
     pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
     pub rate_limit_key_logic: Option<Logic>,
+    /// The post-authentication limiter, built from
+    /// `parsed_config.principal_rate_limit`. A separate backend from
+    /// [`Self::rate_limiter`] so the two counts never share a bucket.
+    pub principal_rate_limiter: Option<Arc<dyn RateLimitBackend>>,
+    /// Compiled `principal_rate_limit.key_logic`. Always `Some` when
+    /// [`Self::principal_rate_limiter`] is — the key is required there.
+    pub principal_rate_limit_key_logic: Option<Logic>,
     /// Compiled `cache.key_logic`, when the channel sets one.
     pub cache_key_logic: Option<Logic>,
     /// Extra header names `rate_limit.key_logic` may read, lowercased once at
@@ -748,6 +756,33 @@ impl ChannelLoader {
             issue(format!("config_json does not parse: {e}"))
         })?;
 
+        // Both limiters are built the same way and reuse the same way; the
+        // only difference is which config block they read and which previous
+        // backend they may carry forward.
+        let build_limiter = |rl: &ChannelRateLimitConfig,
+                             prev_cfg: Option<&ChannelRateLimitConfig>,
+                             prev_limiter: Option<&Arc<dyn RateLimitBackend>>|
+         -> Arc<dyn RateLimitBackend> {
+            if let (Some(prev_rl), Some(prev)) = (prev_cfg, prev_limiter)
+                && prev_rl.requests_per_second == rl.requests_per_second
+                && prev_rl.burst == rl.burst
+                && prev_rl.key_logic == rl.key_logic
+                && prev_rl.key_headers == rl.key_headers
+            {
+                return prev.clone();
+            }
+            let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
+            match deps.cluster_redis.clone() {
+                Some(conn) => Arc::new(RedisRateLimitBackend::new(
+                    conn,
+                    channel.name.clone(),
+                    rl.requests_per_second,
+                    burst,
+                )) as Arc<dyn RateLimitBackend>,
+                None => Arc::new(LocalRateLimitBackend::new(rl.requests_per_second, burst)),
+            }
+        };
+
         let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
             parsed_config.rate_limit.as_ref().map(|rl| {
                 // N6: reuse the previous limiter when its identity —
@@ -761,29 +796,23 @@ impl ChannelLoader {
                 // a key can be computed from: editing the list re-dimensions
                 // the buckets, so carrying the old per-key state forward would
                 // credit new keys with old consumption.
-                if let Some(prev) = prior
-                    && let Some(prev_rl) = prev.parsed_config.rate_limit.as_ref()
-                    && let Some(prev_limiter) = prev.rate_limiter.as_ref()
-                    && prev_rl.requests_per_second == rl.requests_per_second
-                    && prev_rl.burst == rl.burst
-                    && prev_rl.key_logic == rl.key_logic
-                    && prev_rl.key_headers == rl.key_headers
-                {
-                    return prev_limiter.clone();
-                }
-                let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
-                match deps.cluster_redis.clone() {
-                    // Cluster: shared fixed window — the configured limit
-                    // holds across all replicas combined, and survives
-                    // engine reloads (state lives in Redis, not here).
-                    Some(conn) => Arc::new(RedisRateLimitBackend::new(
-                        conn,
-                        channel.name.clone(),
-                        rl.requests_per_second,
-                        burst,
-                    )) as Arc<dyn RateLimitBackend>,
-                    None => Arc::new(LocalRateLimitBackend::new(rl.requests_per_second, burst)),
-                }
+                build_limiter(
+                    rl,
+                    prior.and_then(|p| p.parsed_config.rate_limit.as_ref()),
+                    prior.and_then(|p| p.rate_limiter.as_ref()),
+                )
+            });
+
+        // The quota half, keyed on the authenticated principal. Its own
+        // backend, so a caller's address budget and its principal budget are
+        // never counted against one bucket.
+        let principal_rate_limiter: Option<Arc<dyn RateLimitBackend>> =
+            parsed_config.principal_rate_limit.as_ref().map(|rl| {
+                build_limiter(
+                    rl,
+                    prior.and_then(|p| p.parsed_config.principal_rate_limit.as_ref()),
+                    prior.and_then(|p| p.principal_rate_limiter.as_ref()),
+                )
             });
 
         // N5: an uncompilable `key_logic` used to fall back to
@@ -809,6 +838,38 @@ impl ChannelLoader {
                 })
             })
             .transpose()?;
+
+        // Required, not optional, and validated as such at create: the outer
+        // limiter can fall back to the caller's address, and there is no
+        // equivalent default for a principal — Orion cannot pick the claim
+        // that identifies one on the author's behalf.
+        let principal_rate_limit_key_logic = parsed_config
+            .principal_rate_limit
+            .as_ref()
+            .and_then(|rl| rl.key_logic.as_ref())
+            .map(|logic| {
+                refuse_multi_key_object(logic, "principal_rate_limit.key_logic")
+                    .map_err(|e| issue(e.clone()))?;
+                deps.datalogic.compile(logic).map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: principal_rate_limit.key_logic does not compile"
+                    );
+                    issue(format!(
+                        "principal_rate_limit.key_logic does not compile: {e}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if parsed_config.principal_rate_limit.is_some() && principal_rate_limit_key_logic.is_none()
+        {
+            return Err(issue(
+                "principal_rate_limit requires a 'key_logic' naming the claim that identifies \
+                 the principal — there is no address to fall back to"
+                    .to_string(),
+            ));
+        }
 
         // Same call as N5 above: a response-cache key that silently fell back
         // to the whole-payload hash would serve one caller's body to another
@@ -1052,6 +1113,8 @@ impl ChannelLoader {
             parsed_config,
             rate_limiter,
             rate_limit_key_logic,
+            principal_rate_limiter,
+            principal_rate_limit_key_logic,
             rate_limit_key_headers,
             cache_key_logic,
             validation_logic,

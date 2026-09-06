@@ -244,3 +244,119 @@ pub(crate) fn key_logic_header_paths(logic: &Value) -> Vec<String> {
     walk(logic, &mut out);
     out
 }
+
+/// Check the channel's **principal** rate limit — the quota half, applied after
+/// authentication.
+///
+/// [`check_rate_limit`] runs before `check_auth`, deliberately: a refusal
+/// should cost the least work, and credential-stuffing should be metered like
+/// any other traffic. The consequence is that it cannot know who the caller is.
+/// The only identities available to it are the address and a request header,
+/// and a header is caller-supplied — a key derived from one bounds an honest
+/// client, which is a burst control and not a quota. Both limiters apply; this
+/// one is the quota, and the address limit stays the cheap outer guard.
+///
+/// `claims` are the verified claims `check_auth` returned. They reach the key
+/// expression at `auth`, alongside everything the outer limiter sees. There is
+/// no fallback when the key cannot be computed — the same argument as N5, and
+/// sharper here: falling back to the address would silently turn a per-user
+/// quota into a per-address one.
+pub(super) async fn check_principal_rate_limit(
+    channel: &str,
+    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    datalogic: &datalogic_rs::Engine,
+    caller_identity: &str,
+    header: HeaderLookup<'_>,
+    claims: Option<&Value>,
+) -> Result<(), OrionError> {
+    let Some(cfg) = channel_config else {
+        return Ok(());
+    };
+    let (Some(limiter), Some(compiled)) = (
+        cfg.principal_rate_limiter.as_ref(),
+        cfg.principal_rate_limit_key_logic.as_ref(),
+    ) else {
+        return Ok(());
+    };
+
+    let mut context = rate_limit_context(
+        caller_identity,
+        channel,
+        header,
+        cfg.rate_limit_key_headers.as_deref(),
+    );
+    if let Some(obj) = context.as_object_mut() {
+        obj.insert("auth".to_string(), claims.cloned().unwrap_or(Value::Null));
+    }
+
+    let unavailable = |reason: &str| {
+        tracing::warn!(
+            channel = %channel,
+            reason = %reason,
+            "principal_rate_limit.key_logic produced no usable key; rejecting request"
+        );
+        metrics::record_rate_limit_rejected(channel);
+        metrics::record_rate_limit_key_unavailable(channel);
+        OrionError::RateLimitKeyUnavailable("Too many requests".to_string())
+    };
+    let key = match datalogic
+        .session()
+        .eval_into::<Value, _>(compiled, &context)
+    {
+        Ok(Value::Null) => return Err(unavailable("expression resolved to null")),
+        Ok(Value::String(s)) if s.trim().is_empty() => {
+            return Err(unavailable("expression resolved to an empty string"));
+        }
+        Ok(val) => val
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string(&val).unwrap_or_default()),
+        Err(e) => return Err(unavailable(&format!("evaluation failed: {e}"))),
+    };
+
+    let policy = cfg
+        .parsed_config
+        .principal_rate_limit
+        .as_ref()
+        .map(|rl| rl.on_backend_error)
+        .unwrap_or_default();
+    match limiter.check(key).await {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            // The same counter as the address limit: 429 accounting stays
+            // whole, which is what an operator alerts on. Which of the two
+            // refused is in the log line.
+            metrics::record_rate_limit_rejected(channel);
+            tracing::debug!(channel = %channel, "principal rate limit exceeded");
+            Err(OrionError::RateLimited("Too many requests".to_string()))
+        }
+        Err(e) => {
+            metrics::record_error("rate_limit_backend");
+            match policy {
+                crate::channel::BackendErrorPolicy::Allow => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        "Principal rate-limit backend error; failing open (request allowed)"
+                    );
+                    Ok(())
+                }
+                crate::channel::BackendErrorPolicy::Deny => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        "Principal rate-limit backend error; failing closed (request refused)"
+                    );
+                    metrics::record_rate_limit_rejected(channel);
+                    Err(OrionError::unavailable(
+                        crate::errors::Unavailable::GuardBackend,
+                        format!(
+                            "Channel '{channel}' cannot check its principal rate limit: the \
+                             backend is unavailable and the channel is configured to fail closed"
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+}

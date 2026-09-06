@@ -21,6 +21,27 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub rate_limit: Option<ChannelRateLimitConfig>,
 
+    /// A second rate limit, applied **after** authentication and keyed on the
+    /// verified principal rather than on the caller's address.
+    ///
+    /// [`Self::rate_limit`] runs before `check_auth` — deliberately, so that
+    /// credential-stuffing is metered and a refusal costs the least work — and
+    /// therefore cannot see who the caller is. The only identity available to
+    /// it is the address or a request header, and a header is caller-supplied:
+    /// a key derived from one bounds an honest client, which is a burst control
+    /// and not a quota. This block is the quota half. Both apply; the address
+    /// limit stays the cheap outer guard.
+    ///
+    /// `key_logic` is **required** here and its context carries `auth` — the
+    /// verified claims — alongside the fields the outer limiter sees. Orion
+    /// cannot pick the claim that identifies a principal on the author's
+    /// behalf, so it is named rather than guessed.
+    ///
+    /// Only meaningful with `auth.mode = "jwt"`: it is the one mode that
+    /// exposes claims, so validation refuses this block on any other.
+    #[serde(default)]
+    pub principal_rate_limit: Option<ChannelRateLimitConfig>,
+
     /// Maximum workflow execution time in milliseconds.
     #[serde(default)]
     pub timeout_ms: Option<u64>,

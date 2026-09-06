@@ -97,7 +97,7 @@ async fn assert_channel_rejected(
 #[tokio::test]
 async fn rejection_matrix_on_create_and_update() {
     // (case name, payload under test, expected details path, expected code)
-    let cases: [(&str, Value, &str, Option<&str>); 12] = [
+    let cases: [(&str, Value, &str, Option<&str>); 14] = [
         // `rate_limit` must be an object with requests_per_second; a
         // number-shaped value fails at deserialize.
         (
@@ -125,6 +125,31 @@ async fn rejection_matrix_on_create_and_update() {
                 }
             } }),
             "channel.config.rate_limit.key_logic",
+            None,
+        ),
+        // G6: the quota block needs a principal, and a key naming it. Both
+        // are refused at create rather than shipping a channel that answers
+        // 429 to everything because the key could never be computed.
+        (
+            "principal-rate-limit-without-key-logic",
+            json!({ "config": {
+                "auth": { "mode": "jwt", "jwt_keys": [{ "algorithm": "HS256", "key": "a-test-signing-secret-value" }],
+                    "algorithms": ["HS256"] },
+                "principal_rate_limit": { "requests_per_second": 10 }
+            } }),
+            "channel.config.principal_rate_limit.key_logic",
+            Some("REQUIRED"),
+        ),
+        (
+            "principal-rate-limit-without-jwt-auth",
+            json!({ "config": {
+                "auth": { "mode": "api_key", "keys": ["k"] },
+                "principal_rate_limit": {
+                    "requests_per_second": 10,
+                    "key_logic": { "var": "auth.sub" }
+                }
+            } }),
+            "channel.config.principal_rate_limit",
             None,
         ),
         (

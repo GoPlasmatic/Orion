@@ -14,6 +14,7 @@ All `config` keys are optional. An empty `{}` is valid: the channel then runs wi
 |---|---|
 | [`auth`](#authentication) | Authenticate HTTP callers of this channel. |
 | [`rate_limit`](#rate-limiting) | Token-bucket admission rate per caller. |
+| [`principal_rate_limit`](#per-principal-quotas-principal_rate_limit) | A second limit, applied after authentication and keyed on the verified principal. |
 | [`backpressure`](#backpressure) | Per-node concurrency cap; excess is shed with `503`. |
 | [`deduplication`](#deduplication) | Idempotency-key replay protection. |
 | [`cache`](#response-caching) | Serve repeated identical requests from a response cache. |
@@ -34,6 +35,7 @@ A channel is reachable on up to five ingresses. Each guard runs on the ingresses
 | Guard | HTTP sync | HTTP `/async` | Kafka | `channel_call` | Cron |
 |---|---|---|---|---|---|
 | `rate_limit` | Yes | Yes | Yes | Yes | No |
+| `principal_rate_limit` | Yes | Yes | No | No | No |
 | `auth` | Yes | Yes | No | No | No |
 | `origin_allow_list` | Yes | Yes | No | No | No |
 | `validation_logic` | Yes | Yes | Yes | Yes | Yes |
@@ -377,6 +379,54 @@ The key is part of the control, not a hint:
 
 Limiter state survives engine reloads: a channel whose `requests_per_second`, `burst`, `key_logic`, and `key_headers` are unchanged keeps its limiter, and consumed burst is not refilled. Editing any of them re-dimensions the buckets, so the limiter is rebuilt. Behind a proxy, set [`rate_limit.trusted_proxies`](./configuration.md#rate-limiting) in the server config — without it, every client behind the proxy keys on the proxy's address and collapses into one bucket.
 
+### Per-principal quotas (`principal_rate_limit`)
+
+`rate_limit` runs **before** authentication — deliberately, so a refusal costs
+the least work and credential-stuffing is metered like any other traffic. The
+consequence is that it cannot know who the caller is: the only identities it can
+key on are the address and a request header, and a header is caller-supplied, so
+a key derived from one bounds an honest client. That is a burst control, not a
+quota.
+
+`principal_rate_limit` is the quota half. It runs straight after authentication,
+keyed on the **verified** claims, and both limits apply — the address limit stays
+the cheap outer guard.
+
+```json
+{
+  "auth": { "mode": "jwt", "jwt_keys": [ ... ], "algorithms": ["RS256"] },
+  "rate_limit": { "requests_per_second": 100 },
+  "principal_rate_limit": {
+    "requests_per_second": 10,
+    "burst": 20,
+    "key_logic": { "var": "auth.sub" }
+  }
+}
+```
+
+The block takes the same fields as `rate_limit` — `requests_per_second`,
+`burst`, `key_logic`, `key_headers`, `on_backend_error` — with two differences,
+both refused at create rather than at run time:
+
+- **`key_logic` is required.** The address limiter falls back to the caller
+  identity when none is given; a principal has no such fallback, and inventing
+  one would silently turn a per-user quota into a per-address one.
+- **`auth.mode` must be `jwt`.** It is the only mode that exposes claims. On any
+  other the key could never be computed and every request would be refused, so
+  the config is refused instead.
+
+Its `key_logic` context is the one `rate_limit.key_logic` reads plus `auth`, the
+verified claims — so `{"var": "auth.sub"}` is the usual key, and
+`{"cat": [{"var": "auth.tenant"}, "|", {"var": "auth.sub"}]}` meters a tenant and
+a user together. Every rule above applies unchanged: a key that will not
+evaluate, or resolves to `null` or an empty string, is refused rather than
+bucketed somewhere wrong.
+
+The two limiters keep separate buckets and separate state across reloads. A
+refusal from either answers `429` and counts in
+`orion_rate_limit_rejections_total` under the channel's name — 429 accounting
+stays whole; which of the two refused is in the log line.
+
 ## Backpressure
 
 `backpressure` bounds a channel's in-flight work with a semaphore. When every permit is taken, more requests are refused with `503 Service Unavailable` immediately — load shedding, not queueing.
@@ -539,7 +589,7 @@ A listed-but-absent cookie is simply not present — never `null`, never an erro
 Two further limits worth knowing:
 
 - **A cookie-varying channel must not enable `cache`.** `compute_cache_key` hashes method, params, query and payload — never headers, so a cached response would replay one caller's `Set-Cookie` to the next.
-- **`rate_limit.key_logic` still cannot see cookies.** Its context is `{client_ip, channel, headers}`, and `cookie` is not among the readable headers. Per-cookie rate limiting stays out of reach.
+- **`rate_limit.key_logic` still cannot see cookies.** Its context is `{client_ip, channel, headers}`, and `cookie` is not among the readable headers. Per-cookie rate limiting stays out of reach. It cannot see the authenticated principal either, because it runs before authentication — [`principal_rate_limit`](#per-principal-quotas-principal_rate_limit) is the block that can.
 
 `channel_call` propagates metadata verbatim, so an allowlisted cookie reaches sub-channels — the same way verified claims do.
 
