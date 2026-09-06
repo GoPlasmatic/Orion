@@ -724,13 +724,54 @@ storage class rather than a declared type, so a column declared `BOOLEAN` is
 indistinguishable from an integer by the time the row is read and comes back as
 `1` / `0`. This is the same reason `numeric_as` has nothing to act on there.
 
-**Parameters are the other direction, and they still need a cast.** A `params`
-entry is bound by its JSON type, so a string goes out as `text`. PostgreSQL
-types its parameters and has no `text = uuid` operator, so a comparison against
-a `uuid`, `numeric` or `timestamptz` column is written `WHERE id = ($1)::uuid`.
-Orion does not infer the SQL type from the shape of the value — a string that
-looked like a UUID would then bind as one and fail against a `text` column.
-SQLite and MySQL coerce, so this affects PostgreSQL only.
+**Parameters are the other direction, and the query decides their type.** On
+PostgreSQL a `params` entry is bound to the type the *server* declares for that
+placeholder, not to the shape of the JSON value. `WHERE id = $1` against a
+`uuid` column binds a `uuid`; `LIMIT ($1)::int` binds an integer whether the
+caller sent `5` or `"5"`. The cast forms still work and are still the way to
+write it on a type from the list below, but they are no longer the only way.
+
+This matters beyond convenience. Until 1.7 the type came from the value, and
+PostgreSQL fixes a prepared statement's parameter types on first use — so the
+first call through a query decided them for every later one. A read bound with
+a number and then called with `?limit=5` (a query-string value is always a
+string) failed, and where the byte lengths happened to line up it did something
+worse: an eight-character string bound where `int8` had been declared came back
+as a plausible, wrong number.
+
+The types a parameter can be bound to:
+
+| Declared type | Accepted JSON |
+|---|---|
+| `bool` | boolean, or `"true"` / `"false"` |
+| `int2` `int4` `int8` | number, or a numeric string; out of range is a `400` |
+| `float4` `float8` | number, or a numeric string |
+| `numeric` | string (exact) or number — the string is the lossless one, as with [`numeric_as`](#decimal-columns) |
+| `text` `varchar` `char(n)` `name` `citext` | any scalar |
+| `uuid` | the hyphenated string form |
+| `json` `jsonb` | a document, or JSON text — text is parsed, matching PostgreSQL's own `text` → `json` cast |
+| `timestamptz` | RFC 3339 **with an offset**: `"2026-09-02T05:00:00Z"` |
+| `timestamp` | `"2026-09-02 05:00:00"`, the form a read returns, or RFC 3339 |
+| `date` / `time` | `"2026-09-02"` / `"05:00:00"` |
+| an enum | the label |
+| an array of any of these | a JSON array — which is what makes `WHERE id = ANY($1)` work |
+
+A value that will not convert is a **`400` naming the placeholder and the type
+the query declared for it** — never the value, which may be private.
+
+A `timestamptz` needs its offset stated. Reading one without would mean
+choosing a timezone on your behalf, and a silently shifted timestamp is the
+kind of wrong answer nobody notices; cast the placeholder
+(`($1)::timestamptz`) if you want the server to interpret it.
+
+**A type outside that list keeps the old behaviour**: `bytea`, `inet`,
+`interval`, composites and ranges are bound by the value's JSON shape, as
+before. They are not refused, because an author can define a cast Orion cannot
+know about — but nothing is inferred for them either, so write the cast
+(`decode($1, 'base64')`, `($1)::inet`) as you would have before 1.7.
+
+SQLite has no static parameter types and MySQL re-sends its types on every
+execute, so neither was ever affected and neither changes.
 
 > Before 1.6 these queries ran through a driver-agnostic layer that could
 > decode nine PostgreSQL types. Everything else failed the task with a `500` —

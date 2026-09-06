@@ -5,7 +5,8 @@ use dataflow_rs::engine::task_context::TaskContext;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, reject_mongo_connector, require_op_allowed, timed_query, to_connect_error,
+    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, encode_failure, reject_mongo_connector,
+    require_op_allowed, to_connect_error,
 };
 use super::db_read::DbRead;
 use super::schema::{FieldKind, FieldSchema};
@@ -74,14 +75,35 @@ impl ConnectorHandler for DbWriteHandler {
 
         let query = write.query();
         let params = write.params();
+        // One budget over both legs, so naming the connection does not turn
+        // the connector's `query_timeout_ms` into `connect_timeout_ms` plus it.
+        let budget = QueryBudget::start(db_config.query_timeout_ms);
+        let scalars: Vec<crate::connector::sql_encode::Scalar> =
+            params.iter().map(Into::into).collect();
         let (rows_affected, last_insert_id) = crate::connector::pool_cache::dispatch_sql_pool!(
-            &pool, p, _decode, bind, write_result => {
-                let result = timed_query(
-                    db_config.query_timeout_ms,
-                    call.name,
-                    bind(sqlx::query(query), params).execute(p),
-                )
-                .await?;
+            &pool, p, _decode, bind, typed_args, write_result => {
+                // Named for the same reason as `db_read`'s: a prepared
+                // statement's parameter types are cached per connection, so
+                // the prepare and the execute have to share one.
+                let mut conn = acquire_conn(&budget, call.name, p).await?;
+                let bound = budget
+                    .run(call.name, async {
+                        typed_args(&mut conn, query, Some(&scalars))
+                            .await
+                            .map_err(|e| QueryFailure::Classified(encode_failure("db_write", e)))
+                    })
+                    .await?;
+                let sqlx_query = match bound {
+                    crate::connector::sql_encode::Bound::Typed(args) => {
+                        sqlx::query_with(query, args)
+                    }
+                    crate::connector::sql_encode::Bound::Fallback { cache } => {
+                        bind(sqlx::query(query), params).persistent(cache)
+                    }
+                };
+                let result = budget
+                    .run(call.name, sqlx_query.execute(&mut *conn))
+                    .await?;
                 write_result(&result)
             }
         );

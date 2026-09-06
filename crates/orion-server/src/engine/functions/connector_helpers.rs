@@ -920,6 +920,18 @@ pub fn json_type_name(v: &Value) -> &'static str {
 /// that. Before native decoding this surfaced as an internal `500` plus an
 /// `unhandled DataflowError variant` log line, which told the caller nothing
 /// and the author less.
+/// The bind-side twin of [`decode_failure`].
+///
+/// `Validation` for the same reason: a parameter whose value will not convert
+/// to the type the query declares for it is an authoring problem, and a 400
+/// naming the placeholder is worth more than a 500 with the reason in the log.
+pub fn encode_failure(
+    function: &str,
+    e: crate::connector::sql_encode::EncodeError,
+) -> dataflow_rs::DataflowError {
+    dataflow_rs::DataflowError::Validation(e.message(function))
+}
+
 pub fn decode_failure(
     function: &str,
     e: crate::connector::sql_decode::DecodeError,
@@ -1068,6 +1080,35 @@ impl QueryBudget {
             })
             .map_err(DataflowError::from)
     }
+}
+
+/// Acquire a pooled connection as one leg of `budget`.
+///
+/// Explicit, rather than handing sqlx the pool and letting it acquire per
+/// statement, because PostgreSQL caches a prepared statement's parameter types
+/// **per connection** — so learning what the server declared and then binding
+/// against it only means anything if both happen on the same one.
+///
+/// The classification is the part worth stating. A failure here is "could not
+/// connect", which is [`ErrorClass::Connector`]: retryable, and what the
+/// circuit breaker counts. Left to `QueryFailure`'s blanket `From<sqlx::Error>`
+/// it would arrive as a backend failure instead — not retryable, and invisible
+/// to the breaker, so pool exhaustion would quietly stop opening it.
+pub async fn acquire_conn<DB>(
+    budget: &QueryBudget,
+    handler_name: &str,
+    pool: &sqlx::Pool<DB>,
+) -> Result<sqlx::pool::PoolConnection<DB>, DataflowError>
+where
+    DB: sqlx::Database,
+{
+    budget
+        .run(handler_name, async {
+            pool.acquire()
+                .await
+                .map_err(|e| QueryFailure::Classified(to_connect_error(e).into()))
+        })
+        .await
 }
 
 /// Execute an async operation with a timeout, mapping errors to

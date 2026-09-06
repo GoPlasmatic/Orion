@@ -9,9 +9,9 @@ use serde_json::{Map, Value, json};
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, QueryBudget, build_entity_registry, decode_failure, es_request, es_write_error,
-    is_mongo, require_op_allowed, resolve_params, resolve_row_format, send_es, timed_query,
-    to_connect_error, to_exec_error,
+    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, build_entity_registry, decode_failure,
+    encode_failure, es_request, es_write_error, is_mongo, require_op_allowed, resolve_params,
+    resolve_row_format, send_es, timed_query, to_connect_error, to_exec_error,
 };
 use super::mongo_common::{delete_envelope, empty_insert_envelope, update_envelope};
 use super::schema::{FieldKind, FieldSchema};
@@ -281,20 +281,48 @@ async fn execute_sql(
     // only thing that made one generic body possible, and it is what capped
     // the type vocabulary (#309).
     let mut out = crate::connector::pool_cache::dispatch_sql_pool!(
-        pool, p, rows_to_json, _bind, write_result => {
+        pool, p, rows_to_json, _bind, typed_args, write_result => {
+            let scalars = crate::connector::sql_encode::scalars_from_sea(&values.0);
+            // Converted up front, with the pool pinning which driver's
+            // arguments these are; the move itself is free.
+            let fallback = crate::connector::sql_encode::sea_args_for(p, values);
             if w.is_multi_row() || w.returns_unbounded_rows() {
                 let mut tx = budget.run(NAME, p.begin()).await?;
+                // On the transaction's own connection: that is where the
+                // statement will run, and a prepared statement's parameter
+                // types are cached per connection.
+                let bound = budget
+                    .run(NAME, async {
+                        typed_args(&mut tx, sql, scalars.as_deref())
+                            .await
+                            .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
+                    })
+                    .await?;
+                let (args, persistent) = decide(bound, fallback);
                 let out = run_write_statement(
-                    &mut *tx, sql, values, w, &budget, rows_to_json, write_result, format,
-                    max_returning,
+                    &mut *tx, sql, args, persistent, w, &budget, rows_to_json, write_result,
+                    format, max_returning,
                 )
                 .await?;
                 budget.run(NAME, tx.commit()).await?;
                 out
             } else {
+                // The transaction branch above already owns its connection;
+                // this one names its own for the same reason — a prepared
+                // statement's parameter types are cached per connection, so
+                // the prepare and the execute have to land on the same one.
+                let mut conn = acquire_conn(&budget, NAME, p).await?;
+                let bound = budget
+                    .run(NAME, async {
+                        typed_args(&mut conn, sql, scalars.as_deref())
+                            .await
+                            .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
+                    })
+                    .await?;
+                let (args, persistent) = decide(bound, fallback);
                 run_write_statement(
-                    p, sql, values, w, &budget, rows_to_json, write_result, format,
-                    max_returning,
+                    &mut *conn, sql, args, persistent, w, &budget, rows_to_json, write_result,
+                    format, max_returning,
                 )
                 .await?
             }
@@ -304,6 +332,18 @@ async fn execute_sql(
     // never `partial`; it carries the key so one check works on every backend.
     out["status"] = json!("ok");
     Ok((out, TaskOutcome::Success))
+}
+
+/// Settle a [`Bound`] into the arguments to send and whether the statement may
+/// be cached.
+///
+/// `Typed` is always cacheable: its types are the ones the server inferred, so
+/// re-preparing under them declares the same statement again.
+fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, bool) {
+    match bound {
+        crate::connector::sql_encode::Bound::Typed(args) => (args, true),
+        crate::connector::sql_encode::Bound::Fallback { cache } => (fallback, cache),
+    }
 }
 
 /// Run the rendered statement on `executor` (the pool, or a transaction's
@@ -323,7 +363,8 @@ async fn execute_sql(
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
     sql: &'e str,
-    values: sea_query_sqlx::SqlxValues,
+    args: R::Arguments<'e>,
+    persistent: bool,
     w: &ResolvedWrite,
     budget: &QueryBudget,
     rows_to_json: F,
@@ -333,8 +374,10 @@ async fn run_write_statement<'e, E, R, F, G>(
 ) -> Result<Value, DataflowError>
 where
     E: sqlx::Executor<'e, Database = R>,
-    R: sqlx::Database,
-    sea_query_sqlx::SqlxValues: sqlx::IntoArguments<'e, R>,
+    R: sqlx::Database + sqlx::database::HasStatementCache,
+    // No blanket impl relates a database to its own arguments type, so the
+    // bound has to be spelled out.
+    R::Arguments<'e>: sqlx::IntoArguments<'e, R>,
     F: Fn(
         &[R::Row],
         crate::connector::sql_decode::RowFormat,
@@ -343,7 +386,12 @@ where
 {
     if w.returning().is_empty() {
         let res = budget
-            .run(NAME, sqlx::query_with(sql, values).execute(executor))
+            .run(
+                NAME,
+                sqlx::query_with(sql, args)
+                    .persistent(persistent)
+                    .execute(executor),
+            )
             .await?;
         let (rows_affected, last_insert_id) = write_result(&res);
         let mut out = json!({ "rows_affected": rows_affected });
@@ -361,7 +409,9 @@ where
         let rows = budget
             .run(NAME, async {
                 use futures::TryStreamExt;
-                let mut stream = sqlx::query_with(sql, values).fetch(executor);
+                let mut stream = sqlx::query_with(sql, args)
+                    .persistent(persistent)
+                    .fetch(executor);
                 let mut rows = Vec::new();
                 while let Some(row) = stream.try_next().await? {
                     if rows.len() >= max_returning {

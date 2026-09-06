@@ -35,35 +35,47 @@ pub enum SqlPool {
 /// Dispatch an expression across all three pool variants.
 ///
 /// `$p` binds the concrete pool, `$rows_to_json` the decoder that reads its
-/// rows and `$bind` the binder for its arguments. The body is type-checked
-/// independently per arm, which is what lets one expression cover three
-/// unrelated row types — the same trick `storage::dispatch_pool!` uses.
+/// rows, `$bind` the value-shaped binder for its arguments and `$typed_args`
+/// the one that asks the server what it declared first. The body is
+/// type-checked independently per arm, which is what lets one expression cover
+/// three unrelated row types — the same trick `storage::dispatch_pool!` uses,
+/// and what lets `$typed_args` do real work on PostgreSQL and nothing on the
+/// two backends that never had the problem.
 macro_rules! dispatch_sql_pool {
-    ($self:expr, $p:ident, $rows_to_json:ident, $bind:ident, $write_result:ident => $body:expr) => {
+    ($self:expr, $p:ident, $rows_to_json:ident, $bind:ident, $typed_args:ident, $write_result:ident
+     => $body:expr) => {
         match $self {
             crate::connector::pool_cache::SqlPool::Postgres($p) => {
                 let $rows_to_json = crate::connector::sql_decode::pg_rows_to_json;
                 let $bind = crate::connector::pool_cache::bind_params::<sqlx::Postgres>;
+                let $typed_args = crate::connector::sql_encode::pg_typed_args;
                 let $write_result = crate::connector::pool_cache::pg_write_result;
                 $body
             }
             crate::connector::pool_cache::SqlPool::MySql($p) => {
                 let $rows_to_json = crate::connector::sql_decode::mysql_rows_to_json;
                 let $bind = crate::connector::pool_cache::bind_params::<sqlx::MySql>;
+                let $typed_args = crate::connector::sql_encode::mysql_typed_args;
                 let $write_result = crate::connector::pool_cache::mysql_write_result;
                 $body
             }
             crate::connector::pool_cache::SqlPool::Sqlite($p) => {
                 let $rows_to_json = crate::connector::sql_decode::sqlite_rows_to_json;
                 let $bind = crate::connector::pool_cache::bind_params::<sqlx::Sqlite>;
+                let $typed_args = crate::connector::sql_encode::sqlite_typed_args;
                 let $write_result = crate::connector::pool_cache::sqlite_write_result;
                 $body
             }
         }
     };
+    ($self:expr, $p:ident, $rows_to_json:ident, $bind:ident, $write_result:ident => $body:expr) => {
+        crate::connector::pool_cache::dispatch_sql_pool!(
+            $self, $p, $rows_to_json, $bind, _typed_args, $write_result => $body
+        )
+    };
     ($self:expr, $p:ident, $rows_to_json:ident, $bind:ident => $body:expr) => {
         crate::connector::pool_cache::dispatch_sql_pool!(
-            $self, $p, $rows_to_json, $bind, _write_result => $body
+            $self, $p, $rows_to_json, $bind, _typed_args, _write_result => $body
         )
     };
 }
@@ -263,9 +275,12 @@ where
                 } else if let Some(f) = n.as_f64() {
                     query.bind(f)
                 } else {
-                    // A `u64` above `i64::MAX`. Its digits are what matter, and
-                    // every backend will coerce a numeric literal in a numeric
-                    // position; binding it as `f64` would round it.
+                    // Unreachable for a `serde_json::Number`: `as_f64` answers
+                    // `Some` for every one of them, including a `u64` above
+                    // `i64::MAX` — which it rounds. Preserving those digits is
+                    // what `sql_encode::Scalar::from` does, by asking `as_u64`
+                    // before `as_f64`; this arm predates it and is kept only so
+                    // the match stays total.
                     query.bind(n.to_string())
                 }
             }

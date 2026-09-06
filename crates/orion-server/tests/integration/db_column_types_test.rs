@@ -490,15 +490,17 @@ async fn postgres_numeric_as_string_keeps_every_digit() {
     );
 }
 
-/// The *parameter* side still needs a cast, and this pins that down so the
-/// asymmetry is a documented contract rather than a surprise.
+/// A cast parameter binds, which is how this was written before 1.7 and how it
+/// still works.
 ///
-/// Native decoding removed the ceiling on what a query can **return**. It does
-/// not remove the cast on what a query **binds**, and that is a property of
-/// PostgreSQL rather than of the driver layer: parameters are typed, sqlx sends
-/// a JSON string as `text`, and `text = uuid` has no operator — so
-/// `WHERE id = ($1)::uuid` is still how a uuid parameter is written. The same
-/// holds for `numeric`, `timestamptz` and the rest of the non-text family.
+/// The cast used to be the *only* way: parameters were bound by the JSON value's
+/// shape, so a string went out as `text` and `text = uuid` has no operator.
+/// Parameters are now bound to the type the server declares for the placeholder
+/// (N6), and `postgres_a_uuid_parameter_needs_no_cast` covers the uncast form —
+/// but a cast makes the server infer `text` for the placeholder, which is a
+/// type the binder carries, so this keeps passing unchanged. That is the point
+/// of keeping it: the older spelling is not something authors have to go and
+/// rewrite.
 ///
 /// Requires Docker; run with
 /// `cargo test --test integration -- --ignored db_column_types`.
@@ -1048,4 +1050,452 @@ async fn postgres_domain_columns_decode_as_the_type_they_wrap() {
     // Every rule the base type gets, `numeric_as` included, applies through the
     // domain — because by the time the row is read there is no domain left.
     assert_eq!(row["total"], json!(1234.56), "domain over numeric: {body}");
+}
+
+// ---------------------------------------------------------------------------
+// Parameter types (N6)
+//
+// The mirror of the column-type matrix above, and the record of a defect that
+// ran the other way. `bind_params` chose a parameter's SQL type from the shape
+// of its JSON value — a string as `text`, a number as `int8` — and PostgreSQL
+// types its parameters at `Parse`, keyed in sqlx's cache by the SQL text alone.
+// So the first call through a query froze that statement's parameter types and
+// every later call sent bytes encoded for its own value's type into a slot the
+// server still read with the first call's.
+//
+// Order-dependent, so a query passed every test that happened to send one
+// shape. And not always an error: `int8recv` accepts any eight bytes, so an
+// eight-character string bound where `int8` was declared decoded to a
+// plausible, wrong number and nothing failed anywhere.
+//
+// The fix asks the server what it declared and coerces to that, which is what
+// makes the binding a property of the query rather than of the message.
+// ---------------------------------------------------------------------------
+
+/// Build a channel that runs `select` twice with a parameter, once per shape.
+fn two_call_workflow(name: &str, connector: &str, ddl: &[&str], select: &str) -> serde_json::Value {
+    let mut tasks: Vec<serde_json::Value> = ddl
+        .iter()
+        .enumerate()
+        .map(|(i, sql)| {
+            json!({
+                "id": format!("ddl{i}"),
+                "name": format!("Statement {i}"),
+                "function": {
+                    "name": "db_write",
+                    "input": {
+                        "connector": connector,
+                        "query": sql,
+                        "output": format!("data.ddl{i}")
+                    }
+                }
+            })
+        })
+        .collect();
+    tasks.push(json!({
+        "id": "payload",
+        "name": "Payload",
+        "function": {"name": "parse_json", "input": {"source": "payload", "target": "req"}}
+    }));
+    tasks.push(json!({
+        "id": "read",
+        "name": "Read with the caller's parameter",
+        "function": {
+            "name": "db_read",
+            "input": {
+                "connector": connector,
+                "query": select,
+                "params": [{"var": "data.req.p"}],
+                "output": "data.rows"
+            }
+        }
+    }));
+    common::workflow_with_tasks(name, json!(tasks))
+}
+
+/// The `db_write` twin of [`two_call_workflow`], for the statements a read
+/// handler refuses.
+fn write_with_param_workflow(
+    name: &str,
+    connector: &str,
+    ddl: &[&str],
+    write: &str,
+) -> serde_json::Value {
+    let mut tasks: Vec<serde_json::Value> = ddl
+        .iter()
+        .enumerate()
+        .map(|(i, sql)| {
+            json!({
+                "id": format!("ddl{i}"),
+                "name": format!("Statement {i}"),
+                "function": {
+                    "name": "db_write",
+                    "input": {
+                        "connector": connector,
+                        "query": sql,
+                        "output": format!("data.ddl{i}")
+                    }
+                }
+            })
+        })
+        .collect();
+    tasks.push(json!({
+        "id": "payload",
+        "name": "Payload",
+        "function": {"name": "parse_json", "input": {"source": "payload", "target": "req"}}
+    }));
+    tasks.push(json!({
+        "id": "write",
+        "name": "Write with the caller's parameter",
+        "function": {
+            "name": "db_write",
+            "input": {
+                "connector": connector,
+                "query": write,
+                "params": [{"var": "data.req.p"}],
+                "output": "data.written"
+            }
+        }
+    }));
+    common::workflow_with_tasks(name, json!(tasks))
+}
+
+/// The defect itself: one SQL text, both JSON shapes, either order.
+///
+/// Before the fix the second call in each pair failed — `insufficient data left
+/// in message` one way round, `invalid byte sequence for encoding "UTF8"` the
+/// other — because the statement the first call cached declared the first
+/// call's types.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_one_placeholder_takes_both_json_shapes() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6-ch",
+        two_call_workflow(
+            "PgParamShapes",
+            "pg-n6",
+            &[
+                "DROP TABLE IF EXISTS pg_n6",
+                "CREATE TABLE pg_n6 (id text PRIMARY KEY)",
+                "INSERT INTO pg_n6 VALUES ('a'), ('b'), ('c')",
+            ],
+            "SELECT id FROM pg_n6 ORDER BY id LIMIT ($1)::int",
+        ),
+    )
+    .await;
+
+    // A number first, then a string — the order the bug was found in, and the
+    // one a query-string value produces (`metadata.query` is always strings).
+    for p in [json!(50), json!("2"), json!(3), json!("1")] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/data/pg-n6-ch",
+                Some(json!({ "p": p })),
+            ))
+            .await
+            .expect("request");
+        let status = resp.status();
+        let body = common::body_json(resp).await;
+        assert_eq!(status, StatusCode::OK, "limit {p} failed: {body}");
+        assert!(
+            body["errors"].as_array().is_some_and(|a| a.is_empty()),
+            "limit {p} reported errors: {body}"
+        );
+    }
+}
+
+/// The case that made this worth fixing at the root rather than papering over.
+///
+/// `int8recv` validates length, not meaning. An eight-character string bound
+/// where `int8` was declared is exactly eight bytes, so it decoded — to
+/// 3544952156018063160 for `"12345678"` — and the query returned a wrong
+/// number with no error anywhere for anyone to notice.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_a_parameter_is_not_read_with_an_earlier_calls_type() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6s").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6s-ch",
+        two_call_workflow("PgParamSilent", "pg-n6s", &[], "SELECT ($1)::text AS v"),
+    )
+    .await;
+
+    // The number first, so the old code would have cached an `int8` statement.
+    for (p, want) in [
+        (json!(42), "42"),
+        (json!("12345678"), "12345678"),
+        (json!("abcdefgh"), "abcdefgh"),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/data/pg-n6s-ch",
+                Some(json!({ "p": p })),
+            ))
+            .await
+            .expect("request");
+        let status = resp.status();
+        let body = common::body_json(resp).await;
+        assert_eq!(status, StatusCode::OK, "{p} failed: {body}");
+        assert_eq!(
+            body["data"]["rows"][0]["v"], want,
+            "{p} came back as something else: {body}"
+        );
+    }
+}
+
+/// A `uuid` parameter no longer needs `($1)::uuid` around it.
+///
+/// The cast still works and is still tested above; this is the capability the
+/// server-declared typing adds, and the reason the cast stops being the only
+/// way to write it.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_a_uuid_parameter_needs_no_cast() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6u").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    const ID: &str = "11111111-2222-3333-4444-555555555555";
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6u-ch",
+        two_call_workflow(
+            "PgUuidParam",
+            "pg-n6u",
+            &[
+                "DROP TABLE IF EXISTS pg_n6u",
+                "CREATE TABLE pg_n6u (id uuid PRIMARY KEY, label text NOT NULL)",
+                "INSERT INTO pg_n6u VALUES ('11111111-2222-3333-4444-555555555555', 'found')",
+            ],
+            "SELECT label FROM pg_n6u WHERE id = $1",
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/pg-n6u-ch",
+            Some(json!({ "p": ID })),
+        ))
+        .await
+        .expect("request");
+    let status = resp.status();
+    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["rows"][0]["label"], "found", "{body}");
+}
+
+/// `= ANY($1)` with a JSON array — an IN-list that could not be written before.
+///
+/// A JSON array used to bind as its own JSON text, which matched nothing.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_an_array_parameter_binds_as_a_list() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6a").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6a-ch",
+        two_call_workflow(
+            "PgArrayParam",
+            "pg-n6a",
+            &[
+                "DROP TABLE IF EXISTS pg_n6a",
+                "CREATE TABLE pg_n6a (id bigint PRIMARY KEY)",
+                "INSERT INTO pg_n6a VALUES (1), (2), (3)",
+            ],
+            "SELECT id FROM pg_n6a WHERE id = ANY($1) ORDER BY id",
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/pg-n6a-ch",
+            Some(json!({ "p": [1, "3"] })),
+        ))
+        .await
+        .expect("request");
+    let status = resp.status();
+    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["data"]["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 2, "{body}");
+    assert_eq!(rows[0]["id"], 1, "{body}");
+    assert_eq!(rows[1]["id"], 3, "{body}");
+}
+
+/// A declared type the table does not carry is not refused here.
+///
+/// The decode side must refuse an `inet`: there is no JSON to render it as. The
+/// bind side falls back to the value-shaped binding instead, and the difference
+/// is observable — the query reaches the database and fails on the database's
+/// terms rather than on Orion's.
+///
+/// For the built-in types that costs nothing either way, because PostgreSQL
+/// ships no assignment cast from `text` to any of them, so these queries fail
+/// whatever is bound. The reason to fall back is the case that cannot be
+/// enumerated: `CREATE CAST (text AS mytype) AS ASSIGNMENT` is a thing an
+/// author can write, and refusing would decide on their behalf that it does not
+/// work.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_an_unmapped_parameter_type_is_not_refused_here() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6i").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6i-ch",
+        write_with_param_workflow(
+            "PgInetParam",
+            "pg-n6i",
+            &[
+                "DROP TABLE IF EXISTS pg_n6i",
+                "CREATE TABLE pg_n6i (addr inet)",
+            ],
+            "INSERT INTO pg_n6i (addr) VALUES ($1)",
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/pg-n6i-ch",
+            Some(json!({ "p": "10.0.0.1" })),
+        ))
+        .await
+        .expect("request");
+    let body = common::body_json(resp).await;
+    assert!(
+        !body.to_string().contains("parameter $1 is declared"),
+        "an unmapped type must fall back, not be refused by the encoder: {body}"
+    );
+
+    // And the cast form, which is how it is written today, still works: the
+    // cast makes the server infer `text` for the placeholder, which the table
+    // does carry.
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6i-cast-ch",
+        write_with_param_workflow(
+            "PgInetCast",
+            "pg-n6i",
+            &[],
+            "INSERT INTO pg_n6i (addr) VALUES (($1)::inet)",
+        ),
+    )
+    .await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/pg-n6i-cast-ch",
+            Some(json!({ "p": "10.0.0.1" })),
+        ))
+        .await
+        .expect("request");
+    let status = resp.status();
+    let body = common::body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body["errors"].as_array().is_some_and(|a| a.is_empty()),
+        "{body}"
+    );
+}
+
+/// A value that will not convert names the placeholder, not the value.
+///
+/// The type is supported and the value is wrong, which is the one case that is
+/// an error rather than a fallback — and it is the author's to fix, so the
+/// message says which `$n` and what the query declared it as.
+///
+/// Requires Docker; run with
+/// `cargo test --test integration -- --ignored db_column_types`.
+#[tokio::test]
+#[ignore]
+async fn postgres_a_value_that_cannot_convert_names_the_placeholder() {
+    use crate::common::backends::Backend;
+
+    let app = common::test_app().await;
+    let h = common::backends::start(Backend::Postgres, "pg-n6e").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "pg-n6e-ch",
+        two_call_workflow(
+            "PgBadParam",
+            "pg-n6e",
+            &[
+                "DROP TABLE IF EXISTS pg_n6e",
+                "CREATE TABLE pg_n6e (qty bigint)",
+            ],
+            "SELECT qty FROM pg_n6e WHERE qty > $1",
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/pg-n6e-ch",
+            Some(json!({ "p": "abc" })),
+        ))
+        .await
+        .expect("request");
+    let body = common::body_json(resp).await;
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("parameter $1") && rendered.contains("INT8"),
+        "the failure should name the placeholder and its declared type: {body}"
+    );
 }

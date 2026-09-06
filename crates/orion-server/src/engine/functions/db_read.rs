@@ -7,8 +7,9 @@ use serde_json::Value;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, decode_failure, reject_mongo_connector, require_op_allowed, resolve_bind_params,
-    resolve_row_format, timed_query, to_connect_error,
+    ConnectorCall, QueryBudget, QueryFailure, acquire_conn, decode_failure, encode_failure,
+    reject_mongo_connector, require_op_allowed, resolve_bind_params, resolve_row_format,
+    to_connect_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -150,14 +151,48 @@ impl ConnectorHandler for DbReadHandler {
         let format = read.format();
         let query = read.query();
 
+        // One budget over both legs. `acquire` is a round trip of its own, and
+        // giving it a timeout of its own would silently make the bound the
+        // connector's owner set into `connect_timeout_ms` plus
+        // `query_timeout_ms`.
+        let budget = QueryBudget::start(db_config.query_timeout_ms);
+
+        // Bound once, outside the dispatch, because the vocabulary is the same
+        // whichever driver runs it.
+        let scalars: Vec<crate::connector::sql_encode::Scalar> =
+            params.iter().map(Into::into).collect();
+
         // One body, three drivers: the macro binds the concrete pool, its
-        // decoder and its binder, and each arm is type-checked on its own.
+        // decoder and its binders, and each arm is type-checked on its own.
         let json = crate::connector::pool_cache::dispatch_sql_pool!(
-            &pool, p, rows_to_json, bind => {
-                let rows = timed_query(db_config.query_timeout_ms, call.name, async {
+            &pool, p, rows_to_json, bind, typed_args, _write_result => {
+                // The connection is named rather than left to sqlx to acquire
+                // per statement, because PostgreSQL caches a prepared
+                // statement's parameter types per connection — asking the
+                // server what it declared and then binding against it only
+                // means anything if both happen on the same one.
+                let mut conn = acquire_conn(&budget, call.name, p).await?;
+                // Another leg of the same budget: on a connection that has
+                // already seen this SQL it is a cache hit and no round trip at
+                // all, but the first time through it is a real one.
+                let bound = budget
+                    .run(call.name, async {
+                        typed_args(&mut conn, query, Some(&scalars))
+                            .await
+                            .map_err(|e| QueryFailure::Classified(encode_failure(NAME, e)))
+                    })
+                    .await?;
+                let rows = budget.run(call.name, async {
                     use futures::TryStreamExt;
-                    let sqlx_query = bind(sqlx::query(query), params);
-                    let mut stream = sqlx_query.fetch(p);
+                    let sqlx_query = match bound {
+                        crate::connector::sql_encode::Bound::Typed(args) => {
+                            sqlx::query_with(query, args)
+                        }
+                        crate::connector::sql_encode::Bound::Fallback { cache } => {
+                            bind(sqlx::query(query), params).persistent(cache)
+                        }
+                    };
+                    let mut stream = sqlx_query.fetch(&mut *conn);
                     let mut rows = Vec::new();
                     // Not `.map_err(|e| e.to_string())`: stringifying here
                     // converted through `From<String>`, which is

@@ -13,6 +13,7 @@ pub mod secrets;
 pub mod sigv4;
 pub mod smtp_pool;
 pub mod sql_decode;
+pub mod sql_encode;
 
 pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 

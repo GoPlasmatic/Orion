@@ -114,6 +114,13 @@ composes as `{ "$oid": { "param": "id" } }`; and a param whose *value* is a
 wrapper object (message data echoing a `mongo_read` result, which serializes
 ObjectIds and dates in exactly these spellings) coerces the same way.
 
+On PostgreSQL a filter value is bound to the type the server declares for the
+column it is compared against, so `{"eq": 5}` and `{"eq": "5"}` reach an
+integer column as the same query. The schema's own `type` stays a declaration
+rather than the source of truth — the database is asked directly. See
+[parameters](./functions.md#column-types) for the types this covers and what
+happens outside them.
+
 The payload is validated during lowering — a malformed `$oid` is a located
 envelope error on every backend. On **MongoDB** the wrappers render as native
 BSON values, so filtering on a real `_id` or a date range matches typed data
