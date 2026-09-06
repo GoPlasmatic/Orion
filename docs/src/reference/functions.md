@@ -632,7 +632,7 @@ cannot write.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `SELECT` statement with bind placeholders |
-| `params` | array | no | — | Values bound to the placeholders, in order |
+| `params` | array | no | — | Values bound to the placeholders, in order. Each element folds `{"var": …}` and nothing else — an operator written inline binds as a literal object, which `lint` reports as `logic.unresolvable`; compute it in a `map` task first |
 | `numeric_as` | string | no | `"number"` | How a `numeric`/`decimal` column is rendered: `number` or `string` — see [Decimal columns](#decimal-columns) |
 | `binary_as` | string | no | `"auto"` | How a binary column is rendered: `auto`, `hex`, `base64` or `text` — see [Binary columns](#binary-columns). |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where the row array is written |
@@ -845,7 +845,7 @@ on that pooled connection left behind.
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of the SQL connector |
 | `query` | string | yes | — | `INSERT`/`UPDATE`/`DELETE` statement with bind placeholders |
-| `params` | array | no | — | Values bound to the placeholders, in order |
+| `params` | array | no | — | Values bound to the placeholders, in order. Each element folds `{"var": …}` and nothing else — an operator written inline binds as a literal object, which `lint` reports as `logic.unresolvable`; compute it in a `map` task first |
 | `output` | string \| JSONLogic | no | `"data"` | Dotted path where `{ "rows_affected": N }` (plus `last_insert_id` after an insert) is written |
 
 ```json

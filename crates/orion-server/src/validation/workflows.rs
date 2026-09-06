@@ -1419,6 +1419,50 @@ mod tests {
         assert!(clean.is_empty(), "no findings expected, got {clean:?}");
     }
 
+    /// An operator inside an *array* element of a resolvable field is reported
+    /// like one nested in an object.
+    ///
+    /// `db_read`'s `params` is the shape this matters for and the one an author
+    /// actually writes: the handler folds `{"var": ..}` and nothing else, so an
+    /// `or` computing a default reaches the driver as a literal object and
+    /// binds as one — a `jsonb` document on a JSON column, a type error on any
+    /// other, and never the value that was meant. The walk descends into arrays
+    /// for exactly this; without that it would report the same mistake in a
+    /// `mongo_write` `document` and miss it here.
+    #[test]
+    fn an_operator_in_an_array_element_of_a_resolvable_field_is_reported() {
+        let warnings = unresolvable_logic_warnings(&serde_json::json!([{
+            "id": "q", "name": "Query",
+            "function": {"name": "db_read", "input": {
+                "connector": "orders",
+                "query": "SELECT id FROM orders LIMIT $1",
+                "params": [{"or": [{"var": "data.req.limit"}, 50]}]
+            }}
+        }]));
+        assert_eq!(warnings.len(), 1, "got {warnings:?}");
+        assert_eq!(warnings[0].0, "tasks[0].function.input.params[0]");
+        assert!(warnings[0].1.contains("'or'"), "{}", warnings[0].1);
+        assert!(warnings[0].1.contains("'map' task"), "{}", warnings[0].1);
+    }
+
+    /// The literal a JSON column legitimately binds is not an expression, and
+    /// must not be reported as one: post-1.7 a `json`/`jsonb` parameter takes
+    /// the document itself, so an object in `params` is a real value. Only a
+    /// single-key object whose key is a known operator *and* whose argument is
+    /// an array is reported, which is what keeps an ordinary document out.
+    #[test]
+    fn a_json_document_bound_as_a_parameter_is_not_reported() {
+        let clean = unresolvable_logic_warnings(&serde_json::json!([{
+            "id": "q", "name": "Query",
+            "function": {"name": "db_read", "input": {
+                "connector": "orders",
+                "query": "SELECT id FROM orders WHERE meta @> $1",
+                "params": [{"tier": "gold", "length": 120}]
+            }}
+        }]));
+        assert!(clean.is_empty(), "got {clean:?}");
+    }
+
     /// A non-resolvable field is not scanned: the handler never folds it, so
     /// whatever it holds is a literal by design.
     #[test]
