@@ -953,3 +953,90 @@ fn nearest_field<'a>(
         .min_by_key(|(distance, _)| *distance)
         .map(|(_, f)| f.name.as_str())
 }
+
+// ============================================================
+// correctness.unordered_page
+// ============================================================
+
+pub struct UnorderedPage;
+
+impl Rule for UnorderedPage {
+    fn id(&self) -> &'static str {
+        "correctness.unordered_page"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Deny
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn summary(&self) -> &'static str {
+        "a read that skips rows without ordering them, so the page it skips is undefined"
+    }
+    fn explain(&self) -> &'static str {
+        "`skip` names a position in an order. Without a `sort` there is no order: the rows \
+         come back in whatever the query plan emitted, and two calls need not agree — so \
+         \"skip the first 20\" names no particular set, and the page is neither stable nor \
+         repeatable, with no writes in between and no error anywhere.\n\n\
+         The dialect already refuses exactly this one level in: an `include` must state a \
+         `sort`, because the per-parent page is cut in the database and \"the first 10 \
+         orders\" otherwise has no defined answer (F27). The root page has the same problem \
+         and, for compatibility, keeps accepting it.\n\n\
+         Proof: the envelope itself — `skip` present, `sort` absent or empty.\n\n\
+         Silent when: `skip` is the literal `0` (it skips nothing), when a `sort` is given \
+         (whether or not its keys are unique — that is a judgement this rule does not make), \
+         and for `limit` without `sort`, which is a legitimate \"any n\"."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                let Some(input) = step.node.get("function").and_then(|f| f.get("input")) else {
+                    continue;
+                };
+                // `data_query` pages inside the envelope; `mongo_read` pages at
+                // the task input. Both spell the two keys the same way.
+                let paged = match step.function.as_deref() {
+                    Some("data_query") => input.get("query").map(|q| ("query.", q)),
+                    Some("mongo_read") => Some(("", input)),
+                    _ => None,
+                };
+                let Some((prefix, envelope)) = paged else {
+                    continue;
+                };
+                let Some(skip) = envelope.get("skip") else {
+                    continue;
+                };
+                // A literal zero skips nothing, so it cannot name a wrong page.
+                if skip.as_u64() == Some(0) {
+                    continue;
+                }
+                let ordered = envelope
+                    .get("sort")
+                    .is_some_and(|s| s.as_array().is_some_and(|a| !a.is_empty()));
+                if ordered {
+                    continue;
+                }
+                out.push(
+                    Diagnostic::on_workflow(
+                        self,
+                        cx,
+                        wf,
+                        Some(&format!("{}.function.input.{prefix}skip", step.path)),
+                        format!(
+                            "`{}` skips rows without a `sort`, so which rows it skips is \
+                             whatever the plan emitted and need not be the same twice",
+                            step.id
+                        ),
+                    )
+                    .with_remedy(
+                        "add a `sort` whose last key is unique per row, or drop the `skip`",
+                    ),
+                );
+            }
+        }
+    }
+}

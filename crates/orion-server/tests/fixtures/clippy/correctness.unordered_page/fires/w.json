@@ -1,0 +1,19 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "page",
+      "name": "Page",
+      "function": {
+        "name": "data_query",
+        "input": {
+          "connector": "primary",
+          "query": { "source": "customers", "limit": 20, "skip": 40 },
+          "schema": { "unmapped": "identity" },
+          "output": "data.rows"
+        }
+      }
+    }
+  ]
+}

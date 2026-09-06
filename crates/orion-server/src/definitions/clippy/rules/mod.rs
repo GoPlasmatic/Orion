@@ -19,6 +19,7 @@ pub static ALL: &[&dyn Rule] = &[
     &correctness::SecretUndeclared,
     &correctness::ResponseCookieType,
     &correctness::UnknownInputKey,
+    &correctness::UnorderedPage,
     &perf::ParseResultOverwritten,
     &perf::RedundantStepCondition,
     &perf::GroupConditionRepeated,

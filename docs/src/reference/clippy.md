@@ -40,6 +40,7 @@ item.
 | `correctness.secret_undeclared` | deny | set | a {"secret": name} that the config given with -c does not declare |
 | `correctness.response_cookie_type` | warn | workflow | a response cookie attribute is a literal of the wrong type, so the cookie is always dropped |
 | `correctness.unknown_input_key` | deny | workflow | a task input key the function does not declare, which is silently ignored |
+| `correctness.unordered_page` | deny | workflow | a read that skips rows without ordering them, so the page it skips is undefined |
 | `perf.parse_result_overwritten` | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | `perf.redundant_step_condition` | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |
 | `perf.group_condition_repeated` | warn | workflow | a group member repeats the group's own condition, which was already true on entry |
@@ -189,6 +190,21 @@ not applying". Aliases count as declared, and a close miss is offered as a
 suggestion. Silent when the function declares no field table (an engine
 built-in) or declares `deny_unknown`, where the key is already refused at create
 with a located error.
+
+### `correctness.unordered_page`
+
+A `data_query` or `mongo_read` whose `skip` is not accompanied by a `sort`.
+`skip` names a position in an order, and without one the rows come back in
+whatever the query plan emitted — so "skip the first 20" names no particular
+set, and two calls need not agree, with no writes in between and no error
+anywhere. The dialect already refuses this one level in: an `include` must state
+a `sort`, because the per-parent page is cut in the database and "the first 10
+orders" otherwise has no defined answer. The root page has the same problem and
+keeps accepting it, so the finding is here. Silent when `skip` is the literal
+`0`, which skips nothing; when a `sort` is given, whether or not its keys are
+unique; and for a `limit` with no `sort`, which is a legitimate "any n". See
+[Paging](./data-dialect.md#paging) for the cursor that pages without an offset
+at all.
 
 ### `perf.parse_result_overwritten`
 
