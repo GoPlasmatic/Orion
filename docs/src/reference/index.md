@@ -18,6 +18,7 @@ rationale.
 | Look up a CLI command | [CLI Reference](./cli.md) |
 | Write workflow JSON | [Workflow JSON Schema](./workflows.md) |
 | Choose or configure a task function | [Task Function Index](./functions.md) |
+| Package a WebAssembly task function | [Plugins](./plugins.md) |
 | Write a JSONLogic condition | [Expression Language](./expressions.md) |
 | Configure authentication, limits, caching, or response behavior | [Channel Configuration](./channel-config.md) |
 | Configure an external system | [Connector Types](./connectors.md) |
@@ -25,6 +26,7 @@ rationale.
 | Configure an Orion server | [Configuration](./configuration.md) and [Environment Variables](./environment-variables.md) |
 | Interpret a response or failure | [Errors & Response Envelopes](./errors.md) |
 | Build a dashboard or alert | [Metrics](./metrics.md) |
+| Format definition files, or read an advisory rule | [Definition Style (`fmt`)](./fmt.md) and [Advisory Checks (`clippy`)](./clippy.md) |
 | Check compatibility or terminology | [Support & Compatibility](./support.md) and [Glossary](./glossary.md) |
 
 The longest references retain one stable URL so existing deep links continue to

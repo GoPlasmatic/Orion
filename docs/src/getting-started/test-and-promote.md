@@ -256,8 +256,9 @@ activated channels 'high-value-orders'
 applied high-value-order@1.0.0 to http://localhost:9090
 ```
 
-`apply` stages every entity, activates them in dependency order — connectors,
-then workflows, then channels, and reloads the engine **once** at the end.
+`apply` stages every entity, activates them in dependency order — plugins,
+then connectors, then models, then workflows, then channels — and reloads the
+engine **once** at the end. This package carries only the last three.
 
 > [!NOTE]
 > Against an instance with admin auth enabled, `export`, `plan`, `apply` and

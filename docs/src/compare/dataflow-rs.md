@@ -34,9 +34,10 @@ decision: library, or runtime.
 
 ## What embedding dataflow-rs is good at
 
-- **Custom task functions in Rust.** You implement the handler trait and
-  register whatever you like. This is the capability Orion deliberately does
-  not expose.
+- **Custom task functions in Rust, with I/O.** You implement the handler trait
+  and register whatever you like — sockets, files, the clock. Orion's
+  equivalent, a [plugin](../concepts/plugins.md), is a WebAssembly component
+  that imports nothing, so it can compute but not connect.
 - **No server in the picture.** The engine runs inside a process you already
   operate — a CLI, a batch job, an existing service.
 - **Full control of the lifecycle.** You decide where workflow definitions come

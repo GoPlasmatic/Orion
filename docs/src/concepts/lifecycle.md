@@ -1,9 +1,10 @@
-<!-- description: Draft, active, archived — the one-way lifecycle every Orion channel and workflow follows, enforced by the database rather than by convention. -->
+<!-- description: Draft, active, archived — the one-way lifecycle every Orion channel, workflow, plugin and model follows, enforced by the database rather than by convention. -->
 # The Entity Lifecycle
 
-Every channel and workflow moves through three states, in one direction. The
-rules are enforced by the database, not by convention, which is what makes
-AI-generated logic and urgent operator changes follow the same controlled path.
+Every channel, workflow, [plugin](./plugins.md) and [model](./models.md) moves
+through three states, in one direction. The rules are enforced by the database,
+not by convention, which is what makes AI-generated logic and urgent operator
+changes follow the same controlled path.
 
 ```orion-diagram
 {
@@ -70,8 +71,16 @@ several changes before rebuilding once.
   named workflow to be active, so an endpoint can never point at logic that is
   not serving.
 - **Connectors have no lifecycle.** They are live when saved and replaced when
-  updated; there is no draft to activate. Order matters at promotion time for
-  that reason: connectors first, then workflows, then channels.
+  updated; there is no draft to activate.
+- **A workflow cannot be written ahead of its plugin.** A workflow naming a
+  task function the engine does not serve is refused at create and update
+  time, so a plugin is activated before the workflows that call its functions.
+- **A model is activated only once it is admitted.** Activation is refused
+  until the node's admission run has fetched, verified and probed the artifact
+  and recorded a `passed` verdict.
+- **Those rules give the promotion order.** Plugins, then connectors, then
+  models, then workflows, then channels — which is the order
+  [`package apply`](../operate/promotion.md) uses.
 - **A rollout splits versions, not entities.** Activating a new version at less
   than 100% leaves the previous version serving the remainder, bucketed by a
   stable hash of the request.
@@ -85,6 +94,12 @@ is one whose *workflow* cannot be built: a task naming a function the engine
 will not dispatch, an input its function cannot parse, or a rollout whose
 percentages do not cover the traffic. A channel with nothing runnable behind it
 is refused rather than answering with a pipeline that fails every request.
+
+A plugin or model that this node could not load quarantines the channels whose
+workflows use it the same way — a node with `plugins.enabled` or
+`models.enabled` off, a missing artifact, or a model whose admission never
+passed. The entity stays stored and active; it is this node that cannot serve
+it, which is why the state is reported per node under `/health`.
 
 Quarantine is a load-time failure state, not an authentication outcome, and it
 clears only when a later reload builds the channel successfully. Run

@@ -1,4 +1,4 @@
-<!-- description: Build Orion services: choose the workflow, channel, connector, testing and versioning guide for the development task at hand. -->
+<!-- description: Build Orion services: choose the workflow, channel, connector, testing, plugin, model and versioning guide for the development task at hand. -->
 # Build Orion Services
 
 **Page type:** Section guide · **Audience:** Service authors
@@ -13,7 +13,9 @@ Use this section after the quickstart. A typical service-authoring sequence is:
    regression cases.
 5. [Build a Plugin](./plugins.md): when a codec or calculation already exists
    as code, ship it as a sandboxed WebAssembly task function.
-6. [Version & Roll Out Changes](./versioning.md): activate, canary, promote,
+6. [Serve a Model](./models.md): register an ONNX model from object storage
+   and call it from a task with `model_infer`.
+7. [Version & Roll Out Changes](./versioning.md): activate, canary, promote,
    and roll back changes.
 
 Looking for a complete example instead? Follow the [Orders API golden

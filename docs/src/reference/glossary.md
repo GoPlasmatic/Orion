@@ -84,9 +84,8 @@ See [Cron occurrences](./admin-api.md#cron-occurrences).
 refuse each data operation (`read`, `insert`, `update`, `delete`, `upsert`,
 `raw_write`). See [Connectors](./connectors.md).
 
-**Package**: the channels, workflows, connectors and plugins of one service,
-versioned
-as a unit and promoted between instances. See
+**Package**: the channels, workflows, connectors, plugins and models of one
+service, versioned as a unit and promoted between instances. See
 [Promote Between Environments](../operate/promotion.md).
 
 **Plugin**: a versioned entity carrying a WebAssembly component that adds task

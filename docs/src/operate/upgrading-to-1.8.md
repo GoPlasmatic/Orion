@@ -1,4 +1,4 @@
-<!-- description: Upgrading Orion 1.7.x to 1.8.0: the JSONLogic tensor operators are on, seven names now collide with ordinary keys, and preflight says where $ is needed. -->
+<!-- description: Upgrading Orion 1.7.x to 1.8.0: one expand-only migration, the tensor operators are live, seven names now collide with ordinary keys, and the ops budget is off. -->
 # Upgrading to 1.8.0
 
 This page is for operators upgrading an existing Orion deployment from
@@ -9,9 +9,9 @@ described in full in the
 [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/CHANGELOG.md).
 
 **1.8.0 is a minor release and behaves like one.** No config key was renamed
-or removed, no API path moved, no metric was renamed, and there are no
-migrations. Two things can reach you. One of them can change what an existing
-deployment already does — §1 — and the other is off until you turn it on.
+or removed, no API path moved, and no metric was renamed. Three things can
+reach you. One adds schema — §1 — one can change what an existing deployment
+already does — §2 — and the third is off until you turn it on.
 
 The version-independent procedure — back up, preflight, validate config,
 migrate, roll — is on [Upgrades](./upgrades.md).
@@ -22,12 +22,32 @@ migrate, roll — is on [Upgrades](./upgrades.md).
 
 | # | Check | Applies to you if |
 |---|-------|-------------------|
-| 1 | [Run `preflight` and escape the keys it lists](#1-twenty-operator-names-are-now-live) | A stored workflow emits a literal object keyed `shape`, `full`, `cast`, `pad`, `crop`, `concat` or `stack` from a `map` mapping or a template field |
-| 2 | [Nothing — the budget is off](#2-engineops_budget-is-new-and-off) | Every deployment; read it before turning it on |
+| 1 | [Run the migration as a deploy step](#1-one-migration-expand-only) | You run a cluster with `auto_migrate = false` — everyone else gets it at startup |
+| 2 | [Run `preflight` and escape the keys it lists](#2-twenty-operator-names-are-now-live) | A stored workflow emits a literal object keyed `shape`, `full`, `cast`, `pad`, `crop`, `concat` or `stack` from a `map` mapping or a template field |
+| 3 | [Nothing — the budget is off](#3-engineops_budget-is-new-and-off) | Every deployment; read it before turning it on |
 
 ---
 
-## 1. Twenty operator names are now live
+## 1. One migration, expand-only
+
+**What changed.** One new migration per backend, `models`: the `models` table
+that holds a model registration — its manifest, its artifact reference, and
+the node-written admission verdict — plus two indexes and the single-draft and
+active-immutability triggers every versioned entity has. It adds schema and
+touches nothing that exists, so a 1.7.x binary keeps working against a
+migrated database and a rollback needs no schema work.
+
+The migration runs whether or not you intend to use models: it is applied at
+startup like every other one, and
+[`models.enabled`](../reference/configuration.md#models) — which is off by
+default — governs only whether the node serves them, never whether the table
+exists.
+
+**What to do.** Nothing, unless `storage.auto_migrate = false`: then
+`orion-server migrate` is the deploy step, as it always is in
+[cluster mode](./cluster.md).
+
+## 2. Twenty operator names are now live
 
 1.8 enables dataflow-rs's `tensor` feature, so every engine Orion builds
 evaluates twenty more operators: `tensor`, `zeros`, `full`, `scatter`,
@@ -83,7 +103,7 @@ both so that `--deny-warnings` does not refuse the feature it now supports.
 pipeline that promotes it). The escaped spelling is not reported, so a second
 `preflight` is the proof the estate is clean.
 
-## 2. `engine.ops_budget` is new, and off
+## 3. `engine.ops_budget` is new, and off
 
 The `budget` feature is enabled too, which adds one setting:
 

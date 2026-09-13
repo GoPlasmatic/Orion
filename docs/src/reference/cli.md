@@ -1,4 +1,4 @@
-<!-- description: Every orion-server and orion-cli command: fmt, lint, clippy, dry-run, offline tests, package promotion, and workflow, channel, connector and engine management. -->
+<!-- description: Every orion-server and orion-cli command: fmt, lint, clippy, dry-run, offline tests, package promotion, and workflow, channel, plugin and model management. -->
 # CLI Reference
 
 Orion ships two binaries: `orion-server`, the runtime with diagnostic and promotion subcommands, and `orion-cli`, the admin client. Both accept `--version`, which prints the version, git hash, and build timestamp.
@@ -221,7 +221,7 @@ $ orion-server clippy ./definitions
 definitions/workflows/auth-login.json: warning: [perf.redundant_step_condition] workflow 'Auth - login' at tasks[15].tasks[0].condition: 2 consecutive steps (`send_otp` and `when_unverified`) repeat this condition, and none of them writes what it reads; it is evaluated 2 times for one answer
         fix: wrap them in a task group carrying the condition once: { "id": …, "condition": …, "tasks": [ … ] }
 note: [correctness.metadata_var_undeclared] skipped — needs the serving config (-c <config.toml>)
-./definitions: 59 workflow(s), 62 channel(s), 9 connector(s) — 0 error(s), 1 warning(s) from 13 rule(s)
+./definitions: 59 workflow(s), 62 channel(s), 9 connector(s) — 0 error(s), 1 warning(s) from 17 rule(s)
 ```
 
 Example: `orion-server -c config.toml clippy ./definitions --deny-warnings`
@@ -323,7 +323,7 @@ Example: `orion-server package export -s https://dev.orion.internal --tag paymen
 
 ## orion-cli
 
-`orion-cli` manages workflows, channels, connectors, data, traces, and engine operations on a running server over HTTP. Settings resolve in precedence order: CLI flags, then environment variables, then `~/.orion/config.toml`.
+`orion-cli` manages workflows, channels, connectors, plugins, models, data, traces, and engine operations on a running server over HTTP. Settings resolve in precedence order: CLI flags, then environment variables, then `~/.orion/config.toml`.
 
 Global flags apply to every subcommand:
 
@@ -477,6 +477,70 @@ Connectors are not versioned — there is no draft, no `activate`, and no
 `versions`. `update` writes in place and the engine picks it up on reload.
 
 Example: `orion-cli connectors test payment-api`
+
+### `plugins`
+
+Manages [plugins](../concepts/plugins.md) — WebAssembly components that add
+task functions. Alias: `plugin`. Every subcommand answers `400` against a node
+with `plugins.enabled = false`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List plugins; filter with `--status`, `--tag`. Sorts by `plugin_id`, `status`, `created_at`, `updated_at`. |
+| `get <id>` | Show a plugin with this node's load state; `--verbose` includes the manifest. |
+| `create` | Upload a draft from `-f <plugin.toml>`. `--component <path>` overrides the manifest's `component`; `--signature <path>` supplies the base64 Ed25519 signature a server with `[plugins.trust]` keys requires; `--tag` is repeatable. |
+| `update <id>` | Replace the draft's manifest and component. Same flags; `--tag` replaces the stored tags when given. |
+| `delete <id>` | Delete every version and any component nothing names; prompts unless `--yes`. |
+| `activate <id>` | Activate a draft. `--dry-run` pre-flights; `--defer-reload` batches. Refused when an active dependant no longer satisfies the new version's schema. |
+| `archive <id>` | Archive an active plugin. Same two flags. Refused while an active workflow calls one of its functions. |
+| `dependencies <id>` | The functions this plugin declares and the active workflows calling them. Alias: `deps`. |
+| `validate` | Validate a manifest and component without uploading. Exits `1` when invalid. |
+| `versions <id>` | List version history; pages with `--limit` / `--offset`. |
+| `new-version <id>` | Create a new draft version from the latest. |
+| `export` | Export plugins as JSON; filter with `--status`, `--tag`. `--include-artifacts` inlines each component as base64 so the file imports anywhere. |
+| `import -f <file>` | Bulk-import from a JSON array file; `--dry-run` previews, `--on-conflict` sets the collision rule. |
+
+A component is uploaded, never referenced: the server hashes, compiles and
+probes it before the draft exists. Without `--include-artifacts` an export
+carries manifests and digests only, and imports only into a target that
+already holds those digests.
+
+Example: `orion-cli plugins create -f plugin.toml --tag codecs`
+
+### `models`
+
+Manages [models](../concepts/models.md) — ONNX artifacts held in object
+storage and admitted before they serve. Alias: `model`. Every subcommand
+answers `400` against a node with `models.enabled = false`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List models; filter with `--status`, `--tag`, `--admission` (`pending`, `passed`, `failed`). Sorts by `model_id`, `status`, `created_at`, `updated_at`. |
+| `get <id>` | Show a model with its admission verdict and this node's residency; `--verbose` includes the manifest. |
+| `create` | Register a draft: `-f <manifest.json>` plus `--connector`, `--key` and `--digest` naming the artifact. `--signature <path>` supplies the Ed25519 signature over the digest that `[models.trust]` requires; `--tag` is repeatable; `--wait` polls until the verdict lands. |
+| `update <id>` | Replace the draft's manifest, artifact reference, signature or tags. |
+| `delete <id>` | Delete every version; prompts unless `--yes`. |
+| `activate <id>` | Activate a draft. `--dry-run` pre-flights; `--defer-reload` batches. Refused with `409` until the admission verdict is `passed`. |
+| `archive <id>` | Archive an active model. Same two flags. Refused while an active workflow names it by literal id. |
+| `admit <id>` | Run admission again — fetch, verify and probe the artifact once more. `--wait` polls for the verdict. |
+| `dependencies <id>` | The active workflows naming this model. Alias: `deps`. |
+| `validate` | Validate a manifest and artifact reference without registering them. Exits `1` when invalid. |
+| `versions <id>` | List version history; pages with `--limit` / `--offset`. |
+| `new-version <id>` | Create a new draft version from the active one. |
+| `export` | Export models as JSON; filter with `--status`, `--tag`. References only — the bytes never travel. |
+| `import -f <file>` | Bulk-import from a JSON array file; each item is queued for admission on the target. `--dry-run` previews, `--on-conflict` sets the collision rule. |
+
+The artifact bytes never pass through the CLI. They sit in an S3-compatible
+bucket behind a [`storage` connector](./connectors.md), and a registration
+names them by connector, object key and `sha256:` digest; `create` answers at
+once with `admission.state = "pending"` while a node fetches, verifies, parses
+and probes the object.
+
+`--wait` (on `create` and `admit`) polls until the verdict lands: exit `1` when
+admission fails, `2` on timeout. `--interval` sets the poll period (default
+`2` seconds) and `--timeout` the deadline (default `900`).
+
+Example: `orion-cli models create -f model.json --connector models --key fraud/v3.onnx --digest sha256:9f1c... --wait`
 
 ### `send`
 

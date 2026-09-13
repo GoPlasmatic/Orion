@@ -209,17 +209,18 @@ Click a node to expand it; click a capability to open its page.
 | Area | What the runtime provides |
 |---|---|
 | [Connector types](./reference/connectors.md) | `http`, `kafka`, `db` (PostgreSQL, MySQL, SQLite, MongoDB — chosen by connection-string scheme), `cache` (Redis or in-memory), `es`, `smtp` (transactional email), and `storage` (S3-compatible object stores). |
-| [Task functions](./reference/functions.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect and raw SQL; cache read and write; Kafka publish. |
+| [Task functions](./reference/functions.md) | Parsing, mapping, filtering, validation and logging; HTTP calls; the portable data dialect, raw SQL and MongoDB; cache read and write; Kafka publish; transactional email; object-storage presigning; hashing, HMAC and JWT sign/verify; model inference. |
 | [Portable data dialect](./reference/data-dialect.md) | One filter-and-envelope syntax lowered to SQL, MongoDB, or an Elasticsearch Query DSL body, so the same task reads from any of them. |
 | [Channel protocols](./reference/channel-config.md#routing--protocol) | REST with route patterns and path parameters, plain HTTP by channel name, Kafka topics, and cron schedules — each of them sync or async where the transport allows, except `cron`, which is always async and has no caller at all. |
 | [In-process composition](./reference/functions.md#channel_call) | `channel_call` runs another channel's workflow in the same process: no network hop, no serialization, and the callee's guards still apply. |
-
 | [Plugins](./reference/plugins.md) | Custom task functions as sandboxed WebAssembly components: a pure JSON → JSON transformation, uploaded and activated like any other definition, promoted in packages, synced across a cluster. The sandbox imports nothing — no filesystem, clock, network or secrets. |
+| [Models](./concepts/models.md) | ONNX models held in object storage and admitted — fetched, digest-checked, parsed and probed — before a version may serve. A manifest's JSONLogic adapters shape the message into tensors and read the outputs back, so calling one stays a declarative task. Off by default. |
 
 > [!NOTE]
-> Orion extends **by configuration, and by pure code in a sandbox**. A plugin
-> is the one way to add a task function at runtime, and it can only compute:
-> everything with I/O stays a connector or a service of your own.
+> Orion extends **by configuration, and by pure computation**. A plugin is the
+> one way to add a task function at runtime and a model the one way to add a
+> learned one; both only compute, and everything with I/O stays a connector or
+> a service of your own.
 > [What you can extend](./concepts/how-orion-works.md#what-you-can-extend)
 > states the boundary exactly.
 
@@ -238,7 +239,7 @@ Click a node to expand it; click a capability to open its page.
 
 | Area | What the runtime provides |
 |---|---|
-| [Admin API](./reference/admin-api.md) | Full CRUD over channels, workflows, connectors and packages, plus lifecycle transitions, engine control, and dependency inspection. Everything the console and the CLI do, they do through it. |
+| [Admin API](./reference/admin-api.md) | Full CRUD over channels, workflows, connectors, plugins, models and packages, plus lifecycle transitions, engine control, and dependency inspection. Everything the console and the CLI do, they do through it. |
 | [OpenAPI](./reference/openapi.md) | The whole admin surface as a spec, with Swagger UI served outside production and closed off inside it. |
 | [Offline testing](./build/testing.md) | Lint a workflow file, dry-run it against sample input with stubbed connectors, and keep `*.case.json` regression suites next to the JSON. None of it needs a running server. |
 | [Packages and promotion](./operate/promotion.md) | `export`, `lint`, `plan`, `apply` and `diff` move a named, versioned unit between instances. Applied versions are content-immutable, and receipts record exactly what shipped. |

@@ -195,6 +195,22 @@ single occurrence run. See
 is a constant `"ok"`, kept for response-shape stability: the engine snapshot
 cannot be unavailable once the process serves.
 
+`components.plugins` and `components.models` each carry a third state,
+`disabled`, which is a configuration choice rather than a fault: the node has
+`plugins.enabled` or `models.enabled` off and serves everything else normally.
+Either reads `degraded` when an active row exists that **this node** could not
+carry — a missing artifact, a component that will not compile, a failed
+self-test, a model whose admission never passed, or the capability being off
+while active rows are stored. `components.models` is also `degraded` while the
+admission worker is down, which is the state in which a new registration would
+wait for a verdict forever. Both are per-node: the entity stays stored and
+active, and it is this node that cannot serve it.
+
+Neither flips the top-level `status` on its own. They do not need to — a plugin
+or model that did not load quarantines the channels whose workflows use it, and
+`components.channels` is what carries that into `status`. Alert on
+`components.channels` for impact; read these two for the cause.
+
 ### `components.config_propagation`
 
 Cluster mode only. `degraded` means this node committed a change, applied it

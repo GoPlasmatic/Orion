@@ -20,6 +20,7 @@ valid API key. Success and error bodies follow the
 | [Functions](#functions) | Discover registered task functions and schemas |
 | [Audit logs](#audit-logs) | Query administrative actions |
 | [Trace DLQ](#trace-dlq) | Inspect and retry failed asynchronous persistence |
+| [Cron occurrences](#cron-occurrences) | Inspect, retry and manually trigger scheduled runs |
 | [Backups](#backups) | Create and list SQLite backups |
 
 All resources use the [authentication](#authentication), [response
@@ -147,7 +148,9 @@ Errors follow one structure across both planes. See
 
 ## Lifecycle
 
-Both channels and workflows follow a **draft → active → archived** lifecycle:
+Channels, workflows, plugins and models all follow the same **draft → active
+→ archived** lifecycle, enforced by database triggers rather than by
+convention:
 
 1. **Create:** entities are created as `draft` (not loaded into the engine)
 2. **Update:** only draft versions can be updated via `PUT`
@@ -155,16 +158,28 @@ Both channels and workflows follow a **draft → active → archived** lifecycle
 4. **New version:** `POST /versions` creates a new draft version from the active entity
 5. **Archive:** `PATCH /status` with `{"status": "archived"}` removes from the engine
 
-A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
+A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine. Activating a plugin registers its task functions; activating a model makes it available to `model_infer` — and a model may only be activated once its [admission verdict](#models) is `passed`.
+
+Connectors are the exception: they are not versioned, have no draft and no
+`activate`, and `PUT` writes in place.
 
 Activation order is enforced, not merely conventional.
 
-A workflow refuses to activate while a connector its tasks reference is missing
-or of the wrong type. A channel refuses to activate while its `workflow_id` is
-unset, names a workflow that does not exist, or names one with no active
-version. The
-working order for a bundle is therefore connectors → workflows → channels —
-the same order `?dry_run=true` lets you verify before writing anything.
+A workflow is refused at create and update time when it names a task function
+the engine does not serve, which includes a plugin function whose plugin is
+not yet active and loaded. A workflow refuses to activate while a connector its
+tasks reference is missing or of the wrong type. A channel refuses to activate
+while its `workflow_id` is unset, names a workflow that does not exist, or
+names one with no active version. The working order for a bundle is therefore
+plugins → connectors → workflows → channels — the same order `?dry_run=true`
+lets you verify before writing anything.
+
+Models are not gated this way: a workflow naming a model that is absent or
+inactive is accepted and activated, and the channels reaching it are
+[quarantined](../operate/monitoring.md) on any node that cannot serve the
+model. Activate models before the workflows that name them — between
+connectors and workflows, since a model's artifact is fetched through a
+`storage` connector.
 
 **Channel names are unique**: the data plane and `channel_call` address
 channels by name, so a name may belong to only one `channel_id`. Create,
@@ -410,9 +425,9 @@ Kafka brokers are covered by `orion-server test-connectivity`.
 
 ## Export & Promotion
 
-All three primitives export and import, so an estate can live in git rather than
-only in the database. Each `/export` emits the shape its `/import` accepts, so
-the round trip needs no reshaping in between.
+All five entity kinds export and import, so an estate can live in git rather
+than only in the database. Each `/export` emits the shape its `/import`
+accepts, so the round trip needs no reshaping in between.
 
 Every `/import` endpoint accepts at most **1000 items per request** and answers
 `400 VALIDATION_ERROR` above that — split a larger estate into batches. The
@@ -421,8 +436,8 @@ workflows can reach well before the item cap does.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/{workflows,channels,connectors}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set |
-| POST | `/api/v1/admin/{workflows,channels,connectors}/import` | Bulk import. `?on_conflict=` selects the collision policy; `?dry_run=true` reports what would happen |
+| GET | `/api/v1/admin/{workflows,channels,connectors,plugins,models}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set. Plugin components are inlined only with `?include_artifacts=true`; a model always exports as a reference, never as bytes |
+| POST | `/api/v1/admin/{workflows,channels,connectors,plugins,models}/import` | Bulk import. `?on_conflict=` selects the collision policy; `?dry_run=true` reports what would happen |
 
 Each export reads inside **one repeatable-read transaction**, so the result is a
 consistent snapshot — rows mutated mid-export cannot be skipped or duplicated.
@@ -613,8 +628,8 @@ curl -X POST http://localhost:8080/api/v1/admin/channels/nightly-rollup/trigger 
 
 ## Packages
 
-A **package** is the channels, workflows, connectors and plugins of one
-service, promoted between instances as a versioned unit
+A **package** is the channels, workflows, connectors, plugins and models of
+one service, promoted between instances as a versioned unit
 ([Promote Between Environments](../operate/promotion.md)). This is the single
 package-aware surface of the admin API.
 
@@ -636,12 +651,13 @@ promotion rule cannot be enforced unless the target remembers what was applied:
 The intended apply sequence: **claim** the receipt as `staged` (the atomic
 same-version-different-content rejection, doubling as a guard against two
 concurrent applies), stage the artifact's entities via the `/import`
-endpoints, activate them in dependency order (connectors → workflows →
-channels), then flip the receipt to `applied`. A failed apply leaves the
-receipt `staged`, so a corrected re-run at the same version is legal — only a
-draft can be updated. Re-putting an *older* applied version with its own
-original hash is also legal and simply makes it current again (the rollback
-path: entities roll forward carrying the old content; nothing moves backward).
+endpoints, activate them in dependency order (plugins → connectors → models →
+workflows → channels), then flip the receipt to `applied`. A failed apply
+leaves the receipt `staged`, so a corrected re-run at the same version is
+legal — only a draft can be updated. Re-putting an *older* applied version
+with its own original hash is also legal and simply makes it current again
+(the rollback path: entities roll forward carrying the old content; nothing
+moves backward).
 
 Receipts never touch the engine — no reload, no cluster epoch bump. `state`,
 `content_hash` and `principal` are recorded verbatim; the hash is opaque to

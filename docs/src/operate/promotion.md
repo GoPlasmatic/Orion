@@ -89,12 +89,12 @@ reading once:
    reused applied version with different content is refused here, and it
    doubles as the guard against two applies running at once.
 2. **Stage every entity as a draft**, in dependency order: plugins, then
-   connectors, then workflows, then channels. A package that carries
-   [plugins](../concepts/plugins.md) **activates them here**, reload included,
-   before anything else is staged: a workflow's create-time gate validates
-   every function it names against the registry the engine is serving, so a
-   workflow calling a plugin function cannot be staged until the plugin is
-   active and loaded. Connector import reloads the connector registry
+   connectors, then models, then workflows, then channels. A package that
+   carries [plugins](../concepts/plugins.md) **activates them here**, reload
+   included, before anything else is staged: a workflow's create-time gate
+   validates every function it names against the registry the engine is
+   serving, so a workflow calling a plugin function cannot be staged until
+   the plugin is active and loaded. Connector import reloads the connector registry
    server-side, so workflow activation later sees them.
 3. **Activate in dependency order, with the reload deferred.** Each activation
    is marked in the database but the engine is not rebuilt yet.
