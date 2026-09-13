@@ -287,9 +287,13 @@ than an error.
   ] }
   ```
 
-- **`date_diff` units are plural.** `"days"`, `"hours"`, `"minutes"`,
-  `"seconds"`. An unrecognized unit — including the singular `"day"` — returns
-  `0` rather than an error, which reads exactly like "the dates are the same".
+- **`date_diff` units are plural.** The accepted set is `"days"`, `"hours"`,
+  `"minutes"`, `"seconds"`, `"milliseconds"`. Any other unit — including the
+  singular `"day"` — fails the task with `Invalid arguments: date_diff: unknown
+  unit "day"`, which names the accepted set. The refusal matters because the
+  alternative is worse than an error: a unit the engine does not know would
+  otherwise measure `0`, and `0` reads exactly like "the two datetimes are the
+  same", so the typo would ship and answer plausibly forever.
 
 - **`timestamp` is not a datetime-to-epoch conversion.** It parses a
   *duration* (`"1d"` → `"1d:0h:0m:0s"`) for use in date arithmetic. Passing it

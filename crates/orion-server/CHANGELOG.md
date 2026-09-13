@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The expression reference documented `date_diff`'s unknown-unit behaviour
+  backwards**, and had since 1.2.0. The page said an unrecognized unit —
+  including the singular `"day"`, the natural misspelling of `"days"` — returned
+  `0` rather than an error. datalogic-rs has in fact *rejected* unknown units
+  since 5.3.0, which Orion picked up in 1.2.0 (`deps: dataflow-rs 3.7`), so for
+  six releases the page described behaviour no shipped Orion had. Nothing
+  asserted the claim, so nothing caught it. The page now states the refusal and
+  its accepted set (`days`, `hours`, `minutes`, `seconds`, `milliseconds` — the
+  last of which was also undocumented), and `date_diff_rejects_an_unknown_unit`
+  pins it against the live engine so the page cannot drift from it again.
+
+  No runtime behaviour changed here and no workflow is affected; this is a
+  documentation correction surfaced by the 3.13 upgrade, not caused by it.
+
 ## [1.7.0] - 2026-09-06
 
 Additive throughout, with one behaviour change worth reading before upgrading:

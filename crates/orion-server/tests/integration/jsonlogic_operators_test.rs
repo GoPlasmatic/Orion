@@ -177,8 +177,9 @@ const OPERATORS: &[OperatorCase] = &[
         },
         || json!("2026-07-31 05:30"),
     ),
-    // Units are plural. A singular unit is not an error — `"day"` returns 0 —
-    // so this pins the spelling that actually measures something.
+    // Units are plural, and a unit outside the accepted set is an `Invalid
+    // arguments` error rather than a silent 0 — pinned by
+    // `date_diff_rejects_an_unknown_unit`.
     (
         "date_diff",
         || {
@@ -718,5 +719,32 @@ async fn an_unknown_operator_in_a_mapping_is_a_silent_literal() {
         body["data"]["out"]["typo"].get("uppr").is_some(),
         "expected the echoed literal to carry the misspelled name, got {}",
         body["data"]["out"]["typo"]
+    );
+}
+
+/// An unrecognized `date_diff` unit is refused, not silently answered with 0.
+///
+/// The singular `"day"` is the natural misspelling of the accepted `"days"`,
+/// and the refusal is what keeps it from shipping: an unknown unit would
+/// otherwise measure `0`, which reads exactly like "the two datetimes are the
+/// same" — a wrong answer indistinguishable from a right one.
+///
+/// datalogic-rs has rejected unknown units since 5.3, which Orion has linked
+/// since 1.2.0, but `docs/src/reference/expressions.md` went on documenting the
+/// old silent-`0` behaviour for six releases because nothing asserted it. That
+/// is what this test is for: the claim on the reference page is now pinned to
+/// the engine rather than to a dependency's changelog.
+#[test]
+fn date_diff_rejects_an_unknown_unit() {
+    let logic = json!({"date_diff": [
+        {"datetime": ["2026-07-31T00:00:00Z"]},
+        {"datetime": ["2026-07-30T00:00:00Z"]},
+        "day"]});
+
+    let err = try_eval(&logic)
+        .expect_err("a singular date_diff unit must be refused, not answered with 0");
+    assert!(
+        err.contains("unknown unit"),
+        "expected an unknown-unit refusal, got {err:?}"
     );
 }
