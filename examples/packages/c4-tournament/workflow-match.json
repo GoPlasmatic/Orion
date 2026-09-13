@@ -1,0 +1,199 @@
+{
+  "workflow_id": "c4-match",
+  "name": "C4 Tournament: One Match",
+  "description": "Two entrants play a game: each sweep of the loop is one turn through the c4-turn channel, the loop ends when the rules say the game is over, and both leaderboard rows are updated.",
+  "tags": ["pkg:c4-tournament"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 42 },
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "first_sweep",
+      "name": "On the first sweep only",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "validate",
+          "name": "Require two model ids",
+          "halt_on": "failure",
+          "function": {
+            "name": "validation",
+            "input": {
+              "rules": [
+                {
+                  "logic": { "!!": [{ "var": "data.input.one" }] },
+                  "message": "one is required: the model id playing first"
+                },
+                {
+                  "logic": { "!!": [{ "var": "data.input.two" }] },
+                  "message": "two is required: the model id playing second"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "start",
+          "name": "An empty board, on the first sweep only",
+          "function": { "name": "c4.rules.start", "input": { "output": "data.state" } }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop once the game is over",
+      "function": {
+        "name": "filter",
+        "input": { "condition": { "!": [{ "var": "data.state.over" }] }, "on_reject": "halt" }
+      }
+    },
+    {
+      "id": "mover",
+      "name": "Whose turn, and with which model",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "temp_data.turn_request.state", "logic": { "var": "data.state" } },
+            {
+              "path": "temp_data.turn_request.mover_model",
+              "logic": {
+                "if": [
+                  { "==": [{ "var": "data.state.to_move" }, 1] },
+                  { "var": "data.input.one" },
+                  { "var": "data.input.two" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "turn",
+      "name": "Play one turn through the c4-turn channel",
+      "function": {
+        "name": "channel_call",
+        "input": {
+          "channel": "c4-turn",
+          "data": { "var": "temp_data.turn_request" },
+          "output": "temp_data.turn"
+        }
+      }
+    },
+    {
+      "id": "settle",
+      "name": "Take the new state",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [{ "path": "data.state", "logic": { "var": "temp_data.turn.state" } }]
+        }
+      }
+    },
+    {
+      "id": "finish",
+      "name": "Once the game is over",
+      "condition": { "var": "data.state.over" },
+      "tasks": [
+        {
+          "id": "tally",
+          "name": "Who gets what",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                {
+                  "path": "temp_data.one_won",
+                  "logic": {
+                    "if": [
+                      { "==": [{ "var": "data.state.winner" }, 1] },
+                      1,
+                      0
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.two_won",
+                  "logic": {
+                    "if": [
+                      { "==": [{ "var": "data.state.winner" }, 2] },
+                      1,
+                      0
+                    ]
+                  }
+                },
+                {
+                  "path": "temp_data.drawn",
+                  "logic": {
+                    "if": [
+                      { "==": [{ "var": "data.state.winner" }, 0] },
+                      1,
+                      0
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "record_one",
+          "name": "Update the first entrant's row",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "c4-leaderboard",
+              "query": "UPDATE leaderboard SET wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE model = ?",
+              "params": [
+                { "var": "temp_data.one_won" },
+                { "var": "temp_data.two_won" },
+                { "var": "temp_data.drawn" },
+                { "var": "data.input.one" }
+              ],
+              "output": "temp_data.recorded_one"
+            }
+          }
+        },
+        {
+          "id": "record_two",
+          "name": "Update the second entrant's row",
+          "function": {
+            "name": "db_write",
+            "input": {
+              "connector": "c4-leaderboard",
+              "query": "UPDATE leaderboard SET wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE model = ?",
+              "params": [
+                { "var": "temp_data.two_won" },
+                { "var": "temp_data.one_won" },
+                { "var": "temp_data.drawn" },
+                { "var": "data.input.two" }
+              ],
+              "output": "temp_data.recorded_two"
+            }
+          }
+        },
+        {
+          "id": "answer",
+          "name": "The result",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.result.one", "logic": { "var": "data.input.one" } },
+                { "path": "data.result.two", "logic": { "var": "data.input.two" } },
+                { "path": "data.result.winner", "logic": { "var": "data.state.winner" } },
+                { "path": "data.result.moves", "logic": { "var": "data.state.moves" } },
+                { "path": "data.result.illegal", "logic": { "var": "data.state.illegal" } }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

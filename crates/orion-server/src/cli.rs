@@ -226,6 +226,7 @@ pub(crate) fn run_lint(
     boundary: orion::definitions::Boundary,
     definitions: Option<&str>,
     plugin_dirs: &[String],
+    model_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
@@ -233,10 +234,16 @@ pub(crate) fn run_lint(
     // the ones *between* files — which a per-file lint cannot see by
     // construction (#286).
     if std::path::Path::new(workflow_path).is_dir() {
-        return run_lint_set(workflow_path, deny_warnings, boundary, plugin_dirs);
+        return run_lint_set(
+            workflow_path,
+            deny_warnings,
+            boundary,
+            plugin_dirs,
+            model_dirs,
+        );
     }
 
-    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
+    let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
     let doc = read_expanded_workflow(workflow_path, catalog.as_ref())?;
     let req: CreateWorkflowRequest = serde_json::from_value(doc)
         .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
@@ -278,6 +285,26 @@ pub(crate) fn run_lint(
             )
             .with_remedy("pass --plugin-dir <dir> with the plugin's plugin.toml")
         );
+    }
+
+    // The models the workflow names. With manifests in hand a literal id
+    // that matches none of them is the `closure.model` error set mode gives;
+    // without any, a literal id is unverifiable here the way a plugin
+    // function is — the node it deploys to decides. A computed id is
+    // unverifiable everywhere.
+    let manifests = catalog.as_ref().map(|c| c.models.as_slice()).unwrap_or(&[]);
+    let mut model_errors = 0usize;
+    for finding in model_findings(&req.tasks, &req.name, manifests) {
+        if finding.is_error() {
+            model_errors += 1;
+        }
+        eprintln!("{finding}");
+    }
+    if model_errors > 0 {
+        return Err(format!(
+            "'{workflow_path}' names {model_errors} model(s) the given manifests do not describe"
+        )
+        .into());
     }
 
     // Advisory findings the create path does not refuse. On stderr so stdout
@@ -387,7 +414,8 @@ pub(crate) fn read_expanded_workflow(
 /// case.
 pub(crate) struct Catalog {
     /// The `--definitions` directory, for the message when a reference does
-    /// not resolve against it. `None` when only `--plugin-dir` was given.
+    /// not resolve against it. `None` when only `--plugin-dir` or
+    /// `--model-dir` was given.
     dir: Option<String>,
     shared: orion::definitions::SharedDefinitions,
     /// The plugin manifests found under the definitions directory and every
@@ -397,6 +425,26 @@ pub(crate) struct Catalog {
     /// The sandbox over those components, built on first use: a `test` run
     /// over many cases compiles each component once.
     sandbox: std::sync::OnceLock<Result<OfflineSandbox, String>>,
+    /// The model manifests found under the definitions directory and every
+    /// `--model-dir`, each with its artifact hashed and read when the file
+    /// is beside it. What a literal `model_infer` reference is checked
+    /// against, and what an offline run executes.
+    models: Vec<orion::definitions::ModelDefinition>,
+    /// The runtimes, the resident sessions and the inference slots every
+    /// offline run of this catalog shares, built on first use: a `test`
+    /// suite loads each model into the runtime once, however many cases
+    /// call it. The compiled *set* is per engine and is not here — see
+    /// [`Self::model_handler`].
+    model_host: std::sync::OnceLock<std::sync::Arc<orion::model::InferenceHost>>,
+}
+
+/// The `[models]` an offline run uses: enabled, every other ceiling the
+/// default. No cache directory is read or written — nothing is fetched.
+fn offline_models_config() -> orion::config::ModelsConfig {
+    orion::config::ModelsConfig {
+        enabled: true,
+        ..orion::config::ModelsConfig::default()
+    }
 }
 
 /// The plugin components an offline run executes — for real, in the same
@@ -415,6 +463,7 @@ impl Catalog {
     pub(crate) fn load(
         dir: Option<&str>,
         plugin_dirs: &[String],
+        model_dirs: &[String],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let mut findings = Vec::new();
         let mut shared = orion::definitions::SharedDefinitions::default();
@@ -427,8 +476,10 @@ impl Catalog {
             // The manifests in the definitions tree are part of its catalog
             // as much as its shared values are.
             findings.extend(set.add_plugin_dirs(&[dir.to_string()])?);
+            findings.extend(set.add_model_dirs(&[dir.to_string()])?);
         }
         findings.extend(set.add_plugin_dirs(plugin_dirs)?);
+        findings.extend(set.add_model_dirs(model_dirs)?);
         let errors = findings.iter().filter(|f| f.is_error()).count();
         for finding in &findings {
             eprintln!("{finding}");
@@ -436,7 +487,11 @@ impl Catalog {
         if errors > 0 {
             return Err(format!(
                 "{errors} error(s) in the definitions under '{}'",
-                dir.unwrap_or("--plugin-dir")
+                dir.unwrap_or(if plugin_dirs.is_empty() {
+                    "--model-dir"
+                } else {
+                    "--plugin-dir"
+                })
             )
             .into());
         }
@@ -445,19 +500,22 @@ impl Catalog {
             shared,
             plugins: set.plugins,
             sandbox: std::sync::OnceLock::new(),
+            models: set.models,
+            model_host: std::sync::OnceLock::new(),
         })
     }
 
-    /// [`Self::load`] for the optional `--definitions` and `--plugin-dir`
-    /// arguments: `None` when neither was given.
+    /// [`Self::load`] for the optional `--definitions`, `--plugin-dir` and
+    /// `--model-dir` arguments: `None` when none was given.
     pub(crate) fn load_opt(
         dir: Option<&str>,
         plugin_dirs: &[String],
+        model_dirs: &[String],
     ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        if dir.is_none() && plugin_dirs.is_empty() {
+        if dir.is_none() && plugin_dirs.is_empty() && model_dirs.is_empty() {
             return Ok(None);
         }
-        Self::load(dir, plugin_dirs).map(Some)
+        Self::load(dir, plugin_dirs, model_dirs).map(Some)
     }
 
     /// The registry an offline command validates against: the built-ins plus
@@ -466,10 +524,51 @@ impl Catalog {
         &self,
     ) -> Result<orion::engine::FunctionRegistry, Box<dyn std::error::Error>> {
         let set = orion::definitions::DefinitionSet {
-            definitions: Vec::new(),
             plugins: self.plugins.clone(),
+            ..orion::definitions::DefinitionSet::default()
         };
         Ok(set.function_registry()?)
+    }
+
+    /// The `model_infer` handler for one offline engine: every model whose
+    /// artifact is on disk, run for real through the same handler a node
+    /// registers, over the host this catalog shares between runs. The set
+    /// the handler resolves against is compiled on the engine that first
+    /// calls it — which is why this hands out a fresh [`OfflineModels`] per
+    /// engine and the handler must not outlive the engine it was built for.
+    /// The second value names the models whose manifest is here and whose
+    /// artifact is not, with the manifest's origin: a run naming one of
+    /// them is refused as `MODEL_ARTIFACT_UNAVAILABLE` rather than stubbed.
+    ///
+    /// [`OfflineModels`]: orion::model::OfflineModels
+    pub(crate) fn model_handler(
+        &self,
+    ) -> (dataflow_rs::BoxedFunctionHandler, Vec<(String, String)>) {
+        let mut entries = Vec::new();
+        let mut unavailable = Vec::new();
+        for model in &self.models {
+            match model.manifest_entry() {
+                Some(entry) => entries.push(entry),
+                None => unavailable.push((model.manifest.name.clone(), model.origin.clone())),
+            }
+        }
+        let config = std::sync::Arc::new(offline_models_config());
+        let offline =
+            std::sync::Arc::new(orion::model::OfflineModels::new(entries, config.clone()));
+        let artifacts: std::sync::Arc<dyn orion::model::ArtifactSource> =
+            std::sync::Arc::new(offline.artifacts());
+        let host = self
+            .model_host
+            .get_or_init(|| {
+                std::sync::Arc::new(orion::model::InferenceHost::offline(&config, artifacts))
+            })
+            .clone();
+        let handler = orion::model::ModelInferHandler {
+            source: orion::model::ModelSource::Offline(offline),
+            host: Some(host),
+            config,
+        };
+        (Box::new(handler), unavailable)
     }
 
     /// The compiled components, built once.
@@ -632,6 +731,104 @@ fn placeholder_entries(names: &[String]) -> Vec<orion::engine::FunctionEntry> {
         .collect()
 }
 
+/// One `model_infer` task: where it is, what it is called, and the model it
+/// names when that is a literal.
+struct InferTask {
+    /// The JSON path of the `model` field — what a refusal points at.
+    path: String,
+    /// The task's id, or its step path when it has none.
+    id: String,
+    /// `None` for a computed `model`.
+    model: Option<String>,
+}
+
+/// Every `model_infer` task in `tasks`, through task groups. The literal
+/// ids are the engine's own [`literal_references`]; the computed ones are
+/// what that walk deliberately skips, listed here because an offline run
+/// has to say what it will do about them.
+///
+/// [`literal_references`]: orion::model::literal_references
+fn model_infer_tasks(tasks: &serde_json::Value) -> Vec<InferTask> {
+    let literal = orion::model::literal_references(tasks);
+    let mut out = Vec::new();
+    for (path, task) in orion::engine::walk_steps(tasks).tasks {
+        let Some(function) = task.get("function") else {
+            continue;
+        };
+        if function.get("name").and_then(serde_json::Value::as_str)
+            != Some(orion::model::handler::NAME)
+        {
+            continue;
+        }
+        let id = task
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| path.clone());
+        let model = literal
+            .iter()
+            .find(|(task_id, _)| *task_id == id)
+            .map(|(_, model)| model.clone());
+        out.push(InferTask {
+            path: format!("{path}.function.input.model"),
+            id,
+            model,
+        });
+    }
+    out
+}
+
+/// What a single-file lint says about the models `tasks` names, given the
+/// `manifests` in hand. A literal id none of them describes is an error
+/// when there are manifests to check against, and an unverifiable note when
+/// there are none — the same distinction the set-mode check draws with
+/// `closure.model`, which is the authority when a directory is linted.
+fn model_findings(
+    tasks: &serde_json::Value,
+    workflow: &str,
+    manifests: &[orion::definitions::ModelDefinition],
+) -> Vec<orion::definitions::Diagnostic> {
+    let entity = format!("workflow '{workflow}'");
+    let mut out = Vec::new();
+    for InferTask {
+        id: task, model, ..
+    } in model_infer_tasks(tasks)
+    {
+        match model {
+            Some(model) if manifests.iter().any(|m| m.manifest.name == model) => {}
+            Some(model) if manifests.is_empty() => out.push(
+                orion::definitions::Diagnostic::note(
+                    "model.unverifiable",
+                    &entity,
+                    format!(
+                        "task '{task}' names model '{model}', and no manifest for it was given, \
+                         so the reference cannot be checked here; a node that does not serve \
+                         the model quarantines the workflow"
+                    ),
+                )
+                .with_remedy("pass --model-dir <dir> with the model's manifest"),
+            ),
+            Some(model) => out.push(orion::definitions::Diagnostic::error(
+                "closure.model",
+                &entity,
+                format!(
+                    "task '{task}' names model '{model}', which none of the given manifests \
+                     describes"
+                ),
+            )),
+            None => out.push(orion::definitions::Diagnostic::note(
+                "model.unverifiable",
+                &entity,
+                format!(
+                    "task '{task}' computes its model, so the model it names is decided per \
+                     message and cannot be checked here"
+                ),
+            )),
+        }
+    }
+    out
+}
+
 /// `lint <dir>`: load a definition set and run the cross-reference pass.
 ///
 /// The per-entity validators run here too. A set lint that checked only the
@@ -643,12 +840,13 @@ fn run_lint_set(
     deny_warnings: bool,
     boundary: orion::definitions::Boundary,
     plugin_dirs: &[String],
+    model_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     // `false`: a directory being authored may hold a workflow with no id yet.
     // A package must carry explicit ids because channels reference them across
     // the artifact; a directory has no such contract, and refusing an id-less
     // draft would make the gate unusable exactly when it is most wanted.
-    load_and_gate(dir, boundary, false, deny_warnings, plugin_dirs)?;
+    load_and_gate(dir, boundary, false, deny_warnings, plugin_dirs, model_dirs)?;
     Ok(())
 }
 
@@ -664,6 +862,7 @@ fn load_and_gate(
     require_ids: bool,
     deny_warnings: bool,
     plugin_dirs: &[String],
+    model_dirs: &[String],
 ) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
     let report = orion::definitions::gate_directory(
         std::path::Path::new(dir),
@@ -673,6 +872,7 @@ fn load_and_gate(
             want_raw: false,
         },
         plugin_dirs,
+        model_dirs,
     )?;
 
     // Say what was not read. A set lint that silently ignores a file reports
@@ -682,10 +882,11 @@ fn load_and_gate(
         eprintln!("{notice}");
     }
 
-    if report.set.is_empty() {
+    if report.set.is_empty() && report.set.models.is_empty() {
         return Err(format!(
             "no definitions found under '{dir}'. A definition is a JSON object with \
-             'tasks' (workflow), 'channel_type' (channel) or 'connector_type' (connector)."
+             'tasks' (workflow), 'channel_type' (channel), 'connector_type' (connector) or \
+             an 'abi' of orion:model@… (model manifest)."
         )
         .into());
     }
@@ -715,9 +916,14 @@ fn load_and_gate(
             report.shared.fragments.len(),
         )
     };
+    let models = if report.set.models.is_empty() {
+        String::new()
+    } else {
+        format!(", {} model(s)", report.set.models.len())
+    };
     println!(
-        "{dir}: {} connector(s), {} workflow(s), {} channel(s){shared} — {errors} error(s), \
-         {warnings} warning(s)",
+        "{dir}: {} connector(s), {} workflow(s), {} channel(s){models}{shared} — {errors} \
+         error(s), {warnings} warning(s)",
         report.set.count(Entity::Connector),
         report.set.count(Entity::Workflow),
         report.set.count(Entity::Channel),
@@ -773,6 +979,8 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) no_activate: bool,
     /// Directories of plugin manifests beyond the set's own tree.
     pub(crate) plugin_dirs: &'a [String],
+    /// Directories of model manifests beyond the set's own tree.
+    pub(crate) model_dirs: &'a [String],
 }
 
 pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
@@ -795,16 +1003,14 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
         _ => ("", ""),
     };
 
-    let requires = orion::definitions::Boundary {
-        channels: req.boundary.channels.clone(),
-        connectors: req.boundary.connectors.clone(),
-    };
+    let requires = req.boundary.clone();
     let set = load_and_gate(
         req.dir,
         req.boundary,
         requires_ids,
         req.deny_warnings,
         req.plugin_dirs,
+        req.model_dirs,
     )?;
 
     match req.format {
@@ -870,6 +1076,25 @@ fn emit_artifact(
     }
 
     let plugins = plugin_import_entries(set, no_activate)?;
+    let models = model_import_entries(set, no_activate)?;
+    // The storage connectors the models' references name, unless the set
+    // carries a connector of that name itself: the target fetches every
+    // artifact through one, and `plan` checks it is there before anything
+    // is written.
+    let connectors = collect(Entity::Connector);
+    let carried: Vec<&str> = connectors
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    let mut storage: Vec<String> = Vec::new();
+    for entry in &models {
+        if let Some(name) = entry["artifact"]["connector"].as_str()
+            && !carried.contains(&name)
+            && !storage.iter().any(|s| s == name)
+        {
+            storage.push(name.to_string());
+        }
+    }
 
     let mut artifact = crate::package_cli::PackageArtifact {
         package: crate::package_cli::PackageMeta {
@@ -884,9 +1109,12 @@ fn emit_artifact(
             channels: requires.channels,
             connectors: requires.connectors,
             plugins: Vec::new(),
+            models: Vec::new(),
+            storage,
         },
         plugins,
-        connectors: collect(Entity::Connector),
+        models,
+        connectors,
         workflows,
         channels,
     };
@@ -951,6 +1179,63 @@ fn plugin_import_entries(
     Ok(plugins)
 }
 
+/// The set's models as `/models/import` items: the manifest without its
+/// local `artifact` path, and the reference a serving instance fetches the
+/// bytes through — connector and key from the manifest's `reference`, the
+/// digest computed from the file `artifact` names. Both halves are
+/// required: an artifact has to name bytes a target can reach, and the
+/// digest is what the target checks them against, so a manifest missing
+/// either is a refusal here, naming what to add, rather than an item the
+/// target will refuse at import or fail at admission.
+fn model_import_entries(
+    set: &orion::definitions::DefinitionSet,
+    no_activate: bool,
+) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let mut models = Vec::with_capacity(set.models.len());
+    for model in &set.models {
+        let name = &model.manifest.name;
+        let Some(digest) = &model.digest else {
+            return Err(format!(
+                "model '{name}' ({}): no artifact beside the manifest, and an artifact must be \
+                 reachable by the target — put the file beside the manifest and name it with \
+                 `artifact`, so its digest can be computed",
+                model.origin
+            )
+            .into());
+        };
+        let Some(reference) = &model.manifest.reference else {
+            return Err(format!(
+                "model '{name}' ({}): the manifest names no `reference`, and an artifact must be \
+                 reachable by the target — put the bytes in the bucket and name them with \
+                 `reference = {{ connector, key }}`",
+                model.origin
+            )
+            .into());
+        };
+        let mut manifest = serde_json::to_value(&model.manifest)?;
+        if let Some(obj) = manifest.as_object_mut() {
+            // The path is where the bytes were on this machine; a served
+            // row names them by connector, key and digest.
+            obj.remove("artifact");
+        }
+        let mut entry = serde_json::json!({
+            "model_id": name,
+            "manifest": manifest,
+            "artifact": {
+                "connector": reference.connector,
+                "key": reference.key,
+                "digest": digest,
+            },
+            "tags": [],
+        });
+        if !no_activate {
+            entry["activate"] = serde_json::Value::Bool(true);
+        }
+        models.push(entry);
+    }
+    Ok(models)
+}
+
 /// Mirror the input tree into `out`, compiled.
 ///
 /// One file in, one file out, at the same relative path — so a diff of the two
@@ -998,13 +1283,39 @@ fn emit_dir(
                 .map_err(|e| format!("copy '{}': {e}", component.display()))?;
         }
     }
+    // Model manifests likewise, with the artifact beside each when it is
+    // there: they are already what a registration reads.
+    for model in &set.models {
+        let origin = std::path::Path::new(&model.origin);
+        let Ok(relative) = origin.strip_prefix(root) else {
+            continue;
+        };
+        let target = out_root.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create '{}': {e}", parent.display()))?;
+        }
+        std::fs::copy(origin, &target).map_err(|e| format!("copy '{}': {e}", target.display()))?;
+        if let (Some(artifact), Some(rel)) =
+            (&model.artifact_path, model.manifest.artifact.as_deref())
+            && let Some(parent) = target.parent()
+        {
+            std::fs::copy(artifact, parent.join(rel))
+                .map_err(|e| format!("copy '{}': {e}", artifact.display()))?;
+        }
+    }
     println!(
-        "wrote {} compiled definition(s){} to {out}",
+        "wrote {} compiled definition(s){}{} to {out}",
         set.definitions.len(),
         if set.plugins.is_empty() {
             String::new()
         } else {
             format!(" and {} plugin manifest(s)", set.plugins.len())
+        },
+        if set.models.is_empty() {
+            String::new()
+        } else {
+            format!(" and {} model manifest(s)", set.models.len())
         }
     );
     Ok(())
@@ -1045,6 +1356,15 @@ fn emit_bulk(
         std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
             .map_err(|e| format!("write '{}': {e}", path.display()))?;
         println!("wrote {} plugin(s) to {}", entries.len(), path.display());
+    }
+    // And the fifth: `POST /models/import` takes the manifest and the
+    // reference, never bytes — sent after the connectors it fetches through.
+    if !set.models.is_empty() {
+        let entries = model_import_entries(set, true)?;
+        let path = std::path::Path::new(out).join("models.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&entries)?)
+            .map_err(|e| format!("write '{}': {e}", path.display()))?;
+        println!("wrote {} model(s) to {}", entries.len(), path.display());
     }
     Ok(())
 }
@@ -1257,6 +1577,8 @@ pub(crate) struct ClippyRequest<'a> {
     pub(crate) definitions: Option<&'a str>,
     /// Directories of plugin manifests beyond the set's own tree.
     pub(crate) plugin_dirs: &'a [String],
+    /// Directories of model manifests beyond the set's own tree.
+    pub(crate) model_dirs: &'a [String],
     pub(crate) boundary: orion::definitions::Boundary,
     /// The serving instance's config when `-c` named one — the rules that
     /// need it are skipped otherwise, and say so.
@@ -1315,6 +1637,7 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
                 want_raw: true,
             },
             req.plugin_dirs,
+            req.model_dirs,
         )?;
         for notice in report.notices() {
             eprintln!("{notice}");
@@ -1340,10 +1663,10 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             );
             return Ok(2);
         };
-        let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs)?;
-        let (shared, plugins) = catalog
-            .map(|c| (c.shared, c.plugins))
-            .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new()));
+        let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs, req.model_dirs)?;
+        let (shared, plugins, models) = catalog
+            .map(|c| (c.shared, c.plugins, c.models))
+            .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
         let mut findings = Vec::new();
         let mut compiled_doc = doc.clone();
         orion::definitions::compile::compile(
@@ -1358,6 +1681,7 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
         let mut compiled =
             DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
         compiled.plugins = plugins;
+        compiled.models = models;
         let registry = compiled.function_registry()?;
         findings.extend(orion::definitions::check(
             &compiled,
@@ -1573,6 +1897,7 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // with no stub file: an unstubbed call then reports which stub to add,
     // rather than the `FunctionNotFound` an empty map used to give.
     let log = std::sync::Arc::new(orion::engine::functions::stub::CallLog::new());
+    let stubs_name_model_infer = stubs.contains_key(orion::model::handler::NAME);
     let mut functions =
         orion::engine::functions::stub::build_stub_functions_with_log(stubs, log.clone());
     // Plugin functions are never stubbed: a plugin is capability-free, so the
@@ -1607,6 +1932,91 @@ pub(crate) fn build_dry_run_engine_with_stubs(
             functions.insert(name, handler);
         }
     }
+    // Models run for real once a model directory is in hand — a model is a
+    // pure function of its inputs and its weights, like a plugin — and a
+    // workflow naming one the directory does not hold (or holds without its
+    // bytes) is refused here by name. With no manifests at all the function
+    // is answered from the stub file like a connector function, and a
+    // workflow that calls it with no stub either is refused rather than
+    // left to fail at the task with a message about stubs. A computed
+    // `model` resolves against the directory per message, as it would
+    // against a node's generation.
+    let stubs_model = stubs_name_model_infer;
+    let infer_tasks = model_infer_tasks(&req.tasks);
+    match definitions.filter(|c| !c.models.is_empty()) {
+        Some(catalog) if !infer_tasks.is_empty() => {
+            let (handler, unavailable) = catalog.model_handler();
+            for InferTask {
+                path,
+                id: task,
+                model,
+            } in &infer_tasks
+            {
+                let Some(model) = model else {
+                    continue;
+                };
+                if let Some((_, origin)) = unavailable.iter().find(|(id, _)| id == model) {
+                    return Err(format_lint_error(
+                        workflow_path,
+                        orion::errors::OrionError::invalid_field(
+                            path.clone(),
+                            "MODEL_ARTIFACT_UNAVAILABLE",
+                            format!(
+                                "task '{task}' names model '{model}', whose manifest ({origin}) \
+                                 has no artifact beside it — put the file where the manifest's \
+                                 `artifact` names it, so the run can execute the model rather \
+                                 than stub it"
+                            ),
+                        ),
+                    )
+                    .into());
+                }
+                if !catalog.models.iter().any(|m| m.manifest.name == *model) {
+                    return Err(format_lint_error(
+                        workflow_path,
+                        orion::errors::OrionError::invalid_field(
+                            path.clone(),
+                            "MODEL_ARTIFACT_UNAVAILABLE",
+                            format!(
+                                "task '{task}' names model '{model}', and no manifest for it \
+                                 was given — an offline run executes model_infer for real, so \
+                                 pass --model-dir <dir> holding the model's manifest and its \
+                                 artifact"
+                            ),
+                        ),
+                    )
+                    .into());
+                }
+            }
+            functions.insert(orion::model::handler::NAME.to_string(), handler);
+        }
+        Some(_) | None if infer_tasks.is_empty() || stubs_model => {}
+        _ => {
+            let InferTask {
+                path,
+                id: task,
+                model,
+            } = &infer_tasks[0];
+            return Err(format_lint_error(
+                workflow_path,
+                orion::errors::OrionError::invalid_field(
+                    path.clone(),
+                    "MODEL_ARTIFACT_UNAVAILABLE",
+                    format!(
+                        "task '{task}' calls model_infer{} and no --model-dir was given — pass \
+                         --model-dir <dir> holding the model's manifest and its artifact to run \
+                         it for real, or answer it from the stubs file with \
+                         {{\"model_infer\": {{\"*\": <result>}}}}",
+                        match model {
+                            Some(model) => format!(" on model '{model}'"),
+                            None => " with a computed model".to_string(),
+                        }
+                    ),
+                ),
+            )
+            .into());
+        }
+    }
     // `build_single` registers the custom operators — a dry run must speak the
     // same expression vocabulary as the serving engine — and screens the
     // workflow against the handlers above, which is what makes a dry run's
@@ -1626,15 +2036,28 @@ pub(crate) fn build_dry_run_engine_with_stubs(
 /// naming the stub that would satisfy it. Nothing reaches a real backend
 /// either way — this is the offline counterpart to
 /// `POST /workflows/{id}/test`, which runs against live connectors.
-pub(crate) async fn run_dry_run(
-    workflow_path: &str,
-    input_path: &str,
-    stubs_path: Option<&str>,
-    metadata_path: Option<&str>,
-    secrets_path: Option<&str>,
-    definitions: Option<&str>,
-    plugin_dirs: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) struct DryRunRequest<'a> {
+    pub(crate) workflow: &'a str,
+    pub(crate) input: &'a str,
+    pub(crate) stubs: Option<&'a str>,
+    pub(crate) metadata: Option<&'a str>,
+    pub(crate) secrets: Option<&'a str>,
+    pub(crate) definitions: Option<&'a str>,
+    pub(crate) plugin_dirs: &'a [String],
+    pub(crate) model_dirs: &'a [String],
+}
+
+pub(crate) async fn run_dry_run(req: DryRunRequest<'_>) -> Result<(), Box<dyn std::error::Error>> {
+    let DryRunRequest {
+        workflow: workflow_path,
+        input: input_path,
+        stubs: stubs_path,
+        metadata: metadata_path,
+        secrets: secrets_path,
+        definitions,
+        plugin_dirs,
+        model_dirs,
+    } = req;
     let input_raw = std::fs::read_to_string(input_path)
         .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
     let input: serde_json::Value = serde_json::from_str(&input_raw)
@@ -1665,7 +2088,7 @@ pub(crate) async fn run_dry_run(
         None => orion::engine::ResolvedSecrets::empty(),
     };
 
-    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
+    let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
     let run = build_dry_run_engine(workflow_path, stubs_path, catalog.as_ref(), &secrets)?;
     let mut message = dataflow_rs::Message::builder()
         .payload_json(&input)
@@ -1925,6 +2348,7 @@ pub(crate) async fn run_test(
     path: &str,
     definitions: Option<&str>,
     plugin_dirs: &[String],
+    model_dirs: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let cases = collect_case_files(path)?;
     if cases.is_empty() {
@@ -1938,8 +2362,9 @@ pub(crate) async fn run_test(
     // Loaded once for the whole suite rather than per case: the catalog is
     // the same for all of them, and walking the tree per case was most of a
     // run's work on any set of size — and the plugin components it carries
-    // are compiled once for every case that runs them.
-    let catalog = Catalog::load_opt(definitions, plugin_dirs)?;
+    // are compiled once for every case that runs them — and the models it
+    // carries are loaded into the runtime once.
+    let catalog = Catalog::load_opt(definitions, plugin_dirs, model_dirs)?;
 
     let mut results = Vec::new();
     for case_path in &cases {

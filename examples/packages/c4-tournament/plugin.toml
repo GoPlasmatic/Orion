@@ -1,0 +1,52 @@
+# The c4.rules plugin: the rules of Connect Four as three pure functions,
+# built from examples/plugins/c4-rules/ with the orion-plugin-sdk. The
+# component is committed beside this manifest so the package deploys without
+# a wasm toolchain; `../../plugins/c4-rules/build.sh` rebuilds it.
+#
+# The state every function speaks is one object:
+#   { "board": [42 ints], "to_move": 1|2, "moves": n, "over": bool,
+#     "winner": 0|1|2, "illegal": bool }
+# `board` is row-major, six rows of seven with row 0 at the top; a dropped
+# disc lands in the empty cell with the largest row index.
+abi = "orion:plugin@1.0.0"
+name = "c4.rules"
+version = "0.1.0"
+component = "c4-rules.wasm"
+
+[[functions]]
+name = "c4.rules.start"
+description = "The initial state: an empty board, player one to move"
+category = "transform"
+
+[[functions]]
+name = "c4.rules.view"
+description = "A state from the mover's perspective: cells (1 mine, 2 theirs) and the seven legal-column flags"
+category = "transform"
+
+[[functions.input_fields]]
+name = "state"
+description = "The game state"
+kind = "object"
+required = true
+template_at = true
+
+[[functions]]
+name = "c4.rules.apply"
+description = "Drop the mover's disc in a column and settle the result: a win, a draw at 42 discs, or a forfeit on a full or out-of-range column"
+category = "transform"
+
+[[functions.input_fields]]
+name = "state"
+description = "The game state before the move"
+kind = "object"
+required = true
+template_at = true
+
+# An integer, or a one-element list holding one — the shape `argmax` over a
+# [1, 7] policy yields, so a workflow can hand the model's answer straight in.
+[[functions.input_fields]]
+name = "column"
+description = "The column to play, 0–6, as a number or a one-element list"
+kind = "any"
+required = true
+template_at = true

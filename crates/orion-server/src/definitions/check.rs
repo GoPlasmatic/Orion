@@ -86,6 +86,7 @@ pub fn check(
     let channels = check_channels(set, &workflows.ids, require_explicit_ids, &mut findings);
 
     check_closure(
+        set,
         &workflows,
         &connectors,
         &channels,
@@ -116,7 +117,133 @@ pub fn check(
         ));
     }
 
+    // The models, likewise: the manifest as inventory, then what the file
+    // beside it says — the numbers admission would record, so an author sees
+    // `parameters` before submitting — or the fact that there is no file,
+    // which a serving instance never needs and so is a note, not an error.
+    // What *is* an error is a file that does not read as a graph, or one
+    // whose tensors the manifest does not name: admission would refuse it
+    // at `parse`, and that is a defect the author can fix here.
+    for model in &set.models {
+        let entity = format!("model '{}'", model.manifest.name);
+        findings.push(Diagnostic::note(
+            "model.manifest",
+            &entity,
+            format!(
+                "{} declares {} input(s), {} output(s), format '{}'{}",
+                model.origin,
+                model.manifest.inputs.len(),
+                model.manifest.outputs.len(),
+                model.manifest.format,
+                match &model.manifest.reference {
+                    Some(reference) => {
+                        format!(
+                            "; deployable as connector '{}', key '{}'",
+                            reference.connector, reference.key
+                        )
+                    }
+                    None => String::new(),
+                }
+            ),
+        ));
+        match (&model.graph, &model.digest, model.artifact_bytes) {
+            (Some(Ok(graph)), Some(digest), Some(bytes)) => {
+                findings.push(Diagnostic::note(
+                    "model.stats",
+                    &entity,
+                    format!(
+                        "artifact {digest} ({bytes} bytes): {} parameters, {} nodes, IR {}, \
+                         opset {}; graph inputs {}, outputs {}",
+                        graph.parameters,
+                        graph.nodes,
+                        graph.ir_version,
+                        graph.opset,
+                        quoted(&graph.input_names),
+                        quoted(&graph.output_names),
+                    ),
+                ));
+                if let Err(reason) = crate::model::check_boundary(&model.manifest, graph) {
+                    findings.push(
+                        Diagnostic::error("model.graph", &entity, reason).with_remedy(
+                            "name the graph's tensors in the manifest's inputs and outputs",
+                        ),
+                    );
+                }
+            }
+            (Some(Err(reason)), _, _) => findings.push(Diagnostic::error(
+                "model.graph",
+                &entity,
+                format!(
+                    "the artifact beside {} does not read as a model: {reason}",
+                    model.origin
+                ),
+            )),
+            _ => findings.push(
+                Diagnostic::note(
+                    "model.artifact_missing",
+                    &entity,
+                    match &model.manifest.artifact {
+                        Some(rel) => format!(
+                            "no artifact beside the manifest ({} names '{rel}') — references to \
+                             the model validate here, but it cannot run offline or compile into \
+                             an artifact",
+                            model.origin
+                        ),
+                        None => format!(
+                            "{} names no artifact — references to the model validate here, but \
+                             it cannot run offline or compile into an artifact",
+                            model.origin
+                        ),
+                    },
+                )
+                .with_remedy("put the file beside the manifest and name it with `artifact`"),
+            ),
+        }
+    }
+
     findings
+}
+
+/// `'a', 'b'` for a message.
+fn quoted(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Every `model_infer` task in `tasks`, through task groups: the ones naming
+/// a model by literal id, and the ones whose `model` is computed. Each with
+/// the JSON path of the `model` field, so a finding points at what the
+/// author wrote.
+fn model_references(tasks: &Value) -> (Vec<(String, String)>, Vec<String>) {
+    let mut literal = Vec::new();
+    let mut dynamic = Vec::new();
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        let Some(function) = task.get("function") else {
+            continue;
+        };
+        if function.get("name").and_then(Value::as_str)
+            != Some(crate::model::loader::INFER_FUNCTION)
+        {
+            continue;
+        }
+        let field = format!(
+            "{path}.function.input.{}",
+            crate::model::loader::INFER_MODEL_FIELD
+        );
+        match function
+            .get("input")
+            .and_then(|i| i.get(crate::model::loader::INFER_MODEL_FIELD))
+        {
+            Some(Value::String(id)) => literal.push((field, id.clone())),
+            Some(_) => dynamic.push(field),
+            // A missing `model` is the schema validator's `REQUIRED`.
+            None => {}
+        }
+    }
+    (literal, dynamic)
 }
 
 /// What the workflow pass learned.
@@ -466,6 +593,7 @@ fn check_channels(
 /// Task references that must resolve in the set or be declared on the
 /// boundary.
 fn check_closure(
+    set: &DefinitionSet,
     workflows: &Workflows,
     connectors: &BTreeMap<String, crate::engine::ConnectorFacts>,
     channels: &[String],
@@ -475,6 +603,45 @@ fn check_closure(
 ) {
     for (workflow, tasks) in &workflows.tasks {
         let entity = format!("workflow '{workflow}'");
+
+        // A model named by literal id must have a manifest in the set (or be
+        // on the boundary), as a connector must: on a node, a workflow
+        // naming a model the generation does not serve is quarantined, and
+        // this is that gate offline. The finding is a field error first —
+        // `MODEL_UNKNOWN` at the `model` field's path — so it carries the
+        // coordinate a loaded document can turn into `file:line:col`.
+        let (literal, dynamic) = model_references(tasks);
+        for (path, model) in literal {
+            if set.model_of(&model).is_some() || boundary.allows_model(&model) {
+                continue;
+            }
+            let refusal = crate::errors::FieldError::new(
+                path,
+                "MODEL_UNKNOWN",
+                format!(
+                    "model '{model}' is neither in the set nor declared on the boundary: a \
+                     model_infer task naming a model by literal id needs its manifest here \
+                     (a model.json, or --model-dir), or the workflow is quarantined on a node \
+                     that does not serve it"
+                ),
+            );
+            findings.push(Diagnostic::from_field_error(
+                "closure.model",
+                &entity,
+                &refusal,
+            ));
+        }
+        for path in dynamic {
+            findings.push(Diagnostic::note(
+                "model.unverifiable",
+                &entity,
+                format!(
+                    "{path} is computed, so the model it names is decided per message and \
+                     cannot be checked here; a message naming a model the node does not \
+                     serve fails that task as `unavailable`"
+                ),
+            ));
+        }
         // The rules are `engine::check_connector_refs`, shared with the
         // activation gate the admin API runs (`admin::services::workflows`).
         // Only the lookup differs: there a live registry, here the set's own
@@ -645,7 +812,141 @@ fn collect_env(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::definitions::{Boundary, Entity};
+    use crate::definitions::{Boundary, Entity, ModelDefinition};
+    use crate::model::fixture;
+    use serde_json::json;
+
+    fn infer(id: &str, model: Value) -> Value {
+        json!({"id": id, "name": id, "function": {"name": "model_infer",
+            "input": {"model": model, "input": {"var": ""}}}})
+    }
+
+    fn workflow(id: &str, tasks: Value) -> (Entity, String, Value) {
+        (
+            Entity::Workflow,
+            format!("{id}.json"),
+            json!({"workflow_id": id, "name": id, "tasks": tasks}),
+        )
+    }
+
+    fn checks<'a>(findings: &'a [Diagnostic], check: &str) -> Vec<&'a Diagnostic> {
+        findings.iter().filter(|d| d.check == check).collect()
+    }
+
+    /// A literal reference resolves against the set's manifests or the
+    /// boundary and is an error otherwise — at the `model` field's path,
+    /// through a task group; a computed one is a note, never an error.
+    #[test]
+    fn model_references_resolve_against_manifests_or_the_boundary() {
+        let mut set = DefinitionSet::from_entries([workflow(
+            "score",
+            json!([
+                infer("known", json!("ada.c4-tiny")),
+                {"id": "group", "tasks": [infer("required", json!("ada.required"))]},
+                infer("missing", json!("ada.missing")),
+                infer("computed", json!({"var": "data.model"})),
+            ]),
+        )]);
+        set.models.push(ModelDefinition::from_manifest(
+            "models/c4.json".to_string(),
+            fixture::manifest(),
+        ));
+        let boundary = Boundary {
+            models: vec!["ada.required".to_string()],
+            ..Boundary::default()
+        };
+        let findings = check(&set, &boundary, false, FunctionRegistry::builtin());
+
+        let closure = checks(&findings, "closure.model");
+        assert_eq!(closure.len(), 1, "{findings:#?}");
+        assert!(closure[0].is_error());
+        assert_eq!(
+            closure[0].path.as_deref(),
+            Some("tasks[2].function.input.model")
+        );
+        assert!(closure[0].message.contains("'ada.missing'"));
+        let unverifiable = checks(&findings, "model.unverifiable");
+        assert_eq!(unverifiable.len(), 1);
+        assert!(!unverifiable[0].is_error() && !unverifiable[0].is_warning());
+        assert!(
+            unverifiable[0]
+                .message
+                .contains("tasks[3].function.input.model is computed")
+        );
+        // The manifest without a file is inventoried and noted, not refused.
+        assert_eq!(checks(&findings, "model.manifest").len(), 1);
+        assert_eq!(checks(&findings, "model.artifact_missing").len(), 1);
+        assert!(checks(&findings, "model.stats").is_empty());
+        assert_eq!(
+            findings.iter().filter(|d| d.is_error()).count(),
+            1,
+            "{findings:#?}"
+        );
+    }
+
+    /// With the artifact on disk the stats admission would record are a
+    /// note, and a manifest naming a tensor the graph lacks is the error
+    /// admission would give at `parse`.
+    #[test]
+    fn a_manifest_with_its_artifact_reports_the_graphs_stats_and_boundary() {
+        let dir = std::env::temp_dir().join(format!("orion-check-models-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("c4-tiny.onnx"), fixture::ONNX).expect("write");
+        std::fs::write(dir.join("model.json"), fixture::MANIFEST).expect("write");
+        std::fs::write(
+            dir.join("wrong.json"),
+            fixture::MANIFEST
+                .replace("ada.c4-tiny", "ada.wrong")
+                .replace("\"name\": \"policy\"", "\"name\": \"logits\""),
+        )
+        .expect("write");
+        std::fs::write(dir.join("garbage.onnx"), b"\x00\x01not a graph").expect("write");
+        std::fs::write(
+            dir.join("garbage.json"),
+            fixture::MANIFEST
+                .replace("ada.c4-tiny", "ada.garbage")
+                .replace("c4-tiny.onnx", "garbage.onnx"),
+        )
+        .expect("write");
+
+        let (set, _) = DefinitionSet::from_directory(&dir).expect("loads");
+        assert_eq!(set.models.len(), 3);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let stats = checks(&findings, "model.stats");
+        assert_eq!(stats.len(), 2, "{findings:#?}");
+        let c4 = stats
+            .iter()
+            .find(|d| d.entity == "model 'ada.c4-tiny'")
+            .expect("the fixture's stats");
+        assert!(c4.message.contains("1479 parameters"), "{}", c4.message);
+        assert!(c4.message.contains("6171 bytes"), "{}", c4.message);
+        assert!(c4.message.contains("opset 17"), "{}", c4.message);
+        let graph = checks(&findings, "model.graph");
+        assert_eq!(graph.len(), 2, "{findings:#?}");
+        let wrong = graph
+            .iter()
+            .find(|d| d.entity == "model 'ada.wrong'")
+            .expect("the boundary mismatch");
+        assert!(wrong.is_error());
+        assert!(
+            wrong.message.contains("output 'logits'"),
+            "{}",
+            wrong.message
+        );
+        let garbage = graph
+            .iter()
+            .find(|d| d.entity == "model 'ada.garbage'")
+            .expect("the unreadable file");
+        assert!(garbage.message.contains("does not read as a model"));
+        assert!(checks(&findings, "model.artifact_missing").is_empty());
+    }
 
     /// The defect this module's `schema_diagnostics` exists to close.
     ///

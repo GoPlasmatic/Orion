@@ -115,14 +115,20 @@ pub fn build_custom_functions(
     // The other handler that dispatches through the serving generation: it
     // takes the model set and the expression engine off one load, and the
     // loaded sessions and permits off the node.
+    let models_config = Arc::new(models_config.clone());
     fns.insert(
         crate::model::handler::NAME.to_string(),
         Box::new(crate::model::ModelInferHandler {
-            runtime,
-            models,
-            config: Arc::new(models_config.clone()),
-            registry: registry.clone(),
-            client: client.clone(),
+            source: crate::model::ModelSource::Node(runtime),
+            host: models.map(|models| {
+                Arc::new(crate::model::InferenceHost::node(
+                    &models,
+                    models_config.clone(),
+                    registry.clone(),
+                    client.clone(),
+                ))
+            }),
+            config: models_config,
         }),
     );
 

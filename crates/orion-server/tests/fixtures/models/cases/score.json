@@ -1,0 +1,33 @@
+{
+  "workflow_id": "score",
+  "name": "Score a board",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": {
+        "name": "parse_json",
+        "input": {
+          "source": "payload",
+          "target": "board"
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "name": "Infer",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": "ada.c4-tiny",
+          "input": {
+            "var": ""
+          },
+          "output": "data.policy",
+          "stats_output": "temp_data.stats"
+        }
+      }
+    }
+  ]
+}

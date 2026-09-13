@@ -33,6 +33,21 @@
 //! The outer key is the function name and the inner key is the *target* — the
 //! task's `connector`, or its `channel` for `channel_call`. `"*"` matches any
 //! target.
+//!
+//! ## What is never stubbed, and what is stubbed only by default
+//!
+//! The self-contained functions (`SELF_CONTAINED` below) always run for real. A
+//! plugin function always runs for real too — its component is loaded from a
+//! `--plugin-dir` — and is refused by name when the component is absent. A
+//! model sits between the two: with a `--model-dir` holding its manifest and
+//! artifact, `model_infer` runs the model for real through the same handler a
+//! node registers (`cli.rs` swaps it in for the stub below), and a workflow
+//! naming a model the directory does not hold is refused as
+//! `MODEL_ARTIFACT_UNAVAILABLE`; with no model directory at all it is stubbed
+//! here like a connector function, keyed by its name, so
+//! `{"model_infer": {"*": <result>}}` is what the task writes at its
+//! `output` — `temp_data.inference` when it names none, as the real
+//! handler's schema says.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -377,13 +392,16 @@ impl StubHandler {
     /// place than production reports the wrong verdict in both directions.
     ///
     /// Every function this generic stub serves resolves its destination via
-    /// `resolve_output_path`: the `output` field, defaulting to `"data"` (as
-    /// their published schemas document). `cache_write` is the one that
-    /// writes nothing — its stub exists only to keep the task from failing.
-    /// `response_path` is deliberately not consulted: none of these
-    /// functions' production handlers read it (the pre-1.0 spelling survives
-    /// only where the real config declares it as an alias — `http_call` and
-    /// `channel_call`, which have their own typed stubs).
+    /// `resolve_output_path`: the `output` field, defaulting to what its
+    /// published schema says — `"data"` for the connector functions,
+    /// `temp_data.inference` for `model_infer` — read off the registry's
+    /// `writes` so the stub cannot land a result somewhere the real handler
+    /// would not. `cache_write` is the one that writes nothing — its stub
+    /// exists only to keep the task from failing. `response_path` is
+    /// deliberately not consulted: none of these functions' production
+    /// handlers read it (the pre-1.0 spelling survives only where the real
+    /// config declares it as an alias — `http_call` and `channel_call`,
+    /// which have their own typed stubs).
     fn output_path(
         &self,
         input: &super::templated_input::TemplatedInput,
@@ -392,8 +410,17 @@ impl StubHandler {
         if self.function == "cache_write" {
             return Ok(None);
         }
+        let default_root = match crate::engine::FunctionRegistry::builtin()
+            .get(self.function)
+            .map(|entry| &entry.writes)
+        {
+            Some(super::schema::WriteShape::OutputPath {
+                default_root: Some(root),
+            }) => root,
+            _ => "data",
+        };
         let path = match input.get("output") {
-            None | Some(Value::Null) => "data".to_string(),
+            None | Some(Value::Null) => default_root.to_string(),
             Some(authored) => match evaluate_here(authored, ctx) {
                 Value::String(path) if !path.is_empty() => path,
                 other => {
@@ -755,6 +782,18 @@ mod tests {
         assert_eq!(
             path(&read, json!({"response_path": "data.y"})),
             Some("data".to_string())
+        );
+        // A function whose schema declares another default root lands its
+        // stub where the real handler would: `model_infer` writes to
+        // `temp_data.inference` when the task names no `output`.
+        let infer = stub("model_infer");
+        assert_eq!(
+            path(&infer, json!({})),
+            Some(crate::model::handler::DEFAULT_OUTPUT.to_string())
+        );
+        assert_eq!(
+            path(&infer, json!({"output": "data.policy"})),
+            Some("data.policy".to_string())
         );
 
         for function in [

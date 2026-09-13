@@ -116,6 +116,18 @@ plugin the source itself no longer serves at the digest the workflows ran
 against is recorded under `requires.plugins`, which `plan` checks the target
 has active — the same boundary a `channel_call` outside the selection makes.
 
+A model never travels as bytes. It is carried as its manifest and its artifact
+reference — the storage connector, the key and the digest — and the target
+fetches the object through **its own** connector of that name when it admits
+the model, so every such connector the package does not carry is recorded
+under `requires.storage` and checked by `plan` and `apply` before anything is
+written. A model a workflow names that the source does not serve active is
+recorded under `requires.models`, which `plan` checks the target serves. And
+because activation is refused until a node has admitted the artifact, `apply`
+waits for the target's verdict on each model it staged — polling
+`GET /models/{id}`, with progress on stderr and a 900 s ceiling — before
+activating it ahead of the workflows that name it.
+
 ## When an apply fails midway
 
 The deferred reload is what makes a partial apply safe: entities activate in the

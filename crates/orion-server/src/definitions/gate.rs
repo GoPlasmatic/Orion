@@ -97,6 +97,7 @@ pub fn gate_directory(
     boundary: &Boundary,
     opts: GateOpts,
     plugin_dirs: &[String],
+    model_dirs: &[String],
 ) -> Result<GateReport, String> {
     let raw = if opts.want_raw {
         Some(DefinitionSet::from_directory_raw(dir)?.0)
@@ -113,6 +114,10 @@ pub fn gate_directory(
     // Manifests from outside the tree (`--plugin-dir`) join the ones the walk
     // found, before the registry every check reads is built from them.
     findings.extend(set.add_plugin_dirs(plugin_dirs)?);
+    // Likewise the model manifests: a literal `model_infer` reference is
+    // checked against them, and `--model-dir` is how a set whose models are
+    // authored elsewhere still lints its references.
+    findings.extend(set.add_model_dirs(model_dirs)?);
     let registry = match set.function_registry() {
         Ok(registry) => registry,
         Err(reason) => {

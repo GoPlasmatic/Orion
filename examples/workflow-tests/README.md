@@ -3,14 +3,24 @@
 Offline regression tests for the workflows in this directory's siblings, run by:
 
 ```bash
-orion-server test examples/workflow-tests
+orion-server test examples/workflow-tests \
+  --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-tournament \
+  --model-dir examples/packages/c4-tournament/entrant
 ```
 
 Every case runs the real workflow JSON through the real engine with no server,
 no database and no network. Connector-backed tasks are answered from a `stubs`
 block — `channel-composition-vip.case.json` stubs the `channel_call` its
 workflow makes, which is how a composed service is tested without deploying the
-service it calls.
+service it calls. A plugin function runs for real from the `--plugin-dir` that
+holds its manifest and component, never from a stub. `model_infer` runs for
+real from a `--model-dir` holding the manifest and artifact of the model the
+task names — the three `c4-*` cases run the tournament's reference entrant,
+which is deterministic on the CPU, so a case can assert the cell its answer
+lands in. Without the flag the function is answered from a stub by its own
+name (`"model_infer": { "*": { "column": [3] } }`, as
+`examples/packages/c4-tournament/stubs.json` does for a dry run), and a case
+that names a model with neither fails rather than passing on nothing.
 
 ## Writing a case
 

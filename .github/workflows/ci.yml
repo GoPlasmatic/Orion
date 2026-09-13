@@ -238,7 +238,7 @@ jobs:
       # `--plugin-dir`: the fixed-width-statement cases run the example's
       # codec for real, so its manifest and component are handed to the run.
       - name: Run example workflow tests (offline, stubbed connectors, real plugin)
-        run: ./target/debug/orion-server test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
+        run: ./target/debug/orion-server test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-tournament --model-dir examples/packages/c4-tournament/entrant
 
       - name: Start Postgres (postgres-orders package)
         run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
@@ -325,7 +325,7 @@ jobs:
         run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
 
       - name: Run the example's offline cases against the fresh codec
-        run: cargo run -p orion-server -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement
+        run: cargo run -p orion-server -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-tournament --model-dir examples/packages/c4-tournament/entrant
 
       - name: The SDK's own tests
         run: cargo test -p orion-plugin-sdk

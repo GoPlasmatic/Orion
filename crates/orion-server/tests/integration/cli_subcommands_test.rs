@@ -2525,3 +2525,271 @@ fn dry_run_executes_a_plugin_function_for_real_or_refuses_by_name() {
     assert!(report.contains("PLUGIN_ARTIFACT_UNAVAILABLE"), "{report}");
     assert!(report.contains("--plugin-dir"), "{report}");
 }
+
+// ============================================================
+// models offline: lint, dry-run and the test runner with --model-dir
+// ============================================================
+
+/// The fixture directory: the manifest and the graph beside it.
+fn fixture_model_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/c4-tiny").to_string()
+}
+
+/// A `[1, 2, 6, 7]` board as the nested list the fixture adapter reads.
+fn board_json() -> String {
+    let mut planes = vec![vec![vec![0.0f32; 7]; 6]; 2];
+    planes[0][5][3] = 1.0;
+    planes[1][5][2] = 1.0;
+    serde_json::json!([planes]).to_string()
+}
+
+/// A workflow calling `model_infer` on `model` by literal id.
+fn scoring_workflow(model: &str) -> String {
+    format!(
+        r#"{{"workflow_id":"score","name":"score","condition":true,"tasks":[
+            {{"id":"parse","name":"Parse","function":{{"name":"parse_json",
+                "input":{{"source":"payload","target":"board"}}}}}},
+            {{"id":"infer","name":"Infer","function":{{"name":"model_infer",
+                "input":{{"model":"{model}","input":{{"var":""}},"output":"data.policy",
+                          "stats_output":"temp_data.stats"}}}}}}]}}"#
+    )
+}
+
+/// A directory holding the fixture manifest, its graph and a workflow
+/// naming `model`.
+fn model_set(model: &str) -> ScratchDir {
+    let scratch = ScratchDir::new("model-set");
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("models")).unwrap();
+    let fixture_dir = fixture_model_dir();
+    let fixture = std::path::Path::new(&fixture_dir);
+    std::fs::copy(fixture.join("model.json"), dir.join("models/model.json")).unwrap();
+    std::fs::copy(
+        fixture.join("c4-tiny.onnx"),
+        dir.join("models/c4-tiny.onnx"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("score.json"), scoring_workflow(model)).unwrap();
+    scratch
+}
+
+/// A set holding the manifest and its graph lints clean, and reports what
+/// admission would record — the parameter count first among them; the same
+/// workflow naming a model no manifest describes is a `closure.model` error
+/// at the field's path.
+#[test]
+fn lint_checks_model_references_and_reports_the_graphs_stats() {
+    let scratch = model_set("ada.c4-tiny");
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("[model.manifest] model 'ada.c4-tiny'"),
+        "{report}"
+    );
+    assert!(report.contains("[model.stats]"), "{report}");
+    assert!(report.contains("1479 parameters"), "{report}");
+    assert!(report.contains("opset 17"), "{report}");
+    assert!(report.contains("1 model(s)"), "{report}");
+    assert!(!report.contains("model.artifact_missing"), "{report}");
+
+    let scratch = model_set("ada.unknown");
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(!ok, "{report}");
+    assert!(report.contains("[closure.model]"), "{report}");
+    assert!(report.contains("'ada.unknown'"), "{report}");
+    assert!(report.contains("tasks[1].function.input.model"), "{report}");
+
+    // Without the graph the manifest still resolves the reference; the
+    // missing file is a note, since a serving instance never needs it.
+    let scratch = model_set("ada.c4-tiny");
+    std::fs::remove_file(scratch.path().join("models/c4-tiny.onnx")).unwrap();
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(ok, "{report}");
+    assert!(report.contains("[model.artifact_missing]"), "{report}");
+    assert!(!report.contains("[model.stats]"), "{report}");
+
+    // A manifest from outside the tree, by flag — and a single-file lint
+    // with no manifest reports the reference unverifiable rather than
+    // refusing it.
+    let scratch = ScratchDir::new("model-flag");
+    std::fs::write(
+        scratch.path().join("score.json"),
+        scoring_workflow("ada.c4-tiny"),
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(scratch.path(), &["--model-dir", &fixture_model_dir()]);
+    assert!(ok, "{report}");
+    assert!(report.contains("[model.stats]"), "{report}");
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(
+        !ok,
+        "a literal id with no manifest anywhere is the closure error: {report}"
+    );
+    let out = Command::new(orion_bin())
+        .args(["lint", scratch.path().join("score.json").to_str().unwrap()])
+        .output()
+        .expect("run lint");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stderr.contains("[model.unverifiable]"), "{stderr}");
+    let out = Command::new(orion_bin())
+        .args([
+            "lint",
+            scratch.path().join("score.json").to_str().unwrap(),
+            "--model-dir",
+            &fixture_model_dir(),
+        ])
+        .output()
+        .expect("run lint");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// With `--model-dir` the model runs for real: the result expression's
+/// shape lands at `output`, the stats name the fixture, and nothing was
+/// stubbed. Without it the run is refused by name before it starts — unless
+/// a stub answers the function, which is the pre-model-dir behaviour.
+#[test]
+fn dry_run_executes_a_model_from_disk_or_refuses_by_name() {
+    let wf = write_temp(&scoring_workflow("ada.c4-tiny"), "model-wf");
+    let input = write_temp(&board_json(), "model-in");
+
+    let out = Command::new(orion_bin())
+        .args([
+            "dry-run",
+            "-w",
+            &wf,
+            "-i",
+            &input,
+            "--model-dir",
+            &fixture_model_dir(),
+        ])
+        .output()
+        .expect("run dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout={stdout}\nstderr={stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let policy = parsed["data"]["policy"]["policy"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the result expression writes data.policy.policy: {stdout}"));
+    assert_eq!(policy.len(), 1, "one row");
+    assert_eq!(policy[0].as_array().map(Vec::len), Some(7), "seven moves");
+    assert_eq!(parsed["temp_data"]["stats"]["parameters"], 1479, "{stdout}");
+    assert_eq!(parsed["temp_data"]["stats"]["runtime"], "tract");
+    assert_eq!(parsed["temp_data"]["stats"]["cold_load"], true);
+    assert!(
+        parsed["calls"].get("model_infer").is_none(),
+        "a real run records no stubbed call: {stdout}"
+    );
+    assert!(
+        parsed["errors"].as_array().is_some_and(Vec::is_empty),
+        "{stdout}"
+    );
+
+    // No model directory, no stub: refused before anything runs.
+    let out = Command::new(orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input])
+        .output()
+        .expect("run dry-run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("MODEL_ARTIFACT_UNAVAILABLE"), "{stderr}");
+    assert!(stderr.contains("--model-dir"), "{stderr}");
+
+    // A stub for the function, and no model directory: the stub answers.
+    let stubs = write_temp(
+        r#"{"model_infer":{"*":{"policy":[[1,0,0,0,0,0,0]]}}}"#,
+        "model-stubs",
+    );
+    let out = Command::new(orion_bin())
+        .args(["dry-run", "-w", &wf, "-i", &input, "--stubs", &stubs])
+        .output()
+        .expect("run dry-run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(parsed["data"]["policy"]["policy"][0][0], 1, "{stdout}");
+    assert!(
+        parsed["calls"]["model_infer"].is_array(),
+        "stubbed, so recorded: {stdout}"
+    );
+
+    // A model directory that does not hold the model the workflow names.
+    let other = write_temp(&scoring_workflow("ada.other"), "model-other");
+    let out = Command::new(orion_bin())
+        .args([
+            "dry-run",
+            "-w",
+            &other,
+            "-i",
+            &input,
+            "--model-dir",
+            &fixture_model_dir(),
+        ])
+        .output()
+        .expect("run dry-run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("MODEL_ARTIFACT_UNAVAILABLE"), "{stderr}");
+    assert!(stderr.contains("'ada.other'"), "{stderr}");
+
+    // A manifest without its artifact cannot run, and says so rather than
+    // falling back to a stub — even when one is given.
+    let scratch = model_set("ada.c4-tiny");
+    std::fs::remove_file(scratch.path().join("models/c4-tiny.onnx")).unwrap();
+    let out = Command::new(orion_bin())
+        .args([
+            "dry-run",
+            "-w",
+            &wf,
+            "-i",
+            &input,
+            "--stubs",
+            &stubs,
+            "--model-dir",
+            scratch.path().join("models").to_str().unwrap(),
+        ])
+        .output()
+        .expect("run dry-run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(stderr.contains("MODEL_ARTIFACT_UNAVAILABLE"), "{stderr}");
+    assert!(stderr.contains("no artifact beside it"), "{stderr}");
+
+    for f in [&wf, &input, &stubs, &other] {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// The checked-in case under `tests/fixtures/models/cases` runs the fixture
+/// model through the test runner and asserts the stats the run reports.
+#[test]
+fn the_test_runner_executes_a_model_case_with_a_model_dir() {
+    let cases = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/cases");
+    let out = Command::new(orion_bin())
+        .args(["test", cases, "--model-dir", &fixture_model_dir()])
+        .output()
+        .expect("run test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout={stdout}\nstderr={stderr}");
+    assert!(
+        stdout.contains("c4-tiny scores a board offline"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("1 passed, 0 failed"), "{stdout}");
+
+    // Without the directory the case is refused by name, not passed by a
+    // stub it does not have.
+    let out = Command::new(orion_bin())
+        .args(["test", cases])
+        .output()
+        .expect("run test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "{stdout}");
+    assert!(stdout.contains("MODEL_ARTIFACT_UNAVAILABLE"), "{stdout}");
+}

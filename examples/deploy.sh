@@ -18,11 +18,17 @@
 #   channel.json           the primary channel           (required)
 #   channel-<name>.json    additional channels           (optional)
 #   connector.json         a connector the package needs (optional)
+#   connector-<name>.json  additional connectors         (optional)
+#   plugin.toml            a plugin, with its component  (optional)
+#   entrant/model.json     a model the workflows call    (optional)
 #   request.json           a sample request              (optional)
 #
-# A package whose primary channel has no route_pattern — a Kafka channel — is
-# deployed the same way; the script prints the topic it now consumes instead of
-# sending a request.
+# A package whose primary channel has no route_pattern — a Kafka or a cron
+# channel — is deployed the same way; the script prints the topic it now
+# consumes, or the schedule, instead of sending a request. A package that
+# ships a model entrant is deployed whole, but its sample request is not
+# sent: the model's bytes have to be in a bucket and admitted first, which is
+# an organiser's step (the script prints it).
 #
 # Example:
 #   ./deploy.sh high-value-order
@@ -49,7 +55,7 @@ fi
 WF_FILE="$DIR/workflow.json"
 CH_FILE="$DIR/channel.json"
 REQ_FILE="$DIR/request.json"
-CONN_FILE="$DIR/connector.json"
+ENTRANT_FILE="$DIR/entrant/model.json"
 
 for f in "$WF_FILE" "$CH_FILE"; do
   [[ -f "$f" ]] || { echo "missing $f" >&2; exit 1; }
@@ -89,8 +95,9 @@ active() { curl -fsS "$1" 2> /dev/null | grep -q '"status":"active"'; }
 
 # The primary entity first, then any siblings, so a package that composes
 # channels deploys its callee alongside its caller in one run.
-workflow_files() { echo "$WF_FILE"; ls "$DIR"/workflow-*.json 2>/dev/null || true; }
-channel_files()  { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true; }
+workflow_files()  { echo "$WF_FILE"; ls "$DIR"/workflow-*.json 2>/dev/null || true; }
+channel_files()   { echo "$CH_FILE"; ls "$DIR"/channel-*.json 2>/dev/null || true; }
+connector_files() { ls "$DIR"/connector.json "$DIR"/connector-*.json 2>/dev/null || true; }
 
 # A package that ships a plugin (plugin.toml beside the component it names)
 # installs and activates it first: a workflow calling one of its functions is
@@ -124,16 +131,17 @@ json.dump({"manifest": text, "component": encoded}, sys.stdout)' \
   fi
 fi
 
-if [[ -f "$CONN_FILE" ]]; then
-  CONN_ID=$(json_field "$CONN_FILE" id)
+while IFS= read -r conn; do
+  [[ -n "$conn" ]] || continue
+  CONN_ID=$(json_field "$conn" id)
   if have "$ADMIN/connectors/$CONN_ID"; then
     echo "==> Connector '$CONN_ID' already exists"
   else
     echo "==> Create connector '$CONN_ID'"
     curl --fail-with-body -sS -X POST "$ADMIN/connectors" \
-      -H 'Content-Type: application/json' --data @"$CONN_FILE" > /dev/null
+      -H 'Content-Type: application/json' --data @"$conn" > /dev/null
   fi
-fi
+done < <(connector_files)
 
 while IFS= read -r wf; do
   [[ -n "$wf" ]] || continue
@@ -185,6 +193,23 @@ fi
 
 if [[ ! -f "$REQ_FILE" ]]; then
   echo "==> Deployed. No request.json to send."
+  exit 0
+fi
+
+# A model entrant is registered by reference to a bucket, then admitted and
+# activated — steps that need a bucket this script does not have. The
+# package is deployed; the request that would run the model is left to the
+# organiser, with the commands to run it.
+if [[ -f "$ENTRANT_FILE" ]]; then
+  MODEL_ID=$(json_field "$ENTRANT_FILE" name)
+  MODEL_ARTIFACT=$(json_field "$ENTRANT_FILE" artifact)
+  echo "==> Deployed. The sample request calls model '$MODEL_ID', which is registered separately:"
+  echo "    1. put $DIR/entrant/$MODEL_ARTIFACT in a bucket behind a 'storage' connector"
+  echo "    2. orion-cli models create -f $DIR/entrant/model.json --connector <bucket> --key <key> \\"
+  echo "           --digest sha256:\$(shasum -a 256 $DIR/entrant/$MODEL_ARTIFACT | cut -d' ' -f1) --wait"
+  echo "    3. orion-cli models activate $MODEL_ID"
+  echo "    4. curl -X POST $BASE/api/v1/data$ROUTE -H 'Content-Type: application/json' --data @$REQ_FILE"
+  echo "    The server needs models.enabled = true; see $DIR/README.md."
   exit 0
 fi
 

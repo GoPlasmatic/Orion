@@ -1,0 +1,29 @@
+# The source of the `c4.rules` example plugin: the rules of Connect Four as
+# three pure functions — the referee of the c4-tournament example, where a
+# tiny ONNX model picks the column and this plugin says what the move did.
+# Built on `orion-plugin-sdk` for wasm32-unknown-unknown and turned into a
+# component by `wasm-tools` (see ../build.sh); the built bytes are committed
+# beside the manifest in examples/packages/c4-tournament/ so the example
+# deploys without a wasm toolchain. `cargo test` here runs the rules on the
+# host, with no wasm target involved.
+[package]
+name = "c4-rules"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orion-plugin-sdk = { path = "../../../../crates/orion-plugin-sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
+
+# Its own workspace, so cargo does not try to fold it into Orion's.
+[workspace]

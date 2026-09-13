@@ -1,0 +1,49 @@
+{
+  "workflow_id": "c4-turn",
+  "name": "C4 Tournament: One Turn",
+  "description": "Show the mover's model the board from its side, run it, and play the column it answers. Called in-process by c4-match through channel_call, and callable on its own.",
+  "tags": ["pkg:c4-tournament"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "view",
+      "name": "The board from the mover's perspective",
+      "function": {
+        "name": "c4.rules.view",
+        "input": { "state": { "var": "data.input.state" }, "output": "temp_data.view" }
+      }
+    },
+    {
+      "id": "infer",
+      "name": "Ask the mover's model for a column",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": { "var": "data.input.mover_model" },
+          "input": { "var": "temp_data.view" },
+          "runtime": "tract",
+          "output": "data.answer",
+          "timeout_ms": 50,
+          "stats_output": "data.inference"
+        }
+      }
+    },
+    {
+      "id": "apply",
+      "name": "Play it",
+      "function": {
+        "name": "c4.rules.apply",
+        "input": {
+          "state": { "var": "data.input.state" },
+          "column": { "var": "data.answer.column" },
+          "output": "data.state"
+        }
+      }
+    }
+  ]
+}

@@ -21,6 +21,7 @@
 - [Understand Connectors](./concepts/connectors.md)
 - [Packages](./concepts/packages.md)
 - [Plugins](./concepts/plugins.md)
+- [Models](./concepts/models.md)
 - [The Entity Lifecycle](./concepts/lifecycle.md)
 
 # Build with AI
@@ -37,6 +38,7 @@
 - [Connect Databases & APIs](./build/connectors.md)
 - [Test Workflows Offline](./build/testing.md)
 - [Build a Plugin](./build/plugins.md)
+- [Serve a Model](./build/models.md)
 - [Version & Roll Out Changes](./build/versioning.md)
 
 # Guides

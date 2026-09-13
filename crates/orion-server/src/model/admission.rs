@@ -92,6 +92,25 @@ pub struct Stats {
     pub device: String,
 }
 
+impl Stats {
+    /// What an offline reader learns without a probe: the graph's numbers
+    /// and the file's size, `probe_ms` zero and no runtime or device — the
+    /// stats `lint` prints and a `stats_output` reports in a dry run. A
+    /// node's admission fills the rest.
+    pub fn offline(graph: &onnx::GraphStats, artifact_bytes: u64) -> Self {
+        Self {
+            parameters: graph.parameters,
+            nodes: graph.nodes,
+            artifact_bytes,
+            probe_ms: 0.0,
+            ir_version: graph.ir_version,
+            opset: graph.opset,
+            runtime: String::new(),
+            device: String::new(),
+        }
+    }
+}
+
 /// How an admission ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdmissionState {
@@ -263,10 +282,7 @@ async fn sequence(
             .map_err(|e| ("parse", format!("the parse did not complete: {e}")))?
             .map_err(|reason| ("parse", reason))?
     };
-    check_names("input", job.manifest.input_names(), &graph.input_names)
-        .map_err(|reason| ("parse", reason))?;
-    check_names("output", job.manifest.output_names(), &graph.output_names)
-        .map_err(|reason| ("parse", reason))?;
+    check_boundary(&job.manifest, &graph).map_err(|reason| ("parse", reason))?;
     if deps.config.max_parameters != 0 && graph.parameters > deps.config.max_parameters {
         return Err((
             "parse",
@@ -357,6 +373,15 @@ async fn sequence(
 
 /// Every `declared` name must be one of the graph's; the reason lists the
 /// graph's so a typo is a one-line fix.
+/// Every input and output the manifest declares must be a tensor the graph
+/// has, by name. The parse stage's rule, and `lint`'s over a manifest with
+/// its artifact beside it — one function, so the offline report and the
+/// admission verdict cannot disagree about a boundary.
+pub fn check_boundary(manifest: &Manifest, graph: &onnx::GraphStats) -> Result<(), String> {
+    check_names("input", manifest.input_names(), &graph.input_names)?;
+    check_names("output", manifest.output_names(), &graph.output_names)
+}
+
 fn check_names<'a>(
     kind: &str,
     declared: impl Iterator<Item = &'a str>,

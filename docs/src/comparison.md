@@ -74,9 +74,10 @@ Four words carry the last column:
 - **You need full OIDC flows or mTLS at the data plane** with nothing in front.
   JWT verification itself is built in; the login redirect dance and client
   certificates are not. See the warning above.
-- **The request needs heavy computation.** Task functions parse, map, validate
-  and talk to other systems. Image processing, model inference and large
-  in-memory joins are not what Orion is for.
+- **The request needs heavy computation.** Task functions parse, map, validate,
+  talk to other systems, and run an admitted [model](./concepts/models.md)
+  small enough to pass its probe ceiling. Image processing, training, and
+  large in-memory joins are not what Orion is for.
 
 ## The trade you are making
 

@@ -130,7 +130,7 @@ or deploy a tested package from [`examples/packages/`](examples/packages/).
 | **Traffic** | REST, plain HTTP, synchronous and asynchronous channels, Kafka ingress, cron schedules |
 | **Safety** | Payload validation, API-key/HMAC/JWT channel auth, rate limiting, backpressure, CORS controls |
 | **Resilience** | Timeouts, retries, circuit breakers, idempotency, response caching, dead-letter handling |
-| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins |
+| **Delivery** | Drafts, immutable versions, dry-runs, percentage rollout, rollback, packages, WebAssembly plugins, ONNX models admitted before they serve |
 | **Observability** | Health and readiness endpoints, Prometheus metrics, structured logs, OpenTelemetry traces |
 | **Data** | PostgreSQL, MySQL, SQLite, MongoDB, Elasticsearch, Redis, Kafka, HTTP, SMTP, S3-compatible storage |
 | **Operations** | Embedded SQLite for one node; PostgreSQL/MySQL and Redis for clustered replicas |
@@ -175,8 +175,9 @@ Choose another runtime, or pair one with Orion, when:
 - business logic requires arbitrary code with I/O, or a scripting runtime — a
   pure transformation ships as a sandboxed WebAssembly plugin, anything that
   has to reach another system does not;
-- image processing, model inference, or large in-memory joins sit on the hot
-  path; or
+- image processing, GPU-class inference, or large in-memory joins sit on the
+  hot path — a small ONNX graph runs in-process as a governed model, a large
+  one does not; or
 - full OIDC flows or mutual TLS must terminate inside the data plane. JWT
   verification is built in; those flows require a gateway or service mesh.
 

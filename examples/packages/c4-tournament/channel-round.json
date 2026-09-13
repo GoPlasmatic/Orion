@@ -1,0 +1,17 @@
+{
+  "channel_id": "c4-round",
+  "name": "c4-round",
+  "description": "Every hour, every ordered pair of entrants plays once. `orion-cli channels trigger c4-round` runs a round now",
+  "tags": ["pkg:c4-tournament"],
+  "channel_type": "async",
+  "protocol": "cron",
+  "workflow_id": "c4-round",
+  "transport_config": {
+    "schedule": "0 0 * * * *",
+    "timezone": "UTC",
+    "payload": {},
+    "misfire_policy": "latest",
+    "concurrency": { "policy": "forbid" }
+  },
+  "config": { "timeout_ms": 600000, "tracing": { "mode": "sync", "task_details": true } }
+}

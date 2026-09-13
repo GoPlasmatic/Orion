@@ -3,7 +3,9 @@
 Drives a real `orion-server` binary over HTTP with the `orion-cli` binary,
 both built from this tree — the one place the workspace's API contract
 (server ⇄ `orion-api` ⇄ `orion-client` ⇄ CLI) is exercised end to end at
-the same commit. Shell-based, not `cargo test`; needs `jq` and `curl`.
+the same commit. Shell-based, not `cargo test`; needs `jq` and `curl`
+(and `python3` for suite 18, which serves a model artifact from a static
+server standing in for a bucket).
 CI runs it on every PR (the `cli-e2e` job). The wider test estate is mapped
 in [`TESTING.md`](../../TESTING.md).
 
@@ -37,7 +39,7 @@ down — nothing to start or clean up manually.
 tests/e2e/
 ├── run.sh          # entry point: prerequisites, build, server lifecycle, suite discovery
 ├── helpers.sh      # framework: assertions, CLI wrappers, server control, case runner
-├── suites/         # 17 suites, sourced in filename order
+├── suites/         # 18 suites, sourced in filename order
 ├── cases/          # data-driven runtime-behaviour cases (run by suite 13)
 └── fixtures/       # workflow / connector / request JSON used by the suites
 ```
@@ -61,6 +63,7 @@ tests/e2e/
 | `15_vars_and_secrets` | `[vars]` and `[secrets]` end to end: the harness's config file declares one of each, so this is the only layer that covers `${VAR}` substitution into a var, an `env://` reference resolved at startup, and both reaching a workflow on a real process |
 | `16_plugins` | The plugin entity through the CLI against a server with the sandbox on: upload from a manifest (the component read beside it), activate, a workflow serving through a plugin function including a `template_at` field, the archive gate, export with artifacts, import, delete. Suite 13's `fixed-width-statement` case deploys the example codec the same way (`"plugins"` in the case file) |
 | `17_cron` | A schedule through the CLI against a real server: create and activate a `protocol: "cron"` channel, watch occurrences appear on their own, trigger one by hand with `channels trigger`, and read the ledger back with `cron status|list|get|retry`. The schedule fires every second, so nothing waits on a guessed duration |
+| `18_models` | The model entity through the CLI against a server with the runtime on, with a Python static server standing in for the bucket: register the `c4-tournament` entrant with `models create --wait`, `get` (the verdict, the measured parameter count), `validate`, `activate`; the whole example package deployed with the CLI and a turn, a match and the leaderboard served over the data plane; a wrong digest failing admission at the `digest` stage; `dependencies`, and delete/archive refused while an active workflow names the model by literal id |
 
 The suites speak the v1.0 API: every send goes through a channel bound to
 exactly one workflow (`create_channel` in `helpers.sh`), and reading a

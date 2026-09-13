@@ -1,0 +1,11 @@
+{
+  "channel_id": "c4-turn",
+  "name": "c4-turn",
+  "description": "One turn: POST { \"state\": {...}, \"mover_model\": \"<id>\" } — what c4-match calls in-process for every move",
+  "tags": ["pkg:c4-tournament"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/c4/turn",
+  "workflow_id": "c4-turn"
+}

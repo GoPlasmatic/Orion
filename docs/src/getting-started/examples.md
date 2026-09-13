@@ -42,9 +42,14 @@ and `python3`. Re-running is safe: objects that already exist are skipped.
 
 A package with no HTTP route — `kafka-order-events` — deploys the same way, and
 the script prints the topic it now consumes instead of sending a request. It is
-the one example that is **not** zero-dependency: it needs a broker and a server
-started with `[kafka] enabled = true`. Without those the channel still deploys,
-but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
+one of two examples that are **not** zero-dependency: it needs a broker and a
+server started with `[kafka] enabled = true`. Without those the channel still
+deploys, but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
+The other is `c4-tournament`: `deploy.sh` installs its plugin, connector,
+workflows and channels, then prints the registration of its model entrant —
+a bucket, `orion-cli models create --wait`, `models activate` — instead of
+sending the request, because a model's bytes are fetched from object storage
+by the node rather than posted to it. See [Serve a Model](../build/models.md).
 
 ## The packages
 
@@ -61,6 +66,7 @@ but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
 | [`fixed-width-statement`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/fixed-width-statement) | `POST /statements` | **Plugin-backed:** a fixed-width codec compiled to WebAssembly decodes the line, a `map` summarises it — **needs `plugins.enabled = true`**; the codec's source is in [`examples/plugins/fixed-width/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/plugins/fixed-width) |
 | [`order-summary`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/order-summary) | `POST /order-summary` | The dependency-free files behind [Understand the HTTP Flow](./first-service.md) |
 | [`nightly-rollup`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/nightly-rollup) | `0 15 2 * * *` (no route) | **Scheduled:** a `protocol: "cron"` channel runs the workflow on a six-field expression; every instant becomes a durable occurrence — see [Run work on a schedule](../guides/scheduled-workflows.md) |
+| [`c4-tournament`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/c4-tournament) | `POST /c4/register`, `/c4/turn`, `/c4/match`, `GET /c4/leaderboard`, an hourly round | **Model-backed:** a Connect Four tournament for tiny ONNX networks — `model_infer` routes each turn to the entrant to move, a WebAssembly plugin referees, a `loop` plays the match, a SQLite leaderboard keeps score — **needs `models.enabled = true` and `plugins.enabled = true`**, and the entrant registered from a bucket; see [Serve a Model](../build/models.md) |
 
 ## What is in a package directory
 
@@ -73,6 +79,7 @@ but nothing consumes it. See [Consume from Kafka](../guides/kafka-channels.md).
 | `request.json` | `POST /api/v1/data/<route>` | A sample request to try it |
 | `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the package needs one |
 | `plugin.toml` + the component it names *(optional)* | `POST /api/v1/admin/plugins` | A WebAssembly plugin the workflows call, uploaded and activated before them — needs `plugins.enabled = true` |
+| `entrant/model.json` + the artifact it names *(optional)* | `orion-cli models create` | A model the workflows call. Not deployed by `deploy.sh`: the bytes go in a bucket behind a `storage` connector and the model is registered from there — needs `models.enabled = true`; the script prints the commands |
 
 Every entity carries a `tags: ["pkg:<name>"]` label. That label is what marks it
 as part of the package, and what package export selects on.

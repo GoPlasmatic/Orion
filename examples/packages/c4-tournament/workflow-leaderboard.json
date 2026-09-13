@@ -1,0 +1,39 @@
+{
+  "workflow_id": "c4-leaderboard",
+  "name": "C4 Tournament: Leaderboard",
+  "description": "The ranking: most wins first, and among equals the smaller network.",
+  "tags": ["pkg:c4-tournament"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "rank",
+      "name": "Read the leaderboard",
+      "function": {
+        "name": "data_query",
+        "input": {
+          "connector": "c4-leaderboard",
+          "query": {
+            "source": "leaderboard",
+            "sort": [{ "wins": "desc" }, { "parameters": "asc" }, { "model": "asc" }],
+            "limit": 50
+          },
+          "schema": {
+            "entities": {
+              "leaderboard": {
+                "columns": {
+                  "model": { "type": "text" },
+                  "parameters": { "type": "int" },
+                  "artifact_bytes": { "type": "int" },
+                  "wins": { "type": "int" },
+                  "losses": { "type": "int" },
+                  "draws": { "type": "int" }
+                }
+              }
+            }
+          },
+          "output": "data.leaderboard"
+        }
+      }
+    }
+  ]
+}

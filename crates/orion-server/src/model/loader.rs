@@ -17,6 +17,12 @@
 //! handful of expressions — and evaluated only on `generation.engine`'s.
 //! Nothing is loaded into a runtime at this point; that is the
 //! [`LoadedCache`]'s, on first use or at preload.
+//!
+//! The same compile serves an **offline** set ([`ModelSet::from_manifests`]):
+//! `dry-run` and `orion-server test` build one from the manifests a
+//! `--model-dir` holds, on the engine that will evaluate them, with no row
+//! and no admission behind any entry — the bytes on disk are what the author
+//! is testing, and are trusted as such.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -101,7 +107,10 @@ impl ModelSet {
             ..ModelSet::default()
         };
         for row in rows {
-            match load_one(row, config, enabled, datalogic) {
+            let compiled = decode_row(row, enabled).and_then(|item| {
+                compile_entry(item, config, datalogic).map_err(|reason| ("adapter", reason))
+            });
+            match compiled {
                 Ok(entry) => {
                     tracing::info!(
                         model = %row.model_id,
@@ -131,6 +140,60 @@ impl ModelSet {
                 }
             }
         }
+        set
+    }
+
+    /// An offline set: one entry per manifest, compiled on `datalogic` — the
+    /// engine of the dry run that will evaluate them — with the digest and
+    /// stats the caller read off the file beside each manifest. No admission
+    /// stands behind an entry: the bytes are the author's own, and what a
+    /// serving node would verify at admission (the digest claim, the probe)
+    /// is exactly what an offline run exists to try. A manifest whose
+    /// adapters do not compile is an issue, as a row's would be, so the run
+    /// that names it fails as `unavailable` with the reason rather than
+    /// silently skipping the model.
+    pub fn from_manifests(
+        manifests: impl IntoIterator<Item = ManifestEntry>,
+        config: &ModelsConfig,
+        datalogic: &datalogic::Engine,
+    ) -> Self {
+        let mut set = ModelSet::default();
+        let mut parts = Vec::new();
+        for entry in manifests {
+            let id = entry.manifest.name.clone();
+            let digest = entry.digest.clone();
+            parts.push(format!("{id}@0:{digest}"));
+            let item = CompileItem {
+                id: id.clone(),
+                version: 0,
+                digest: digest.clone(),
+                manifest: entry.manifest,
+                // Offline the bytes come from the file, not a bucket: the
+                // reference names that file so a log line can say where the
+                // model was read from, and nothing fetches through it.
+                artifact: ArtifactRef {
+                    connector: String::new(),
+                    key: entry.artifact_path.display().to_string(),
+                    digest: digest.clone(),
+                    size: None,
+                },
+                stats: entry.stats,
+            };
+            match compile_entry(item, config, datalogic) {
+                Ok(compiled) => {
+                    set.models.insert(id, Arc::new(compiled));
+                }
+                Err(reason) => set.issues.push(ModelLoadIssue {
+                    model: id,
+                    version: 0,
+                    digest,
+                    stage: "adapter",
+                    reason,
+                }),
+            }
+        }
+        parts.sort();
+        set.fingerprint = parts.join(";");
         set
     }
 
@@ -221,12 +284,34 @@ impl ModelSet {
     }
 }
 
-fn load_one(
-    row: &Model,
-    config: &ModelsConfig,
-    enabled: bool,
-    datalogic: &datalogic::Engine,
-) -> Result<ModelEntry, (&'static str, String)> {
+/// A manifest an offline set is built from: the file beside it, hashed and
+/// read, by whoever found it on disk (`definitions::ModelDefinition`).
+#[derive(Debug, Clone)]
+pub struct ManifestEntry {
+    pub manifest: Manifest,
+    /// The artifact file the manifest's `artifact` names, resolved beside it.
+    pub artifact_path: std::path::PathBuf,
+    /// `sha256:…` of that file.
+    pub digest: String,
+    /// What `lint` read out of the graph, when it could — the offline twin
+    /// of what admission records, minus the probe.
+    pub stats: Option<Stats>,
+}
+
+/// What one entry is compiled from, once a row (or a manifest) has been
+/// decoded: the part of the load that is the same on a node and offline.
+struct CompileItem {
+    id: String,
+    version: i64,
+    digest: String,
+    manifest: Manifest,
+    artifact: ArtifactRef,
+    stats: Option<Stats>,
+}
+
+/// The row half of a load: the node has the runtime, the verdict passed,
+/// and the stored columns decode. Nothing here touches an engine.
+fn decode_row(row: &Model, enabled: bool) -> Result<CompileItem, (&'static str, String)> {
     if !enabled {
         return Err((
             "disabled",
@@ -255,8 +340,9 @@ fn load_one(
     }
     // Decoded, not re-validated, as the admission worker does: the row holds
     // the validated form, and a rule added since it was written is
-    // preflight's to report. What *is* checked again is compilation, below,
-    // because the serving engine is the one that has to accept it.
+    // preflight's to report. What *is* checked again is compilation, in
+    // `compile_entry`, because the serving engine is the one that has to
+    // accept it.
     let manifest: Manifest = serde_json::from_str(&row.manifest_json)
         .map_err(|e| ("manifest", format!("stored manifest does not parse: {e}")))?;
     let artifact: ArtifactRef = serde_json::from_str(&row.artifact_json).map_err(|e| {
@@ -269,34 +355,43 @@ fn load_one(
         .stats_json
         .as_deref()
         .and_then(|s| serde_json::from_str::<Stats>(s).ok());
-
-    let mut adapters = Vec::with_capacity(manifest.inputs.len());
-    for input in &manifest.inputs {
-        let logic = datalogic
-            .compile(&manifest.adapter_for(input))
-            .map_err(|e| {
-                (
-                    "adapter",
-                    format!("adapter for input '{}' does not compile: {e}", input.name),
-                )
-            })?;
-        adapters.push((input.name.clone(), logic));
-    }
-    let result = datalogic.compile(&manifest.result_logic()).map_err(|e| {
-        (
-            "adapter",
-            format!("result expression does not compile: {e}"),
-        )
-    })?;
-
-    let limits = Limits::effective(config, &row.model_id);
-    Ok(ModelEntry {
+    Ok(CompileItem {
         id: row.model_id.clone(),
         version: row.version,
         digest: row.digest.clone(),
         manifest,
         artifact,
         stats,
+    })
+}
+
+/// The engine half: every adapter and the result compiled on `datalogic`,
+/// the limits from the config, the permits sized by them. `Err` is the
+/// reason the first expression that did not compile gave.
+fn compile_entry(
+    item: CompileItem,
+    config: &ModelsConfig,
+    datalogic: &datalogic::Engine,
+) -> Result<ModelEntry, String> {
+    let mut adapters = Vec::with_capacity(item.manifest.inputs.len());
+    for input in &item.manifest.inputs {
+        let logic = datalogic
+            .compile(&item.manifest.adapter_for(input))
+            .map_err(|e| format!("adapter for input '{}' does not compile: {e}", input.name))?;
+        adapters.push((input.name.clone(), logic));
+    }
+    let result = datalogic
+        .compile(&item.manifest.result_logic())
+        .map_err(|e| format!("result expression does not compile: {e}"))?;
+
+    let limits = Limits::effective(config, &item.id);
+    Ok(ModelEntry {
+        id: item.id,
+        version: item.version,
+        digest: item.digest,
+        manifest: item.manifest,
+        artifact: item.artifact,
+        stats: item.stats,
         adapters,
         result,
         limits,
@@ -492,6 +587,44 @@ mod tests {
             set.issue_for("ada.c4-tiny").expect("issue").stage,
             "artifact"
         );
+    }
+
+    /// An offline set compiles the same entries a row set does, without a
+    /// row: version `0`, the file's digest, the stats the caller read, and
+    /// a manifest whose adapters do not compile becomes an `adapter` issue
+    /// rather than a silent absence.
+    #[test]
+    fn an_offline_set_is_built_from_manifests_alone() {
+        let config = ModelsConfig::default();
+        let engine = engine();
+        let entry = |text: &str| ManifestEntry {
+            manifest: Manifest::parse(text).expect("valid"),
+            artifact_path: std::path::PathBuf::from("c4-tiny.onnx"),
+            digest: "sha256:abc".to_string(),
+            stats: None,
+        };
+        let set = ModelSet::from_manifests([entry(fixture::MANIFEST)], &config, &engine);
+        assert!(set.issues.is_empty(), "{:?}", set.issues);
+        let loaded = set.get("ada.c4-tiny").expect("compiled");
+        assert_eq!(loaded.version, 0);
+        assert_eq!(loaded.digest, "sha256:abc");
+        assert_eq!(loaded.artifact.key, "c4-tiny.onnx");
+        assert_eq!(loaded.adapters.len(), 1);
+        assert_eq!(set.fingerprint(), "ada.c4-tiny@0:sha256:abc");
+
+        let bare = datalogic::Engine::builder().build();
+        let set = ModelSet::from_manifests(
+            [entry(&fixture::MANIFEST.replace(
+                r#"{ "tensor": [{ "var": "data.board" }, "f32"] }"#,
+                r#"{ "tensor": [{ "var": "data.board" }, "f32"], "and": [1] }"#,
+            ))],
+            &config,
+            &bare,
+        );
+        assert!(set.get("ada.c4-tiny").is_none());
+        let issue = set.issue_for("ada.c4-tiny").expect("an issue");
+        assert_eq!(issue.stage, "adapter");
+        assert_eq!(issue.version, 0);
     }
 
     /// Order-independent, version- and digest-sensitive.

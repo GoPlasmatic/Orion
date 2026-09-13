@@ -47,6 +47,7 @@ Start Orion (`orion-server`, listening on `http://localhost:8080`), then:
 | [`kafka-order-events`](packages/kafka-order-events/) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates — **needs `kafka.enabled = true` and a broker** |
 | [`order-summary`](packages/order-summary/) | `POST /order-summary` | The dependency-free files behind the documentation's HTTP-flow tutorial |
 | [`nightly-rollup`](packages/nightly-rollup/) | `0 15 2 * * *` (no route) | **Scheduled:** a `protocol: "cron"` channel runs the workflow on a six-field expression; every instant becomes a durable occurrence |
+| [`c4-tournament`](packages/c4-tournament/) | `POST /c4/register`, `/c4/turn`, `/c4/match`, `GET /c4/leaderboard`, an hourly round | **Model-backed:** a Connect Four tournament for tiny ONNX networks — `model_infer` routes each turn to the entrant to move, a plugin ([source](plugins/c4-rules/)) referees, a `loop` plays the match, a SQLite leaderboard keeps score — needs `models.enabled = true` and `plugins.enabled = true`; the entrant is registered from a bucket, not by `deploy.sh` |
 
 Every entity carries a `tags: ["pkg:<name>"]` label — that is what marks it as
 belonging to the package, and what `orion-server package export` selects on.
@@ -54,9 +55,16 @@ belonging to the package, and what `orion-server package export` selects on.
 ## Testing
 
 ```bash
-orion-server test examples/workflow-tests   # offline: real engine, no server or network
-just e2e                                    # live: tests/e2e drives a real server via orion-cli
+orion-server test examples/workflow-tests \
+  --plugin-dir examples/packages/fixed-width-statement \
+  --plugin-dir examples/packages/c4-tournament \
+  --model-dir examples/packages/c4-tournament/entrant   # offline: real engine, no server or network
+just e2e                                                # live: tests/e2e drives a real server via orion-cli
 ```
+
+The two `--plugin-dir`s hand the runner the plugins the cases call for
+real, and `--model-dir` the reference entrant the `c4-turn` case runs for
+real; without them those cases fail rather than pass on a stub.
 
 [`workflow-tests/README.md`](workflow-tests/README.md) documents the case format
 (including connector stubs); [`use-cases/README.md`](use-cases/README.md)

@@ -1,0 +1,11 @@
+{
+  "channel_id": "c4-register",
+  "name": "c4-register",
+  "description": "Register an entrant: POST { \"model\": \"<id>\" } once the model is admitted and active",
+  "tags": ["pkg:c4-tournament"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/c4/register",
+  "workflow_id": "c4-register"
+}

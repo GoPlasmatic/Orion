@@ -36,9 +36,10 @@ Three principles shape the setup:
 | Touched `[vars]` / `[secrets]`, or anything a message carries into a trace | `cargo test --test integration secrets_and_vars_test` — the leak sweep asserts a secret reaches no recording surface *and* carries its own controls, so an assertion that stops seeing anything fails rather than passing quietly |
 | Touched a **rider crate** (`orion-api`, `orion-client`, `orion-plugin-sdk`), including its manifest | `cargo package --locked --workspace` (needs a clean tree) — no version bump: all five crates share `workspace.package.version` and a release moves it |
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
-| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement`) |
+| Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement` and `c4-tournament`; the latter's model entrant is registered separately, and `./tests/e2e/run.sh 18` is the run that does it against a real server) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
-| Touched the model runtime, the manifest, the loader, the session cache or `model_infer` | `cargo test --lib -- model:: runtime::models` and `cargo test --test integration admin_models_test model_infer_test` — the fixture graph in `tests/fixtures/models/c4-tiny/` is served by an in-process bucket, so the load, the adapters and the quarantine run for real; `function_registry_test` and `functions_docs_drift_test` pin the function's table and its page |
+| Touched the model runtime, the manifest, the loader, the session cache or `model_infer` | `cargo test --lib -- model:: runtime::models` and `cargo test --test integration admin_models_test model_infer_test` — the fixture graph in `tests/fixtures/models/c4-tiny/` is served by an in-process bucket, so the load, the adapters and the quarantine run for real; `function_registry_test` and `functions_docs_drift_test` pin the function's table and its page. Then `./tests/e2e/run.sh 18` — the CLI's `models` verbs over HTTP against a Python static server standing in for the bucket: register with `--wait`, activate, the `c4-tournament` package served end to end, a wrong digest failing at the `digest` stage, the delete gate |
+| Touched what an inference costs | `crates/orion-server/tests/benchmark/bench.sh model` — scenario I registers the example entrant against a local fake bucket and drives `hey` at a `model_infer` workflow; needs `hey` and `python3` |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)
@@ -147,7 +148,7 @@ runner per invocation) — kept drift-free by `ci_filter_drift_test`.*
 
 ## Layer 4 — end-to-end suite (`tests/e2e/`)
 
-The workspace-level suite at the repo root: 17 shell suites drive a real
+The workspace-level suite at the repo root: 18 shell suites drive a real
 `orion-server` binary over HTTP with the `orion-cli` binary, both built from
 the same tree — the one place the full contract chain (server ⇄ `orion-api`
 ⇄ `orion-client` ⇄ CLI rendering) is exercised end to end at one commit.
@@ -173,8 +174,10 @@ The examples are executable and CI treats them as a gate (`examples` job):
 - **Offline:** every package workflow passes `orion-server lint`, and the
   [`examples/workflow-tests/`](examples/workflow-tests/) cases run each
   workflow through the real engine with stubbed connectors and the
-  `fixed-width-statement` plugin running for real (`just workflow-tests`,
-  which passes `--plugin-dir`).
+  `fixed-width-statement` and `c4-tournament` plugins running for real
+  (`just workflow-tests`, which passes `--plugin-dir` for each); the
+  three `c4-*` cases also run the tournament's reference entrant for real
+  through `--model-dir`.
 - **Live:** CI boots a real server with plugins enabled (plus Postgres for
   `postgres-orders`), runs `quickstart.sh` twice and `deploy.sh` for
   **every** package twice — deployability and idempotency are both asserted,
@@ -214,8 +217,10 @@ The examples are executable and CI treats them as a gate (`examples` job):
 
 ## Layer 8 — benchmarks (manual, recorded per release)
 
-`crates/orion-server/tests/benchmark/bench.sh` (seven `hey` scenarios, plus a
-`cluster` mode against the HA compose stack). Not in CI — numbers from
+`crates/orion-server/tests/benchmark/bench.sh` (eight `hey` scenarios — the
+last, `model`, registers the example entrant against a local fake bucket and
+loads a `model_infer` workflow — plus a `cluster` mode against the HA compose
+stack). Not in CI — numbers from
 shared runners are noise. Run on dedicated hardware at release checkpoints;
 each release's record is committed under `crates/orion-server/tests/benchmark/results/vX.Y.Z/`
 (procedure: `RELEASING.md`).
@@ -244,9 +249,9 @@ recompiled from cold.
   `commands/benchmark/stats.rs`); output formatting and error hints are
   exercised only indirectly, through the e2e suite's assertions on command
   output.
-- **The e2e suite invokes 17 of the CLI's 18 command groups.** The nine the
+- **The e2e suite invokes 18 of the CLI's 19 command groups.** The ten the
   lifecycle suites exercise in depth (`workflows`, `channels`, `connectors`,
-  `send`, `traces`, `engine`, `health`, `plugins`, `cron`) plus eight covered
+  `send`, `traces`, `engine`, `health`, `plugins`, `cron`, `models`) plus eight covered
   at smoke depth by `suites/14_read_only_commands.sh` (`functions`, `metrics`,
   `audit-logs`, `backups`, `packages`, `dlq`, `completions`, `config`) —
   enough to catch a broken output shape or envelope, not enough to call them

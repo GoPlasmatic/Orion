@@ -1,0 +1,25 @@
+{
+  "name": "bench-model-infer",
+  "workflow_id": "bench-model-infer",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "view" } }
+    },
+    {
+      "id": "infer",
+      "name": "Ask the entrant for a column",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": "example.c4-tiny",
+          "input": { "var": "data.view" },
+          "output": "data.answer",
+          "stats_output": "data.inference"
+        }
+      }
+    }
+  ]
+}

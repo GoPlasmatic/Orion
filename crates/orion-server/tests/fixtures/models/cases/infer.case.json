@@ -1,0 +1,137 @@
+{
+  "name": "c4-tiny scores a board offline",
+  "workflow": "score.json",
+  "input": [
+    [
+      [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ],
+      [
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      ]
+    ]
+  ],
+  "expect": {
+    "temp_data.stats.id": "ada.c4-tiny",
+    "temp_data.stats.version": 0,
+    "temp_data.stats.digest": "sha256:a846b06040de77b5c51789ba7b02e05618008f6524f1fc2789e4382f3f811619",
+    "temp_data.stats.parameters": 1479,
+    "temp_data.stats.artifact_bytes": 6171,
+    "temp_data.stats.runtime": "tract",
+    "temp_data.stats.device": "cpu",
+    "temp_data.stats.cold_load": true
+  },
+  "expect_tasks": [
+    "parse",
+    "infer"
+  ],
+  "expect_calls": {
+    "model_infer": []
+  }
+}

@@ -1,4 +1,4 @@
-<!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors and plugins — and the boundary along which a service ships. -->
+<!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors, plugins and models — and the boundary along which a service ships. -->
 # Packages
 
 A **package** is one service, named and versioned as a unit: the channels it
@@ -50,10 +50,15 @@ in two, or absorbed into another — by changing labels.
 
 Export selects **channels**, by tag or by id, and works outward from there. The
 **closure** is what it collects: each selected channel, the workflow that
-channel names, every connector those workflows reference, and every
+channel names, every connector those workflows reference, every
 [plugin](./plugins.md) whose functions they call — at the exact version and
 component digest serving them on the source, with the component itself
-inlined when the export is asked to carry artifacts.
+inlined when the export is asked to carry artifacts — and every model they
+name by literal `model_infer` id, the fifth member, carried as its manifest and
+its artifact *reference* rather than its bytes: the target fetches the object
+through a storage connector of the same name when it admits the model, so that
+connector is a stated requirement (`requires.storage`) unless the package
+carries it.
 
 The channel is the unit of selection because each channel names exactly one
 workflow. Selecting the endpoints selects the service.
@@ -61,14 +66,18 @@ workflow. Selecting the endpoints selects the service.
 What the closure deliberately does *not* pull in is anything belonging to
 someone else. A `channel_call` target you did not select is not swept up; it is
 recorded as a **requirement**: a name the package uses but does not contain.
-Requirements keep packages small and their boundaries stated, and the target
-instance is checked for each one before anything is written.
+So is a plugin or a model the source does not serve active, and the storage
+connector a carried model is fetched through. Requirements keep packages small
+and their boundaries stated, and the target instance is checked for each one
+before anything is written.
 
 ## Two forms of the same thing
 
 - **Source form**: a directory of entity JSON files, one per channel, workflow
-  and connector. This is what you author, review and keep in git; the
-  [shipped examples](../getting-started/examples.md) are packages in this form.
+  and connector — plus a `plugin.toml` per plugin and a model manifest per
+  model, each with its artifact beside it. This is what you author, review and
+  keep in git; the [shipped examples](../getting-started/examples.md) are
+  packages in this form.
 - **Artifact form**: one JSON document carrying the entities plus a name, a
   version, the Orion version it came from, and a content hash. This is what
   travels between instances.

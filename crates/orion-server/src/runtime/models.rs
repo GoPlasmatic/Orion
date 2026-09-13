@@ -161,6 +161,12 @@ pub fn spawn_preload(
         models = ?targets,
         "Preloading models"
     );
+    let host = crate::model::InferenceHost::node(
+        &models,
+        deps.config.clone(),
+        deps.registry.clone(),
+        deps.client.clone(),
+    );
     tokio::spawn(async move {
         for id in targets {
             let Some(entry) = generation.models.get(&id).cloned() else {
@@ -182,17 +188,7 @@ pub fn spawn_preload(
             };
             // The outcome is logged and counted by the load path itself;
             // a warm-up has no caller to answer.
-            let _ = crate::model::load_model(
-                &models,
-                &deps.config,
-                &deps.registry,
-                &deps.client,
-                entry,
-                runtime,
-                device,
-                "preload",
-            )
-            .await;
+            let _ = crate::model::load_model(&host, entry, runtime, device, "preload").await;
         }
     });
 }

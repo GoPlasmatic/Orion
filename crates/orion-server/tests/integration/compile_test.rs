@@ -601,3 +601,213 @@ fn an_artifact_refuses_a_manifest_whose_component_is_missing() {
     );
     assert!(!out.exists(), "nothing is written on refusal");
 }
+
+/// The fixture's bytes, for the digest the artifact must name.
+const MODEL_ONNX: &[u8] = include_bytes!("../fixtures/models/c4-tiny/c4-tiny.onnx");
+const MODEL_MANIFEST: &str = include_str!("../fixtures/models/c4-tiny/model.json");
+
+/// A set with the fixture model in it: the manifest — with a `reference`
+/// unless told otherwise — the graph beside it unless told otherwise, and a
+/// workflow that calls it behind a channel.
+fn model_set(label: &str, with_reference: bool, with_artifact: bool) -> ScratchDir {
+    let scratch = ScratchDir::new(label);
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("models/c4")).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_str(MODEL_MANIFEST).unwrap();
+    if with_reference {
+        manifest["reference"] = serde_json::json!({"connector": "models", "key": "c4/0.1.0.onnx"});
+    }
+    std::fs::write(
+        dir.join("models/c4/model.json"),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    if with_artifact {
+        std::fs::write(dir.join("models/c4/c4-tiny.onnx"), MODEL_ONNX).unwrap();
+    }
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "score", "name": "Score", "tasks": [
+             { "id": "parse", "name": "Parse", "function": { "name": "parse_json",
+               "input": { "source": "payload", "target": "board" } } },
+             { "id": "infer", "name": "Infer", "function": { "name": "model_infer",
+               "input": { "model": "ada.c4-tiny", "input": { "var": "" }, "output": "data.policy" } } } ] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ch.json"),
+        r#"{ "channel_id": "score-api", "name": "score-api", "channel_type": "sync",
+             "protocol": "rest", "methods": ["POST"], "route_pattern": "/score",
+             "workflow_id": "score" }"#,
+    )
+    .unwrap();
+    scratch
+}
+
+/// A model manifest in the set compiles into the artifact as the fifth
+/// member: the manifest without its local path, the reference the manifest
+/// names, the digest of the file beside it, marked for activation — and the
+/// storage connector it is fetched through goes to `requires.storage`.
+/// `package lint` accepts the result, and the bulk form writes the same
+/// items to `models.json`.
+#[test]
+fn a_model_in_the_set_compiles_into_the_artifact_with_its_reference() {
+    let scratch = model_set("compile-model", true, true);
+    let dir = scratch.path();
+    let out = dir.join("dist/package.json");
+
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "score",
+        "--version",
+        "1.0.0",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("[model.manifest] model 'ada.c4-tiny'"),
+        "{report}"
+    );
+    assert!(report.contains("[model.stats]"), "{report}");
+    assert!(report.contains("1 models,"), "{report}");
+
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).expect("artifact")).expect("json");
+    let model = &artifact["models"][0];
+    assert_eq!(model["model_id"], "ada.c4-tiny");
+    assert_eq!(model["activate"], true);
+    assert_eq!(model["artifact"]["connector"], "models");
+    assert_eq!(model["artifact"]["key"], "c4/0.1.0.onnx");
+    assert_eq!(
+        model["artifact"]["digest"],
+        serde_json::json!(orion::crypto::sha256_digest(MODEL_ONNX))
+    );
+    assert!(
+        model["manifest"].get("artifact").is_none(),
+        "the local path does not travel: {model}"
+    );
+    assert_eq!(model["manifest"]["name"], "ada.c4-tiny");
+    assert_eq!(model["manifest"]["reference"]["key"], "c4/0.1.0.onnx");
+    assert!(
+        model.get("component").is_none() && model.get("bytes").is_none(),
+        "a model travels as a reference, never bytes: {model}"
+    );
+    assert_eq!(
+        artifact["requires"]["storage"],
+        serde_json::json!(["models"])
+    );
+    assert!(artifact["requires"].get("models").is_none());
+
+    let (ok, report) = run(&["package", "lint", "-f", out.to_str().unwrap()]);
+    assert!(ok, "{report}");
+    assert!(report.contains("1 models,"), "{report}");
+
+    // `--no-activate` leaves the model a draft too.
+    let drafts = dir.join("dist/drafts.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "score",
+        "--version",
+        "1.0.1",
+        "--no-activate",
+        "-o",
+        drafts.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&drafts).expect("artifact")).expect("json");
+    assert!(
+        artifact["models"][0].get("activate").is_none(),
+        "{artifact}"
+    );
+
+    // The bulk form writes the same items to models.json, and the dir form
+    // mirrors the manifest with its graph.
+    let bulk = dir.join("dist/bulk");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "bulk",
+        "-o",
+        bulk.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let items: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(bulk.join("models.json")).expect("bulk"))
+            .expect("json");
+    assert_eq!(items[0]["model_id"], "ada.c4-tiny");
+    assert_eq!(items[0]["artifact"]["connector"], "models");
+    let mirrored = dir.join("dist/mirror");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "dir",
+        "-o",
+        mirrored.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(mirrored.join("models/c4/model.json").is_file());
+    assert_eq!(
+        std::fs::read(mirrored.join("models/c4/c4-tiny.onnx")).expect("copied"),
+        MODEL_ONNX
+    );
+}
+
+/// A manifest with no `reference`, or no artifact beside it, lints — the
+/// workflow's reference resolves against the manifest alone — but cannot
+/// become an artifact, and the refusal names what to add.
+#[test]
+fn an_artifact_refuses_a_model_missing_its_reference_or_its_bytes() {
+    let scratch = model_set("compile-model-no-reference", false, true);
+    let dir = scratch.path();
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(ok, "the manifest alone validates the set: {report}");
+    let out = dir.join("dist/package.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "score",
+        "--version",
+        "1.0.0",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!ok, "an artifact must name where the bytes are: {report}");
+    assert!(report.contains("ada.c4-tiny"), "{report}");
+    assert!(
+        report.contains("reference = { connector, key }"),
+        "{report}"
+    );
+    assert!(!out.exists(), "nothing is written on refusal");
+
+    let scratch = model_set("compile-model-no-bytes", true, false);
+    let dir = scratch.path();
+    let (ok, report) = run(&["lint", dir.to_str().unwrap()]);
+    assert!(ok, "{report}");
+    assert!(report.contains("[model.artifact_missing]"), "{report}");
+    let out = dir.join("dist/package.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "score",
+        "--version",
+        "1.0.0",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!ok, "an artifact must carry the digest: {report}");
+    assert!(
+        report.contains("no artifact beside the manifest"),
+        "{report}"
+    );
+    assert!(!out.exists(), "nothing is written on refusal");
+}

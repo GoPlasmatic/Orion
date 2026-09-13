@@ -73,6 +73,13 @@ impl Server {
             .env("ORION_SERVER__PORT", port.to_string())
             // Plugins on: the promotion scenario below carries one.
             .env("ORION_PLUGINS__ENABLED", "true")
+            // Models on, with the admission worker this process starts:
+            // the model scenario needs the target to admit what apply stages.
+            .env("ORION_MODELS__ENABLED", "true")
+            .env(
+                "ORION_MODELS__CACHE_DIR",
+                dir.path().join("models-cache").display().to_string(),
+            )
             .env("ORION_LOGGING__LEVEL", "warn")
             .stdout(std::process::Stdio::from(out))
             .stderr(std::process::Stdio::from(err))
@@ -566,4 +573,273 @@ async fn package_promotes_a_plugin_with_its_component() {
         .find(|f| f["name"] == "test.fixture.wrap")
         .expect("the plugin function is served on the target");
     assert_eq!(entry["plugin"]["digest"], artifact["plugins"][0]["digest"]);
+}
+
+/// A package with a model in it: the fifth member travels as its reference,
+/// the storage connector it is fetched through is a stated requirement that
+/// `plan` refuses a bare target for, and `apply` waits for the target to
+/// admit the model before activating it ahead of the workflow — so the
+/// promoted channel scores a board on the first request.
+#[tokio::test]
+async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
+    use crate::common::models::{
+        FIXTURE_ID, FIXTURE_ONNX, fixture_digest, registration, spawn_bucket, storage_connector,
+    };
+    /// The CLI on the blocking pool: the bucket both servers fetch from is a
+    /// task on this test's runtime, and a `Command::output()` on the runtime
+    /// thread would stall it exactly while the target's admission needs it.
+    async fn package(args: &[&str]) -> std::process::Output {
+        let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+        tokio::task::spawn_blocking(move || {
+            let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+            package_cmd(&borrowed)
+        })
+        .await
+        .expect("the CLI ran")
+    }
+    let client = reqwest::Client::new();
+    let bucket = spawn_bucket(FIXTURE_ONNX.to_vec()).await;
+    let source = Server::start("model-source");
+    let target = Server::start("model-target");
+    source.wait_ready(&client).await;
+    target.wait_ready(&client).await;
+    let base = source.url();
+
+    // The source: a storage connector at the bucket, the model registered,
+    // admitted by the source's own worker and activated, and a workflow
+    // calling it behind a channel.
+    let resp = client
+        .post(format!("{base}/api/v1/admin/connectors"))
+        .json(&storage_connector("bucket", bucket.addr))
+        .send()
+        .await
+        .expect("create connector");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .post(format!("{base}/api/v1/admin/models"))
+        .json(&registration("bucket", &fixture_digest()))
+        .send()
+        .await
+        .expect("register model");
+    assert_eq!(
+        resp.status(),
+        202,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let mut admitted = false;
+    for _ in 0..240 {
+        let row: serde_json::Value = client
+            .get(format!("{base}/api/v1/admin/models/{FIXTURE_ID}"))
+            .send()
+            .await
+            .expect("get model")
+            .json()
+            .await
+            .expect("json");
+        match row["data"]["admission"]["state"].as_str() {
+            Some("passed") => {
+                admitted = true;
+                break;
+            }
+            Some("failed") => panic!("the source refused the fixture: {row}"),
+            _ => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+        }
+    }
+    assert!(admitted, "the source's admission worker never ran");
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/models/{FIXTURE_ID}/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate model");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .post(format!("{base}/api/v1/admin/workflows"))
+        .json(&serde_json::json!({
+            "workflow_id": "score", "name": "Score", "tags": ["pkg:model"], "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "board"}}},
+                {"id": "infer", "name": "infer", "function": {"name": "model_infer",
+                    "input": {"model": FIXTURE_ID, "input": {"var": ""}, "output": "data.policy"}}}
+            ],
+        }))
+        .send()
+        .await
+        .expect("create workflow");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/workflows/score/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate workflow");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .post(format!("{base}/api/v1/admin/channels"))
+        .json(&serde_json::json!({
+            "channel_id": "score-api", "name": "score-api", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/score",
+            "workflow_id": "score", "tags": ["pkg:model"],
+        }))
+        .send()
+        .await
+        .expect("create channel");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/channels/score-api/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate channel");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    let dir = ScratchDir::new("model-artifacts");
+    let file = dir.path().join("score-1.0.0.json");
+    let file = file.to_str().expect("utf8 path");
+    let stdout = assert_ok(
+        &package(&[
+            "export",
+            "-s",
+            &source.url(),
+            "--tag",
+            "pkg:model",
+            "--name",
+            "score",
+            "--version",
+            "1.0.0",
+            "-o",
+            file,
+        ])
+        .await,
+        "export",
+    );
+    assert!(stdout.contains("1 models"), "{stdout}");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(file).expect("artifact")).expect("json");
+    assert_eq!(artifact["models"][0]["model_id"], FIXTURE_ID);
+    assert_eq!(artifact["models"][0]["artifact"]["connector"], "bucket");
+    assert_eq!(
+        artifact["models"][0]["artifact"]["digest"],
+        serde_json::json!(fixture_digest())
+    );
+    assert_eq!(artifact["models"][0]["activate"], true);
+    assert!(artifact["models"][0].get("component").is_none());
+    assert_eq!(
+        artifact["requires"]["storage"],
+        serde_json::json!(["bucket"])
+    );
+    assert_ok(&package(&["lint", "-f", file]).await, "lint");
+
+    // A target without the storage connector cannot take the package, and
+    // `plan` names the connector before anything is written.
+    let out = package(&["plan", "-s", &target.url(), "-f", file]).await;
+    assert!(!out.status.success(), "a bare target lacks the connector");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("required storage connector 'bucket'"),
+        "{stderr}"
+    );
+    let out = package(&["apply", "-s", &target.url(), "-f", file]).await;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("'bucket'"), "{stderr}");
+
+    // With the connector in place: plan, apply — which waits for the
+    // target's admission — and the channel serves the model.
+    let resp = client
+        .post(format!("{}/api/v1/admin/connectors", target.url()))
+        .json(&storage_connector("bucket", bucket.addr))
+        .send()
+        .await
+        .expect("create connector");
+    assert_eq!(
+        resp.status(),
+        201,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    assert_ok(
+        &package(&["plan", "-s", &target.url(), "-f", file]).await,
+        "plan",
+    );
+    let stdout = assert_ok(
+        &package(&["apply", "-s", &target.url(), "-f", file]).await,
+        "apply",
+    );
+    assert!(stdout.contains("staged models: 1 written"), "{stdout}");
+    assert!(stdout.contains("admitted models 'ada.c4-tiny'"), "{stdout}");
+    assert!(stdout.contains("1479 parameters"), "{stdout}");
+    assert!(
+        stdout.contains("activated models 'ada.c4-tiny'"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("applied score@1.0.0"), "{stdout}");
+    assert!(
+        bucket.gets.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "each instance fetched the artifact through its own connector"
+    );
+
+    let mut planes = vec![vec![vec![0.0f32; 7]; 6]; 2];
+    planes[0][5][3] = 1.0;
+    let resp = client
+        .post(format!("{}/api/v1/data/score", target.url()))
+        .json(&serde_json::json!({"data": [planes]}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+    let body: serde_json::Value = resp.json().await.expect("json");
+    assert_eq!(
+        body["data"]["policy"]["policy"][0].as_array().map(Vec::len),
+        Some(7),
+        "{body}"
+    );
+
+    // No drift, and re-applying identical content is a no-op.
+    assert_ok(
+        &package(&["diff", "-s", &target.url(), "-f", file]).await,
+        "diff",
+    );
+    let stdout = assert_ok(
+        &package(&["apply", "-s", &target.url(), "-f", file]).await,
+        "re-apply",
+    );
+    assert!(stdout.contains("nothing to do"), "{stdout}");
 }

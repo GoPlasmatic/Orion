@@ -1327,10 +1327,16 @@ lists the reason under `models.failed_to_load` and `channels.quarantined`.
 A computed `model` is checked per message instead and answers
 `unavailable`.
 
-**Offline.** `dry-run` and `orion-server test` do not run a model:
+**Offline.** With [`--model-dir`](./cli.md#dry-run) pointing at the
+manifest and its artifact, `dry-run` and `orion-server test` run the model
+**for real** through this same handler — the adapters, the runtime, the
+result expression and every refusal above — with no admission: the digest is
+computed from the file rather than claimed, and the bytes are trusted as the
+author's own. A workflow naming a model the directory does not hold is
+refused before it runs with `MODEL_ARTIFACT_UNAVAILABLE`. Without the flag
 `model_infer` is stubbed like a connector function, keyed by its name — the
 stub file's `"model_infer": {"*": …}` entry is what the task writes at
-`output`. A `--model-dir` that runs the artifact for real is planned.
+`output`. See [Run a model offline](../build/testing.md#run-a-model-offline).
 
 ---
 

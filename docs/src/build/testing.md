@@ -144,6 +144,41 @@ matches nothing.
 > real topics. Reach for the endpoint when you mean to touch the real systems,
 > and for `dry-run` when you do not.
 
+## Run a model offline
+
+A workflow that calls [`model_infer`](../reference/functions.md#model_infer)
+can run the model for real, with no server and no bucket, when the model is on
+disk: pass `--model-dir` pointing at a directory holding the manifest and the
+artifact its `artifact` field names beside it.
+
+```bash
+orion-server dry-run -w score.json -i board.json --model-dir ./models/c4-tiny
+orion-server test ./workflow-tests --model-dir ./models
+```
+
+The model runs through the same handler a node registers — the manifest's
+adapters, the runtime, the result expression, every limit and every refusal —
+so what the run writes is what the deployed workflow would write for the same
+bytes. What does *not* happen offline is admission: no digest is claimed and no
+probe runs, because the bytes are your own and the run is the probe. A model
+the directory holds without its artifact, or a literal `model` id no manifest
+in the directory describes, is refused before anything runs with
+`MODEL_ARTIFACT_UNAVAILABLE`, naming the model and what to add; a computed
+`model` resolves against the directory per message and fails the task as
+`unavailable` when it names one that is not there. Once a model directory is
+given, `model_infer` is never stubbed.
+
+Without the flag, `model_infer` is stubbed like a connector function, keyed by
+its name — `{"model_infer": {"*": {"policy": [[0.1, 0.2, 0.7, 0, 0, 0, 0]]}}}`
+is what the task writes to its `output` (`temp_data.inference` when it names
+none) — and a workflow that calls it with no stub either is refused with the
+same code rather than left to fail at the task.
+
+`orion-server lint` reads the same directory: a `model.json` in the set (or a
+`--model-dir`) is what a literal `model_infer` reference is checked against,
+and with the artifact beside it the graph's parameter count and tensor names
+are reported before anything is submitted.
+
 ## Build a regression suite
 
 A case is any `*.case.json` file — the suffix is what separates cases from the

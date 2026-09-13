@@ -7,7 +7,7 @@
 //! it evaluates them on are the same generation's, so a reload mid-workflow
 //! can never pair one generation's adapters with another's engine. The
 //! loaded session comes from the process-wide
-//! [`LoadedCache`](super::cache::LoadedCache) and outlives generations.
+//! [`LoadedCache`] and outlives generations.
 //!
 //! The sequence, and what each step refuses as:
 //!
@@ -34,10 +34,20 @@
 //! `model` and `runtime` labels are the entry's id and the runtime's own
 //! name — never a string the message chose.
 //!
-//! **Offline**, `dry-run` and `orion-server test` do not run a model: the
-//! function is stubbed like a connector function, keyed by its name, and the
-//! stub's `"*"` entry is what a task gets back. A `--model-dir` that runs the
-//! component for real is a later step.
+//! **Offline**, `dry-run` and `orion-server test` run the same handler over
+//! a [`ModelSource::Offline`]: the set is built from the manifests a
+//! `--model-dir` holds ([`super::offline::OfflineModels`]), compiled lazily
+//! on the calling engine — the only engine a dry run has — and a cold load
+//! reads the file beside the manifest rather than fetching through a storage
+//! connector. That is the one seam between the two: [`ArtifactSource`] is
+//! how a load gets its bytes, and [`InferenceHost`] carries it beside the
+//! runtimes, the resident sessions and the inference slots. Nothing about
+//! the adapters, the limits or the refusals differs, so what a dry run
+//! reports is what a node would do with the same bytes — admission excepted:
+//! no digest is claimed and no probe runs offline, because the bytes on
+//! disk are the author's own and are what the run exists to try. Without a
+//! `--model-dir` the function is stubbed like a connector function, keyed by
+//! its name.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,11 +63,13 @@ use serde_json::{Value, json};
 use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::time::Instant;
 
-use super::cache::CacheKey;
+use super::artifact::ArtifactStore;
+use super::cache::{CacheKey, LoadedCache};
 use super::error::{Category, Failure};
-use super::loader::ModelEntry;
+use super::loader::{ModelEntry, ModelSet};
 use super::node::ModelsRuntime;
-use super::runtimes::{LoadError, LoadedModel, ModelRuntime};
+use super::offline::OfflineModels;
+use super::runtimes::{LoadError, LoadedModel, ModelRuntime, ModelRuntimes};
 use crate::config::ModelsConfig;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::engine::HandlerError;
@@ -70,19 +82,151 @@ pub const NAME: &str = "model_infer";
 /// Where the result lands when the task names no `output`.
 pub const DEFAULT_OUTPUT: &str = "temp_data.inference";
 
-/// The `model_infer` task function.
-pub struct ModelInferHandler {
-    /// The node's serving generation, loaded once per call.
-    pub runtime: Arc<RuntimeHandle>,
-    /// The node's model runtime — `None` with `models.enabled = false`,
-    /// which makes every call an `unavailable` failure rather than a build
-    /// error.
-    pub models: Option<Arc<ModelsRuntime>>,
-    pub config: Arc<ModelsConfig>,
-    /// Resolves the storage connector an artifact is fetched through on a
-    /// cold load.
+/// How a cold load gets a model's bytes.
+///
+/// On a node the bytes come out of the digest-keyed disk cache, fetched
+/// through the entry's storage connector when the cache does not hold them
+/// ([`NodeArtifacts`]); offline they are the file beside the manifest
+/// ([`super::offline::LocalArtifacts`]). Everything after the bytes — the
+/// parse into a runtime, the cache, the permits — is shared.
+#[async_trait]
+pub trait ArtifactSource: Send + Sync {
+    /// The bytes of `entry`'s artifact, or the stage that could not produce
+    /// them.
+    async fn bytes(&self, entry: &ModelEntry) -> Result<Vec<u8>, LoadError>;
+}
+
+/// A node's artifacts: the store every admission filled, the connector
+/// registry the entry's reference resolves through, and the fetch ceilings.
+pub struct NodeArtifacts {
+    pub store: Arc<ArtifactStore>,
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
+    pub config: Arc<ModelsConfig>,
+}
+
+#[async_trait]
+impl ArtifactSource for NodeArtifacts {
+    async fn bytes(&self, entry: &ModelEntry) -> Result<Vec<u8>, LoadError> {
+        let name = entry.artifact.connector.as_str();
+        let storage = match self.registry.get(name).await {
+            Some(connector) => match connector.as_ref() {
+                ConnectorConfig::Storage(storage) => storage.clone(),
+                other => {
+                    return Err(LoadError::new(
+                        "gate",
+                        format!(
+                            "connector '{name}' is a {} connector, and a model artifact is read \
+                             through a storage connector",
+                            other.connector_type().as_str()
+                        ),
+                    ));
+                }
+            },
+            None => {
+                return Err(LoadError::new(
+                    "gate",
+                    format!(
+                        "connector '{name}' is not loaded on this node — it does not exist, is \
+                         disabled, or failed to load (see /health)"
+                    ),
+                ));
+            }
+        };
+        let path = self
+            .store
+            .fetch(
+                &storage,
+                &self.client,
+                &entry.artifact,
+                self.config.max_artifact_bytes,
+                Duration::from_secs(self.config.fetch_timeout_secs),
+            )
+            .await
+            .map_err(|e| LoadError::new(e.stage(), e.to_string()))?;
+        tokio::fs::read(&path).await.map_err(|e| {
+            LoadError::new(
+                "cache",
+                format!("the cached artifact could not be read: {e}"),
+            )
+        })
+    }
+}
+
+/// What an inference runs on, wherever it runs: the runtimes to load into,
+/// the sessions already resident, the process-wide slots, and where a cold
+/// load gets its bytes. A node builds one over its [`ModelsRuntime`]; an
+/// offline run builds one over the files a `--model-dir` holds.
+pub struct InferenceHost {
+    pub runtimes: Arc<ModelRuntimes>,
+    pub loaded: Arc<LoadedCache>,
+    pub inference_permits: Arc<Semaphore>,
+    pub inference_slots: usize,
+    pub artifacts: Arc<dyn ArtifactSource>,
+}
+
+impl InferenceHost {
+    /// The node's: its runtimes, cache and slots shared by `Arc`, so the
+    /// handler, the preload and the health view all see one set of resident
+    /// sessions.
+    pub fn node(
+        models: &ModelsRuntime,
+        config: Arc<ModelsConfig>,
+        registry: Arc<ConnectorRegistry>,
+        client: reqwest::Client,
+    ) -> Self {
+        Self {
+            runtimes: models.runtimes.clone(),
+            loaded: models.loaded.clone(),
+            inference_permits: models.inference_permits.clone(),
+            inference_slots: models.inference_slots,
+            artifacts: Arc::new(NodeArtifacts {
+                store: models.store.clone(),
+                registry,
+                client,
+                config,
+            }),
+        }
+    }
+
+    /// An offline host: the runtimes `config` enables, a fresh session
+    /// cache bounded by `config.max_loaded_bytes`, slots as the config says,
+    /// and `artifacts` for the bytes. No disk cache and no admission queue —
+    /// nothing is fetched and nothing is admitted.
+    pub fn offline(config: &ModelsConfig, artifacts: Arc<dyn ArtifactSource>) -> Self {
+        let inference_slots = match config.max_concurrent_inferences {
+            0 => std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
+            n => n as usize,
+        };
+        Self {
+            runtimes: Arc::new(ModelRuntimes::builtin(config)),
+            loaded: Arc::new(LoadedCache::new(config.max_loaded_bytes)),
+            inference_permits: Arc::new(Semaphore::new(inference_slots)),
+            inference_slots,
+            artifacts,
+        }
+    }
+}
+
+/// Where a call finds the model set and the expression engine its adapters
+/// were compiled on — the two must be one pair.
+pub enum ModelSource {
+    /// A node: the serving generation, loaded once per call, so a reload
+    /// mid-workflow can never pair one generation's adapters with another's
+    /// engine.
+    Node(Arc<RuntimeHandle>),
+    /// An offline run: a fixed set of manifests, compiled on the calling
+    /// engine the first time a task asks and reused for the rest of the run.
+    Offline(Arc<OfflineModels>),
+}
+
+/// The `model_infer` task function.
+pub struct ModelInferHandler {
+    pub source: ModelSource,
+    /// What the call runs on — `None` with `models.enabled = false`, which
+    /// makes every call an `unavailable` failure rather than a build error.
+    pub host: Option<Arc<InferenceHost>>,
+    pub config: Arc<ModelsConfig>,
 }
 
 #[async_trait]
@@ -268,10 +412,23 @@ impl ModelInferHandler {
         input: &TemplatedInput,
     ) -> Result<Labels, Refused> {
         let started = Instant::now();
-        // One generation for this call: the entry, its adapters and the
-        // engine they were compiled on.
-        let generation = self.runtime.load();
-        let Some(models) = &self.models else {
+        // One set and one engine for this call: the entry, its adapters and
+        // the engine they were compiled on, off one load of the generation
+        // on a node, or the offline set on the engine that is running us.
+        let (set, datalogic): (Arc<ModelSet>, Arc<datalogic::Engine>) = match &self.source {
+            ModelSource::Node(runtime) => {
+                let generation = runtime.load();
+                (
+                    generation.models.clone(),
+                    generation.engine.datalogic().clone(),
+                )
+            }
+            ModelSource::Offline(offline) => {
+                (offline.set_on(ctx.datalogic()), ctx.datalogic().clone())
+            }
+        };
+        let datalogic: &datalogic::Engine = &datalogic;
+        let Some(host) = &self.host else {
             return Err(refuse(
                 None,
                 Failure::new(
@@ -298,9 +455,8 @@ impl ModelInferHandler {
                 }
             },
         };
-        let Some(entry) = generation.models.get(&model_id).cloned() else {
-            let reason = generation
-                .models
+        let Some(entry) = set.get(&model_id).cloned() else {
+            let reason = set
                 .issue_for(&model_id)
                 .map(|issue| format!("{}: {}", issue.stage, issue.reason))
                 .unwrap_or_else(|| "it is unknown or not active".to_string());
@@ -334,7 +490,7 @@ impl ModelInferHandler {
             Some(Value::String(name)) => name.as_str(),
             Some(_) => return Err(caller_input(None, "'runtime' must be a string".to_string())),
         };
-        let (runtime, device) = models
+        let (runtime, device) = host
             .runtimes
             .for_format(&self.config, runtime_name, format)
             .map_err(|selection| {
@@ -412,7 +568,6 @@ impl ModelInferHandler {
             }
             Some(Ok(root)) => root,
         };
-        let datalogic = generation.engine.datalogic();
         let mut tensors: Vec<OwnedDataTensor> = Vec::with_capacity(entry.adapters.len());
         let mut input_elements = 0usize;
         for ((name, logic), decl) in entry.adapters.iter().zip(&entry.manifest.inputs) {
@@ -471,34 +626,26 @@ impl ModelInferHandler {
         // bounds how long this task waits for it, not the thread it runs on.
         let budget_ms = budget.as_millis() as u64;
         let timed = tokio::time::timeout_at(deadline, async {
-            let (loaded, cold_load) = load_model(
-                models,
-                &self.config,
-                &self.registry,
-                &self.client,
-                entry.clone(),
-                runtime.clone(),
-                device,
-                "demand",
-            )
-            .await
-            .map_err(|e| {
-                refuse(
-                    Some(&labels),
-                    Failure::new(
-                        Category::Unavailable,
-                        format!(
-                            "model '{}' is not loaded on this node: the {} step failed",
-                            entry.id, e.stage
-                        ),
-                    )
-                    .with_detail(e.message),
-                )
-            })?;
+            let (loaded, cold_load) =
+                load_model(host, entry.clone(), runtime.clone(), device, "demand")
+                    .await
+                    .map_err(|e| {
+                        refuse(
+                            Some(&labels),
+                            Failure::new(
+                                Category::Unavailable,
+                                format!(
+                                    "model '{}' is not loaded on this node: the {} step failed",
+                                    entry.id, e.stage
+                                ),
+                            )
+                            .with_detail(e.message),
+                        )
+                    })?;
 
             let queued = Instant::now();
             let _global = acquire(
-                &models.inference_permits,
+                &host.inference_permits,
                 deadline,
                 "models.max_concurrent_inferences",
                 &labels,
@@ -518,9 +665,8 @@ impl ModelInferHandler {
                 queued_for.as_secs_f64(),
             );
             crate::metrics::set_model_live_inferences(
-                models
-                    .inference_slots
-                    .saturating_sub(models.inference_permits.available_permits())
+                host.inference_slots
+                    .saturating_sub(host.inference_permits.available_permits())
                     as u64,
             );
 
@@ -652,18 +798,15 @@ impl ModelInferHandler {
 }
 
 /// The session for `entry` on `runtime`/`device`, from the cache or loaded
-/// into it: the artifact through its storage connector into the disk cache,
-/// the bytes into the runtime on the blocking pool. The second value says
+/// into it: the bytes from the host's [`ArtifactSource`] — the disk cache
+/// through the storage connector on a node, the file beside the manifest
+/// offline — into the runtime on the blocking pool. The second value says
 /// whether this call waited for a load. `source` is the metric's account of
 /// why — `demand` from a task, `preload` from a publish.
 ///
 /// Shared by the handler and the preload so the two cannot load differently.
-#[allow(clippy::too_many_arguments)]
 pub async fn load_model(
-    models: &ModelsRuntime,
-    config: &ModelsConfig,
-    registry: &ConnectorRegistry,
-    client: &reqwest::Client,
+    host: &InferenceHost,
     entry: Arc<ModelEntry>,
     runtime: Arc<dyn ModelRuntime>,
     device: &str,
@@ -674,20 +817,10 @@ pub async fn load_model(
         runtime: runtime.name(),
         device: device.to_string(),
     };
-    models
-        .loaded
+    host.loaded
         .get_or_load(key, || async {
             let started = Instant::now();
-            let result = fetch_and_load(
-                models,
-                config,
-                registry,
-                client,
-                &entry,
-                runtime.clone(),
-                device,
-            )
-            .await;
+            let result = fetch_and_load(host, &entry, runtime.clone(), device).await;
             let secs = started.elapsed().as_secs_f64();
             match &result {
                 Ok(loaded) => {
@@ -737,56 +870,12 @@ pub async fn load_model(
 }
 
 async fn fetch_and_load(
-    models: &ModelsRuntime,
-    config: &ModelsConfig,
-    registry: &ConnectorRegistry,
-    client: &reqwest::Client,
+    host: &InferenceHost,
     entry: &Arc<ModelEntry>,
     runtime: Arc<dyn ModelRuntime>,
     device: &str,
 ) -> Result<Arc<dyn LoadedModel>, LoadError> {
-    let name = entry.artifact.connector.as_str();
-    let storage = match registry.get(name).await {
-        Some(connector) => match connector.as_ref() {
-            ConnectorConfig::Storage(storage) => storage.clone(),
-            other => {
-                return Err(LoadError::new(
-                    "gate",
-                    format!(
-                        "connector '{name}' is a {} connector, and a model artifact is read \
-                         through a storage connector",
-                        other.connector_type().as_str()
-                    ),
-                ));
-            }
-        },
-        None => {
-            return Err(LoadError::new(
-                "gate",
-                format!(
-                    "connector '{name}' is not loaded on this node — it does not exist, is \
-                     disabled, or failed to load (see /health)"
-                ),
-            ));
-        }
-    };
-    let path = models
-        .store
-        .fetch(
-            &storage,
-            client,
-            &entry.artifact,
-            config.max_artifact_bytes,
-            Duration::from_secs(config.fetch_timeout_secs),
-        )
-        .await
-        .map_err(|e| LoadError::new(e.stage(), e.to_string()))?;
-    let bytes = tokio::fs::read(&path).await.map_err(|e| {
-        LoadError::new(
-            "cache",
-            format!("the cached artifact could not be read: {e}"),
-        )
-    })?;
+    let bytes = host.artifacts.bytes(entry).await?;
     let entry = entry.clone();
     let device = device.to_string();
     tokio::task::spawn_blocking(move || runtime.load(&bytes, &entry.manifest, &device))
@@ -818,12 +907,18 @@ mod tests {
     }
 
     fn handler(models: Option<Arc<ModelsRuntime>>, config: ModelsConfig) -> ModelInferHandler {
+        let config = Arc::new(config);
         ModelInferHandler {
-            runtime: crate::runtime::generation::test_handle(),
-            models,
-            config: Arc::new(config),
-            registry: Arc::new(ConnectorRegistry::new(Default::default())),
-            client: reqwest::Client::new(),
+            source: ModelSource::Node(crate::runtime::generation::test_handle()),
+            host: models.map(|m| {
+                Arc::new(InferenceHost::node(
+                    &m,
+                    config.clone(),
+                    Arc::new(ConnectorRegistry::new(Default::default())),
+                    reqwest::Client::new(),
+                ))
+            }),
+            config,
         }
     }
 
@@ -871,7 +966,11 @@ mod tests {
 
         // A generation carrying the model's load issue hands the reason on.
         let h = handler(Some(models.clone()), config.clone());
-        let generation = h.runtime.load();
+        let ModelSource::Node(runtime) = &h.source else {
+            unreachable!("built on a node source")
+        };
+        let runtime = runtime.clone();
+        let generation = runtime.load();
         let now = chrono::Utc::now().naive_utc();
         let row = crate::storage::models::Model {
             model_id: "ada.c4-tiny".to_string(),
@@ -890,7 +989,7 @@ mod tests {
             updated_at: now,
         };
         let set = ModelSet::load_active(&[row], &config, true, generation.engine.datalogic());
-        h.runtime.publish(
+        runtime.publish(
             generation.engine.clone(),
             generation.channels.clone(),
             generation.functions.clone(),

@@ -1,0 +1,12 @@
+{
+  "channel_id": "c4-match",
+  "name": "c4-match",
+  "description": "One match: POST { \"one\": \"<id>\", \"two\": \"<id>\" }; answers the winner, the move count and whether it ended in a forfeit",
+  "tags": ["pkg:c4-tournament"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/c4/match",
+  "workflow_id": "c4-match",
+  "config": { "timeout_ms": 60000 }
+}

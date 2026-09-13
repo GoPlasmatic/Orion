@@ -1,0 +1,167 @@
+{
+  "workflow_id": "c4-register",
+  "name": "C4 Tournament: Register an Entrant",
+  "description": "Probe an entrant model against the contract on an empty board, then put it on the leaderboard with the parameter count and artifact size the server measured at admission.",
+  "tags": ["pkg:c4-tournament"],
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "validate",
+      "name": "Require a model id",
+      "halt_on": "failure",
+      "function": {
+        "name": "validation",
+        "input": {
+          "rules": [
+            {
+              "logic": { "!!": [{ "var": "data.input.model" }] },
+              "message": "model is required: the id of an admitted, active model"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "start",
+      "name": "An empty board",
+      "function": { "name": "c4.rules.start", "input": { "output": "temp_data.state" } }
+    },
+    {
+      "id": "view",
+      "name": "The board as the entrant sees it",
+      "function": {
+        "name": "c4.rules.view",
+        "input": { "state": { "var": "temp_data.state" }, "output": "temp_data.view" }
+      }
+    },
+    {
+      "id": "probe",
+      "name": "Ask the entrant for its opening move",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": { "var": "data.input.model" },
+          "input": { "var": "temp_data.view" },
+          "runtime": "tract",
+          "output": "temp_data.answer",
+          "timeout_ms": 250,
+          "stats_output": "data.stats"
+        }
+      }
+    },
+    {
+      "id": "apply",
+      "name": "Play the answer",
+      "function": {
+        "name": "c4.rules.apply",
+        "input": {
+          "state": { "var": "temp_data.state" },
+          "column": { "var": "temp_data.answer.column" },
+          "output": "temp_data.probe"
+        }
+      }
+    },
+    {
+      "id": "legal",
+      "name": "The opening move must be legal",
+      "halt_on": "failure",
+      "function": {
+        "name": "validation",
+        "input": {
+          "rules": [
+            {
+              "logic": { "!": [{ "var": "temp_data.probe.illegal" }] },
+              "message": "the entrant answered an illegal column on an empty board"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "table",
+      "name": "Create the leaderboard if it is missing",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "c4-leaderboard",
+          "query": "CREATE TABLE IF NOT EXISTS leaderboard (model TEXT PRIMARY KEY, parameters INTEGER NOT NULL, artifact_bytes INTEGER NOT NULL, wins INTEGER NOT NULL DEFAULT 0, losses INTEGER NOT NULL DEFAULT 0, draws INTEGER NOT NULL DEFAULT 0)",
+          "output": "temp_data.table"
+        }
+      }
+    },
+    {
+      "id": "record",
+      "name": "Put the entrant on the leaderboard",
+      "function": {
+        "name": "data_write",
+        "input": {
+          "connector": "c4-leaderboard",
+          "write": {
+            "op": "upsert",
+            "target": "leaderboard",
+            "values": {
+              "model": { "param": "model" },
+              "parameters": { "param": "parameters" },
+              "artifact_bytes": { "param": "artifact_bytes" },
+              "wins": 0,
+              "losses": 0,
+              "draws": 0
+            },
+            "on_conflict": { "target": ["model"], "action": "update" },
+            "set": {
+              "parameters": { "param": "parameters" },
+              "artifact_bytes": { "param": "artifact_bytes" }
+            }
+          },
+          "params": {
+            "model": { "var": "data.input.model" },
+            "parameters": { "var": "data.stats.parameters" },
+            "artifact_bytes": { "var": "data.stats.artifact_bytes" }
+          },
+          "schema": {
+            "entities": {
+              "leaderboard": {
+                "columns": {
+                  "model": { "type": "text" },
+                  "parameters": { "type": "int" },
+                  "artifact_bytes": { "type": "int" },
+                  "wins": { "type": "int" },
+                  "losses": { "type": "int" },
+                  "draws": { "type": "int" }
+                }
+              }
+            }
+          },
+          "output": "temp_data.record"
+        }
+      }
+    },
+    {
+      "id": "answer",
+      "name": "Report what was registered",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.registered.model", "logic": { "var": "data.input.model" } },
+            { "path": "data.registered.parameters", "logic": { "var": "data.stats.parameters" } },
+            {
+              "path": "data.registered.artifact_bytes",
+              "logic": { "var": "data.stats.artifact_bytes" }
+            },
+            { "path": "data.registered.digest", "logic": { "var": "data.stats.digest" } },
+            {
+              "path": "data.registered.opening_column",
+              "logic": { "var": "temp_data.answer.column" }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

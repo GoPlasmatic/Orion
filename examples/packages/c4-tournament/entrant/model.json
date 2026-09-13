@@ -1,0 +1,34 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "example.c4-tiny",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "c4-tiny.onnx",
+  "description": "The reference entrant: a two-layer policy network with 1479 untrained parameters that answers the tournament contract — {cells, legal} in, a column out",
+  "inputs": [
+    {
+      "name": "board",
+      "dtype": "f32",
+      "shape": [1, 2, 6, 7],
+      "adapter": {
+        "reshape": [
+          {
+            "transpose": [
+              {
+                "crop": [
+                  { "one_hot": [{ "var": "cells" }, 3, "f32"] },
+                  [0, 1],
+                  [42, 2]
+                ]
+              },
+              [1, 0]
+            ]
+          },
+          [1, 2, 6, 7]
+        ]
+      }
+    }
+  ],
+  "outputs": [{ "name": "policy", "dtype": "f32", "shape": [1, 7] }],
+  "result": { "column": { "argmax": [{ "var": "policy" }, 1] } }
+}

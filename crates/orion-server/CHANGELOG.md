@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Models offline, and as the fifth package member.** The definition set
+  now has a fifth kind: a model manifest (JSON with an `abi` of
+  `orion:model@…`), found by shape in a linted directory or under the new
+  `--model-dir` flag on `lint`, `clippy`, `dry-run`, `test` and `compile`.
+  `lint` checks every `model_infer` task naming a model by literal id
+  against the manifests in hand (`[closure.model]`, field code
+  `MODEL_UNKNOWN`), notes a computed `model` as `[model.unverifiable]`,
+  inventories each manifest (`[model.manifest]`) and — with the artifact
+  beside it — reports what admission would record (`[model.stats]`: the
+  digest, size, parameter and node counts, IR version, opset and the graph's
+  tensor names) or refuses a graph the manifest does not fit
+  (`[model.graph]`); a manifest without its file is a `[model.artifact_missing]`
+  note, never an error. `dry-run` and `orion-server test` **run the model for
+  real** with `--model-dir` — the same `model_infer` handler a node registers,
+  over the file beside the manifest, on the run's own engine, with no
+  admission and no stub — and refuse a workflow naming a model the directory
+  does not hold as `MODEL_ARTIFACT_UNAVAILABLE`; without the flag the
+  function stays stubbed by name. A manifest gained an optional `reference`
+  (`{ connector, key }`), the deployable twin of the local `artifact` path,
+  and `compile` writes a `models[]` member from the two: the manifest, the
+  reference and the digest of the local file, refusing a manifest missing
+  either. `package export` carries every model a selected workflow names by
+  literal id as its reference (never bytes), records the storage connectors
+  those references need under `requires.storage` and a model the source does
+  not serve under `requires.models`; `plan` and `apply` verify both, `apply`
+  stages models after connectors and **waits for the target to admit each
+  one** before activating it ahead of the workflows, and `diff` lists the
+  member. `models` is omitted from the document and the content hash when a
+  package carries none, so every existing receipt stays valid. The
+  `model_infer` stub now lands at the function's documented default
+  (`temp_data.inference`) when the task names no `output`.
+
 - **Models: a governed entity for ONNX models held in object storage.**
   `/api/v1/admin/models` is the fifth admin entity, with the workflow's
   lifecycle — draft, active, archived; versions; import/export; validate;

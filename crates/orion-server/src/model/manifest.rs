@@ -102,10 +102,22 @@ pub struct Manifest {
     #[serde(default = "default_format")]
     pub format: String,
     /// Path of the artifact relative to the manifest, read by offline
-    /// tooling and the CLI only. A served row names its artifact by
-    /// connector, key and digest and ignores this.
+    /// tooling and the CLI only: where the bytes are **on disk**, for
+    /// `lint` to read the graph's stats, `dry-run` and `test` to run the
+    /// model for real, and `compile` to hash. A served row names its
+    /// artifact by connector, key and digest and ignores this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact: Option<String>,
+    /// Where a pipeline put the bytes for a serving instance: the
+    /// `storage` connector and object key `compile` writes into the
+    /// package's `models[]` entry, beside the digest of the file `artifact`
+    /// names. The deployable counterpart of `artifact` — one is a path on
+    /// the authoring machine, the other an object the target fetches at
+    /// admission. Neither is required: a manifest registered by hand carries
+    /// its reference on the request, and `compile` refuses a manifest
+    /// missing either, naming what to add.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<ArtifactReference>,
     #[serde(default)]
     pub description: String,
     #[serde(default)]
@@ -120,6 +132,17 @@ pub struct Manifest {
 
 fn default_format() -> String {
     FORMAT_ONNX.to_string()
+}
+
+/// Where a serving instance finds the bytes: a `storage` connector by name
+/// and the object key within its bucket. The digest is not here — it is
+/// computed from the file `artifact` names, never declared, so a manifest
+/// cannot claim one thing and ship another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactReference {
+    pub connector: String,
+    pub key: String,
 }
 
 /// One input tensor and how the message becomes it.
@@ -250,6 +273,17 @@ impl Manifest {
             && let Err(reason) = check_artifact_path(artifact)
         {
             out.push(FieldError::new("artifact", "INVALID", reason));
+        }
+        if let Some(reference) = &self.reference {
+            for (field, value) in [("connector", &reference.connector), ("key", &reference.key)] {
+                if value.trim().is_empty() {
+                    out.push(FieldError::new(
+                        format!("reference.{field}"),
+                        "REQUIRED",
+                        format!("reference.{field} must not be empty"),
+                    ));
+                }
+            }
         }
         if self.inputs.is_empty() {
             out.push(FieldError::new(
@@ -759,6 +793,57 @@ mod tests {
         Manifest::validated(&doc).expect("a nested relative path is fine");
         doc.as_object_mut().expect("object").remove("artifact");
         Manifest::validated(&doc).expect("absent is fine: a served row never reads it");
+    }
+
+    /// The deployable reference travels beside the local path: both optional,
+    /// and a reference that is present names a connector and a key.
+    #[test]
+    fn a_reference_names_a_connector_and_a_key() {
+        let mut doc = good();
+        doc["reference"] = json!({ "connector": "models", "key": "c4/0.3.0.onnx" });
+        let manifest = Manifest::validated(&doc).expect("a full reference is fine");
+        assert_eq!(
+            manifest.reference,
+            Some(ArtifactReference {
+                connector: "models".to_string(),
+                key: "c4/0.3.0.onnx".to_string(),
+            })
+        );
+        // Round-trips, and is absent from the serialised form when unset.
+        let back = serde_json::to_value(&manifest).expect("serialises");
+        assert_eq!(back["reference"]["key"], "c4/0.3.0.onnx");
+        assert!(
+            serde_json::to_value(Manifest::validated(&good()).expect("valid"))
+                .expect("serialises")
+                .get("reference")
+                .is_none()
+        );
+
+        let err = refused(good(), |d| {
+            d["reference"] = json!({ "connector": "", "key": " " })
+        });
+        assert_eq!(
+            at(&err),
+            [
+                ("reference.connector".to_string(), "REQUIRED".to_string()),
+                ("reference.key".to_string(), "REQUIRED".to_string()),
+            ]
+        );
+        // The digest is never declared: it is computed from the file.
+        let err =
+            refused(
+                good(),
+                |d| {
+                    d["reference"] =
+                        json!({ "connector": "models", "key": "k", "digest": "sha256:x" })
+                },
+            );
+        assert_eq!(err[0].path, "reference.digest");
+        assert!(
+            err[0].message.contains("unknown field"),
+            "{}",
+            err[0].message
+        );
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "channel_id": "c4-leaderboard",
+  "name": "c4-leaderboard",
+  "description": "The ranking: GET, no body",
+  "tags": ["pkg:c4-tournament"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["GET"],
+  "route_pattern": "/c4/leaderboard",
+  "workflow_id": "c4-leaderboard"
+}

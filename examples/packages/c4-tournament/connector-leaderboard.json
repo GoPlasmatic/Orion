@@ -1,0 +1,11 @@
+{
+  "id": "c4-leaderboard",
+  "name": "c4-leaderboard",
+  "connector_type": "db",
+  "tags": ["pkg:c4-tournament"],
+  "config": {
+    "type": "db",
+    "connection_string": "${C4_LEADERBOARD_URL:-sqlite:/tmp/c4-leaderboard.db?mode=rwc}",
+    "max_connections": 2
+  }
+}

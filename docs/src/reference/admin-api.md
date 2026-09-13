@@ -292,7 +292,15 @@ curl -s "http://localhost:8080/api/v1/admin/plugins/export?include_artifacts=tru
 ONNX models held in object storage. The lifecycle is the workflow's. A
 registration carries the manifest (the `orion:model@1.0.0` JSON document) and
 an **artifact reference** — a `storage` connector, an object key and the
-`sha256:` digest the bytes must hash to — and never the bytes: the server
+`sha256:` digest the bytes must hash to — and never the bytes. The manifest
+itself may name where its bytes are, twice, for the two places it is read:
+`artifact` is a path relative to the manifest, read only by the offline
+tooling (`lint` reports the graph's stats from it, `dry-run` and `test` run
+the model from it, `compile` hashes it); `reference` is `{ "connector",
+"key" }`, where a pipeline put the same bytes for a serving instance, which
+[`compile`](./cli.md#compile) writes into a package's `models[]` entry beside
+the digest of the local file. A served row ignores both — the request's
+`artifact` reference is its authority — and neither is required. The server
 validates the manifest, checks the connector exists and allows reads
 (`operations.presign_get`), confirms the object is there and within
 `models.max_artifact_bytes`, writes the draft and answers `202`. The node's

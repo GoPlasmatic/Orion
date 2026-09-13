@@ -89,6 +89,18 @@ pub mod field_codes {
     /// whether the runtime is *enabled* on a node is that node's config and
     /// is answered at execution.
     pub const MODEL_RUNTIME_UNKNOWN: &str = "MODEL_RUNTIME_UNKNOWN";
+    /// A `model_infer` task names, as a literal, a model no manifest in the
+    /// definition set describes and no boundary (`requires.models`)
+    /// declares. Reported by `orion-server lint <dir>` and `package lint`
+    /// as `closure.model`; a computed `model` is not checked, because the
+    /// model it resolves to is decided per message.
+    pub const MODEL_UNKNOWN: &str = "MODEL_UNKNOWN";
+    /// An offline run (`dry-run`, `orion-server test`) names a model it
+    /// cannot execute: no `--model-dir` holds its manifest, or the manifest
+    /// is there and the artifact its `artifact` names is not. A model runs
+    /// for real offline or not at all — it is never stubbed once a model
+    /// directory is given — so the run is refused before it starts.
+    pub const MODEL_ARTIFACT_UNAVAILABLE: &str = "MODEL_ARTIFACT_UNAVAILABLE";
 
     /// Every code above, for exhaustiveness checks.
     pub const ALL: &[&str] = &[
@@ -104,6 +116,8 @@ pub mod field_codes {
         UNCOMPILED_SOURCE,
         UNRESOLVED_SECRET_REF,
         MODEL_RUNTIME_UNKNOWN,
+        MODEL_UNKNOWN,
+        MODEL_ARTIFACT_UNAVAILABLE,
     ];
 }
 

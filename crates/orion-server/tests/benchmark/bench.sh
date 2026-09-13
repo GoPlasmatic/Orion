@@ -2,7 +2,7 @@
 # tests/benchmark/bench.sh — Performance benchmarking suite for Orion
 #
 # Uses `hey` HTTP load generator to measure throughput, latency, and
-# concurrency behaviour across 8 scenarios.
+# concurrency behaviour across 9 scenarios.
 #
 # Usage:
 #   ./tests/benchmark/bench.sh                        # Run all local scenarios
@@ -24,6 +24,9 @@ set -euo pipefail
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$BENCH_DIR/../.." && pwd)"
 FIXTURES_DIR="$BENCH_DIR/fixtures"
+# Scenario I's model: the c4-tournament example's reference entrant, at the
+# workspace root two levels up.
+ENTRANT_DIR="$PROJECT_ROOT/../../examples/packages/c4-tournament/entrant"
 
 BENCH_DURATION="${BENCH_DURATION:-10s}"
 BENCH_CONCURRENCY="${BENCH_CONCURRENCY:-50}"
@@ -152,6 +155,7 @@ start_bench_server() {
     BENCH_DB_PATH="$BENCH_TMP_DIR/bench.db"
     BENCH_LOG_FILE="$BENCH_TMP_DIR/bench.log"
     BENCH_CONFIG_FILE="$BENCH_TMP_DIR/bench.toml"
+    mkdir -p "$BENCH_TMP_DIR/models-cache"
 
     cat > "$BENCH_CONFIG_FILE" <<TOMLEOF
 [server]
@@ -176,6 +180,15 @@ enabled = false
 # Scenario H uploads a plugin; everywhere else the sandbox is idle.
 [plugins]
 enabled = true
+
+# Scenario I registers a model; everywhere else the runtime is idle. The
+# `onnx` row is required whenever the table is declared.
+[models]
+enabled = true
+cache_dir = "$BENCH_TMP_DIR/models-cache"
+
+[models.default_runtime]
+onnx = "tract"
 TOMLEOF
 
     log_info "Starting Orion on port $BENCH_PORT ($BUILD_PROFILE mode)"
@@ -224,6 +237,7 @@ stop_bench_server() {
     fi
 
     BENCH_PID=""
+    stop_bench_bucket
     # The whole directory goes, so the WAL/SHM sidecars cannot be left behind.
     [[ -n "${BENCH_TMP_DIR:-}" ]] && rm -rf "$BENCH_TMP_DIR"
     BENCH_TMP_DIR=""
@@ -792,13 +806,140 @@ scenario_plugin() {
     record_result "H: JSONLogic echo (map)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
+# I: A model on the hot path — the c4-tournament example's reference entrant
+# (1479 parameters, a [1, 2, 6, 7] board in, a [1, 7] policy out) behind
+# `parse_json` + one `model_infer`, so the row is what one inference costs
+# per request end to end: the manifest's adapter building the tensor from
+# the payload's 42 cells (one_hot, crop, transpose, reshape), the tract
+# session, and the result expression's argmax. The task also writes
+# `stats_output`, and the scenario prints its `inference_ms` from one extra
+# request after the run — the graph alone, engine-side, against the wire
+# p99 in the row. `models.preload = "referenced"` (the default) warms the
+# session when the workflow activates, so no request in the run is a cold
+# load; the cold number is the integration test's (`model_infer_test`).
+#
+# The artifact is served by a Python static server standing in for a
+# bucket: `python3 -m http.server` answers the signed HEAD and GET an
+# admission makes (the SigV4 headers are ignored, the query string dropped),
+# which is all the storage connector needs to fetch and verify the bytes.
+BUCKET_PID=""
+BUCKET_PORT=""
+
+digest_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+start_bench_bucket() {
+    local dir="$BENCH_TMP_DIR/bucket/models"
+    mkdir -p "$dir"
+    cp "$ENTRANT_DIR/c4-tiny.onnx" "$dir/c4-tiny.onnx"
+    BUCKET_PORT=$(find_free_port)
+    python3 -m http.server "$BUCKET_PORT" --bind 127.0.0.1 --directory "$BENCH_TMP_DIR/bucket" >/dev/null 2>&1 &
+    BUCKET_PID=$!
+    local waited=0
+    while ! curl -sfI "http://127.0.0.1:${BUCKET_PORT}/models/c4-tiny.onnx" >/dev/null 2>&1; do
+        sleep 0.2
+        waited=$((waited + 1))
+        if [[ $waited -gt 50 ]]; then
+            log_error "The bucket did not come up on port $BUCKET_PORT"
+            return 1
+        fi
+    done
+}
+
+stop_bench_bucket() {
+    if [[ -n "$BUCKET_PID" ]] && kill -0 "$BUCKET_PID" 2>/dev/null; then
+        kill "$BUCKET_PID" 2>/dev/null || true
+        wait "$BUCKET_PID" 2>/dev/null || true
+    fi
+    BUCKET_PID=""
+}
+
+# Register the entrant through a storage connector at the bucket, wait for
+# this node's admission verdict, and activate it — what `orion-cli models
+# create --wait` and `models activate` do, over curl.
+register_and_activate_model() {
+    local manifest="$ENTRANT_DIR/model.json"
+    local id
+    id=$(jq -r '.name' "$manifest")
+
+    jq -n --arg endpoint "http://127.0.0.1:${BUCKET_PORT}" '{
+        name: "bench-bucket", connector_type: "storage",
+        config: { type: "storage", endpoint: $endpoint, region: "us-east-1", bucket: "models",
+                  access_key: "AKIAEXAMPLE", secret_key: "example-secret",
+                  force_path_style: true, allow_private_urls: true } }' \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/connectors" \
+            -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || true
+
+    jq -n --slurpfile manifest "$manifest" --arg digest "sha256:$(digest_of "$ENTRANT_DIR/c4-tiny.onnx")" \
+        '{manifest: $manifest[0], artifact: {connector: "bench-bucket", key: "c4-tiny.onnx", digest: $digest}}' \
+        | curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/models" \
+            -H "Content-Type: application/json" --data @- >/dev/null 2>&1 || {
+        log_error "Failed to register $id — is models.enabled on?"
+        return 1
+    }
+
+    local waited=0 state="pending"
+    while [[ "$state" == "pending" ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+        state=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/models/${id}" 2>/dev/null \
+            | jq -r '.data.admission.state // "pending"')
+        if [[ $waited -gt 120 ]]; then
+            log_error "Admission of $id did not settle within 60s"
+            return 1
+        fi
+    done
+    if [[ "$state" != "passed" ]]; then
+        log_error "Admission of $id failed: $(curl -sf "${BENCH_URL}/api/v1/admin/models/${id}" | jq -c '.data.admission')"
+        return 1
+    fi
+
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/models/${id}/status" \
+        -H "Content-Type: application/json" -d '{"status": "active"}' >/dev/null 2>&1 || {
+        log_error "Failed to activate $id"
+        return 1
+    }
+    log_info "  $id admitted and active ($(curl -sf "${BENCH_URL}/api/v1/admin/models/${id}" | jq -r '.data.stats.parameters') parameters)"
+}
+
+scenario_model() {
+    log_info "I: Model inference on the hot path (example.c4-tiny)"
+
+    clear_workflows
+    start_bench_bucket || return 1
+    register_and_activate_model || { stop_bench_bucket; return 1; }
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_model_infer.json")
+    create_and_activate_channel "bench-model" "$wf"
+    CURRENT_SCENARIO="I_model_infer"
+    run_hey POST "${BENCH_URL}/api/v1/data/bench-model" "$FIXTURES_DIR/data/model_payload.json"
+    record_result "I: Model inference (example.c4-tiny)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+
+    # The graph alone, engine-side, for one more request at rest.
+    local stats
+    stats=$(curl -sf -X POST "${BENCH_URL}/api/v1/data/bench-model" -H "Content-Type: application/json" \
+        --data @"$FIXTURES_DIR/data/model_payload.json" 2>/dev/null | jq -c '.data.inference | {inference_ms, queued_ms, cold_load, runtime, device}')
+    log_info "  stats_output: ${stats:-unavailable} — inference_ms is the graph, the row above is the whole request"
+
+    # The model outlives the workflows otherwise: a delete is refused while
+    # an active workflow names it, so the workflows go first.
+    clear_workflows
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/models/example.c4-tiny" >/dev/null 2>&1 || true
+    stop_bench_bucket
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # SCENARIO REGISTRY
 # ═══════════════════════════════════════════════════════════════════
 
 # `cluster` (G) is deliberately absent: it needs Docker and a running HA
 # stack, so it only runs when named explicitly.
-ALL_SCENARIOS=(baseline simple complex multi concurrency reload plugin)
+ALL_SCENARIOS=(baseline simple complex multi concurrency reload plugin model)
 
 run_scenario() {
     local name="$1"
@@ -810,6 +951,7 @@ run_scenario() {
         concurrency) scenario_concurrency ;;
         reload)      scenario_reload ;;
         plugin)      scenario_plugin ;;
+        model)       scenario_model ;;
         cluster)     scenario_cluster ;;
         *)
             log_error "Unknown scenario: $name"

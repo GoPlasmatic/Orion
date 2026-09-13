@@ -1,0 +1,135 @@
+{
+  "workflow_id": "c4-round",
+  "name": "C4 Tournament: A Round",
+  "description": "Every ordered pair of entrants plays one match through the c4-match channel. Sweep i of the loop plays entrants[floor(i / n)] against entrants[i mod n] and skips the pairs of an entrant with itself.",
+  "tags": ["pkg:c4-tournament"],
+  "condition": true,
+  "loop": { "counter": "i", "max": 400 },
+  "tasks": [
+    {
+      "id": "first_sweep",
+      "name": "On the first sweep only",
+      "condition": { "==": [{ "var": "temp_data.i" }, 0] },
+      "tasks": [
+        {
+          "id": "entrants",
+          "name": "Who is registered, on the first sweep only",
+          "function": {
+            "name": "data_query",
+            "input": {
+              "connector": "c4-leaderboard",
+              "query": {
+                "source": "leaderboard",
+                "fields": ["model"],
+                "sort": [{ "model": "asc" }],
+                "limit": 20
+              },
+              "schema": {
+                "entities": { "leaderboard": { "columns": { "model": { "type": "text" } } } }
+              },
+              "output": "data.entrants"
+            }
+          }
+        },
+        {
+          "id": "count",
+          "name": "How many, and nothing played yet",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.n", "logic": { "length": [{ "var": "data.entrants" }] } },
+                { "path": "data.played", "logic": 0 }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "more",
+      "name": "Stop after the last pair",
+      "function": {
+        "name": "filter",
+        "input": {
+          "condition": {
+            "<": [
+              { "var": "temp_data.i" },
+              { "*": [{ "var": "data.n" }, { "var": "data.n" }] }
+            ]
+          },
+          "on_reject": "halt"
+        }
+      }
+    },
+    {
+      "id": "pair",
+      "name": "The pair this sweep plays",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            {
+              "path": "temp_data.pair.one",
+              "logic": {
+                "val": [
+                  "data",
+                  "entrants",
+                  {
+                    "floor": [
+                      { "/": [{ "var": "temp_data.i" }, { "var": "data.n" }] }
+                    ]
+                  },
+                  "model"
+                ]
+              }
+            },
+            {
+              "path": "temp_data.pair.two",
+              "logic": {
+                "val": [
+                  "data",
+                  "entrants",
+                  { "%": [{ "var": "temp_data.i" }, { "var": "data.n" }] },
+                  "model"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "game",
+      "name": "Unless it is an entrant against itself",
+      "condition": { "!=": [{ "var": "temp_data.pair.one" }, { "var": "temp_data.pair.two" }] },
+      "tasks": [
+        {
+          "id": "play",
+          "name": "Play the match, unless it is an entrant against itself",
+          "function": {
+            "name": "channel_call",
+            "input": {
+              "channel": "c4-match",
+              "data": { "var": "temp_data.pair" },
+              "output": "temp_data.match"
+            }
+          }
+        },
+        {
+          "id": "tally",
+          "name": "Count it",
+          "function": {
+            "name": "map",
+            "input": {
+              "mappings": [
+                { "path": "data.played", "logic": { "+": [{ "var": "data.played" }, 1] } },
+                { "path": "data.last", "logic": { "var": "temp_data.match.result" } }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

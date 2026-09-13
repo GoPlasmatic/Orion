@@ -121,6 +121,12 @@ enum Command {
         /// reported as unverifiable, never as an error.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
+        /// Directory of model manifests (`orion:model@` JSON) beyond the
+        /// set's own tree, so a `model_infer` task naming a model by literal
+        /// id is checked against a manifest. With the artifact beside a
+        /// manifest, the graph's stats are reported too. Repeatable.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
     },
     /// Compile a definition set into files the admin API accepts.
     ///
@@ -168,6 +174,12 @@ enum Command {
         /// its component inlined. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
+        /// Directory of model manifests beyond the set's own tree. A
+        /// manifest in the set compiles into the artifact as a `models[]`
+        /// entry: its `reference` names where the bytes are for the target,
+        /// and the file its `artifact` names is hashed. Repeatable.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
@@ -217,6 +229,13 @@ enum Command {
         /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
+        /// Directory of model manifests and their artifacts. With one,
+        /// `model_infer` runs the model for real, never stubbed; a workflow
+        /// naming a model the directory does not hold, or holds without its
+        /// artifact, fails as MODEL_ARTIFACT_UNAVAILABLE. Without one the
+        /// function is answered from --stubs. Repeatable.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
     },
     /// Run a directory of workflow test cases (A6).
     ///
@@ -245,6 +264,12 @@ enum Command {
         /// PLUGIN_ARTIFACT_UNAVAILABLE. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
+        /// Directory of model manifests and their artifacts, loaded once for
+        /// the whole suite. `model_infer` runs the model for real; a case
+        /// naming a model the directory does not hold fails as
+        /// MODEL_ARTIFACT_UNAVAILABLE. Repeatable.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
     },
     /// Probe configured backends for reachability (A6).
     ///
@@ -316,6 +341,10 @@ enum Command {
         /// evaluates them. Repeatable.
         #[arg(long = "plugin-dir", value_name = "DIR")]
         plugin_dirs: Vec<String>,
+        /// Directory of model manifests beyond the set's own tree, for the
+        /// `lint` gate that runs first. Repeatable.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
     },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
@@ -487,10 +516,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_connectors,
             definitions,
             plugin_dirs,
+            model_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
+                ..orion::definitions::Boundary::default()
             };
             return cli::run_lint(
                 &workflow,
@@ -498,6 +529,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 boundary,
                 definitions.as_deref(),
                 &plugin_dirs,
+                &model_dirs,
             );
         }
         Some(Command::Compile {
@@ -511,10 +543,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             deny_warnings,
             no_activate,
             plugin_dirs,
+            model_dirs,
         }) => {
             let boundary = orion::definitions::Boundary {
                 channels: requires_channels,
                 connectors: requires_connectors,
+                ..orion::definitions::Boundary::default()
             };
             return cli::run_compile(cli::CompileRequest {
                 dir: &dir,
@@ -526,6 +560,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 deny_warnings,
                 no_activate,
                 plugin_dirs: &plugin_dirs,
+                model_dirs: &model_dirs,
             });
         }
         Some(Command::DryRun {
@@ -536,24 +571,27 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             secrets,
             definitions,
             plugin_dirs,
+            model_dirs,
         }) => {
-            return cli::run_dry_run(
-                &workflow,
-                &input,
-                stubs.as_deref(),
-                metadata.as_deref(),
-                secrets.as_deref(),
-                definitions.as_deref(),
-                &plugin_dirs,
-            )
+            return cli::run_dry_run(cli::DryRunRequest {
+                workflow: &workflow,
+                input: &input,
+                stubs: stubs.as_deref(),
+                metadata: metadata.as_deref(),
+                secrets: secrets.as_deref(),
+                definitions: definitions.as_deref(),
+                plugin_dirs: &plugin_dirs,
+                model_dirs: &model_dirs,
+            })
             .await;
         }
         Some(Command::Test {
             path,
             definitions,
             plugin_dirs,
+            model_dirs,
         }) => {
-            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs).await;
+            return cli::run_test(&path, definitions.as_deref(), &plugin_dirs, &model_dirs).await;
         }
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::Clippy {
@@ -566,6 +604,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_channels,
             requires_connectors,
             plugin_dirs,
+            model_dirs,
         }) => {
             let code = if list {
                 cli::run_clippy_list()?
@@ -583,9 +622,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     format,
                     definitions: definitions.as_deref(),
                     plugin_dirs: &plugin_dirs,
+                    model_dirs: &model_dirs,
                     boundary: orion::definitions::Boundary {
                         channels: requires_channels,
                         connectors: requires_connectors,
+                        ..orion::definitions::Boundary::default()
                     },
                     // Only a config the operator named counts as "the serving
                     // config": the defaults say nothing about [vars]/[secrets].
