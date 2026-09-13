@@ -1,34 +1,35 @@
-<!-- description: A self-contained context block to paste into any LLM: Orion's workflow and channel schemas, lifecycle rules and REST calls, for assistants with no shell. -->
-# Prompt Pack (any LLM)
+<!-- Description: A self-contained context doesn't allow to paste the content into any of the below LLM: 
+- Orion's workflow and channel schemas, 
+- Lifecycle rules and REST calls, 
+for assistants with no shell. -->
 
-The [agent skill](./skills.md) is the richest way to give an AI assistant
-control of Orion: the full authoring reference, loaded on demand, driving the
-`orion-cli` binary. But it needs an agent that reads skills *and* can run a
+# Prompt Pack (any LLM)
+The [agent skill](./skills.md) provides the most comprehensive way to give an AI assistant
+control of the Orion: The full authoring reference, loaded on demand, driving the
+`orion-cli` binary, but it needs an agent that reads skills *and* can run a
 shell.
 
-This page is the zero-install alternative: **paste the block below into any
-LLM** (as a system prompt, a project instruction, or just the first message)
+This page is the zero-install alternative: **Paste the block below into any of the 
+LLM** (as a system prompt, a project instruction, or the first message only),
 and it has enough context to write valid workflows and deploy them through
 Orion's plain REST API — no CLI, no tooling, just HTTP.
 
 > [!NOTE]
 > **Provenance.** The block is hand-maintained and matches **Orion 1.0.0**. It
-> is deliberately short — a summary an LLM can hold, not a specification, so it
-> tells the model to read `GET /api/v1/admin/functions` for exact input schemas
-> rather than trusting the list it carries. If your instance is newer than this
-> page, that endpoint is the authority; this text is the orientation.
+> is deliberately short — a summary that an LLM can hold, not a specification, so it
+> command the model to read `GET /api/v1/admin/functions` for exact input schemas, rather than trusting the list which it carries. If your instance is newer than this page, then that endpoint is the authority; this **text** is the orientation.
 
 ````text
-You are working with Orion, a runtime that turns JSON definitions into live
-REST/Kafka services. Everything is managed over a REST admin API. No code,
-no deploys.
+You are working with the Orion, a runtime that turns JSON definitions into live
+REST/Kafka services. Everything is managed over a REST admin API. No code, no deploys.
+
 Base URL: http://localhost:8080 (adjust if told otherwise).
 
 ## The three primitives
 
-- WORKFLOW: a pipeline of tasks (the business logic)
-- CHANNEL: a service endpoint (REST route or Kafka topic) that routes to a workflow
-- CONNECTOR: a named connection to an external system (HTTP API, SQL database,
+- WORKFLOW: A pipeline of tasks (the business logic)
+- CHANNEL: A service endpoint (REST route or Kafka topic) that routes to a workflow
+- CONNECTOR: A named connection to an external system (HTTP API, SQL database,
   MongoDB, Elasticsearch, Redis cache, Kafka), referenced from tasks by name
 
 ## Workflow JSON
@@ -116,10 +117,10 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
 
 ## Working style
 
-- Always: create draft → test with realistic sample data → activate.
-- Validation errors come back as structured field-pathed errors; fix and retry.
-- For database access prefer data_query / data_write (parameterized, portable,
-  injection-safe); use db_read / db_write only for SQL the portable dialect
+- Always: Create draft → Test with realistic sample data → activate.
+- Validation errors which come back as structured field-pathed errors; fix and then retry.
+- For database access, prefer: data_query / data_write (parameterized, portable,
+  injection-safe); use db_read / db_write only for SQL; the portable dialect
   cannot express.
 - Connector configs support ${VAR} / ${VAR:-default} environment references.
   Never embed real credentials in JSON.
