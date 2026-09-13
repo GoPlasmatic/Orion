@@ -214,6 +214,11 @@ pub(crate) async fn health_check(
     // supervisor cannot see it, because nothing crashed.
     let cron_state = cron_component(&state, &generation);
 
+    // A node without the model runtime admits and runs nothing, which is a
+    // state, not a fault; with it, the admission worker's liveness is what
+    // decides whether a registration will ever get its verdict.
+    let models_state = models_component(&state);
+
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
@@ -282,6 +287,7 @@ pub(crate) async fn health_check(
             } else {
                 "degraded"
             },
+            "models": models_state,
         },
     });
     if let Some(kafka) = kafka_state {
@@ -324,6 +330,13 @@ pub(crate) async fn health_check(
             })).collect::<Vec<_>>(),
             "failed_to_load": plugin_issues,
         });
+        if let Some(models) = &state.models {
+            body["models"] = json!({
+                "node": models.node,
+                "admission_queue_capacity": models.queue_capacity(),
+                "cache_bytes": models.store.cached_bytes(),
+            });
+        }
         // O9: task names are internal topology, so the per-task breakdown
         // rides with the other admin-only detail. The coarse
         // `components.background_tasks` above is what a monitor keys on.
@@ -527,6 +540,22 @@ fn cron_component(
             "ok"
         },
     )
+}
+
+/// Coarse state of the model node: `disabled` without the runtime, else
+/// `degraded` while the admission worker is restarting or gone and `ok`
+/// otherwise. A node that never started the worker — the integration
+/// harness — has no report for it and is `ok`: nothing is failing there.
+fn models_component(state: &AppState) -> &'static str {
+    if state.models.is_none() {
+        return "disabled";
+    }
+    let worker_down = state
+        .tasks
+        .report()
+        .iter()
+        .any(|r| r.name == crate::runtime::model_admission::TASK_NAME && r.is_degraded());
+    if worker_down { "degraded" } else { "ok" }
 }
 
 /// Coarse state of the node's supervised background tasks (the trace

@@ -143,9 +143,12 @@ pub async fn reload_engine_with_opts(
             for (name, handler) in plugins.handlers() {
                 handlers.insert(name, handler);
             }
-            let builder = crate::engine::operators::with_orion_engine_defaults(
-                dataflow_rs::Engine::builder(),
-                &state.secrets,
+            let builder = crate::engine::operators::with_ops_budget(
+                crate::engine::operators::with_orion_engine_defaults(
+                    dataflow_rs::Engine::builder(),
+                    &state.secrets,
+                ),
+                state.config.engine.ops_budget,
             )
             .with_handlers(handlers);
             let (workflows, mut engine_issues) =

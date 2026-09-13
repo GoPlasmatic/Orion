@@ -22,6 +22,31 @@ pub(super) fn require_nonempty(value: &str, field: &str) -> Result<(), OrionErro
     Ok(())
 }
 
+/// A per-entity override is a ceiling lowered, never raised, and never zero.
+/// Shared by the `[plugins.overrides]` and `[models.overrides]` blocks, which
+/// follow the same rule for the same reason: an author who needs more asks
+/// the operator, and the host ceiling is where that conversation ends.
+pub(super) fn reduce_only(
+    at: &str,
+    field: &str,
+    value: Option<u64>,
+    ceiling: u64,
+) -> Result<(), OrionError> {
+    match value {
+        None => Ok(()),
+        Some(0) => Err(OrionError::Config {
+            message: format!("{at}.{field} must be non-zero"),
+        }),
+        Some(v) if v > ceiling => Err(OrionError::Config {
+            message: format!(
+                "{at}.{field} ({v}) exceeds the host ceiling ({ceiling}): an override may only \
+                 reduce a limit"
+            ),
+        }),
+        Some(_) => Ok(()),
+    }
+}
+
 /// Orchestrate validation across config sub-structs. Each `validate()`
 /// method is defined next to its struct; this function only sequences them.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
@@ -47,6 +72,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.vars.validate()?;
     config.secrets.validate()?;
     config.plugins.validate()?;
+    config.models.validate()?;
     // Cross-section: cluster mode is meaningless on SQLite (single-host by
     // construction) — refuse at startup rather than corrupt silently.
     // `storage.validate()` above has already established that the URL names a

@@ -1,5 +1,5 @@
-//! Cryptographic primitives shared across the tree: the binary-encoding table
-//! and the MAC helpers.
+//! Cryptographic primitives shared across the tree: the binary-encoding table,
+//! the MAC helpers, the artifact digest and the Ed25519 trust check.
 //!
 //! These lived in `engine::operators`, which is where the JSONLogic
 //! `base64_encode` / `hex_decode` family is registered. That made the operator
@@ -12,11 +12,16 @@
 //! Nothing here is new — it is the same code, one level down — and that is
 //! deliberate: these are the spellings the security-sensitive paths already
 //! agreed on, and the value of having one of each is exactly that it is one.
+//! The same argument brought [`sha256_digest`] and [`ed25519`] down from the
+//! plugin sandbox when models arrived: a plugin component and a model
+//! artifact are identified by the same `sha256:<hex>` string and signed the
+//! same way, and neither `plugin` nor `model` may name the other.
 
 use base64::Engine as _;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use hmac::Mac;
 use hmac::digest::KeyInit;
+use sha2::{Digest as _, Sha256};
 
 /// Standard-alphabet decoder that accepts padded and unpadded input.
 /// Encoding always uses the canonical [`base64::engine::general_purpose::STANDARD`]
@@ -117,6 +122,193 @@ pub fn random_bytes(n: usize) -> Vec<u8> {
     buf
 }
 
+/// The identity of a stored artifact: `sha256:<64 lowercase hex>` of its
+/// bytes.
+///
+/// One spelling for every artifact Orion stores by content — a plugin
+/// component, a model file — so a digest a generation, a trace, a package
+/// and a release pipeline name is the same string wherever it appears, and a
+/// signature over it ([`ed25519::verify`]) is over the same message.
+pub fn sha256_digest(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+/// Whether `s` has the shape [`sha256_digest`] produces: the `sha256:`
+/// prefix and exactly 64 lowercase hex characters.
+pub fn is_sha256_digest(s: &str) -> bool {
+    s.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// Detached Ed25519 signatures over an artifact digest.
+///
+/// Optional hardening on top of admin auth. The trust root for installing an
+/// artifact is the admin credential — the one that already reads and writes
+/// connector secrets — so a signature adds no new principal; what it adds is
+/// a check that survives the upload. The signed message is the digest string
+/// exactly as [`sha256_digest`] renders it, so a release pipeline signs the
+/// identity a generation, a trace and a package already name, and never
+/// needs the bytes in memory to do it. Keys and signatures travel as standard
+/// base64.
+///
+/// Two surfaces consume this with the same policy shape: `[plugins.trust]`
+/// (verified at upload and again by every node that loads the version) and
+/// `[models.trust]` (verified by the node that admits the artifact). A node
+/// with no keys configured checks nothing and stores what it was sent.
+pub mod ed25519 {
+    use aws_lc_rs::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
+    use base64::Engine as _;
+
+    /// An Ed25519 public key, raw.
+    pub const KEY_LEN: usize = 32;
+    /// An Ed25519 signature.
+    pub const SIGNATURE_LEN: usize = 64;
+
+    fn b64() -> base64::engine::GeneralPurpose {
+        base64::engine::general_purpose::STANDARD
+    }
+
+    /// One configured key, decoded. Refused at config validation rather than
+    /// at the first upload, so a typo in a `public_keys` list cannot silently
+    /// make every signature fail to verify.
+    pub fn parse_public_key(encoded: &str) -> Result<Vec<u8>, String> {
+        let bytes = b64()
+            .decode(encoded.trim())
+            .map_err(|e| format!("not base64: {e}"))?;
+        if bytes.len() != KEY_LEN {
+            return Err(format!(
+                "an Ed25519 public key is {KEY_LEN} bytes, this one decodes to {}",
+                bytes.len()
+            ));
+        }
+        Ok(bytes)
+    }
+
+    /// Whether `signature` is a valid Ed25519 signature over `digest` by one
+    /// of `public_keys`. With no keys configured there is nothing to check
+    /// and any signature — or none — passes.
+    ///
+    /// # Errors
+    ///
+    /// The reason, in a sentence an author can act on: no signature where one
+    /// is required, a signature that is not base64 or not 64 bytes, or one
+    /// that no configured key accepts. The caller names the setting the keys
+    /// came from; this layer does not know it.
+    pub fn verify(
+        public_keys: &[String],
+        digest: &str,
+        signature: Option<&str>,
+    ) -> Result<(), String> {
+        if public_keys.is_empty() {
+            return Ok(());
+        }
+        let Some(signature) = signature.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(format!(
+                "this node requires a signature over the digest ({} trust key(s) configured) \
+                 and none was given",
+                public_keys.len()
+            ));
+        };
+        let sig = b64()
+            .decode(signature)
+            .map_err(|e| format!("signature is not base64: {e}"))?;
+        if sig.len() != SIGNATURE_LEN {
+            return Err(format!(
+                "an Ed25519 signature is {SIGNATURE_LEN} bytes, this one decodes to {}",
+                sig.len()
+            ));
+        }
+        for key in public_keys {
+            let key = parse_public_key(key)?;
+            if UnparsedPublicKey::new(&ED25519, key)
+                .verify(digest.as_bytes(), &sig)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Err(format!(
+            "the signature does not verify over {digest} with any of the {} configured key(s)",
+            public_keys.len()
+        ))
+    }
+
+    /// A signing key, for tests and tooling that produce the signature an
+    /// upload carries. The server never holds one: it verifies, it does not
+    /// sign.
+    pub struct SigningKey(Ed25519KeyPair);
+
+    impl SigningKey {
+        /// A fresh key pair.
+        pub fn generate() -> Self {
+            Self(Ed25519KeyPair::generate().expect("Ed25519 key generation cannot fail"))
+        }
+
+        /// The public half, base64 — what goes in a `trust.public_keys` list.
+        pub fn public_key_base64(&self) -> String {
+            b64().encode(self.0.public_key().as_ref())
+        }
+
+        /// The signature over `digest`, base64 — what an upload carries.
+        pub fn sign(&self, digest: &str) -> String {
+            b64().encode(self.0.sign(digest.as_bytes()).as_ref())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const DIGEST: &str =
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        #[test]
+        fn a_signature_by_a_configured_key_verifies_and_nothing_else_does() {
+            let key = SigningKey::generate();
+            let other = SigningKey::generate();
+            let keys = vec![other.public_key_base64(), key.public_key_base64()];
+            let sig = key.sign(DIGEST);
+
+            verify(&keys, DIGEST, Some(&sig)).expect("signed by the second configured key");
+            let err =
+                verify(&keys, &DIGEST.replace('0', "1"), Some(&sig)).expect_err("other digest");
+            assert!(err.contains("does not verify"), "{err}");
+            let err = verify(&[other.public_key_base64()], DIGEST, Some(&sig))
+                .expect_err("a key that did not sign");
+            assert!(err.contains("does not verify"), "{err}");
+            let err = verify(&keys, DIGEST, None).expect_err("no signature");
+            assert!(err.contains("none was given"), "{err}");
+            let err = verify(&keys, DIGEST, Some("not base64!")).expect_err("garbage");
+            assert!(err.contains("not base64"), "{err}");
+            let err = verify(&keys, DIGEST, Some(&b64().encode([0u8; 10]))).expect_err("short");
+            assert!(err.contains("64 bytes"), "{err}");
+        }
+
+        #[test]
+        fn no_configured_key_means_nothing_is_checked() {
+            verify(&[], DIGEST, None).expect("no keys, no check");
+            verify(&[], DIGEST, Some("anything")).expect("no keys, no check");
+        }
+
+        #[test]
+        fn a_public_key_must_decode_to_thirty_two_bytes() {
+            assert!(parse_public_key("nope").is_err());
+            let err = parse_public_key(&b64().encode([1u8; 31])).expect_err("31 bytes");
+            assert!(err.contains("32 bytes"), "{err}");
+            assert_eq!(
+                parse_public_key(&SigningKey::generate().public_key_base64())
+                    .expect("valid")
+                    .len(),
+                KEY_LEN
+            );
+        }
+    }
+}
+
 /// Install the process-wide rustls crypto provider if nothing has yet.
 ///
 /// rustls refuses to build a config until one is installed, and the choice is
@@ -184,6 +376,21 @@ mod tests {
         assert!(!mac_verify::<H>(key, data, &good[..16]));
         assert!(!mac_verify::<H>(key, data, &[]));
         assert!(!mac_verify::<H>(b"wrong-secret", data, &good));
+    }
+
+    /// The digest spelling every artifact shares: prefix, lowercase hex, 71
+    /// characters. A plugin component and a model file hash identically.
+    #[test]
+    fn the_artifact_digest_is_prefixed_lowercase_hex() {
+        let digest = sha256_digest(b"hello world");
+        assert_eq!(
+            digest,
+            "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        assert!(is_sha256_digest(&digest));
+        assert!(!is_sha256_digest(&digest.to_uppercase()));
+        assert!(!is_sha256_digest("sha256:abc"));
+        assert!(!is_sha256_digest(&digest["sha256:".len()..]));
     }
 
     /// Width and freshness, the two properties a nonce is used for. A

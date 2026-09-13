@@ -96,7 +96,9 @@ pub struct HandlerError {
     /// `DataflowError → HandlerError → DataflowError` the identity.
     ///
     /// Dropped by [`Self::prefixed`], because a rewritten message is no longer
-    /// the one the original carried.
+    /// the one the original carried — with one exception, a budget refusal,
+    /// whose variant is its classification and is carried through with the
+    /// prefixed message.
     original: Option<Box<DataflowError>>,
 }
 
@@ -124,8 +126,17 @@ impl HandlerError {
     pub fn prefixed(mut self, handler: &str) -> Self {
         self.msg = format!("{handler}: {}", self.msg);
         // The original carried the message being replaced, so it is no longer
-        // a faithful round-trip target.
-        self.original = None;
+        // a faithful round-trip target — except where the *variant* is the
+        // point. A budget refusal is classified by its variant (the code
+        // `BUDGET_EXCEEDED`, non-retryable upstream) and nothing in the class
+        // table can rebuild it, so it is carried through with the prefixed
+        // message rather than dropped into `FunctionExecution`.
+        self.original = match self.original.take() {
+            Some(original) if matches!(*original, DataflowError::BudgetExceeded(_)) => {
+                Some(Box::new(DataflowError::BudgetExceeded(self.msg.clone())))
+            }
+            _ => None,
+        };
         self
     }
 }
@@ -215,6 +226,14 @@ impl From<DataflowError> for HandlerError {
             | DataflowError::Deserialization(m)
             | DataflowError::LogicEvaluation(m)
             | DataflowError::Unknown(m) => (ErrorClass::Backend, m),
+            // `engine.ops_budget` crossed while a handler resolved one of its
+            // template fields. A configured cap, like a result set over
+            // `max_limit`: the author's or the operator's to fix, the message
+            // says which number was crossed, and a retry spends the same
+            // operations — so a `Limit`, and the variant is kept through
+            // `prefixed` below so the code the retry loop and the trace read
+            // stays `BUDGET_EXCEEDED`.
+            DataflowError::BudgetExceeded(m) => (ErrorClass::Limit, m),
             // `DataflowError` is `#[non_exhaustive]`. A variant added upstream
             // is classified as a backend failure — not retryable, message
             // replaced — because that is the conservative reading of an error
@@ -362,5 +381,43 @@ mod round_trip_tests {
             matches!(back, DataflowError::FunctionExecution { .. }),
             "a rewritten Service error is rebuilt from its class, got {back:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod budget_round_trip {
+    use super::*;
+
+    /// The one variant `prefixed` must not drop: a handler that resolves a
+    /// template under `engine.ops_budget` gets `BudgetExceeded` from the
+    /// engine, names itself, and hands it back — and the executor must still
+    /// see the variant, or the code on the message becomes `FUNCTION_ERROR`
+    /// and the refusal reads as a backend fault.
+    #[test]
+    fn a_budget_refusal_keeps_its_variant_through_a_prefixed_handler() {
+        let from_engine = DataflowError::BudgetExceeded(
+            "501 operations charged against a budget of 50".to_string(),
+        );
+        let handler: HandlerError = from_engine.into();
+        assert_eq!(handler.class, ErrorClass::Limit);
+        assert!(!handler.class.is_retryable());
+        let back: DataflowError = handler.prefixed("crypto").into();
+        assert!(
+            matches!(
+                back,
+                DataflowError::BudgetExceeded(ref m)
+                    if m == "crypto: 501 operations charged against a budget of 50"
+            ),
+            "the variant was dropped: {back:?}"
+        );
+    }
+
+    /// Every other original is still dropped by `prefixed`, as before: a
+    /// rewritten message is not the one the original carried.
+    #[test]
+    fn prefixing_still_rebuilds_other_errors_from_their_class() {
+        let handler: HandlerError = DataflowError::Io("connect refused".to_string()).into();
+        let back: DataflowError = handler.prefixed("http_call").into();
+        assert!(matches!(back, DataflowError::Io(ref m) if m == "http_call: connect refused"));
     }
 }

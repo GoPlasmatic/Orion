@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::validation::require_nonzero;
+use super::validation::{reduce_only, require_nonzero};
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,23 +188,6 @@ impl PluginsConfig {
     /// The override for `plugin_id`, if the operator wrote one.
     pub fn override_for(&self, plugin_id: &str) -> Option<&PluginOverride> {
         self.overrides.iter().find(|o| o.id == plugin_id)
-    }
-}
-
-/// An override is a ceiling lowered, never raised, and never zero.
-fn reduce_only(at: &str, field: &str, value: Option<u64>, ceiling: u64) -> Result<(), OrionError> {
-    match value {
-        None => Ok(()),
-        Some(0) => Err(OrionError::Config {
-            message: format!("{at}.{field} must be non-zero"),
-        }),
-        Some(v) if v > ceiling => Err(OrionError::Config {
-            message: format!(
-                "{at}.{field} ({v}) exceeds the host ceiling ({ceiling}): an override may only \
-                 reduce a limit"
-            ),
-        }),
-        Some(_) => Ok(()),
     }
 }
 

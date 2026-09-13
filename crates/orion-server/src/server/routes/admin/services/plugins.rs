@@ -193,8 +193,9 @@ pub(crate) fn prepare(
 }
 
 /// A manifest's field-error code, as the `'static` the constructor wants.
-/// The manifest module emits a closed set, all of which the registry names.
-fn leak_code(code: &str) -> &'static str {
+/// Both manifest modules — the plugin's and the model's — emit a closed set,
+/// all of which the registry names.
+pub(super) fn leak_code(code: &str) -> &'static str {
     match code {
         "REQUIRED" => "REQUIRED",
         "DUPLICATE_FIELD" => "DUPLICATE_FIELD",

@@ -31,9 +31,9 @@ pub mod rows;
 
 pub use dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
-    PluginHealth, PluginResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
-    TraceListItemResponse, WorkflowResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, ModelAdmission, ModelArtifactRef,
+    ModelHealth, ModelResponse, ModelStats, PackageReceiptResponse, PluginHealth, PluginResponse,
+    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,
@@ -42,6 +42,6 @@ pub use enums::{
 };
 pub use rows::{
     AuditLogEntry, Channel, Connector, ConnectorOauthStateRow, CronOccurrence, CronScheduleState,
-    CronSingleton, PackageReceipt, Plugin, PluginArtifact, Trace, TraceDlqEntry, TraceDlqSummary,
-    TraceListRow, Workflow,
+    CronSingleton, Model, PackageReceipt, Plugin, PluginArtifact, Trace, TraceDlqEntry,
+    TraceDlqSummary, TraceListRow, Workflow,
 };

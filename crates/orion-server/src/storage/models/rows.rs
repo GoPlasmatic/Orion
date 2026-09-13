@@ -89,6 +89,43 @@ pub struct PluginArtifact {
 }
 
 // ============================================================
+// Model
+// ============================================================
+
+/// One version of an ONNX model: the manifest it was registered with and a
+/// reference to its artifact in object storage. Unlike [`Plugin`] there is
+/// no bytes table — the row points at a bucket, the digest is claimed at
+/// registration, and a node confirms it against what it fetches.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct Model {
+    pub model_id: String,
+    pub version: i64,
+    pub status: String,
+    /// `sha256:<hex>` of the artifact bytes as claimed at registration — a
+    /// copy of the `digest` inside [`Self::artifact_json`], as a column so it
+    /// can be indexed.
+    pub digest: String,
+    /// The manifest as JSON — the parsed, validated form.
+    pub manifest_json: String,
+    /// `{"connector","key","digest","size"}`: where the bytes are.
+    pub artifact_json: String,
+    /// The admission verdict — `{"state":"pending"}` until a node has probed
+    /// the artifact. Derived, not authored: outside the active-immutability
+    /// trigger, and written only by `ModelRepository::set_admission`.
+    pub admission_json: String,
+    /// What the admission probe read out of the model; `None` until it
+    /// passes. Derived like `admission_json`, written only by
+    /// `ModelRepository::set_stats`.
+    pub stats_json: Option<String>,
+    pub tags_json: String,
+    /// A detached signature over `digest`, base64, when the registration
+    /// carried one; `None` otherwise.
+    pub signature: Option<String>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+// ============================================================
 // Channel
 // ============================================================
 

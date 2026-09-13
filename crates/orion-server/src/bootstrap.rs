@@ -184,6 +184,10 @@ pub struct ServingComponents {
     /// sized from the ceilings before the first generation loads anything
     /// into it. `None` makes every stored plugin a load issue on this node.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
+    /// The model node — artifact cache and admission queue — when
+    /// `models.enabled`. `None` makes every model route answer that models
+    /// are disabled here, and every stored active model a load issue.
+    pub models: Option<Arc<crate::model::ModelsRuntime>>,
 }
 
 /// The engine's serving components, built in one pass by
@@ -293,9 +297,12 @@ pub async fn build_engine_components(
     // Building a second identical empty engine for that repeated nine operator
     // registrations and the secret store at every boot.
     let boot_engine = Arc::new(
-        crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs::Engine::builder(),
-            &secrets,
+        crate::engine::operators::with_ops_budget(
+            crate::engine::operators::with_orion_engine_defaults(
+                dataflow_rs::Engine::builder(),
+                &secrets,
+            ),
+            config.engine.ops_budget,
         )
         .build()
         .map_err(|e| {
@@ -375,6 +382,22 @@ pub async fn build_engine_components(
         None
     };
 
+    // The model node: the cache directory is created here so a misconfigured
+    // path fails the boot rather than the first admission.
+    let models = if config.models.enabled {
+        Some(Arc::new(
+            crate::model::ModelsRuntime::new(
+                &config.models,
+                crate::model::node_name(&config.cluster.instance_id),
+            )
+            .map_err(|e| crate::errors::OrionError::Config {
+                message: format!("models: {e}"),
+            })?,
+        ))
+    } else {
+        None
+    };
+
     Ok(EngineComponents {
         serving: ServingComponents {
             connector_registry,
@@ -391,6 +414,7 @@ pub async fn build_engine_components(
             kafka_producer,
             kafka_producers,
             plugins,
+            models,
         },
         custom_functions,
     })
@@ -474,9 +498,12 @@ impl EngineComponents {
         // cannot parse, is quarantined per channel instead of aborting the
         // whole build. `with_handlers` is the only thing this borrow is for —
         // the workflows are added below, on the same builder.
-        let builder = crate::engine::operators::with_orion_engine_defaults(
-            dataflow_rs::Engine::builder(),
-            &serving.secrets,
+        let builder = crate::engine::operators::with_ops_budget(
+            crate::engine::operators::with_orion_engine_defaults(
+                dataflow_rs::Engine::builder(),
+                &serving.secrets,
+            ),
+            config.engine.ops_budget,
         )
         .with_handlers(custom_functions);
         let (workflows, mut engine_issues) =
@@ -1007,6 +1034,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         kafka_producer,
         kafka_producers,
         plugins,
+        models,
     } = components;
     // Parsed once, unconditionally — not from `rate_limit_state`. Three
     // callers need it whether or not the platform limiter is enabled: the
@@ -1052,6 +1080,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         tasks,
         cron_status,
         plugins,
+        models,
         admin_auth_failures: Arc::new(Default::default()),
         channel_auth_failures: Arc::new(Default::default()),
         trusted_proxies,

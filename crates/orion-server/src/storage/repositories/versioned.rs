@@ -1,9 +1,9 @@
-//! Shared machinery for the two versioned entities (workflows, channels):
-//! composite-PK `(id, version)` tables with a draft/active/archived lifecycle.
-//! Both repositories delegate the common read and lifecycle shapes here so a
-//! fix lands once instead of twice; the genuinely entity-specific parts —
-//! column sets, draft merging, and workflow rollout arithmetic — stay in the
-//! owning repository.
+//! Shared machinery for the versioned entities (workflows, channels, plugins,
+//! models): composite-PK `(id, version)` tables with a draft/active/archived
+//! lifecycle. Every one of those repositories delegates the common read and
+//! lifecycle shapes here so a fix lands once instead of four times; the
+//! genuinely entity-specific parts — column sets, draft merging, and workflow
+//! rollout arithmetic — stay in the owning repository.
 
 use sea_query::{Asterisk, Condition, DynIden, Expr, ExprTrait, Order, Query};
 
@@ -104,6 +104,19 @@ pub(crate) async fn get_version_tx<T: DbRow>(
 ) -> Result<T, OrionError> {
     let (sql, values) = build_sqlx(tx.backend(), &mut version_select(spec, id, version));
     fetch_required_tx(tx, &sql, values, || version_not_found(spec, id, version)).await
+}
+
+/// Fetch one specific `(id, version)` row from the pool — the read behind a
+/// version-addressed `GET`, where no write is in flight and a transaction
+/// would only cost a connection.
+pub(crate) async fn get_version<T: DbRow>(
+    pool: &DbPool,
+    spec: &VersionedSpec,
+    id: &str,
+    version: i64,
+) -> Result<T, OrionError> {
+    let (sql, values) = build_sqlx(pool.backend(), &mut version_select(spec, id, version));
+    fetch_required(pool, &sql, values, || version_not_found(spec, id, version)).await
 }
 
 /// Run a single-statement create/update that must yield the `(id, version)`

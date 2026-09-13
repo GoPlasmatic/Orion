@@ -74,6 +74,12 @@ supported-version window, the MSRV, and the platform matrix.
 
 ## Per-version guides
 
+- [Upgrading to 1.8.0](./upgrading-to-1.8.md): from 1.7.x. A minor release
+  that turns on the JSONLogic tensor operators and the evaluation budget: one
+  thing to review — a stored `map` mapping that emits a literal object keyed
+  `shape`, `full`, `cast`, `pad`, `crop`, `concat` or `stack` now needs the
+  `$` escape, and `preflight` lists every such key — and one setting,
+  `engine.ops_budget`, off by default.
 - [Upgrading to 1.6.0](./upgrading-to-1.6.md): from 1.5.x. A minor release
   that adds the plugin sandbox (off by default) and cron channels (the
   scheduler is on): nine expand-only migrations, three behaviour changes to

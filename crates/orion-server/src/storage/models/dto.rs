@@ -11,16 +11,16 @@ use serde_json::Value;
 
 use super::enums::parse_json_field;
 use super::rows::{
-    AuditLogEntry, Channel, Connector, CronOccurrence, PackageReceipt, Plugin, TraceDlqEntry,
-    TraceDlqSummary, TraceListRow, Workflow,
+    AuditLogEntry, Channel, Connector, CronOccurrence, Model, PackageReceipt, Plugin,
+    TraceDlqEntry, TraceDlqSummary, TraceListRow, Workflow,
 };
 use crate::errors::OrionError;
 
 pub use orion_api::dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
-    PluginHealth, PluginResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse,
-    TraceListItemResponse, WorkflowResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, ModelAdmission, ModelArtifactRef,
+    ModelHealth, ModelResponse, ModelStats, PackageReceiptResponse, PluginHealth, PluginResponse,
+    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 
 impl From<&CronOccurrence> for CronOccurrenceSummaryResponse {
@@ -108,6 +108,76 @@ impl TryFrom<&Plugin> for PluginResponse {
             health: None,
             created_at: plugin.created_at,
             updated_at: plugin.updated_at,
+        })
+    }
+}
+
+impl TryFrom<&Model> for ModelResponse {
+    type Error = OrionError;
+
+    fn try_from(model: &Model) -> Result<Self, Self::Error> {
+        let id = &model.model_id;
+        let manifest: Value = parse_json_field(&model.manifest_json, "model", id, "manifest_json")?;
+        // The tensor names in declared order, lifted to the top level so a
+        // client need not walk the manifest to learn the model's signature.
+        let names = |key: &str| -> Vec<String> {
+            manifest
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let field = |key: &str| {
+            manifest
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        let abi = field("abi");
+        let model_version = field("version");
+        let format = field("format");
+        let inputs = names("inputs");
+        let outputs = names("outputs");
+        let artifact: ModelArtifactRef =
+            parse_json_field(&model.artifact_json, "model", id, "artifact_json")?;
+        let admission: ModelAdmission =
+            parse_json_field(&model.admission_json, "model", id, "admission_json")?;
+        // Absent stays absent: `None` is "admission has not passed", which
+        // the wire says as `null`, not as a default-valued stats block.
+        let stats: Option<ModelStats> = model
+            .stats_json
+            .as_deref()
+            .map(|json| parse_json_field(json, "model", id, "stats_json"))
+            .transpose()?;
+        Ok(Self {
+            model_id: model.model_id.clone(),
+            version: model.version,
+            status: model.status.clone(),
+            digest: model.digest.clone(),
+            abi,
+            model_version,
+            format,
+            manifest,
+            inputs,
+            outputs,
+            artifact,
+            admission,
+            stats,
+            tags: parse_json_field(&model.tags_json, "model", id, "tags_json")?,
+            content_hash: crate::storage::content::content_hash(
+                &crate::storage::content::model_content(model)?,
+            ),
+            signature: model.signature.clone(),
+            health: None,
+            created_at: model.created_at,
+            updated_at: model.updated_at,
         })
     }
 }
@@ -701,5 +771,126 @@ mod tests {
         // The listing shape must stay payload-free.
         assert!(value.get("payload_json").is_none());
         assert!(value.get("metadata_json").is_none());
+    }
+
+    fn sample_model() -> Model {
+        Model {
+            model_id: "fraud-scorer".to_string(),
+            version: 2,
+            status: EntityStatus::Active.as_str().to_string(),
+            digest: "sha256:abc".to_string(),
+            manifest_json: r#"{"abi":"1","name":"fraud-scorer","version":"1.4.0","format":"onnx","inputs":[{"name":"features","dtype":"float32","shape":[1,32]}],"outputs":[{"name":"score","dtype":"float32","shape":[1]}]}"#.to_string(),
+            artifact_json: r#"{"connector":"models","key":"fraud/1.4.0.onnx","digest":"sha256:abc","size":4096}"#.to_string(),
+            admission_json: r#"{"state":"passed","node":"node-a","at":"2025-01-01T00:00:00"}"#.to_string(),
+            stats_json: Some(r#"{"parameters":1200,"nodes":17,"artifact_bytes":4096,"probe_ms":12.5,"ir_version":9,"opset":17,"runtime":"ort","device":"cpu"}"#.to_string()),
+            tags_json: r#"["fraud"]"#.to_string(),
+            signature: None,
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        }
+    }
+
+    /// The model response lifts the manifest's signature to the top level,
+    /// decodes the three JSON columns into their typed shapes, and publishes
+    /// exactly this key set — `signature` and `health` only when set, `stats`
+    /// always, as `null` until admission passes.
+    #[test]
+    fn model_response_projects_the_manifest_and_pins_the_wire_shape() {
+        let response = ModelResponse::try_from(&sample_model()).expect("test");
+        assert_eq!(response.abi, "1");
+        assert_eq!(response.model_version, "1.4.0");
+        assert_eq!(response.format, "onnx");
+        assert_eq!(response.inputs, ["features"]);
+        assert_eq!(response.outputs, ["score"]);
+        assert_eq!(response.artifact.connector, "models");
+        assert_eq!(response.artifact.key, "fraud/1.4.0.onnx");
+        assert_eq!(response.artifact.size, Some(4096));
+        assert_eq!(response.admission.state, "passed");
+        assert_eq!(response.admission.node.as_deref(), Some("node-a"));
+        assert!(response.admission.at.is_some());
+        assert_eq!(response.stats.as_ref().map(|s| s.parameters), Some(1200));
+        assert_eq!(response.stats.as_ref().map(|s| s.opset), Some(17));
+        assert!(response.health.is_none());
+
+        let value = serde_json::to_value(&response).expect("test");
+        assert_eq!(
+            field_names(&value),
+            [
+                "model_id",
+                "version",
+                "status",
+                "digest",
+                "abi",
+                "model_version",
+                "format",
+                "manifest",
+                "inputs",
+                "outputs",
+                "artifact",
+                "admission",
+                "stats",
+                "tags",
+                "content_hash",
+                "created_at",
+                "updated_at"
+            ]
+        );
+        assert_eq!(value["tags"], serde_json::json!(["fraud"]));
+        assert!(
+            value["content_hash"]
+                .as_str()
+                .is_some_and(|h| h.starts_with("sha256:")),
+            "{value}"
+        );
+        // The admission block carries only what was set: the three absent
+        // optionals are skipped, not published as `null`.
+        let mut admission_keys = field_names(&value["admission"]);
+        admission_keys.sort();
+        assert_eq!(admission_keys, ["at", "node", "state"]);
+    }
+
+    /// A fresh version: pending admission, no stats — and the wire keeps the
+    /// `stats` key, as `null`, so the shape is stable across the lifecycle.
+    #[test]
+    fn model_response_carries_null_stats_until_admission_passes() {
+        let mut model = sample_model();
+        model.stats_json = None;
+        model.admission_json =
+            crate::storage::repositories::models::ADMISSION_PENDING_JSON.to_string();
+        let response = ModelResponse::try_from(&model).expect("test");
+        assert_eq!(
+            response.admission,
+            ModelAdmission {
+                state: "pending".to_string(),
+                ..Default::default()
+            }
+        );
+        assert!(response.stats.is_none());
+        let value = serde_json::to_value(&response).expect("test");
+        assert!(value.get("stats").is_some_and(Value::is_null));
+    }
+
+    /// Every JSON column is decoded strictly: a corrupt one fails the read,
+    /// naming the column, rather than serving a half-empty model.
+    #[test]
+    fn model_response_refuses_a_corrupt_json_column() {
+        for column in [
+            "manifest_json",
+            "artifact_json",
+            "admission_json",
+            "stats_json",
+            "tags_json",
+        ] {
+            let mut model = sample_model();
+            match column {
+                "manifest_json" => model.manifest_json = "nope".to_string(),
+                "artifact_json" => model.artifact_json = "nope".to_string(),
+                "admission_json" => model.admission_json = "nope".to_string(),
+                "stats_json" => model.stats_json = Some("nope".to_string()),
+                _ => model.tags_json = "nope".to_string(),
+            }
+            let err = ModelResponse::try_from(&model).expect_err(column);
+            assert!(err.to_string().contains(column), "{column}: {err}");
+        }
     }
 }

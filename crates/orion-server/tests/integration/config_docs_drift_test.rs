@@ -85,6 +85,13 @@ const NO_DEFAULT: &[&str] = &[
     "plugins.overrides.max_concurrency",
     "plugins.overrides.max_request_bytes",
     "plugins.overrides.max_response_bytes",
+    // The fields of the `[[models.overrides]]` array of tables, the same
+    // shape: every one an `Option`, and `id` names the model.
+    "models.overrides.id",
+    "models.overrides.timeout_ms",
+    "models.overrides.max_concurrency",
+    "models.overrides.max_input_elements",
+    "models.overrides.max_output_elements",
 ];
 
 /// Settings where the derived `Default` and the `#[serde(default = "…")]`
@@ -132,6 +139,19 @@ fn documented_defaults() -> BTreeMap<String, toml::Value> {
         toml::Value::try_from(parsed).expect("AppConfig must be representable as a TOML value");
     let mut out = BTreeMap::new();
     flatten("", &value, &mut out);
+    out
+}
+
+/// [`documented_defaults`] plus the rows only the derived `Default` carries:
+/// the entries of a map keyed by a free-form name (`models.default_runtime`,
+/// format → runtime) have no serde default of their own — declaring the
+/// table in a file and writing nothing under it is an empty map, which is
+/// what the skeleton produces — so their documented value can only be the
+/// no-config-file one. Every other path is identical in both, which
+/// [`derived_and_serde_defaults_agree`] asserts.
+fn all_defaults() -> BTreeMap<String, toml::Value> {
+    let mut out = derived_defaults();
+    out.extend(documented_defaults());
     out
 }
 
@@ -761,7 +781,7 @@ fn parse_value(raw: &str) -> Option<toml::Value> {
 
 /// Compare one document's settings against the struct defaults.
 fn assert_values_match(document: &str, settings: &[Documented]) {
-    let defaults = documented_defaults();
+    let defaults = all_defaults();
     let mut problems = Vec::new();
 
     for setting in settings {
@@ -806,7 +826,7 @@ fn assert_values_match(document: &str, settings: &[Documented]) {
 /// Every setting that exists must be documented.
 fn assert_coverage(document: &str, settings: &[Documented]) {
     let documented: BTreeSet<&str> = settings.iter().map(|s| s.path.as_str()).collect();
-    let defaults = documented_defaults();
+    let defaults = all_defaults();
     let missing: Vec<&String> = defaults
         .keys()
         .filter(|path| !documented.contains(path.as_str()))

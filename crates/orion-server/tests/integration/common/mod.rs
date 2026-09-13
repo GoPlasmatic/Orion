@@ -8,6 +8,9 @@
 pub mod backends;
 /// Shared task-builder DSL for the data-plane (data_query/data_write) tests.
 pub mod dsl;
+/// The model fixture, the bucket standing in for its object storage, and the
+/// registration helpers the model tests share.
+pub mod models;
 
 use std::sync::Arc;
 

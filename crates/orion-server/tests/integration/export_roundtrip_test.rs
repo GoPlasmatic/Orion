@@ -310,3 +310,50 @@ async fn an_unresolvable_secret_reference_is_a_warning_not_an_error() {
         "but it must be reported: {warnings}"
     );
 }
+
+/// `POST /models/validate` answers exactly what `POST /models` would do,
+/// including the network half — the connector and the object — and an
+/// export item is importable as it is.
+#[tokio::test]
+async fn model_validate_agrees_with_create() {
+    let h = common::models::harness().await;
+    let good = common::models::registration("bucket", &common::models::fixture_digest());
+    let mut bad = good.clone();
+    bad["artifact"]["key"] = json!("models/absent.onnx");
+
+    let (status, body) = post(&h.app, "/api/v1/admin/models/validate", good.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], true, "{body}");
+    let (status, body) = post(&h.app, "/api/v1/admin/models", good).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    // The bucket serves every key, so make the object vanish by pointing
+    // the reference at a connector that cannot read it.
+    let mut gated = common::models::storage_connector("gated", h.bucket.addr);
+    gated["config"]["operations"] = json!({"presign_get": false});
+    let (status, body) = post(&h.app, "/api/v1/admin/connectors", gated).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    bad["artifact"]["connector"] = json!("gated");
+    bad["manifest"]["name"] = json!("ada.gated");
+    let (status, body) = post(&h.app, "/api/v1/admin/models/validate", bad.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], false, "{body}");
+    assert_eq!(body["data"]["errors"][0]["field"], "artifact.connector");
+    let (status, body) = post(&h.app, "/api/v1/admin/models", bad).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["details"][0]["path"], "artifact.connector");
+
+    // What export produces, import accepts unchanged.
+    let exported = get(&h.app, "/api/v1/admin/models/export").await;
+    assert_eq!(exported["data"].as_array().map(Vec::len), Some(1));
+    let target = common::models::harness().await;
+    let (status, body) = post(
+        &target.app,
+        "/api/v1/admin/models/import",
+        exported["data"].clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["imported"], 1, "{body}");
+    assert_eq!(body["data"]["failed"], 0, "{body}");
+}

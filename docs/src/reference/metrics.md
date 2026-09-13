@@ -59,6 +59,33 @@ or `bad_result`.
 | `orion_plugin_compile_duration_seconds` | Histogram | `plugin` | Cranelift compile time of one component. Paid once per digest per process. |
 | `orion_plugin_live_instances` | Gauge | — | Plugin instances alive right now, across every function. Bounded by `plugins.max_live_instances`. |
 
+## Models
+
+Emitted by the model runtime (`[models]`). `model` is a stored model id and
+`runtime` a runtime name this build knows (`tract`) — never a string a row,
+a request or a runtime's error chose. `category` is the host's stable
+classification of an inference failure: `caller_input`, `unavailable`,
+`runtime_unavailable`, `adapter`, `input_size`, `output_size`, `permit`,
+`timeout` or `run`. `stage` is the admission step a failure stopped at:
+`signature`, `gate`, `head`, `size`, `fetch`, `digest` or `cache` (later
+`parse` and `probe`), or `none` for a pass.
+
+| Name | Type | Labels | Description |
+|------|------|--------|-------------|
+| `orion_model_inferences_total` | Counter | `model`, `runtime`, `outcome` | Inferences run; `outcome` is `ok` or `error`. |
+| `orion_model_inference_duration_seconds` | Histogram | `model`, `runtime` | Wall-clock time of one inference, adapters included. |
+| `orion_model_queue_seconds` | Histogram | `model`, `runtime` | Time an inference waited for its model's concurrency permit. |
+| `orion_model_failures_total` | Counter | `model`, `runtime`, `category` | Failed inferences by category. `timeout` is the one retryable category; `input_size`, `output_size` and `permit` are limits an operator raised or a caller exceeded. |
+| `orion_model_admissions_total` | Counter | `outcome`, `stage` | Admissions finished on this node; `outcome` is `passed` or `failed`, `stage` where a failure stopped (`none` on a pass). |
+| `orion_model_admission_duration_seconds` | Histogram | `outcome` | Wall-clock time of one admission, signature to cache. |
+| `orion_model_fetch_bytes_total` | Counter | `model`, `outcome` | Artifact bytes kept after a fetch through a storage connector; a failed fetch (`outcome = error`) keeps none and adds `0`. |
+| `orion_model_fetch_duration_seconds` | Histogram | `model`, `outcome` | Wall-clock time of one artifact fetch, first byte to verified file. |
+| `orion_model_loads_total` | Counter | `model`, `runtime`, `outcome`, `source` | Models loaded into a runtime; `outcome` is `ok` or `error`, `source` is `admission` (the probe load), `preload` (at a generation build) or `demand` (at a first inference). |
+| `orion_model_load_duration_seconds` | Histogram | `model`, `runtime` | Parse plus runtime allocation for one load. Paid once per digest per process unless evicted. |
+| `orion_model_loaded_bytes` | Gauge | — | Bytes of models resident in memory right now, across every runtime. Bounded by `models.max_loaded_bytes`. |
+| `orion_model_cache_bytes` | Gauge | — | Bytes the artifact cache directory holds right now. Swept to `models.max_cache_bytes` after every fetch. |
+| `orion_model_live_inferences` | Gauge | — | Inferences running right now, across every model. Bounded by `models.max_concurrent_inferences`. |
+
 ## Scheduling
 
 Cron channels: what the reconciler and the workers are doing. See [Cron transport](./channel-config.md#cron-transport) for the schedules themselves and [Cron occurrences](./admin-api.md#cron-occurrences) for the ledger these summarise.

@@ -7,6 +7,7 @@ pub(crate) mod env_substitute;
 mod jwt;
 mod kafka;
 mod logging;
+mod models;
 mod oauth2_login;
 mod observability;
 mod plugins;
@@ -31,6 +32,7 @@ pub use env_overrides::known_env_override_keys;
 pub use jwt::JwtConfig;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
+pub use models::{ModelOverride, ModelPreload, ModelRuntimeConfig, ModelTrustConfig, ModelsConfig};
 pub use oauth2_login::OAuth2LoginConfig;
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
@@ -102,6 +104,9 @@ pub struct AppConfig {
     pub secrets: SecretsConfig,
     /// The WebAssembly plugin sandbox and its ceilings. Off by default.
     pub plugins: PluginsConfig,
+    /// The ONNX model runtime, its artifact cache and its ceilings. Off by
+    /// default.
+    pub models: ModelsConfig,
 }
 
 fn default_environment() -> String {
@@ -136,6 +141,7 @@ impl Default for AppConfig {
             vars: VarsConfig::default(),
             secrets: SecretsConfig::default(),
             plugins: PluginsConfig::default(),
+            models: ModelsConfig::default(),
         }
     }
 }

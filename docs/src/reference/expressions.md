@@ -126,6 +126,50 @@ directly with `map` / `filter` / `sort`.
 | `switch` / `match` | see [Sharp edges](#sharp-edges) | Multi-way branch |
 | `try` / `throw` | `{ "try": [expr, fallback] }` | Catch / raise an evaluation error |
 
+### Tensors (`tensor`)
+
+A tensor is a dtype, a shape and one contiguous buffer — the value a model
+consumes and produces. JSON has no such thing, so this family is the bridge:
+twenty operators that build one from JSON, reshape it, and read it back out.
+There is deliberately **no arithmetic** here; every operator's cost is
+proportional to the data it moves, which is what lets
+[`engine.ops_budget`](./configuration.md#engine) price it. Compute belongs in
+the model the tensor is handed to, not in the expression that builds it.
+
+On the wire a tensor is `{"tensor": {"dtype": "f32", "shape": [1, 7], "data":
+"<base64>"}}`, which is what a response body or a trace snapshot shows and what
+the `tensor` operator reads back. Dtypes: `bool`, `i8`, `u8`, `i16`, `u16`,
+`i32`, `u32`, `i64`, `u64`, `f32`, `f64` (`f16`/`bf16` are carried but not
+decoded).
+
+> [!IMPORTANT]
+> Seven of these names are ordinary JSON keys — `shape`, `full`, `cast`,
+> `pad`, `crop`, `concat`, `stack`. In a `map` mapping or any other template
+> position, a **single-key object** whose key is one of the twenty is an
+> operator call, not data. To emit the literal key, prefix it: `{"$shape":
+> [6, 7]}` emits `{"shape": [6, 7]}`. Multi-key objects are unaffected.
+> `orion-server lint` and `preflight` list every such key as
+> `logic.tensor_operator_key` — see [Upgrading to 1.8.0](../operate/upgrading-to-1.8.md).
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `tensor` | `{ "tensor": [{ "var": "data.cells" }, "i64"] }` | Build from nested arrays (or the wire form); dtype optional |
+| `zeros` / `full` | `{ "full": [[3], "i64", 7] }` | A tensor of the given shape filled with 0 / with `value` |
+| `scatter` | `{ "scatter": [[[0, 1], [1, 0, 5]], [2, 2], "i64"] }` | Sparse write: each point `[i, j]` sets 1, `[i, j, v]` sets `v`; out-of-range points are dropped |
+| `rle_expand` | `{ "rle_expand": [[7, 2, 0, 1], [3], "i64"] }` | Run-length decode `[v0, n0, v1, n1, …]` into `shape`, row-major |
+| `one_hot` | `{ "one_hot": [{ "var": "data.cells" }, 3, "f32"] }` | `[len, depth]` indicator matrix; an index outside `0..depth` leaves its row zero |
+| `stack` / `concat` | `{ "stack": [[a, b], 0] }` | Join along a **new** axis / an **existing** axis |
+| `unstack` | `{ "unstack": [t, 0] }` | Split along an axis and drop it: an array of tensors one rank lower |
+| `reshape` | `{ "reshape": [t, [1, 2, 6, 7]] }` | Same bytes, new shape; the element count must match, there is no inferred `-1` |
+| `transpose` | `{ "transpose": [t, [1, 0]] }` | Permute axes; `perm` defaults to a full reversal |
+| `pad` / `crop` | `{ "crop": [t, [1, 0], [2, 42]] }` | Grow every axis by `before`/`after` margins (filled with `value`, default 0) / cut the sub-block at `offset` of size `shape` |
+| `cast` | `{ "cast": [t, "f32"] }` | Convert dtype; narrowing saturates, `NaN` becomes 0 |
+| `normalize` | `{ "normalize": [t, 127.5, 0.0078125] }` | `(x − mean) × scale`, always to `f32`; `scale` defaults to 1 |
+| `argmax` | `{ "argmax": [{ "var": "policy" }, 1] }` | Index of the largest element along `axis`, as plain JSON (a number for 1-d input); ties go to the first |
+| `gather` | `{ "gather": [t, [2, 0]] }` | Select slices along `axis` (default 0) in the order given; every index must be in range |
+| `to_list` | `{ "to_list": [t] }` | Back to nested JSON arrays — the general escape hatch, and the expensive one |
+| `shape` / `dtype` | `{ "shape": [t] }` | The shape as a JSON array / the dtype's wire name |
+
 ### Encoding (Orion operators)
 
 Registered by Orion itself rather than gated by a cargo feature — available on
@@ -363,13 +407,14 @@ see [Test Workflows Offline](../build/testing.md#assert-on-what-a-workflow-write
 ## Feature boundary
 
 The extension categories — `datetime`, `ext-string`, `ext-array`, `ext-math`,
-`ext-control`, `error-handling` — are Cargo features of datalogic-rs.
+`ext-control`, `error-handling`, `tensor` — are Cargo features of datalogic-rs.
 
 > [!NOTE]
 > Orion reaches datalogic-rs through dataflow-rs and cannot enable a datalogic
 > feature on its own. The extension operators are available only as dataflow-rs
 > enables them; Orion turns them all on through dataflow-rs's `all-operators`
-> feature. A build without that feature compiles only the [Core](#core) set.
+> feature, plus `tensor` and `budget` (both outside `all-operators` upstream)
+> since 1.8. A build without those features compiles only the [Core](#core) set.
 
 ## Related
 

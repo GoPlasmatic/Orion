@@ -298,6 +298,126 @@ const OPERATORS: &[OperatorCase] = &[
         || json!({"try": [{"throw": ["boom"]}, "caught"]}),
         || json!("caught"),
     ),
+    // ---- tensors (dataflow-rs 3.13 `tensor`) ----
+    // Every row reads its result back out as plain JSON (`to_list`, `shape`,
+    // `dtype`, `argmax`) so the assertion is on values rather than on the
+    // base64 wire form of a tensor. Integer dtypes throughout, except where
+    // the operator's own output is float: `serde_json` does not equate `1`
+    // with `1.0`, and this table is about operators, not number rendering.
+    (
+        "tensor",
+        || json!({"to_list": [{"tensor": [{"var": "cells"}, "i64"]}]}),
+        || json!([0, 2, 1]),
+    ),
+    (
+        "zeros",
+        || json!({"to_list": [{"zeros": [[2, 2], "i64"]}]}),
+        || json!([[0, 0], [0, 0]]),
+    ),
+    (
+        "full",
+        || json!({"to_list": [{"full": [[3], "i64", 7]}]}),
+        || json!([7, 7, 7]),
+    ),
+    (
+        "scatter",
+        || json!({"to_list": [{"scatter": [[[0, 1], [1, 0, 5]], [2, 2], "i64"]}]}),
+        || json!([[0, 1], [5, 0]]),
+    ),
+    (
+        "rle_expand",
+        || json!({"to_list": [{"rle_expand": [[7, 2, 0, 1], [3], "i64"]}]}),
+        || json!([7, 7, 0]),
+    ),
+    (
+        "one_hot",
+        || json!({"to_list": [{"one_hot": [{"var": "cells"}, 3, "i64"]}]}),
+        || json!([[1, 0, 0], [0, 0, 1], [0, 1, 0]]),
+    ),
+    (
+        "stack",
+        || {
+            json!({"shape": [{"stack": [
+                [{"tensor": [[1, 2], "i64"]}, {"tensor": [[3, 4], "i64"]}], 0]}]})
+        },
+        || json!([2, 2]),
+    ),
+    (
+        "concat",
+        || {
+            json!({"to_list": [{"concat": [
+                [{"tensor": [[1, 2], "i64"]}, {"tensor": [[3], "i64"]}], 0]}]})
+        },
+        || json!([1, 2, 3]),
+    ),
+    (
+        "unstack",
+        || {
+            json!({"map": [{"unstack": [{"tensor": [{"var": "grid"}, "i64"]}, 0]},
+                {"to_list": [{"var": ""}]}]})
+        },
+        || json!([[1, 2], [3, 4]]),
+    ),
+    (
+        "reshape",
+        || json!({"shape": [{"reshape": [{"tensor": [{"var": "grid"}, "i64"]}, [4]]}]}),
+        || json!([4]),
+    ),
+    (
+        "transpose",
+        || json!({"to_list": [{"transpose": [{"tensor": [{"var": "grid"}, "i64"]}]}]}),
+        || json!([[1, 3], [2, 4]]),
+    ),
+    (
+        "pad",
+        || json!({"to_list": [{"pad": [{"tensor": [[1], "i64"]}, [1], [1]]}]}),
+        || json!([0, 1, 0]),
+    ),
+    (
+        "crop",
+        || {
+            json!({"to_list": [{"crop": [{"tensor": [{"var": "grid"}, "i64"]},
+                [0, 1], [2, 1]]}]})
+        },
+        || json!([[2], [4]]),
+    ),
+    (
+        "cast",
+        || json!({"dtype": [{"cast": [{"tensor": [[1, 2], "i64"]}, "f32"]}]}),
+        || json!("f32"),
+    ),
+    // `(x − 2) × 0.25` over `[2, 4]`: a whole float renders as `0`, so the
+    // second element is the one that shows the output is `f32`.
+    (
+        "normalize",
+        || json!({"to_list": [{"normalize": [{"tensor": [[2, 4], "i64"]}, 2, 0.25]}]}),
+        || json!([0, 0.5]),
+    ),
+    (
+        "argmax",
+        || json!({"argmax": [{"tensor": [[1, 9, 3], "i64"]}, 0]}),
+        || json!(1),
+    ),
+    (
+        "gather",
+        || json!({"to_list": [{"gather": [{"tensor": [[10, 20, 30], "i64"]}, [2, 0]]}]}),
+        || json!([30, 10]),
+    ),
+    (
+        "to_list",
+        || json!({"to_list": [{"tensor": [{"var": "grid"}, "i64"]}]}),
+        || json!([[1, 2], [3, 4]]),
+    ),
+    (
+        "shape",
+        || json!({"shape": [{"tensor": [{"var": "grid"}, "i64"]}]}),
+        || json!([2, 2]),
+    ),
+    (
+        "dtype",
+        || json!({"dtype": [{"tensor": [[1, 2], "i64"]}]}),
+        || json!("i64"),
+    ),
     // ---- orion custom operators (src/engine/operators.rs, #259c/#260) ----
     // Not feature-gated: they are registered by Orion itself on every engine
     // it builds, so a failure here means a construction site lost the
@@ -419,6 +539,9 @@ fn context() -> Value {
         "nums": [3, 1, 2],
         "tier": "silver",
         "obj": {"a": 1, "b": 2},
+        // The tensor rows: a 2×2 grid and a flat list of class indices.
+        "grid": [[1, 2], [3, 4]],
+        "cells": [0, 2, 1],
     })
 }
 

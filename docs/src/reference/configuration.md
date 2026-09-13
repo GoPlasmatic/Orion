@@ -20,6 +20,7 @@
 | Authentication, JWT, OAuth, and CORS | [Admin Authentication](#admin-authentication), [JWT Verification](#jwt-verification), [Inbound OAuth2](#inbound-oauth2-sign-in), and [CORS](#cors) |
 | Logs, metrics, and distributed tracing | [Logging and Metrics](#logging-and-metrics) and [Tracing](#tracing) |
 | Custom task functions in WebAssembly | [Plugins](#plugins) |
+| ONNX models and the artifact cache | [Models](#models) |
 
 Use browser search for an exact TOML key or `ORION_*` variable. Every table
 uses the wire name, default, and corresponding environment override.
@@ -296,6 +297,7 @@ instance_id = "${HOSTNAME}"
 | `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Per-namespace bound — see below. Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (e.g. `"x-user-id"`) so canary rollouts are stable per caller. |
 | `engine.fail_on_connector_load_error` | `false` | `ORION_ENGINE__FAIL_ON_CONNECTOR_LOAD_ERROR` | **Set to `true` in production.** Refuse to start when an enabled connector cannot be loaded — see below. |
+| `engine.ops_budget` | `0` | `ORION_ENGINE__OPS_BUDGET` | Ceiling on the operations one JSONLogic evaluation may perform, on every engine this node builds; `0` installs none. Set it when expressions come from someone other than the operator — a tenant's rules, a competitor's model adapters — see below. |
 
 ### Connector load failures
 
@@ -310,6 +312,8 @@ Three surfaces report this:
 **`max_memory_cache_entries`** bounds each in-memory cache **namespace**, with LRU eviction on insert. There is no single shared store: the built-in dedup store, the built-in response cache, and every `(purpose, connector)` use of a `backend = "memory"` cache connector each get their own instance with their own bound, so a hot workflow cache cannot evict dedup entries, but the budgets add up. Worst-case resident entries are `max_memory_cache_entries × number of namespaces`: the two built-in stores plus up to three (workflow cache, dedup, response cache) for every memory connector. Size a memory-constrained host from that product, not from the single value. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
 
 **`rollout_sticky_header`** decides how a request is bucketed for canary rollouts. With a header configured, the same caller always lands in the same bucket and therefore on the same workflow version. Empty (the default) falls back to the forwarded client IP, and with neither available the bucket is random per request, so a caller can flip between versions mid-session.
+
+**`ops_budget`** bounds one JSONLogic evaluation, deterministically, on every engine this node builds — the serving generation, every reload, and `POST /workflows/{id}/test`; an offline `dry-run` runs unbounded. One operation is one dispatched node, one item an iterator examines, or what an operator charges for the data it moves (the [tensor family](./expressions.md#tensors-tensor) charges per element); constant-folded subtrees cost nothing. The ceiling is per *evaluation*, not per task or message: a task that evaluates ten expressions gets it ten times. It exists for expressions the operator did not write. How a refusal surfaces is not uniform. A custom function's template field — `http_call.path`, `crypto.data`, a model adapter — fails the task with `BUDGET_EXCEEDED`, which is not retried. A built-in `map` mapping fails its task with status `500` and keeps the reason for the log, which is how the engine reports every mapping failure. A **condition** (workflow, task, group, `filter`) fails closed to `false` and is only logged, because condition evaluation has no error channel, so a ceiling low enough to trip an ordinary condition reads as "no workflow matched" and the caller gets their own input back with a `200`. Size it from the heaviest legitimate expression in the estate, then leave headroom. The counter runs whether or not a ceiling is set; the cost is one add-and-compare per node.
 
 ### Circuit Breaker
 
@@ -698,6 +702,70 @@ Each `[[plugins.overrides]]` block names a plugin `id` and any of
 `timeout_ms`, `max_memory_bytes`, `max_concurrency`, `max_request_bytes` and
 `max_response_bytes`. A value above the host ceiling, a zero, or an `id`
 repeated across blocks is refused at startup.
+
+## Models
+
+ONNX models as governed entities: a model row names a storage connector, an
+object key and a digest; the node fetches the bytes, verifies them, keeps them
+in `cache_dir`, and runs them through a runtime. Off by default, and turning it
+on changes nothing until a model is uploaded and activated. Every limit here is
+the host's: a model requests nothing, and a per-model override may only lower a
+ceiling, never raise one.
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `models.enabled` | `false` | `ORION_MODELS__ENABLED` | Turn on to admit and run models on this node. A stored model on a node with models off quarantines the workflows naming it rather than aborting. |
+| `models.cache_dir` | `""` | `ORION_MODELS__CACHE_DIR` | Where verified artifacts are kept, one file per digest. Required when `enabled`; refused empty. |
+| `models.max_cache_bytes` | `8589934592` | `ORION_MODELS__MAX_CACHE_BYTES` | Ceiling on the cache directory (8 GiB). Swept least-recently-used after every fetch. |
+| `models.max_loaded_bytes` | `2147483648` | `ORION_MODELS__MAX_LOADED_BYTES` | Ceiling on models resident in memory at once (2 GiB), across every runtime. A load that would cross it fails as a limit rather than evicting a model in use. |
+| `models.preload` | `"referenced"` | `ORION_MODELS__PRELOAD` | Which admitted models a generation loads before it serves: `none` (the first inference pays the load), `referenced` (every model an active workflow names) or `all`. |
+| `models.max_artifact_bytes` | `536870912` | `ORION_MODELS__MAX_ARTIFACT_BYTES` | Largest artifact an admission will fetch (512 MiB). Checked against the declared length before a byte is read, and again while the body streams. |
+| `models.max_parameters` | `0` | `ORION_MODELS__MAX_PARAMETERS` | Ceiling on a model's parameter count, read from the graph at admission. `0` leaves it unbounded. |
+| `models.max_input_elements` | `1048576` | `ORION_MODELS__MAX_INPUT_ELEMENTS` | Elements one inference may hand a model, summed over its inputs. |
+| `models.max_output_elements` | `1048576` | `ORION_MODELS__MAX_OUTPUT_ELEMENTS` | Elements one inference may take back, summed over its outputs. |
+| `models.max_timeout_ms` | `1000` | `ORION_MODELS__MAX_TIMEOUT_MS` | Wall-clock ceiling per inference; the task's own deadline applies too and the shorter wins. |
+| `models.max_probe_ms` | `250` | `ORION_MODELS__MAX_PROBE_MS` | Ceiling on the admission probe — the median of five inferences at rest, over zero-filled inputs, that prove the graph runs here. A model slower than this idle could never meet `max_timeout_ms` under load, so it is refused. |
+| `models.fetch_timeout_secs` | `300` | `ORION_MODELS__FETCH_TIMEOUT_SECS` | How long one artifact fetch may take, connection to last byte. |
+| `models.admission_timeout_secs` | `900` | `ORION_MODELS__ADMISSION_TIMEOUT_SECS` | How long one admission may take end to end. A row still pending after this is marked failed with the stage it was in. |
+| `models.max_concurrency_per_model` | `16` | `ORION_MODELS__MAX_CONCURRENCY_PER_MODEL` | Inferences of one model that may run at once; beyond it a task waits until its deadline and fails as a limit. |
+| `models.max_concurrent_inferences` | `0` | `ORION_MODELS__MAX_CONCURRENT_INFERENCES` | Inferences that may run at once across every model. `0` means the host's available parallelism. |
+| `models.trust.public_keys` | `[]` | `ORION_MODELS__TRUST__PUBLIC_KEYS` | When set, a model row must carry an Ed25519 signature over its artifact digest by one of these keys, verified by the node that admits it. |
+| `models.default_runtime.onnx` | `"tract"` | — | The runtime a model whose manifest declares `format = "onnx"` runs on. One row per format — see below. The `onnx` row is required: it is the only format a manifest can declare today. |
+| `models.runtimes.tract.enabled` | `true` | — | Whether models may run on tract here. A disabled runtime keeps its entry so a row naming it is refused by name. |
+| `models.runtimes.tract.device` | `"cpu"` | — | The device tract executes on: `cpu`, `metal` or `cuda`. A device the build lacks fails the load with the reason, not the config. |
+| `models.overrides` | `[]` | — | Per-model ceilings — see below. |
+
+```toml
+[models]
+enabled = true
+cache_dir = "/var/cache/orion/models"
+
+[models.default_runtime]
+onnx = "tract"
+
+[models.runtimes.tract]
+device = "metal"
+
+[[models.overrides]]
+id = "ada.c4-tiny"
+timeout_ms = 50
+max_concurrency = 4
+```
+
+`[models.runtimes]` is a map keyed by runtime name; the names a build knows
+are the ones `orion-server validate-config` accepts, and the only one today is
+`tract`. `[models.default_runtime]` is a map keyed by **artifact format** —
+the `format` a manifest declares — naming the runtime a model of that format
+runs on when nothing names one explicitly. Every value must be a key of
+`models.runtimes`, enabled there, and a runtime that serves the format (tract
+serves `onnx`); a key must be a format some runtime this build knows serves.
+The `onnx` row is required, because it is the only format a manifest can
+declare today — declaring the table without it is refused at startup, as is
+the pre-table spelling `default_runtime = "tract"`. Adding a format or a
+runtime later is a row here, not a schema change. Each `[[models.overrides]]`
+block names a model `id` and any of `timeout_ms`, `max_concurrency`,
+`max_input_elements` and `max_output_elements`. A value above the host
+ceiling, a zero, or an `id` repeated across blocks is refused at startup.
 
 ## Related
 

@@ -22,7 +22,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
 use wasmtime::component::{Component, Linker};
 use wasmtime::{Config, Engine, InstanceAllocationStrategy, PoolingAllocationConfig, Store};
 
@@ -155,9 +154,10 @@ impl WasmRuntime {
         }))
     }
 
-    /// The identity of a component: `sha256:<hex>` of its bytes.
+    /// The identity of a component: `sha256:<hex>` of its bytes — the one
+    /// spelling every stored artifact uses ([`crate::crypto::sha256_digest`]).
     pub fn digest(bytes: &[u8]) -> String {
-        format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+        crate::crypto::sha256_digest(bytes)
     }
 
     pub fn engine(&self) -> &Engine {

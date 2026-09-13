@@ -313,6 +313,31 @@ pub enum PluginArtifacts {
     CreatedAt,
 }
 
+// ============================================================
+// Models: the versioned entity; its bytes live in a bucket, not here
+// ============================================================
+
+#[derive(Iden)]
+pub enum Models {
+    Table,
+    ModelId,
+    Version,
+    Status,
+    Digest,
+    ManifestJson,
+    /// The artifact reference: `{"connector","key","digest","size"}`.
+    ArtifactJson,
+    /// The admission verdict — derived, outside the immutability trigger.
+    AdmissionJson,
+    /// What admission read out of the model — derived, nullable.
+    StatsJson,
+    TagsJson,
+    /// Optional detached signature over `digest`.
+    Signature,
+    CreatedAt,
+    UpdatedAt,
+}
+
 #[derive(Iden)]
 pub enum CurrentChannels {
     Table,
@@ -482,6 +507,42 @@ mod tests {
                 "config_hash",
                 "next_fire_at",
                 "paused_at",
+            ]
+        );
+
+        // The model columns, in the order the three `models` migrations
+        // declare them: every one is spelled by hand in each set, and the
+        // two derived columns are the ones the immutability trigger must
+        // *not* name.
+        assert_eq!(
+            [
+                Iden::to_string(&Models::ModelId),
+                Iden::to_string(&Models::Version),
+                Iden::to_string(&Models::Status),
+                Iden::to_string(&Models::Digest),
+                Iden::to_string(&Models::ManifestJson),
+                Iden::to_string(&Models::ArtifactJson),
+                Iden::to_string(&Models::AdmissionJson),
+                Iden::to_string(&Models::StatsJson),
+                Iden::to_string(&Models::TagsJson),
+                Iden::to_string(&Models::Signature),
+                Iden::to_string(&Models::CreatedAt),
+                Iden::to_string(&Models::UpdatedAt),
+            ]
+            .to_vec(),
+            [
+                "model_id",
+                "version",
+                "status",
+                "digest",
+                "manifest_json",
+                "artifact_json",
+                "admission_json",
+                "stats_json",
+                "tags_json",
+                "signature",
+                "created_at",
+                "updated_at",
             ]
         );
 

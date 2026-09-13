@@ -1,0 +1,22 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.c4-tiny",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "c4-tiny.onnx",
+  "description": "A tiny Connect-4 policy network: two dense layers over a [1, 2, 6, 7] board, producing a [1, 7] policy",
+  "inputs": [
+    {
+      "name": "board",
+      "dtype": "f32",
+      "shape": [1, 2, 6, 7],
+      "adapter": { "tensor": [{ "var": "data.board" }, "f32"] }
+    }
+  ],
+  "outputs": [
+    { "name": "policy", "dtype": "f32", "shape": [1, 7] }
+  ],
+  "result": {
+    "policy": { "to_list": [{ "var": "policy" }] }
+  }
+}

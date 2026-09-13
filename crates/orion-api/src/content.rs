@@ -82,6 +82,29 @@ pub fn plugin_content(doc: &Value) -> Value {
     })
 }
 
+/// A model's importable content: the manifest, the artifact reference and
+/// the tags.
+///
+/// Of the reference only `connector`, `key` and `digest` are content —
+/// `size` is a hint admission confirms, so a registration that stated it and
+/// one that did not hash the same. Three response fields are left out on
+/// purpose: `signature` is attached to the digest rather than part of it
+/// (as for plugins), and `admission` and `stats` are derived by the node
+/// that probed the artifact — verdicts *about* the content, not content, so
+/// a re-import must not change hash because a different node probed it.
+pub fn model_content(doc: &Value) -> Value {
+    let artifact = optional(doc, "artifact");
+    json!({
+        "manifest": optional(doc, "manifest"),
+        "artifact": {
+            "connector": optional(&artifact, "connector"),
+            "key": optional(&artifact, "key"),
+            "digest": optional(&artifact, "digest"),
+        },
+        "tags": defaulted(doc, "tags", json!([])),
+    })
+}
+
 /// A workflow's importable content.
 pub fn workflow_content(doc: &Value) -> Value {
     let mut content = json!({
@@ -221,6 +244,38 @@ mod tests {
         );
     }
 
+    /// A model's derived fields never reach its content: two documents that
+    /// differ only in what a node found when it probed the artifact, in
+    /// whether the registration stated a size, or in the signature attached
+    /// to the digest are the same model. Where the bytes are, is.
+    #[test]
+    fn a_models_verdict_size_and_signature_are_not_content() {
+        let bare = model_content(&json!({
+            "manifest": {"name": "m"},
+            "artifact": {"connector": "c", "key": "k", "digest": "sha256:d"},
+        }));
+        let decorated = model_content(&json!({
+            "manifest": {"name": "m"},
+            "artifact": {"connector": "c", "key": "k", "digest": "sha256:d", "size": 42},
+            "signature": "sig",
+            "admission": {"state": "passed", "node": "n1"},
+            "stats": {"parameters": 1},
+            "tags": [],
+        }));
+        assert_eq!(bare, decorated);
+        assert_eq!(bare["tags"], json!([]));
+        assert!(bare["artifact"].get("size").is_none());
+        assert!(bare.get("signature").is_none());
+        assert!(bare.get("admission").is_none());
+        assert!(bare.get("stats").is_none());
+
+        let moved = model_content(&json!({
+            "manifest": {"name": "m"},
+            "artifact": {"connector": "c", "key": "elsewhere", "digest": "sha256:d"},
+        }));
+        assert_ne!(bare, moved, "the object key is content");
+    }
+
     /// The invariant `workflows diff` rides on: a response document and the
     /// create-shaped document that produced it project identically, so the
     /// two sides of a comparison are commensurable.
@@ -262,6 +317,7 @@ mod tests {
             assert_eq!(workflow_content(&doc), workflow_content(&json!({})));
             assert_eq!(channel_content(&doc), channel_content(&json!({})));
             assert_eq!(connector_content(&doc), connector_content(&json!({})));
+            assert_eq!(model_content(&doc), model_content(&json!({})));
         }
     }
 }

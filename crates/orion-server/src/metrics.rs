@@ -441,6 +441,159 @@ pub fn set_plugin_live_instances(count: u64) {
     gauge!("orion_plugin_live_instances").set(count as f64);
 }
 
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+//
+// `model` is a stored model id and `runtime` one of `model::runtimes::NAMES`
+// — never a string a row, a request or a runtime's error chose, for the same
+// reason the plugin block gives: a label value is a time series, and an
+// unbounded set of them is an unbounded registry.
+
+/// One inference: outcome counted, duration observed.
+pub fn record_model_inference(
+    model: &str,
+    runtime: &'static str,
+    outcome: &'static str,
+    secs: f64,
+) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_model_inferences_total",
+        "model" => model.to_owned(),
+        "runtime" => runtime,
+        "outcome" => outcome
+    )
+    .increment(1);
+    histogram!(
+        "orion_model_inference_duration_seconds",
+        "model" => model.to_owned(),
+        "runtime" => runtime
+    )
+    .record(secs);
+}
+
+/// How long an inference waited for its model's concurrency permit.
+pub fn record_model_queue_time(model: &str, runtime: &'static str, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!(
+        "orion_model_queue_seconds",
+        "model" => model.to_owned(),
+        "runtime" => runtime
+    )
+    .record(secs);
+}
+
+/// A failed inference, by the host's stable category (`model::Category`).
+pub fn record_model_failure(model: &str, runtime: &'static str, category: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_model_failures_total",
+        "model" => model.to_owned(),
+        "runtime" => runtime,
+        "category" => category
+    )
+    .increment(1);
+}
+
+/// One admission finished: outcome counted with the stage a failure stopped
+/// at (`none` for a pass), duration observed.
+pub fn record_model_admission(outcome: &'static str, stage: Option<&'static str>, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_model_admissions_total",
+        "outcome" => outcome,
+        "stage" => stage.unwrap_or("none")
+    )
+    .increment(1);
+    histogram!(
+        "orion_model_admission_duration_seconds",
+        "outcome" => outcome
+    )
+    .record(secs);
+}
+
+/// One artifact fetch through a storage connector: bytes kept counted (`0`
+/// on failure, when nothing is), duration observed.
+pub fn record_model_fetch(model: &str, outcome: &'static str, bytes: u64, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_model_fetch_bytes_total",
+        "model" => model.to_owned(),
+        "outcome" => outcome
+    )
+    .increment(bytes);
+    histogram!(
+        "orion_model_fetch_duration_seconds",
+        "model" => model.to_owned(),
+        "outcome" => outcome
+    )
+    .record(secs);
+}
+
+/// A model loaded into a runtime (or refused): outcome counted with why the
+/// load happened (`preload` at a generation build, `demand` at a first
+/// inference), load time observed.
+pub fn record_model_load(
+    model: &str,
+    runtime: &'static str,
+    outcome: &'static str,
+    source: &'static str,
+    secs: f64,
+) {
+    if !is_enabled() {
+        return;
+    }
+    counter!(
+        "orion_model_loads_total",
+        "model" => model.to_owned(),
+        "runtime" => runtime,
+        "outcome" => outcome,
+        "source" => source
+    )
+    .increment(1);
+    histogram!(
+        "orion_model_load_duration_seconds",
+        "model" => model.to_owned(),
+        "runtime" => runtime
+    )
+    .record(secs);
+}
+
+/// Bytes of models resident in memory right now, across every runtime.
+pub fn set_model_loaded_bytes(bytes: u64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_model_loaded_bytes").set(bytes as f64);
+}
+
+/// Bytes the artifact cache directory holds right now.
+pub fn set_model_cache_bytes(bytes: u64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_model_cache_bytes").set(bytes as f64);
+}
+
+/// Inferences running right now, across every model.
+pub fn set_model_live_inferences(count: u64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_model_live_inferences").set(count as f64);
+}
+
 /// Record engine reload event.
 pub fn record_engine_reload(status: &'static str) {
     if !is_enabled() {

@@ -5,6 +5,7 @@ pub(crate) mod connectors;
 pub(crate) mod cron;
 pub(crate) mod engine;
 pub(crate) mod functions;
+pub(crate) mod models;
 pub(crate) mod packages;
 pub(crate) mod plugins;
 pub(crate) mod services;
@@ -885,7 +886,8 @@ async fn reload_after_commit(
 
 /// [`reload_after_commit`] with the scope the mutation names — `Plugins`
 /// for the plugin routes, whose peers must compare the active plugin set
-/// rather than only republish definitions.
+/// rather than only republish definitions, and `Models` for the model
+/// routes likewise.
 async fn reload_after_commit_scoped(
     state: &AppState,
     reload: ReloadMode,
@@ -951,6 +953,27 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
             get(plugins::list_plugin_versions).post(plugins::create_new_plugin_version),
         )
         .layer(axum::extract::DefaultBodyLimit::max(plugin_body_size));
+
+    // A model registration is JSON only — a manifest and a reference, never
+    // the bytes — so the admin plane's own limit is the right one.
+    let model_routes = Router::new()
+        .route("/", get(models::list_models).post(models::create_model))
+        .route("/import", post(models::import_models))
+        .route("/export", get(models::export_models))
+        .route("/validate", post(models::validate_model))
+        .route(
+            "/{id}",
+            get(models::get_model)
+                .put(models::update_model)
+                .delete(models::delete_model),
+        )
+        .route("/{id}/status", patch(models::change_model_status))
+        .route("/{id}/admit", post(models::admit_model))
+        .route("/{id}/dependencies", get(models::model_dependencies))
+        .route(
+            "/{id}/versions",
+            get(models::list_model_versions).post(models::create_new_model_version),
+        );
 
     let workflow_routes = Router::new()
         .route(
@@ -1043,6 +1066,7 @@ pub fn admin_routes(max_body_size: usize, plugin_body_size: usize) -> Router<App
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/plugins", plugin_routes)
+        .nest("/models", model_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)

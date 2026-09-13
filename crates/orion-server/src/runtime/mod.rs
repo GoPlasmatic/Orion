@@ -13,6 +13,11 @@
 //! it is injected *downward* into `engine`, `channel`, `kafka` and `queue`
 //! rather than reaching up into any of them.
 //!
+//! [`model_admission`] is the worker behind the model routes: it drains the
+//! admission queue the node holds, resolving each job's storage connector
+//! from the registry and recording the verdict through the repository — the
+//! two things `model::admission` deliberately takes as parameters.
+//!
 //! [`reload`] rebuilds that generation, and restarts the Kafka consumer that
 //! rides along with it. It was `engine::reload`, and that was the largest of
 //! the upward dependency edges in the tree: a module the whole request path
@@ -23,6 +28,7 @@
 //! downward on all of them.
 
 pub mod generation;
+pub mod model_admission;
 pub mod reload;
 pub mod tasks;
 

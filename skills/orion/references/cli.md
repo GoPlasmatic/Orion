@@ -97,6 +97,25 @@ refused activation with a `409`. `plugins create --signature` is required when
 the server configures `[plugins.trust]`. All of it answers `400` when
 `plugins.enabled` is off.
 
+Models take the same path, with an asynchronous admission between
+registration and activation — the bytes stay in object storage and the CLI
+sends only the reference:
+
+```bash
+orion-cli models create -f model.json --connector <connector> --key <object-key> \
+    --digest sha256:<hex> --wait               # 0 passed, 1 failed, 2 timed out
+orion-cli models get <model-id>                # the verdict, this node's residency
+orion-cli models admit <model-id> --wait       # run admission again
+orion-cli models list --admission failed
+orion-cli models activate <model-id>
+orion-cli models dependencies <model-id>       # what would break on archive
+```
+
+`models update` changes only what is named (`-f`, the three reference flags
+together, `--signature`, `--tag`); `models export` carries the manifest and
+reference, never the bytes. All of it answers `400` when `models.enabled` is
+off.
+
 Transition dry-runs return findings in HTTP 200; the CLI maps invalid findings
 to exit code 1, so gate automation on the exit code.
 

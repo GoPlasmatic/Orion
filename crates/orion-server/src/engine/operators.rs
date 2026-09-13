@@ -96,6 +96,46 @@ pub fn is_operator(name: &str) -> bool {
     operator_names().contains(name)
 }
 
+/// The tensor family dataflow-rs 3.13's `tensor` feature adds, by name.
+///
+/// Kept as a list rather than derived from [`operator_names`] because the
+/// list is what the *upgrade* surfaces need: `preflight` and `lint` report a
+/// stored template key that names one of these (`logic.tensor_operator_key`),
+/// and that report has to say which names changed meaning in 1.8, not which
+/// names are operators. The unit test below pins every entry to the live
+/// engine, so the list cannot name an operator the build does not compile.
+///
+/// A third of these are ordinary JSON keys — `shape`, `full`, `cast`, `pad`,
+/// `crop`, `concat`, `stack` — which is why the family is documented with the
+/// `$` escape beside it rather than as one more table.
+pub const TENSOR_OPERATORS: [&str; 20] = [
+    "tensor",
+    "zeros",
+    "full",
+    "scatter",
+    "rle_expand",
+    "one_hot",
+    "stack",
+    "concat",
+    "unstack",
+    "reshape",
+    "transpose",
+    "pad",
+    "crop",
+    "cast",
+    "normalize",
+    "argmax",
+    "gather",
+    "to_list",
+    "shape",
+    "dtype",
+];
+
+/// Whether `key` is a name the tensor family took in 1.8.
+pub fn is_tensor_operator(key: &str) -> bool {
+    TENSOR_OPERATORS.contains(&key)
+}
+
 /// The text an encoder operates on: strings as-is (borrowed — no copy on the
 /// common case), other values as their compact-JSON form, `null`/absent as an
 /// error naming the operator.
@@ -560,6 +600,31 @@ pub fn with_orion_engine_defaults(
     builder.with_error_context_path(crate::engine::ERROR_CONTEXT_PATH)
 }
 
+/// Bound every JSONLogic evaluation the engine performs to `ops_budget`
+/// operations, or leave it unbounded when `ops_budget` is `0`.
+///
+/// Separate from [`with_orion_engine_defaults`] because the budget is
+/// *configuration* (`engine.ops_budget`) where the defaults are *identity*:
+/// every engine must carry the same operators and the same secret store or
+/// two surfaces disagree about what an expression means, whereas an offline
+/// `dry-run` legitimately runs unbounded. The serving engines — boot, the
+/// generation build, every reload — and `POST /workflows/{id}/test` pass the
+/// configured value; the ceiling is carried across `with_new_workflows` by
+/// dataflow-rs, so the cheap reload path cannot lose it.
+///
+/// `0` means "do not call the builder" rather than "a budget of zero", which
+/// upstream would treat as a ceiling every expression crosses.
+pub fn with_ops_budget(
+    builder: dataflow_rs::engine::EngineBuilder,
+    ops_budget: u64,
+) -> dataflow_rs::engine::EngineBuilder {
+    if ops_budget == 0 {
+        builder
+    } else {
+        builder.with_ops_budget(ops_budget)
+    }
+}
+
 /// As [`with_orion_engine_defaults`], for the datalogic engines Orion builds
 /// directly.
 ///
@@ -940,5 +1005,48 @@ mod random_tests {
             let err = eval(logic.clone()).expect_err("test");
             assert!(err.contains(expected), "{logic}: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tensor_family_tests {
+    use super::*;
+
+    /// The list the upgrade surfaces report from names only operators the
+    /// build actually compiles — a name here that `operator_names()` lacks
+    /// would make `lint` warn about a key that is, in fact, still data.
+    #[test]
+    fn every_tensor_operator_is_live() {
+        for name in TENSOR_OPERATORS {
+            assert!(is_operator(name), "`{name}` is listed but not compiled in");
+        }
+    }
+
+    /// And the list is complete: the family is exactly what dataflow-rs's
+    /// changelog for 3.13 enumerates, so a later minor adding a 21st name
+    /// fails here rather than going unreported by `preflight`.
+    #[test]
+    fn the_list_is_the_documented_family() {
+        assert_eq!(TENSOR_OPERATORS.len(), 20);
+        assert!(is_tensor_operator("shape"));
+        assert!(!is_tensor_operator("map"));
+        assert!(
+            !is_tensor_operator("$shape"),
+            "the escape is the remedy, not a member"
+        );
+    }
+
+    /// `0` leaves the builder alone, so a default config builds the same
+    /// engine it did before the setting existed.
+    #[test]
+    fn a_zero_budget_is_no_budget() {
+        let engine = with_ops_budget(dataflow_rs::Engine::builder(), 0)
+            .build()
+            .expect("an empty builder builds");
+        assert_eq!(engine.datalogic().config().ops_budget, None);
+        let bounded = with_ops_budget(dataflow_rs::Engine::builder(), 500)
+            .build()
+            .expect("an empty builder builds");
+        assert_eq!(bounded.datalogic().config().ops_budget, Some(500));
     }
 }

@@ -2691,6 +2691,1189 @@
         ]
       }
     },
+    "/api/v1/admin/models": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "list_models",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "admission",
+            "in": "query",
+            "description": "Admission state to select: `pending`, `passed` or `failed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: model_id (default), status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of models",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "create_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Model registered as draft and queued for admission on this node. The manifest was validated, the artifact reference checked against a storage connector that allows reads, and the object confirmed to exist within `models.max_artifact_bytes`; `admission.state` is `pending` until the worker has fetched and verified the bytes — poll `GET /models/{id}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid manifest, artifact reference, signature or connector; or models are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Model id already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/export": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "export_models",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "admission",
+            "in": "query",
+            "description": "Admission state to select: `pending`, `passed` or `failed`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: model_id (default), status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported models, importable as they are: each item carries the manifest and the artifact reference — connector, key, digest — and never the bytes. The target fetches the object from its own connector of that name at admission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_ModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/import": {
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "import_models",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "on_conflict",
+            "in": "query",
+            "description": "What an already-stored conflict key means: `fail` (default — the item\nis refused), `skip`, or `new_version` (upsert: update the draft in\nplace, or cut a new draft version over an active entity; identical\ncontent is a no-op). K2.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OnConflict"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateModelRequest"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently and carries a manifest and an artifact reference, never bytes — what an export produces. Every item written is queued for admission on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an active model whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/validate": {
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "validate_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result: `valid: true` means `POST /models` would accept this payload on this node — the manifest parses, the reference names a storage connector that allows reads, and the object exists within `models.max_artifact_bytes`. `head` carries the object's size and ETag when the check got that far. Nothing is written and nothing is fetched.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelValidationEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/{id}": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "get_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest version, with this node's view of it under `health`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "update_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateModelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Draft model updated; an absent field keeps its stored value. A changed artifact reference resets admission to `pending` and queues the draft again; a change to the manifest or tags alone keeps the verdict, which was about the bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input, or models are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found, or it has no draft version to update",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "delete_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Model deleted (all versions). The cached artifact, if any, stays in this node's cache until swept"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active workflow still names it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/{id}/admit": {
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "admit_model",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "description": "When true, run the admission inline and answer with the verdict\nrecorded; otherwise queue it for the worker and answer `202`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "With `?wait=true`: the admission ran inline and the row carries its verdict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "The latest version queued for admission on this node again — after a fixed bucket, a re-uploaded object, or a node that never ran it. Idempotent: a version already admitted is admitted again and the verdict replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Models are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/{id}/dependencies": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "model_dependencies",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active workflows calling `model_infer` on this model by its literal id, with the task ids that do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelDependencies"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/{id}/status": {
+      "patch": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "change_model_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, run the transition's gates and report findings without\nwriting. The response body is the `/validate` envelope, not the\nentity.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated. Activating supersedes the previously active version in the same transaction, so a model id resolves to one digest per generation; it is refused until the draft's admission has passed. Archiving is refused while an active workflow names the model. `?dry_run=true` reports every gate without writing; `?reload=defer` commits without rebuilding the engine.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid status transition, or models are disabled on this node",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Admission is pending or failed, or an active workflow still names the model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/models/{id}/versions": {
+      "get": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "list_model_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated version history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Model not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Models"
+        ],
+        "operationId": "create_new_model_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Model ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New draft version copied from the latest, admission verdict and stats included — the reference they describe is unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ModelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The presented admin key is read-only, and this method mutates. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Draft already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/packages": {
       "get": {
         "tags": [
@@ -6224,6 +7407,28 @@
   },
   "components": {
     "schemas": {
+      "ArtifactHead": {
+        "type": "object",
+        "description": "What the bucket said about the object, when `validate` got that far.",
+        "properties": {
+          "etag": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The object's ETag, unquoted, when the bucket sent one."
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`Content-Length`, when the bucket sent one.",
+            "minimum": 0
+          }
+        }
+      },
       "AsyncSubmitResponse": {
         "type": "object",
         "description": "Acknowledgement returned by `POST /api/v1/data/{channel}/async`.",
@@ -6803,6 +8008,41 @@
               "type": "string"
             },
             "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
+          }
+        }
+      },
+      "CreateModelRequest": {
+        "type": "object",
+        "description": "What `POST /models` and the import accept.\n\n`manifest` is the manifest as a JSON object; `artifact` says where the\nbytes are and what digest the author claims for them. Nothing is\nuploaded: the server never holds model bytes, it fetches them from the\nconnector at admission.",
+        "required": [
+          "manifest",
+          "artifact"
+        ],
+        "properties": {
+          "artifact": {
+            "$ref": "#/components/schemas/ModelArtifactRef",
+            "description": "The object-storage reference. `size` is optional and advisory."
+          },
+          "manifest": {},
+          "model_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Must equal the manifest's `name` when given; the manifest is the\nsource of truth for the id."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A detached Ed25519 signature over the digest string, base64, when\nthe deployment requires one; stored either way."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -7706,6 +8946,165 @@
           }
         }
       },
+      "DataEnvelope_ModelDependencies": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "What depends on a model: the active workflows naming it.",
+            "required": [
+              "model_id",
+              "version",
+              "workflows",
+              "dynamic_references_unlisted"
+            ],
+            "properties": {
+              "dynamic_references_unlisted": {
+                "type": "boolean",
+                "description": "Always `true`: a task whose `input.model` is an expression resolves\nits model per message, so a reference of that kind is not listed and\nnot gated on."
+              },
+              "model_id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "workflows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ModelDependant"
+                },
+                "description": "Active workflows with a `model_infer` task whose `input.model` is\nthis id as a literal — the ones an archive or delete is refused for."
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_ModelResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "One version of a model, as every model endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was registered, with\nnothing the server inferred added to it. `inputs` and `outputs` are the\ntensor names it declares, repeated at the top level so a client need not\nwalk the manifest to learn the model's signature. `artifact` is where the\nbytes are; `admission` and `stats` are what a node found when it fetched\nthem — `stats` is `null` until admission passes. `health` is present only\non the single-entity read, and only when the serving node has an opinion:\nit says whether *this node* has the version resident.",
+            "required": [
+              "model_id",
+              "version",
+              "status",
+              "digest",
+              "abi",
+              "model_version",
+              "format",
+              "manifest",
+              "inputs",
+              "outputs",
+              "artifact",
+              "admission",
+              "tags",
+              "content_hash",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "abi": {
+                "type": "string",
+                "description": "The manifest ABI the model was registered against."
+              },
+              "admission": {
+                "$ref": "#/components/schemas/ModelAdmission"
+              },
+              "artifact": {
+                "$ref": "#/components/schemas/ModelArtifactRef"
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "`sha256:…` over the importable content (manifest, artifact reference\nwithout its size, tags) — the same projection the upsert import\ncompares. The signature, the admission verdict and the stats are not\nin it: see `content::model_content`."
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "digest": {
+                "type": "string",
+                "description": "`sha256:…` of the artifact bytes, as claimed at registration — the\nidentity a generation, a trace and a package all name the model by."
+              },
+              "format": {
+                "type": "string",
+                "description": "The artifact format the manifest declares (`onnx`)."
+              },
+              "health": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ModelHealth",
+                    "description": "This node's residency for the version, on the single-entity read."
+                  }
+                ]
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The input tensor names, in the manifest's order."
+              },
+              "manifest": {},
+              "model_id": {
+                "type": "string"
+              },
+              "model_version": {
+                "type": "string",
+                "description": "The author's own version string from the manifest, informational."
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The output tensor names, in the manifest's order."
+              },
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The detached Ed25519 signature over `digest` the registration carried,\nbase64, when there was one. Not part of the content hash: the digest\nis the identity, and the signature only attests to it."
+              },
+              "stats": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ModelStats",
+                    "description": "Present as `null` until admission passes."
+                  }
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "tags": {},
+              "updated_at": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        }
+      },
       "DataEnvelope_PackageDetail": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -8385,6 +9784,129 @@
           }
         }
       },
+      "DataEnvelope_Vec_ModelResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One version of a model, as every model endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was registered, with\nnothing the server inferred added to it. `inputs` and `outputs` are the\ntensor names it declares, repeated at the top level so a client need not\nwalk the manifest to learn the model's signature. `artifact` is where the\nbytes are; `admission` and `stats` are what a node found when it fetched\nthem — `stats` is `null` until admission passes. `health` is present only\non the single-entity read, and only when the serving node has an opinion:\nit says whether *this node* has the version resident.",
+              "required": [
+                "model_id",
+                "version",
+                "status",
+                "digest",
+                "abi",
+                "model_version",
+                "format",
+                "manifest",
+                "inputs",
+                "outputs",
+                "artifact",
+                "admission",
+                "tags",
+                "content_hash",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "abi": {
+                  "type": "string",
+                  "description": "The manifest ABI the model was registered against."
+                },
+                "admission": {
+                  "$ref": "#/components/schemas/ModelAdmission"
+                },
+                "artifact": {
+                  "$ref": "#/components/schemas/ModelArtifactRef"
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the importable content (manifest, artifact reference\nwithout its size, tags) — the same projection the upsert import\ncompares. The signature, the admission verdict and the stats are not\nin it: see `content::model_content`."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "`sha256:…` of the artifact bytes, as claimed at registration — the\nidentity a generation, a trace and a package all name the model by."
+                },
+                "format": {
+                  "type": "string",
+                  "description": "The artifact format the manifest declares (`onnx`)."
+                },
+                "health": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModelHealth",
+                      "description": "This node's residency for the version, on the single-entity read."
+                    }
+                  ]
+                },
+                "inputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The input tensor names, in the manifest's order."
+                },
+                "manifest": {},
+                "model_id": {
+                  "type": "string"
+                },
+                "model_version": {
+                  "type": "string",
+                  "description": "The author's own version string from the manifest, informational."
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The output tensor names, in the manifest's order."
+                },
+                "signature": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The detached Ed25519 signature over `digest` the registration carried,\nbase64, when there was one. Not part of the content hash: the digest\nis the identity, and the signature only attests to it."
+                },
+                "stats": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModelStats",
+                      "description": "Present as `null` until admission passes."
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "updated_at": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        }
+      },
       "DataEnvelope_Vec_PluginResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -9052,6 +10574,364 @@
           }
         }
       },
+      "ModelAdmission": {
+        "type": "object",
+        "description": "The admission verdict on a model version: whether a node has fetched the\nartifact, confirmed its digest and loaded it — and if not, why.\n\n`state` is `pending` until a node has probed the artifact, then `passed`\nor `failed`. The other fields are set alongside a verdict and absent on a\npending one, so `{\"state\":\"pending\"}` is the whole of a fresh version's\nadmission.",
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the verdict was recorded."
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The node that recorded it."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stage a `failed` verdict stopped at."
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelArtifactRef": {
+        "type": "object",
+        "description": "Where a model version's bytes are: an object in a storage connector's\nbucket, and the digest the author claims for it.\n\nThe reference *is* the content — a model row never carries bytes — so\n`connector`, `key` and `digest` are what the content hash covers. `size`\nis a hint the registration may carry and admission confirms; it is not\ncontent, and it is omitted from the wire when unknown.",
+        "required": [
+          "connector",
+          "key",
+          "digest"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string",
+            "description": "The object-storage connector the artifact is read through."
+          },
+          "digest": {
+            "type": "string",
+            "description": "`sha256:<hex>` of the artifact bytes, as claimed at registration and\nconfirmed by admission."
+          },
+          "key": {
+            "type": "string",
+            "description": "The object key within that connector's bucket."
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The artifact's size in bytes, when known.",
+            "minimum": 0
+          }
+        }
+      },
+      "ModelDependant": {
+        "type": "object",
+        "description": "One active workflow that names a model, and where.",
+        "required": [
+          "workflow_id",
+          "version",
+          "task_ids"
+        ],
+        "properties": {
+          "task_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the tasks calling `model_infer` with this model as a\nliteral `input.model`."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workflow_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ModelDependencies": {
+        "type": "object",
+        "description": "What depends on a model: the active workflows naming it.",
+        "required": [
+          "model_id",
+          "version",
+          "workflows",
+          "dynamic_references_unlisted"
+        ],
+        "properties": {
+          "dynamic_references_unlisted": {
+            "type": "boolean",
+            "description": "Always `true`: a task whose `input.model` is an expression resolves\nits model per message, so a reference of that kind is not listed and\nnot gated on."
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelDependant"
+            },
+            "description": "Active workflows with a `model_infer` task whose `input.model` is\nthis id as a literal — the ones an archive or delete is refused for."
+          }
+        }
+      },
+      "ModelHealth": {
+        "type": "object",
+        "description": "Whether the node answering has a model version resident, and if not, why.",
+        "properties": {
+          "device": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stage and reason when `failed`."
+          },
+          "resident_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Bytes the loaded session holds, when loaded.",
+            "minimum": 0
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "description": "`disabled` (models are off on this node); `pending` or `rejected`\nwhile the version's admission has not passed; `admitted` for the\nactive version and `inactive` for a draft or archived one; and, on a\nnode that loads models, `loaded` or `failed` for the version its\ngeneration carries."
+          }
+        }
+      },
+      "ModelResponse": {
+        "type": "object",
+        "description": "One version of a model, as every model endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was registered, with\nnothing the server inferred added to it. `inputs` and `outputs` are the\ntensor names it declares, repeated at the top level so a client need not\nwalk the manifest to learn the model's signature. `artifact` is where the\nbytes are; `admission` and `stats` are what a node found when it fetched\nthem — `stats` is `null` until admission passes. `health` is present only\non the single-entity read, and only when the serving node has an opinion:\nit says whether *this node* has the version resident.",
+        "required": [
+          "model_id",
+          "version",
+          "status",
+          "digest",
+          "abi",
+          "model_version",
+          "format",
+          "manifest",
+          "inputs",
+          "outputs",
+          "artifact",
+          "admission",
+          "tags",
+          "content_hash",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "abi": {
+            "type": "string",
+            "description": "The manifest ABI the model was registered against."
+          },
+          "admission": {
+            "$ref": "#/components/schemas/ModelAdmission"
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/ModelArtifactRef"
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the importable content (manifest, artifact reference\nwithout its size, tags) — the same projection the upsert import\ncompares. The signature, the admission verdict and the stats are not\nin it: see `content::model_content`."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "description": "`sha256:…` of the artifact bytes, as claimed at registration — the\nidentity a generation, a trace and a package all name the model by."
+          },
+          "format": {
+            "type": "string",
+            "description": "The artifact format the manifest declares (`onnx`)."
+          },
+          "health": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelHealth",
+                "description": "This node's residency for the version, on the single-entity read."
+              }
+            ]
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The input tensor names, in the manifest's order."
+          },
+          "manifest": {},
+          "model_id": {
+            "type": "string"
+          },
+          "model_version": {
+            "type": "string",
+            "description": "The author's own version string from the manifest, informational."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The output tensor names, in the manifest's order."
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The detached Ed25519 signature over `digest` the registration carried,\nbase64, when there was one. Not part of the content hash: the digest\nis the identity, and the signature only attests to it."
+          },
+          "stats": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelStats",
+                "description": "Present as `null` until admission passes."
+              }
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {},
+          "updated_at": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "ModelStats": {
+        "type": "object",
+        "description": "What admission read out of a model, on the node that admitted it. Absent\nfrom a response until admission passes. The graph numbers are read from\nthe ONNX protobuf itself, so they are the same on every node and every\nruntime; the probe numbers are the admitting node's.",
+        "properties": {
+          "artifact_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The artifact's size as fetched — the confirmed twin of\n[`ModelArtifactRef::size`].",
+            "minimum": 0
+          },
+          "device": {
+            "type": "string",
+            "description": "The device the probe loaded the model on."
+          },
+          "ir_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The ONNX IR version the model declares."
+          },
+          "nodes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Node count of the top-level graph.",
+            "minimum": 0
+          },
+          "opset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The default-domain opset the model imports."
+          },
+          "parameters": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total parameter count across the model's initializers — the sum of\nthe product of each initializer's dimensions. A tensor a `Constant`\nnode carries in an attribute is not counted.",
+            "minimum": 0
+          },
+          "probe_ms": {
+            "type": "number",
+            "format": "double",
+            "description": "The admission probe's wall time per inference, in milliseconds: the\nmedian of five runs over zero-filled inputs on `runtime` and `device`.\nAdmission requires it within `models.max_probe_ms`."
+          },
+          "runtime": {
+            "type": "string",
+            "description": "The runtime the probe ran on — the admitting node's\n`models.default_runtime` row for the manifest's format."
+          }
+        }
+      },
+      "ModelValidationEnvelope": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ModelValidationResponse"
+          }
+        }
+      },
+      "ModelValidationResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ValidationResponse"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "head": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ArtifactHead",
+                    "description": "Present when the reference resolved and the object answered a HEAD."
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "description": "The `/validate` envelope for models: the shared shape plus what the\nsynchronous half learned about the object."
+      },
       "PackageDetail": {
         "type": "object",
         "description": "`GET /api/v1/admin/packages/{name}` — one package's receipts.",
@@ -9487,6 +11367,145 @@
                 "trigger": {
                   "type": "string",
                   "description": "`cron` or `manual`."
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_ModelResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One version of a model, as every model endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was registered, with\nnothing the server inferred added to it. `inputs` and `outputs` are the\ntensor names it declares, repeated at the top level so a client need not\nwalk the manifest to learn the model's signature. `artifact` is where the\nbytes are; `admission` and `stats` are what a node found when it fetched\nthem — `stats` is `null` until admission passes. `health` is present only\non the single-entity read, and only when the serving node has an opinion:\nit says whether *this node* has the version resident.",
+              "required": [
+                "model_id",
+                "version",
+                "status",
+                "digest",
+                "abi",
+                "model_version",
+                "format",
+                "manifest",
+                "inputs",
+                "outputs",
+                "artifact",
+                "admission",
+                "tags",
+                "content_hash",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "abi": {
+                  "type": "string",
+                  "description": "The manifest ABI the model was registered against."
+                },
+                "admission": {
+                  "$ref": "#/components/schemas/ModelAdmission"
+                },
+                "artifact": {
+                  "$ref": "#/components/schemas/ModelArtifactRef"
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the importable content (manifest, artifact reference\nwithout its size, tags) — the same projection the upsert import\ncompares. The signature, the admission verdict and the stats are not\nin it: see `content::model_content`."
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string",
+                  "description": "`sha256:…` of the artifact bytes, as claimed at registration — the\nidentity a generation, a trace and a package all name the model by."
+                },
+                "format": {
+                  "type": "string",
+                  "description": "The artifact format the manifest declares (`onnx`)."
+                },
+                "health": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModelHealth",
+                      "description": "This node's residency for the version, on the single-entity read."
+                    }
+                  ]
+                },
+                "inputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The input tensor names, in the manifest's order."
+                },
+                "manifest": {},
+                "model_id": {
+                  "type": "string"
+                },
+                "model_version": {
+                  "type": "string",
+                  "description": "The author's own version string from the manifest, informational."
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "The output tensor names, in the manifest's order."
+                },
+                "signature": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The detached Ed25519 signature over `digest` the registration carried,\nbase64, when there was one. Not part of the content hash: the digest\nis the identity, and the signature only attests to it."
+                },
+                "stats": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModelStats",
+                      "description": "Present as `null` until admission passes."
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "updated_at": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
                 }
               }
             }
@@ -10585,6 +12604,38 @@
           }
         }
       },
+      "UpdateModelRequest": {
+        "type": "object",
+        "description": "`PUT /models/{id}`: every field optional, absent means keep.",
+        "properties": {
+          "artifact": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModelArtifactRef"
+              }
+            ]
+          },
+          "manifest": {},
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "UpdatePluginRequest": {
         "type": "object",
         "description": "`PUT /plugins/{id}`: every field optional, absent means keep.",
@@ -10899,6 +12950,10 @@
     {
       "name": "Plugins",
       "description": "WebAssembly plugins: sandboxed custom task functions"
+    },
+    {
+      "name": "Models",
+      "description": "ONNX models held in object storage: registered by reference, admitted by the node that fetches and verifies them"
     },
     {
       "name": "Audit",

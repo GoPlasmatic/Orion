@@ -108,6 +108,7 @@ reported without sometimes being wrong.
 | A cron `payload` key the bound workflow never reads | the payload reaches the workflow through `parse_json` into a target the rule would have to guess at, and a workflow may branch on a key only some occurrences carry — the same uncertain-reads problem the first row records |
 | A cron schedule that fires faster than its work takes | knowable only at run time, and visible where it is knowable: `skipped_singleton` occurrences and `orion_cron_schedule_lag_seconds` |
 | Anything about a [plugin](./plugins.md) function beyond what its manifest declares | a plugin's writes are already proven structurally through `output`, exactly as `crypto`'s are, and its reads arrive only through declared fields — there is no second proof source to add; a plugin function no manifest covers is unverifiable, and an unverifiable fact is not a certain one |
+| A template key that names a [tensor operator](./expressions.md#tensors-tensor) (`{"shape": …}` in a `map` mapping) | whether the author meant data or a call is not provable: `{"shape": {"var": "data.dims"}}` is a call on a set being written today and a literal on one stored before 1.8. `lint` reports the constant objects that do not evaluate as a call (`logic.tensor_operator_key`), `preflight` the dynamic ones too, both as advisories with the `$` escape as the remedy |
 
 ## Each rule
 

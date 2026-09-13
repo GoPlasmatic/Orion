@@ -70,6 +70,7 @@ E2E tests are shell-based (not `cargo test`). 17 test suites in `tests/e2e/suite
 | `backups.rs` | Create and list database backups (SQLite) |
 | `packages.rs` | Package promotion receipts: list, get (v1.0) |
 | `plugins.rs` | WebAssembly plugins: list, get, create/update from a `plugin.toml` (the component read relative to it and sent as base64), delete, activate, archive, versions, dependencies, validate, export, import |
+| `models.rs` | ONNX models: the same verbs over a manifest (JSON) plus an artifact *reference* (`--connector`/`--key`/`--digest` — the bytes stay in object storage), and the two the asynchronous admission adds: `--wait` on `create`, and `admit` (run admission again). `--wait` polls `admission.state` out of `pending` and exits 0 passed / 1 failed / 2 timed out, the `traces wait` codes; `list` has an `--admission` filter and shows `stats.parameters` blank until admitted |
 | `cron.rs` | The scheduled-run ledger: `status` (per-channel cursor, next fire, last result), `list` (filterable by `--channel-id`/`--status`), `get`, and `retry` — another attempt at the same occurrence, keeping its id and `scheduled_for`. A new run *now* is `channels trigger` instead |
 | `dlq.rs` | Trace dead-letter queue: list, get, requeue, purge (v1.0) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |

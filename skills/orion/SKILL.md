@@ -13,9 +13,12 @@ than application code:
   schedule, and binds it to a workflow;
 - a **connector** names an external dependency and its policy;
 - a **plugin** adds a custom task function as a sandboxed WebAssembly
-  component.
+  component;
+- a **model** is an ONNX artifact in object storage that a `model_infer`
+  task runs; Orion stores a reference (connector, key, digest) and admits
+  each version before it serves.
 
-Workflows, channels, and plugins are versioned (`draft -> active -> archived`).
+Workflows, channels, plugins and models are versioned (`draft -> active -> archived`).
 Connectors are unversioned and update in place. A **package** is the deployable
 closure of the workflows, channels, connectors, and plugins that make up one
 service.
@@ -34,6 +37,7 @@ orion-cli engine status
 orion-cli workflows list
 orion-cli channels list
 orion-cli plugins list
+orion-cli models list
 orion-cli cron status
 orion-cli traces list
 ```
@@ -268,6 +272,29 @@ I/O (that stays `http_call` or a connector), and never for a field rewrite a
   a definition set compiles into the artifact.
 - A `{"secret": …}` node is refused anywhere in a plugin task's input; a
   plugin never sees key material.
+
+## Models: an ONNX artifact behind a reference
+
+A model's bytes never travel through the CLI or the admin API. They sit in
+an S3-compatible bucket behind a storage connector, and a registration names
+them by connector, object key and `sha256:` digest beside a JSON manifest
+(`abi = "orion:model@1.0.0"`, a reverse-domain `name`, `format: "onnx"`, and
+the `inputs`/`outputs` tensors by name, dtype and fixed shape).
+
+- Register with `orion-cli models create -f model.json --connector <c>
+  --key <k> --digest sha256:… [--wait]`. The server answers at once with
+  `admission.state = "pending"` and a node admits the version asynchronously:
+  fetches the object, verifies the digest (and the signature where
+  `[models.trust]` requires one), parses the graph and runs one probe
+  inference. `--wait` follows it and exits 0 passed / 1 failed (with the
+  stage and reason) / 2 timed out; without it, `models get <id>` shows the
+  verdict and `models admit <id>` runs admission again.
+- Activate only after admission passes; `models list --admission failed`
+  finds what did not. `models dependencies <id>` lists the active workflows
+  naming it, which is what blocks an archive.
+- `models export` carries the manifest and the reference, never the bytes:
+  the target reads them through its own connector of the same name.
+- All of it answers `400` when `models.enabled` is off on the server.
 
 ## Read only the reference needed
 

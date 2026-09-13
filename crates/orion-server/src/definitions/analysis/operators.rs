@@ -92,6 +92,30 @@ pub const NON_SCOPING: &[&str] = &[
     "url_decode",
     "join",
     "secret",
+    // The tensor family (dataflow-rs 3.13 `tensor`): fixed positional
+    // arguments, every one evaluated in the enclosing scope. Nothing here
+    // rebinds `var` — `one_hot`'s `indices` and `gather`'s `indices` are
+    // values, not per-element expressions.
+    "tensor",
+    "zeros",
+    "full",
+    "scatter",
+    "rle_expand",
+    "one_hot",
+    "stack",
+    "concat",
+    "unstack",
+    "reshape",
+    "transpose",
+    "pad",
+    "crop",
+    "cast",
+    "normalize",
+    "argmax",
+    "gather",
+    "to_list",
+    "shape",
+    "dtype",
 ];
 
 /// Operators whose result is not a function of the context alone. An

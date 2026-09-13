@@ -346,14 +346,54 @@ pub fn check_workflow_tasks(
                          the doubled spelling is what emits the '$' key"
                             .to_string(),
                     )
+                } else if advisory.check == crate::validation::EngineAdvisory::TENSOR_OPERATOR_KEY {
+                    tensor_key_diagnostic(entity, advisory.message)
                 } else {
                     Diagnostic::warning(advisory.check, entity, advisory.message)
                 }
             }),
     );
 
+    // 1.8: the dynamic half of the tensor-key question, which `lint` leaves
+    // alone because on a set being written today `{"shape": {"var": …}}` is a
+    // call. Here the rows are the *stored* estate, and one written before 1.8
+    // cannot have meant a call — the operator did not exist. Reported as the
+    // same advisory: the remedy is the same `$`, and a pipeline that
+    // grandfathers the id grandfathers both halves.
+    findings.extend(
+        crate::validation::tensor_operator_key_advisories(
+            &tasks,
+            functions,
+            crate::validation::TensorKeyScope::Dynamic,
+        )
+        .into_iter()
+        .map(|advisory| {
+            tensor_key_diagnostic(
+                format!("workflow '{name}' {}", advisory.path),
+                advisory.message,
+            )
+        }),
+    );
+
     findings.extend(check_dialect_schemas(name, &tasks));
     findings
+}
+
+/// An advisory, never a break: the workflow loads and serves, and what it
+/// emits at that key is what changed. Named remedy, so the review is a
+/// find-and-prefix rather than a judgement per row.
+fn tensor_key_diagnostic(entity: String, message: String) -> Diagnostic {
+    Diagnostic::warning(
+        crate::validation::EngineAdvisory::TENSOR_OPERATOR_KEY,
+        entity,
+        message,
+    )
+    .with_remedy(
+        "prefix the key with '$' — 'shape' becomes '$shape' — and PUT the workflow; the \
+         escaped spelling emits the literal key and is not reported. Leave it if the call \
+         is what you meant"
+            .to_string(),
+    )
 }
 
 /// Checklist row 14: a `data_query`/`data_write` that declares no `schema`.

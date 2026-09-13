@@ -83,6 +83,7 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `channels` | Manage channels — create, update, delete, activate/archive, versioning, bulk import |
 | `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
 | `plugins` | Manage WebAssembly plugins — create from a manifest, activate/archive, versioning, dependencies, import/export |
+| `models` | Manage ONNX models — register a manifest plus an object-storage reference, follow admission with `--wait`, activate/archive, versioning, dependencies, import/export |
 | `cron` | The scheduled-run ledger — status, list, get, retry an occurrence |
 | `send` | Send data through channels (sync or async; `--profile` for timing breakdown) |
 | `traces` | View and monitor execution traces |
@@ -282,6 +283,28 @@ orion-cli plugins export --include-artifacts -o plugins.json
 Activate a plugin before the workflows that call its functions. The server
 needs `plugins.enabled = true`, and `--signature` where it configures
 `[plugins.trust]`.
+
+## Models
+
+A model is an ONNX artifact whose bytes live in an S3-compatible bucket behind
+a storage connector; Orion stores only a reference — connector, object key,
+sha256 digest — and *admits* each version asynchronously (fetch, verify the
+digest, parse the graph, one probe inference) before it may be activated:
+
+```bash
+orion-cli models create -f model.json --connector models-bucket \
+    --key fraud/v3.onnx --digest sha256:9f1c... --wait   # follow admission
+orion-cli models get <ID>                                # the verdict, and this node's residency
+orion-cli models admit <ID> --wait                       # run admission again
+orion-cli models list --admission failed
+orion-cli models activate <ID>
+orion-cli models dependencies <ID>                       # what would break on archive
+orion-cli models export --status active > models.json    # the reference, never the bytes
+```
+
+`--wait` exits 0 when admission passes, 1 when it fails (printing the stage and
+reason) and 2 when `--timeout` elapses first. The server needs
+`models.enabled = true`, and `--signature` where it configures `[models.trust]`.
 
 ## Scheduled runs
 

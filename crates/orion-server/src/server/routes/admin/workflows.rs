@@ -654,7 +654,12 @@ pub(crate) async fn test_workflow(
     // that will not serve. A task nothing can dispatch is now a 400 naming it,
     // here, before anyone activates.
     let custom_fns = crate::engine::build_custom_functions(crate::runtime::handler_deps(&state));
-    let test_engine = crate::engine::build_single(df_workflow, custom_fns, &state.secrets)?;
+    let test_engine = crate::engine::build_single(
+        df_workflow,
+        custom_fns,
+        &state.secrets,
+        state.config.engine.ops_budget,
+    )?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {

@@ -7,15 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Models: a governed entity for ONNX models held in object storage.**
+  `/api/v1/admin/models` is the fifth admin entity, with the workflow's
+  lifecycle — draft, active, archived; versions; import/export; validate;
+  `?dry_run=true` and `?reload=defer` on the status change — and one verb of
+  its own, `POST /models/{id}/admit`. A registration carries the
+  `orion:model@1.0.0` manifest (inputs, outputs, their dtypes and shapes, the
+  JSONLogic adapters that marshal a message into tensors and a result back
+  out) and an **artifact reference**: a `storage` connector, an object key
+  and the `sha256:` digest the bytes must hash to. The server never holds
+  model bytes. It validates the manifest, checks the connector exists and
+  allows reads, confirms the object is there and within
+  `models.max_artifact_bytes`, writes the draft and answers `202`; the
+  node's admission worker (`model_admission`, supervised, visible on
+  `/health` as `components.models`) then fetches the object through the
+  connector with a SigV4-signed GET, verifies the digest, keeps the bytes in
+  `models.cache_dir`, reads the graph (parameter and node counts, IR
+  version, opset — read from the protobuf itself, so the numbers never move
+  with a runtime; every manifest input and output must name a graph tensor,
+  and `models.max_parameters` applies), probes it on the node's default
+  runtime for the manifest's format — `[models.default_runtime]` is a table
+  keyed by artifact format, `onnx = "tract"` by default, and a runtime
+  declares the formats it serves, so a second format (NNEF, TFLite) or a
+  second runtime later is a row and an implementation, not a config or
+  schema break — `tract`, the pure-Rust ONNX engine, on the configured
+  device: five inferences over zero-filled inputs, the median within
+  `models.max_probe_ms`, the outputs matching the manifest's dtypes and
+  shapes — and records the verdict on the row — `admission` (`pending` →
+  `passed` | `failed` with the stage and reason) and `stats`.
+  Activation is refused with a `409` until the verdict is `passed`; archive
+  and delete are refused while an active workflow names the model, which
+  `GET /models/{id}/dependencies` lists. `[models.trust]` makes an Ed25519
+  signature over the digest mandatory, checked at registration and again at
+  every admission. Off by default: with `models.enabled = false` the routes
+  answer `400` and the node admits nothing. Cluster peers learn of a status
+  change through the new `models` epoch scope. The `model_infer` task
+  function that runs an admitted model arrives in the same release;
+  documented under [Models](https://goplasmatic.github.io/Orion/reference/admin-api.html#models).
+
+- **The JSONLogic tensor family.** dataflow-rs 3.13's `tensor` feature is on,
+  so every expression surface — conditions, `map` mappings, template fields,
+  channel guards — can build, reshape and read back a tensor: `tensor`,
+  `zeros`, `full`, `scatter`, `rle_expand`, `one_hot`, `stack`, `concat`,
+  `unstack`, `reshape`, `transpose`, `pad`, `crop`, `cast`, `normalize`,
+  `argmax`, `gather`, `to_list`, `shape`, `dtype`. No arithmetic, by upstream
+  design: every operator's cost is proportional to the data it moves. A
+  tensor travels between tasks as a value and renders on the wire as
+  `{"tensor": {"dtype", "shape", "data": <base64>}}`. Documented under
+  [Tensors](https://goplasmatic.github.io/Orion/reference/expressions.html#tensors-tensor),
+  asserted against the live engine by `jsonlogic_operators_test`, and
+  classified in the analysis tables so `clippy` keeps reasoning about reads.
+
+  **One thing to review before upgrading.** Seven of the twenty names are
+  ordinary JSON keys — `shape`, `full`, `cast`, `pad`, `crop`, `concat`,
+  `stack` — and in a template position a single-key object whose key is a
+  live operator is a call, not data. A stored `map` mapping emitting a
+  literal `{"shape": [6, 7]}` therefore changes meaning; the fix is the
+  `$` key escape every engine already carries: `{"$shape": [6, 7]}` emits
+  `{"shape": [6, 7]}`. `orion-server preflight` lists every such key over the
+  stored estate and `lint` over a definition set, both as the advisory
+  `logic.tensor_operator_key` with that remedy; neither gates. See
+  [Upgrading to 1.8.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.8.html).
+
+- **`engine.ops_budget`** — a ceiling on the operations one JSONLogic
+  evaluation may perform, on every engine the node builds (dataflow-rs 3.13's
+  `budget` feature). `0`, the default, installs none. A custom function's
+  template field that crosses it fails the task with `BUDGET_EXCEEDED`,
+  non-retryable — `engine::error` now carries that variant through a
+  handler's own error path instead of flattening it to `FUNCTION_ERROR`; a
+  built-in `map` mapping fails its task with status `500`; a condition that
+  crosses it fails closed to `false` and is only logged, which the
+  configuration reference spells out beside the setting. Carried across
+  the cheap reload path by dataflow-rs, so a hot reload cannot lift it;
+  applied to `POST /workflows/{id}/test`; not applied to an offline
+  `dry-run`, which has no config to read it from.
+
 ### Changed
 
 - **`dataflow-rs` 3.12 → 3.13**, which moves `datalogic-rs` 5.4 → 5.5 and
   `datavalue-rs` 0.2 → 0.3. The engine's MSRV rises to 1.98 — already Orion's
   floor, since the plugin sandbox links Wasmtime — so the toolchain is
-  unchanged. No behaviour change reaches a workflow: the JSONLogic vocabulary is
-  identical (`jsonlogic_operators_test` asserts it against the live engine in
-  both directions and passes untouched), and the two features 3.13 adds are
-  both off.
+  unchanged. The bump itself changes nothing a workflow sees; the two features
+  3.13 adds are turned on by the entries under *Added* above, which is where
+  the vocabulary change is described.
 
 - **Every other dependency moved to its latest release too.** `sqlx` 0.8 → 0.9,
   `sea-query-sqlx` 0.8 → 0.9 (its major tracks sqlx's — the two do not resolve

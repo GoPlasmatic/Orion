@@ -48,6 +48,7 @@ pub mod http_body;
 pub mod jwt;
 pub mod kafka;
 pub mod metrics;
+pub mod model;
 pub mod plugin;
 pub mod preflight;
 pub(crate) mod query;

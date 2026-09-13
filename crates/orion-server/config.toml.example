@@ -173,6 +173,16 @@
                                            # forwarded client IP; with neither, each request is
                                            # bucketed at random and a caller can flip versions
                                            # between requests.
+# ops_budget = 0                           # Ceiling on the operations one JSONLogic evaluation
+                                           # may perform, on every engine this node builds. 0
+                                           # installs none. Set it when expressions come from
+                                           # someone other than the operator. A custom
+                                           # function's template field that crosses it fails
+                                           # the task with BUDGET_EXCEEDED; a built-in `map`
+                                           # mapping fails its task with status 500; a
+                                           # *condition* fails closed to false and is only
+                                           # logged. Size it from the heaviest legitimate
+                                           # expression.
 # fail_on_connector_load_error = false     # Refuse to start when an enabled connector cannot be
                                            # loaded (missing env://VAR, unparseable config,
                                            # unresolvable secret). Default false skips it with a
@@ -527,6 +537,50 @@
 # max_concurrency = 8
 # max_request_bytes = 262144
 # max_response_bytes = 262144
+
+# ============================================================
+# Models — ONNX models as governed entities
+# ============================================================
+
+# [models]
+# A model row names a storage connector, an object key and a digest; the node
+# fetches the bytes, verifies them, keeps them in cache_dir and runs them
+# through a runtime. Off by default; enabling it changes nothing until a
+# model is uploaded and activated. Every limit is the host's — a model
+# requests nothing — and an override block below may only lower one.
+# enabled = false
+# cache_dir = ""                     # Required when enabled: one verified file per digest
+# max_cache_bytes = 8589934592       # Cache directory ceiling (8 GiB), swept LRU after every fetch
+# max_loaded_bytes = 2147483648      # Models resident in memory at once (2 GiB), every runtime
+# preload = "referenced"             # none | referenced (what active workflows name) | all
+# max_artifact_bytes = 536870912     # Largest artifact an admission fetches (512 MiB)
+# max_parameters = 0                 # Parameter-count ceiling read at admission; 0 = unbounded
+# max_input_elements = 1048576       # Elements one inference may hand a model, over its inputs
+# max_output_elements = 1048576      # Elements one inference may take back, over its outputs
+# max_timeout_ms = 1000              # Wall-clock ceiling per inference
+# max_probe_ms = 250                 # Ceiling on the admission probe inference
+# fetch_timeout_secs = 300           # One artifact fetch, connection to last byte
+# admission_timeout_secs = 900       # One admission end to end; a row past it fails by stage
+# max_concurrency_per_model = 16     # Concurrent inferences of one model
+# max_concurrent_inferences = 0      # Across every model; 0 = available parallelism
+# overrides = []                     # Per-model ceilings; see [[models.overrides]] below
+
+# [models.trust]
+# public_keys = []                   # When set, rows must carry a signature over the digest
+
+# [models.default_runtime]           # One row per artifact format: the runtime it runs on
+# onnx = "tract"                     # Required — onnx is the one format a manifest declares today
+
+# [models.runtimes.tract]            # One table per runtime this build knows (only tract today)
+# enabled = true
+# device = "cpu"                     # cpu | metal | cuda; a device the build lacks fails the load
+
+# [[models.overrides]]               # Repeat per model; each field lowers the host ceiling
+# id = "ada.c4-tiny"
+# timeout_ms = 50
+# max_concurrency = 4
+# max_input_elements = 4096
+# max_output_elements = 64
 
 # ============================================================
 # Vars and secrets — the values that differ per environment

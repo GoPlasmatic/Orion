@@ -812,6 +812,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cron_status: cron_status.clone(),
     });
 
+    // The model admission worker: drains the queue the model routes fill,
+    // fetching and verifying each artifact and recording the verdict on the
+    // row. Only with `models.enabled`; supervised as `Required` because a
+    // dead worker leaves every registration pending forever.
+    if state.models.is_some() {
+        orion::runtime::model_admission::start(&tasks, state.clone());
+    }
+
     // Cluster background tasks (epoch watcher). None when disabled.
     orion::cluster::start_cluster_tasks(&state);
 

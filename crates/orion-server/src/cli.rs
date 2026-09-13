@@ -1613,7 +1613,9 @@ pub(crate) fn build_dry_run_engine_with_stubs(
     // verdict mean something. Screened against the *stub* table on purpose:
     // the question a dry run answers is "will this run offline", and the stub
     // table is the handler set it will run against.
-    let engine = orion::engine::build_single(df_workflow, functions, secrets)?;
+    // Unbounded: an offline run has no `[engine]` config to read a budget
+    // from, and a definition is not refused for being expensive here.
+    let engine = orion::engine::build_single(df_workflow, functions, secrets, 0)?;
     Ok(OfflineRun { engine, log })
 }
 

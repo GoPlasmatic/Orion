@@ -93,6 +93,31 @@ pub fn plugin_request_content(manifest: &Value, digest: &str, tags: &[String]) -
     }))
 }
 
+/// A model row's importable content, mirroring [`model_request_content`].
+///
+/// The row's JSON columns are decoded here and the projection itself is
+/// [`orion_api::content::model_content`] — including the rule that the
+/// artifact's `size`, the signature, the admission verdict and the stats are
+/// not content, which that function documents. The two derived columns are
+/// not even read: nothing a node found about the artifact can move the hash.
+pub fn model_content(m: &crate::storage::models::Model) -> Result<Value, OrionError> {
+    Ok(orion_api::content::model_content(&serde_json::json!({
+        "manifest": serde_json::from_str::<Value>(&m.manifest_json)?,
+        "artifact": serde_json::from_str::<Value>(&m.artifact_json)?,
+        "tags": serde_json::from_str::<Value>(&m.tags_json)?,
+    })))
+}
+
+/// A resolved model draft's importable content — the manifest as it will be
+/// stored, the artifact reference and its tags.
+pub fn model_request_content(manifest: &Value, artifact: &Value, tags: &[String]) -> Value {
+    orion_api::content::model_content(&serde_json::json!({
+        "manifest": manifest,
+        "artifact": artifact,
+        "tags": tags,
+    }))
+}
+
 /// A channel row's importable content, mirroring
 /// [`channel_request_content`].
 pub fn channel_content(c: &Channel) -> Result<Value, OrionError> {
@@ -344,6 +369,46 @@ mod tests {
         assert_eq!(
             canonical_json(&connector_request_content(&req)),
             r#"{"config":{"url":"https://example.com"},"connector_type":"http","enabled":false,"name":"hash-conn","tags":["t"]}"#
+        );
+    }
+
+    /// The model pair: a stored row and the resolved draft that produced it
+    /// project identically, and the canonical form is pinned so a key added
+    /// to one side and not the other names itself in the diff. Every stored
+    /// model hash is taken over this string, so it is also the
+    /// receipt-immutability guard for models.
+    #[test]
+    fn model_row_and_request_projections_agree() {
+        let now = chrono::NaiveDateTime::default();
+        let manifest = json!({"abi": "1", "name": "m", "version": "1.0.0", "format": "onnx",
+                              "inputs": [{"name": "x"}], "outputs": [{"name": "y"}]});
+        // The request-side reference carries a size; the row's copy does
+        // not. Neither reaches the projection.
+        let artifact = json!({"connector": "models", "key": "m/1.onnx",
+                              "digest": "sha256:d", "size": 10});
+        let row = crate::storage::models::Model {
+            model_id: "m".to_string(),
+            version: 3, // DB-owned: must not affect the projection
+            status: "active".to_string(),
+            digest: "sha256:d".to_string(),
+            manifest_json: serde_json::to_string(&manifest).expect("test"),
+            artifact_json: r#"{"connector":"models","key":"m/1.onnx","digest":"sha256:d"}"#
+                .to_string(),
+            admission_json: r#"{"state":"passed","node":"n1"}"#.to_string(),
+            stats_json: Some(r#"{"parameters":5}"#.to_string()),
+            tags_json: r#"["t"]"#.to_string(),
+            signature: Some("sig".to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let row_content = model_content(&row).expect("model content");
+        assert_eq!(
+            row_content,
+            model_request_content(&manifest, &artifact, &["t".to_string()])
+        );
+        assert_eq!(
+            canonical_json(&row_content),
+            r#"{"artifact":{"connector":"models","digest":"sha256:d","key":"m/1.onnx"},"manifest":{"abi":"1","format":"onnx","inputs":[{"name":"x"}],"name":"m","outputs":[{"name":"y"}],"version":"1.0.0"},"tags":["t"]}"#
         );
     }
 

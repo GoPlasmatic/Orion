@@ -47,6 +47,15 @@ ignore = [
     # and drop the ignore when tabled_derive migrates (manyhow or
     # proc-macro2-diagnostics are the advisory's suggested successors).
     { id = "RUSTSEC-2026-0173", reason = "unmaintained proc-macro-only dep of tabled_derive; no runtime code ships" },
+
+    # RUSTSEC-2024-0436 — `paste` is unmaintained (archived by its author).
+    # Assessed 2026-09-13 when the tract runtime joined the tree: it rides
+    # in with `metal` 0.33, the Metal bindings `tract-metal` links on Apple
+    # targets (the facade links it unconditionally there). A proc-macro
+    # crate — identifier concatenation at compile time — so nothing from it
+    # ships in a binary; supply-chain hygiene, not a vulnerability. Drop the
+    # ignore when `metal` moves to `pastey` or tract stops needing it.
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro-only dep of metal (via tract-metal); no runtime code ships" },
 ]
 
 [licenses]

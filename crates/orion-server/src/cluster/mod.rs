@@ -47,6 +47,11 @@ pub enum EpochScope {
     /// what makes each compile locally only what changed. No connector
     /// reload: a plugin row changes nothing about a connector.
     Plugins,
+    /// A model was activated, archived or deleted. Peers republish the
+    /// generation, which is what carries the active model set; no connector
+    /// reload, for the same reason as `Plugins` — a model row names a
+    /// storage connector but changes nothing about it.
+    Models,
     /// Everything. The default, and what an unrecognised or absent scope
     /// means — an older node's bump, or a value a newer node writes that this
     /// one does not know. Reading an unknown scope as "resync everything"
@@ -62,6 +67,7 @@ impl EpochScope {
             Self::Definitions => "definitions",
             Self::Connectors => "connectors",
             Self::Plugins => "plugins",
+            Self::Models => "models",
             Self::All => "all",
         }
     }
@@ -73,6 +79,7 @@ impl EpochScope {
             "definitions" => Self::Definitions,
             "connectors" => Self::Connectors,
             "plugins" => Self::Plugins,
+            "models" => Self::Models,
             _ => Self::All,
         }
     }
@@ -306,6 +313,7 @@ mod tests {
             EpochScope::Definitions,
             EpochScope::Connectors,
             EpochScope::Plugins,
+            EpochScope::Models,
             EpochScope::All,
         ] {
             assert_eq!(EpochScope::parse(scope.as_str()), scope);

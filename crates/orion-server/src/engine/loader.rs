@@ -218,10 +218,17 @@ pub fn build_single(
     workflow: dataflow_rs::Workflow,
     handlers: HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     secrets: &crate::engine::ResolvedSecrets,
+    ops_budget: u64,
 ) -> Result<dataflow_rs::Engine, crate::errors::OrionError> {
-    let builder = crate::engine::operators::with_orion_engine_defaults(
-        dataflow_rs::Engine::builder(),
-        secrets,
+    // `ops_budget` is `engine.ops_budget` where a config exists (the admin
+    // test endpoint) and `0` where none does (an offline `dry-run`), so a
+    // test run on the server is bounded exactly as serving is.
+    let builder = crate::engine::operators::with_ops_budget(
+        crate::engine::operators::with_orion_engine_defaults(
+            dataflow_rs::Engine::builder(),
+            secrets,
+        ),
+        ops_budget,
     )
     .with_handlers(handlers);
 
@@ -885,6 +892,7 @@ mod tests {
             task(),
             std::collections::HashMap::new(),
             &crate::engine::ResolvedSecrets::empty(),
+            0,
         ) else {
             unreachable!(
                 "`enrich` has no handler in any Orion engine — building it is \
@@ -914,6 +922,7 @@ mod tests {
                 one_task_workflow("log", serde_json::json!({ "message": "x" })),
                 std::collections::HashMap::new(),
                 &crate::engine::ResolvedSecrets::empty(),
+                0,
             )
             .is_ok(),
             "`log` is self-contained — every engine dispatches it"

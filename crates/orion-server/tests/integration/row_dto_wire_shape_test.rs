@@ -469,3 +469,56 @@ async fn tag_filtering_reaches_the_renamed_column() {
     assert_eq!(rows.len(), 1, "exactly the tagged workflow: {body}");
     assert_eq!(rows[0]["tags"], json!(["d26-keep"]));
 }
+
+// ---------------------------------------------------------------------------
+// Models — `ModelResponse`, with `health` only on the single read
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn model_response_keeps_every_field_the_row_published() {
+    let h = common::models::harness().await;
+    common::models::register_fixture(&h.app).await;
+
+    let body = get(
+        &h.app,
+        &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+    )
+    .await;
+    assert_eq!(
+        keys(&body["data"], "model"),
+        [
+            "abi",
+            "admission",
+            "artifact",
+            "content_hash",
+            "created_at",
+            "digest",
+            "format",
+            "health",
+            "inputs",
+            "manifest",
+            "model_id",
+            "model_version",
+            "outputs",
+            "stats",
+            "status",
+            "tags",
+            "updated_at",
+            "version"
+        ]
+    );
+    // `stats` is a present `null` until admission passes, so a client can
+    // tell "not yet" from a field the server does not have.
+    assert!(body["data"]["stats"].is_null());
+    assert_eq!(
+        keys(&body["data"]["artifact"], "artifact reference"),
+        ["connector", "digest", "key", "size"]
+    );
+    assert_eq!(keys(&body["data"]["admission"], "admission"), ["state"]);
+
+    // The list row is the same shape without this node's view.
+    let list = get(&h.app, "/api/v1/admin/models").await;
+    let mut expected = keys(&body["data"], "model");
+    expected.retain(|k| k != "health");
+    assert_eq!(keys(&list["data"][0], "model list row"), expected);
+}

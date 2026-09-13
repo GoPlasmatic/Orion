@@ -271,6 +271,36 @@ where
     ov!(plugins.fuel_backstop: u64);
     ov_list!(plugins.trust.public_keys);
 
+    // Models. `default_runtime` is a map keyed by format, `runtimes` a map
+    // keyed by runtime name and `overrides` an array of tables; none fits
+    // the ORION_SECTION__KEY scheme, so all three are file-only, as
+    // `plugins.overrides` is.
+    ov!(models.enabled: bool);
+    ov!(models.cache_dir: String);
+    ov!(models.max_cache_bytes: u64);
+    ov!(models.max_loaded_bytes: u64);
+    ov_enum!(
+        "ORION_MODELS__PRELOAD",
+        models.preload,
+        {
+            "none" => crate::config::ModelPreload::None,
+            "referenced" => crate::config::ModelPreload::Referenced,
+            "all" => crate::config::ModelPreload::All,
+        },
+        "'none', 'referenced' or 'all'"
+    );
+    ov!(models.max_artifact_bytes: usize);
+    ov!(models.max_parameters: u64);
+    ov!(models.max_input_elements: usize);
+    ov!(models.max_output_elements: usize);
+    ov!(models.max_timeout_ms: u64);
+    ov!(models.max_probe_ms: u64);
+    ov!(models.fetch_timeout_secs: u64);
+    ov!(models.admission_timeout_secs: u64);
+    ov!(models.max_concurrency_per_model: u32);
+    ov!(models.max_concurrent_inferences: u32);
+    ov_list!(models.trust.public_keys);
+
     // Query dialect
     ov!(query.default_limit: u64);
     ov!(query.max_limit: u64);
@@ -324,6 +354,7 @@ where
     ov!(engine.max_channel_call_depth: u32);
     ov!(engine.default_channel_call_timeout_ms: u64);
     ov!(engine.max_loop_iterations: i64);
+    ov!(engine.ops_budget: u64);
     ov!(engine.global_http_timeout_secs: u64);
     ov!(engine.max_pool_cache_entries: usize);
     ov!(engine.max_memory_cache_entries: usize);

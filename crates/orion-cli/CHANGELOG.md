@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`orion-cli models`** — the model entity end to end: `list` (with an
+  `--admission` filter, and a `Params` column that stays blank until
+  admission passes), `get` (the admission verdict and this node's residency,
+  `--verbose` for the manifest), `create` (a JSON manifest plus the artifact's
+  place in object storage — `--connector`, `--key`, `--digest` — and
+  `--signature` where `[models.trust]` requires one), `update`, `delete`,
+  `activate`, `archive`, `admit` (run admission again), `versions`,
+  `new-version`, `dependencies`, `validate`, `export` and `import`.
+  Registration answers at once with admission pending; `create --wait` and
+  `admit --wait` follow it to a verdict, printing each state change to
+  stderr, and exit 0 passed / 1 failed (with the stage and reason) / 2 when
+  `--timeout` elapses — the codes `traces wait` uses.
+
 ## [1.7.0] - 2026-09-06
 
 No CLI changes. The version moves because the workspace releases in

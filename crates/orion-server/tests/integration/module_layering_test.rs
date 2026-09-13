@@ -43,6 +43,13 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     // The plugin sandbox produces registry entries and handlers for a
     // generation to carry; it names nothing above `engine`.
     ("plugin", &["crate::server::", "crate::bootstrap::"]),
+    // The model subsystem sits beside `plugin` with the same ceiling. The
+    // two share their digest and signature primitives through `crypto` and
+    // name each other nowhere: a change to one must not be able to reach
+    // the other's sandbox.
+    ("model", &["crate::server::", "crate::bootstrap::"]),
+    ("model", &["crate::plugin::"]),
+    ("plugin", &["crate::model::"]),
     // The cron scheduler sits beside `queue` and `kafka`: it consumes the
     // engine, the channel estate and the storage layer, and nothing below it
     // may name it back. `engine` reaching up here is how `TRIGGER_KEY` briefly
@@ -109,6 +116,10 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
     ),
     (
         "plugin",
+        &["crate::runtime::reload", "crate::runtime::handler_deps"],
+    ),
+    (
+        "model",
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     ("storage", &["crate::runtime::"]),

@@ -4,6 +4,7 @@ pub mod cluster;
 pub mod connectors;
 pub mod cron;
 pub mod helpers;
+pub mod models;
 pub mod packages;
 pub mod plugins;
 pub mod trace_dlq;
@@ -34,6 +35,8 @@ pub struct Repositories {
     pub trace_dlq: Arc<dyn trace_dlq::TraceDlqRepository>,
     pub packages: Arc<dyn packages::PackageRepository>,
     pub plugins: Arc<dyn plugins::PluginRepository>,
+    /// ONNX model versions and the artifact references they carry.
+    pub models: Arc<dyn models::ModelRepository>,
     /// The cron ledger: cursors, occurrences and singletons.
     pub cron: Arc<dyn cron::CronRepository>,
 }
@@ -68,6 +71,7 @@ impl Repositories {
             trace_dlq: Arc::new(trace_dlq::SqlTraceDlqRepository::new(pool.clone())),
             packages: Arc::new(packages::SqlPackageRepository::new(pool.clone())),
             plugins: Arc::new(plugins::SqlPluginRepository::new(pool.clone())),
+            models: Arc::new(models::SqlModelRepository::new(pool.clone())),
             cron: Arc::new(cron::SqlCronRepository::new(pool.clone())),
         })
     }

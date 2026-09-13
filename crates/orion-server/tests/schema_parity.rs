@@ -158,6 +158,10 @@ const BACKEND_SPECIFIC_INDEXES: &[(&str, &str)] = &[
         "same as idx_workflows_single_draft",
     ),
     (
+        "idx_models_single_draft",
+        "same as idx_workflows_single_draft",
+    ),
+    (
         "idx_channels_route_partial",
         "partial index — MySQL has no equivalent",
     ),
@@ -843,6 +847,7 @@ async fn sqlite_schema_is_introspectable() {
         "audit_logs",
         "config_epoch",
         "job_leases",
+        "models",
     ] {
         assert!(
             schema.tables.contains_key(table),
@@ -1106,12 +1111,29 @@ fn single_draft_trigger_message_matches_the_code() {
 /// asymmetric. A column missing from the triggers by *accident* is a hole in
 /// the rule; one missing on purpose is a feature — and only a written-down
 /// list can tell the next person which they are looking at.
-const MUTABLE_WHILE_ACTIVE: &[(&str, &str, &str)] = &[(
-    "workflows",
-    "rollout_percentage",
-    "PATCH /workflows/{id}/rollout shifts traffic between two active versions \
-     in place; a rollout that needed a new version could not be a rollout",
-)];
+const MUTABLE_WHILE_ACTIVE: &[(&str, &str, &str)] = &[
+    (
+        "workflows",
+        "rollout_percentage",
+        "PATCH /workflows/{id}/rollout shifts traffic between two active versions \
+         in place; a rollout that needed a new version could not be a rollout",
+    ),
+    (
+        "models",
+        "admission_json",
+        "a node's verdict on the artifact, written by `ModelRepository::set_admission`: \
+         derived from the content rather than part of it, and a node re-probing a \
+         version it already serves must be able to record what it found without a \
+         new version",
+    ),
+    (
+        "models",
+        "stats_json",
+        "what the admission probe read out of the model, written by \
+         `ModelRepository::set_stats` alongside the verdict — the same reasoning as \
+         admission_json",
+    ),
+];
 
 /// The set of columns an active-immutability trigger compares, read out of the
 /// migration that last defined it.
@@ -1168,7 +1190,7 @@ fn active_immutability_rules() -> BTreeMap<(&'static str, String), BTreeSet<Stri
             // Postgres puts the comparisons in the function the trigger calls,
             // the other two inline them in the trigger. Both are matched by
             // the shared `<entity>_active_immutable` name.
-            for entity in ["workflows", "channels", "plugins"] {
+            for entity in ["workflows", "channels", "plugins", "models"] {
                 let marker = format!("{entity}_active_immutable");
                 let Some(start) = sql.rfind(&marker) else {
                     continue;
@@ -1203,7 +1225,7 @@ fn active_immutability_triggers_guard_the_same_columns_on_every_backend() {
          looking at anything, which is worse than a mismatch"
     );
 
-    for entity in ["workflows", "channels", "plugins"] {
+    for entity in ["workflows", "channels", "plugins", "models"] {
         let per_backend: Vec<(&str, &BTreeSet<String>)> = ["sqlite", "postgres", "mysql"]
             .iter()
             .map(|b| {
@@ -1248,6 +1270,7 @@ async fn active_immutability_triggers_cover_every_content_column() {
         ("workflows", "workflow_id"),
         ("channels", "channel_id"),
         ("plugins", "plugin_id"),
+        ("models", "model_id"),
     ] {
         let mutable: BTreeSet<&str> = MUTABLE_WHILE_ACTIVE
             .iter()

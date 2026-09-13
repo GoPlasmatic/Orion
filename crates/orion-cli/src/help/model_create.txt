@@ -1,0 +1,32 @@
+The definition is a model manifest (JSON). The bytes themselves never travel
+through the CLI: they sit in an S3-compatible bucket behind a storage
+connector, and the registration names them by connector, object key and
+sha256 digest. The server stores that reference and starts an asynchronous
+admission -- a node fetches the object, checks the digest (and the signature
+where `[models.trust]` requires one), parses the graph and runs one probe
+inference -- so `create` answers at once with `admission.state = "pending"`.
+
+Examples:
+  orion-cli models create -f model.json --connector models-bucket \
+      --key fraud/v3.onnx --digest sha256:9f1c...
+  orion-cli models create -f model.json --connector models-bucket \
+      --key fraud/v3.onnx --digest sha256:9f1c... --wait
+  orion-cli models create -f model.json ... --tag scoring --tag fraud
+
+The manifest, at minimum:
+  {
+    "abi": "orion:model@1.0.0",
+    "name": "acme.fraud",
+    "version": "3.0.0",
+    "format": "onnx",
+    "inputs":  [ { "name": "features", "dtype": "f32", "shape": [1, 12] } ],
+    "outputs": [ { "name": "score",    "dtype": "f32", "shape": [1] } ]
+  }
+
+`--wait` polls the model until admission passes or fails, printing each state
+change; it exits 1 on a failed admission (with the stage and reason) and 2 if
+`--timeout` elapses first. Without it, `orion-cli models get <id>` shows the
+verdict, and `orion-cli models admit <id>` runs admission again.
+
+Activate it with `orion-cli models activate acme.fraud` once admitted; a
+workflow's `model_infer` task may then name it.

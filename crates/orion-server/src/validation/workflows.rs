@@ -678,6 +678,17 @@ pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<Eng
         );
     });
 
+    // The keys the tensor family took in 1.8, where an author almost
+    // certainly meant data: the constant ones. A dynamic one is a call an
+    // author wrote on purpose on this surface; `preflight` asks for those
+    // separately, because on a stored estate written before 1.8 it cannot
+    // have been.
+    out.extend(tensor_operator_key_advisories(
+        tasks,
+        functions,
+        TensorKeyScope::Constant,
+    ));
+
     out.extend(issues.into_iter().filter_map(|issue| {
         // Everything else the engine calls advisory. Selected by severity
         // rather than by naming the codes, so this asks the same question
@@ -737,6 +748,7 @@ pub fn engine_advisories(tasks: &Value, functions: &FunctionRegistry) -> Vec<Eng
 /// rest. The ids are consts because a caller has to branch on one —
 /// `preflight` treats the escaped key differently from the other two — and a
 /// string literal repeated at a call site is how that stops matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineAdvisory {
     pub check: &'static str,
     pub path: String,
@@ -750,11 +762,178 @@ impl EngineAdvisory {
     pub const UNGUARDED_VALIDATION: &'static str = "engine.unguarded_validation";
     /// `continue_on_error` on a group, which the engine drops.
     pub const GROUP_CONTINUE_ON_ERROR: &'static str = "engine.group_continue_on_error";
+    /// A single-key object in a template position whose key names a tensor
+    /// operator (1.8), so it is evaluated as a call rather than emitted as
+    /// the literal it was before the family existed.
+    pub const TENSOR_OPERATOR_KEY: &'static str = "logic.tensor_operator_key";
     /// An advisory this version of Orion has no specific id for — a code a
     /// later dataflow-rs added. Reported rather than dropped: the serving
     /// screen already knows not to quarantine it, and an author should still
     /// hear what the engine said.
     pub const UNCLASSIFIED: &'static str = "engine.advisory";
+}
+
+/// Which tensor-named keys [`tensor_operator_key_advisories`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TensorKeyScope {
+    /// Objects with no evaluated node inside them, whose evaluation as the
+    /// operator call they now are fails — `{"shape": [6, 7]}`, `{"full": true}`.
+    /// A constant that *does* evaluate (`{"zeros": [[2], "i64"]}`) is a
+    /// working call and is not reported. This is `lint`'s scope, on every
+    /// definition set for as long as the family exists.
+    Constant,
+    /// Objects that read the context somewhere inside — `{"shape": {"var":
+    /// "data.dims"}}`. Before 1.8 this emitted `{"shape": <dims>}`; after it,
+    /// `shape(dims)`. On a set an author is writing today it is a call; on
+    /// a stored estate written before 1.8 it cannot be, which is why only
+    /// `preflight` asks for these.
+    Dynamic,
+}
+
+/// The keys the tensor family took in 1.8, in every position the engine
+/// evaluates as a template — a `map` mapping's `logic`, and the fields a
+/// custom function's table marks `template_at` — as advisories with the
+/// `$`-escape remedy in the message.
+///
+/// A single-key object in a template position is an operator call in
+/// templating mode, so a stored `{"shape": [6, 7]}` that was data before 1.8
+/// is `shape([6, 7])` after it. The engine cannot report this the way it
+/// reports `ESCAPED_TEMPLATE_KEY`: to it the key *is* an operator, and a call
+/// with the wrong arguments is a run-time error, not an authoring issue. So
+/// the walk is Orion's, over the same positions, naming the same remedy the
+/// escape exists for. Multi-key objects are never operator calls and are left
+/// alone; a key already escaped (`$shape`) is the fix and is not reported.
+///
+/// Conditions are not walked: they are compiled strictly, so a tensor-named
+/// key there raised "Invalid operator" before 1.8 and could not have been
+/// serving. Nor is a field the registry folds rather than evaluates (a
+/// MongoDB `filter`, a cached `value`): a literal there is stored or sent as
+/// written, tensor-named key and all. Unlike the escaped-key walk above, this
+/// one does not defer built-in functions to the engine — the engine has
+/// nothing to say about a key that is, to it, simply an operator — so
+/// `http_call.body` and `map`'s mappings are walked by the same rule.
+pub fn tensor_operator_key_advisories(
+    tasks: &Value,
+    functions: &FunctionRegistry,
+    scope: TensorKeyScope,
+) -> Vec<EngineAdvisory> {
+    let mut out = Vec::new();
+    for_each_input_field(tasks, |function, field, path, value| {
+        if function == "map" {
+            if field != "mappings" {
+                return;
+            }
+            let Some(mappings) = value.as_array() else {
+                return;
+            };
+            for (i, mapping) in mappings.iter().enumerate() {
+                if let Some(logic) = mapping.get("logic") {
+                    collect_tensor_keys(logic, &format!("{path}[{i}].logic"), scope, &mut out);
+                }
+            }
+            return;
+        }
+        let template_paths = functions.template_paths(function, field);
+        if template_paths.contains(&"") {
+            collect_tensor_keys(value, path, scope, &mut out);
+        } else if template_paths.contains(&"*")
+            && let Some(members) = value.as_object()
+        {
+            for (member, v) in members {
+                collect_tensor_keys(v, &format!("{path}.{member}"), scope, &mut out);
+            }
+        }
+    });
+    out
+}
+
+fn collect_tensor_keys(
+    value: &Value,
+    path: &str,
+    scope: TensorKeyScope,
+    out: &mut Vec<EngineAdvisory>,
+) {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1 {
+                let (key, inner) = map.iter().next().expect("one entry");
+                if crate::engine::operators::is_tensor_operator(key) {
+                    let dynamic = reads_the_context(inner);
+                    let report = match scope {
+                        TensorKeyScope::Constant => !dynamic && !evaluates_as_a_call(value),
+                        TensorKeyScope::Dynamic => dynamic,
+                    };
+                    if report {
+                        out.push(EngineAdvisory {
+                            check: EngineAdvisory::TENSOR_OPERATOR_KEY,
+                            path: format!("{path}.{key}"),
+                            message: format!(
+                                "`{key}` names a tensor operator since 1.8, so this object is \
+                                 evaluated as a call to it rather than emitted as data; spell \
+                                 the key `${key}` to keep the literal"
+                            ),
+                        });
+                    }
+                    // Whichever it is, what sits inside is the call's own
+                    // argument list — or a literal the author will escape as
+                    // a whole — so the walk stops here rather than reporting
+                    // the arguments of a genuine call.
+                    return;
+                }
+                collect_tensor_keys(inner, &format!("{path}.{key}"), scope, out);
+                return;
+            }
+            for (key, inner) in map {
+                collect_tensor_keys(inner, &format!("{path}.{key}"), scope, out);
+            }
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                collect_tensor_keys(item, &format!("{path}[{i}]"), scope, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether any node inside `value` is one the engine evaluates — a `var`, an
+/// operator call — rather than data. The same question `is_operator` answers
+/// for one key, asked of a whole tree.
+fn reads_the_context(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            if map.len() == 1
+                && let Some(key) = map.keys().next()
+                && crate::engine::operators::is_operator(key)
+            {
+                return true;
+            }
+            map.values().any(reads_the_context)
+        }
+        Value::Array(items) => items.iter().any(reads_the_context),
+        _ => false,
+    }
+}
+
+/// Whether a constant single-key object, read as the operator call it now is,
+/// evaluates at all. `{"zeros": [[2], "i64"]}` does and is a working call;
+/// `{"shape": [6, 7]}` does not — `shape` wants one tensor, not two numbers —
+/// and so was certainly data. Evaluated on a bare, strict datalogic engine
+/// carrying Orion's operators, against an empty context; a constant needs no
+/// other.
+fn evaluates_as_a_call(value: &Value) -> bool {
+    use dataflow_rs::datalogic_rs as datalogic;
+    static ENGINE: std::sync::OnceLock<datalogic::Engine> = std::sync::OnceLock::new();
+    let engine = ENGINE.get_or_init(|| {
+        crate::engine::operators::add_to_datalogic(datalogic::Engine::builder()).build()
+    });
+    let Ok(compiled) = engine.compile(value) else {
+        return false;
+    };
+    engine
+        .session()
+        .eval_into::<Value, _>(&compiled, &Value::Object(Default::default()))
+        .is_ok()
 }
 
 /// Ask the engine which keys in one arbitrary value it would strip a `$` from,
@@ -1834,5 +2013,153 @@ mod engine_advisory_tests {
                 "message": "x" } } }
         ]);
         assert!(engine_advisories(&tasks).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod tensor_operator_key_tests {
+    use super::{EngineAdvisory, TensorKeyScope, tensor_operator_key_advisories};
+    use serde_json::{Value, json};
+
+    fn constant(tasks: &Value) -> Vec<EngineAdvisory> {
+        tensor_operator_key_advisories(
+            tasks,
+            crate::engine::FunctionRegistry::builtin(),
+            TensorKeyScope::Constant,
+        )
+    }
+
+    fn dynamic(tasks: &Value) -> Vec<EngineAdvisory> {
+        tensor_operator_key_advisories(
+            tasks,
+            crate::engine::FunctionRegistry::builtin(),
+            TensorKeyScope::Dynamic,
+        )
+    }
+
+    fn mapping(logic: Value) -> Value {
+        json!([{ "id": "m", "name": "M", "function": { "name": "map", "input": {
+            "mappings": [{ "path": "data.out", "logic": logic }] } } }])
+    }
+
+    /// The pre-1.8 shape this exists for: a literal object, emitted as data
+    /// for years, whose key the family took. `shape([6, 7])` is not a call
+    /// that evaluates, so the object was certainly data.
+    #[test]
+    fn a_constant_literal_named_after_a_tensor_operator_is_reported() {
+        let found = constant(&mapping(json!({ "shape": [6, 7] })));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].check, "logic.tensor_operator_key");
+        assert_eq!(
+            found[0].path,
+            "tasks[0].function.input.mappings[0].logic.shape"
+        );
+        assert!(
+            found[0].message.contains("`$shape`"),
+            "{}",
+            found[0].message
+        );
+    }
+
+    /// Nested inside a larger literal, with the path saying where.
+    #[test]
+    fn a_nested_literal_is_reported_with_its_path() {
+        let found = constant(&mapping(json!({
+            "board": { "cells": [], "geometry": { "full": true } }
+        })));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].path,
+            "tasks[0].function.input.mappings[0].logic.board.geometry.full"
+        );
+    }
+
+    /// A constant that evaluates is a working call — an author using the
+    /// family on purpose — and is not reported, or `lint --deny-warnings`
+    /// would refuse the very thing the family is for.
+    #[test]
+    fn a_working_constant_call_is_quiet() {
+        assert!(constant(&mapping(json!({ "zeros": [[2], "i64"] }))).is_empty());
+        assert!(
+            constant(&mapping(
+                json!({ "to_list": [{ "tensor": [[1, 2], "i64"] }] })
+            ))
+            .is_empty()
+        );
+    }
+
+    /// The remedy is not itself a finding, and neither is a multi-key object.
+    #[test]
+    fn the_escape_and_multi_key_objects_are_quiet() {
+        assert!(constant(&mapping(json!({ "$shape": [6, 7] }))).is_empty());
+        assert!(constant(&mapping(json!({ "shape": "queue", "type": "channel" }))).is_empty());
+        assert!(dynamic(&mapping(json!({ "$shape": { "var": "data.dims" } }))).is_empty());
+    }
+
+    /// A dynamic one is `preflight`'s question, not `lint`'s: on a set being
+    /// written today it is a call, on a stored pre-1.8 estate it cannot be.
+    #[test]
+    fn a_dynamic_object_is_reported_only_in_the_dynamic_scope() {
+        let tasks = mapping(json!({ "shape": { "var": "data.dims" } }));
+        assert!(constant(&tasks).is_empty());
+        let found = dynamic(&tasks);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(
+            found[0].path,
+            "tasks[0].function.input.mappings[0].logic.shape"
+        );
+    }
+
+    /// The walk stops at the first tensor-named key: what is inside a call is
+    /// its argument list, and reporting `{"tensor": …}` inside a `reshape`
+    /// would flag every argument of every genuine call.
+    #[test]
+    fn arguments_of_a_call_are_not_walked() {
+        let found = dynamic(&mapping(json!({
+            "reshape": [{ "tensor": [{ "var": "data.cells" }, "i64"] }, [2, 2]]
+        })));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].path.ends_with(".reshape"));
+    }
+
+    /// A function's template fields are template positions too — the field
+    /// itself (`body`) and each member of a map of templates (`headers`) —
+    /// while a field the registry folds (`cache_write.value`) is stored as
+    /// written and is not.
+    #[test]
+    fn template_fields_are_walked_and_folded_fields_are_not() {
+        let tasks = json!([
+            { "id": "c", "name": "C", "function": { "name": "http_call", "input": {
+                "connector": "api",
+                "path": { "cat": ["/v1/", { "var": "data.id" }] },
+                "body": { "shape": [6, 7] },
+                "headers": { "x-shape": { "shape": [6, 7] } }
+            } } },
+            { "id": "w", "name": "W", "function": { "name": "cache_write", "input": {
+                "connector": "cache", "key": "k", "value": { "shape": [6, 7] }
+            } } }
+        ]);
+        let found = constant(&tasks);
+        let mut paths: Vec<&str> = found.iter().map(|a| a.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            [
+                "tasks[0].function.input.body.shape",
+                "tasks[0].function.input.headers.x-shape.shape",
+            ],
+            "{found:?}"
+        );
+    }
+
+    /// Conditions compile strictly and always did, so a tensor-named key
+    /// there never served as data; it is not this advisory's business.
+    #[test]
+    fn conditions_are_not_walked() {
+        let tasks = json!([{ "id": "t", "name": "T",
+            "condition": { "==": [{ "var": "data.shape" }, { "shape": [1] }] },
+            "function": { "name": "log", "input": { "message": "x" } } }]);
+        assert!(constant(&tasks).is_empty());
+        assert!(dynamic(&tasks).is_empty());
     }
 }

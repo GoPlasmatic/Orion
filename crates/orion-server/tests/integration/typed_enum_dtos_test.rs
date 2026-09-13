@@ -137,3 +137,42 @@ async fn invalid_channel_type_is_rejected_with_400() {
         "message should list allowed channel types, got {msg}"
     );
 }
+
+#[tokio::test]
+async fn model_status_transition_is_typed_like_the_other_entities() {
+    let h = crate::common::models::harness().await;
+    crate::common::models::register_fixture(&h.app).await;
+    let uri = format!(
+        "/api/v1/admin/models/{}/status",
+        crate::common::models::FIXTURE_ID
+    );
+
+    // A value outside the lifecycle vocabulary fails at deserialization, as
+    // a 400 through the OrionJson extractor.
+    let resp = h
+        .app
+        .clone()
+        .oneshot(json_request("PATCH", &uri, Some(json!({"status": "live"}))))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // `draft` is in the vocabulary but not a transition the API offers.
+    let resp = h
+        .app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &uri,
+            Some(json!({"status": "draft"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let msg = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        msg.contains("active") && msg.contains("archived"),
+        "message should list the transitions offered, got {msg}"
+    );
+}

@@ -246,3 +246,31 @@ async fn trace_list_pages_the_same_way() {
     assert_eq!(page["offset"], 0);
     assert_eq!(page["data"].as_array().expect("data").len(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// 8: models — the one list with an admission filter
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn models_list_pages_the_same_way() {
+    let h = common::models::harness().await;
+    for i in 0..3 {
+        let mut body = common::models::registration("bucket", &common::models::fixture_digest());
+        body["manifest"]["name"] = json!(format!("page.model-{i}"));
+        let resp = h
+            .app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/models",
+                Some(body),
+            ))
+            .await
+            .expect("register");
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+
+    assert_pagination_contract(&h.app, "/api/v1/admin/models", 3).await;
+    // The admission filter rides on the same page: every row is pending.
+    assert_pagination_contract(&h.app, "/api/v1/admin/models?admission=pending", 3).await;
+}

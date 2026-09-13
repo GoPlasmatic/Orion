@@ -319,3 +319,70 @@ async fn channel_dry_run_sees_a_route_collision() {
         "route collision must be a finding: {body}"
     );
 }
+
+#[tokio::test]
+async fn model_activation_dry_run_reports_the_admission_gate_without_writing() {
+    let h = common::models::harness().await;
+    common::models::register_fixture(&h.app).await;
+    let uri = format!(
+        "/api/v1/admin/models/{}/status?dry_run=true",
+        common::models::FIXTURE_ID
+    );
+
+    // Pending admission is the finding; nothing is written.
+    let (code, body) = patch_status(&h.app, &uri, "active").await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], false, "{body}");
+    assert!(
+        body["data"]["errors"].to_string().contains("pending"),
+        "{body}"
+    );
+    let resp = h
+        .app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["data"]["status"], "draft");
+
+    // Once admission passes, the same dry run is green — and still writes
+    // nothing.
+    assert!(
+        common::models::admit(&h.state, common::models::FIXTURE_ID)
+            .await
+            .passed()
+    );
+    let (code, body) = patch_status(&h.app, &uri, "active").await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["valid"], true, "{body}");
+    let resp = h
+        .app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/models/{}", common::models::FIXTURE_ID),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["data"]["status"], "draft");
+
+    // A missing model is a finding too, like the other entities.
+    let (code, body) = patch_status(
+        &h.app,
+        "/api/v1/admin/models/no-such-id/status?dry_run=true",
+        "active",
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(
+        body["data"]["errors"].to_string().contains("not found"),
+        "{body}"
+    );
+    let models = h.state.models.as_ref().expect("enabled");
+    let _ = std::fs::remove_dir_all(models.store.cache_dir());
+}

@@ -175,6 +175,10 @@ pub struct AppStateInner {
     /// The plugin sandbox, when `plugins.enabled`. `None` makes every stored
     /// plugin a load issue on this node rather than a running function.
     pub plugins: Option<Arc<crate::plugin::WasmRuntime>>,
+    /// The model node — the artifact cache and the admission queue — when
+    /// `models.enabled`. `None` makes every model route answer that models
+    /// are disabled on this node, and a stored active model a load issue.
+    pub models: Option<Arc<crate::model::ModelsRuntime>>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,

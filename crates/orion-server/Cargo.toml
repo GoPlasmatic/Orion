@@ -77,17 +77,18 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-# `tensor` and `budget` (3.13) are deliberately *not* enabled. `tensor` adds 20
-# operators whose names are ordinary JSON keys — `shape`, `full`, `cast`,
-# `pad`, `crop`, `concat`, `stack` — and in templating mode a single-key object
-# whose key is a live operator evaluates instead of passing through as data, so
-# turning it on would silently change what `{"shape": ...}` means in every
-# stored workflow that already uses it as a field name. `budget` charges an
-# add-and-compare per dispatched node whether or not a ceiling is set, and a
-# ceiling crossed in a *condition* fails closed to `false` with no error
-# channel — which here reads as "no workflow matched" and answers 200 with the
-# caller's own input. Both need a design before they are worth their cost.
-dataflow-rs = { version = "3.13.0", features = ["all-operators"] }
+# `tensor` and `budget` (3.13) are on as well, since 1.8. `tensor` adds the
+# 20 marshalling operators a model adapter is written in (`engine::operators::
+# TENSOR_OPERATORS`), and with them a rule: in templating mode a single-key
+# object whose key is a live operator evaluates instead of passing through as
+# data, so a stored `map` mapping emitting a literal `{"shape": ...}` must
+# spell it `{"$shape": ...}` — the `$` key escape dataflow-rs sets on every
+# engine. `preflight` and `lint` list every such key (`logic.tensor_operator_key`).
+# `budget` charges an add-and-compare per dispatched node and installs no
+# ceiling until `engine.ops_budget` is set; a ceiling crossed in a *condition*
+# fails closed to `false` with no error channel, which is why the setting is
+# documented next to that caveat rather than defaulted on.
+dataflow-rs = { version = "3.13.0", features = ["all-operators", "tensor", "budget"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went
@@ -127,6 +128,9 @@ serde_json = "1"
 # `var://` references it cannot resolve (`config::vars::parse_with_unresolved_vars`).
 serde_path_to_error = "0.1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
+# The host name a node records on a model admission verdict when no
+# `cluster.instance_id` is configured.
+gethostname = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Cron channels (docs/src/guides/scheduled-workflows.md): the six-field
 # expression parser, and the IANA time-zone table the local calendar times it
@@ -186,6 +190,21 @@ arc-swap = "1"
 # Wasmtime's MSRV (stable minus two) is what Orion's now tracks.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "cranelift", "component-model", "async", "pooling-allocator", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
+# The ONNX inference engine behind `model::runtimes::tract`, reached through
+# its stable facade only: `tract-onnx`, `tract-core` and the rest of the
+# family are declared unstable upstream and are never named here.
+# `default-features = false` because the facade's *default* feature is
+# `cuda-13000`, which links the CUDA toolkit; without it the build is pure
+# Rust — the CPU runtime everywhere, plus Metal on Apple targets, which the
+# facade links unconditionally. MIT OR Apache-2.0 throughout; rust-version
+# 1.91, under the 1.98 floor.
+tract = { version = "0.23.7", default-features = false }
+# The runtime-independent ONNX reader (`model::onnx`): a hand-written subset
+# of onnx.proto3 — the parameter count, node count, IR version, opset and the
+# graph's input and output names an admission records — decoded with prost,
+# which skips every field the subset leaves out. Already in the tree at 0.14,
+# so this adds no crate.
+prost = "0.14"
 # ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
 # SCRAM work without a system OpenSSL at runtime (kafka.auth support).
 #
