@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-13
+
 ### Added
 
 - **Models offline, and as the fifth package member.** The definition set
@@ -5277,7 +5279,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/GoPlasmatic/Orion/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/GoPlasmatic/Orion/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/GoPlasmatic/Orion/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/GoPlasmatic/Orion/compare/v1.5.0...v1.5.1
