@@ -254,9 +254,9 @@ fn connect_failed(connector_name: &str, e: sqlx::Error) -> OrionError {
 /// `text` column. Guessing from the value is the data-dependent behaviour
 /// #309 was filed about; it is not worth reintroducing on the other side.
 pub(crate) fn bind_params<'q, DB>(
-    mut query: sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>,
+    mut query: sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments>,
     params: &'q [serde_json::Value],
-) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments<'q>>
+) -> sqlx::query::Query<'q, DB, <DB as sqlx::Database>::Arguments>
 where
     DB: sqlx::Database,
     &'q str: sqlx::Encode<'q, DB> + sqlx::Type<DB>,

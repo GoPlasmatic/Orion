@@ -77,7 +77,17 @@ harness = true
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.
-dataflow-rs = { version = "3.12.0", features = ["all-operators"] }
+# `tensor` and `budget` (3.13) are deliberately *not* enabled. `tensor` adds 20
+# operators whose names are ordinary JSON keys — `shape`, `full`, `cast`,
+# `pad`, `crop`, `concat`, `stack` — and in templating mode a single-key object
+# whose key is a live operator evaluates instead of passing through as data, so
+# turning it on would silently change what `{"shape": ...}` means in every
+# stored workflow that already uses it as a field name. `budget` charges an
+# add-and-compare per dispatched node whether or not a ceiling is set, and a
+# ceiling crossed in a *condition* fails closed to `false` with no error
+# channel — which here reads as "no workflow matched" and answers 200 with the
+# caller's own input. Both need a design before they are worth their cost.
+dataflow-rs = { version = "3.13.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path", "multipart"] }
 # `uuid`, `json` and `bigdecimal` are what let the connector decoders read a
 # real Postgres row (#309). Before native decoding, connector queries went
@@ -87,21 +97,23 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 # `chrono` was already on for the server's own store and covers the date/time
 # family. `any` stays: `sea-query-sqlx` still lists it, and dropping it is a
 # separate cleanup.
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "any", "sqlite", "postgres", "mysql"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "uuid", "json", "bigdecimal", "any", "sqlite", "postgres", "mysql"] }
 # Postgres NUMERIC is arbitrary precision and JSON has no equivalent. Decoding
 # through f64 would silently round a money column, so the value is read exactly
 # here and the lossy step is the one the author asks for (`numeric_as`).
 bigdecimal = "0.4"
 sea-query = { version = "1.0", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-# `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.8.x is the
-# line that keeps sqlx 0.8 and MSRV 1.88; 0.9 moves to sqlx 0.9 / Rust 1.94.
+# `sea-query-binder` was superseded by `sea-query-sqlx` upstream. 0.9.x is the
+# line that tracks sqlx 0.9; it declares Rust 1.94, comfortably under the 1.98
+# the plugin sandbox already pins, so it is the binder version and the sqlx
+# version that move together — bumping one without the other does not resolve.
 # It lists `jiff-sqlx` (Unlicense OR MIT) as an optional dependency behind
 # `with-jiff`, which is off here — so the crate lands in Cargo.lock but is
 # never compiled, and `cargo deny` clears it via the MIT arm of that
 # expression (`Unlicense` is not in deny.toml's allowlist).
 # `default-features = false` on sea-query also opts out of 1.0's new `itoa`
 # (integer-formatting fast path) and `audit` defaults; neither is needed.
-sea-query-sqlx = { version = "0.8.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-query-sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
@@ -195,7 +207,7 @@ mongodb = { version = "3", default-features = false, features = ["compat-3-0-0",
 # dead for the process lifetime after one Redis restart (proposal D15).
 # `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
 # must come from Redis's own clock (N8).
-redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
+redis = { version = "1.7", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install
@@ -218,7 +230,7 @@ tracing-opentelemetry = { version = "0.33", default-features = false }
 socket2 = "0.6"
 sha1 = "0.11"
 md-5 = "0.11"
-argon2 = "0.5.3"
+argon2 = "0.6.0"
 bcrypt = "0.19.3"
 # SMTP for `send_email` (#262). mail-send rather than lettre because lettre's
 # `builder` feature pulls quoted_printable, whose bare 0BSD licence is the one
@@ -231,7 +243,7 @@ bcrypt = "0.19.3"
 # the rest of the tree already resolves rustls to.
 mail-send = { version = "0.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 # Message assembly. Does its own quoted-printable/base64, no external encoder.
-mail-builder = "0.5"
+mail-builder = "1.0"
 # The RFC 5322 address parser mail-builder deliberately omits — `Name <a@b>`
 # for the to/cc/bcc/from/reply_to fields, which lettre's Mailbox used to do.
 mail-parser = "0.11"
@@ -259,7 +271,7 @@ testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "m
 # Already a runtime dependency; listed here so integration tests can build a
 # connection for direct backend tests (RedisRateLimitBackend takes a
 # ConnectionManager). Same version req as the runtime dep, so no extra crate.
-redis = { version = "1.6", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+redis = { version = "1.7", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 # In-process self-signed certificate generation for the TLS tests (no
 # external `openssl` CLI dependency), and the JWT test keypairs.
 #

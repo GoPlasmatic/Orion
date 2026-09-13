@@ -240,9 +240,12 @@ impl AppStateInner {
         // `VACUUM INTO` takes a literal, not a bind parameter. The path is
         // operator-configured (`backup.directory`) plus a generated timestamp,
         // never caller-supplied; the escape is belt-and-braces.
-        sqlx::query(&format!("VACUUM INTO '{}'", path.replace('\'', "''")))
-            .execute(pool)
-            .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "VACUUM INTO '{}'",
+            path.replace('\'', "''")
+        )))
+        .execute(pool)
+        .await?;
         Ok(true)
     }
 }

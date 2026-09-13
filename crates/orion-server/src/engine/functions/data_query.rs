@@ -7,6 +7,14 @@ use dataflow_rs::engine::task_context::TaskContext;
 use futures::TryStreamExt;
 use mongodb::bson::Document;
 use serde_json::{Map, Value};
+// sqlx 0.9 refuses a non-`'static` query string unless it is wrapped, so that
+// building SQL by concatenation has to be an explicit, greppable decision. Every
+// string wrapped in this module is emitted by `query::backend::sql` from a
+// parsed IR — table and column identifiers are quoted by the dialect and every
+// author-supplied *value* travels as a bind parameter in the `args` beside it,
+// never spliced into the text. The raw-SQL escape hatch is `db_read`/`db_write`,
+// not this path.
+use sqlx::AssertSqlSafe;
 
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
@@ -271,9 +279,11 @@ async fn run_sql_count(
             // arguments these are; the move itself is free.
             let fallback = crate::connector::sql_encode::sea_args_for(p, values);
             let q = match bound {
-                crate::connector::sql_encode::Bound::Typed(args) => sqlx::query_with(&sql, args),
+                crate::connector::sql_encode::Bound::Typed(args) => {
+                    sqlx::query_with(AssertSqlSafe(sql.as_str()), args)
+                }
                 crate::connector::sql_encode::Bound::Fallback { cache } => {
-                    sqlx::query_with(&sql, fallback)
+                    sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback)
                         .persistent(cache)
                 }
             };
@@ -427,9 +437,11 @@ async fn run_sql_with_includes(
             // arguments these are; the move itself is free.
             let fallback = crate::connector::sql_encode::sea_args_for(p, values);
             let q = match bound {
-                crate::connector::sql_encode::Bound::Typed(args) => sqlx::query_with(&sql, args),
+                crate::connector::sql_encode::Bound::Typed(args) => {
+                    sqlx::query_with(AssertSqlSafe(sql.as_str()), args)
+                }
                 crate::connector::sql_encode::Bound::Fallback { cache } => {
-                    sqlx::query_with(&sql, fallback)
+                    sqlx::query_with(AssertSqlSafe(sql.as_str()), fallback)
                         .persistent(cache)
                 }
             };
@@ -480,10 +492,10 @@ async fn run_sql_with_includes(
                     let fallback = crate::connector::sql_encode::sea_args_for(p, cvalues);
                     let q = match bound {
                         crate::connector::sql_encode::Bound::Typed(args) => {
-                            sqlx::query_with(&csql, args)
+                            sqlx::query_with(AssertSqlSafe(csql.as_str()), args)
                         }
                         crate::connector::sql_encode::Bound::Fallback { cache } => {
-                            sqlx::query_with(&csql, fallback)
+                            sqlx::query_with(AssertSqlSafe(csql.as_str()), fallback)
                                 .persistent(cache)
                         }
                     };

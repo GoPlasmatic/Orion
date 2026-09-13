@@ -718,7 +718,10 @@ pub async fn pg_typed_args(
     let Some(params) = params else {
         return Ok(Bound::Fallback { cache: false });
     };
-    let Ok(statement) = conn.prepare(sql).await else {
+    let Ok(statement) = conn
+        .prepare(sqlx::SqlSafeStr::into_sql_str(sqlx::AssertSqlSafe(sql)))
+        .await
+    else {
         // Nothing was cached — the prepare is what would have cached it.
         return Ok(Bound::Fallback { cache: false });
     };
@@ -771,13 +774,10 @@ async fn fall_back(
 /// does not work backwards to its database either. The pool does: `Pool<DB>` is
 /// an ordinary generic struct, and every arm already has one in scope. It is
 /// borrowed only to pin `DB`, which is why it goes unread.
-pub fn sea_args_for<'q, DB>(
-    _pool: &sqlx::Pool<DB>,
-    values: sea_query_sqlx::SqlxValues,
-) -> DB::Arguments<'q>
+pub fn sea_args_for<DB>(_pool: &sqlx::Pool<DB>, values: sea_query_sqlx::SqlxValues) -> DB::Arguments
 where
     DB: sqlx::Database,
-    sea_query_sqlx::SqlxValues: sqlx::IntoArguments<'q, DB>,
+    sea_query_sqlx::SqlxValues: sqlx::IntoArguments<DB>,
 {
     sqlx::IntoArguments::into_arguments(values)
 }
@@ -794,11 +794,11 @@ pub async fn mysql_typed_args(
 
 /// SQLite has no static parameter types at all — a value carries a storage
 /// class, not a declared one — so the same holds for the same reason.
-pub async fn sqlite_typed_args<'q>(
+pub async fn sqlite_typed_args(
     _conn: &mut sqlx::SqliteConnection,
     _sql: &str,
     _params: Option<&[Scalar]>,
-) -> Result<Bound<sqlx::sqlite::SqliteArguments<'q>>, EncodeError> {
+) -> Result<Bound<sqlx::sqlite::SqliteArguments>, EncodeError> {
     Ok(Bound::Fallback { cache: true })
 }
 

@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`dataflow-rs` 3.12 → 3.13**, which moves `datalogic-rs` 5.4 → 5.5 and
+  `datavalue-rs` 0.2 → 0.3. The engine's MSRV rises to 1.98 — already Orion's
+  floor, since the plugin sandbox links Wasmtime — so the toolchain is
+  unchanged. No behaviour change reaches a workflow: the JSONLogic vocabulary is
+  identical (`jsonlogic_operators_test` asserts it against the live engine in
+  both directions and passes untouched), and the two features 3.13 adds are
+  both off.
+
+- **Every other dependency moved to its latest release too.** `sqlx` 0.8 → 0.9,
+  `sea-query-sqlx` 0.8 → 0.9 (its major tracks sqlx's — the two do not resolve
+  apart), `redis` 1.6 → 1.7, `argon2` 0.5 → 0.6, `mail-builder` 0.5 → 1.0. MSRV
+  is unchanged at 1.98: nothing in the resolved tree asks for more.
+
+  `testcontainers` is the one crate held back. 0.28.0 exists, but
+  `testcontainers-modules` — which Orion uses for the Postgres, MySQL, MongoDB,
+  Kafka, Elasticsearch and Redis fixtures — tops out at 0.15.0 and requires
+  `testcontainers ^0.27.0`. Taking testcontainers to 0.28 makes the workspace
+  unresolvable, so it stays on 0.27 until a `testcontainers-modules` release
+  catches up.
+
+  Two of these needed code changes rather than a version edit:
+
+  - **sqlx 0.9** dropped the lifetime parameter from `Database::Arguments` and
+    `IntoArguments`, and put query strings behind the `SqlSafeStr` trait: a
+    `&'static str` is accepted bare, anything built at runtime must be wrapped
+    in `AssertSqlSafe`. The wrapper is an assertion, so each site says what it
+    is asserting — the storage helpers take `sea-query` output whose values are
+    bound separately, `data_query`/`data_write` take `query::backend::sql`
+    output for the same reason, and `db_read`/`db_write` are the documented
+    raw-SQL escape hatch where the statement is authored in the workflow and
+    the values still travel as bind parameters. `VACUUM INTO` in
+    `backup_sqlite_into` keeps the quote-escaping it already had, because
+    `VACUUM INTO` takes a literal path and cannot take a placeholder.
+
+  - **argon2 0.6** (password-hash 0.6) moved `SaltString`/`rand_core` behind
+    features, renamed `Error::Password` to `Error::PasswordInvalid`, and made
+    `hash_password` take only the password, drawing its own salt from the OS
+    RNG. `password_hash` now calls that one-argument form — the same bytes from
+    the same source as the hand-generated salt it replaces — and
+    `password_verify` matches the new variant, so a wrong password is still
+    `false` and a malformed stored hash is still a task error.
+
+- **`tensor` and `budget`, the two features 3.13 adds, stay off**, and the
+  reasons are recorded beside the dependency in `Cargo.toml`. `tensor` adds 20
+  operators whose names are ordinary JSON keys — `shape`, `full`, `cast`, `pad`,
+  `crop`, `concat`, `stack` — and Orion runs datalogic in templating mode, where
+  a single-key object whose key is a live operator *evaluates* rather than
+  passing through as data; enabling it would silently change what
+  `{"shape": ...}` means in workflows already stored and running, with no lint
+  able to catch it. Upstream keeps it out of `all-operators` for the same
+  reason. `budget` charges an add-and-compare per dispatched node whether or not
+  a ceiling is set, and a ceiling crossed inside a *condition* fails closed to
+  `false` with no error channel — which at this layer reads as "no workflow
+  matched" and answers `200` with the caller's own input. Adopting it is a
+  config-surface decision, not a dependency bump.
+
 ### Fixed
 
 - **The expression reference documented `date_diff`'s unknown-unit behaviour

@@ -363,7 +363,7 @@ fn decide<A>(bound: crate::connector::sql_encode::Bound<A>, fallback: A) -> (A, 
 async fn run_write_statement<'e, E, R, F, G>(
     executor: E,
     sql: &'e str,
-    args: R::Arguments<'e>,
+    args: R::Arguments,
     persistent: bool,
     w: &ResolvedWrite,
     budget: &QueryBudget,
@@ -377,7 +377,7 @@ where
     R: sqlx::Database + sqlx::database::HasStatementCache,
     // No blanket impl relates a database to its own arguments type, so the
     // bound has to be spelled out.
-    R::Arguments<'e>: sqlx::IntoArguments<'e, R>,
+    R::Arguments: sqlx::IntoArguments<R>,
     F: Fn(
         &[R::Row],
         crate::connector::sql_decode::RowFormat,
@@ -388,7 +388,7 @@ where
         let res = budget
             .run(
                 NAME,
-                sqlx::query_with(sql, args)
+                sqlx::query_with(sqlx::AssertSqlSafe(sql), args)
                     .persistent(persistent)
                     .execute(executor),
             )
@@ -409,7 +409,7 @@ where
         let rows = budget
             .run(NAME, async {
                 use futures::TryStreamExt;
-                let mut stream = sqlx::query_with(sql, args)
+                let mut stream = sqlx::query_with(sqlx::AssertSqlSafe(sql), args)
                     .persistent(persistent)
                     .fetch(executor);
                 let mut rows = Vec::new();

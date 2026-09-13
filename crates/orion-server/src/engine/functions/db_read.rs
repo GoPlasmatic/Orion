@@ -184,12 +184,21 @@ impl ConnectorHandler for DbReadHandler {
                     .await?;
                 let rows = budget.run(call.name, async {
                     use futures::TryStreamExt;
+                    // `AssertSqlSafe` states what this handler is: the
+                    // raw-SQL escape hatch, whose statement is authored in the
+                    // workflow rather than assembled here. sqlx 0.9 asks the
+                    // caller to own that, and the answer is the same as it was
+                    // before it asked — the text comes from the definition, the
+                    // author-supplied *values* travel as bind parameters beside
+                    // it, and a definition reaches the runtime only through the
+                    // admin API. Authors who want values checked use the
+                    // portable dialect (`data_query`/`data_write`) instead.
                     let sqlx_query = match bound {
                         crate::connector::sql_encode::Bound::Typed(args) => {
-                            sqlx::query_with(query, args)
+                            sqlx::query_with(sqlx::AssertSqlSafe(query), args)
                         }
                         crate::connector::sql_encode::Bound::Fallback { cache } => {
-                            bind(sqlx::query(query), params).persistent(cache)
+                            bind(sqlx::query(sqlx::AssertSqlSafe(query)), params).persistent(cache)
                         }
                     };
                     let mut stream = sqlx_query.fetch(&mut *conn);

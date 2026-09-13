@@ -34,6 +34,12 @@ pub mod schema;
 use std::time::Duration;
 
 use sea_query_sqlx::SqlxBinder;
+// sqlx 0.9 will not take a non-`'static` query string unwrapped, so that
+// assembling SQL by concatenation has to be stated rather than assumed. Every
+// `sql` reaching these helpers is rendered by a `sea-query` builder — the
+// binder emits placeholders and hands the values back separately in the
+// `SqlxValues` beside it — so no caller-supplied value is ever in the text.
+use sqlx::AssertSqlSafe;
 
 use crate::config::StorageConfig;
 use crate::errors::OrionError;
@@ -180,7 +186,7 @@ impl DbPool {
         sql: &str,
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<Vec<T>, sqlx::Error> {
-        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(p).await)
+        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_all(p).await)
     }
 
     pub async fn fetch_one_as<T: DbRow>(
@@ -188,7 +194,7 @@ impl DbPool {
         sql: &str,
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<T, sqlx::Error> {
-        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_one(p).await)
+        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_one(p).await)
     }
 
     pub async fn fetch_optional_as<T: DbRow>(
@@ -196,7 +202,7 @@ impl DbPool {
         sql: &str,
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<Option<T>, sqlx::Error> {
-        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(p).await)
+        dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_optional(p).await)
     }
 
     pub async fn execute_query(
@@ -205,7 +211,7 @@ impl DbPool {
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<u64, sqlx::Error> {
         dispatch_pool!(self, p => {
-            let r = sqlx::query_with(sql, values).execute(p).await?;
+            let r = sqlx::query_with(AssertSqlSafe(sql), values).execute(p).await?;
             Ok(r.rows_affected())
         })
     }
@@ -224,7 +230,7 @@ impl DbPool {
         (T,): for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
         (T,): for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
     {
-        dispatch_pool!(self, p => sqlx::query_scalar_with::<_, T, _>(sql, values).fetch_one(p).await)
+        dispatch_pool!(self, p => sqlx::query_scalar_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_one(p).await)
     }
 
     /// Begin a deferred transaction. Fine for read-only transactions and for
@@ -306,7 +312,7 @@ impl DbTransaction {
         sql: &str,
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<Vec<T>, sqlx::Error> {
-        dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(&mut **tx).await)
+        dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_all(&mut **tx).await)
     }
 
     pub async fn fetch_optional_as<T: DbRow>(
@@ -314,7 +320,7 @@ impl DbTransaction {
         sql: &str,
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<Option<T>, sqlx::Error> {
-        dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(&mut **tx).await)
+        dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(AssertSqlSafe(sql), values).fetch_optional(&mut **tx).await)
     }
 
     pub async fn execute_query(
@@ -323,7 +329,7 @@ impl DbTransaction {
         values: sea_query_sqlx::SqlxValues,
     ) -> Result<u64, sqlx::Error> {
         dispatch_tx!(self, tx => {
-            let r = sqlx::query_with(sql, values).execute(&mut **tx).await?;
+            let r = sqlx::query_with(AssertSqlSafe(sql), values).execute(&mut **tx).await?;
             Ok(r.rows_affected())
         })
     }

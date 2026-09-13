@@ -424,13 +424,16 @@ async fn password_hash_op(
             // Memory-hard by design, so off the async worker (W: ~20 MiB and
             // tens of milliseconds per call at the defaults).
             spawn_hashing(move || {
-                use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
+                use argon2::password_hash::PasswordHasher;
                 use argon2::{Algorithm, Argon2, Params, Version};
                 let params = Params::new(memory_kib, iterations, parallelism, None)
                     .map_err(|e| format!("argon2 parameters were rejected: {e}"))?;
-                let salt = SaltString::generate(&mut OsRng);
+                // `hash_password` draws its own salt from the OS RNG
+                // (password-hash 0.6's `getrandom` feature, on by default).
+                // Generating one by hand is the same bytes from the same
+                // source, so there is nothing to keep by spelling it out.
                 Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-                    .hash_password(password.as_bytes(), &salt)
+                    .hash_password(password.as_bytes())
                     .map(|h| Value::String(h.to_string()))
                     .map_err(|e| format!("argon2 hashing failed: {e}"))
             })
@@ -461,12 +464,12 @@ async fn password_verify_op(
     // from a bad credential.
     spawn_hashing(move || {
         if hash.starts_with("$argon2") {
-            use argon2::password_hash::{Error, PasswordHash, PasswordVerifier};
+            use argon2::password_hash::{Error, PasswordVerifier, phc::PasswordHash};
             let parsed = PasswordHash::new(&hash)
                 .map_err(|e| format!("stored hash is not a valid PHC string: {e}"))?;
             match argon2::Argon2::default().verify_password(password.as_bytes(), &parsed) {
                 Ok(()) => Ok(Value::Bool(true)),
-                Err(Error::Password) => Ok(Value::Bool(false)),
+                Err(Error::PasswordInvalid) => Ok(Value::Bool(false)),
                 Err(e) => Err(format!("stored hash could not be checked: {e}")),
             }
         } else if hash.starts_with("$2") {
