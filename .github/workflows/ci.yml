@@ -316,6 +316,12 @@ jobs:
       - name: Rebuild the example codec from source on the SDK
         run: examples/plugins/fixed-width/build.sh
 
+      # The c4-tournament referee, the second example guest. Its committed
+      # component is what the offline cases below run, so rebuilding it here
+      # is what makes "against the fresh codec" true of both of them.
+      - name: Rebuild the example referee from source on the SDK
+        run: examples/plugins/c4-rules/build.sh
+
       # The fixture was rebuilt in place, so the committed-bytes path and the
       # fresh path are the same file; naming it explicitly keeps the suite's
       # override path exercised.
@@ -324,7 +330,7 @@ jobs:
           ORION_PLUGIN_FIXTURE: crates/orion-server/tests/fixtures/plugins/fixture.wasm
         run: cargo test -p orion-server --test integration -- plugin_abi_cases_test plugin_runtime_test plugin_sdk_test
 
-      - name: Run the example's offline cases against the fresh codec
+      - name: Run the examples' offline cases against the fresh components
         run: cargo run -p orion-server -- test examples/workflow-tests --plugin-dir examples/packages/fixed-width-statement --plugin-dir examples/packages/c4-tournament --model-dir examples/packages/c4-tournament/entrant
 
       - name: The SDK's own tests

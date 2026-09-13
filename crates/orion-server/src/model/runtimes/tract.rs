@@ -420,6 +420,12 @@ mod tests {
     use super::*;
     use crate::model::fixture;
 
+    /// How far an accelerator may land from the CPU path, element-wise and
+    /// absolute, before it is a different computation rather than a
+    /// different order of the same one. See
+    /// [`metal_agrees_with_the_cpu_path_where_this_build_has_it`].
+    const DEVICE_AGREEMENT: f32 = 1e-5;
+
     fn load(manifest: &Manifest, device: &str) -> Result<Arc<dyn LoadedModel>, LoadError> {
         TractRuntime.load(fixture::ONNX, manifest, device)
     }
@@ -553,8 +559,18 @@ mod tests {
     /// Where this build has Metal (an Apple target with a device), the
     /// same graph loads and runs there; elsewhere the assertion is that
     /// the device is honestly absent.
+    ///
+    /// The comparison against the CPU path is the point: an accelerator
+    /// **agrees with the CPU to a tolerance, not to the bit**, which is why
+    /// `docs/src/concepts/models.md` scopes its determinism claim to the CPU
+    /// path and tells an operator running a scored competition to keep the
+    /// fleet on one device. Measured on an M-series host against this
+    /// fixture, the largest element-wise difference is ~9.3e-8 — f32 epsilon
+    /// scale — so [`DEVICE_AGREEMENT`] is loose enough not to be flaky and
+    /// tight enough that a runtime upgrade computing something genuinely
+    /// different fails here rather than in a tournament.
     #[test]
-    fn metal_loads_and_runs_where_this_build_has_it() {
+    fn metal_agrees_with_the_cpu_path_where_this_build_has_it() {
         let manifest = fixture::manifest();
         if !TractRuntime.devices().contains(&"metal") {
             let err = load_err(&manifest, "metal");
@@ -563,9 +579,39 @@ mod tests {
         }
         let model = load(&manifest, "metal").expect("loads on metal");
         let out = model.run(ones_board()).expect("runs on metal");
+        assert_eq!(out[0].dtype(), DType::F32);
         assert_eq!(out[0].shape(), [1, 7]);
-        let policy = out[0].as_slice::<f32>().expect("f32 data");
-        assert!(policy.iter().any(|v| *v != 0.0), "{policy:?}");
+        let metal = out[0].as_slice::<f32>().expect("f32 data");
+        assert!(metal.iter().any(|v| *v != 0.0), "{metal:?}");
+        assert!(metal.iter().all(|v| v.is_finite()), "{metal:?}");
+
+        let cpu = load(&manifest, "cpu").expect("loads on cpu");
+        let cpu = cpu.run(ones_board()).expect("runs on cpu");
+        let cpu = cpu[0].as_slice::<f32>().expect("f32 data");
+        let worst = cpu
+            .iter()
+            .zip(metal)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            worst <= DEVICE_AGREEMENT,
+            "metal and cpu differ by {worst:e}, over the {DEVICE_AGREEMENT:e} tolerance: \
+             cpu {cpu:?} vs metal {metal:?}"
+        );
+
+        // One session, many threads — the accelerator path shares a queue
+        // where the CPU path shares a plan, and `LoadedModel` promises both
+        // are `Sync`.
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let model = &model;
+                scope.spawn(move || {
+                    for _ in 0..8 {
+                        model.run(ones_board()).expect("runs concurrently on metal");
+                    }
+                });
+            }
+        });
     }
 
     #[test]

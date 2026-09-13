@@ -1,0 +1,26 @@
+# An object store for the model drill, as a compose overlay.
+#
+#   docker compose -f docker-compose.ha.yml -f deploy/ha/docker-compose.bucket.yml up -d --wait
+#
+# It is an overlay rather than part of the reference topology because the
+# bucket is *not* part of it: a real deployment points `models` at S3, R2,
+# MinIO or whatever it already runs, and Orion only ever issues a signed HEAD
+# and GET against it. This serves the test fixture as a static file, which is
+# enough for exactly that: nginx ignores the SigV4 `Authorization` header the
+# connector sends, and answers both verbs with a `content-length`.
+#
+# `models` is the bucket name, so a path-style request lands on
+# /models/c4-tiny.onnx — the key the drill's registration claims.
+
+services:
+  bucket:
+    image: nginx:1.30-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
+    restart: unless-stopped
+    volumes:
+      - ./crates/orion-server/tests/fixtures/models/c4-tiny/c4-tiny.onnx:/usr/share/nginx/html/models/c4-tiny.onnx:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/models/c4-tiny.onnx"]
+      interval: 5s
+      timeout: 3s
+      start_period: 5s
+      retries: 3

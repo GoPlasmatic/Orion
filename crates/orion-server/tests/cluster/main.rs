@@ -2271,3 +2271,176 @@ async fn cron_schedule_changes_propagate_across_nodes() {
         "node B must stop scheduling an archived channel within a few epochs"
     );
 }
+
+/// A model admitted and activated through node A is served by node B within
+/// a few epoch polls — and the division of labour between the two nodes is
+/// the point of the test.
+///
+/// **The verdict is shared; the bytes are not.** Admission is recorded on the
+/// row, so node B reads node A's `passed` and loads the model into its
+/// generation without re-running the sequence — it never fetches at
+/// activation, never probes, and the row keeps naming the node that admitted
+/// it. What B *does* do for itself is the cold load: its artifact cache is its
+/// own (a separate `models.cache_dir` here, as two hosts would have), so the
+/// first inference on B fetches the object through the storage connector and
+/// verifies the digest before the graph runs. That is why the bucket sees a
+/// second GET, and why a peer that cannot reach the bucket fails at the call
+/// rather than at activation.
+///
+/// The `Models` epoch scope is what carries the change: B republishes its
+/// generation and rebuilds the model set on its own engine, with no request
+/// to B's admin API and no shared filesystem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn model_activation_propagates_across_nodes() {
+    use common::models::{FIXTURE_ID, admit, fixture_digest, registration};
+
+    let bucket = common::models::spawn_bucket(common::models::FIXTURE_ONNX.to_vec()).await;
+    let cluster = cluster_nodes_with(
+        2,
+        |c| {
+            c.models.enabled = true;
+            // The default: B warms what its active workflows name as soon as
+            // it publishes, which is the load this test is about.
+            c.models.preload = orion::config::ModelPreload::Referenced;
+        },
+        |i, c| {
+            // Separate caches, as two hosts have. Sharing one would let B
+            // serve from the bytes A fetched and hide the per-node fetch.
+            c.models.cache_dir = std::env::temp_dir()
+                .join(format!("orion-cluster-models-{i}-{}", uuid::Uuid::new_v4()))
+                .to_string_lossy()
+                .into_owned();
+        },
+    )
+    .await;
+    let (node_a, state_a) = (
+        cluster.nodes[0].router.clone(),
+        cluster.nodes[0].state.clone(),
+    );
+    let (node_b, state_b) = (
+        cluster.nodes[1].router.clone(),
+        cluster.nodes[1].state.clone(),
+    );
+
+    // The connector is a row like any other, so B learns it through the
+    // `Connectors` scope; nothing else can proceed until it has.
+    common::models::create_storage_connector(&node_a, "bucket", bucket.addr).await;
+    let has_connector = eventually(cluster.poll, async || {
+        state_b.connector_registry.get("bucket").await.is_some()
+    })
+    .await;
+    assert!(has_connector, "node B must resync the storage connector");
+
+    // Register and admit on A only.
+    let resp = node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/models",
+            Some(registration("bucket", &fixture_digest())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert!(admit(&state_a, FIXTURE_ID).await.passed());
+    let gets_after_admission = bucket.gets.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(gets_after_admission, 1, "A's admission fetched once");
+
+    let resp = node_a
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/models/{FIXTURE_ID}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // B carries the model once its watcher resyncs — on A's verdict.
+    let loaded = eventually(cluster.poll, async || {
+        state_b.runtime.load().models.get(FIXTURE_ID).is_some()
+    })
+    .await;
+    assert!(
+        loaded,
+        "node B must load the model within a few epoch polls"
+    );
+    assert!(state_b.runtime.load().models.issues.is_empty());
+
+    let row = state_b
+        .repos
+        .models
+        .get_by_id(FIXTURE_ID)
+        .await
+        .expect("the row B loaded from");
+    let admission: serde_json::Value =
+        serde_json::from_str(&row.admission_json).expect("admission json");
+    assert_eq!(admission["state"], "passed");
+    assert_eq!(
+        admission["node"],
+        orion::model::node_name(&state_a.config.cluster.instance_id),
+        "the verdict names the node that ran the sequence, and B did not re-run it"
+    );
+
+    // A workflow activated on A, called on B: B's own cold load fetches the
+    // artifact through the connector and verifies the digest before the graph
+    // runs.
+    common::create_and_activate_channel(
+        &node_a,
+        "model-prop",
+        json!({
+            "name": "Infer on B",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "board"}}},
+                {"id": "infer", "name": "infer", "function": {"name": "model_infer",
+                    "input": {"model": FIXTURE_ID, "input": {"var": ""},
+                              "output": "data.policy"}}}
+            ]
+        }),
+    )
+    .await;
+
+    // A zero board of the fixture's `[1, 2, 6, 7]`: the shape is what the
+    // adapter checks, and zeros make the answer the graph's biases.
+    let board = serde_json::to_value(vec![vec![vec![vec![0.0f32; 7]; 6]; 2]]).expect("board");
+    let mut served = false;
+    for _ in 0..25 {
+        tokio::time::sleep(cluster.poll).await;
+        let resp = node_b
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/model-prop",
+                Some(json!({"data": board})),
+            ))
+            .await
+            .unwrap();
+        if resp.status() == StatusCode::OK {
+            let body = body_json(resp).await;
+            // The manifest's result expression writes the `[1, 7]` output
+            // back as a nested list, so the row is one level in.
+            let policy = body["data"]["policy"]["policy"][0]
+                .as_array()
+                .expect("the result expression writes one row of seven");
+            assert_eq!(policy.len(), 7, "{body}");
+            served = true;
+            break;
+        }
+    }
+    assert!(served, "node B must serve the model-backed channel");
+
+    assert!(
+        bucket.gets.load(std::sync::atomic::Ordering::SeqCst) > gets_after_admission,
+        "node B must fetch the artifact for itself: its cache started empty"
+    );
+
+    for node in &cluster.nodes {
+        if let Some(models) = node.state.models.as_ref() {
+            let _ = std::fs::remove_dir_all(models.store.cache_dir());
+        }
+    }
+}

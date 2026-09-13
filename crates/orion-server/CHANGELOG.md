@@ -75,7 +75,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature over the digest mandatory, checked at registration and again at
   every admission. Off by default: with `models.enabled = false` the routes
   answer `400` and the node admits nothing. Cluster peers learn of a status
-  change through the new `models` epoch scope. Documented under
+  change through the new `models` epoch scope, and **the verdict is shared
+  where the bytes are not**: admission runs once, on the node that took the
+  registration, and a peer loads the model on that verdict without re-probing
+  (`admission.node` keeps naming the one that ran it) — but each node's
+  artifact cache is its own, so every node fetches the object and checks the
+  digest before it will run the graph. A peer that cannot reach the bucket
+  therefore fails the *call*, not the activation.
+  `cluster::model_activation_propagates_across_nodes` pins the sequence in
+  process and `deploy/ha/model-drill.sh` measures it across two, through the
+  reference topology's load balancer. Documented under
   [Models](https://goplasmatic.github.io/Orion/reference/admin-api.html#models).
 
 - **`model_infer`, the task function that runs an admitted model.** A
@@ -151,6 +160,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cheap reload path by dataflow-rs, so a hot reload cannot lift it;
   applied to `POST /workflows/{id}/test`; not applied to an offline
   `dry-run`, which has no config to read it from.
+
+- **Which device a model runs on, measured and documented.** `tract` offers
+  `cpu` always, `metal` on an Apple build with a Metal device and `cuda` where
+  the toolkit is present, and a config may name any of them. The
+  [Devices](https://goplasmatic.github.io/Orion/reference/configuration.html#devices)
+  section now says what that choice costs, because the intuition runs the wrong
+  way for the graphs this feature is for: against the 1479-parameter fixture on
+  an M-series host, `metal` is **36× slower per inference** than `cpu`
+  (0.20 ms vs 0.0055 ms) and **105× slower to load** (794 ms vs 7.5 ms) —
+  dispatch overhead is a per-call constant that a small graph cannot repay.
+  And an accelerator agrees with the CPU path to about `f32` epsilon rather
+  than to the bit (largest element-wise difference measured: 9.3e-8), so a
+  deployment whose answers are scored or audited should keep its fleet on one
+  device. `cpu` remains the default and the recommendation;
+  `model::runtimes::tract` pins the agreement and
+  `config_docs_drift_test` pins the documented device list to the code's.
 
 ### Changed
 

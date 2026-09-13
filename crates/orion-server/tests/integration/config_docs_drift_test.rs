@@ -967,3 +967,47 @@ fn config_example_loads_through_the_real_entry_point() {
     orion::config::load_config(Some(EXAMPLE_TOML))
         .expect("config.toml.example must load with no environment variables set");
 }
+
+/// The device names the reference documents for `models.runtimes.tract.device`
+/// are the ones the code knows.
+///
+/// The rest of this file pins config *keys*; this pins one key's *values*,
+/// because they are the one place a build's capabilities leak into prose. A
+/// runtime gaining a device (or tract dropping one) changes what an operator
+/// may write, and the `Devices` section — which carries the measured cost and
+/// the determinism caveat for each — is where they find out. `devices_of` is
+/// the static table config validation reads, so this compares the two lists
+/// that must agree and says which way they drifted.
+#[test]
+fn the_documented_tract_devices_are_the_ones_the_code_knows() {
+    let known = orion::model::runtimes::devices_of("tract").expect("tract is a known runtime");
+    let reference = read(REFERENCE_MD);
+
+    // The row and the section both enumerate them; the row is the normative
+    // one, so it is what is compared.
+    let row = reference
+        .lines()
+        .find(|line| line.contains("`models.runtimes.tract.device`"))
+        .expect("configuration.md must document models.runtimes.tract.device");
+
+    for device in known {
+        assert!(
+            row.contains(&format!("`{device}`")),
+            "device '{device}' is in devices_of(\"tract\") but not in the \
+             models.runtimes.tract.device row of configuration.md — document it, with what it \
+             costs and whether it reproduces the CPU path"
+        );
+    }
+    for quoted in row.split('`').skip(1).step_by(2) {
+        // The row also spells the setting's path, its `"cpu"` default and a
+        // section link; a device name is a bare lowercase word.
+        if !quoted.chars().all(|c| c.is_ascii_lowercase()) {
+            continue;
+        }
+        assert!(
+            known.contains(&quoted),
+            "configuration.md offers device '{quoted}' for tract, which devices_of(\"tract\") \
+             does not list"
+        );
+    }
+}

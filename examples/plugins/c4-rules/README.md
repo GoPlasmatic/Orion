@@ -53,6 +53,11 @@ cargo install wasm-tools
 The export is gated on the wasm target, which is what lets `cargo test` link
 the same source into a host test binary.
 
+The `plugin-sdk` CI job rebuilds this component, the `fixed-width` codec and
+the test fixture from source on every relevant change and runs the examples'
+offline cases against the fresh bytes, so a committed component and its source
+cannot drift.
+
 ## Try it without a server
 
 ```bash

@@ -1,4 +1,4 @@
-<!-- description: Upgrading Orion 1.7.x to 1.8.0 — the JSONLogic tensor operators are on, seven of their names collide with ordinary keys, and preflight lists where the $ escape is needed; engine.ops_budget is new and off. -->
+<!-- description: Upgrading Orion 1.7.x to 1.8.0: the JSONLogic tensor operators are on, seven names now collide with ordinary keys, and preflight says where $ is needed. -->
 # Upgrading to 1.8.0
 
 This page is for operators upgrading an existing Orion deployment from
@@ -116,3 +116,7 @@ is one add-and-compare per dispatched node.
   — the advisory ids and what each command reports.
 - [Configuration › Engine](../reference/configuration.md#engine) —
   `engine.ops_budget`.
+- [Models](../concepts/models.md) — the release's headline capability, and the
+  reason the tensor operators exist. It changes nothing about an existing
+  deployment: `models.enabled` is off by default, and a node with it off
+  behaves exactly as 1.7.x did.

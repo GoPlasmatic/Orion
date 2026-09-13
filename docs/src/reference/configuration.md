@@ -732,7 +732,7 @@ ceiling, never raise one.
 | `models.trust.public_keys` | `[]` | `ORION_MODELS__TRUST__PUBLIC_KEYS` | When set, a model row must carry an Ed25519 signature over its artifact digest by one of these keys, verified by the node that admits it. |
 | `models.default_runtime.onnx` | `"tract"` | — | The runtime a model whose manifest declares `format = "onnx"` runs on. One row per format — see below. The `onnx` row is required: it is the only format a manifest can declare today. |
 | `models.runtimes.tract.enabled` | `true` | — | Whether models may run on tract here. A disabled runtime keeps its entry so a row naming it is refused by name. |
-| `models.runtimes.tract.device` | `"cpu"` | — | The device tract executes on: `cpu`, `metal` or `cuda`. A device the build lacks fails the load with the reason, not the config. |
+| `models.runtimes.tract.device` | `"cpu"` | — | The device tract executes on: `cpu`, `metal` or `cuda`. A device the build lacks fails the load with the reason, not the config. Leave it at `cpu` unless you have measured otherwise — see [Devices](#devices). |
 | `models.overrides` | `[]` | — | Per-model ceilings — see below. |
 
 ```toml
@@ -766,6 +766,46 @@ runtime later is a row here, not a schema change. Each `[[models.overrides]]`
 block names a model `id` and any of `timeout_ms`, `max_concurrency`,
 `max_input_elements` and `max_output_elements`. A value above the host
 ceiling, a zero, or an `id` repeated across blocks is refused at startup.
+
+### Devices
+
+`cpu` is the default and, for the models Orion is built to serve, almost
+always the right answer. What a build actually offers is narrower than the
+three names the config accepts: `metal` needs an Apple target with a Metal
+device, `cuda` a tract compiled with it and a toolkit present. A device the
+config names but the build lacks is not a startup error — it fails the load
+with stage `device`, naming what this build does offer, so a fleet of mixed
+hardware runs one config.
+
+Two things to know before moving off `cpu`.
+
+**An accelerator is slower for a small graph.** Dispatch overhead is a
+per-call constant that does not shrink with the model, so it dominates
+exactly the workload [Models](../concepts/models.md) is for. Measured on an
+M-series host against the 1479-parameter `c4-tiny` fixture, release build:
+
+| Device | Load | Inference (median) |
+|---|---:|---:|
+| `cpu` | 7.5 ms | 0.0055 ms |
+| `metal` | 794 ms | 0.20 ms |
+
+Metal is 36× slower per inference here and 105× slower to load. The load is
+charged to a cold call's deadline, and `models.max_timeout_ms` defaults to
+1000 ms — so on an accelerator a cold call is close to that ceiling on its
+own, and `models.preload` (`referenced` by default) is doing more work for
+you than it is on `cpu`. A graph large enough to repay the dispatch is a
+graph worth checking against [what a model is for](../concepts/models.md#what-a-model-is-for)
+before it goes on the hot path at all. Measure with
+`orion-server clippy`'s sibling tooling — register the model, read
+`stats.probe_ms` from `GET /models/{id}` on a node configured each way.
+
+**An accelerator does not reproduce the CPU path bit for bit.** It computes
+the same thing in a different order, and in `f32` a different order is a
+different last digit: against the same fixture the largest element-wise
+difference between `metal` and `cpu` is ~9.3e-8. That is nothing for a score
+or a class boundary, and everything for a fleet that must agree exactly —
+see [what the graph guarantees](../concepts/models.md#the-model). Keep a
+scored or audited deployment on one device.
 
 ## Related
 

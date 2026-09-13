@@ -95,7 +95,7 @@ jobs:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: |
           docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml \
-            up -d --wait --no-build
+            -f deploy/ha/docker-compose.bucket.yml up -d --wait --no-build
 
       - name: Run the drill
         run: deploy/ha/rolling-drill.sh
@@ -114,14 +114,25 @@ jobs:
       - name: Run the cron drill
         run: deploy/ha/cron-drill.sh
 
+      # The model half: admission runs on one node and every other node loads
+      # the model on that verdict, but fetches and verifies the artifact for
+      # itself — so the data path keeps serving with the bucket stopped. The
+      # bucket is the overlay service started with the stack above.
+      - name: Run the model drill
+        run: deploy/ha/model-drill.sh
+
       - name: Stack logs on failure
         if: failure()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
-        run: docker compose -f docker-compose.ha.yml logs --tail 200
+        run: |
+          docker compose -f docker-compose.ha.yml \
+            -f deploy/ha/docker-compose.bucket.yml logs --tail 200
 
       - name: Tear down
         if: always()
         env:
           ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
-        run: docker compose -f docker-compose.ha.yml down -v
+        run: |
+          docker compose -f docker-compose.ha.yml \
+            -f deploy/ha/docker-compose.bucket.yml down -v

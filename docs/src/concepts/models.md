@@ -1,4 +1,4 @@
-<!-- description: A model is an ONNX graph registered by reference, admitted by every node that serves it, and run by one task function: what it can and cannot do, its lifecycle, and when to use one. -->
+<!-- description: An ONNX graph registered by reference, admitted by the node before it serves, and run by one task function: what it is for, its lifecycle, and its limits. -->
 # Models
 
 A model is an ONNX graph that a workflow runs inside Orion with one task
@@ -9,8 +9,8 @@ promoted between instances by reference, synced across a cluster by the
 config epoch, and served from the same runtime generation as everything
 else. What sets it apart from every other entity is that Orion never holds
 its bytes as the source of truth. A model row names an object in a bucket
-and the SHA-256 digest the bytes must hash to, and each node fetches,
-verifies and probes the artifact for itself before it will serve it.
+and the SHA-256 digest the bytes must hash to, and no node will serve an
+artifact it has not fetched from that bucket and hashed to the claim itself.
 
 ## What a model is for
 
@@ -69,7 +69,12 @@ expression engine, which is what lets two host rules hold:
   tensors and a manifest cannot reach the deployment's credentials. The
   graph itself sees tensors and nothing else — no connectors, no context,
   no I/O — and on the CPU path the runtime is deterministic: the same bytes
-  over the same inputs land the same outputs on every node.
+  over the same inputs land the same outputs on every node. An accelerator
+  (`metal`, `cuda`) reorders the same arithmetic and so agrees with the CPU
+  to about `f32` epsilon rather than to the bit; a deployment whose answers
+  are scored, compared or audited should keep its whole fleet on one
+  [device](../reference/configuration.md#devices), which is also the faster
+  choice for a graph this size.
 
 Whatever the manifest declares, the node measures: the parameter and node
 counts, the IR version and opset are read from the graph at admission and
@@ -119,7 +124,23 @@ with the stage it stopped at (`signature`, `gate`, `head`, `size`, `fetch`,
 until the verdict is `passed`**, and `orion-cli models create --wait`
 follows the verdict so a pipeline can stop on it. The identity of an
 artifact is its digest: claimed by the author, confirmed by every node that
-admits it, and what a generation, a trace and a package all name.
+holds the bytes, and what a generation, a trace and a package all name.
+
+**In a cluster, the verdict is shared and the bytes are not.** Admission runs
+once, on the node that took the registration, and the verdict lands on the
+row — so a peer learning of the activation through the `models` epoch scope
+loads the model on that verdict rather than re-running the sequence: it does
+not re-probe, and `admission.node` keeps naming the node that did. The bytes
+are each node's own. A peer's artifact cache starts empty, so its first load
+of that model — the `models.preload` warm-up, or the first inference — fetches
+the object through the storage connector and checks the digest before the
+graph runs. Two consequences worth planning for: a peer that cannot reach the
+bucket fails at the call, not at the activation, reporting `unavailable`
+with the fetch stage; and the probe's `stats.probe_ms`, `runtime` and
+`device` describe the admitting node, which is only the whole fleet's story
+where the fleet is homogeneous — see
+[Devices](../reference/configuration.md#devices).
+`cluster::model_activation_propagates_across_nodes` pins the whole sequence.
 
 ## On a node
 
@@ -133,7 +154,10 @@ across every runtime. Which runtime runs a model is the node's decision —
 `[models.default_runtime]` maps an artifact format to a runtime name, and
 `tract` is the one this build knows — so a manifest declares a format, not
 a runtime, and a task may name one explicitly only among the names the
-build compiled in.
+build compiled in. So is the device: `cpu` by default, with `metal` and
+`cuda` available where the build has them, and `cpu` the right answer for
+almost every graph that belongs on this path —
+[Devices](../reference/configuration.md#devices) has the measurements.
 
 `models.preload` decides what a generation loads before it serves: `none`
 (the first inference pays the load), `referenced` — the default: every

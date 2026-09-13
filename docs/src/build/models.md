@@ -1,4 +1,4 @@
-<!-- description: Serve an ONNX model from Orion: write the manifest, validate it offline, put the bytes in a bucket, register and admit it, activate it, and call it from a workflow with model_infer. -->
+<!-- description: Serve an ONNX model: write the manifest, check it offline, put the bytes in a bucket, register and admit it, and call it from a workflow with model_infer. -->
 # Serve a Model
 
 **Page type:** How-to · **Audience:** Service authors with a trained graph that belongs on the hot path
