@@ -2479,7 +2479,10 @@ mod tests {
         let observations = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader_stop = stop.clone();
         let reader_observations = observations.clone();
-        let reader = tokio::spawn(async move {
+        // A real OS thread, not a task: `require_serviceable` is a synchronous
+        // snapshot read, so the reader needs no runtime, and preemption is what
+        // lets it race the writer instead of depending on the writer to yield.
+        let reader = std::thread::spawn(move || {
             while !reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
                 match reader_registry.require_serviceable("flip-ch") {
                     // Serving, or refused as quarantined — both are whole
@@ -2492,28 +2495,45 @@ mod tests {
                          the serving map and the quarantine map disagreed"
                     ),
                 }
-                tokio::task::yield_now().await;
+                // Spin rather than yield: the writer below waits on this
+                // counter after every flip, and parking for a scheduler
+                // quantum each time made the test take three seconds.
+                std::hint::spin_loop();
             }
         });
 
-        // 300 reloads take well under a tenth of a second, so without this
-        // handshake the writer can finish and set `stop` before the reader is
-        // ever scheduled — the test would pass having observed nothing.
+        // Wait for the reader to be running before timing anything from it.
         while observations.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             tokio::task::yield_now().await;
         }
         let before_flips = observations.load(std::sync::atomic::Ordering::Relaxed);
-        for i in 0..300 {
+        // All 300 flips together take a few milliseconds — less than one
+        // scheduler quantum — so nothing makes the reader run *during* them on
+        // its own, and this test used to assert that it had. The writer waits
+        // for an answer against each generation instead, which is what turns
+        // the assertion below into a statement about the registry rather than
+        // about how the two happened to be scheduled.
+        'flips: for i in 0..300 {
             let channels = if i % 2 == 0 {
                 std::slice::from_ref(&broken)
             } else {
                 std::slice::from_ref(&good)
             };
             deps.reload(&registry, channels).await;
-            tokio::task::yield_now().await;
+            let seen = observations.load(std::sync::atomic::Ordering::Relaxed);
+            // Bounded, because the reader panicking on `Ok(None)` is the very
+            // failure this test exists to catch: leave the loop so `join`
+            // reports it, rather than waiting here for an answer never coming.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while observations.load(std::sync::atomic::Ordering::Relaxed) == seen {
+                if std::time::Instant::now() >= deadline {
+                    break 'flips;
+                }
+                tokio::task::yield_now().await;
+            }
         }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        reader.await.expect("reader must not panic");
+        reader.join().expect("reader must not panic");
         assert!(
             observations.load(std::sync::atomic::Ordering::Relaxed) > before_flips,
             "the reader must have read while the registry was being reloaded"
