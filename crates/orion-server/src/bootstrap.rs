@@ -348,6 +348,23 @@ pub async fn build_engine_components(
         config.engine.max_pool_cache_entries,
     ));
 
+    // The model node: the cache directory is created here so a misconfigured
+    // path fails the boot rather than the first admission. Before the
+    // handlers, because `model_infer` holds it.
+    let models = if config.models.enabled {
+        Some(Arc::new(
+            crate::model::ModelsRuntime::new(
+                &config.models,
+                crate::model::node_name(&config.cluster.instance_id),
+            )
+            .map_err(|e| crate::errors::OrionError::Config {
+                message: format!("models: {e}"),
+            })?,
+        ))
+    } else {
+        None
+    };
+
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
     let mut custom_functions = crate::engine::build_custom_functions(crate::engine::HandlerDeps {
         registry: connector_registry.clone(),
@@ -361,6 +378,8 @@ pub async fn build_engine_components(
         sql_pool_cache: sql_pool_cache.clone(),
         mongo_pool_cache: mongo_pool_cache.clone(),
         smtp_pool_cache: smtp_pool_cache.clone(),
+        models: models.clone(),
+        models_config: &config.models,
     });
 
     let (kafka_producer, kafka_producers) = setup_kafka_producer(
@@ -378,22 +397,6 @@ pub async fn build_engine_components(
                 }
             })?,
         )
-    } else {
-        None
-    };
-
-    // The model node: the cache directory is created here so a misconfigured
-    // path fails the boot rather than the first admission.
-    let models = if config.models.enabled {
-        Some(Arc::new(
-            crate::model::ModelsRuntime::new(
-                &config.models,
-                crate::model::node_name(&config.cluster.instance_id),
-            )
-            .map_err(|e| crate::errors::OrionError::Config {
-                message: format!("models: {e}"),
-            })?,
-        ))
     } else {
         None
     };
@@ -511,6 +514,39 @@ impl EngineComponents {
         for issue in &mut engine_issues {
             plugins.annotate(&mut issue.reason);
         }
+
+        let channel_names: std::collections::HashSet<&str> =
+            workflows.iter().map(|w| w.channel.as_str()).collect();
+        let channel_count = channel_names.len();
+
+        // The observer is attached here rather than on the placeholder at
+        // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
+        // carries it across every subsequent reload, so this is the only place
+        // it needs setting. Built before the channel estate because the model
+        // set below compiles its adapters on this engine's own expression
+        // engine, and a model that did not load quarantines channels.
+        let built_engine = builder
+            .with_workflows(workflows)
+            .build()?
+            .with_observer(Arc::new(crate::engine::MetricsObserver));
+
+        // The active models, compiled on the engine they will be evaluated
+        // by — or every one a load issue on a node without the runtime, or
+        // whose admission has not passed. A workflow naming one the set does
+        // not serve is quarantined with the reason, as with a plugin.
+        let model_rows = repos.models.list_active().await?;
+        let models = Arc::new(crate::model::ModelSet::load_active(
+            &model_rows,
+            &config.models,
+            serving.models.is_some(),
+            built_engine.datalogic(),
+        ));
+        engine_issues.extend(crate::runtime::models::load_issues(
+            &channels,
+            &active_workflows,
+            &models,
+        ));
+
         let previous = serving.runtime.load();
         let channels_snapshot = channel_loader
             .build(
@@ -549,23 +585,11 @@ impl EngineComponents {
             );
         }
 
-        let channel_names: std::collections::HashSet<&str> =
-            workflows.iter().map(|w| w.channel.as_str()).collect();
-
         tracing::info!(
             workflows = active_workflows.len(),
-            channels = channel_names.len(),
+            channels = channel_count,
             "Workflows loaded"
         );
-
-        // The observer is attached here rather than on the placeholder at
-        // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
-        // carries it across every subsequent reload, so this is the only place
-        // it needs setting.
-        let built_engine = builder
-            .with_workflows(workflows)
-            .build()?
-            .with_observer(Arc::new(crate::engine::MetricsObserver));
 
         // Generation 1: the engine and the channel estate built from the same
         // rows, published together. Nothing serves before this — the readiness
@@ -577,6 +601,20 @@ impl EngineComponents {
             Arc::new(channels_snapshot),
             functions,
             plugins,
+            models,
+        );
+
+        // Warm what `models.preload` selects, in the background — the same
+        // step the reload path takes after its publish.
+        crate::runtime::models::spawn_preload(
+            crate::runtime::models::PreloadDeps {
+                models: serving.models.clone(),
+                config: Arc::new(config.models.clone()),
+                registry: serving.connector_registry.clone(),
+                client: serving.http_client.clone(),
+            },
+            serving.runtime.load(),
+            &active_workflows,
         );
 
         Ok((serving, channels, active_workflows.len()))

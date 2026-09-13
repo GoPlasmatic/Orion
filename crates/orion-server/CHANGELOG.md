@@ -43,9 +43,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature over the digest mandatory, checked at registration and again at
   every admission. Off by default: with `models.enabled = false` the routes
   answer `400` and the node admits nothing. Cluster peers learn of a status
-  change through the new `models` epoch scope. The `model_infer` task
-  function that runs an admitted model arrives in the same release;
-  documented under [Models](https://goplasmatic.github.io/Orion/reference/admin-api.html#models).
+  change through the new `models` epoch scope. Documented under
+  [Models](https://goplasmatic.github.io/Orion/reference/admin-api.html#models).
+
+- **`model_infer`, the task function that runs an admitted model.** A
+  `compute` function: `model` (the id, or JSONLogic that routes to one per
+  message), `input` (the JSON root the manifest's adapters read — `{"var":
+  ""}` for the whole context), and optionally `runtime`, `output` (default
+  `temp_data.inference`), `raw` (write the outputs as tagged tensors for
+  chaining), `timeout_ms` and `stats_output` (id, version, digest, runtime,
+  device, parameters, artifact bytes, queue and inference time, whether the
+  call paid a cold load). Every generation carries a **model set**: each
+  active admitted row with its adapters and result compiled on that
+  generation's own expression engine — so they use the tensor family and
+  are priced by `engine.ops_budget` — and the reasons any row did not load
+  (`disabled`, `admission`, `manifest`, `adapter`). A workflow naming, by
+  literal id, a model the set does not serve is **quarantined** with that
+  reason, exactly as a workflow naming an unavailable plugin function is,
+  and `/health` lists it under `models.failed_to_load`; a computed `model`
+  is answered per message. Loaded sessions live in a process-wide cache
+  keyed by digest, runtime and device — single-flight, so ten cold requests
+  share one load; least-recently-used eviction to `models.max_loaded_bytes`;
+  an entry larger than the whole ceiling serves its call and is not kept —
+  and `models.preload` (`referenced` by default: what active workflows name;
+  `all`; `none`) warms it right after every publish without blocking the
+  publish. The sequence, per call: resolve the model and the runtime, run
+  the adapters (a message that does not marshal never pays a load), then
+  under the deadline — the shorter of `timeout_ms` and the model's ceiling
+  — load if cold, take a global and a per-model permit, run on the blocking
+  pool, check the outputs against the manifest, and write. Failures are
+  counted by the nine categories `orion_model_failures_total` already
+  documents; a `runtime` this build does not know is refused when the
+  workflow is written with the new field code `MODEL_RUNTIME_UNKNOWN`.
+  `GET /models/{id}` health gains `loaded` (with the runtime, device and
+  resident bytes), `evicted` and `failed`; `/health`'s `models` block gains
+  `loaded_bytes`, `loaded` and `failed_to_load`, and `components.models`
+  degrades when the generation could not carry an active model. Offline,
+  `dry-run` and `orion-server test` stub the function by name like a
+  connector function. Documented under
+  [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html#model_infer).
 
 - **The JSONLogic tensor family.** dataflow-rs 3.13's `tensor` feature is on,
   so every expression surface — conditions, `map` mappings, template fields,

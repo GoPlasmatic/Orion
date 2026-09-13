@@ -349,6 +349,7 @@ use super::db_write::DB_WRITE_FIELDS;
 use super::http_call::HTTP_CALL_FIELDS;
 use super::jwt_sign::JWT_SIGN_FIELDS;
 use super::jwt_verify::JWT_VERIFY_FIELDS;
+use super::model_infer::MODEL_INFER_FIELDS;
 use super::mongo_aggregate::MONGO_AGGREGATE_FIELDS;
 use super::mongo_read::MONGO_READ_FIELDS;
 use super::mongo_write::MONGO_WRITE_FIELDS;
@@ -509,6 +510,24 @@ const REGISTRY: &[FunctionSchema] = &[
         connector: None,
         deny_unknown: true,
         validate_static: Some(super::jwt_verify::validate_static_input),
+    },
+    FunctionSchema {
+        name: "model_infer",
+        description: "Run an admitted ONNX model on the named runtime: the manifest's adapters turn `input` into tensors and the outputs back into JSON.",
+        category: "compute",
+        // Strict like crypto: a typoed `raw` or `stats_output` would silently
+        // mean "the default", and the default writes somewhere else.
+        input_fields: MODEL_INFER_FIELDS,
+        writes: WriteShape::OutputPath {
+            default_root: Some(crate::model::handler::DEFAULT_OUTPUT),
+        },
+        // A function of the input and the model's weights; nothing outside
+        // the message changes. A retry re-runs the graph and lands the same
+        // tensors.
+        retry_safety: RetrySafety::Pure,
+        connector: None,
+        deny_unknown: true,
+        validate_static: Some(super::model_infer::validate_static_input),
     },
     FunctionSchema {
         name: "http_call",

@@ -1,4 +1,4 @@
-<!-- description: Every built-in Orion task function with its input schema: parse, map, filter, validation, HTTP and channel calls, SQL, MongoDB, cache, Kafka, email and JWT. -->
+<!-- description: Every built-in Orion task function with its input schema: parse, map, filter, validation, HTTP and channel calls, SQL, MongoDB, cache, Kafka, email, JWT and ONNX inference. -->
 # Function Reference
 
 A workflow is an ordered list of **tasks**, and every task invokes one built-in
@@ -60,6 +60,7 @@ on a running instance.
 | [`storage_presign`](#storage_presign) | Connector | Storage | Compute a time-limited presigned object URL — no data path |
 | [`storage_head`](#storage_head) | Connector | Storage | Object metadata (exists/size/etag) |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
+| [`model_infer`](#model_infer) | Compute | — | Run an admitted ONNX model: the manifest's adapters in, tensors through, the result out |
 | [`crypto`](#crypto) | Utility | — | Digests, HMAC compute/verify, password hashing |
 | [`jwt_sign`](#jwt_sign) | Utility | — | Mint a signed JWT (login, refresh, client assertions) |
 | [`jwt_verify`](#jwt_verify) | Utility | — | Verify a JWT against static keys or a JWKS |
@@ -67,8 +68,8 @@ on a running instance.
 > [!NOTE]
 > The **Category** column above groups the table for reading. It is not the wire
 > value: `GET /api/v1/admin/functions` serves a `category` of `connector`,
-> `control`, `data`, or `utility` for every function, so tooling should branch
-> on those rather than on the labels here.
+> `control`, `data`, `compute`, or `utility` for every function, so tooling
+> should branch on those rather than on the labels here.
 >
 > That endpoint serves **all** of the functions above. Functions contributed by
 > the engine carry `source: "engine"` and **no** `input_fields`, because Orion
@@ -104,6 +105,7 @@ happens, what does it cost?**
 |---|---|---|
 | [`crypto`](#crypto) | `pure` | Local computation. |
 | [`jwt_sign`](#jwt_sign) | `pure` | Local signing. |
+| [`model_infer`](#model_infer) | `pure` | The graph is a function of its inputs and its weights; a retry re-runs it and lands the same tensors. |
 | [`storage_presign`](#storage_presign) | `pure` | SigV4 arithmetic over the connector's credentials; zero bytes move. |
 | [`cache_read`](#cache_read) | `read` | |
 | [`db_read`](#db_read) | `read` | |
@@ -1249,6 +1251,89 @@ contains one, because the static list of targets cannot be complete:
 
 ---
 
+## Compute functions
+
+### `model_infer`
+
+Runs an admitted [model](./admin-api.md#models) — an ONNX artifact this node
+has fetched, verified and probed — and writes what the model's manifest makes
+of the outputs. The **manifest** does the marshalling: one *adapter* per
+declared input turns `input` into that input's tensor, and the *result*
+expression turns the output tensors back into JSON. The task names the model,
+hands over the JSON root the adapters read, and says where the result goes;
+the dtypes, the shapes and the expressions are the manifest's, so a workflow
+never spells a tensor. The adapters and the result are compiled on the
+serving generation's own expression engine, which is what lets them use the
+[tensor family](./expressions.md#tensors-tensor) and be priced by
+[`engine.ops_budget`](./configuration.md#engine).
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `model` | string \| JSONLogic | yes | — | The model id; the active version resolves. JSONLogic here is what lets one workflow route to any model |
+| `input` | any \| JSONLogic | yes | — | The JSON root every input adapter of the manifest sees. `{"var": ""}` hands the adapters the whole message context (`data`, `metadata`, `temp_data`) |
+| `runtime` | string | no | `[models.default_runtime]` for the model's format | Which runtime runs the graph: one of the compiled-in names (`tract`). A name this build does not know is refused when the workflow is written (`MODEL_RUNTIME_UNKNOWN`); a known one disabled on a node fails the call there |
+| `output` | string | no | `"temp_data.inference"` | Dotted result path |
+| `raw` | bool | no | `false` | Skip `result`; write `{name: tensor}` in wire form for chaining — `{"policy": {"tensor": {"dtype": "f32", "shape": [1, 7], "data": "<base64>"}}}` |
+| `timeout_ms` | number | no | the model's ceiling | Per-call deadline, capped by `models.max_timeout_ms` (or the model's `[[models.overrides]]` row); a cold load on first use is charged to it |
+| `stats_output` | string | no | not written | Path for `{id, version, digest, runtime, device, parameters, artifact_bytes, queued_ms, inference_ms, cold_load}` |
+
+```json
+{
+  "name": "model_infer",
+  "input": {
+    "model": "ada.c4-tiny",
+    "input": { "var": "" },
+    "output": "data.policy",
+    "stats_output": "temp_data.inference"
+  }
+}
+```
+
+With the `c4-tiny` manifest — one input `board` (`f32[1,2,6,7]`, adapter
+`{"tensor": [{"var": "data.board"}, "f32"]}`), one output `policy`
+(`f32[1,7]`), result `{"policy": {"to_list": [{"var": "policy"}]}}` — a
+message whose `data.board` is the nested list of a board gets
+`data.policy.policy` back as one row of seven numbers. A computed `model`
+routes per message; the dependants list on `GET /models/{id}/dependencies`
+and the quarantine below see only literal ids.
+
+**What the node checks, and how it refuses.** Nothing is written on a
+failure, and every failure is one of these categories — the label
+`orion_model_failures_total` counts by:
+
+| Category | When | Response |
+|---|---|---|
+| `caller_input` | `model` does not name a model, `input` is missing, or an adapter produced something other than the declared tensor — the wrong dtype or shape, or no tensor at all | `400`, the message names the input and the expected `dtype[shape]` |
+| `unavailable` | models are disabled on this node, the id has no active admitted version here, or the artifact could not be loaded into the runtime (the stage is named; the runtime's own text goes to the log) | `500` |
+| `runtime_unavailable` | the runtime named — or the default for the format — is not enabled on this node, or does not serve the format | `500` |
+| `adapter` | an adapter or the result expression failed to evaluate; an `engine.ops_budget` refusal keeps its `BUDGET_EXCEEDED` code | `400` |
+| `input_size` / `output_size` | more elements than `models.max_input_elements` / `max_output_elements` | `400` |
+| `permit` | no inference slot freed up before the deadline (`models.max_concurrent_inferences`, `models.max_concurrency_per_model`) | `400` |
+| `timeout` | the deadline elapsed — loading, waiting or running | `504`-class, the one retryable category |
+| `run` | the runtime failed mid-graph, or produced outputs that do not match the manifest | `500` |
+
+The adapters run **before** the load, so a message that does not marshal
+never pays a cold load, and the load — when the session is cold — counts
+against the call's deadline. Under `models.preload = "referenced"` (the
+default) a node warms every model an active workflow names right after
+publishing a generation, so the first request rarely finds one cold.
+
+**Availability is decided at load, not at the first request.** A workflow
+that names a model by literal id is [quarantined](./admin-api.md#models) —
+its channels refused with a `503` naming the model and why — while the
+node's generation cannot serve that model: no active admitted version,
+`models.enabled = false`, an adapter the serving engine refuses. `/health`
+lists the reason under `models.failed_to_load` and `channels.quarantined`.
+A computed `model` is checked per message instead and answers
+`unavailable`.
+
+**Offline.** `dry-run` and `orion-server test` do not run a model:
+`model_infer` is stubbed like a connector function, keyed by its name — the
+stub file's `"model_infer": {"*": …}` entry is what the task writes at
+`output`. A `--model-dir` that runs the artifact for real is planned.
+
+---
+
 ## Utility functions
 
 ### `crypto`
@@ -1373,8 +1458,8 @@ is.
 **Since:** Orion 1.2 for the complete function catalog.
 
 `GET /api/v1/admin/functions` returns the live input schema for the connector,
-composition, and utility functions (the data functions are provided by
-dataflow-rs and are not cataloged there). The [Orion agent skill](../ai/skills.md) points an assistant at
+composition, compute, and utility functions (the data functions are provided
+by dataflow-rs and are not cataloged there). The [Orion agent skill](../ai/skills.md) points an assistant at
 the same schemas to AI assistants so generated workflows use correct field names.
 
 **Plugin functions.** The functions of every active

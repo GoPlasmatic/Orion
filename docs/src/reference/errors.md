@@ -161,6 +161,7 @@ a drift test fails the build if `src/` emits one or if this table and the
 | `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
 | `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli.md#shared-definitions). |
 | `UNRESOLVED_SECRET_REF` | A secret reference (`env://NAME`, `vault://…`) sits in a workflow field that does not resolve one, so it would be sent on as that literal text — a URL spelled `env://API_BASE` is requested verbatim. Five fields resolve a reference: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and `audience`. See [Environment Variables](./environment-variables.md#where-a-reference-resolves). |
+| `MODEL_RUNTIME_UNKNOWN` | A [`model_infer`](./functions.md#model_infer) task names a `runtime` this build does not know. The runtimes are compiled in (`tract`), so the name is checked when the workflow is written rather than at its first inference; whether a known runtime is *enabled* on a node is that node's `[models.runtimes]` and is answered at execution. |
 
 ### How `path` is rooted
 

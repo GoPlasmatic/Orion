@@ -12,10 +12,11 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 use super::admission::{AdmissionJob, AdmissionQueue, QUEUE_CAPACITY};
 use super::artifact::ArtifactStore;
+use super::cache::LoadedCache;
 use super::runtimes::ModelRuntimes;
 use crate::config::ModelsConfig;
 
@@ -35,6 +36,17 @@ pub struct ModelsRuntime {
     /// names; which one a model gets is `[models.default_runtime]`'s row
     /// for the manifest's format.
     pub runtimes: Arc<ModelRuntimes>,
+    /// The sessions resident in a runtime right now, across every
+    /// generation, bounded by `models.max_loaded_bytes`.
+    pub loaded: Arc<LoadedCache>,
+    /// The process-wide inference slots — `models.max_concurrent_inferences`,
+    /// or the host's available parallelism when that is `0`. One per
+    /// process rather than per engine build, so a reload cannot hand out a
+    /// second set of permits over the same cores.
+    pub inference_permits: Arc<Semaphore>,
+    /// How many permits `inference_permits` was created with, for the live
+    /// gauge.
+    pub inference_slots: usize,
 }
 
 impl ModelsRuntime {
@@ -49,12 +61,19 @@ impl ModelsRuntime {
             )
         })?;
         let (admissions, receiver) = AdmissionQueue::new();
+        let inference_slots = match config.max_concurrent_inferences {
+            0 => std::thread::available_parallelism().map_or(1, std::num::NonZero::get),
+            n => n as usize,
+        };
         Ok(Self {
             store: Arc::new(ArtifactStore::new(cache_dir, config.max_cache_bytes)),
             admissions,
             receiver: Mutex::new(Some(receiver)),
             node,
             runtimes: Arc::new(ModelRuntimes::builtin(config)),
+            loaded: Arc::new(LoadedCache::new(config.max_loaded_bytes)),
+            inference_permits: Arc::new(Semaphore::new(inference_slots)),
+            inference_slots,
         })
     }
 
@@ -120,6 +139,21 @@ mod tests {
             .expect("onnx has a default");
         assert_eq!(tract.name(), "tract");
         assert_eq!(device, "cpu");
+        // Nothing resident yet, and the slots follow the config: `0` is the
+        // host's parallelism, anything else is the number itself.
+        assert_eq!(runtime.loaded.loaded_bytes(), 0);
+        assert_eq!(runtime.loaded.max_bytes(), config.max_loaded_bytes);
+        assert!(runtime.inference_slots >= 1);
+        assert_eq!(
+            runtime.inference_permits.available_permits(),
+            runtime.inference_slots
+        );
+        let four = ModelsConfig {
+            max_concurrent_inferences: 4,
+            ..config
+        };
+        let runtime = ModelsRuntime::new(&four, "n".to_string()).expect("creates the dir");
+        assert_eq!(runtime.inference_slots, 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

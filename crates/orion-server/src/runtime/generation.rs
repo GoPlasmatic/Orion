@@ -32,6 +32,7 @@ use arc_swap::ArcSwap;
 
 use crate::channel::ChannelSnapshot;
 use crate::engine::FunctionRegistry;
+use crate::model::ModelSet;
 use crate::plugin::PluginSet;
 
 /// One complete, self-consistent generation of everything a request is served
@@ -56,6 +57,12 @@ pub struct RuntimeGeneration {
     /// `/health` and `GET /plugins/{id}` read it, and a reload compares its
     /// fingerprint to decide whether the engine must be rebuilt.
     pub plugins: Arc<PluginSet>,
+    /// The models this generation can run — each with its adapters compiled
+    /// on `engine`'s own expression engine, which is why the set is rebuilt
+    /// with every generation and never carried across — and the reasons any
+    /// active row did not load. `model_infer` resolves through it; `/health`
+    /// and `GET /models/{id}` read it.
+    pub models: Arc<ModelSet>,
 }
 
 /// The live generation, swapped wholesale on reload.
@@ -103,6 +110,7 @@ impl RuntimeHandle {
                 channels,
                 functions,
                 plugins: Arc::new(PluginSet::empty()),
+                models: Arc::new(ModelSet::empty()),
             }),
             published: AtomicU64::new(0),
         }
@@ -121,16 +129,17 @@ impl RuntimeHandle {
 
     /// Publish the next generation. Returns its id.
     ///
-    /// The engine, the channels and the function registry must be built from
-    /// the same rows; taking them together is what makes that the only way to
-    /// say it. Readers already holding a generation finish on it; every load
-    /// after this returns the new one.
+    /// The engine, the channels, the function registry, the plugin set and
+    /// the model set must be built from the same rows; taking them together
+    /// is what makes that the only way to say it. Readers already holding a
+    /// generation finish on it; every load after this returns the new one.
     pub fn publish(
         &self,
         engine: Arc<dataflow_rs::Engine>,
         channels: Arc<ChannelSnapshot>,
         functions: Arc<FunctionRegistry>,
         plugins: Arc<PluginSet>,
+        models: Arc<ModelSet>,
     ) -> u64 {
         let id = self.published.fetch_add(1, Ordering::Relaxed) + 1;
         self.current.store(Arc::new(RuntimeGeneration {
@@ -139,6 +148,7 @@ impl RuntimeHandle {
             channels,
             functions,
             plugins,
+            models,
         }));
         id
     }
@@ -204,6 +214,7 @@ mod tests {
             Arc::new(ChannelSnapshot::empty()),
             FunctionRegistry::builtin().clone(),
             Arc::new(PluginSet::empty()),
+            Arc::new(ModelSet::empty()),
         );
 
         assert_eq!(held.id, 0);
@@ -233,6 +244,7 @@ mod tests {
                 Arc::new(ChannelSnapshot::empty()),
                 FunctionRegistry::builtin().clone(),
                 Arc::new(PluginSet::empty()),
+                Arc::new(ModelSet::empty()),
             );
             assert_eq!(id, expected);
             assert_eq!(handle.load().id, expected);

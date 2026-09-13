@@ -2,13 +2,13 @@
 //! holds its bytes, the admission that proves a node can run it, and the
 //! runtime abstraction an inference goes through.
 //!
-//! Sits beside `plugin` and below `runtime`, and names neither `server` nor
-//! `bootstrap` — nor `plugin`: the two subsystems share their digest and
-//! signature primitives through [`crate::crypto`] and nothing else. What a
-//! generation carries (the loaded models, the compiled adapters) and the
-//! `model_infer` task function that runs them are built on top of this
-//! module; this module is the part that does not need a database or an
-//! engine to exist.
+//! Sits beside `plugin`, and names neither `server` nor `bootstrap` — nor
+//! `plugin`: the two subsystems share their digest and signature primitives
+//! through [`crate::crypto`] and nothing else. It holds the node's handle
+//! the way `engine::functions::channel_call` does — the `model_infer`
+//! handler loads the serving generation once per call — and the generation
+//! holds the model set back, which is the same pair of edges `engine` and
+//! `runtime` already share.
 //!
 //! - [`manifest`]: the `orion:model@1.0.0` document — inputs, outputs, their
 //!   dtypes and shapes, and the JSONLogic adapters that marshal a message
@@ -26,15 +26,26 @@
 //!   devices this build knows, the name-keyed registry, and `tract`, the
 //!   one implementation.
 //! - [`node`]: what one node holds for all of the above — the store, the
-//!   admission queue and the name its verdicts carry — built at boot when
-//!   `models.enabled` and absent otherwise.
+//!   admission queue, the loaded-session cache, the inference slots and the
+//!   name its verdicts carry — built at boot when `models.enabled` and
+//!   absent otherwise.
+//! - [`loader`]: the model half of a generation — every active row that can
+//!   serve here, its adapters and result compiled on that generation's
+//!   engine, and the reasons any row did not load.
+//! - [`cache`]: the sessions resident in a runtime, process-wide,
+//!   single-flight per digest and bounded by `models.max_loaded_bytes`.
+//! - [`handler`]: the `model_infer` task function, and the load path it
+//!   shares with the preload.
 //! - [`limits`] and [`error`]: the effective ceilings for one model and the
 //!   categories an inference can fail in.
 
 pub mod admission;
 pub mod artifact;
+pub mod cache;
 pub mod error;
+pub mod handler;
 pub mod limits;
+pub mod loader;
 pub mod manifest;
 pub mod node;
 pub mod onnx;
@@ -45,8 +56,11 @@ pub use admission::{
     admission_json, admit,
 };
 pub use artifact::{ArtifactRef, ArtifactStore, FetchError, HeadInfo};
+pub use cache::{CacheKey, LoadedCache};
 pub use error::{Category, Failure};
+pub use handler::{ModelInferHandler, load_model};
 pub use limits::Limits;
+pub use loader::{ModelEntry, ModelLoadIssue, ModelSet, literal_references};
 pub use manifest::{ABI, InputDecl, Manifest, OutputDecl, is_model_manifest};
 pub use node::{ModelsRuntime, node_name};
 pub use onnx::{GraphStats, read_stats};

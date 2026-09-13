@@ -38,6 +38,7 @@ Three principles shape the setup:
 | Touched the MSRV surface (new language features) | `cargo +1.98 check --workspace --all-targets` — `just check` does **not** cover this; CI runs it as its own job |
 | Touched the examples | `just workflow-tests` + `./examples/deploy.sh <name>` against a local server (`ORION_PLUGINS__ENABLED=true` for `fixed-width-statement`) |
 | Touched the plugin sandbox, the manifest, the SDK, or the WIT | `cargo test --test integration plugin_runtime_test admin_plugins_test plugin_abi_cases_test plugin_sdk_test`; after a guest or SDK change, `crates/orion-server/tests/fixtures/plugins/build.sh` and `examples/plugins/fixed-width/build.sh` (needs `wasm32-unknown-unknown` + `wasm-tools`) and commit the components — the `plugin-sdk` CI job rebuilds both from source and runs the ABI cases against the fresh bytes |
+| Touched the model runtime, the manifest, the loader, the session cache or `model_infer` | `cargo test --lib -- model:: runtime::models` and `cargo test --test integration admin_models_test model_infer_test` — the fixture graph in `tests/fixtures/models/c4-tiny/` is served by an in-process bucket, so the load, the adapters and the quarantine run for real; `function_registry_test` and `functions_docs_drift_test` pin the function's table and its page |
 | Release session | `RELEASING.md` — rc pipeline rehearsal, benchmarks, HA drill |
 
 ## Layer 1 — unit tests (every crate)

@@ -704,6 +704,18 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
         // G13: same wire code as `OrionError::Timeout` — a caller keying on
         // the 504 `code` must not have to know which layer timed out.
         DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, codes::TIMEOUT, msg.clone()),
+        // `engine.ops_budget` crossed while a handler resolved one of its
+        // template fields or a model adapter. A configured cap, like a result
+        // set over `max_limit`: the same `400` with the message preserved that
+        // every other `Limit`-class refusal gets, because "N operations
+        // charged against a budget of M" is the guidance, and the task-level
+        // code `BUDGET_EXCEEDED` stays on the trace. It used to fall through
+        // to the arm below and go out as a sanitised 500.
+        DataflowError::BudgetExceeded(msg) => (
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_ERROR,
+            msg.clone(),
+        ),
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
@@ -764,6 +776,17 @@ mod tests {
         ));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_engine_budget_returns_400_with_the_message() {
+        let err = OrionError::Engine(dataflow_rs::DataflowError::BudgetExceeded(
+            "crypto: Operation budget exceeded: 86 charged against 20".to_string(),
+        ));
+        let (status, code, message) = err.response_parts();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, codes::VALIDATION_ERROR);
+        assert!(message.contains("budget"), "{message}");
     }
 
     #[test]

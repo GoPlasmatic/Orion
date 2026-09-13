@@ -266,8 +266,9 @@ pub struct ModelHealth {
     /// `disabled` (models are off on this node); `pending` or `rejected`
     /// while the version's admission has not passed; `admitted` for the
     /// active version and `inactive` for a draft or archived one; and, on a
-    /// node that loads models, `loaded` or `failed` for the version its
-    /// generation carries.
+    /// node that loads models, `loaded` (resident in a runtime), `evicted`
+    /// (was resident, dropped under `models.max_loaded_bytes`) or `failed`
+    /// (the generation could not carry it) for the version it serves.
     #[serde(default)]
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

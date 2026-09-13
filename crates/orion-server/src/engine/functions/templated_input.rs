@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 
+use dataflow_rs::datavalue::OwnedDataValue;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::{Template, TemplateCompiler};
@@ -195,6 +196,34 @@ impl TemplatedInput {
         self.raw.get(field)
     }
 
+    /// This field's value for this message as the engine's own value type,
+    /// or `None` when the task does not set it.
+    ///
+    /// [`Self::value_of`] and [`Self::template_value`] both bridge the
+    /// resolved value to `serde_json::Value`, which is what every field
+    /// carrying JSON wants — and what a *tensor* must not go through: the
+    /// bridge serialises it to its base64 wire form, and the handler that
+    /// asked for a tensor would be handed a string. `model_infer`'s `model`
+    /// and `input` read through here so an adapter sees the value itself.
+    ///
+    /// A compiled template is resolved; a field never compiled (an input
+    /// built by hand in a test) reads as the literal it was written as.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::value_of`].
+    pub fn resolve_owned(
+        &self,
+        field: &str,
+        ctx: &TaskContext<'_>,
+    ) -> Option<Result<OwnedDataValue, DataflowError>> {
+        let raw = self.raw.get(field)?;
+        Some(match self.templates.get(field) {
+            Some(template) => template.resolve(ctx),
+            None => Ok(OwnedDataValue::from(raw)),
+        })
+    }
+
     /// This field's value for this message, or `None` when the task does not
     /// set it.
     ///
@@ -280,6 +309,16 @@ mod tests {
             json!("orders")
         );
         assert!(input.value_of("absent", "cache_read", &ctx).is_none());
+        // The owned form reads the same literal without a JSON bridge.
+        assert_eq!(
+            input
+                .resolve_owned("n", &ctx)
+                .expect("set")
+                .expect("reads")
+                .as_i64(),
+            Some(3)
+        );
+        assert!(input.resolve_owned("absent", &ctx).is_none());
     }
 
     /// `raw` is the authored document, so a field read as written — a

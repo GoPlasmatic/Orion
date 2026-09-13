@@ -134,7 +134,9 @@ twenty operators that build one from JSON, reshape it, and read it back out.
 There is deliberately **no arithmetic** here; every operator's cost is
 proportional to the data it moves, which is what lets
 [`engine.ops_budget`](./configuration.md#engine) price it. Compute belongs in
-the model the tensor is handed to, not in the expression that builds it.
+the model the tensor is handed to — [`model_infer`](./functions.md#model_infer)
+runs one, its manifest's adapters building the tensors with exactly these
+operators — not in the expression that builds it.
 
 On the wire a tensor is `{"tensor": {"dtype": "f32", "shape": [1, 7], "data":
 "<base64>"}}`, which is what a response body or a trace snapshot shows and what

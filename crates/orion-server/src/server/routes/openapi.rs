@@ -928,7 +928,7 @@ pub(crate) struct TraceDetail {
 pub(crate) struct FunctionSchemaItem {
     name: String,
     description: String,
-    /// `connector`, `control`, `data`, or `utility`.
+    /// `connector`, `control`, `data`, `compute`, or `utility`.
     category: String,
     /// `orion` for a handler Orion implements and input-schema validates,
     /// `engine` for a dataflow-rs built-in the engine executes itself.

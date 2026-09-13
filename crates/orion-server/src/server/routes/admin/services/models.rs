@@ -19,12 +19,6 @@ use crate::storage::models::Model;
 use crate::storage::repositories::models::{ModelArtifactRef, ModelDraft};
 use crate::storage::repositories::workflows::WorkflowRepository;
 
-/// The task function that runs a model, and the input field that names it.
-/// The function itself arrives with the runtime; the dependants walk reads
-/// the authored task, so it needs only the spelling.
-pub(crate) const INFER_FUNCTION: &str = "model_infer";
-pub(crate) const INFER_MODEL_FIELD: &str = "model";
-
 /// Everything about one registration the synchronous half can decide.
 #[derive(Debug)]
 pub(crate) struct Prepared {
@@ -293,23 +287,12 @@ pub(crate) struct ModelDependant {
 /// The ids of the tasks in `tasks` that call `model_infer` with `model_id`
 /// as a literal `input.model`. A computed reference — an expression, a
 /// template — is not seen: the model it resolves to is decided per message.
+/// The walk itself is the loader's, so the dependants list and the
+/// quarantine read the same references.
 pub(crate) fn literal_references(tasks: &Value, model_id: &str) -> Vec<String> {
-    crate::engine::walk_steps(tasks)
-        .tasks
+    crate::model::literal_references(tasks)
         .into_iter()
-        .filter_map(|(path, task)| {
-            let function = task.get("function")?;
-            if function.get("name").and_then(Value::as_str) != Some(INFER_FUNCTION) {
-                return None;
-            }
-            let named = function.get("input")?.get(INFER_MODEL_FIELD)?.as_str()?;
-            (named == model_id).then(|| {
-                task.get("id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or(path)
-            })
-        })
+        .filter_map(|(task_id, model)| (model == model_id).then_some(task_id))
         .collect()
 }
 
@@ -365,14 +348,13 @@ pub(crate) async fn ensure_no_active_dependants(
 
 /// Whether the active workflows naming this version still fit it.
 ///
-/// Always `Ok` for now, and deliberately so: the plugin twin checks each
+/// Always `Ok`, and deliberately so: the plugin twin checks each
 /// dependant's authored input against the version's schema, but what a
 /// `model_infer` task hands a model is decided by the manifest's adapters
 /// at inference time, not by the task's input shape — so there is no
-/// authored input to check a declared input against here. When the task
-/// function exists, a version whose adapters no longer produce what the
-/// graph expects is caught by admission's probe, on the row, before this
-/// gate runs.
+/// authored input to check a declared input against here. A version whose
+/// adapters no longer produce what the graph expects is caught by
+/// admission's probe, on the row, before this gate runs.
 pub(crate) fn ensure_dependants_accept(_draft: &Model) -> Result<(), OrionError> {
     Ok(())
 }

@@ -187,6 +187,26 @@ pub async fn reload_engine_with_opts(
             )
         };
 
+        // The model half, compiled on the engine just built — never carried
+        // across, because a `datalogic` program is bound to the engine that
+        // compiled it and both paths above produced a fresh one. A workflow
+        // naming a model the set does not serve is quarantined with the
+        // reason, the way a workflow naming an unavailable plugin function
+        // is.
+        let model_rows = state.repos.models.list_active().await?;
+        let models = Arc::new(crate::model::ModelSet::load_active(
+            &model_rows,
+            &state.config.models,
+            state.models.is_some(),
+            new_engine.datalogic(),
+        ));
+        let mut engine_issues = engine_issues;
+        engine_issues.extend(super::models::load_issues(
+            &channels,
+            &active_workflows,
+            &models,
+        ));
+
         // Channels that fail to load are quarantined — refused at every
         // ingress — and the reload proceeds (F35). It used to abort here,
         // which meant one unparseable `config_json` failed every activate,
@@ -220,10 +240,22 @@ pub async fn reload_engine_with_opts(
         // before the Kafka restart below — and no window in which a request is
         // admitted by one generation and executed by another, which is what
         // two stores here could not avoid however they were ordered.
-        let generation =
-            state
-                .runtime
-                .publish(new_engine, Arc::new(new_channels), functions, plugins);
+        let generation = state.runtime.publish(
+            new_engine,
+            Arc::new(new_channels),
+            functions,
+            plugins,
+            models,
+        );
+
+        // Warm what `models.preload` selects, off the publish's critical
+        // path: the generation serves now, and a request that arrives before
+        // its model is resident shares the load in flight.
+        super::models::spawn_preload(
+            super::models::PreloadDeps::from_state(state),
+            state.runtime.load(),
+            &active_workflows,
+        );
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

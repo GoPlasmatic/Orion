@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::functions;
 use crate::connector::ConnectorRegistry;
 
-/// Everything the ten custom handlers need to be constructed.
+/// Everything Orion's own handlers need to be constructed.
 ///
 /// F44: this was ten positional parameters carrying
 /// `#[allow(clippy::too_many_arguments)]`, and the full call was written out
@@ -41,6 +41,12 @@ pub struct HandlerDeps<'a> {
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     pub smtp_pool_cache: Arc<crate::connector::smtp_pool::SmtpPoolCache>,
+    /// The node's model runtime — the loaded-session cache, the inference
+    /// slots, the runtimes — for `model_infer`. `None` with
+    /// `models.enabled = false`, which the handler answers as `unavailable`
+    /// rather than the build refusing the function.
+    pub models: Option<Arc<crate::model::ModelsRuntime>>,
+    pub models_config: &'a crate::config::ModelsConfig,
 }
 
 /// Register one connector handler, wrapped and keyed by its own name.
@@ -64,11 +70,11 @@ fn register<H: functions::connector_handler::ConnectorHandler>(
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
-/// Registers the nine Orion-specific handlers (`http_call`, `channel_call`,
-/// `db_read`, `db_write`, `data_query`, `data_write`, `cache_read`,
-/// `cache_write`, `mongo_read`) plus a stub `publish_kafka`. Call
-/// [`register_kafka_publisher`] afterwards to swap the stub for the real
-/// Kafka-backed handler once the producer is initialised.
+/// Registers every `Source::Orion` entry of the registry — the connector
+/// handlers, `channel_call`, the self-contained trio, `model_infer` — plus a
+/// stub `publish_kafka`. Call [`register_kafka_publisher`] afterwards to swap
+/// the stub for the real Kafka-backed handler once the producer is
+/// initialised.
 pub fn build_custom_functions(
     deps: HandlerDeps<'_>,
 ) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
@@ -84,6 +90,8 @@ pub fn build_custom_functions(
         sql_pool_cache,
         mongo_pool_cache,
         smtp_pool_cache,
+        models,
+        models_config,
     } = deps;
     let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
@@ -98,9 +106,23 @@ pub fn build_custom_functions(
     fns.insert(
         "channel_call".to_string(),
         Box::new(functions::channel_call::ChannelCallHandler {
-            runtime,
+            runtime: runtime.clone(),
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
+        }),
+    );
+
+    // The other handler that dispatches through the serving generation: it
+    // takes the model set and the expression engine off one load, and the
+    // loaded sessions and permits off the node.
+    fns.insert(
+        crate::model::handler::NAME.to_string(),
+        Box::new(crate::model::ModelInferHandler {
+            runtime,
+            models,
+            config: Arc::new(models_config.clone()),
+            registry: registry.clone(),
+            client: client.clone(),
         }),
     );
 

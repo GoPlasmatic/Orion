@@ -9756,7 +9756,7 @@
                 },
                 "category": {
                   "type": "string",
-                  "description": "`connector`, `control`, `data`, or `utility`."
+                  "description": "`connector`, `control`, `data`, `compute`, or `utility`."
                 },
                 "description": {
                   "type": "string"
@@ -10415,7 +10415,7 @@
           },
           "category": {
             "type": "string",
-            "description": "`connector`, `control`, `data`, or `utility`."
+            "description": "`connector`, `control`, `data`, `compute`, or `utility`."
           },
           "description": {
             "type": "string"
@@ -10735,7 +10735,7 @@
           },
           "state": {
             "type": "string",
-            "description": "`disabled` (models are off on this node); `pending` or `rejected`\nwhile the version's admission has not passed; `admitted` for the\nactive version and `inactive` for a draft or archived one; and, on a\nnode that loads models, `loaded` or `failed` for the version its\ngeneration carries."
+            "description": "`disabled` (models are off on this node); `pending` or `rejected`\nwhile the version's admission has not passed; `admitted` for the\nactive version and `inactive` for a draft or archived one; and, on a\nnode that loads models, `loaded` (resident in a runtime), `evicted`\n(was resident, dropped under `models.max_loaded_bytes`) or `failed`\n(the generation could not carry it) for the version it serves."
           }
         }
       },

@@ -715,7 +715,7 @@ mod tests {
             count += 1;
         }
         assert_eq!(
-            count, 18,
+            count, 19,
             "every Orion handler is stubbable, and only those"
         );
     }

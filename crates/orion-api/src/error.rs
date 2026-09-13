@@ -83,6 +83,12 @@ pub mod field_codes {
     /// read as `{"var": "metadata.vars.<name>"}`, and key material under
     /// `[secrets]`, read as `{"secret": "<name>"}` in one of the five fields.
     pub const UNRESOLVED_SECRET_REF: &str = "UNRESOLVED_SECRET_REF";
+    /// A `model_infer` task names a `runtime` this build does not know. The
+    /// runtimes are compiled in (`tract`), so the name is checked at
+    /// authoring time against that list rather than at the first inference;
+    /// whether the runtime is *enabled* on a node is that node's config and
+    /// is answered at execution.
+    pub const MODEL_RUNTIME_UNKNOWN: &str = "MODEL_RUNTIME_UNKNOWN";
 
     /// Every code above, for exhaustiveness checks.
     pub const ALL: &[&str] = &[
@@ -97,6 +103,7 @@ pub mod field_codes {
         UNKNOWN_FUNCTION,
         UNCOMPILED_SOURCE,
         UNRESOLVED_SECRET_REF,
+        MODEL_RUNTIME_UNKNOWN,
     ];
 }
 

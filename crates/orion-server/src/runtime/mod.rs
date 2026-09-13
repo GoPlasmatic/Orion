@@ -18,6 +18,13 @@
 //! from the registry and recording the verdict through the repository — the
 //! two things `model::admission` deliberately takes as parameters.
 //!
+//! [`models`] is the generation-side of the model subsystem: the quarantine
+//! of a workflow that names a model the generation cannot serve — the same
+//! treatment a workflow naming an unavailable plugin function gets — and the
+//! preload that warms what a published generation will run. Both need the
+//! channel rows, the workflow rows and the node's live components, which is
+//! why they are here and not in `model/`.
+//!
 //! [`reload`] rebuilds that generation, and restarts the Kafka consumer that
 //! rides along with it. It was `engine::reload`, and that was the largest of
 //! the upward dependency edges in the tree: a module the whole request path
@@ -29,6 +36,7 @@
 
 pub mod generation;
 pub mod model_admission;
+pub mod models;
 pub mod reload;
 pub mod tasks;
 
@@ -83,5 +91,7 @@ pub fn handler_deps(state: &crate::server::state::AppState) -> crate::engine::Ha
         sql_pool_cache: state.caches.sql_pool_cache.clone(),
         mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
         smtp_pool_cache: state.caches.smtp_pool_cache.clone(),
+        models: state.models.clone(),
+        models_config: &state.config.models,
     }
 }

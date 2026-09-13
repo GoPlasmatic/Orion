@@ -19,6 +19,7 @@ pub mod db_read;
 pub mod db_write;
 pub mod jwt_sign;
 pub mod jwt_verify;
+pub mod model_infer;
 pub mod mongo_aggregate;
 pub mod mongo_common;
 pub mod mongo_read;

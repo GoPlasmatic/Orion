@@ -106,22 +106,32 @@ fn admission_of(row: &Model) -> Result<ModelAdmission, OrionError> {
 
 /// This node's view of a version, for the single-entity read: `disabled`
 /// without the runtime; `pending` or `rejected` from the verdict until it
-/// passes; then `admitted` for the active version and `inactive` for any
-/// other. The loading states arrive with the runtime that loads.
+/// passes; then `inactive` for a draft or archived version, and for the
+/// active one what the serving generation says — `loaded` (with the
+/// runtime, device and resident bytes) while a runtime holds it, `evicted`
+/// when it was held and dropped, `failed` when the generation could not
+/// carry it — or `admitted` when nothing has asked for it yet.
 fn health_of(state: &AppState, row: &Model) -> Result<ModelHealth, OrionError> {
     let mut health = ModelHealth::default();
-    if state.models.is_none() {
+    let Some(models) = &state.models else {
         health.state = "disabled".to_string();
         return Ok(health);
-    }
+    };
     let admission = admission_of(row)?;
     match admission.state.as_str() {
         ADMISSION_PASSED => {
-            health.state = if row.status == EntityStatus::Active.as_str() {
-                "admitted".to_string()
-            } else {
-                "inactive".to_string()
-            };
+            if row.status != EntityStatus::Active.as_str() {
+                health.state = "inactive".to_string();
+                return Ok(health);
+            }
+            let generation = state.runtime.load();
+            health = generation
+                .models
+                .health_of(&row.model_id, row.version, &models.loaded)
+                .unwrap_or_else(|| ModelHealth {
+                    state: "admitted".to_string(),
+                    ..ModelHealth::default()
+                });
         }
         "failed" => {
             health.state = "rejected".to_string();
