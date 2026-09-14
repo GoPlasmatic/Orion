@@ -22,8 +22,6 @@ git-repository-url = "https://github.com/GoPlasmatic/Orion"
 # reads the reference section in order. Titles alone are what you scan for.
 no-section-label = true
 
-# The edit template makes the menu-bar pencil open the exact Markdown source.
-
 # Collapse the sidebar to its groups, expanding only the branch the reader is
 # in. Fold was off while the book was 82 flat chapters; the reference estate is
 # now one page per function, per command, per connector type and per config
