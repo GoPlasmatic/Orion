@@ -52,6 +52,22 @@ The *adapter* is evaluated against the JSON the task hands over and must produce
 
 `name` is the model id: lowercase labels joined by `.`, with `orion.*` reserved. `version` is yours and informational; Orion assigns the entity version. `artifact` is the file beside the manifest, read by offline tooling and the CLI only. A registration names the bytes by bucket, key and digest. An adapter may not read `{"secret": …}`, `now` or `random`: a replay must reproduce the same tensors, and a manifest's author is not the secrets' owner.
 
+### A variable axis
+
+A dimension may be a **name** instead of a count, for a graph exported with a dynamic axis:
+
+```json
+{
+  "inputs": [{ "name": "x", "dtype": "f32", "shape": ["N", 3] }],
+  "outputs": [{ "name": "y", "dtype": "f32", "shape": ["N", 3] }],
+  "probe_dims": { "N": 2 }
+}
+```
+
+A name binds to whatever the call brings on its first occurrence, and every later occurrence — in another input, or in an output — must equal that binding. So `["N", 3]` on the output means *the same* N the input had, while the 3 stays exact: naming one axis costs nothing on the others. One session serves every size, so this is not the same as registering the model once per shape, and what bounds a single call is `models.max_input_elements` rather than the declaration.
+
+`probe_dims` is only for admission, which needs concrete tensors to run its five probe inferences. A name it leaves out is probed at 1; a graph needing more — a convolution with a kernel wider than its input — says so there. The binding is recorded in `stats.probe_dims`, because `probe_ms` over a variable axis means nothing without the size behind it.
+
 ## 3. Validate it offline
 
 Point the offline runners at the directory holding the manifest and the artifact:

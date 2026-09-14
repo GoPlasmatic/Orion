@@ -10893,6 +10893,18 @@
             "description": "Every value the graph carries, counted from the graph itself: each\ninitializer, each tensor or list of numbers a node holds in an\nattribute, through every subgraph body and every model-local\nfunction. Moving weights from one of those fields to another does\nnot move this number, which is what lets `models.max_parameters`\nbound it.",
             "minimum": 0
           },
+          "probe_dims": {
+            "type": "object",
+            "description": "What each named dimension in the manifest's shapes was bound to for\nthe probe. Absent when the manifest declares fixed shapes, which is\nmost of them; present when it does not, because `probe_ms` over a\nvariable axis says nothing without the size behind it.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "probe_ms": {
             "type": "number",
             "format": "double",

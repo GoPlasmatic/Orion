@@ -1,0 +1,23 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.scale",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "scale.onnx",
+  "description": "y = x * 2 over an [N, 3] input, N decided by the call",
+  "inputs": [
+    {
+      "name": "x",
+      "dtype": "f32",
+      "shape": ["N", 3],
+      "adapter": { "tensor": [{ "var": "data.x" }, "f32"] }
+    }
+  ],
+  "outputs": [
+    { "name": "y", "dtype": "f32", "shape": ["N", 3] }
+  ],
+  "probe_dims": { "N": 2 },
+  "result": {
+    "y": { "to_list": [{ "var": "y" }] }
+  }
+}

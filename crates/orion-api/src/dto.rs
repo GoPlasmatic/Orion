@@ -247,6 +247,12 @@ pub struct ModelStats {
     /// before this was recorded.
     #[serde(default)]
     pub operators: Vec<String>,
+    /// What each named dimension in the manifest's shapes was bound to for
+    /// the probe. Absent when the manifest declares fixed shapes, which is
+    /// most of them; present when it does not, because `probe_ms` over a
+    /// variable axis says nothing without the size behind it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub probe_dims: std::collections::BTreeMap<String, u64>,
     /// The artifact's size as fetched — the confirmed twin of
     /// [`ModelArtifactRef::size`].
     #[serde(default)]

@@ -347,8 +347,10 @@ fn caller_input(labels: Option<&Labels>, message: String) -> Refused {
     refuse(labels, Failure::new(Category::CallerInput, message))
 }
 
-/// `[1,2,6,7]` as `1x2x6x7`-style text for a message.
-fn dims(shape: &[usize]) -> String {
+/// `[1,2,6,7]` as `1x2x6x7`-style text for a message. Takes a declared
+/// shape as readily as an actual one, so a refusal can put `1,2,H,7`
+/// beside the `1,2,5,7` that did not fit it.
+fn dims<D: std::fmt::Display>(shape: &[D]) -> String {
     shape
         .iter()
         .map(ToString::to_string)
@@ -608,6 +610,9 @@ impl ModelInferHandler {
         // neither `queued_ms` nor `inference_ms` — and without this it was
         // in nothing at all.
         let mut charged = Charged::default();
+        // What this call binds each named dimension to, filled by the
+        // inputs in order and then held against the outputs.
+        let mut bindings = crate::model::manifest::Bindings::default();
         for ((name, logic), decl) in entry.adapters.iter().zip(&entry.manifest.inputs) {
             let (value, ops) = evaluate(datalogic, logic, &root).map_err(|e| {
                 evaluation_refused(
@@ -632,7 +637,12 @@ impl ModelInferHandler {
                     ));
                 }
             };
-            if tensor.dtype().name() != decl.dtype || tensor.shape() != decl.shape.as_slice() {
+            // The declared shape may name a dimension, and a name binds on
+            // its first occurrence in the call: every later one — in
+            // another input, or in an output below — is held to it.
+            let fits = tensor.dtype().name() == decl.dtype
+                && bindings.check(&decl.shape, tensor.shape()).is_ok();
+            if !fits {
                 return Err(caller_input(
                     Some(&labels),
                     format!(
@@ -761,7 +771,11 @@ impl ModelInferHandler {
         }
         let mut output_elements = 0usize;
         for (decl, tensor) in entry.manifest.outputs.iter().zip(&outputs) {
-            if tensor.dtype().name() != decl.dtype || tensor.shape() != decl.shape.as_slice() {
+            // Against the same bindings the inputs filled, so `[…, "H"]` on
+            // an output means the H the call actually brought.
+            let fits = tensor.dtype().name() == decl.dtype
+                && bindings.check(&decl.shape, tensor.shape()).is_ok();
+            if !fits {
                 return Err(refuse(
                     Some(&labels),
                     Failure::new(
@@ -1055,7 +1069,17 @@ mod tests {
     #[test]
     fn messages_spell_shapes_and_kinds() {
         assert_eq!(dims(&[1, 2, 6, 7]), "1,2,6,7");
-        assert_eq!(dims(&[]), "");
+        assert_eq!(dims::<usize>(&[]), "");
+        // A declared shape prints the same way, a named axis by its name,
+        // so a refusal can put the declaration beside what arrived.
+        assert_eq!(dims(&crate::model::manifest::fixed_shape(&[1, 7])), "1,7");
+        assert_eq!(
+            dims(&[
+                crate::model::manifest::Dim::Fixed(1),
+                crate::model::manifest::Dim::Named("H".to_string()),
+            ]),
+            "1,H"
+        );
         assert_eq!(kind_of(&OwnedDataValue::Null), "null");
         assert_eq!(kind_of(&OwnedDataValue::from(&json!([1]))), "a list");
         assert_eq!(

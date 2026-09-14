@@ -34,6 +34,7 @@
 //! the generation that runs them, which is built elsewhere with the engine
 //! that will evaluate them.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use dataflow_rs::datalogic_rs as datalogic;
@@ -128,6 +129,17 @@ pub struct Manifest {
     /// writes. Absent means [`Manifest::default_result`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// What each named dimension is worth to the admission probe, which
+    /// needs concrete shapes to build the zero-filled tensors it runs.
+    ///
+    /// Only for the probe. A name left out of it is probed at 1, which is
+    /// the smallest tensor that exists and is what most graphs will take;
+    /// a graph that needs more — a convolution with a kernel wider than its
+    /// input — says so here. The values land in `stats` so a reader can see
+    /// what `probe_ms` was measured at, which is the only thing that makes
+    /// that number comparable between two models with a variable axis.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probe_dims: BTreeMap<String, usize>,
 }
 
 fn default_format() -> String {
@@ -145,6 +157,119 @@ pub struct ArtifactReference {
     pub key: String,
 }
 
+/// One dimension of a declared shape: a count, or a name standing for
+/// whatever the call brings.
+///
+/// A graph exported with a dynamic axis — a batch, a sequence length, a
+/// variable image size — cannot be described by fixed integers, and the
+/// runtime underneath has never been the constraint: tract binds input
+/// facts from a string spec and parses each dimension with `parse_tdim`,
+/// which takes a symbol. So a name is passed through to it verbatim.
+///
+/// A name **binds on its first occurrence in a call** and every later
+/// occurrence — in another input, or in an output — must equal that
+/// binding. That is what makes `[..., "H", "W"]` on an output mean *the
+/// same* H and W the input had, and it keeps the per-call check as strong
+/// as it was everywhere except the axis the author declared variable.
+///
+/// Serialised as itself: a fixed dimension is a JSON number and a named one
+/// a string, so a manifest that declares no symbol is byte-identical to one
+/// written before they existed — which matters, because a session's cache
+/// key is a hash of this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Dim {
+    Fixed(usize),
+    Named(String),
+}
+
+impl Dim {
+    /// The count, for a dimension that is one.
+    pub fn fixed(&self) -> Option<usize> {
+        match self {
+            Dim::Fixed(n) => Some(*n),
+            Dim::Named(_) => None,
+        }
+    }
+
+    /// The symbol, for a dimension that is one.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Dim::Fixed(_) => None,
+            Dim::Named(name) => Some(name.as_str()),
+        }
+    }
+}
+
+/// A shape of fixed dimensions, for a caller holding integers.
+pub fn fixed_shape(dims: &[usize]) -> Vec<Dim> {
+    dims.iter().copied().map(Dim::Fixed).collect()
+}
+
+impl std::fmt::Display for Dim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Dim::Fixed(n) => write!(f, "{n}"),
+            Dim::Named(name) => f.write_str(name),
+        }
+    }
+}
+
+/// What a call has bound each named dimension to.
+///
+/// One of these lives for one inference: every input is checked through it
+/// in order, then every output, so a name the inputs bound is what the
+/// outputs are held to.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Bindings(std::collections::BTreeMap<String, usize>);
+
+impl Bindings {
+    /// Bindings fixed in advance — the probe's, from `probe_dims`.
+    pub fn seeded(dims: impl IntoIterator<Item = (String, usize)>) -> Self {
+        Self(dims.into_iter().collect())
+    }
+
+    /// What `name` is bound to, if anything.
+    pub fn get(&self, name: &str) -> Option<usize> {
+        self.0.get(name).copied()
+    }
+
+    /// Check one tensor's `actual` shape against a `declared` one, binding
+    /// any name met for the first time. `Err` is the reason, phrased for
+    /// whoever supplied the tensor.
+    pub fn check(&mut self, declared: &[Dim], actual: &[usize]) -> Result<(), String> {
+        if declared.len() != actual.len() {
+            return Err(format!(
+                "expected {} dimension(s), got {}",
+                declared.len(),
+                actual.len()
+            ));
+        }
+        for (axis, (dim, actual)) in declared.iter().zip(actual).enumerate() {
+            match dim {
+                Dim::Fixed(n) if n == actual => {}
+                Dim::Fixed(n) => {
+                    return Err(format!("axis {axis} must be {n}, got {actual}"));
+                }
+                Dim::Named(name) => match self.0.get(name) {
+                    // Bound earlier in this call, so this is the axis that
+                    // has to agree with it.
+                    Some(bound) if bound != actual => {
+                        return Err(format!(
+                            "axis {axis} is '{name}', already {bound} in this call, got {actual}"
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.0.insert(name.clone(), *actual);
+                    }
+                },
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One input tensor and how the message becomes it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -154,8 +279,9 @@ pub struct InputDecl {
     pub name: String,
     /// A datavalue dtype wire name (`f32`, `i64`, `bool`, …), lowercase.
     pub dtype: String,
-    /// The fixed shape, every dimension positive.
-    pub shape: Vec<usize>,
+    /// The shape: every dimension a positive count, or a name that binds to
+    /// what the call brings — see [`Dim`].
+    pub shape: Vec<Dim>,
     /// JSONLogic over the message producing this input's tensor. Absent
     /// means [`Manifest::default_adapter`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,10 +294,16 @@ impl InputDecl {
         parse_dtype(&self.dtype).ok()
     }
 
-    /// Elements in one tensor of this shape, or `None` when the product
-    /// overflows.
+    /// Elements in one tensor of this shape, or `None` when a dimension is
+    /// named or the product overflows.
     pub fn element_count(&self) -> Option<usize> {
         element_count(&self.shape)
+    }
+
+    /// The shape with every named dimension replaced by what `bindings`
+    /// holds, or `None` when one of them is unbound.
+    pub fn bound_shape(&self, bindings: &Bindings) -> Option<Vec<usize>> {
+        bound_shape(&self.shape, bindings)
     }
 }
 
@@ -184,8 +316,10 @@ pub struct OutputDecl {
     pub name: String,
     /// A datavalue dtype wire name, lowercase.
     pub dtype: String,
-    /// The fixed shape, every dimension positive.
-    pub shape: Vec<usize>,
+    /// The shape: every dimension a positive count, or a name — which must
+    /// be one an input also declares, or it binds to whatever the graph
+    /// produces. See [`Dim`].
+    pub shape: Vec<Dim>,
 }
 
 impl OutputDecl {
@@ -194,10 +328,16 @@ impl OutputDecl {
         parse_dtype(&self.dtype).ok()
     }
 
-    /// Elements in one tensor of this shape, or `None` when the product
-    /// overflows.
+    /// Elements in one tensor of this shape, or `None` when a dimension is
+    /// named or the product overflows.
     pub fn element_count(&self) -> Option<usize> {
         element_count(&self.shape)
+    }
+
+    /// The shape with every named dimension replaced by what `bindings`
+    /// holds, or `None` when one of them is unbound.
+    pub fn bound_shape(&self, bindings: &Bindings) -> Option<Vec<usize>> {
+        bound_shape(&self.shape, bindings)
     }
 }
 
@@ -323,6 +463,42 @@ impl Manifest {
         if let Some(result) = &self.result {
             check_expression("result", result, &mut out);
         }
+        // `probe_dims` is only meaningful for a name the shapes declare,
+        // and a name it leaves out is probed at 1 rather than refused — so
+        // what is checked here is that every entry means something.
+        let declared: std::collections::BTreeSet<&str> = self
+            .inputs
+            .iter()
+            .flat_map(|i| i.shape.iter())
+            .chain(self.outputs.iter().flat_map(|o| o.shape.iter()))
+            .filter_map(Dim::name)
+            .collect();
+        for (name, size) in &self.probe_dims {
+            if !declared.contains(name.as_str()) {
+                out.push(FieldError::new(
+                    format!("probe_dims.{name}"),
+                    "INVALID",
+                    if declared.is_empty() {
+                        "no shape in this manifest declares a named dimension".to_string()
+                    } else {
+                        format!(
+                            "'{name}' is not a dimension this manifest names; it names {}",
+                            declared
+                                .iter()
+                                .map(|d| format!("'{d}'"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    },
+                ));
+            } else if *size == 0 {
+                out.push(FieldError::new(
+                    format!("probe_dims.{name}"),
+                    "INVALID",
+                    "a probe dimension must be positive: the probe builds a real tensor of it",
+                ));
+            }
+        }
         out
     }
 
@@ -336,10 +512,32 @@ impl Manifest {
         self.outputs.iter().map(|o| o.name.as_str())
     }
 
+    /// What the probe binds each named dimension to: `probe_dims` where it
+    /// says, and 1 for every other name the manifest declares.
+    ///
+    /// One value per name across the whole manifest, not per declaration,
+    /// because a name means the same axis wherever it appears — which is
+    /// the property the per-call check enforces, and the probe has to hold
+    /// to it or it would prove something the calls cannot do.
+    pub fn probe_bindings(&self) -> Bindings {
+        let named = self
+            .inputs
+            .iter()
+            .flat_map(|i| i.shape.iter())
+            .chain(self.outputs.iter().flat_map(|o| o.shape.iter()))
+            .filter_map(Dim::name);
+        Bindings::seeded(named.map(|name| {
+            let size = self.probe_dims.get(name).copied().unwrap_or(1);
+            (name.to_string(), size)
+        }))
+    }
+
     /// One zero-filled tensor per input, of the declared dtype and shape —
-    /// what the admission probe feeds a model. `Err` only for a manifest
-    /// that did not validate (an unknown dtype, a shape that overflows).
+    /// what the admission probe feeds a model, with every named dimension
+    /// at [`Self::probe_bindings`]. `Err` only for a manifest that did not
+    /// validate (an unknown dtype, a shape that overflows).
     pub fn zero_inputs(&self) -> Result<Vec<OwnedDataTensor>, String> {
+        let bindings = self.probe_bindings();
         self.inputs
             .iter()
             .map(|input| {
@@ -349,11 +547,13 @@ impl Manifest {
                         input.name, input.dtype
                     )
                 })?;
-                let len = input
-                    .element_count()
+                let shape = input.bound_shape(&bindings).ok_or_else(|| {
+                    format!("input '{}': the shape has an unbound dimension", input.name)
+                })?;
+                let len = bound_element_count(&input.shape, &bindings)
                     .and_then(|count| dtype.byte_len(count))
                     .ok_or_else(|| format!("input '{}': the shape overflows", input.name))?;
-                OwnedDataTensor::from_bytes(dtype, input.shape.clone(), &vec![0u8; len])
+                OwnedDataTensor::from_bytes(dtype, shape, &vec![0u8; len])
                     .map_err(|e| format!("input '{}': {e}", input.name))
             })
             .collect()
@@ -466,7 +666,7 @@ fn check_tensor_decl<'a>(
     path: &str,
     name: &'a str,
     dtype: &str,
-    shape: &[usize],
+    shape: &[Dim],
     seen: &mut Vec<&'a str>,
     out: &mut Vec<FieldError>,
 ) {
@@ -493,20 +693,55 @@ fn check_tensor_decl<'a>(
             "REQUIRED",
             "shape must list at least one dimension",
         ));
-    } else if let Some(i) = shape.iter().position(|d| *d == 0) {
-        out.push(FieldError::new(
-            format!("{path}.shape[{i}]"),
-            "INVALID",
-            "every dimension must be positive: a model declares fixed shapes, and a zero \
-             dimension is a tensor with nothing in it",
-        ));
-    } else if element_count(shape).is_none() {
-        out.push(FieldError::new(
-            format!("{path}.shape"),
-            "INVALID",
-            "the product of the dimensions does not fit in memory on this host",
+    } else {
+        for (i, dim) in shape.iter().enumerate() {
+            let problem = match dim {
+                Dim::Fixed(0) => Some(
+                    "a fixed dimension must be positive: a zero dimension is a tensor with \
+                     nothing in it. Name the dimension instead to let a call decide it"
+                        .to_string(),
+                ),
+                Dim::Fixed(_) => None,
+                Dim::Named(name) => check_dim_name(name),
+            };
+            if let Some(reason) = problem {
+                out.push(FieldError::new(
+                    format!("{path}.shape[{i}]"),
+                    "INVALID",
+                    reason,
+                ));
+            }
+        }
+        // A shape with a name in it has no product until a call binds it,
+        // and `models.max_input_elements` is what bounds that one.
+        if shape.iter().all(|d| d.fixed().is_some()) && element_count(shape).is_none() {
+            out.push(FieldError::new(
+                format!("{path}.shape"),
+                "INVALID",
+                "the product of the dimensions does not fit in memory on this host",
+            ));
+        }
+    }
+}
+
+/// A named dimension's spelling. It is passed to the runtime verbatim — for
+/// tract, into a fact spec it parses as a symbol — so it has to look like
+/// an identifier and must not be mistakable for a number.
+fn check_dim_name(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("a named dimension must not be empty".to_string());
+    }
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        return Some(format!(
+            "a named dimension must start with a letter or '_': '{name}'"
         ));
     }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Some(format!(
+            "a named dimension may hold only letters, digits and '_': '{name}'"
+        ));
+    }
+    None
 }
 
 /// The dtype a manifest may declare: a datavalue wire name, spelled in
@@ -538,8 +773,35 @@ pub(super) fn parse_dtype(name: &str) -> Result<DType, String> {
     Ok(dtype)
 }
 
-fn element_count(shape: &[usize]) -> Option<usize> {
-    shape.iter().try_fold(1usize, |n, d| n.checked_mul(*d))
+/// Elements in one tensor of `shape`, or `None` when a dimension is named
+/// — a symbolic shape has no count until a call binds it — or when the
+/// product overflows.
+fn element_count(shape: &[Dim]) -> Option<usize> {
+    shape
+        .iter()
+        .try_fold(1usize, |n, d| n.checked_mul(d.fixed()?))
+}
+
+/// Elements in one tensor of `shape` with `bindings` applied, or `None`
+/// when a name is unbound or the product overflows.
+fn bound_shape(shape: &[Dim], bindings: &Bindings) -> Option<Vec<usize>> {
+    shape
+        .iter()
+        .map(|d| match d {
+            Dim::Fixed(size) => Some(*size),
+            Dim::Named(name) => bindings.get(name),
+        })
+        .collect()
+}
+
+fn bound_element_count(shape: &[Dim], bindings: &Bindings) -> Option<usize> {
+    shape.iter().try_fold(1usize, |n, d| {
+        let size = match d {
+            Dim::Fixed(size) => *size,
+            Dim::Named(name) => bindings.get(name)?,
+        };
+        n.checked_mul(size)
+    })
 }
 
 /// `label(.label)*`, each label `[a-z][a-z0-9-]*`, and not under `orion`.
@@ -697,6 +959,128 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
     }
 
+    /// A dimension is a number or a name, and a fixed one is written the
+    /// way it always was — which is what keeps a manifest that declares no
+    /// name fingerprinting to the same session key it did before names
+    /// existed.
+    #[test]
+    fn a_dimension_is_a_number_or_a_name_and_a_number_is_unchanged() {
+        let shape: Vec<Dim> = serde_json::from_str(r#"[1, "N", 3]"#).expect("parses");
+        assert_eq!(
+            shape,
+            [Dim::Fixed(1), Dim::Named("N".to_string()), Dim::Fixed(3)]
+        );
+        assert_eq!(
+            serde_json::to_string(&shape).expect("serialises"),
+            r#"[1,"N",3]"#
+        );
+        assert_eq!(
+            serde_json::to_string(&fixed_shape(&[1, 2, 6, 7])).expect("serialises"),
+            "[1,2,6,7]",
+            "a fixed shape is bytes-identical to the Vec<usize> it replaced"
+        );
+        assert_eq!(shape[1].name(), Some("N"));
+        assert_eq!(shape[0].fixed(), Some(1));
+        assert_eq!(shape[1].fixed(), None);
+    }
+
+    /// A name binds on first sight and is held to it everywhere after,
+    /// which is what `[…, "H", "W"]` on an output has to mean.
+    #[test]
+    fn a_named_dimension_binds_once_and_then_must_agree() {
+        let named = |names: [&str; 2]| {
+            vec![
+                Dim::Named(names[0].to_string()),
+                Dim::Fixed(3),
+                Dim::Named(names[1].to_string()),
+            ]
+        };
+        let mut bindings = Bindings::default();
+        // First sight: anything goes, and it is remembered.
+        assert!(bindings.check(&named(["N", "H"]), &[4, 3, 8]).is_ok());
+        assert_eq!(bindings.get("N"), Some(4));
+        assert_eq!(bindings.get("H"), Some(8));
+        // Second: the same axis, or a reason naming it.
+        assert!(bindings.check(&named(["N", "H"]), &[4, 3, 8]).is_ok());
+        let err = bindings
+            .check(&named(["N", "H"]), &[5, 3, 8])
+            .expect_err("N moved");
+        assert!(err.contains("'N'") && err.contains("already 4"), "{err}");
+        // A fixed dimension is still exact, and rank is still exact.
+        let err = bindings
+            .check(&named(["N", "H"]), &[4, 9, 8])
+            .expect_err("the 3 is fixed");
+        assert!(err.contains("axis 1 must be 3"), "{err}");
+        let err = bindings
+            .check(&named(["N", "H"]), &[4, 3])
+            .expect_err("rank");
+        assert!(err.contains("3 dimension(s), got 2"), "{err}");
+        // A name only this check introduces binds here, independently.
+        let mut fresh = Bindings::default();
+        assert!(fresh.check(&named(["N", "N"]), &[7, 3, 7]).is_ok());
+        assert!(
+            fresh.check(&named(["N", "N"]), &[7, 3, 6]).is_err(),
+            "one name, one value, even within a single shape"
+        );
+    }
+
+    /// The probe needs concrete shapes, so a name it is told nothing about
+    /// is 1 and the rest come from `probe_dims`.
+    #[test]
+    fn the_probe_binds_named_dimensions_from_probe_dims_or_one() {
+        let manifest = crate::model::fixture::dynamic();
+        assert_eq!(manifest.probe_bindings().get("N"), Some(2));
+        let tensors = manifest.zero_inputs().expect("zero inputs");
+        assert_eq!(tensors[0].shape(), [2, 3]);
+
+        let mut bare = manifest.clone();
+        bare.probe_dims.clear();
+        assert_eq!(bare.probe_bindings().get("N"), Some(1));
+        assert_eq!(bare.zero_inputs().expect("zero inputs")[0].shape(), [1, 3]);
+    }
+
+    /// What a named dimension may be called, and what `probe_dims` may name.
+    #[test]
+    fn a_named_dimension_is_checked_and_so_is_what_probes_it() {
+        let with_shape = |shape: Value| {
+            refused(good(), |d| {
+                d["inputs"][0]["shape"] = shape;
+            })
+        };
+        for bad in ["", "2N", "N-1", "a b"] {
+            let err = with_shape(json!([bad, 3]));
+            assert_eq!(err[0].path, "inputs[0].shape[0]", "{bad}: {err:?}");
+            assert_eq!(err[0].code, "INVALID", "{bad}");
+        }
+        // A zero is still refused, and now says what to write instead.
+        let err = with_shape(json!([0, 3]));
+        assert_eq!(err[0].path, "inputs[0].shape[0]");
+        assert!(err[0].message.contains("Name the dimension"), "{err:?}");
+
+        // `probe_dims` must name a dimension the shapes declare.
+        let err = refused(good(), |d| {
+            d["probe_dims"] = json!({"N": 4});
+        });
+        assert_eq!(err[0].path, "probe_dims.N");
+        assert!(err[0].message.contains("no shape"), "{err:?}");
+
+        let err = refused(good(), |d| {
+            d["inputs"][0]["shape"] = json!(["N", 3]);
+            d["outputs"][0]["shape"] = json!(["N", 3]);
+            d["probe_dims"] = json!({"M": 4});
+        });
+        assert_eq!(err[0].path, "probe_dims.M");
+        assert!(err[0].message.contains("'N'"), "{err:?}");
+
+        let err = refused(good(), |d| {
+            d["inputs"][0]["shape"] = json!(["N", 3]);
+            d["outputs"][0]["shape"] = json!(["N", 3]);
+            d["probe_dims"] = json!({"N": 0});
+        });
+        assert_eq!(err[0].path, "probe_dims.N");
+        assert!(err[0].message.contains("must be positive"), "{err:?}");
+    }
+
     /// An output named after a live operator would turn the default result
     /// into a call; the escape the serving engine honours keeps it a key.
     #[test]
@@ -713,12 +1097,12 @@ mod tests {
             OutputDecl {
                 name: "shape".to_string(),
                 dtype: "i64".to_string(),
-                shape: vec![2],
+                shape: fixed_shape(&[2]),
             },
             OutputDecl {
                 name: "logits".to_string(),
                 dtype: "f32".to_string(),
-                shape: vec![1, 3],
+                shape: fixed_shape(&[1, 3]),
             },
         ];
         let result = Manifest::default_result(&outputs);

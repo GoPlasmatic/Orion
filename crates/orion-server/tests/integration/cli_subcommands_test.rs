@@ -2915,6 +2915,84 @@ fn dry_run_executes_a_model_from_disk_or_refuses_by_name() {
 }
 
 /// The fixture directory holding one graph and the two manifests over it.
+fn dynamic_model_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/dynamic").to_string()
+}
+
+/// One model, one session, every size the call brings (#318).
+///
+/// `scale.onnx` declares its first axis symbolic in the ONNX file, and the
+/// manifest names the same axis `"N"`. A manifest could only say a fixed
+/// integer before, so this graph could not be described at all: the
+/// workarounds were to declare a maximum and pad every call up to it, or to
+/// register one model per shape — which the session cache made unsound
+/// until #323, and which multiplies the resident bytes either way.
+#[test]
+fn dry_run_serves_a_named_axis_at_whatever_size_the_call_brings() {
+    let wf = write_temp(
+        r#"{"workflow_id":"dyn","name":"dyn","condition":true,"tasks":[
+            {"id":"parse","name":"Parse","function":{"name":"parse_json",
+                "input":{"source":"payload","target":"x"}}},
+            {"id":"infer","name":"Infer","function":{"name":"model_infer",
+                "input":{"model":"ada.scale","input":{"var":""},"output":"data.out"}}}]}"#,
+        "dynamic-wf",
+    );
+    for rows in [1usize, 2, 5] {
+        let payload: Vec<Vec<f64>> = (0..rows).map(|i| vec![i as f64; 3]).collect();
+        let input = write_temp(&serde_json::json!(payload).to_string(), "dynamic-in");
+        let out = Command::new(orion_bin())
+            .args([
+                "dry-run",
+                "-w",
+                &wf,
+                "-i",
+                &input,
+                "--model-dir",
+                &dynamic_model_dir(),
+            ])
+            .output()
+            .expect("run dry-run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "N={rows}: {stdout}{stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let y = parsed["data"]["out"]["y"]
+            .as_array()
+            .unwrap_or_else(|| panic!("N={rows}: no rows in {stdout}"));
+        assert_eq!(y.len(), rows, "N={rows}: {stdout}");
+        for (i, row) in y.iter().enumerate() {
+            let values: Vec<f64> = row
+                .as_array()
+                .expect("a row")
+                .iter()
+                .map(|v| v.as_f64().expect("a number"))
+                .collect();
+            assert_eq!(values, vec![i as f64 * 2.0; 3], "N={rows}: {stdout}");
+        }
+        let _ = std::fs::remove_file(&input);
+    }
+
+    // The fixed axis is still exact: only the axis the author named varies.
+    let input = write_temp("[[1.0, 2.0]]", "dynamic-bad");
+    let out = Command::new(orion_bin())
+        .args([
+            "dry-run",
+            "-w",
+            &wf,
+            "-i",
+            &input,
+            "--model-dir",
+            &dynamic_model_dir(),
+        ])
+        .output()
+        .expect("run dry-run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a two-wide row is not [N, 3]");
+    assert!(stderr.contains("f32[N,3]"), "{stderr}");
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&wf);
+}
+
 fn weights_model_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/weights").to_string()
 }

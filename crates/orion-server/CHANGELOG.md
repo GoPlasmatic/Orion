@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A manifest can declare a variable axis.** A shape's dimension may be a
+  name instead of a count — `"shape": ["N", 3]` — so a graph exported with a
+  dynamic axis (a batch, a sequence length, a variable image size) can be
+  described and served. The runtime was never the constraint: tract binds
+  input facts from a string spec and parses each dimension with
+  `parse_tdim`, which takes a symbol, and the symbol survives into the plan,
+  which resolves it from the actual inputs at run time. The declaration was
+  the only thing in the way. A name **binds on its first occurrence in a
+  call** and every later occurrence — in another input, or in an output —
+  must equal that binding, so `["N", 3]` on an output means the N the input
+  brought, and every axis the author did not name stays exactly as strict as
+  it was. One session serves every size, which is what separates this from
+  registering one model per shape; the per-call ceiling is
+  `models.max_input_elements`, unchanged. Admission needs concrete tensors,
+  so the new `probe_dims` says what to probe each name at — 1 where it says
+  nothing — and the binding lands in `stats.probe_dims`, because `probe_ms`
+  over a variable axis says nothing without the size behind it. The
+  workarounds this replaces were to declare a maximum and pad every call up
+  to it, at a cost quadratic in the ceiling for two variable axes, or to
+  register the same artifact once per shape.
+
 - **`models.preload_tags` warms a set the node cannot infer.** `models.preload`
   reads the *literal* `model` of each active workflow's tasks, so a workflow
   that routes with a computed one — `{"var": "data.mover_model"}`, the form

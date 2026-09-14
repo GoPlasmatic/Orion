@@ -233,8 +233,12 @@ pub struct BoundInput {
     pub name: String,
     /// A datavalue dtype wire name, as the manifest spells it.
     pub dtype: String,
-    /// The fixed shape, every dimension positive.
-    pub shape: Vec<usize>,
+    /// The shape the fact pins, a named dimension included: a load is a
+    /// function of the *declaration*, not of what some call brought, and
+    /// two manifests that make one axis variable and fixed are two plans
+    /// over one graph. A fixed dimension renders as the number it always
+    /// did, so a manifest that names none fingerprints exactly as before.
+    pub shape: Vec<super::manifest::Dim>,
 }
 
 impl BoundInput {
@@ -518,7 +522,19 @@ mod tests {
             ),
             (
                 "an input shape",
-                changed(|m| m.inputs[0].shape = vec![1, 2, 6, 8]),
+                changed(|m| m.inputs[0].shape = crate::model::manifest::fixed_shape(&[1, 2, 6, 8])),
+            ),
+            (
+                "an input axis becoming variable",
+                changed(|m| {
+                    m.inputs[0].shape[3] = crate::model::manifest::Dim::Named("W".to_string());
+                }),
+            ),
+            (
+                "the name a variable axis is given",
+                changed(|m| {
+                    m.inputs[0].shape[3] = crate::model::manifest::Dim::Named("H".to_string());
+                }),
             ),
             (
                 "an output name",
@@ -590,7 +606,7 @@ mod tests {
             ),
             (
                 "an output shape",
-                changed(|m| m.outputs[0].shape = vec![1, 9]),
+                changed(|m| m.outputs[0].shape = crate::model::manifest::fixed_shape(&[1, 9])),
             ),
         ] {
             assert_eq!(untouched, moved, "{what} is not part of the binding");

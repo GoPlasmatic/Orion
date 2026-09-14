@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dataflow_rs::datavalue::OwnedDataTensor;
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -89,6 +91,12 @@ pub struct Stats {
     /// carries every other field and not this one.
     #[serde(default)]
     pub operators: Vec<String>,
+    /// What each named dimension was bound to for the probe. Absent when
+    /// the manifest declares fixed shapes, which is most of them; present
+    /// when it does not, because `probe_ms` over a variable axis means
+    /// nothing without the size it was measured at.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probe_dims: BTreeMap<String, usize>,
     pub artifact_bytes: u64,
     /// The median wall time of [`PROBE_RUNS`] inferences, in milliseconds.
     pub probe_ms: f64,
@@ -108,6 +116,8 @@ impl Stats {
             parameters: graph.parameters,
             nodes: graph.nodes,
             operators: graph.operators.clone(),
+            // Offline nothing is probed, so there is nothing to record.
+            probe_dims: BTreeMap::new(),
             artifact_bytes,
             probe_ms: 0.0,
             ir_version: graph.ir_version,
@@ -368,6 +378,7 @@ async fn sequence(
             parameters: graph.parameters,
             nodes: graph.nodes,
             operators: graph.operators.clone(),
+            probe_dims: probe_bindings_of(&job.manifest),
             artifact_bytes,
             probe_ms,
             ir_version: graph.ir_version,
@@ -440,19 +451,66 @@ fn check_outputs(manifest: &Manifest, outputs: &[OwnedDataTensor]) -> Result<(),
             manifest.outputs.len()
         ));
     }
+    // Seeded with what the probe fed: a named dimension is already bound
+    // to the value `zero_inputs` built its tensors at, so an output naming
+    // it is held to that rather than binding freely.
+    let mut bindings = manifest.probe_bindings();
     for (decl, tensor) in manifest.outputs.iter().zip(outputs) {
-        if tensor.dtype().name() != decl.dtype || tensor.shape() != decl.shape.as_slice() {
+        let fits = tensor.dtype().name() == decl.dtype
+            && bindings.check(&decl.shape, tensor.shape()).is_ok();
+        if !fits {
             return Err(format!(
-                "output '{}' is {}{:?} from the graph, but the manifest declares {}{:?}",
+                "output '{}' is {}{:?} from the graph, but the manifest declares {}[{}]{}",
                 decl.name,
                 tensor.dtype().name(),
                 tensor.shape(),
                 decl.dtype,
                 decl.shape
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                probed_at(manifest)
             ));
         }
     }
     Ok(())
+}
+
+/// What the probe bound each named dimension to, flat, for the record: the
+/// `probe_dims` the manifest asked for plus the 1 every other name takes.
+fn probe_bindings_of(manifest: &Manifest) -> BTreeMap<String, usize> {
+    let bindings = manifest.probe_bindings();
+    named_dims(manifest)
+        .map(|name| (name.to_string(), bindings.get(name).unwrap_or(1)))
+        .collect()
+}
+
+/// Every named dimension the manifest declares, deduplicated and sorted.
+fn named_dims(manifest: &Manifest) -> impl Iterator<Item = &str> {
+    manifest
+        .inputs
+        .iter()
+        .flat_map(|i| i.shape.iter())
+        .chain(manifest.outputs.iter().flat_map(|o| o.shape.iter()))
+        .filter_map(crate::model::manifest::Dim::name)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+}
+
+/// ` (probed with H = 6)`, or nothing when the manifest names no dimension
+/// — so a shape mismatch on a variable axis says what the probe was run at
+/// rather than leaving a reader to guess.
+fn probed_at(manifest: &Manifest) -> String {
+    let named: Vec<String> = probe_bindings_of(manifest)
+        .into_iter()
+        .map(|(name, size)| format!("{name} = {size}"))
+        .collect();
+    if named.is_empty() {
+        String::new()
+    } else {
+        format!(" (probed with {})", named.join(", "))
+    }
 }
 
 fn with_connector(artifact: &ArtifactRef, message: String) -> String {
@@ -821,6 +879,44 @@ mod tests {
 
     /// The probe stage: no runtime enabled, an output the graph does not
     /// produce as declared, and a probe over the time ceiling.
+    /// A manifest with a named dimension is probed at a concrete one, and
+    /// the record says which (#318).
+    ///
+    /// `probe_ms` over a variable axis is meaningless without the size
+    /// behind it — the whole point of the axis is that the cost moves with
+    /// it — so the binding the probe used lands in `stats`. A name the
+    /// manifest says nothing about is probed at 1; this one asks for 2.
+    #[tokio::test]
+    async fn a_named_dimension_is_probed_at_a_concrete_size_and_recorded() {
+        let body = fixture::DYNAMIC_ONNX.to_vec();
+        let bucket = spawn_bucket(body.clone(), None).await;
+        let rig = Rig::new(bucket.addr, config());
+        let outcome = admit(&rig.deps(), &job_with(&body, fixture::dynamic())).await;
+        let AdmissionState::Passed { stats } = &outcome.state else {
+            unreachable!("{outcome:?}")
+        };
+        assert_eq!(stats.probe_dims, BTreeMap::from([("N".to_string(), 2)]));
+        assert!(stats.probe_ms > 0.0, "{stats:?}");
+
+        // An output that cannot hold the axis the input bound is caught,
+        // and the reason says what the probe ran at.
+        let mut manifest = fixture::dynamic();
+        manifest.outputs[0].shape[0] = crate::model::manifest::Dim::Fixed(9);
+        let outcome = admit(&rig.deps(), &job_with(&body, manifest)).await;
+        let (stage, reason) = failure(&outcome);
+        assert_eq!(stage, "probe");
+        assert!(reason.contains("probed with N = 2"), "{reason}");
+
+        // A name the manifest does not bind is probed at 1.
+        let mut manifest = fixture::dynamic();
+        manifest.probe_dims.clear();
+        let outcome = admit(&rig.deps(), &job_with(&body, manifest)).await;
+        let AdmissionState::Passed { stats } = &outcome.state else {
+            unreachable!("{outcome:?}")
+        };
+        assert_eq!(stats.probe_dims, BTreeMap::from([("N".to_string(), 1)]));
+    }
+
     #[tokio::test]
     async fn the_probe_stage_runs_the_graph_on_the_default_runtime() {
         let body = fixture::ONNX.to_vec();
@@ -838,7 +934,7 @@ mod tests {
         rig.runtimes = ModelRuntimes::builtin(&rig.config);
 
         let mut manifest = fixture::manifest();
-        manifest.outputs[0].shape = vec![1, 8];
+        manifest.outputs[0].shape = crate::model::manifest::fixed_shape(&[1, 8]);
         let outcome = admit(&rig.deps(), &job_with(&body, manifest)).await;
         let (stage, reason) = failure(&outcome);
         assert_eq!(stage, "probe");

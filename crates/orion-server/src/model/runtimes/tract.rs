@@ -24,6 +24,7 @@ use ::tract::prelude::*;
 use dataflow_rs::datavalue::{DType, OwnedDataTensor};
 
 use super::{LoadBinding, LoadError, LoadedModel, ModelRuntime, RunError, devices_of, formats_of};
+use crate::model::manifest::Bindings;
 use crate::model::onnx;
 
 /// The name the runtime registers under — the `tract` in
@@ -160,7 +161,10 @@ struct InputSlot {
     /// The graph's input index.
     index: usize,
     dtype: DType,
-    shape: Vec<usize>,
+    /// The declared shape, a named dimension included — checked per run
+    /// through one [`Bindings`] for the call, so a name means the same axis
+    /// across every input.
+    shape: Vec<crate::model::manifest::Dim>,
 }
 
 /// Pin every bound input to its declared dtype and shape, in graph order.
@@ -247,7 +251,13 @@ fn quoted(names: &[String]) -> String {
 
 /// The fact spec tract parses: the dimensions comma-joined, then the datum
 /// type, lowercase — `1,2,6,7,f32`.
-fn fact_spec(shape: &[usize], datum_type: DatumType) -> String {
+///
+/// A named dimension goes in as its name, `1,2,H,7,f32`, which is what
+/// tract's own spec parser takes: it maps each dimension through
+/// `parse_tdim`, and a symbol survives into the plan, which resolves it
+/// from the actual inputs at run time. So a variable axis costs nothing
+/// here — the declaration was always the only thing in the way.
+fn fact_spec(shape: &[crate::model::manifest::Dim], datum_type: DatumType) -> String {
     let mut spec = shape
         .iter()
         .map(ToString::to_string)
@@ -359,17 +369,26 @@ impl LoadedModel for TractModel {
         // directions), so every slot below is filled.
         let mut by_graph_index: Vec<Option<Tensor>> =
             (0..self.inputs.len()).map(|_| None).collect();
+        // One set of bindings for the run, so a named dimension means the
+        // same axis across every input the plan is fed.
+        let mut bindings = Bindings::default();
         for (tensor, slot) in inputs.iter().zip(&self.inputs) {
-            if tensor.dtype() != slot.dtype || tensor.shape() != slot.shape.as_slice() {
+            let fits =
+                tensor.dtype() == slot.dtype && bindings.check(&slot.shape, tensor.shape()).is_ok();
+            if !fits {
                 return Err(RunError::new(
                     "inputs",
                     format!(
-                        "input '{}' is {}{:?}, the manifest declares {}{:?}",
+                        "input '{}' is {}{:?}, the manifest declares {}[{}]",
                         slot.name,
                         tensor.dtype().name(),
                         tensor.shape(),
                         slot.dtype.name(),
                         slot.shape
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ),
                 ));
             }
@@ -658,6 +677,63 @@ mod tests {
         });
     }
 
+    /// One session serves a variable axis at whatever each call brings
+    /// (#318).
+    ///
+    /// `scale.onnx` declares its first axis symbolic in the file itself, so
+    /// the graph really does take any N; the manifest names the same axis
+    /// `"N"`, which goes into the fact spec verbatim and survives into the
+    /// plan. Before, a manifest could only say a number, and the only ways
+    /// to serve this graph were to declare a maximum and pad every call to
+    /// it, or to register one model per shape.
+    #[test]
+    fn one_session_serves_every_size_a_named_axis_takes() {
+        let manifest = crate::model::fixture::dynamic();
+        let loaded = TractRuntime
+            .load(
+                crate::model::fixture::DYNAMIC_ONNX,
+                &LoadBinding::of(&manifest),
+                "cpu",
+            )
+            .expect("loads");
+
+        for rows in [1usize, 2, 5] {
+            let data: Vec<f32> = (0..rows * 3).map(|i| i as f32).collect();
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let tensor =
+                OwnedDataTensor::from_bytes(DType::F32, vec![rows, 3], &bytes).expect("a tensor");
+            let out = loaded.run(vec![tensor]).expect("runs");
+            assert_eq!(out[0].shape(), [rows, 3], "N = {rows}");
+            let (words, rest) = out[0].data().as_chunks::<4>();
+            assert!(rest.is_empty(), "whole f32s");
+            let doubled: Vec<f32> = words.iter().copied().map(f32::from_le_bytes).collect();
+            assert_eq!(
+                doubled,
+                data.iter().map(|f| f * 2.0).collect::<Vec<_>>(),
+                "N = {rows}"
+            );
+        }
+
+        // The fixed axis is still exact, and the message names the
+        // declaration rather than a number the manifest never wrote.
+        let bytes = vec![0u8; 4 * 2 * 4];
+        let wrong = OwnedDataTensor::from_bytes(DType::F32, vec![2, 4], &bytes).expect("a tensor");
+        let err = loaded.run(vec![wrong]).expect_err("4 is not 3");
+        assert_eq!(err.stage, "inputs");
+        assert!(err.message.contains("f32[N, 3]"), "{}", err.message);
+    }
+
+    /// A fact spec passes a named dimension through as its name, which is
+    /// the syntax tract's own parser takes.
+    #[test]
+    fn a_fact_spec_writes_a_named_dimension_as_its_name() {
+        let shape = vec![
+            crate::model::manifest::Dim::Named("N".to_string()),
+            crate::model::manifest::Dim::Fixed(3),
+        ];
+        assert_eq!(fact_spec(&shape, DatumType::F32), "N,3,f32");
+    }
+
     #[test]
     fn dtypes_map_both_ways_and_halves_are_refused() {
         for dtype in DType::ALL {
@@ -665,7 +741,7 @@ mod tests {
                 Ok(datum_type) => {
                     assert_eq!(dtype_of(datum_type).expect("round trip"), dtype);
                     assert_eq!(
-                        fact_spec(&[1, 7], datum_type),
+                        fact_spec(&crate::model::manifest::fixed_shape(&[1, 7]), datum_type),
                         format!("1,7,{}", dtype.name()),
                         "tract spells the type as datavalue does"
                     );

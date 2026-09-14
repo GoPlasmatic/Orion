@@ -105,6 +105,18 @@ pub(crate) mod fixture {
     pub const AS_LIST_ONNX: &[u8] =
         include_bytes!("../../tests/fixtures/models/weights/as-list.onnx");
 
+    /// The `dynamic` fixture: `y = x * 2` over an `[N, 3]` input, the axis
+    /// symbolic in the ONNX file itself, so the graph genuinely takes any
+    /// N and the manifest is not merely claiming one.
+    pub const DYNAMIC_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/dynamic/scale.onnx");
+    pub const DYNAMIC_MANIFEST: &str =
+        include_str!("../../tests/fixtures/models/dynamic/model.json");
+
+    pub fn dynamic() -> super::Manifest {
+        super::Manifest::parse(DYNAMIC_MANIFEST).expect("the dynamic manifest is valid")
+    }
+
     pub fn manifest() -> super::Manifest {
         super::Manifest::parse(MANIFEST).expect("the fixture manifest is valid")
     }

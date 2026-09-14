@@ -10,7 +10,7 @@ ONNX models held in object storage. The lifecycle is the workflow's. A registrat
 
 It reads the graph: parameter and node counts, the distinct operators it asks a runtime for, IR version and opset. The parameter count is every value the graph carries, in its initializers or in its nodes' attributes, through every subgraph body. Every manifest input and output must name a graph tensor, and `models.max_parameters` applies.
 
-It then probes the model on the node's default runtime for the manifest's format (`[models.default_runtime]`). The probe is five inferences over zero-filled inputs. The median must be within `models.max_probe_ms`, and the outputs must have the dtypes and shapes the manifest declares.
+It then probes the model on the node's default runtime for the manifest's format (`[models.default_runtime]`). The probe is five inferences over zero-filled inputs, with any named dimension at the manifest's `probe_dims` (1 where it says nothing) and the binding recorded in `stats.probe_dims`. The median must be within `models.max_probe_ms`, and the outputs must have the dtypes and shapes the manifest declares.
 
 The verdict lands on the row as `admission` (`pending` → `passed` | `failed`) with a stage and a reason, plus `stats`. The stages are `signature`, `gate`, `head`, `size`, `fetch`, `digest`, `cache`, `parse` and `probe`. Activation is refused until the verdict is `passed`. Every route answers `400` on a node with `models.enabled = false`.
 
