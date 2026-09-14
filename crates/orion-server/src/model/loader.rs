@@ -36,6 +36,7 @@ use super::artifact::ArtifactRef;
 use super::cache::LoadedCache;
 use super::limits::Limits;
 use super::manifest::Manifest;
+use super::runtimes::LoadBinding;
 use crate::config::ModelsConfig;
 use crate::storage::models::{Model, ModelHealth};
 
@@ -51,6 +52,9 @@ pub struct ModelEntry {
     pub version: i64,
     pub digest: String,
     pub manifest: Manifest,
+    /// What a load of this model's artifact is given — and, with the
+    /// digest, the runtime and the device, what its session is keyed by.
+    pub binding: Arc<LoadBinding>,
     pub artifact: ArtifactRef,
     /// What admission read out of the artifact, when the row carries it.
     pub stats: Option<Stats>,
@@ -252,7 +256,8 @@ impl ModelSet {
         cache: &LoadedCache,
     ) -> Option<ModelHealth> {
         if let Some(entry) = self.get(model_id).filter(|e| e.version == version) {
-            if let Some((key, bytes)) = cache.loaded_for(&entry.digest) {
+            if let Some((key, bytes)) = cache.loaded_for(&entry.digest, entry.binding.fingerprint())
+            {
                 return Some(ModelHealth {
                     state: "loaded".to_string(),
                     runtime: Some(key.runtime.to_string()),
@@ -261,7 +266,7 @@ impl ModelSet {
                     reason: None,
                 });
             }
-            if cache.was_evicted(&entry.digest) {
+            if cache.was_evicted(&entry.digest, entry.binding.fingerprint()) {
                 return Some(ModelHealth {
                     state: "evicted".to_string(),
                     ..ModelHealth::default()
@@ -389,6 +394,7 @@ fn compile_entry(
         id: item.id,
         version: item.version,
         digest: item.digest,
+        binding: Arc::new(LoadBinding::of(&item.manifest)),
         manifest: item.manifest,
         artifact: item.artifact,
         stats: item.stats,
@@ -464,6 +470,79 @@ mod tests {
 
     fn passed() -> Value {
         json!({"state": "passed", "node": "n", "at": "2026-09-13T00:00:00"})
+    }
+
+    /// A resident session of no size, standing in for a loaded plan.
+    struct Resident;
+
+    impl crate::model::LoadedModel for Resident {
+        fn digest(&self) -> &str {
+            "sha256:abc"
+        }
+        fn resident_bytes(&self) -> usize {
+            1
+        }
+        fn run(
+            &self,
+            _inputs: Vec<dataflow_rs::datavalue::OwnedDataTensor>,
+        ) -> Result<Vec<dataflow_rs::datavalue::OwnedDataTensor>, crate::model::RunError> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Health answers for the model that asked, not for the bytes.
+    ///
+    /// Two models over one artifact are one digest and two sessions. While
+    /// residency was read by digest alone, a model reported `loaded` on the
+    /// strength of the *other* model's session — and the load it was waiting
+    /// for had not happened.
+    #[tokio::test]
+    async fn health_is_read_per_binding_not_per_digest() {
+        let config = ModelsConfig::default();
+        let (order_a, order_b) = fixture::two_out();
+        let mut rows = [
+            row(passed(), fixture::TWO_OUT_A),
+            row(passed(), fixture::TWO_OUT_B),
+        ];
+        rows[0].model_id = order_a.name.clone();
+        rows[1].model_id = order_b.name.clone();
+        let set = ModelSet::load_active(&rows, &config, true, &engine());
+        assert!(set.issues.is_empty(), "{:?}", set.issues);
+        let entry_a = set.get(&order_a.name).expect("loaded").clone();
+        let entry_b = set.get(&order_b.name).expect("loaded").clone();
+        assert_eq!(entry_a.digest, entry_b.digest, "one artifact");
+        assert_ne!(
+            entry_a.binding.fingerprint(),
+            entry_b.binding.fingerprint(),
+            "two bindings"
+        );
+
+        // Nothing resident: neither reports a state of its own.
+        let cache = LoadedCache::new(1024);
+        assert!(set.health_of(&order_a.name, 3, &cache).is_none());
+        assert!(set.health_of(&order_b.name, 3, &cache).is_none());
+
+        // Only `a`'s session is resident, so only `a` is loaded.
+        cache
+            .get_or_load(
+                crate::model::CacheKey {
+                    digest: entry_a.digest.clone(),
+                    runtime: "tract",
+                    device: "cpu".to_string(),
+                    binding: entry_a.binding.fingerprint().to_string(),
+                },
+                || async { Ok(Arc::new(Resident) as Arc<dyn crate::model::LoadedModel>) },
+            )
+            .await
+            .expect("loads");
+        assert_eq!(
+            set.health_of(&order_a.name, 3, &cache).map(|h| h.state),
+            Some("loaded".to_string())
+        );
+        assert!(
+            set.health_of(&order_b.name, 3, &cache).is_none(),
+            "the other model's session is not this one's"
+        );
     }
 
     /// The fixture row loads: one compiled adapter per input, the result

@@ -49,7 +49,7 @@ Models are off by default, and turning them on changes nothing until a model is 
 | `models.enabled` | `false` | `ORION_MODELS__ENABLED` | Turn on to admit and run models on this node. A stored model on a node with models off quarantines the workflows naming it rather than aborting. |
 | `models.cache_dir` | `""` | `ORION_MODELS__CACHE_DIR` | Where verified artifacts are kept, one file per digest. Required when `enabled`; refused empty. |
 | `models.max_cache_bytes` | `8589934592` | `ORION_MODELS__MAX_CACHE_BYTES` | Ceiling on the cache directory (8 GiB). Swept least recently used after every fetch. |
-| `models.max_loaded_bytes` | `2147483648` | `ORION_MODELS__MAX_LOADED_BYTES` | Ceiling on models resident in memory at once (2 GiB), across every runtime. A load that would cross it fails as a limit rather than evicting a model in use. |
+| `models.max_loaded_bytes` | `2147483648` | `ORION_MODELS__MAX_LOADED_BYTES` | Ceiling on models resident in memory at once (2 GiB), across every runtime. Crossing it evicts least recently used sessions; a model larger than the whole ceiling serves the call that asked and is not kept resident. |
 | `models.preload` | `"referenced"` | `ORION_MODELS__PRELOAD` | Which admitted models a generation loads before it serves: `none` (the first inference pays the load), `referenced` (every model an active workflow names) or `all`. |
 | `models.max_artifact_bytes` | `536870912` | `ORION_MODELS__MAX_ARTIFACT_BYTES` | Largest artifact an admission will fetch (512 MiB). Checked against the declared length before a byte is read, and again while the body streams. |
 | `models.max_parameters` | `0` | `ORION_MODELS__MAX_PARAMETERS` | Ceiling on a model's parameter count, read from the graph at admission. `0` leaves it unbounded. |

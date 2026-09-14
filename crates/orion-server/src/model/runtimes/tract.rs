@@ -1,7 +1,7 @@
 //! The tract runtime: the first [`ModelRuntime`], over the `tract` facade.
 //!
 //! A load is the facade's sequence — parse the protobuf into an inference
-//! model, pin every input to the manifest's dtype and shape, run shape
+//! model, pin every input to the binding's dtype and shape, run shape
 //! inference, type and declutter the graph, prepare it for a device — and an
 //! inference is one call on the prepared plan. Everything here is
 //! **synchronous** work on the calling thread (a Metal or CUDA plan still
@@ -23,8 +23,7 @@ use std::sync::{Arc, OnceLock};
 use ::tract::prelude::*;
 use dataflow_rs::datavalue::{DType, OwnedDataTensor};
 
-use super::{LoadError, LoadedModel, ModelRuntime, RunError, devices_of, formats_of};
-use crate::model::manifest::Manifest;
+use super::{LoadBinding, LoadError, LoadedModel, ModelRuntime, RunError, devices_of, formats_of};
 use crate::model::onnx;
 
 /// The name the runtime registers under — the `tract` in
@@ -73,7 +72,7 @@ impl ModelRuntime for TractRuntime {
     fn load(
         &self,
         bytes: &[u8],
-        manifest: &Manifest,
+        binding: &LoadBinding,
         device: &str,
     ) -> Result<Arc<dyn LoadedModel>, LoadError> {
         // The device first: it is the cheapest check, and a graph parsed
@@ -109,11 +108,11 @@ impl ModelRuntime for TractRuntime {
             ));
         }
 
-        let inputs = bind_inputs(&mut model, manifest, &graph.input_names)?;
+        let inputs = bind_inputs(&mut model, binding, &graph.input_names)?;
         let output_order = order_of(
             "outputs",
             "output",
-            manifest.output_names(),
+            binding.output_names(),
             &graph.output_names,
         )?;
 
@@ -154,7 +153,7 @@ fn parse_error(e: impl std::fmt::Display) -> LoadError {
     LoadError::new("parse", format!("{e:#}"))
 }
 
-/// One manifest input as the plan expects it: where it goes, and what a
+/// One bound input as the plan expects it: where it goes, and what a
 /// tensor handed in must be.
 struct InputSlot {
     name: String,
@@ -164,19 +163,19 @@ struct InputSlot {
     shape: Vec<usize>,
 }
 
-/// Pin every manifest input to its declared dtype and shape, in graph
-/// order. Both directions are checked — a manifest input the graph lacks
-/// and a graph input the manifest leaves out — because a plan with an unfed
-/// input would fail every run with tract's words instead of the manifest's.
+/// Pin every bound input to its declared dtype and shape, in graph order.
+/// Both directions are checked — a declared input the graph lacks and a
+/// graph input the binding leaves out — because a plan with an unfed input
+/// would fail every run with tract's words instead of the manifest's.
 fn bind_inputs(
     model: &mut InferenceModel,
-    manifest: &Manifest,
+    binding: &LoadBinding,
     graph_inputs: &[String],
 ) -> Result<Vec<InputSlot>, LoadError> {
-    let order = order_of("inputs", "input", manifest.input_names(), graph_inputs)?;
+    let order = order_of("inputs", "input", binding.input_names(), graph_inputs)?;
     if let Some(missing) = graph_inputs
         .iter()
-        .find(|name| !manifest.inputs.iter().any(|input| &input.name == *name))
+        .find(|name| !binding.inputs().iter().any(|input| &input.name == *name))
     {
         return Err(LoadError::new(
             "inputs",
@@ -188,7 +187,7 @@ fn bind_inputs(
         ));
     }
     let mut slots = Vec::with_capacity(order.len());
-    for (input, index) in manifest.inputs.iter().zip(order) {
+    for (input, index) in binding.inputs().iter().zip(order) {
         let dtype = input.dtype().ok_or_else(|| {
             LoadError::new(
                 "inputs",
@@ -215,7 +214,7 @@ fn bind_inputs(
     Ok(slots)
 }
 
-/// The graph index of each manifest name, in manifest order. A name the
+/// The graph index of each bound name, in manifest order. A name the
 /// graph lacks fails at `stage`, listing the graph's names.
 fn order_of<'a>(
     stage: &'static str,
@@ -419,6 +418,7 @@ impl LoadedModel for TractModel {
 mod tests {
     use super::*;
     use crate::model::fixture;
+    use crate::model::manifest::Manifest;
 
     /// How far an accelerator may land from the CPU path, element-wise and
     /// absolute, before it is a different computation rather than a
@@ -427,7 +427,7 @@ mod tests {
     const DEVICE_AGREEMENT: f32 = 1e-5;
 
     fn load(manifest: &Manifest, device: &str) -> Result<Arc<dyn LoadedModel>, LoadError> {
-        TractRuntime.load(fixture::ONNX, manifest, device)
+        TractRuntime.load(fixture::ONNX, &LoadBinding::of(manifest), device)
     }
 
     /// A load expected to fail. (`expect_err` needs the `Ok` type to be
@@ -480,6 +480,50 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// One graph, two bindings, two sessions.
+    ///
+    /// The `two-out` manifests declare the same two graph outputs in
+    /// opposite orders, and both are `f32[1, 2]`. A session built for one
+    /// and handed to the other therefore answers with the tensors swapped
+    /// and nothing to show for it — which is what keys the session cache on
+    /// the binding as well as the bytes. Here each binding gets its own
+    /// load, and each must report `double = x * 2` and `shift = x + 100`.
+    #[test]
+    fn two_bindings_over_one_graph_are_two_sessions() {
+        use std::collections::BTreeMap;
+
+        let (order_a, order_b) = fixture::two_out();
+        let outputs = |manifest: &Manifest| {
+            let model = TractRuntime
+                .load(fixture::TWO_OUT_ONNX, &LoadBinding::of(manifest), "cpu")
+                .expect("the two-out fixture loads");
+            let x = vec![
+                OwnedDataTensor::from_slice(vec![1, 2], &[1.0f32, 2.0]).expect("a valid tensor"),
+            ];
+            manifest
+                .output_names()
+                .zip(model.run(x).expect("runs"))
+                .map(|(name, tensor)| {
+                    (
+                        name.to_string(),
+                        tensor.as_slice::<f32>().expect("f32 data").to_vec(),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let ground_truth = BTreeMap::from([
+            ("double".to_string(), vec![2.0f32, 4.0]),
+            ("shift".to_string(), vec![101.0f32, 102.0]),
+        ]);
+        assert_eq!(outputs(&order_a), ground_truth);
+        assert_eq!(outputs(&order_b), ground_truth);
+        assert_ne!(
+            LoadBinding::of(&order_a).fingerprint(),
+            LoadBinding::of(&order_b).fingerprint(),
+            "and the two sessions are not one cache entry"
+        );
     }
 
     #[test]

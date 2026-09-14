@@ -2765,6 +2765,96 @@ fn dry_run_executes_a_model_from_disk_or_refuses_by_name() {
     }
 }
 
+/// The fixture directory holding one graph and the two manifests over it.
+fn two_out_model_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/two-out").to_string()
+}
+
+/// A workflow calling both two-out models in the given order, each writing
+/// under a key of its own — `out_a` for `order-a`, `out_b` for `order-b`,
+/// whichever ran first.
+fn two_out_workflow(order: [(&str, &str); 2]) -> String {
+    let task = |step: &str, (model, key): (&str, &str)| {
+        format!(
+            r#"{{"id":"{step}","name":"{step}","function":{{"name":"model_infer",
+                "input":{{"model":"{model}","input":{{"var":""}},"output":"data.{key}"}}}}}}"#
+        )
+    };
+    format!(
+        r#"{{"workflow_id":"two-out","name":"two-out","condition":true,"tasks":[
+            {{"id":"parse","name":"Parse","function":{{"name":"parse_json",
+                "input":{{"source":"payload","target":"x"}}}}}},
+            {},
+            {}]}}"#,
+        task("first", order[0]),
+        task("second", order[1])
+    )
+}
+
+/// Two models over one artifact are two sessions, not one (#323).
+///
+/// Both manifests name the same file — so one digest — and declare the same
+/// two outputs in the other order. The session a runtime builds is a
+/// function of the manifest as much as of the bytes: `load` pins the input
+/// facts and bakes the graph's output permutation into the plan. While the
+/// loaded-session cache was keyed on the digest alone, whichever model ran
+/// first won, and the second was handed the first's session: its tensors
+/// came back under its own names in the other order, `200`, nothing logged,
+/// and which of the two was wrong flipped with the call order.
+///
+/// So the run is made twice, once in each order. `double` is `x * 2` and
+/// `shift` is `x + 100`; for `x = [[1, 2]]` that is `[[2, 4]]` and
+/// `[[101, 102]]`, under both manifests, in either order.
+#[test]
+fn two_manifests_over_one_artifact_do_not_share_a_session() {
+    let input = write_temp("[[1.0, 2.0]]", "two-out-in");
+    let a = ("ada.two-out-a", "out_a");
+    let b = ("ada.two-out-b", "out_b");
+
+    for order in [[a, b], [b, a]] {
+        let first = order[0].0;
+        let wf = write_temp(&two_out_workflow(order), "two-out-wf");
+        let out = Command::new(orion_bin())
+            .args([
+                "dry-run",
+                "-w",
+                &wf,
+                "-i",
+                &input,
+                "--model-dir",
+                &two_out_model_dir(),
+            ])
+            .output()
+            .expect("run dry-run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "stdout={stdout}\nstderr={stderr}");
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert!(
+            parsed["errors"].as_array().is_some_and(Vec::is_empty),
+            "{stdout}"
+        );
+        for (model, key) in [a, b] {
+            // Read as numbers: a whole float renders as `2`, not `2.0`.
+            let row = |name: &str| {
+                parsed["data"][key][name][0]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("'{model}' wrote no '{name}' row: {stdout}"))
+                    .iter()
+                    .map(|v| v.as_f64().expect("a number"))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                (row("double"), row("shift")),
+                (vec![2.0, 4.0], vec![101.0, 102.0]),
+                "'{model}' ran with '{first}' loaded first: {stdout}"
+            );
+        }
+        let _ = std::fs::remove_file(&wf);
+    }
+    let _ = std::fs::remove_file(&input);
+}
+
 /// The checked-in case under `tests/fixtures/models/cases` runs the fixture
 /// model through the test runner and asserts the stats the run reports.
 #[test]

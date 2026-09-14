@@ -22,9 +22,10 @@
 //!   parameter and node counts, IR version, opset and boundary names an
 //!   admission records, read from the protobuf so they never move with a
 //!   runtime.
-//! - [`runtimes`]: the `ModelRuntime` / `LoadedModel` traits, the names and
-//!   devices this build knows, the name-keyed registry, and `tract`, the
-//!   one implementation.
+//! - [`runtimes`]: the `ModelRuntime` / `LoadedModel` traits, the
+//!   `LoadBinding` a load is given — everything a session is a function of
+//!   besides the bytes and the device — the names and devices this build
+//!   knows, the name-keyed registry, and `tract`, the one implementation.
 //! - [`node`]: what one node holds for all of the above — the store, the
 //!   admission queue, the loaded-session cache, the inference slots and the
 //!   name its verdicts carry — built at boot when `models.enabled` and
@@ -33,7 +34,7 @@
 //!   serve here, its adapters and result compiled on that generation's
 //!   engine, and the reasons any row did not load.
 //! - [`cache`]: the sessions resident in a runtime, process-wide,
-//!   single-flight per digest and bounded by `models.max_loaded_bytes`.
+//!   single-flight per key and bounded by `models.max_loaded_bytes`.
 //! - [`handler`]: the `model_infer` task function, and the load path it
 //!   shares with the preload — over a [`handler::ModelSource`] that is the
 //!   serving generation on a node and a fixed manifest set offline, and an
@@ -71,7 +72,10 @@ pub use manifest::{ABI, ArtifactReference, InputDecl, Manifest, OutputDecl, is_m
 pub use node::{ModelsRuntime, node_name};
 pub use offline::{LocalArtifacts, OfflineModels};
 pub use onnx::{GraphStats, read_stats};
-pub use runtimes::{LoadError, LoadedModel, ModelRuntime, ModelRuntimes, RunError, TractRuntime};
+pub use runtimes::{
+    BoundInput, LoadBinding, LoadError, LoadedModel, ModelRuntime, ModelRuntimes, RunError,
+    TractRuntime,
+};
 
 /// The `c4-tiny` fixture every model test loads — the graph, its manifest
 /// and what `build.py` says about them — so the reader, the runtime and
@@ -81,7 +85,23 @@ pub(crate) mod fixture {
     pub const ONNX: &[u8] = include_bytes!("../../tests/fixtures/models/c4-tiny/c4-tiny.onnx");
     pub const MANIFEST: &str = include_str!("../../tests/fixtures/models/c4-tiny/model.json");
 
+    /// The `two-out` fixture: one graph with two outputs of the same dtype
+    /// and shape, and the two manifests that declare them in either order —
+    /// the pair that shares an artifact digest and must not share a session.
+    pub const TWO_OUT_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/two-out/two-out.onnx");
+    pub const TWO_OUT_A: &str = include_str!("../../tests/fixtures/models/two-out/order-a.json");
+    pub const TWO_OUT_B: &str = include_str!("../../tests/fixtures/models/two-out/order-b.json");
+
     pub fn manifest() -> super::Manifest {
         super::Manifest::parse(MANIFEST).expect("the fixture manifest is valid")
+    }
+
+    /// The two `two-out` manifests, `order-a` first.
+    pub fn two_out() -> (super::Manifest, super::Manifest) {
+        (
+            super::Manifest::parse(TWO_OUT_A).expect("the order-a manifest is valid"),
+            super::Manifest::parse(TWO_OUT_B).expect("the order-b manifest is valid"),
+        )
     }
 }

@@ -6,10 +6,19 @@
 //! megabytes for a large model — and a reload that changed one channel must
 //! not pay it again for every model. A generation carries the *compiled
 //! adapters* (cheap, bound to its engine); this holds the *runtime
-//! sessions* (expensive, bound to nothing but the bytes), keyed by the
-//! digest, the runtime and the device, so one artifact loaded on two
-//! runtimes is two entries and a new version — a new digest — never serves
-//! from the old one.
+//! sessions* (expensive, bound to nothing but the bytes and the binding),
+//! keyed by the digest, the binding, the runtime and the device, so one
+//! artifact loaded on two runtimes is two entries and a new version — a new
+//! digest — never serves from the old one.
+//!
+//! The binding is in the key because a session is built from one: a runtime
+//! pins the declared input facts and bakes the graph's output permutation
+//! into the plan ([`super::LoadBinding`]). Two models naming one artifact
+//! with different bindings are therefore two sessions, counted twice
+//! against the ceiling, because they are two plans — and keying them on the
+//! digest alone served one model the other's, silently reordering its
+//! outputs. Two models whose bindings agree still share one session, which
+//! is what makes registering one artifact under two manifests cheap.
 //!
 //! Two properties a load path needs and a plain map does not give:
 //!
@@ -34,13 +43,16 @@ use std::sync::{Arc, Mutex};
 
 use super::runtimes::{LoadError, LoadedModel};
 
-/// What a loaded session is keyed by: the bytes, the runtime, the device.
+/// What a loaded session is keyed by — the same four things it is a
+/// function of: the bytes, the binding, the runtime and the device.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     pub digest: String,
     /// One of [`super::runtimes::NAMES`], as the runtime reports it.
     pub runtime: &'static str,
     pub device: String,
+    /// [`super::LoadBinding::fingerprint`] of what the load was given.
+    pub binding: String,
 }
 
 struct Entry {
@@ -53,9 +65,10 @@ struct Entry {
 #[derive(Default)]
 struct Inner {
     entries: HashMap<CacheKey, Entry>,
-    /// Digests that were resident at some point and are no longer, on any
-    /// runtime — what tells `evicted` from `never loaded`.
-    gone: HashSet<String>,
+    /// The `(digest, binding)` pairs that were resident at some point and
+    /// are no longer, on any runtime — what tells `evicted` from `never
+    /// loaded`.
+    gone: HashSet<(String, String)>,
     tick: u64,
 }
 
@@ -65,7 +78,7 @@ pub struct LoadedCache {
     inner: Mutex<Inner>,
     /// One mutex per key, held for the length of a load so concurrent first
     /// callers share it. Kept for the life of the process: the set of keys
-    /// is the set of digests × runtimes this node has ever loaded, which is
+    /// is the set of bindings × runtimes this node has ever loaded, which is
     /// small.
     flights: Mutex<HashMap<CacheKey, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -150,7 +163,7 @@ impl LoadedCache {
                 "Model is larger than models.max_loaded_bytes: served for this call and not \
                  kept resident"
             );
-            inner.gone.insert(key.digest);
+            inner.gone.insert((key.digest, key.binding));
             crate::metrics::set_model_loaded_bytes(total(&inner));
             return;
         }
@@ -179,7 +192,7 @@ impl LoadedCache {
                     "Model evicted: models.max_loaded_bytes reached"
                 );
             }
-            inner.gone.insert(victim.digest);
+            inner.gone.insert((victim.digest, victim.binding));
         }
         crate::metrics::set_model_loaded_bytes(total(&inner));
     }
@@ -196,6 +209,7 @@ impl LoadedCache {
             a.0.digest
                 .cmp(&b.0.digest)
                 .then(a.0.runtime.cmp(b.0.runtime))
+                .then(a.0.binding.cmp(&b.0.binding))
         });
         out
     }
@@ -213,18 +227,26 @@ impl LoadedCache {
             .contains_key(key)
     }
 
-    /// The first resident entry under `digest`, on any runtime, and its
-    /// bytes.
-    pub fn loaded_for(&self, digest: &str) -> Option<(CacheKey, u64)> {
+    /// The first resident entry under `digest` with `binding`, on any
+    /// runtime, and its bytes. The binding is asked for because another
+    /// model's session over the same artifact is not this one's: it answers
+    /// for the model that asked, not for the bytes.
+    pub fn loaded_for(&self, digest: &str, binding: &str) -> Option<(CacheKey, u64)> {
         self.states()
             .into_iter()
-            .find(|(key, _)| key.digest == digest)
+            .find(|(key, _)| key.digest == digest && key.binding == binding)
     }
 
-    /// Whether `digest` was resident on some runtime and is on none now.
-    pub fn was_evicted(&self, digest: &str) -> bool {
+    /// Whether this pair was resident on some runtime and is on none now.
+    pub fn was_evicted(&self, digest: &str, binding: &str) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.gone.contains(digest) && !inner.entries.keys().any(|k| k.digest == digest)
+        inner
+            .gone
+            .contains(&(digest.to_string(), binding.to_string()))
+            && !inner
+                .entries
+                .keys()
+                .any(|k| k.digest == digest && k.binding == binding)
     }
 }
 
@@ -260,10 +282,15 @@ mod tests {
     }
 
     fn key(digest: &str) -> CacheKey {
+        key_with(digest, "binding")
+    }
+
+    fn key_with(digest: &str, binding: &str) -> CacheKey {
         CacheKey {
             digest: digest.to_string(),
             runtime: "tract",
             device: "cpu".to_string(),
+            binding: binding.to_string(),
         }
     }
 
@@ -299,7 +326,7 @@ mod tests {
         assert_eq!(loads.load(Ordering::SeqCst), 1);
         assert!(cache.contains(&key("a")));
         assert_eq!(cache.loaded_bytes(), 10);
-        assert_eq!(cache.loaded_for("a").map(|(_, b)| b), Some(10));
+        assert_eq!(cache.loaded_for("a", "binding").map(|(_, b)| b), Some(10));
 
         let Err(err) = cache
             .get_or_load(key("b"), || async {
@@ -311,7 +338,7 @@ mod tests {
         };
         assert_eq!(err.stage, "parse");
         assert!(!cache.contains(&key("b")));
-        assert!(!cache.was_evicted("b"));
+        assert!(!cache.was_evicted("b", "binding"));
         assert_eq!(cache.loaded_bytes(), 10);
     }
 
@@ -339,8 +366,8 @@ mod tests {
         assert!(!cache.contains(&key("b")));
         assert!(cache.contains(&key("c")));
         assert_eq!(cache.loaded_bytes(), 80);
-        assert!(cache.was_evicted("b"));
-        assert!(!cache.was_evicted("a"));
+        assert!(cache.was_evicted("b", "binding"));
+        assert!(!cache.was_evicted("a", "binding"));
         assert_eq!(
             cache
                 .states()
@@ -354,7 +381,7 @@ mod tests {
             .get_or_load(key("b"), || async { Ok(fake("b", 10)) })
             .await
             .expect("loads");
-        assert!(!cache.was_evicted("b"));
+        assert!(!cache.was_evicted("b", "binding"));
     }
 
     /// A model over the whole ceiling serves its caller and is not kept.
@@ -372,10 +399,52 @@ mod tests {
         assert!(cold);
         assert_eq!(model.resident_bytes(), 500);
         assert!(!cache.contains(&key("huge")));
-        assert!(cache.was_evicted("huge"));
+        assert!(cache.was_evicted("huge", "binding"));
         // The small one was not sacrificed for a model that could never fit.
         assert!(cache.contains(&key("small")));
         assert_eq!(cache.loaded_bytes(), 30);
+    }
+
+    /// Two models over one artifact are two entries, not one.
+    ///
+    /// A session is built from a binding, so two manifests over one file are
+    /// two plans. Keyed on the digest alone they aliased, and the second
+    /// model was served the first's session — silently, when the two named
+    /// the same outputs in a different order. Residency is per pair too: the
+    /// health view must answer for the model that asked, not for the bytes.
+    #[tokio::test]
+    async fn one_digest_with_two_bindings_is_two_entries() {
+        let cache = LoadedCache::new(100);
+        for binding in ["order-a", "order-b"] {
+            cache
+                .get_or_load(key_with("one", binding), || async { Ok(fake("one", 40)) })
+                .await
+                .expect("loads");
+        }
+        assert!(cache.contains(&key_with("one", "order-a")));
+        assert!(cache.contains(&key_with("one", "order-b")));
+        assert_eq!(cache.loaded_bytes(), 80, "two plans, counted twice");
+        assert_eq!(
+            cache
+                .loaded_for("one", "order-b")
+                .map(|(key, _)| key.binding),
+            Some("order-b".to_string())
+        );
+        assert!(
+            cache.loaded_for("one", "order-c").is_none(),
+            "a third binding over the same bytes is not resident"
+        );
+
+        // Evicting one of the pair leaves the other's answer alone: the
+        // digest is still resident, and it is still not this binding's.
+        cache
+            .get_or_load(key_with("two", "order-a"), || async { Ok(fake("two", 40)) })
+            .await
+            .expect("loads");
+        assert!(!cache.contains(&key_with("one", "order-a")));
+        assert!(cache.was_evicted("one", "order-a"));
+        assert!(!cache.was_evicted("one", "order-b"));
+        assert!(cache.contains(&key_with("one", "order-b")));
     }
 
     /// Concurrent first callers share one load, and every one of them

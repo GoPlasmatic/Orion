@@ -1,0 +1,24 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.two-out-a",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "two-out.onnx",
+  "description": "One graph, two outputs of the same dtype and shape, declared double first",
+  "inputs": [
+    {
+      "name": "x",
+      "dtype": "f32",
+      "shape": [1, 2],
+      "adapter": { "tensor": [{ "var": "data.x" }, "f32"] }
+    }
+  ],
+  "outputs": [
+    { "name": "double", "dtype": "f32", "shape": [1, 2] },
+    { "name": "shift", "dtype": "f32", "shape": [1, 2] }
+  ],
+  "result": {
+    "double": { "to_list": [{ "var": "double" }] },
+    "shift": { "to_list": [{ "var": "shift" }] }
+  }
+}

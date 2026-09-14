@@ -511,7 +511,7 @@ fn check_tensor_decl<'a>(
 
 /// The dtype a manifest may declare: a datavalue wire name, spelled in
 /// lowercase, that an adapter can decode.
-fn parse_dtype(name: &str) -> Result<DType, String> {
+pub(super) fn parse_dtype(name: &str) -> Result<DType, String> {
     let Some(dtype) = DType::from_name(name) else {
         let known: Vec<&str> = DType::ALL
             .iter()

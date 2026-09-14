@@ -74,7 +74,7 @@ Emitted by the model runtime (`[models]`). `model` is a stored model id and `run
 | `orion_model_fetch_bytes_total` | Counter | `model`, `outcome` | Artifact bytes kept after a fetch through a storage connector; a failed fetch (`outcome = error`) keeps none and adds `0`. |
 | `orion_model_fetch_duration_seconds` | Histogram | `model`, `outcome` | Wall-clock time of one artifact fetch, first byte to verified file. |
 | `orion_model_loads_total` | Counter | `model`, `runtime`, `outcome`, `source` | Models loaded into a runtime; `outcome` is `ok` or `error`, `source` is `admission` (the probe load), `preload` (at a generation build) or `demand` (at a first inference). |
-| `orion_model_load_duration_seconds` | Histogram | `model`, `runtime` | Parse plus runtime allocation for one load. Paid once per digest per process unless evicted. |
+| `orion_model_load_duration_seconds` | Histogram | `model`, `runtime` | Parse plus runtime allocation for one load. Paid once per digest, binding, runtime and device per process unless evicted. |
 | `orion_model_loaded_bytes` | Gauge | — | Bytes of models resident in memory right now, across every runtime. Bounded by `models.max_loaded_bytes`. |
 | `orion_model_cache_bytes` | Gauge | — | Bytes the artifact cache directory holds right now. Swept to `models.max_cache_bytes` after every fetch. |
 | `orion_model_live_inferences` | Gauge | — | Inferences running right now, across every model. Bounded by `models.max_concurrent_inferences`. |

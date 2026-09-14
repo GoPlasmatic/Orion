@@ -816,6 +816,7 @@ pub async fn load_model(
         digest: entry.digest.clone(),
         runtime: runtime.name(),
         device: device.to_string(),
+        binding: entry.binding.fingerprint().to_string(),
     };
     host.loaded
         .get_or_load(key, || async {
@@ -878,7 +879,7 @@ async fn fetch_and_load(
     let bytes = host.artifacts.bytes(entry).await?;
     let entry = entry.clone();
     let device = device.to_string();
-    tokio::task::spawn_blocking(move || runtime.load(&bytes, &entry.manifest, &device))
+    tokio::task::spawn_blocking(move || runtime.load(&bytes, &entry.binding, &device))
         .await
         .map_err(|e| LoadError::new("load", format!("the load did not complete: {e}")))?
 }

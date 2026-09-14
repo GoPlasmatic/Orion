@@ -2,7 +2,7 @@
 //! names and devices this build knows, and the registry a generation reads.
 //!
 //! A runtime is a *mechanism* — tract today, another engine later — behind
-//! two traits: [`ModelRuntime`] turns bytes plus a manifest into a
+//! two traits: [`ModelRuntime`] turns bytes plus a [`LoadBinding`] into a
 //! [`LoadedModel`], and a loaded model turns tensors into tensors. Everything
 //! Orion adds (adapters, limits, permits, timeouts, metrics) sits above the
 //! traits, so a second runtime is a second `impl` and nothing else.
@@ -34,7 +34,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use dataflow_rs::datavalue::OwnedDataTensor;
+use dataflow_rs::datavalue::{DType, OwnedDataTensor};
+use serde::Serialize;
 
 use super::manifest::Manifest;
 use crate::config::ModelsConfig;
@@ -198,6 +199,108 @@ impl fmt::Display for RuntimeSelection {
 
 impl std::error::Error for RuntimeSelection {}
 
+/// Everything a runtime reads out of a manifest to build a session: the
+/// inputs it pins a fact for and the output names it resolves to graph
+/// indices, both in manifest order.
+///
+/// [`ModelRuntime::load`] takes this rather than the manifest, and the
+/// loaded-session cache keys on its [`fingerprint`](Self::fingerprint), so
+/// what *shapes* a session and what *identifies* one are one value. A
+/// session is a function of the bytes, this binding and the device; keyed
+/// on the bytes alone, two models over one artifact shared a session and
+/// the second was served the first's — silently, when the two declared the
+/// same outputs in a different order.
+///
+/// What is deliberately absent is what keeps an artifact shared: the
+/// model's name and version, its description, its adapters and its result
+/// expression, and its outputs' dtypes and shapes. A load reads none of
+/// them — the outputs' dtype and shape are checked per call against the
+/// row's own manifest — so two manifests over one graph differing only in
+/// those keep one resident session between them, which is the whole point
+/// of registering one artifact twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadBinding {
+    inputs: Vec<BoundInput>,
+    outputs: Vec<String>,
+    fingerprint: String,
+}
+
+/// One input as a load pins it: which graph tensor to feed, and the fact it
+/// is given.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoundInput {
+    /// The graph's input name.
+    pub name: String,
+    /// A datavalue dtype wire name, as the manifest spells it.
+    pub dtype: String,
+    /// The fixed shape, every dimension positive.
+    pub shape: Vec<usize>,
+}
+
+impl BoundInput {
+    /// The declared dtype. `None` only for a manifest that did not
+    /// validate — the same answer [`super::InputDecl::dtype`] gives.
+    pub fn dtype(&self) -> Option<DType> {
+        super::manifest::parse_dtype(&self.dtype).ok()
+    }
+}
+
+impl LoadBinding {
+    /// The binding `manifest` imposes on its graph.
+    pub fn of(manifest: &Manifest) -> Self {
+        /// What the fingerprint is taken over. A derived struct of strings
+        /// and numbers: the field order is this declaration's and there are
+        /// no map keys, so the rendering is canonical without a sort.
+        #[derive(Serialize)]
+        struct Rendered<'a> {
+            inputs: &'a [BoundInput],
+            outputs: &'a [String],
+        }
+
+        let inputs: Vec<BoundInput> = manifest
+            .inputs
+            .iter()
+            .map(|input| BoundInput {
+                name: input.name.clone(),
+                dtype: input.dtype.clone(),
+                shape: input.shape.clone(),
+            })
+            .collect();
+        let outputs: Vec<String> = manifest.output_names().map(str::to_string).collect();
+        let rendered = serde_json::to_vec(&Rendered {
+            inputs: &inputs,
+            outputs: &outputs,
+        })
+        .expect("a binding of strings and numbers serializes");
+        Self {
+            fingerprint: crate::crypto::sha256_digest(&rendered),
+            inputs,
+            outputs,
+        }
+    }
+
+    /// The inputs to pin, in manifest order.
+    pub fn inputs(&self) -> &[BoundInput] {
+        &self.inputs
+    }
+
+    /// Every input name, in manifest order.
+    pub fn input_names(&self) -> impl Iterator<Item = &str> {
+        self.inputs.iter().map(|input| input.name.as_str())
+    }
+
+    /// Every output name, in manifest order.
+    pub fn output_names(&self) -> impl Iterator<Item = &str> {
+        self.outputs.iter().map(String::as_str)
+    }
+
+    /// `sha256:…` over the binding — what the session cache keys on, beside
+    /// the artifact digest, the runtime and the device.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+}
+
 /// One inference engine.
 pub trait ModelRuntime: Send + Sync {
     /// The name a config and a row use for it — one of [`NAMES`].
@@ -210,13 +313,18 @@ pub trait ModelRuntime: Send + Sync {
     /// name. Never empty: a runtime that serves no format cannot be
     /// selected for anything, and [`ModelRuntimes::register`] refuses it.
     fn formats(&self) -> &'static [&'static str];
-    /// Parse `bytes` as the manifest's format and make the graph runnable on
-    /// `device`. Blocks for the length of a parse — a caller on a request
-    /// path runs it on the blocking pool.
+    /// Parse `bytes` and make the graph runnable on `device`, bound as
+    /// `binding` declares. Blocks for the length of a parse — a caller on a
+    /// request path runs it on the blocking pool.
+    ///
+    /// It takes the binding rather than the whole manifest deliberately:
+    /// the session this returns is a function of exactly these three
+    /// arguments, and the loaded-session cache keys on exactly them, so no
+    /// runtime can come to depend on something the key does not carry.
     fn load(
         &self,
         bytes: &[u8],
-        manifest: &Manifest,
+        binding: &LoadBinding,
         device: &str,
     ) -> Result<Arc<dyn LoadedModel>, LoadError>;
 }
@@ -369,6 +477,125 @@ impl ModelRuntimes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::fixture;
+    use serde_json::json;
+
+    /// The binding is everything a load reads out of a manifest, and
+    /// nothing else.
+    ///
+    /// The first half is the correctness half: every field a runtime binds
+    /// a graph with — an input's name, dtype or shape, an output's name,
+    /// either list's length or order — moves the fingerprint, so two models
+    /// over one artifact that differ in any of them get their own session.
+    /// The second half is the sharing half: a load reads none of the rest,
+    /// so two manifests differing only there keep one session between them,
+    /// which is why registering one artifact under two manifests is cheap
+    /// rather than double.
+    #[test]
+    fn the_binding_covers_what_a_load_reads_and_nothing_more() {
+        let base = fixture::manifest();
+        let fingerprint = |m: &Manifest| LoadBinding::of(m).fingerprint().to_string();
+        let changed = |f: fn(&mut Manifest)| {
+            let mut m = base.clone();
+            f(&mut m);
+            fingerprint(&m)
+        };
+        let untouched = fingerprint(&base);
+        assert!(
+            crate::crypto::is_sha256_digest(&untouched),
+            "{untouched} is the one digest spelling"
+        );
+        assert_eq!(untouched, fingerprint(&base.clone()), "and it is stable");
+
+        for (what, moved) in [
+            (
+                "an input name",
+                changed(|m| m.inputs[0].name = "boards".into()),
+            ),
+            (
+                "an input dtype",
+                changed(|m| m.inputs[0].dtype = "f64".into()),
+            ),
+            (
+                "an input shape",
+                changed(|m| m.inputs[0].shape = vec![1, 2, 6, 8]),
+            ),
+            (
+                "an output name",
+                changed(|m| m.outputs[0].name = "logits".into()),
+            ),
+            (
+                "a second input",
+                changed(|m| {
+                    let mut extra = m.inputs[0].clone();
+                    extra.name = "other".into();
+                    m.inputs.push(extra);
+                }),
+            ),
+            (
+                "a second output",
+                changed(|m| {
+                    let mut extra = m.outputs[0].clone();
+                    extra.name = "other".into();
+                    m.outputs.push(extra);
+                }),
+            ),
+        ] {
+            assert_ne!(untouched, moved, "{what} is part of the binding");
+        }
+
+        // Order, in both lists. The fixture declares one of each, so the
+        // input pair is made here; the output pair is the `two-out` fixture,
+        // which is two manifests over one graph differing in nothing else.
+        let mut two_inputs = base.clone();
+        let mut extra = two_inputs.inputs[0].clone();
+        extra.name = "other".to_string();
+        two_inputs.inputs.push(extra);
+        let mut swapped = two_inputs.clone();
+        swapped.inputs.swap(0, 1);
+        assert_ne!(
+            fingerprint(&two_inputs),
+            fingerprint(&swapped),
+            "input order is part of the binding"
+        );
+        let (order_a, order_b) = fixture::two_out();
+        assert_ne!(
+            fingerprint(&order_a),
+            fingerprint(&order_b),
+            "output order is part of the binding"
+        );
+
+        for (what, moved) in [
+            ("the model name", changed(|m| m.name = "ada.other".into())),
+            ("the version", changed(|m| m.version = "9.9.9".into())),
+            (
+                "the description",
+                changed(|m| m.description = "another graph entirely".into()),
+            ),
+            (
+                "the artifact path",
+                changed(|m| m.artifact = Some("other.onnx".into())),
+            ),
+            (
+                "an input adapter",
+                changed(|m| m.inputs[0].adapter = Some(json!({"var": "data.other"}))),
+            ),
+            (
+                "the result expression",
+                changed(|m| m.result = Some(json!({"other": {"var": "policy"}}))),
+            ),
+            (
+                "an output dtype",
+                changed(|m| m.outputs[0].dtype = "f64".into()),
+            ),
+            (
+                "an output shape",
+                changed(|m| m.outputs[0].shape = vec![1, 9]),
+            ),
+        ] {
+            assert_eq!(untouched, moved, "{what} is not part of the binding");
+        }
+    }
 
     /// A runtime by name, serving the given formats.
     struct Stub(&'static str, &'static [&'static str]);
@@ -386,7 +613,7 @@ mod tests {
         fn load(
             &self,
             _bytes: &[u8],
-            _manifest: &Manifest,
+            _binding: &LoadBinding,
             _device: &str,
         ) -> Result<Arc<dyn LoadedModel>, LoadError> {
             Err(LoadError::new("parse", "stub"))

@@ -1,0 +1,24 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.two-out-b",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "two-out.onnx",
+  "description": "The same graph as order-a, declaring the same two outputs in the other order",
+  "inputs": [
+    {
+      "name": "x",
+      "dtype": "f32",
+      "shape": [1, 2],
+      "adapter": { "tensor": [{ "var": "data.x" }, "f32"] }
+    }
+  ],
+  "outputs": [
+    { "name": "shift", "dtype": "f32", "shape": [1, 2] },
+    { "name": "double", "dtype": "f32", "shape": [1, 2] }
+  ],
+  "result": {
+    "double": { "to_list": [{ "var": "double" }] },
+    "shift": { "to_list": [{ "var": "shift" }] }
+  }
+}

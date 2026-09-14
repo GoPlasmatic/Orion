@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use super::artifact::{ArtifactRef, ArtifactStore};
 use super::manifest::Manifest;
 use super::onnx;
-use super::runtimes::{LoadedModel, ModelRuntimes};
+use super::runtimes::{LoadBinding, LoadedModel, ModelRuntimes};
 use crate::config::ModelsConfig;
 use crate::connector::StorageConnectorConfig;
 
@@ -311,9 +311,9 @@ async fn sequence(
     let loaded = {
         let runtime = runtime.clone();
         let bytes = bytes.clone();
-        let manifest = job.manifest.clone();
+        let binding = LoadBinding::of(&job.manifest);
         let device = device.to_string();
-        tokio::task::spawn_blocking(move || runtime.load(&bytes, &manifest, &device)).await
+        tokio::task::spawn_blocking(move || runtime.load(&bytes, &binding, &device)).await
     };
     let load_secs = load_started.elapsed().as_secs_f64();
     let outcome = match &loaded {

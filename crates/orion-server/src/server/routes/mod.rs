@@ -354,6 +354,7 @@ pub(crate) async fn health_check(
                     .into_iter()
                     .map(|(key, bytes)| json!({
                         "digest": key.digest,
+                        "binding": key.binding,
                         "runtime": key.runtime,
                         "device": key.device,
                         "resident_bytes": bytes,
