@@ -8,7 +8,7 @@ Orion itself is API-first; everything in this book is plain HTTP. [Orion UI](htt
 
 ## Before you start
 
-Tested with Orion 1.8.0. You need Docker and a running Orion server on port 8080. The command below starts the console on port 8081. On Linux, `host.docker.internal` may need Docker's `host-gateway` mapping; the Orion UI repository documents the alternatives.
+Tested with Orion 1.8.1. You need Docker and a running Orion server on port 8080. The command below starts the console on port 8081. On Linux, `host.docker.internal` may need Docker's `host-gateway` mapping; the Orion UI repository documents the alternatives.
 
 The video shows the full creation loop. You import a workflow (paste, validate, dry-run, activate) and watch its logic render as a graph. Then you give it an endpoint with the channel form, send a request from the Data Console, and see the service on the System Map.
 

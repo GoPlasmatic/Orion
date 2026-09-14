@@ -15,7 +15,7 @@ The repository ships twelve ready-to-deploy services, each a *package*: one serv
 
 ## Before you start
 
-Tested with Orion 1.8.0. You need:
+Tested with Orion 1.8.1. You need:
 
 - Git, `curl` and Python 3
 - an Orion server on `http://localhost:8080`
