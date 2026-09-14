@@ -117,14 +117,23 @@ impl PreloadDeps {
 
 /// The ids `config.preload` selects out of `generation.models`, sorted:
 /// every entry for `all`, the literal references of `workflows` for
-/// `referenced`, nothing for `none`. An id the set does not serve is not
-/// selected — its workflows are quarantined, and there is nothing to load.
+/// `referenced`, nothing for `none` — plus every entry carrying one of
+/// `config.preload_tags`, whichever mode is set. An id the set does not
+/// serve is not selected — its workflows are quarantined, and there is
+/// nothing to load.
+///
+/// The tags are a union rather than a fourth mode because they answer a
+/// question the modes cannot: `referenced` reads the *literal* `model` of
+/// each task, so a workflow that routes with a computed one warms nothing,
+/// and `all` is the only alternative on an estate where it will not fit.
+/// Naming the hot set is the operator's to do, and the tags are already on
+/// the registration and in the package.
 pub fn preload_targets(
     config: &ModelsConfig,
     generation: &RuntimeGeneration,
     workflows: &[Workflow],
 ) -> Vec<String> {
-    let selected: BTreeSet<String> = match config.preload {
+    let mut selected: BTreeSet<String> = match config.preload {
         ModelPreload::None => BTreeSet::new(),
         ModelPreload::All => generation.models.ids().map(str::to_string).collect(),
         ModelPreload::Referenced => workflows
@@ -135,6 +144,20 @@ pub fn preload_targets(
             .filter(|model| generation.models.get(model).is_some())
             .collect(),
     };
+    if !config.preload_tags.is_empty() {
+        selected.extend(
+            generation
+                .models
+                .entries()
+                .filter(|entry| {
+                    entry
+                        .tags
+                        .iter()
+                        .any(|tag| config.preload_tags.iter().any(|want| want == tag))
+                })
+                .map(|entry| entry.id.clone()),
+        );
+    }
     selected.into_iter().collect()
 }
 
@@ -249,6 +272,14 @@ mod tests {
     }
 
     fn model_row(id: &str, admission: serde_json::Value) -> crate::storage::models::Model {
+        tagged_row(id, admission, &[])
+    }
+
+    fn tagged_row(
+        id: &str,
+        admission: serde_json::Value,
+        tags: &[&str],
+    ) -> crate::storage::models::Model {
         let now = chrono::Utc::now().naive_utc();
         crate::storage::models::Model {
             model_id: id.to_string(),
@@ -260,7 +291,7 @@ mod tests {
                 .to_string(),
             admission_json: admission.to_string(),
             stats_json: None,
-            tags_json: "[]".to_string(),
+            tags_json: json!(tags).to_string(),
             signature: None,
             created_at: now,
             updated_at: now,
@@ -357,5 +388,66 @@ mod tests {
         assert_eq!(targets(ModelPreload::Referenced), ["ada.a"]);
         assert_eq!(targets(ModelPreload::All), ["ada.a", "ada.b"]);
         assert!(targets(ModelPreload::None).is_empty());
+    }
+
+    /// `preload_tags` names the set the modes cannot infer (#329).
+    ///
+    /// Every workflow here routes with a computed `model`, which is the
+    /// form the guide recommends for serving many models from one workflow
+    /// — and the form `referenced` sees nothing in, because it reads the
+    /// *literal* `model` of each task. So `referenced` warms nothing and
+    /// `all` warms the estate; between them there was no way to say
+    /// "these".
+    #[test]
+    fn preload_tags_warm_a_set_no_workflow_names() {
+        let rows = [
+            tagged_row("ada.a", json!({"state": "passed"}), &["hot"]),
+            tagged_row("ada.b", json!({"state": "passed"}), &["cold", "eu"]),
+            tagged_row("ada.c", json!({"state": "passed"}), &[]),
+            // Tagged, but no admitted version: nothing to warm.
+            tagged_row("ada.d", json!({"state": "pending"}), &["hot"]),
+        ];
+        let generation = RuntimeGeneration {
+            id: 1,
+            engine: Arc::new(dataflow_rs::Engine::builder().build().expect("builds")),
+            channels: Arc::new(crate::channel::ChannelSnapshot::empty()),
+            functions: crate::engine::FunctionRegistry::builtin().clone(),
+            plugins: Arc::new(crate::plugin::PluginSet::empty()),
+            models: Arc::new(set(&rows)),
+        };
+        let workflows = [workflow(
+            "router",
+            json!([infer("t", json!({"var": "data.which"}))]),
+        )];
+        let targets = |preload, tags: &[&str]| {
+            let config = ModelsConfig {
+                preload,
+                preload_tags: tags.iter().map(|t| (*t).to_string()).collect(),
+                ..ModelsConfig::default()
+            };
+            preload_targets(&config, &generation, &workflows)
+        };
+
+        // What the issue reports: neither mode fits.
+        assert!(targets(ModelPreload::Referenced, &[]).is_empty());
+        assert_eq!(targets(ModelPreload::All, &[]), ["ada.a", "ada.b", "ada.c"]);
+
+        // Named instead. `none` plus tags is exactly the tagged set, and a
+        // model the node does not serve is not selected however it is
+        // tagged.
+        assert_eq!(targets(ModelPreload::None, &["hot"]), ["ada.a"]);
+        // Any one of the tags matches.
+        assert_eq!(
+            targets(ModelPreload::None, &["hot", "eu"]),
+            ["ada.a", "ada.b"]
+        );
+        // A union, not a mode: the tags add to what the mode selected.
+        assert_eq!(targets(ModelPreload::Referenced, &["hot"]), ["ada.a"]);
+        assert_eq!(
+            targets(ModelPreload::All, &["hot"]),
+            ["ada.a", "ada.b", "ada.c"]
+        );
+        // A tag nothing carries selects nothing, and disturbs no mode.
+        assert!(targets(ModelPreload::None, &["nope"]).is_empty());
     }
 }

@@ -49,6 +49,20 @@ pub struct ModelsConfig {
     /// Which admitted models a generation loads before it serves — see
     /// [`ModelPreload`].
     pub preload: ModelPreload,
+    /// Model tags to warm in addition to whatever [`Self::preload`] selects.
+    ///
+    /// `preload` infers what to warm from the workflows, and can only see a
+    /// `model` named by literal id. A workflow that routes with a computed
+    /// one — `{"var": "data.mover_model"}`, the form the guide recommends
+    /// for serving many models from one workflow — therefore warms nothing
+    /// under `referenced`, and `all` is the only alternative. This is how
+    /// an operator names the set instead: the tags travel on the
+    /// registration and through a package, so whoever deploys the models
+    /// says which are hot, and the node does not have to infer it.
+    ///
+    /// Empty by default, and a union rather than a mode: `referenced` plus
+    /// tags warms both, and `none` plus tags warms exactly the tagged ones.
+    pub preload_tags: Vec<String>,
     /// Largest artifact an admission will fetch. Checked against the
     /// object's declared size before a byte is read, and again while the
     /// body streams.
@@ -211,6 +225,7 @@ impl Default for ModelsConfig {
             max_cache_bytes: 8 * 1024 * 1024 * 1024,
             max_loaded_bytes: 2 * 1024 * 1024 * 1024,
             preload: ModelPreload::default(),
+            preload_tags: Vec::new(),
             max_artifact_bytes: 512 * 1024 * 1024,
             max_parameters: 0,
             max_input_elements: 1_048_576,

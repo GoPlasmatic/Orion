@@ -15,6 +15,7 @@ cache_dir = ""
 max_cache_bytes = 8589934592
 max_loaded_bytes = 2147483648
 preload = "referenced"
+preload_tags = []
 max_artifact_bytes = 536870912
 max_parameters = 0
 max_input_elements = 1048576
@@ -50,7 +51,8 @@ Models are off by default, and turning them on changes nothing until a model is 
 | `models.cache_dir` | `""` | `ORION_MODELS__CACHE_DIR` | Where verified artifacts are kept, one file per digest. Required when `enabled`; refused empty. |
 | `models.max_cache_bytes` | `8589934592` | `ORION_MODELS__MAX_CACHE_BYTES` | Ceiling on the cache directory (8 GiB). Swept least recently used after every fetch. |
 | `models.max_loaded_bytes` | `2147483648` | `ORION_MODELS__MAX_LOADED_BYTES` | Ceiling on models resident in memory at once (2 GiB), across every runtime. Crossing it evicts least recently used sessions; a model larger than the whole ceiling serves the call that asked and is not kept resident. |
-| `models.preload` | `"referenced"` | `ORION_MODELS__PRELOAD` | Which admitted models a generation loads before it serves: `none` (the first inference pays the load), `referenced` (every model an active workflow names) or `all`. |
+| `models.preload` | `"referenced"` | `ORION_MODELS__PRELOAD` | Which admitted models a generation loads before it serves: `none` (the first inference pays the load), `referenced` (every model an active workflow names **by literal id**) or `all`. |
+| `models.preload_tags` | `[]` | `ORION_MODELS__PRELOAD_TAGS` | Also warm every active model carrying one of these tags, whatever `preload` is set to. Set it where workflows route with a computed `model`, which `referenced` cannot see: the tags are on the registration, so whoever deploys the models says which are hot. |
 | `models.max_artifact_bytes` | `536870912` | `ORION_MODELS__MAX_ARTIFACT_BYTES` | Largest artifact an admission will fetch (512 MiB). Checked against the declared length before a byte is read, and again while the body streams. |
 | `models.max_parameters` | `0` | `ORION_MODELS__MAX_PARAMETERS` | Ceiling on a model's parameter count, read from the graph at admission — every value it carries, in initializers or in node attributes, through every subgraph body. `0` leaves it unbounded. |
 | `models.max_input_elements` | `1048576` | `ORION_MODELS__MAX_INPUT_ELEMENTS` | Elements one inference may hand a model, summed over its inputs. |

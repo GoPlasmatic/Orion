@@ -299,6 +299,7 @@ where
     ov!(models.admission_timeout_secs: u64);
     ov!(models.max_concurrency_per_model: u32);
     ov!(models.max_concurrent_inferences: u32);
+    ov_list!(models.preload_tags);
     ov_list!(models.trust.public_keys);
 
     // Query dialect

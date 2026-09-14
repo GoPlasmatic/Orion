@@ -58,6 +58,9 @@ pub struct ModelEntry {
     pub artifact: ArtifactRef,
     /// What admission read out of the artifact, when the row carries it.
     pub stats: Option<Stats>,
+    /// The row's tags. Empty for an offline set, which has no row — they
+    /// are a property of the registration, not of the manifest.
+    pub tags: Vec<String>,
     /// One compiled adapter per manifest input, in manifest order.
     pub adapters: Vec<(String, datalogic::Logic)>,
     /// The compiled result expression, over `{output name: tensor}`.
@@ -182,6 +185,9 @@ impl ModelSet {
                     size: None,
                 },
                 stats: entry.stats,
+                // Offline there is no row, and so no registration to have
+                // tagged.
+                tags: Vec::new(),
             };
             match compile_entry(item, config, datalogic) {
                 Ok(compiled) => {
@@ -312,6 +318,7 @@ struct CompileItem {
     manifest: Manifest,
     artifact: ArtifactRef,
     stats: Option<Stats>,
+    tags: Vec<String>,
 }
 
 /// The row half of a load: the node has the runtime, the verdict passed,
@@ -367,6 +374,10 @@ fn decode_row(row: &Model, enabled: bool) -> Result<CompileItem, (&'static str, 
         manifest,
         artifact,
         stats,
+        // A tag list that does not parse is not a reason to refuse a model
+        // the node can otherwise serve: it costs the row its `preload_tags`
+        // membership and nothing else.
+        tags: serde_json::from_str(&row.tags_json).unwrap_or_default(),
     })
 }
 
@@ -398,6 +409,7 @@ fn compile_entry(
         manifest: item.manifest,
         artifact: item.artifact,
         stats: item.stats,
+        tags: item.tags,
         adapters,
         result,
         limits,

@@ -553,6 +553,7 @@
 # max_cache_bytes = 8589934592       # Cache directory ceiling (8 GiB), swept LRU after every fetch
 # max_loaded_bytes = 2147483648      # Models resident in memory at once (2 GiB), every runtime
 # preload = "referenced"             # none | referenced (what active workflows name) | all
+# preload_tags = []                  # Also warm every active model carrying one of these tags
 # max_artifact_bytes = 536870912     # Largest artifact an admission fetches (512 MiB)
 # max_parameters = 0                 # Parameter-count ceiling read at admission; 0 = unbounded
 # max_input_elements = 1048576       # Elements one inference may hand a model, over its inputs

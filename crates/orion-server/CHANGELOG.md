@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`models.preload_tags` warms a set the node cannot infer.** `models.preload`
+  reads the *literal* `model` of each active workflow's tasks, so a workflow
+  that routes with a computed one — `{"var": "data.mover_model"}`, the form
+  the guide recommends for serving many models from one workflow, and the
+  form `examples/packages/c4-tournament` is built on — selected nothing under
+  `referenced`, and `all` was the only alternative. The new setting warms
+  every active model carrying one of the tags it names. It is a union rather
+  than a fourth mode: `none` plus tags warms exactly the tagged set,
+  `referenced` plus tags warms both, and `referenced` stays the default. Tags
+  already travel on a registration and through a package's `models[]` member,
+  so the set is named where the models are deployed rather than inferred from
+  workflows that cannot state it.
+
 - **A model's `stats` records the operators its graph asks for.**
   `stats.operators` is the distinct set, sorted, each qualified by its domain
   unless that is the default one (`ai.onnx.ml.LinearRegressor`, but plain
