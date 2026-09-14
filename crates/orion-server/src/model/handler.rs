@@ -233,7 +233,8 @@ pub struct ModelInferHandler {
 impl AsyncFunctionHandler for ModelInferHandler {
     type Input = TemplatedInput;
 
-    /// Compile the expression fields the table declares (`model`, `input`).
+    /// Compile the expression fields the table declares (`model`, `input`,
+    /// `timeout_ms`).
     fn compile_input(
         input: &mut Self::Input,
         c: &dataflow_rs::engine::functions::TemplateCompiler,
@@ -504,10 +505,19 @@ impl ModelInferHandler {
             runtime: runtime.name(),
         };
 
-        // The rest of the task's own fields, read as written.
-        let timeout_ms = match input.get("timeout_ms") {
-            None | Some(Value::Null) => None,
-            Some(v) => match v.as_u64() {
+        // The deadline evaluates, like `channel_call`'s and `http_call`'s: a
+        // workflow running several inferences under one wall-clock budget
+        // has to divide it per message, so each call spends its own share
+        // and times itself out rather than starving the ones behind it.
+        // The rest of the task's own fields are read as written.
+        let timeout_ms = match input.value_of("timeout_ms", NAME, ctx) {
+            None | Some(Ok(Value::Null)) => None,
+            Some(Err(e)) => {
+                let mut refused = field_refused("timeout_ms", e);
+                refused.labels = Some(labels.clone());
+                return Err(refused);
+            }
+            Some(Ok(v)) => match v.as_u64() {
                 Some(ms) if ms > 0 => Some(ms),
                 _ => {
                     return Err(caller_input(

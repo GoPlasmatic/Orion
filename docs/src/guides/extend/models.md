@@ -130,7 +130,7 @@ Name the model, the JSON root the adapters read, and where the result goes:
 }
 ```
 
-`input` is the JSON root every adapter reads: `{"var": ""}` hands over the whole context, a path hands over one object. A literal `model` is what the dependency list, the quarantine and the preload see. A computed one (`{"var": "data.mover_model"}`) routes per message and is checked per message instead. `timeout_ms` is the call's deadline, capped by `models.max_timeout_ms`, and a cold load is charged to it. The failure classes are on the [function's page](../../reference/functions/model_infer.md).
+`input` is the JSON root every adapter reads: `{"var": ""}` hands over the whole context, a path hands over one object. A literal `model` is what the dependency list, the quarantine and the preload see. A computed one (`{"var": "data.mover_model"}`) routes per message and is checked per message instead. `timeout_ms` is the call's deadline, capped by `models.max_timeout_ms`, and a cold load is charged to it; it is JSONLogic too, so a workflow running several inferences under one budget can hand each call what is left of it. The failure classes are on the [function's page](../../reference/functions/model_infer.md).
 
 ## 8. Read the stats
 

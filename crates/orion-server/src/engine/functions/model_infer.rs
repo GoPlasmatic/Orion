@@ -8,7 +8,9 @@
 //! authoring analysis read one declaration. The static check below and
 //! the handler's own parsing agree by construction: both read
 //! [`crate::model::runtimes::NAMES`] for the runtime, and both refuse a
-//! non-positive `timeout_ms`.
+//! non-positive `timeout_ms` — the static one only where it was written as
+//! a literal, because a deadline computed per message is not a number until
+//! one arrives.
 
 use serde_json::Value;
 
@@ -55,9 +57,10 @@ pub(super) const MODEL_INFER_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "timeout_ms",
-        description: "Per-call deadline, capped by `models.max_timeout_ms`; a cold load on first \
-                      use is charged to it.",
+        description: "Per-call deadline (JSONLogic), capped by `models.max_timeout_ms`; a cold \
+                      load on first use is charged to it.",
         kind: FieldKind::Number,
+        template_at: &[""],
         ..FieldSchema::DEFAULT
     },
     FieldSchema {
@@ -105,7 +108,12 @@ pub(super) fn validate_static_input(
             refusal.message,
         ));
     }
-    if let Some(timeout) = obj.get("timeout_ms").filter(|v| !v.is_null())
+    // A scalar is unambiguously itself in JSONLogic, so it is judged here;
+    // an object or array may be an operator call, and what it computes per
+    // message is the handler's to check.
+    if let Some(timeout) = obj
+        .get("timeout_ms")
+        .filter(|v| !v.is_null() && !v.is_object() && !v.is_array())
         && timeout.as_u64().is_none_or(|ms| ms == 0)
     {
         errors.push((
@@ -241,6 +249,48 @@ mod tests {
             )),
             "{errors:?}"
         );
+    }
+
+    /// A deadline computed per message is an expression, not a type error
+    /// (#327). `channel_call` and `http_call` — the two sibling functions
+    /// that also take a per-call deadline — have always accepted one, and a
+    /// workflow dividing a shared wall-clock budget between several
+    /// inferences has to compute each share. What it evaluates to is still
+    /// judged, by the handler, at the only moment it is a number.
+    #[test]
+    fn a_computed_timeout_is_an_expression_and_a_literal_one_is_still_judged() {
+        let timeout = FunctionRegistry::builtin()
+            .get("model_infer")
+            .and_then(|e| {
+                e.input_fields
+                    .as_deref()?
+                    .iter()
+                    .find(|f| f.name == "timeout_ms")
+                    .map(|f| f.template_at)
+            })
+            .expect("timeout_ms is registered");
+        assert!(timeout.contains(&""), "the field itself is the expression");
+
+        for computed in [json!({"var": "temp_data.ms"}), json!({"+": [40, 10]})] {
+            let errors = errors_for(json!({
+                "model": "ada.c4-tiny",
+                "input": {"var": ""},
+                "timeout_ms": computed
+            }));
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+        // A literal keeps both checks it always had: the kind, and the sign.
+        for literal in [json!(0), json!(-5), json!("250")] {
+            let errors = errors_for(json!({
+                "model": "ada.c4-tiny",
+                "input": {},
+                "timeout_ms": literal
+            }));
+            assert!(
+                errors.iter().any(|(p, _)| p.ends_with(".timeout_ms")),
+                "{errors:?}"
+            );
+        }
     }
 
     /// The runtime check reads the same table the handler selects from, and

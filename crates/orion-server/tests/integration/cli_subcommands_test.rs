@@ -2719,6 +2719,84 @@ fn lint_reports_a_broken_model_manifest_rather_than_calling_it_nothing() {
     assert!(report.contains("1 model(s)"), "{report}");
 }
 
+/// A workflow that computes a deadline and hands it to `model_infer`.
+/// `temp_data.ms` is 50 by the time the inference runs.
+fn computed_timeout_workflow(timeout: &str) -> String {
+    format!(
+        r#"{{"workflow_id":"deadline","name":"deadline","condition":true,"tasks":[
+            {{"id":"parse","name":"Parse","function":{{"name":"parse_json",
+                "input":{{"source":"payload","target":"board"}}}}}},
+            {{"id":"ms","name":"Budget","function":{{"name":"map",
+                "input":{{"mappings":[{{"path":"temp_data.ms","logic":{{"+":[40,10]}}}}]}}}}}},
+            {{"id":"infer","name":"Infer","function":{{"name":"model_infer",
+                "input":{{"model":"ada.c4-tiny","input":{{"var":""}},
+                          "timeout_ms":{timeout},"output":"data.policy"}}}}}}]}}"#
+    )
+}
+
+/// `model_infer` takes a deadline the workflow computes (#327).
+///
+/// The field took only a literal, where the same field on the two sibling
+/// functions that also carry a per-call deadline — `channel_call`'s and
+/// `http_call`'s — has always taken JSONLogic. A workflow running several
+/// inferences under one shared wall-clock budget has to divide it per
+/// message, so that each call spends its own share and times itself out
+/// instead of starving the ones behind it.
+///
+/// This is the issue's own reproduction. Before, it was refused when the
+/// workflow was written, with a `TYPE_MISMATCH` and an `INVALID` at
+/// `tasks[2].function.input.timeout_ms`.
+#[test]
+fn dry_run_takes_a_deadline_the_workflow_computes() {
+    let input = write_temp(&board_json(), "deadline-in");
+    let run = |timeout: &str, name: &str| {
+        let wf = write_temp(&computed_timeout_workflow(timeout), name);
+        let out = Command::new(orion_bin())
+            .args([
+                "dry-run",
+                "-w",
+                &wf,
+                "-i",
+                &input,
+                "--model-dir",
+                &fixture_model_dir(),
+            ])
+            .output()
+            .expect("run dry-run");
+        let _ = std::fs::remove_file(&wf);
+        out
+    };
+
+    let out = run(r#"{"var":"temp_data.ms"}"#, "deadline-var-wf");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stdout={stdout}\nstderr={stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert!(
+        parsed["errors"].as_array().is_some_and(Vec::is_empty),
+        "{stdout}"
+    );
+    assert_eq!(
+        parsed["data"]["policy"]["policy"][0]
+            .as_array()
+            .map(Vec::len),
+        Some(7),
+        "the model answered under a computed deadline: {stdout}"
+    );
+
+    // The sign check did not go away with the literal — it moved to the one
+    // moment the value is a number, which is the call.
+    let out = run(r#"{"-":[{"var":"temp_data.ms"},50]}"#, "deadline-zero-wf");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a zero deadline is refused");
+    assert!(
+        stderr.contains("'timeout_ms' must be a positive integer"),
+        "{stderr}"
+    );
+
+    let _ = std::fs::remove_file(&input);
+}
+
 /// With `--model-dir` the model runs for real: the result expression's
 /// shape lands at `output`, the stats name the fixture, and nothing was
 /// stubbed. Without it the run is refused by name before it starts — unless

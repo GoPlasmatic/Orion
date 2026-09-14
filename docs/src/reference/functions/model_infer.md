@@ -42,7 +42,7 @@ The task names the model, hands over the JSON root the adapters read, and says w
 | `runtime` | string | no | `[models.default_runtime]` for the model's format | Which runtime runs the graph: one of the compiled-in names (`tract`). A name this build does not know is refused when the workflow is written (`MODEL_RUNTIME_UNKNOWN`); a known one disabled on a node fails the call there |
 | `output` | string | no | `"temp_data.inference"` | Dotted result path |
 | `raw` | bool | no | `false` | Skip `result`; write `{name: tensor}` in wire form for chaining — `{"policy": {"tensor": {"dtype": "f32", "shape": [1, 7], "data": "<base64>"}}}` |
-| `timeout_ms` | number | no | the model's ceiling | Per-call deadline, capped by `models.max_timeout_ms` (or the model's `[[models.overrides]]` row); a cold load on first use is charged to it |
+| `timeout_ms` | number \| JSONLogic | no | the model's ceiling | Per-call deadline, capped by `models.max_timeout_ms` (or the model's `[[models.overrides]]` row); a cold load on first use is charged to it. JSONLogic here is what lets a workflow divide one wall-clock budget between several inferences. A value that is not a positive integer fails the call; the cap is the host's either way |
 | `stats_output` | string | no | not written | Path for `{id, version, digest, runtime, device, parameters, artifact_bytes, queued_ms, inference_ms, cold_load}` |
 
 ## Errors

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`model_infer`'s `timeout_ms` takes JSONLogic**, as `channel_call`'s and
+  `http_call`'s — the same field on the two sibling functions that also carry
+  a per-call deadline — always have. It accepted only a literal integer, and
+  an expression was refused when the workflow was written, so a workflow
+  running several inferences under one shared wall-clock budget had no way to
+  divide it: the choice was a fixed per-call deadline too generous (one slow
+  model eats the budget) or too tight (a legitimately slower model is
+  refused), or one channel per timeout value. The host cap is unaffected — a
+  computed value still cannot raise `models.max_timeout_ms` or a
+  `[[models.overrides]]` row — and a value that is not a positive integer
+  still fails, at the call rather than at authoring time, which is the only
+  moment it is a number.
+
 - **A model's `parameters` counts every value its graph carries, not only
   its initializers.** The reader summed `GraphProto.initializer` alone, so a
   graph that carried identical weights as `Constant` node attributes — a few
