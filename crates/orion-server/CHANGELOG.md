@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A model's `stats` records the operators its graph asks for.**
+  `stats.operators` is the distinct set, sorted, each qualified by its domain
+  unless that is the default one (`ai.onnx.ml.LinearRegressor`, but plain
+  `Gemm`), gathered over the graph, every subgraph body and every
+  model-local function. It answers the first question anyone asks when a
+  model that admitted last month stops loading on a new runtime, and the one
+  an operator has before rolling one out — and it is the question a model row
+  uniquely cannot answer for itself, because the row holds the artifact's
+  reference and not its bytes, and the node may no longer have them cached.
+  Additive: a version admitted before this was recorded reports an empty set
+  rather than failing to read.
+
 - **`model_infer` reports what a call's expressions charged.** `stats_output`
   gains `ops` — every input adapter plus the result — and `peak_ops`, the
   heaviest single evaluation. `engine.ops_budget` is what makes it safe to

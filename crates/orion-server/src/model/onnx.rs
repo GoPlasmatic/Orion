@@ -101,15 +101,35 @@ struct FunctionProto {
     node: Vec<NodeProto>,
 }
 
-/// `NodeProto`: a node is counted, and its attributes are where a value
-/// that is not an initializer hides. The operator's own name is not
-/// decoded: what an attribute carries counts the same whichever operator
-/// declared it, so the reader needs no table of operators and cannot fall
-/// behind one.
+/// `NodeProto`: a node is counted, its attributes are where a value that is
+/// not an initializer hides, and its operator is what the graph asks a
+/// runtime for.
+///
+/// The name is reported, never consulted: what an attribute carries counts
+/// the same whichever operator declared it, so the count needs no table of
+/// operators and cannot fall behind one. `domain` qualifies the name where
+/// it is not the default one — `ai.onnx.ml.LinearRegressor` is a different
+/// operator from anything called `LinearRegressor` elsewhere.
 #[derive(Clone, PartialEq, Message)]
 struct NodeProto {
+    #[prost(string, tag = "4")]
+    op_type: String,
+    #[prost(string, tag = "7")]
+    domain: String,
     #[prost(message, repeated, tag = "5")]
     attribute: Vec<AttributeProto>,
+}
+
+impl NodeProto {
+    /// The operator this node asks for, qualified by its domain unless that
+    /// is the default one (`""`, or its alias `ai.onnx`).
+    fn operator(&self) -> String {
+        if self.domain.is_empty() || self.domain == "ai.onnx" {
+            self.op_type.clone()
+        } else {
+            format!("{}.{}", self.domain, self.op_type)
+        }
+    }
 }
 
 /// `AttributeProto`: exactly the fields that can hold an unbounded number
@@ -181,6 +201,13 @@ pub struct GraphStats {
     /// Nodes in the graph, in every subgraph body it carries (`If`, `Loop`,
     /// `Scan`) and in every model-local function the document defines.
     pub nodes: u64,
+    /// The distinct operators those nodes ask for, sorted, qualified by
+    /// domain where it is not the default one. What the graph needs a
+    /// runtime to implement, which is the first thing anyone wants when a
+    /// model that admitted last month stops loading — and which the row
+    /// cannot otherwise answer, because it holds the reference and not the
+    /// bytes.
+    pub operators: Vec<String>,
     /// `ModelProto.ir_version`.
     pub ir_version: i64,
     /// The version of the default operator domain (`""`, or its alias
@@ -258,11 +285,13 @@ pub fn read_stats(bytes: &[u8]) -> Result<GraphStats, String> {
     // that limit is what keeps both honest.
     let mut parameters = stored_values(graph);
     let mut nodes = 0u64;
+    let mut operators = std::collections::BTreeSet::new();
     let mut pending: Vec<&[NodeProto]> = vec![&graph.node];
     pending.extend(model.functions.iter().map(|f| f.node.as_slice()));
     while let Some(body) = pending.pop() {
         nodes = nodes.saturating_add(body.len() as u64);
         for node in body {
+            operators.insert(node.operator());
             for attribute in &node.attribute {
                 parameters = parameters.saturating_add(carried_values(attribute));
                 for sub in attribute.g.as_deref().into_iter().chain(&attribute.graphs) {
@@ -299,6 +328,7 @@ pub fn read_stats(bytes: &[u8]) -> Result<GraphStats, String> {
     Ok(GraphStats {
         parameters,
         nodes,
+        operators: operators.into_iter().collect(),
         ir_version: model.ir_version,
         opset,
         input_names,
@@ -327,6 +357,7 @@ mod tests {
             GraphStats {
                 parameters: 1479,
                 nodes: 4,
+                operators: ["Flatten", "Gemm", "Relu"].map(str::to_string).to_vec(),
                 ir_version: 9,
                 opset: 17,
                 input_names: vec!["board".to_string()],
@@ -355,6 +386,11 @@ mod tests {
         assert_eq!(as_list.parameters, 17);
         // What the rewrites actually cost is visible where it belongs.
         assert_eq!((as_init.nodes, as_const.nodes, as_list.nodes), (1, 3, 5));
+        // And in what they ask a runtime to implement, which is the other
+        // thing the bytes know and the row does not.
+        assert_eq!(as_init.operators, ["Gemm"]);
+        assert_eq!(as_const.operators, ["Constant", "Gemm"]);
+        assert_eq!(as_list.operators, ["Constant", "Gemm", "Reshape"]);
         assert_eq!(as_init.input_names, as_const.input_names);
         assert_eq!(as_init.output_names, as_list.output_names);
     }
@@ -423,7 +459,9 @@ mod tests {
             dims,
             name: String::new(),
         };
-        let holding = |attribute: AttributeProto| NodeProto {
+        let holding = |op_type: &str, attribute: AttributeProto| NodeProto {
+            op_type: op_type.to_string(),
+            domain: String::new(),
             attribute: vec![attribute],
         };
         let inner = GraphProto {
@@ -438,32 +476,47 @@ mod tests {
             }],
             graph: Some(GraphProto {
                 node: vec![
-                    holding(AttributeProto {
-                        t: Some(tensor(vec![2, 3])),
-                        ..AttributeProto::default()
-                    }),
-                    holding(AttributeProto {
-                        floats: vec![0.0; 6],
-                        ..AttributeProto::default()
-                    }),
+                    holding(
+                        "Constant",
+                        AttributeProto {
+                            t: Some(tensor(vec![2, 3])),
+                            ..AttributeProto::default()
+                        },
+                    ),
+                    holding(
+                        "Constant",
+                        AttributeProto {
+                            floats: vec![0.0; 6],
+                            ..AttributeProto::default()
+                        },
+                    ),
                     // A convolution's shape settings are lists too, and
                     // they count: the rule is the carrier, not the
                     // operator, and two is what that costs.
-                    holding(AttributeProto {
-                        ints: vec![3, 3],
-                        ..AttributeProto::default()
-                    }),
-                    holding(AttributeProto {
-                        g: Some(Box::new(GraphProto {
-                            node: vec![holding(AttributeProto {
-                                g: Some(Box::new(inner)),
-                                ..AttributeProto::default()
-                            })],
-                            initializer: vec![tensor(vec![5])],
-                            ..GraphProto::default()
-                        })),
-                        ..AttributeProto::default()
-                    }),
+                    holding(
+                        "Conv",
+                        AttributeProto {
+                            ints: vec![3, 3],
+                            ..AttributeProto::default()
+                        },
+                    ),
+                    holding(
+                        "If",
+                        AttributeProto {
+                            g: Some(Box::new(GraphProto {
+                                node: vec![holding(
+                                    "Loop",
+                                    AttributeProto {
+                                        g: Some(Box::new(inner)),
+                                        ..AttributeProto::default()
+                                    },
+                                )],
+                                initializer: vec![tensor(vec![5])],
+                                ..GraphProto::default()
+                            })),
+                            ..AttributeProto::default()
+                        },
+                    ),
                 ],
                 sparse_initializer: vec![SparseTensorProto {
                     values: Some(tensor(vec![2])),
@@ -471,10 +524,16 @@ mod tests {
                 ..GraphProto::default()
             }),
             functions: vec![FunctionProto {
-                node: vec![holding(AttributeProto {
-                    t: Some(tensor(vec![7])),
-                    ..AttributeProto::default()
-                })],
+                // A second domain's operator, which is a different operator
+                // from anything of the same name in the default one.
+                node: vec![NodeProto {
+                    op_type: "LinearRegressor".to_string(),
+                    domain: "ai.onnx.ml".to_string(),
+                    attribute: vec![AttributeProto {
+                        t: Some(tensor(vec![7])),
+                        ..AttributeProto::default()
+                    }],
+                }],
             }],
         };
         let stats = read_stats(&model.encode_to_vec()).expect("decodes");
@@ -484,6 +543,18 @@ mod tests {
         // Four here, one in the first branch body, none in the second, one
         // in the function.
         assert_eq!(stats.nodes, 6);
+        // Every node the document defines, wherever it is defined, and the
+        // one outside the default domain carries it.
+        assert_eq!(
+            stats.operators,
+            [
+                "Constant",
+                "Conv",
+                "If",
+                "Loop",
+                "ai.onnx.ml.LinearRegressor"
+            ]
+        );
     }
 
     #[test]

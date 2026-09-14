@@ -76,13 +76,19 @@ pub const PROBE_RUNS: usize = 5;
 /// row's `stats`.
 ///
 /// `artifact_bytes` is the fetch stage's; `parameters`, `nodes`,
-/// `ir_version` and `opset` are read from the protobuf by the parse stage
+/// `operators`, `ir_version` and `opset` are read from the protobuf by the
+/// parse stage
 /// (`onnx::read_stats`), so they are the same on every node; `probe_ms`,
 /// `runtime` and `device` are the probe stage's, on the node that admitted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
     pub parameters: u64,
     pub nodes: u64,
+    /// The distinct operators the graph asks a runtime for, sorted.
+    /// Defaulted on read, because a row admitted before this was recorded
+    /// carries every other field and not this one.
+    #[serde(default)]
+    pub operators: Vec<String>,
     pub artifact_bytes: u64,
     /// The median wall time of [`PROBE_RUNS`] inferences, in milliseconds.
     pub probe_ms: f64,
@@ -101,6 +107,7 @@ impl Stats {
         Self {
             parameters: graph.parameters,
             nodes: graph.nodes,
+            operators: graph.operators.clone(),
             artifact_bytes,
             probe_ms: 0.0,
             ir_version: graph.ir_version,
@@ -360,6 +367,7 @@ async fn sequence(
         Stats {
             parameters: graph.parameters,
             nodes: graph.nodes,
+            operators: graph.operators.clone(),
             artifact_bytes,
             probe_ms,
             ir_version: graph.ir_version,
@@ -650,12 +658,29 @@ mod tests {
                 "device",
                 "ir_version",
                 "nodes",
+                "operators",
                 "opset",
                 "parameters",
                 "probe_ms",
                 "runtime"
             ]
         );
+        // What the graph asks a runtime for, which the row cannot otherwise
+        // say: it holds the artifact's reference and not its bytes.
+        assert_eq!(stats.operators, ["Flatten", "Gemm", "Relu"]);
+        // A row stored before this was recorded still reads: every other
+        // field is there, and this one defaults.
+        let older = stats_json
+            .as_object()
+            .expect("object")
+            .iter()
+            .filter(|(k, _)| k.as_str() != "operators")
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let read_back: Stats =
+            serde_json::from_value(Value::Object(older)).expect("an older row still reads");
+        assert!(read_back.operators.is_empty());
+        assert_eq!(read_back.parameters, 1479);
         let now = Utc::now();
         assert_eq!(
             admission_json(&outcome, "node-a", now),

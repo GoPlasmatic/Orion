@@ -168,6 +168,12 @@ async fn admission_fetches_verifies_and_records_the_stats() {
     assert_eq!(model["stats"]["artifact_bytes"], 6171);
     assert_eq!(model["stats"]["parameters"], 1479);
     assert_eq!(model["stats"]["nodes"], 4);
+    // What the graph asks a runtime for — the question a row cannot
+    // otherwise answer, because it holds the reference and not the bytes.
+    assert_eq!(
+        model["stats"]["operators"],
+        json!(["Flatten", "Gemm", "Relu"])
+    );
     assert_eq!(model["stats"]["opset"], 17);
     assert_eq!(model["stats"]["ir_version"], 9);
     assert_eq!(model["stats"]["runtime"], "tract");

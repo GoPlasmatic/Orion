@@ -239,6 +239,14 @@ pub struct ModelStats {
     /// `Loop`, `Scan`) and of every model-local function.
     #[serde(default)]
     pub nodes: u64,
+    /// The distinct operators those nodes ask a runtime for, sorted, each
+    /// qualified by its domain unless that is the default one — so
+    /// `ai.onnx.ml.LinearRegressor`, but plain `Gemm`. What the graph needs
+    /// implemented, which is what a row cannot otherwise say: it holds the
+    /// artifact's reference, not its bytes. Empty on a version admitted
+    /// before this was recorded.
+    #[serde(default)]
+    pub operators: Vec<String>,
     /// The artifact's size as fetched — the confirmed twin of
     /// [`ModelArtifactRef::size`].
     #[serde(default)]

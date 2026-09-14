@@ -10875,6 +10875,13 @@
             "description": "Node count of the graph, of every subgraph body it carries (`If`,\n`Loop`, `Scan`) and of every model-local function.",
             "minimum": 0
           },
+          "operators": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The distinct operators those nodes ask a runtime for, sorted, each\nqualified by its domain unless that is the default one — so\n`ai.onnx.ml.LinearRegressor`, but plain `Gemm`. What the graph needs\nimplemented, which is what a row cannot otherwise say: it holds the\nartifact's reference, not its bytes. Empty on a version admitted\nbefore this was recorded."
+          },
           "opset": {
             "type": "integer",
             "format": "int64",
