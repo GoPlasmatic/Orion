@@ -32,58 +32,6 @@
   }
 })();
 
-// ── Page feedback ──
-// Keep feedback tied to the page that prompted it. GitHub's issue composer
-// preserves the rendered URL and title without collecting reader data here.
-(function () {
-  function injectFeedback() {
-    var main = document.querySelector(".content main");
-    var heading = main && main.querySelector("h1");
-    if (!main || !heading || main.querySelector(".page-feedback")) return;
-
-    var sourcePath = window.location.pathname
-      .replace(/^\//, "")
-      .replace(/\.html$/, ".md");
-    if (!sourcePath || sourcePath === "index.md") sourcePath = "introduction.md";
-
-    var edit = document.createElement("a");
-    edit.href =
-      "https://github.com/GoPlasmatic/Orion/edit/main/docs/src/" + sourcePath;
-    edit.textContent = "Edit this page";
-
-    var issue = document.createElement("a");
-    issue.href =
-      "https://github.com/GoPlasmatic/Orion/issues/new?labels=documentation" +
-      "&title=" + encodeURIComponent("Docs feedback: " + heading.textContent.trim()) +
-      "&body=" + encodeURIComponent(
-        "Page: " + window.location.href + "\n\nWhat were you trying to do?\n\nWhat was unclear or missing?\n"
-      );
-    issue.textContent = "Was this helpful? Send feedback";
-
-    // The Markdown twin docs/build.sh copies beside every page
-    // (DOCUMENTATION_STANDARD.md §10.5): the same document, for a reader who
-    // wants the source or an agent that wants it without the chrome.
-    var twin = document.createElement("a");
-    twin.href = window.location.pathname.replace(/\.html$/, ".md").replace(/\/$/, "/introduction.md");
-    if (/\/index\.md$/.test(twin.href) && sourcePath === "introduction.md") twin.href = twin.href.replace(/index\.md$/, "introduction.md");
-    twin.textContent = "View as Markdown";
-
-    var feedback = document.createElement("aside");
-    feedback.className = "page-feedback";
-    feedback.setAttribute("aria-label", "Documentation feedback");
-    feedback.appendChild(edit);
-    feedback.appendChild(twin);
-    feedback.appendChild(issue);
-    main.appendChild(feedback);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectFeedback);
-  } else {
-    injectFeedback();
-  }
-})();
-
 // ── Icon sprite ──
 // One hidden <svg> of <symbol>s, injected once, referenced everywhere as
 // <svg class="orion-ico"><use href="#i-name"></use></svg> via window.orionIcon.

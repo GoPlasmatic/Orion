@@ -17,7 +17,6 @@ additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
-edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 # No "1., 2., 3." prefixes in the sidebar. The parts already group the book,
 # and the numbers implied a reading order this estate does not have — nobody
 # reads the reference section in order. Titles alone are what you scan for.

@@ -1403,17 +1403,6 @@ pre > .buttons {
 }
 
 
-.content main .page-feedback {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.8rem 1.6rem;
-  margin-top: 3rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--p-border);
-  font-size: 1.3rem;
-}
-
-
 /* ============================================================
    21. Narrow screens
    ============================================================ */
