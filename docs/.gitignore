@@ -1,0 +1,31 @@
+# Everything docs/ generates or fetches. Paths are relative to this file, so
+# the root .gitignore carries none of it.
+
+# Python: structure_lint.py runs from lint.sh, and CPython writes a bytecode
+# cache beside it the first time. The rest are the caches a contributor's own
+# tooling leaves behind — none of them are needed to run the linter, which
+# wants nothing but a Python 3 on PATH.
+__pycache__/
+*.py[cod]
+*$py.class
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.venv/
+venv/
+
+# mdBook rendered output (build.sh).
+book/
+
+# The pinned mdBook binary build.sh fetches when one is not on PATH
+# (Cloudflare's build image); dev machines and CI never populate this.
+.bin/
+
+# Wrangler local dev state (`just docs-preview`).
+.wrangler/
+
+# Vale's third-party style packages, fetched by `vale sync` (.vale.ini names
+# them under Packages). Not vendored: the Google style guide has its own
+# release cadence, and a committed copy would be one more thing to maintain.
+# styles/Orion/ and styles/config/ are ours and are committed.
+styles/Google/

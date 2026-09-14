@@ -41,18 +41,7 @@ debug/
 .env.*
 /config.toml
 
-# mdBook rendered output
-/docs/book/
-
-# structure_lint.py's bytecode cache
-/docs/__pycache__/
-
-# Wrangler local dev state (`just docs-preview`)
-/docs/.wrangler/
-
-# The pinned mdBook binary docs/build.sh fetches when one is not on PATH
-# (Cloudflare's build image); dev machines and CI never populate this.
-/docs/.bin/
+# Everything docs/ generates or fetches is in docs/.gitignore.
 
 # Benchmark results: scratch runs stay local; each Orion release record
 # (RELEASING.md's C13 session) gets an explicit re-include line. Deliberately
@@ -62,8 +51,3 @@ debug/
 !/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
 !/crates/orion-server/tests/benchmark/results/v1.1.0/
-
-# Vale's third-party style packages, fetched by `vale sync` (docs/.vale.ini
-# names them under Packages). Not vendored: the Google style guide has its own
-# release cadence, and a committed copy would be one more thing to maintain.
-/docs/styles/Google/
