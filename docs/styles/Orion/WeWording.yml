@@ -1,0 +1,15 @@
+extends: existence
+message: "'%s' uses 'we' for what the product does. Name the actor: Orion, the server, the engine, the CLI (§6.1)."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - we return
+  - we send
+  - we store
+  - we create
+  - we validate
+  - we reject
+  - we call
+  - our runtime
+  - our engine

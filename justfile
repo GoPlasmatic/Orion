@@ -37,6 +37,13 @@ test-containers:
 docs:
     bash docs/build.sh
 
+# The docs estate's two linters: structure (docs/lint.sh, including
+# structure_lint.py's conformance checks) and prose (Vale over
+# DOCUMENTATION_STANDARD.md's rules). Both are what the `book` CI job runs.
+docs-lint:
+    bash docs/lint.sh
+    cd docs && vale sync && vale --no-exit --output=line src
+
 # Serve the built book the way Cloudflare will, on http://localhost:8787 —
 # exact-match .html URLs, the "/" proxy rule and the _headers rules all apply,
 # which plain `mdbook serve` does not model. Run `just docs` first.

@@ -90,6 +90,24 @@ mdbook build docs
   done
 } >docs/book/llms-full.txt
 
+# The Markdown twin of every page, served at the page's own URL with `.md`
+# swapped for `.html` (DOCUMENTATION_STANDARD.md §10.5). An answer engine, an
+# agent and a reader who wants the source all reach the same document rather
+# than a flattened variant: this is a byte copy of the source, so a tab set or
+# an include renders once, under its own heading, exactly as authored.
+#
+# The three-line metadata header each page carries (description, type,
+# freshness stamp) is kept — it is what tells a retrieval model what the page
+# is for and when it was last verified.
+#
+# cp rather than a generator: docs/src IS the Markdown, and any transform here
+# would be a second rendering path to keep honest.
+find docs/src -name '*.md' ! -name 'SUMMARY.md' | while read -r f; do
+  rel=${f#docs/src/}
+  mkdir -p "docs/book/$(dirname "$rel")"
+  cp "$f" "docs/book/$rel"
+done
+
 # Per-page descriptions, canonicals, Open Graph/Twitter cards, JSON-LD and
 # sitemap.xml. mdBook gives every page the book-level description and no
 # canonical at all, so this pass is what makes the site legible to search and

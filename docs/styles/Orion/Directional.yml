@@ -1,0 +1,16 @@
+extends: existence
+message: "'%s' assumes a layout the reader may not have. Name the section or the element."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - the section above
+  - the section below
+  - see above
+  - see below
+  - as shown above
+  - as shown below
+  - in the table below
+  - in the diagram below
+  - on the right
+  - on the left

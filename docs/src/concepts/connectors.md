@@ -1,12 +1,10 @@
 <!-- description: A connector is a named connection to an external system. Configure it once; workflows reference it by name, and credentials, pooling and retries live there. -->
-# Understand Connectors
+<!-- type: concept -->
+<!-- last_verified: 2026-09-14 -->
 
-**Page type:** Concept · **Audience:** Service authors
+# Connectors
 
-A **connector** is a named connection to an external system. You configure it
-once, then reference it by name from any workflow. Credentials, pooling,
-retries, and circuit breaking belong to the connector, not to the tasks that use
-it.
+A *connector* is a named connection to an external system. You configure it once, then reference it by name from any workflow. Credentials, pooling, retries and circuit breaking belong to the connector, not to the tasks that use it.
 
 ```orion-diagram
 {
@@ -27,8 +25,7 @@ it.
 }
 ```
 
-Two workflows pointing at `payments-api` share one configured connection, one
-credential, and one circuit breaker. Change the endpoint and both follow.
+Two workflows pointing at `payments-api` share one configured connection, one credential and one circuit breaker. Change the endpoint and both follow.
 
 ## The types
 
@@ -38,14 +35,11 @@ credential, and one circuit breaker. Change the endpoint and both follow.
 | `db` | PostgreSQL, MySQL, SQLite, MongoDB | `data_query`, `data_write`, `db_read`, `db_write`, `mongo_read`, `mongo_write`, `mongo_aggregate` |
 | `cache` | Redis, or process memory | `cache_read`, `cache_write` |
 | `es` | Elasticsearch | `data_query`, `data_write` |
-| `kafka` | A Kafka cluster (producing) | `publish_kafka` |
-| `smtp` | A mail server (transactional email) | `send_email` |
+| `kafka` | A Kafka cluster, for producing | `publish_kafka` |
+| `smtp` | A mail server, for transactional email | `send_email` |
 | `storage` | S3-compatible object storage | `storage_presign`, `storage_head` |
 
-One `db` type covers both SQL and MongoDB: the connection-string scheme selects
-the backend. Connectors are **unversioned**: unlike channels and workflows, an
-update replaces the stored config and the registry reloads immediately. There is
-no draft step and no activation.
+One `db` type covers both SQL and MongoDB; the connection-string scheme selects the backend. Connectors are unversioned. Unlike channels and workflows, an update replaces the stored config and the registry reloads at once. There is no draft step and no activation.
 
 ## Secrets live outside the config
 
@@ -55,59 +49,34 @@ Any string field can hold a reference instead of a value:
 { "name": "orders-db", "config": { "type": "db", "connection_string": "env://ORDERS_DB_URL" } }
 ```
 
-Orion resolves `env://` from the *server's* environment each time the connector
-loads. Three things follow, and they are the reason to always author connectors
-this way:
+Orion resolves `env://` from the server's environment each time the connector loads. Three things follow, and they are the reason to always author connectors this way:
 
-- **The database never stores the credential**, so a database dump is not a
-  credential leak.
-- **The same JSON works in every environment.** Dev, QA, and production differ
-  only in what the variable holds, which is what makes a connector
-  [promotable](./packages.md).
-- **A connector holding a literal secret exports as `"******"` and is refused on
-  import.** Masked values cannot round-trip, by design.
+- **The database never stores the credential**, so a database dump is not a credential leak.
+- **The same JSON works in every environment.** Dev, QA and production differ only in what the variable holds, which is what makes a connector [promotable](./packages.md).
+- **A connector holding a literal secret exports as `"******"` and is refused on import.** Masked values cannot round-trip, by design.
 
-`vault://` reads from HashiCorp Vault. Cloud secret-manager schemes are
-reserved: a reference using one without a live resolver is refused rather than
-passed through as a literal.
+`vault://` reads from HashiCorp Vault. Cloud secret-manager schemes are reserved: a reference using one without a live resolver is refused rather than passed through as a literal.
 
 ## Gates: what a connector permits
 
-Every connector declares which operations workflows may perform through it, and
-every gate defaults to allowed. Turning one off makes it a validation error
-regardless of what a workflow asks for:
+Every connector declares which operations workflows may perform through it, and every gate defaults to allowed. Turning one off makes it a validation error regardless of what a workflow asks for:
 
 ```json
 { "type": "db", "connection_string": "env://ORDERS_DB_URL",
   "operations": { "delete": false, "raw_write": false } }
 ```
 
-That connector cannot delete a row — not because no workflow tries, but because
-the connector refuses. Gates are the cheapest blast-radius control Orion has:
-they are enforced at the connection, one level below the logic, and they survive
-every workflow change.
+That connector cannot delete a row, not because no workflow tries but because the connector refuses. Gates are the cheapest blast-radius control Orion has. They are enforced at the connection, one level below the logic, and they survive every workflow change.
 
 ## Breakers: what a connector does when the far side fails
 
-Connectors can be guarded by a **circuit breaker**. Repeated failures open it,
-calls through it then fail fast with `503` instead of piling up against a dead
-backend, and it closes again on its own once calls succeed. HTTP connectors also
-retry with exponential backoff.
+A connector can be guarded by a *circuit breaker*. Repeated failures open it. Calls through it then fail fast with `503` instead of piling up against a dead backend. It closes again on its own once calls succeed. HTTP connectors also retry with exponential backoff.
 
-Breakers are off by default — turn them on with
-`engine.circuit_breaker.enabled = true`
-([configuration](../reference/configuration.md#circuit-breaker)). A breaker is
-per `channel:connector` pair and per node, so one failing vendor API cannot
-exhaust the request capacity a healthy one needs, and one noisy channel cannot
-trip a shared connector for every other channel using it.
+Breakers are off by default. Turn them on with `engine.circuit_breaker.enabled = true` ([configuration](../reference/configuration/engine.md#circuit-breaker)). A breaker is per `channel:connector` pair and per node. One failing vendor API cannot exhaust the request capacity a healthy one needs. One noisy channel cannot trip a shared connector for every other channel using it.
 
 ## Next steps
 
-- [Your First Connector](../getting-started/first-connector.md): configure one
-  against PostgreSQL and use it from a workflow.
-- [Connector Types](../reference/connectors.md): every field of every type,
-  with defaults, gates, retries, and masking rules.
-- [Portable Data Dialect](../reference/data-dialect.md): the backend-neutral
-  query and write envelope, so switching databases is a connector change.
-- [Task Functions](../reference/functions.md): the functions that call
-  connectors, and their inputs.
+- [Add your first connector](../get-started/tutorials/first-connector.md): configure one against PostgreSQL and use it from a workflow.
+- [Connector types](../reference/connectors/index.md): every field of every type, with defaults, gates, retries and masking rules.
+- [Portable data dialect](../reference/data-dialect.md): the backend-neutral query and write envelope, so switching databases is a connector change.
+- [Task functions](../reference/functions/index.md): the functions that call connectors, and their inputs.

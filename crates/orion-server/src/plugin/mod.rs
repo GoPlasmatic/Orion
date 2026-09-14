@@ -7,7 +7,7 @@
 //! `AsyncFunctionHandler` implementations for a generation to carry, and
 //! names nothing above them but the task supervisor it hands the ticker to.
 //! See `docs/src/concepts/plugins.md` for the design and
-//! `docs/src/reference/plugins.md` for the manifest, ABI and limits.
+//! `docs/src/reference/plugin-manifest.md` for the manifest, ABI and limits.
 
 pub mod error;
 pub mod handler;

@@ -91,7 +91,7 @@ the canonical key tables to the request schemas and the reference pages; and
 `clippy` has the same shape: `clippy_cases_test.rs` runs every rule over
 `tests/fixtures/clippy/<rule>/{fires,quiet}/` — the rule must fire on the
 first and **no rule** may fire on the second — and refuses a rule without
-both; `clippy_docs_drift_test.rs` pins `docs/src/reference/clippy.md`'s
+both; `clippy_docs_drift_test.rs` pins `docs/src/reference/clippy/index.md`'s
 table to the registry; `clippy_cli_test.rs` drives the binary (exit codes,
 `--list`, `--explain`, JSON, the lint-error short-circuit); and
 `clippy_examples_test.rs` is the acceptance gate — the example packages and

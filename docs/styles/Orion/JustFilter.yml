@@ -1,0 +1,11 @@
+extends: existence
+message: "'just' as a minimiser reads as ease language. Use it only for the `just` command runner, in code."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: false
+# `just check`, `just e2e` and friends are the repo's command runner and are
+# always in code spans, which Vale does not scan. "What just happened" is the
+# standard's own quickstart heading (§5.1), where the word is temporal, not a
+# minimiser. This catches the adverb everywhere else.
+tokens:
+  - '(?<!What )\bjust\b(?! (check|e2e|fmt|docs|openapi|workflow-tests|test-containers|docs-preview))'

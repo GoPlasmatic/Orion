@@ -1,0 +1,14 @@
+extends: existence
+message: "Link text must say where the link goes, not '%s'."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: true
+scope: raw
+tokens:
+  - '\[here\]\('
+  - '\[click here\]\('
+  - '\[this page\]\('
+  - '\[this link\]\('
+  - '\[read more\]\('
+  - '\[learn more\]\('
+  - '\[more\]\('

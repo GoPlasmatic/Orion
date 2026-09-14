@@ -1,7 +1,7 @@
 //! Documentation drift guard for the task-function surface.
 //!
-//! `reference/functions.md` used to open by stating how many functions Orion
-//! ships — "**18 functions** … Eight are contributed by the dataflow-rs engine;
+//! `reference/functions/index.md` (the hub of the split reference) used to
+//! open by stating how many functions Orion ships — "**18 functions** … Eight are contributed by the dataflow-rs engine;
 //! ten are Orion handlers". The docs 2.0 proposal called numbers like that out
 //! by name (style rule 18: "no hand-maintained magic numbers … cite the
 //! generated source or omit the number"), because the estate had already
@@ -28,7 +28,7 @@
 //!    "cite the generated source or omit the number", and the page may take
 //!    either half — but a number that is there is a checked number rather than
 //!    a typed one.
-//! 4. Every row has a section on the page documenting it.
+//! 4. Every row has a page of its own under `reference/functions/`.
 
 use std::collections::BTreeSet;
 
@@ -54,9 +54,11 @@ fn orion_entries() -> impl Iterator<Item = &'static FunctionEntry> {
         .filter(|e| e.source == Source::Orion)
 }
 
-const FUNCTIONS_MD: &str = concat!(
+/// The reference is one directory: `index.md` is the hub carrying the summary
+/// and retry-safety tables, and every function has a page named after it.
+const FUNCTIONS_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/functions.md"
+    "/../../docs/src/reference/functions"
 );
 
 /// One row of the page's summary table.
@@ -67,7 +69,8 @@ struct DocRow {
 }
 
 fn doc() -> String {
-    std::fs::read_to_string(FUNCTIONS_MD).expect("read reference/functions.md")
+    std::fs::read_to_string(format!("{FUNCTIONS_DIR}/index.md"))
+        .expect("read reference/functions/index.md")
 }
 
 /// The summary table's rows, in page order.
@@ -228,7 +231,7 @@ fn the_summary_table_parses() {
     let rows = documented_functions(&doc());
     assert!(
         rows.len() > 10,
-        "parsed only {} rows from reference/functions.md's summary table — the \
+        "parsed only {} rows from reference/functions/index.md's summary table — the \
          table's shape changed and the parser lost it",
         rows.len()
     );
@@ -258,7 +261,7 @@ fn the_summary_table_matches_the_catalogue() {
     assert!(
         undocumented.is_empty(),
         "served by GET /admin/functions but absent from the summary table in \
-         docs/src/reference/functions.md: {undocumented:?}"
+         docs/src/reference/functions/index.md: {undocumented:?}"
     );
     let invented: Vec<&String> = documented.difference(&catalogued).collect();
     assert!(
@@ -341,7 +344,7 @@ fn every_registry_function_is_documented() {
     assert!(
         missing.is_empty(),
         "these functions are in the schema registry but absent from \
-         docs/src/reference/functions.md: {missing:?}"
+         docs/src/reference/functions/index.md: {missing:?}"
     );
 }
 
@@ -355,7 +358,7 @@ fn no_documented_orion_function_is_a_ghost() {
         .collect();
     assert!(
         ghosts.is_empty(),
-        "docs/src/reference/functions.md documents Connector/Composition \
+        "docs/src/reference/functions/index.md documents Connector/Composition \
          functions the schema registry does not carry (a rename with a missed \
          doc update looks exactly like this): {ghosts:?}"
     );
@@ -396,7 +399,7 @@ fn the_stated_counts_match_the_table() {
         assert_eq!(
             total,
             rows.len(),
-            "reference/functions.md states a total its own summary table \
+            "reference/functions/index.md states a total its own summary table \
              contradicts — drop the number or correct it"
         );
     }
@@ -416,26 +419,54 @@ fn the_stated_counts_match_the_table() {
     }
 }
 
+/// Every function in the summary table has its own page, titled with its
+/// name, and every page in the directory is a function the table lists (or
+/// the hub, or the runtime-discovery page). A page with no row would be a
+/// function the catalogue does not serve; a row with no page is a dead link.
 #[test]
-fn every_documented_function_has_a_section() {
+fn every_documented_function_has_a_page() {
     let doc = doc();
-    let headings: Vec<&str> = doc
-        .lines()
-        .filter(|l| l.starts_with("### "))
-        .collect::<Vec<_>>();
-    let missing: Vec<String> = documented_functions(&doc)
+    let rows: BTreeSet<String> = documented_functions(&doc)
         .iter()
         .map(|r| r.name.clone())
-        .filter(|name| {
-            // `validation` heads a shared section: `### `validation` / `validate``.
-            let backticked = format!("`{name}`");
-            !headings.iter().any(|h| h.contains(&backticked))
+        .collect();
+    let mut missing = Vec::new();
+    for name in &rows {
+        let path = format!("{FUNCTIONS_DIR}/{name}.md");
+        let Ok(page) = std::fs::read_to_string(&path) else {
+            missing.push(format!("{name} (no {path})"));
+            continue;
+        };
+        let title = page
+            .lines()
+            .find(|l| l.starts_with("# "))
+            .unwrap_or_default();
+        if !title.contains(&format!("`{name}`")) {
+            missing.push(format!("{name} (page titled {title:?})"));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "these functions have a summary-table row but no page of their own under \
+         docs/src/reference/functions/: {missing:?}"
+    );
+
+    let stray: Vec<String> = std::fs::read_dir(FUNCTIONS_DIR)
+        .expect("list reference/functions")
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|f| f.ends_with(".md"))
+        .map(|f| f.trim_end_matches(".md").to_string())
+        .filter(|stem| {
+            stem != "index"
+                && stem != "runtime-discovery"
+                && stem != "retry-safety"
+                && !rows.contains(stem)
         })
         .collect();
     assert!(
-        missing.is_empty(),
-        "these functions have a summary-table row but no section on \
-         docs/src/reference/functions.md: {missing:?}"
+        stray.is_empty(),
+        "pages under docs/src/reference/functions/ that the summary table does not \
+         list: {stray:?}"
     );
 }
 
@@ -443,17 +474,17 @@ fn every_documented_function_has_a_section() {
 // Retry safety (finding 10, bullet 3)
 // ============================================================
 
-/// The `## Retry safety` table, as `name -> answer`.
+/// The retry-safety page's function table, as `name -> answer`.
 ///
 /// A `depends_on` row spells the deciding input in the same cell —
 /// `` `depends_on` `method` `` — so the answer here is the two joined, which is
 /// what the registry's `DependsOn { input }` carries.
 fn documented_retry_safety(doc: &str) -> std::collections::BTreeMap<String, String> {
     let section = doc
-        .split("## Retry safety")
+        .split("\n## Functions\n")
         .nth(1)
-        .expect("the page must carry a `## Retry safety` section");
-    // Stop at the next section, so the summary table above is never read here.
+        .expect("reference/functions/retry-safety.md must carry a `## Functions` section");
+    // Stop at the next section, so no other table is read here.
     let section = section.split("\n## ").next().unwrap_or(section);
     let mut out = std::collections::BTreeMap::new();
     for line in section.lines() {
@@ -496,12 +527,14 @@ fn registry_retry_safety() -> std::collections::BTreeMap<String, String> {
 /// naming the wrong deciding input sends someone to read the wrong field.
 #[test]
 fn the_retry_safety_table_matches_the_registry() {
-    let documented = documented_retry_safety(&doc());
+    let page = std::fs::read_to_string(format!("{FUNCTIONS_DIR}/retry-safety.md"))
+        .expect("read reference/functions/retry-safety.md");
+    let documented = documented_retry_safety(&page);
     let declared = registry_retry_safety();
 
     assert_eq!(
         documented, declared,
-        "the `## Retry safety` table in docs/src/reference/functions.md does not \
+        "the function table in docs/src/reference/functions/retry-safety.md does not \
          match `schema::REGISTRY`"
     );
 }

@@ -644,7 +644,7 @@ impl Source {
 /// `(name, description, aliases, writes, retry_safety)` — the five things that
 /// vary. Every
 /// entry is `category: "data"` (the fourth wire value, matching the grouping
-/// `reference/functions.md` already gives these in its summary table),
+/// `reference/functions/index.md` already gives these in its summary table),
 /// `source: Engine`, and no input schema, so the registry supplies those
 /// rather than each row restating them.
 /// Descriptions are the code's, and `functions_docs_drift_test` checks the

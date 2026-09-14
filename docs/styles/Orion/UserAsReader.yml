@@ -1,0 +1,14 @@
+extends: existence
+message: "Address the reader as 'you', never as '%s' (§6.1)."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - the user should
+  - the user must
+  - the user can
+  - the user needs
+  - users should
+  - users must
+  - the developer should
+  - the operator should

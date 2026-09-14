@@ -37,3 +37,13 @@
 
 /webfonts/*
   Cache-Control: public, max-age=31536000, immutable
+
+# The Markdown twin of every page (DOCUMENTATION_STANDARD.md §10.5), copied
+# into the site by docs/build.sh so `…/channels.md` serves the source of
+# `…/channels.html`. Cloudflare's static-asset server would otherwise answer
+# `application/octet-stream` for an unknown extension, which makes a browser
+# download the file instead of showing it and gives a fetching agent nothing to
+# go on. The charset is explicit because the book is UTF-8 throughout.
+/*.md
+  Content-Type: text/markdown; charset=utf-8
+  X-Robots-Tag: noindex

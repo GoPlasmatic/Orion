@@ -1,0 +1,16 @@
+extends: existence
+message: "'%s' tells a reader who is struggling that the fault is theirs. Cut it, or state the actual cost."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: true
+tokens:
+  - simply
+  - simple
+  - easy
+  - easily
+  - obviously
+  - of course
+  - quickly
+  - straightforward
+  - trivial
+  - merely

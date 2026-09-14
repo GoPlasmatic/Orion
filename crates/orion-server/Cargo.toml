@@ -132,7 +132,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # `cluster.instance_id` is configured.
 gethostname = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-# Cron channels (docs/src/guides/scheduled-workflows.md): the six-field
+# Cron channels (docs/src/guides/patterns/scheduled-workflows.md): the six-field
 # expression parser, and the IANA time-zone table the local calendar times it
 # produces are resolved against.
 #

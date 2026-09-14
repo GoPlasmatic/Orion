@@ -507,7 +507,7 @@ async fn a_rejected_query_does_not_trip_the_breaker() {
 /// fallback — so shedding a dependency stays distinguishable from the
 /// `IO_ERROR` of a genuine connection failure and the `TIMEOUT_ERROR` of a slow
 /// one. Before 3.5.0 all three flattened to `TASK_ERROR` here, which is why
-/// `docs/src/operate/upgrading-to-1.0.md` still warns that the rejection is
+/// `docs/src/releases/upgrade-to-1.0.md` still warns that the rejection is
 /// invisible outside the trace and the metric. It no longer is.
 #[tokio::test]
 async fn an_open_breaker_is_named_in_the_errors_of_a_continue_on_error_workflow() {

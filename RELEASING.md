@@ -171,13 +171,13 @@ is what proves it independently of the runner that produced the artifact.
    one back to `1.0.0` in step 8.
 
    **Re-stamp the tutorial pages in the same commit**, for the same reason.
-   Twelve pages under `docs/src/` carry
-   `**Tested with:** Orion <version> · **Last reviewed:** <date>`, and
-   `docs/lint.sh` (the `book` CI job) fails when that version is not the
-   workspace version — `bash docs/lint.sh` names every page that is behind.
-   The version is mechanical; the date is not. Move it only for a page whose
-   documented path you actually re-ran, so a stale date stays visible rather
-   than being laundered by the bump.
+   Twelve pages under `docs/src/` state `Tested with Orion <version>.` in
+   their opening paragraph, and `docs/lint.sh` (the `book` CI job) fails when
+   that version is not the workspace version — `bash docs/lint.sh` names
+   every page that is behind. The version is mechanical; the page's
+   `<!-- last_verified: <date> -->` stamp is not. Move the date only for a
+   page whose documented path you actually re-ran, so a stale date stays
+   visible rather than being laundered by the bump.
 2. **Tag and push:**
 
    ```bash
@@ -260,7 +260,7 @@ stay accurate either way.
 **1.6.0 is where that stops being defensible**, for two reasons. The runtime
 generation is now one published value rather than two, which touches the hot
 path of every request; and scenario H (`plugin`) is new, so there is no
-published number for the sandbox at all — `docs/src/reference/plugins.md`
+published number for the sandbox at all — `docs/src/reference/plugin-manifest.md`
 says as much under "Performance" and points here. Run the session below at
 the 1.6.0 tag (or its rc) and land the numbers.
 
@@ -299,7 +299,7 @@ produces numbers worse than none.
    Scenario H (`plugin`, in the default set since 1.6) is the plugin cost:
    the fixture's `identity` on the hot path against the same rewrite as a
    `map`. Publish both rows and their ratio in
-   `docs/src/reference/plugins.md` under "Performance".
+   `docs/src/reference/plugin-manifest.md` under "Performance".
 5. **Record:** commit the run outputs under
    `crates/orion-server/tests/benchmark/results/v<version>/` — one `.txt` per
    scenario plus a `SUMMARY.md` recording the hardware (CPU model, cores, RAM,

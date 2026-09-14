@@ -1295,24 +1295,14 @@ pre > .buttons {
   border-bottom: 1px solid var(--p-border);
 }
 
+/* The landing page's H1 is the Markdown heading above this block — one title
+   string for the tab, the sidebar and the page (DOCUMENTATION_STANDARD.md
+   §3.6) — so the hero carries the mark and the tagline only. */
 .hero-logo img {
   width: 88px;
   height: 88px;
   border-radius: 16px;
   margin-bottom: 16px;
-}
-
-.hero-logo h1 {
-  font-family: var(--p-font-display);
-  font-weight: 700;
-  font-size: 4.4rem;
-  line-height: 1.1;
-  margin: 0;
-  letter-spacing: -0.025em;
-  background: linear-gradient(135deg, var(--p-accent), #4CBD97);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
 }
 
 .hero-logo p {
@@ -1412,14 +1402,6 @@ pre > .buttons {
   }
 }
 
-/* Documentation type and intended reader, inserted directly below the title. */
-.content main .page-meta {
-  margin: -0.35rem 0 1.5rem;
-  color: var(--p-fg-muted);
-  font-size: 1.25rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
 
 .content main .page-feedback {
   display: flex;
@@ -2138,5 +2120,113 @@ pre > .buttons {
 
   .content main .fold > summary {
     padding-inline-start: 0;
+  }
+}
+
+
+/* ============================================================
+   27. Freshness stamp
+   ============================================================
+
+   DOCUMENTATION_STANDARD.md §10.2: every authored page says when a person
+   last ran it, and every generated page says what it was generated from.
+   docs/seo.mjs reads the stamp out of the page's Markdown header and writes
+   a `<p class="page-stamp">` just inside `</main>`, below the handoff and
+   above mdBook's previous/next rail.
+
+   It is deliberately quiet. A reader who wants it knows to look at the foot
+   of the page; a reader who does not should never have their eye pulled to
+   it mid-scroll. The rule above it is the same hairline the footnotes use. */
+
+.content main .page-stamp {
+  margin-block: 3rem 0;
+  padding-block-start: 1rem;
+  border-block-start: 1px solid var(--p-border-subtle, var(--table-border-color));
+  color: var(--p-text-muted, var(--sidebar-non-existant));
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+}
+
+/* On paper the stamp is the most useful line on the page: a printout has no
+   URL and no history, so the date is the only thing saying how old it is. */
+@media print {
+  .content main .page-stamp {
+    color: inherit;
+  }
+}
+
+
+/* ============================================================
+   28. Tabs
+   ============================================================
+
+   The variant device of DOCUMENTATION_STANDARD.md §4.6 and §7.4. js/extra.js
+   builds the tablist from each <section data-tab> inside a `.tabs` block;
+   before the script runs, and in the Markdown twin, every section simply
+   shows in order, which is the accessible fallback and the right thing for
+   a printout too.
+
+   The strip is deliberately quiet — a hairline and a coloured underline on
+   the selected tab — because a page can carry several sets and a loud one
+   would fight the headings. */
+
+.content main .tabs {
+  margin-block: 1rem 1.5rem;
+}
+
+.content main .tabs-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-block-end: 0.75rem;
+  border-block-end: 1px solid var(--p-border, var(--table-border-color));
+}
+
+.content main .tabs-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-block-end: 2px solid transparent;
+  margin-block-end: -1px;
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--p-text-muted, var(--sidebar-non-existant));
+  cursor: pointer;
+}
+
+.content main .tabs-tab:hover {
+  color: var(--fg);
+}
+
+.content main .tabs-tab[aria-selected="true"] {
+  color: var(--fg);
+  border-block-end-color: var(--p-accent);
+}
+
+.content main .tabs-tab:focus-visible {
+  outline: 2px solid var(--p-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.content main .tabs > section > :first-child {
+  margin-block-start: 0;
+}
+
+/* On paper every variant prints, each under its label, so the reader can
+   tell which command is which. */
+@media print {
+  .content main .tabs-list {
+    display: none;
+  }
+  .content main .tabs > section {
+    display: block !important;
+  }
+  .content main .tabs > section::before {
+    content: attr(data-tab);
+    display: block;
+    font-weight: 600;
+    margin-block: 1rem 0.5rem;
   }
 }

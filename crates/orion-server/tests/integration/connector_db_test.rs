@@ -572,7 +572,7 @@ async fn test_db_read_row_cap_enforced() {
 /// `db_write` no longer reads `numeric_as`, so the runtime and the schema agree.
 ///
 /// `db_write` reused `DbRead::parse_statement`, which resolved `numeric_as` — a
-/// field `DB_WRITE_FIELDS` does not declare, `functions.md` never mentions, and
+/// field `DB_WRITE_FIELDS` does not declare, the `db_write` reference page never mentions, and
 /// `db_write` cannot act on because it decodes no rows. So a *wrong* value
 /// failed the task with `db_write: 'numeric_as' must be one of number/string`,
 /// an error naming a field the function's own schema does not have, while a

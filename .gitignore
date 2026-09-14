@@ -44,6 +44,9 @@ debug/
 # mdBook rendered output
 /docs/book/
 
+# structure_lint.py's bytecode cache
+/docs/__pycache__/
+
 # Wrangler local dev state (`just docs-preview`)
 /docs/.wrangler/
 
@@ -59,3 +62,8 @@ debug/
 !/crates/orion-server/tests/benchmark/results/v0.2.0/
 !/crates/orion-server/tests/benchmark/results/v1.0.0/
 !/crates/orion-server/tests/benchmark/results/v1.1.0/
+
+# Vale's third-party style packages, fetched by `vale sync` (docs/.vale.ini
+# names them under Packages). Not vendored: the Google style guide has its own
+# release cadence, and a committed copy would be one more thing to maintain.
+/docs/styles/Google/

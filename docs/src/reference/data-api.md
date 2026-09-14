@@ -1,37 +1,35 @@
 <!-- description: The Orion data API: how a request path resolves to a channel, sync and async processing, trace retrieval, and the result envelopes callers receive. -->
+<!-- type: reference -->
+<!-- last_verified: 2026-09-14 -->
+
 # Data API
 
-The data API handles runtime request processing: routing messages to channels, executing workflows, and returning results.
+The data API is the runtime request path. A request resolves to a channel, the channel's workflow runs, and the result comes back in a fixed envelope. [Channels](../concepts/channels.md) is the concept; [Configure a channel](../guides/author/channels.md) is the guide.
 
-## Endpoints
+## Synopsis
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/data/{channel}` | Process message synchronously (simple channel name) |
+| `POST` | `/api/v1/data/{channel}` | Process message synchronously (bare channel name) |
 | `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
 | `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
-| `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
+| `ANY` | `/api/v1/data/{path...}/async` | Async submission through REST route matching |
 | `GET` | `/api/v1/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=`; page with `?cursor=`; count with `?include_total=true` |
 | `GET` | `/api/v1/admin/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
 
-> **Note:** the trace *list* is guarded like `/api/v1/admin/*` and `/metrics`
-> when admin auth is enabled (`[admin_auth]`), and its rows carry no payloads.
-> The single-trace GET follows a two-lane rule instead: a valid admin
-> credential always works, and an async submission's `trace_token` grants
-> access to that one trace, so data-plane callers can poll their own results
-> without holding an admin key. Channel endpoints stay unauthenticated.
+The trace *list* is guarded like `/api/v1/admin/*` and `/metrics` when admin auth is enabled, and its rows carry no payloads. The single-trace GET follows a two-lane rule instead. A valid admin credential always works. An async submission's `trace_token` grants access to that one trace, so a data-plane caller can poll its own result without holding an admin key. Channel endpoints stay unauthenticated.
 
-## Route Resolution
+## Route resolution
 
 When a request arrives at `/api/v1/data/{path}`, Orion resolves the target channel in this order:
 
-1. **Async check:** strip trailing `/async` suffix (switches to async mode)
-2. **REST route table:** match HTTP method + path against channel `route_pattern` values (e.g., `GET /orders/{order_id}`)
-3. **Channel name fallback:** direct lookup by single path segment (e.g., `/api/v1/data/orders` → channel named `orders`)
+1. **Async check:** a trailing `/async` suffix is stripped and switches the request to async mode.
+2. **REST route table:** the HTTP method and path are matched against channel `route_pattern` values, such as `GET /orders/{order_id}`.
+3. **Channel name fallback:** a single path segment is looked up as a channel name, so `/api/v1/data/orders` reaches the channel named `orders`.
 
-REST routes are matched by priority (descending) then specificity (segment count). Matching is byte-exact — the path is case-sensitive per RFC 3986, so `/ORDERS/1` does not match `/orders/{id}`. Path parameters are extracted, percent-decoded exactly once (`a%2Fb` arrives as `a/b`), and injected into the message metadata; a path carrying an invalid percent-sequence is answered with `400`.
+REST routes are matched by priority (descending) then specificity (segment count). Matching is byte-exact: the path is case-sensitive per RFC 3986, so `/ORDERS/1` does not match `/orders/{id}`. Path parameters are extracted, percent-decoded exactly once (`a%2Fb` arrives as `a/b`), and injected into the message metadata. A path carrying an invalid percent-sequence is answered with `400`.
 
-## Synchronous Processing
+## Synchronous processing
 
 Send a POST to the channel name or a matching REST route:
 
@@ -47,14 +45,14 @@ curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 
 ### Serving at other paths
 
-The data plane is always mounted at `/api/v1/data`. [`server.data_mounts`](./configuration.md#server) adds prefixes it *also* answers on, for deployed clients that call legacy paths and cannot be changed:
+The data plane is always mounted at `/api/v1/data`. [`server.data_mounts`](./configuration/server.md) adds prefixes it *also* answers on, for deployed clients that call legacy paths and cannot be changed:
 
 ```toml
 [server]
 data_mounts = ["/zoom"]
 ```
 
-A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them — they are matched prefix-free, so nothing about the channel changes.
+A channel with `route_pattern = "/zoom/meetings/user"` then answers at both `/zoom/meetings/user` and `/api/v1/data/zoom/meetings/user`, `/async` included. Route patterns are written exactly as the client calls them. They are matched prefix-free, so nothing about the channel changes.
 
 This is additive: the canonical prefix stays, so `orion-cli` and every existing integration keep working. A mount cannot claim a platform route, and the root mount `"/"` carries a caveat. See the configuration reference.
 
@@ -70,15 +68,15 @@ By default a channel detects the envelope: **an object carrying a top-level `dat
 | empty | `{}` | `{}` |
 | `{"metadata": {"a": 1}, "b": 2}` | `{}` | `{"a": 1}` — **`b` is discarded** |
 
-That last row is the sharp edge. Detection keys on a field *name*, so a request model that owns the name `data` is read as an envelope and **every sibling field is dropped**: silently, with a normal `200`. It is not an exotic collision: it is the standard FCM/push payload shape.
+That last row is the sharp edge. Detection keys on a field *name*. A request model that owns the name `data` is read as an envelope, and every sibling field is dropped, silently, with a normal `200`. It is not an exotic collision; it is the standard FCM push payload shape.
 
-Set [`config.request.body_mode`](./channel-config.md#request-body) to `"payload"` on such a channel and the whole body is taken verbatim:
+Set [`config.request.body_mode`](./channel-config/request.md) to `"payload"` on such a channel and the whole body is taken verbatim:
 
 ```json
 { "config": { "request": { "body_mode": "payload" } } }
 ```
 
-In `payload` mode a caller cannot supply `metadata` at all — the metadata object is server-stamped keys only. The two modes differ for exactly one input shape (a top-level object carrying `data` or `metadata`); arrays, scalars and objects without those keys behave identically in both.
+In `payload` mode a caller cannot supply `metadata` at all; the metadata object is server-stamped keys only. The two modes differ for exactly one input shape, a top-level object carrying `data` or `metadata`. Arrays, scalars and objects without those keys behave identically in both.
 
 > [!NOTE]
 > `orion-cli send` wraps its argument in `{"data": …}`, so it cannot address a payload-mode channel without double-nesting. Use `curl` for those until `send --raw` lands.
@@ -96,13 +94,11 @@ In `payload` mode a caller cannot supply `metadata` at all — the metadata obje
 }
 ```
 
-The full envelope contract — including how failed tasks appear in `errors[]`
-and the conditional `request_id` field — is specified in
-[Errors & Response Envelopes](./errors.md#the-sync-result-envelope).
+The full envelope contract, including how failed tasks appear in `errors[]` and the conditional `request_id` field, is specified in [The sync result envelope](./errors.md#the-sync-result-envelope).
 
 ### Per-request profiling
 
-Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains a `_orion.profile` block that breaks the request down by phase. The header is opt-in so you only pay the cost on the requests you care about, and `tracing.debug_profile_enabled` in config gates the surface entirely. The debug surface always sits under the `_orion` namespace so workflow-produced output keys can never collide with future debug fields.
+Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains a `_orion.profile` block that breaks the request down by phase. The header is opt-in, so only the requests you care about pay the cost, and `tracing.debug_profile_enabled` in config gates the surface entirely. The debug surface always sits under the `_orion` namespace, so workflow-produced output keys can never collide with future debug fields.
 
 ```json
 {
@@ -129,25 +125,16 @@ Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains
 }
 ```
 
-`phases[]` is the iterable view — same numbers as the `*_ms` detail fields, so a
-client that does not want to hard-code each key can just walk it. `nested[]`
-lists the handler calls that ran *inside* a `channel_call`, matched by when they
-ran; a call with no children omits the key.
+`phases[]` is the iterable view. It holds the same numbers as the `*_ms` detail fields, so a client that does not want to hard-code each key can walk it. `nested[]` lists the handler calls that ran *inside* a `channel_call`, matched by when they ran. A call with no children omits the key.
 
 Branch on `version` when parsing: **v2** is current. v1 profiles may still
 exist in stored traces and attribute `nested[]` differently.
 
-## Shaped Responses
+## Shaped responses
 
-A channel can let its workflow set the HTTP status, headers, and body of its
-response by opting in with `response.mode: "shaped"` in its `config_json`.
-The full contract — the `data._orion.response` control block, the header
-allowlist, soft-failure and caching semantics — is specified in
-[Channel Configuration › Response shaping](./channel-config.md#response-shaping).
-Setting cookies is part of it and needs its own opt-in; see
-[Cookies](./channel-config.md#cookies).
+A channel can let its workflow set the HTTP status, headers and body of its response by opting in with `response.mode: "shaped"` in its `config_json`. The full contract is specified in [Response shaping](./channel-config/response.md): the `data._orion.response` control block, the header allowlist, and the soft-failure and caching semantics. Setting cookies is part of it and needs its own opt-in; see [Cookies](./channel-config/response.md#cookies).
 
-## Asynchronous Processing
+## Asynchronous processing
 
 Append `/async` to submit for background processing:
 
@@ -166,11 +153,9 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
 }
 ```
 
-The token is shown once — only its hash is stored, and scopes the poll to
-this submission. The ack and failure semantics are specified in
-[Errors & Response Envelopes](./errors.md#the-async-acknowledgment).
+The token is shown once; only its hash is stored, and it scopes the poll to this submission. The acknowledgment and failure semantics are specified in [The async acknowledgment](./errors.md#the-async-acknowledgment).
 
-**Poll for the result** — put the token in the `x-trace-token` header:
+Poll for the result with the token in the `x-trace-token` header:
 
 ```bash
 curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655440000 \
@@ -179,7 +164,7 @@ curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655
 
 **Trace statuses:** `pending` → `running` → `completed` or `failed`.
 
-## Trace Endpoints
+## Trace endpoints
 
 List and filter traces:
 
@@ -200,10 +185,7 @@ The page envelope is `{data, limit, offset}`. Two things are conditional:
 
 - **`total` is opt-in.** Ask for it with `?include_total=true` when you
   actually need it.
-- **`next_cursor`** appears when the page is in the default `created_at`
-  ordering and may have a successor. Pass it back as `?cursor=` to get the
-  next page — the only paging mode that stays flat as the table grows. Treat
-  the value as opaque.
+- **`next_cursor`** appears when the page is in the default `created_at` ordering and may have a successor. Pass it back as `?cursor=` to get the next page, which is the only paging mode that stays flat as the table grows. Treat the value as opaque.
 
 ```bash
 # First page
@@ -214,10 +196,7 @@ curl -s "http://localhost:8080/api/v1/admin/traces?limit=100"
 curl -s "http://localhost:8080/api/v1/admin/traces?limit=100&cursor=1753900000123456.<uuid>"
 ```
 
-`cursor` is rejected with a 400 alongside `offset` (two paging modes) or with
-`sort_by` set to anything but `created_at`. The reasoning — why offset paging
-degrades and why `updated_at` cannot carry a cursor — is in
-[Design Notes › Cursor paging](./design-notes.md#cursor-paging).
+`cursor` is rejected with a `400` beside `offset` (two paging modes) or with `sort_by` set to anything but `created_at`. The reasoning, why offset paging degrades and why `updated_at` cannot carry a cursor, is in [Cursor paging](../concepts/design-notes.md#cursor-paging).
 
 Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):
@@ -227,34 +206,19 @@ curl -s http://localhost:8080/api/v1/admin/traces/{trace-id} \
   -H "x-trace-token: {trace-token}"
 ```
 
-Every trace read answers with `Cache-Control: no-store`. The body is the
-submission's result, and the capability that authorised it is not an
-`Authorization` header — which is the header a shared cache treats as making
-a response private — so nothing else would stop a proxy storing it.
+Every trace read answers with `Cache-Control: no-store`. The body is the submission's result. The capability that authorized it is not an `Authorization` header, which is the header a shared cache treats as making a response private. Nothing else would stop a proxy storing it.
 
 ### The `?token=` query parameter is deprecated
 
-`GET /api/v1/admin/traces/{id}?token={trace-token}` still authorises, for
-clients that cannot set headers. Prefer the header, and migrate if you are
-using it: a URL is not a private place. It reaches browser history, reverse
-proxy and CDN access logs, analytics pipelines, the `Referer` header of
-anything the page loads next, and every chat window a support ticket is
-pasted into. A header reaches none of those.
+`GET /api/v1/admin/traces/{id}?token={trace-token}` still authorizes, for clients that cannot set headers. Prefer the header, and migrate if you are using it, because a URL is not a private place. It reaches browser history, reverse proxy and CDN access logs, and analytics pipelines. It reaches the `Referer` header of anything the page loads next, and every chat window a support ticket is pasted into. A header reaches none of those.
 
-Reads authorised this way answer with `Deprecation: true`, and the server
-counts them in `orion_trace_token_query_reads_total` — so an operator can
-confirm nothing depends on the parameter before it is removed in a future
-major version.
+Reads authorized this way answer with `Deprecation: true`, and the server counts them in `orion_trace_token_query_reads_total`. An operator can confirm nothing depends on the parameter before it is removed in a future major version.
 
-List rows are payload-free projections — `input_json`, `result_json` and
-`task_trace_json` are served only by the single-trace GET, and the served
-message omits the submitter's request context (`context.metadata`).
+List rows are payload-free projections. `input_json`, `result_json` and `task_trace_json` are served only by the single-trace GET, and the served message omits the submitter's request context (`context.metadata`).
 
 ### The trace object
 
-**Statuses:** `pending` → `running` → `completed` | `failed`. There is no
-partial status; a partially-failed bulk write is a *task-level* outcome inside
-`result_json`, not a trace status.
+**Statuses:** `pending` → `running` → `completed` | `failed`. There is no partial status. A partially failed bulk write is a task-level outcome inside `result_json`, not a trace status.
 
 **List rows** (`GET /traces`) carry exactly: `id`, `channel`, `channel_id`,
 `mode`, `status`, `error_message`, `duration_ms`, `started_at`,
@@ -269,7 +233,7 @@ withheld.
 | `message` | `status = completed` | The result document; the submitter's request context (`context.metadata`) is stripped |
 | `error` | `status = failed` | Note the name — list rows call this `error_message` |
 | `started_at` / `completed_at` / `duration_ms` | once processing started/finished | |
-| `task_trace_json` | per-task tracing was on for the channel | See below |
+| `task_trace_json` | per-task tracing was on for the channel | The engine's execution trace; the step table follows |
 
 **`task_trace_json`** is the engine's execution trace, recorded per task when
 the channel opts in with `config.tracing.task_details` (default `false`). Its
@@ -287,7 +251,7 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 | `duration_us` | number | **Microseconds**, executed steps only |
 | `changes` | array | Per-task diff entries `{path, old_value, new_value}` |
 
-## Operational Endpoints
+## Operational endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -300,10 +264,8 @@ cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
 
 ## Related
 
-- [Channel Configuration](./channel-config.md): the guards a request passes
-  through before a workflow runs.
-- [Errors & Response Envelopes](./errors.md): the sync envelope, and how a
-  failed task appears in it.
-- [Traces & Async Processing](../operate/traces.md): the async submission's
-  other half.
-- [Channels](../concepts/channels.md): what a route resolves to.
+- [Channels](../concepts/channels.md): the concept a route resolves to.
+- [Configure a channel](../guides/author/channels.md): the guide that declares the route and the guards.
+- [Channel configuration](./channel-config/index.md): the guards a request passes through before a workflow runs.
+- [Errors and response envelopes](./errors.md): the sync envelope, and how a failed task appears in it.
+- [Traces and async processing](../operate/run/traces.md): the async submission's other half.

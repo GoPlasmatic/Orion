@@ -1,11 +1,14 @@
 <!-- description: Orion's three response shapes — admin success, data result, and the shared error envelope — with the complete error code and field-error registries. -->
-# Errors & Response Envelopes
+<!-- type: reference -->
+<!-- last_verified: 2026-09-14 -->
 
-Every Orion response is one of three JSON shapes: the admin success envelope, the data-plane result envelope, or the shared error envelope. This page is the owner of the error envelope, the data-plane result shapes, and the complete `error.code` registry.
+# Errors and response envelopes
+
+Every Orion response is one of three JSON shapes: the admin success envelope, the data-plane result envelope, or the shared error envelope. This page owns the error envelope, the data-plane result shapes, and the complete `error.code` registry. [Troubleshooting](../operate/maintain/troubleshooting.md) is the symptom-first guide to the failures these codes name.
 
 ## The admin envelope
 
-Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add pagination counters alongside it: `limit` and `offset` always, and `total` where the endpoint computes it — the trace list makes `total` opt-in via `?include_total=true` and adds `next_cursor` (see [Data API](./data-api.md)). The [Admin API](./admin-api.md) documents each endpoint's payload.
+Every admin 2xx body puts its payload under a top-level `data` key. List endpoints add pagination counters beside it: `limit` and `offset` always, and `total` where the endpoint computes it. The trace list makes `total` opt-in through `?include_total=true` and adds `next_cursor` (see [Data API](./data-api.md)). [Admin API](./admin-api/index.md) documents each endpoint's payload.
 
 ### The error envelope
 
@@ -68,7 +71,7 @@ Each `errors[]` entry:
 | `message` | string | The failure text, sanitized by default — see [Message sanitization](#message-sanitization-verbose_errors). |
 | `task_id` | string | The failing task. Omitted for workflow-level failures. |
 
-Three shapes never appear here. Ingress rejections — auth, rate limiting, `validation_logic`, a deduplication replay, backpressure — answer with the [error envelope](#the-error-envelope) and a registry code, such as `429 RATE_LIMITED` or `409 CONFLICT`. A [shaped channel](./data-api.md#shaped-responses) replaces the envelope entirely with a workflow-controlled status, headers, and body. And a channel declaring [`response.error_bodies`](./channel-config.md#error-bodies) replaces the *bytes* of a guard rejection with its own template — the status, the code and the error-owned headers stay exactly as the platform set them, and only the body changes.
+Three shapes never appear here. Ingress rejections (auth, rate limiting, `validation_logic`, a deduplication replay, backpressure) answer with the [error envelope](#the-error-envelope) and a registry code, such as `429 RATE_LIMITED` or `409 CONFLICT`. A [shaped channel](./data-api.md#shaped-responses) replaces the envelope entirely with a workflow-controlled status, headers and body. And a channel declaring [`response.error_bodies`](./channel-config/response.md#error-bodies) replaces the bytes of a guard rejection with its own template. The status, the code and the error-owned headers stay exactly as the platform set them; only the body changes.
 
 ### The async acknowledgment
 
@@ -81,9 +84,9 @@ An `/async` submission answers `202` with an acknowledgment, never a result:
 }
 ```
 
-Both fields are always present — the trace row is written before the response is sent, so the id can always be polled. The token appears only in this response; Orion stores its hash. Poll `GET /api/v1/admin/traces/{trace_id}` with the token in `x-trace-token`, or with an admin credential. (The `?token=` query parameter also works and is [deprecated](./data-api.md#the-token-query-parameter-is-deprecated).)
+Both fields are always present. The trace row is written before the response is sent, so the id can always be polled. The token appears only in this response; Orion stores its hash. Poll `GET /api/v1/admin/traces/{trace_id}` with the token in `x-trace-token`, or with an admin credential. The `?token=` query parameter also works and is [deprecated](./data-api.md#the-token-query-parameter-is-deprecated).
 
-A failed async run surfaces on [the trace](./data-api.md#the-trace-object), not in any HTTP response. Its `status` becomes `failed`, and the trace detail carries the failure text in `error` — list rows name the same value `error_message`. Orion also enqueues the failed delivery to the [trace DLQ](./admin-api.md#trace-dlq) for retry.
+A failed async run surfaces on [the trace](./data-api.md#the-trace-object), not in any HTTP response. Its `status` becomes `failed`, and the trace detail carries the failure text in `error`; list rows name the same value `error_message`. Orion also enqueues the failed delivery to the [trace DLQ](./admin-api/trace-dlq.md) for retry.
 
 A submission shed at the queue answers `503 SERVICE_UNAVAILABLE` with the error envelope. Its already-written trace row is settled as `failed` so no phantom `pending` row remains.
 
@@ -100,10 +103,10 @@ Every `error.code` the server emits, on both the admin and data planes:
 | `FORBIDDEN` | 403 | Access denied — a read-only admin key on a mutating method, an `Origin` outside a channel's `origin_allow_list`, or a `channel_call` relaying a target channel's 403. A channel **auth** failure is `UNAUTHORIZED` above |
 | `NOT_FOUND` | 404 | Resource not found |
 | `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
-| `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, an import collision, an idempotency-key replay, or a database unique/foreign-key constraint a workflow did not catch (see [integrity violations](./workflows.md#integrity-violations)) |
+| `CONFLICT` | 409 | Duplicate or conflicting state: a second draft, an import collision, an idempotency-key replay, or a database unique/foreign-key constraint a workflow did not catch (see [integrity violations](./workflows.md#integrity-violations)) |
 | `PAYLOAD_TOO_LARGE` | 413 | The request body exceeded `ingest.max_payload_size` (data plane) or `server.max_admin_body_size` (admin plane) — the caller's to fix, unlike `RESPONSE_TOO_LARGE` |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
-| `RATE_LIMITED` | 429 | Too many requests. The response carries a `Retry-After` header |
+| `RATE_LIMITED` | 429 | The caller exceeded a rate limit. The response carries a `Retry-After` header |
 | `INTERNAL_ERROR` | 500 | Internal server error |
 | `ENGINE_ERROR` | 500 | Workflow execution failed inside the engine for a reason the server does not surface (the detail is in the server log) |
 | `STORAGE_ERROR` | 500 | A database operation failed (detail in the server log) |
@@ -136,7 +139,7 @@ When a workflow, channel, or connector fails strict validation on create or upda
 
 | Field | Type | Present | Description |
 |---|---|---|---|
-| `path` | string | always | Pointer to the failing key. Rooted two ways — see below. |
+| `path` | string | always | Pointer to the failing key. Rooted two ways; see [How `path` is rooted](#how-path-is-rooted). |
 | `code` | string | always | Stable machine-readable identifier from the closed vocabulary below. |
 | `message` | string | always | What is wrong with the field. |
 | `expected` | any | when known | The accepted value, list, or type. |
@@ -144,9 +147,7 @@ When a workflow, channel, or connector fails strict validation on create or upda
 
 ### Field error codes
 
-The complete vocabulary. It is closed: a code outside this table is a bug, and
-a drift test fails the build if `src/` emits one or if this table and the
-`orion-api` registry disagree.
+The complete vocabulary. It is closed: a code outside this table is a bug. A drift test fails the build if `src/` emits one, or if this table and the `orion-api` registry disagree.
 
 | Code | Meaning |
 |---|---|
@@ -159,36 +160,26 @@ a drift test fails the build if `src/` emits one or if this table and the
 | `DUPLICATE_FIELD` | The same key appeared twice in one object. |
 | `DUPLICATE_TASK_ID` | Two steps in one workflow declare the same `id`. Tasks and task groups share one id namespace. |
 | `UNKNOWN_FUNCTION` | A task names a function the engine does not register — the workflow would be accepted and then fail at its first request. When the name is a plausible typo, the message appends the closest registered name (`did you mean …?`). |
-| `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli.md#shared-definitions). |
+| `UNCOMPILED_SOURCE` | The document still carries an authoring convenience a definition set resolves at compile time — a `$from` shared value, a `use` task fragment. This endpoint takes one document and has no set to resolve names against; send what `orion-server compile <dir>` writes. See [Shared definitions](./cli/shared-definitions.md). |
 | `UNRESOLVED_SECRET_REF` | A secret reference (`env://NAME`, `vault://…`) sits in a workflow field that does not resolve one, so it would be sent on as that literal text — a URL spelled `env://API_BASE` is requested verbatim. Five fields resolve a reference: `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys`, `issuer` and `audience`. See [Environment Variables](./environment-variables.md#where-a-reference-resolves). |
-| `MODEL_RUNTIME_UNKNOWN` | A [`model_infer`](./functions.md#model_infer) task names a `runtime` this build does not know. The runtimes are compiled in (`tract`), so the name is checked when the workflow is written rather than at its first inference; whether a known runtime is *enabled* on a node is that node's `[models.runtimes]` and is answered at execution. |
-| `MODEL_UNKNOWN` | A `model_infer` task names, as a literal, a model no manifest in the definition set describes and no `requires.models` entry declares. Reported by [`orion-server lint <dir>`](./cli.md#lint) and `package lint` as `[closure.model]`, at the `model` field's path; a computed `model` is not checked, because the model it resolves to is decided per message. A node that does not serve the model would quarantine the workflow. |
-| `MODEL_ARTIFACT_UNAVAILABLE` | An offline run ([`dry-run`](./cli.md#dry-run), [`test`](./cli.md#test)) names a model it cannot execute: no `--model-dir` holds its manifest, the manifest is there and the artifact its `artifact` names is not, or the workflow calls `model_infer` with neither a model directory nor a stub for it. A model runs for real offline or not at all once a model directory is given — it is never stubbed — so the run is refused before it starts, naming the model and what to pass. |
+| `MODEL_RUNTIME_UNKNOWN` | A [`model_infer`](./functions/model_infer.md) task names a `runtime` this build does not know. The runtimes are compiled in (`tract`), so the name is checked when the workflow is written rather than at its first inference; whether a known runtime is *enabled* on a node is that node's `[models.runtimes]` and is answered at execution. |
+| `MODEL_UNKNOWN` | A `model_infer` task names, as a literal, a model no manifest in the definition set describes and no `requires.models` entry declares. Reported by [`orion-server lint <dir>`](./cli/orion-server/lint.md) and `package lint` as `[closure.model]`, at the `model` field's path; a computed `model` is not checked, because the model it resolves to is decided per message. A node that does not serve the model would quarantine the workflow. |
+| `MODEL_ARTIFACT_UNAVAILABLE` | An offline run ([`dry-run`](./cli/orion-server/dry-run.md), [`test`](./cli/orion-server/test.md)) names a model it cannot execute: no `--model-dir` holds its manifest, the manifest is there and the artifact its `artifact` names is not, or the workflow calls `model_infer` with neither a model directory nor a stub for it. A model runs for real offline or not at all once a model directory is given — it is never stubbed — so the run is refused before it starts, naming the model and what to pass. |
 
 ### How `path` is rooted
 
-`path` points at the offending field, rooted according to how far the request
-got before it was rejected:
+`path` points at the offending field, rooted according to how far the request got before it was rejected:
 
-- **Validation ran**: the path is resource-rooted and may be indexed:
-  `channel.protocol`, `tasks[2].function.input.connector`. Inside a
-  [task group](./workflows.md#task-groups) the index nests, naming the
-  coordinate as authored rather than the position the task ends up at once the
-  engine flattens the tree: `tasks[1].tasks[0].id`.
-- **The body did not deserialize**: validation never ran, and the layer that
-  reports the failure knows the field name but not which resource was being
-  parsed. The path is `body.<field>`, or bare `body` when the field cannot be
-  recovered from the parser's message at all.
+- **Validation ran**: the path is resource-rooted and may be indexed: `channel.protocol`, `tasks[2].function.input.connector`. Inside a [task group](./workflows.md#task-groups) the index nests, naming the coordinate as authored rather than the position the task ends up at once the engine flattens the tree: `tasks[1].tasks[0].id`.
+- **The body did not deserialize**: validation never ran, and the layer that reports the failure knows the field name but not which resource was being parsed. The path is `body.<field>`, or bare `body` when the field cannot be recovered from the parser's message at all.
 
-So the same mistake can surface as `body.protocol` or `channel.protocol`
-depending on whether it was a parse failure or a validation failure. Match on
-the last segment if you want to treat both alike.
+The same mistake can surface as `body.protocol` or `channel.protocol` depending on whether it was a parse failure or a validation failure. Match on the last segment to treat both alike.
 
 The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
 
 ## Validation warnings
 
-`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only — it means "`POST /workflows` would accept this", so a workflow can be valid and still carry warnings. These are reported:
+`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only. It means "`POST /workflows` would accept this", so a workflow can be valid and still carry warnings. These are reported:
 
 | Warning | Meaning |
 |---|---|
@@ -196,18 +187,18 @@ The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{i
 | `reads '…', which no earlier task writes` | A `data.*` path read by a task that no earlier task writes. |
 | `… is JSONLogic in a field nothing evaluates` | An operator node in a connector-payload field, which folds `{"var": …}` and nothing else — so the expression is stored or sent verbatim. |
 | `… emits '…' with one '$' stripped` | A `$`-prefixed key in a template position. The engine strips one `$` from every such key, so a `{"$set": …}` update document composed in a `map` goes out as `{"set": …}`. Double the prefix (`$$set`) to emit the `$`. |
-| `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions.md#validation--validate) whose failure stops nothing: `4xx` warns and carries on, and `continue_on_error` governs `5xx` only. Add [`"halt_on": "failure"`](./workflows.md#halting-on-failure), or gate what follows. |
+| `a failing rule here records status 400 and task '…' still runs` | A [`validation`](./functions/validation.md) whose failure stops nothing: `4xx` warns and carries on, and `continue_on_error` governs `5xx` only. Add [`"halt_on": "failure"`](./workflows.md#halting-on-failure), or gate what follows. |
 | `group '…' carries continue_on_error, which the engine does not honour` | The key parses on a task group and is then dropped. It belongs on the tasks inside the group, or on the workflow. |
 
-The last three are the engine's own findings, reported wherever a workflow is checked — this endpoint, `orion-server lint`, `orion-server clippy`, the definition-set check and `preflight`. Each carries a stable id there ([`lint`](./cli.md#lint)); here they arrive as warnings like any other.
+The last three are the engine's own findings, reported wherever a workflow is checked: this endpoint, `orion-server lint`, `orion-server clippy`, the definition-set check and `preflight`. Each carries a stable id there ([`lint`](./cli/orion-server/lint.md)); here they arrive as warnings like any other.
 
 The second warning exists because the failure it predicts is invisible at runtime. JSONLogic resolves an unknown `var` to null. A mistyped path therefore leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
 
-It is advisory in both directions. Writes are tracked from `parse_json`/`parse_xml` targets, `map` mapping paths, and connector `output` paths, and matched by prefix — writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map`/`reduce` bodies are out of scope and never warn. A value that legitimately arrives another way — a connector response shape, a `continue_on_error` predecessor — can still be flagged, which is why it never blocks creation.
+It is advisory in both directions. Writes are tracked from `parse_json` and `parse_xml` targets, `map` mapping paths, and connector `output` paths. They are matched by prefix: writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map` and `reduce` bodies are out of scope and never warn. A value that legitimately arrives another way, such as a connector response shape or a `continue_on_error` predecessor, can still be flagged. That is why it never blocks creation.
 
 ## Message sanitization (`verbose_errors`)
 
-[`server.verbose_errors`](./configuration.md#server) decides whether data-plane `errors[]` entries carry the engine's own `message` or this placeholder:
+[`server.verbose_errors`](./configuration/server.md) decides whether data-plane `errors[]` entries carry the engine's own `message` or this placeholder:
 
 ```
 Task processing failed; full detail is available in the trace
@@ -216,16 +207,17 @@ Task processing failed; full detail is available in the trace
 The contract:
 
 - **Only `message` is replaced.** `code` and `task_id` pass through either way.
-- **Sanitized is the production posture.** Raw messages can embed upstream URLs, connector names, and driver errors, which must not reach anonymous data-plane callers. `verbose_errors = true` is refused in production and the server will not start.
+- **Sanitized is the production posture.** Raw messages can embed upstream URLs, connector names and driver errors, which must not reach anonymous data-plane callers. `verbose_errors = true` is refused in production and the server does not start.
 - **Nothing is lost.** The persisted trace keeps the original messages. Correlate with the `request_id` the envelope adds whenever `errors` is non-empty.
 - **The data plane only.** Admin 5xx messages always name the failure class; their detail goes to the server log regardless of this setting.
-- **Workflow-visible failure records carry no message.** [`metadata._orion_errors`](./workflows.md#branching-on-a-failure) exposes `code`, `task_id`, `workflow_id` and `status` so a workflow can branch on *why* a step failed — the same fields this contract already lets through. A message there would defeat the setting entirely: a workflow could copy it into `data`, which is returned unsanitized.
+- **Workflow-visible failure records carry no message.** [`metadata._orion_errors`](./workflows.md#branching-on-a-failure) exposes `code`, `task_id`, `workflow_id` and `status` so a workflow can branch on why a step failed, the same fields this contract already lets through. A message there would defeat the setting entirely, because a workflow could copy it into `data`, which is returned unsanitized.
 
-The [configuration reference](./configuration.md#server) owns the setting's values and environment-dependent default.
+The [configuration reference](./configuration/server.md) owns the setting's values and environment-dependent default.
 
 ## Related
 
-- [Admin API](./admin-api.md): the endpoints these envelopes wrap, and each payload under `data`.
-- [Data API](./data-api.md): routing, traces, shaped responses, and profiling around the result envelope.
-- [Configuration](./configuration.md#server): the `server.verbose_errors` row and the trace-queue size caps named above.
-- [Workflows](./workflows.md): the task pipelines whose failures land in `errors[]`.
+- [Troubleshooting](../operate/maintain/troubleshooting.md): the symptom-first guide to the failures these codes name.
+- [Admin API](./admin-api/index.md): the endpoints these envelopes wrap, and each payload under `data`.
+- [Data API](./data-api.md): routing, traces, shaped responses and profiling around the result envelope.
+- [Configuration › Server](./configuration/server.md): the `server.verbose_errors` row and the trace-queue size caps named above.
+- [Workflow definition](./workflows.md): the task pipelines whose failures land in `errors[]`.

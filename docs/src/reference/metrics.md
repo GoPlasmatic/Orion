@@ -1,7 +1,12 @@
 <!-- description: Every Prometheus series Orion exports, one row per metric: request counters, latency histograms with explicit buckets, and engine, queue and connector gauges. -->
-# Metrics Reference
+<!-- type: reference -->
+<!-- last_verified: 2026-09-14 -->
 
-Every Prometheus series Orion exports, one row per metric. All names carry the `orion_` prefix. In cluster mode, every series also carries an `instance` label naming the replica. Histograms export explicit buckets, so `histogram_quantile()` aggregates correctly across replicas.
+# Metrics
+
+Every Prometheus series Orion exports, one row per metric, asserted against the code by `metrics_docs_drift_test`. All names carry the `orion_` prefix, and in cluster mode every series also carries an `instance` label naming the replica. Histograms export explicit buckets so `histogram_quantile()` aggregates across replicas.
+
+[Monitor and alert](../operate/run/monitoring.md) is the guide that turns these into alerts.
 
 ## Core runtime
 
@@ -9,8 +14,8 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 |------|------|--------|-------------|
 | `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`; identifies the build each replica runs. |
 | `orion_jwt_rejections_total` | Counter | `reason` | JWTs refused at channel auth, by typed cause (`expired`, `bad_signature`, `alg_rejected`, …) — the wire answer stays uniform; the dashboard does not have to. |
-| `orion_oauth_token_requests_total` | Counter | `connector`, `outcome` | Managed-OAuth2 token-endpoint requests ([connector auth](./connectors.md#managed-oauth2)): `ok`, `rejected` (`invalid_grant` and friends — non-retryable, negative-cached), `transport_error` (retryable). A rising `rejected` on a `refresh_token` connector means a burned seed. |
-| `orion_oauth_login_total` | Counter | `channel`, `leg`, `outcome` | Inbound OAuth2 sign-in legs ([channel `oauth2_login`](./channel-config.md#inbound-oauth2-sign-in)) — Orion as the relying party, so the label is a channel rather than a connector. `leg` is `authorize` or `callback`. `outcome` carries what the wire deliberately does not: every callback refusal is the same uniform `401`, so this is where `provider_error` (users abandoning the consent screen), `state_mismatch` (replayed or forged callbacks) and `exchange_rejected` (a wrong client secret) become distinguishable. Also `ok`, `state_missing`, `code_missing`, `state_invalid`, `nonce_mismatch`, `exchange_error`, `id_token_rejected`. |
+| `orion_oauth_token_requests_total` | Counter | `connector`, `outcome` | Managed-OAuth2 token-endpoint requests ([connector auth](./connectors/authentication.md#managed-oauth2)): `ok`, `rejected` (`invalid_grant` and friends — non-retryable, negative-cached), `transport_error` (retryable). A rising `rejected` on a `refresh_token` connector means a burned seed. |
+| `orion_oauth_login_total` | Counter | `channel`, `leg`, `outcome` | Inbound OAuth2 sign-in legs ([channel `oauth2_login`](./channel-config/oauth2_login.md)) — Orion as the relying party, so the label is a channel rather than a connector. `leg` is `authorize` or `callback`. `outcome` carries what the wire deliberately does not: every callback refusal is the same uniform `401`, so this is where `provider_error` (users abandoning the consent screen), `state_mismatch` (replayed or forged callbacks) and `exchange_rejected` (a wrong client secret) become distinguishable. Also `ok`, `state_missing`, `code_missing`, `state_invalid`, `nonce_mismatch`, `exchange_error`, `id_token_rejected`. |
 | `orion_messages_total` | Counter | `channel`, `status` | Messages processed, by outcome: `ok`, `error`, `timeout`, or `duplicate`. A run that finished with task errors is `error` on every transport, including the synchronous one that answers `200` with those errors in its envelope. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Message processing latency. |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in the engine. |
@@ -32,7 +37,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 | `orion_workflow_duration_seconds` | Histogram | `workflow` | Per-workflow-run latency, task bodies included. Subtract the `orion_task_duration_seconds` sum for the same workflow to get the engine's own overhead: condition evaluation, group gating, loop bookkeeping, audit writes. A workflow skipped by its condition or rollout gate is not recorded; a looping workflow records once for the whole loop. |
 | `orion_rate_limit_rejections_total` | Counter | `scope` | Rate-limited requests; `scope` is a channel name or route group. |
 | `orion_rate_limit_key_unavailable_total` | Counter | `channel` | Rate-limit refusals where the bucket key could not be computed — a subset of the rejections above. Any non-zero rate is a misconfiguration: the channel's `key_logic` failed to evaluate, or resolved to `null`/empty because it reads a header outside the key context. Alert on it. |
-| `orion_response_drops_total` | Counter | `channel`, `kind` | Declarations a [shaped response](./channel-config.md#response-shaping) made and did not get: `RESPONSE_COOKIE_DROPPED`, `RESPONSE_HEADER_DROPPED`, `RESPONSE_HEADER_NOT_ALLOWED`, `RESPONSE_COOKIES_DISABLED`. The request still ships — an authoring slip should not be an outage — but the declaration did not happen, so any non-zero rate is a bug in a definition. Alert on it rather than dashboard it. |
+| `orion_response_drops_total` | Counter | `channel`, `kind` | Declarations a [shaped response](./channel-config/response.md) made and did not get: `RESPONSE_COOKIE_DROPPED`, `RESPONSE_HEADER_DROPPED`, `RESPONSE_HEADER_NOT_ALLOWED`, `RESPONSE_COOKIES_DISABLED`. The request still ships — an authoring slip should not be an outage — but the declaration did not happen, so any non-zero rate is a bug in a definition. Alert on it rather than dashboard it. |
 | `orion_response_cache_hits_total` | Counter | `channel` | Response-cache hits. |
 | `orion_response_cache_misses_total` | Counter | `channel` | Response-cache misses. |
 | `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of each background job's last successful tick: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher`, `kafka_lag`, `cron_reconcile`, `cron_cleanup`. |
@@ -42,12 +47,7 @@ Every Prometheus series Orion exports, one row per metric. All names carry the `
 
 ## Plugins
 
-Emitted by the WebAssembly plugin sandbox (`[plugins]`). `plugin` is a
-registered plugin id and `function` a registered function name — never a
-string a guest chose. `category` is the host's stable classification of a
-failure: `caller_input`, `guest_error`, `bad_code`, `request_size`,
-`response_size`, `permit`, `instances`, `fuel`, `memory`, `timeout`, `trap`
-or `bad_result`.
+Emitted by the WebAssembly plugin sandbox (`[plugins]`). `plugin` is a registered plugin id and `function` a registered function name, never a string a guest chose. `category` is the host's stable classification of a failure: `caller_input`, `guest_error`, `bad_code`, `request_size`, `response_size`, `permit`, `instances`, `fuel`, `memory`, `timeout`, `trap` or `bad_result`.
 
 | Name | Type | Labels | Description |
 |------|------|--------|-------------|
@@ -61,14 +61,7 @@ or `bad_result`.
 
 ## Models
 
-Emitted by the model runtime (`[models]`). `model` is a stored model id and
-`runtime` a runtime name this build knows (`tract`) — never a string a row,
-a request or a runtime's error chose. `category` is the host's stable
-classification of an inference failure: `caller_input`, `unavailable`,
-`runtime_unavailable`, `adapter`, `input_size`, `output_size`, `permit`,
-`timeout` or `run`. `stage` is the admission step a failure stopped at:
-`signature`, `gate`, `head`, `size`, `fetch`, `digest` or `cache` (later
-`parse` and `probe`), or `none` for a pass.
+Emitted by the model runtime (`[models]`). `model` is a stored model id and `runtime` a runtime name this build knows (`tract`). Neither is ever a string a row, a request or a runtime's error chose. `category` is the host's stable classification of an inference failure: `caller_input`, `unavailable`, `runtime_unavailable`, `adapter`, `input_size`, `output_size`, `permit`, `timeout` or `run`. `stage` is the admission step a failure stopped at, or `none` for a pass. The steps are `signature`, `gate`, `head`, `size`, `fetch`, `digest` and `cache`, then `parse` and `probe`.
 
 | Name | Type | Labels | Description |
 |------|------|--------|-------------|
@@ -88,7 +81,7 @@ classification of an inference failure: `caller_input`, `unavailable`,
 
 ## Scheduling
 
-Cron channels: what the reconciler and the workers are doing. See [Cron transport](./channel-config.md#cron-transport) for the schedules themselves and [Cron occurrences](./admin-api.md#cron-occurrences) for the ledger these summarise.
+Cron channels: what the reconciler and the workers are doing. See [Cron transport](./channel-config/cron.md) for the schedules themselves and [Cron occurrences](./admin-api/cron-occurrences.md) for the ledger these summarise.
 
 | Metric | Type | Labels | Notes |
 |---|---|---|---|
@@ -133,12 +126,13 @@ These series exist only when `kafka.enabled = true`.
 | `orion_kafka_consumer_lag_messages` | Gauge | `topic`, `partition` | Consumer lag in messages; polled every `kafka.lag_poll_interval_secs`. |
 | `orion_kafka_ingest_degraded` | Gauge | — | `1` while ingestion is down; mirrors the `kafka` component of `/readyz`. |
 
-## Scrape the endpoint
+## Caveats
 
-Orion serves metrics at `GET /metrics` in Prometheus text format. The route exists only when `metrics.enabled = true`; otherwise it returns `404`. On the main listener the endpoint sits behind admin auth. Set `metrics.bind_addr` to move it onto a dedicated unauthenticated listener. The settings are in the [Configuration Reference](./configuration.md#logging-and-metrics).
+- Orion serves metrics at `GET /metrics` in Prometheus text format. The route exists only when `metrics.enabled = true`; otherwise it returns `404`.
+- On the main listener the endpoint sits behind admin auth. Set `metrics.bind_addr` to move it onto a dedicated unauthenticated listener; the settings are in [Configuration › Logging and metrics](./configuration/logging-metrics.md).
 
 ## Related
 
-- [Monitoring & Alerts](../operate/monitoring.md): enable metrics, structured logging, OTLP tracing, and the health endpoints.
-- [Configuration Reference](./configuration.md#logging-and-metrics): the `[metrics]` and `[logging]` settings, including `bind_addr`.
-- [CLI Reference](./cli.md): `orion-cli metrics` fetches this endpoint from the terminal.
+- [Monitor and alert](../operate/run/monitoring.md): the guide that enables metrics, structured logging, OTLP tracing and the health endpoints, and names what to alert on.
+- [Configuration › Logging and metrics](./configuration/logging-metrics.md): the `[metrics]` and `[logging]` settings, including `bind_addr`.
+- [CLI](./cli/index.md): `orion-cli metrics` fetches this endpoint from the terminal.

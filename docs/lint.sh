@@ -90,8 +90,8 @@ fi
 ##    *correct* is asserted by functions_docs_drift_test against the schema
 ##    registry and the page's own summary table — this check only stops the
 ##    number being restated somewhere it would later drift.
-stray=$(git grep -I -lE '24 functions|24 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
-[ -z "$stray" ] || err "function count '24' stated outside reference/functions.md: $stray"
+stray=$(git grep -I -lE '24 functions|24 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions/' || true)
+[ -z "$stray" ] || err "function count '24' stated outside reference/functions/: $stray"
 
 ## 6. No internal review IDs in user docs. The audit IDs (K…, R…, F…, N…, S…)
 ##    are repo-internal: they resolve to nothing a reader can open. Every page
@@ -112,11 +112,13 @@ if [ -n "$hits" ]; then
 fi
 
 ## 7. (Phase ≥3, after the features/* pages dissolve) no Rust internals
-##    outside reference/design-notes.md.
+##    outside concepts/design-notes.md — the one page whose job is the
+##    implementation's rationale (DOCUMENTATION_STANDARD.md §2.1 files it as
+##    explanation, so it lives under Concepts).
 if [ "$DOCS2_PHASE" -ge 3 ]; then
-  if git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >/dev/null 2>&1; then
-    git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/reference/design-notes.md' >&2
-    err 'Rust internals outside reference/design-notes.md'
+  if git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/concepts/design-notes.md' >/dev/null 2>&1; then
+    git grep -I -nE 'Arc<RwLock|tokio::sync::mpsc|apply_guards|CatchPanicLayer|arena-mode' -- docs/src ':!docs/src/concepts/design-notes.md' >&2
+    err 'Rust internals outside concepts/design-notes.md'
   fi
 fi
 
@@ -187,8 +189,8 @@ done
 ##     says "What Orion adds on top" because it is a build decision, not a
 ##     competitive comparison, and the page opens by saying so. Forcing the
 ##     heading there would make it lie to satisfy a grep.
-if [ -d docs/src/compare ]; then
-  for f in docs/src/compare/*.md; do
+if ls docs/src/get-started/decide/vs-*.md >/dev/null 2>&1; then
+  for f in docs/src/get-started/decide/vs-*.md; do
     [ -e "$f" ] || continue
     for h in 'Side by side' 'Where they overlap' 'Running both' \
              'What Orion cannot do here' 'Related'; do
@@ -211,7 +213,7 @@ fi
 
 ## 13. The Required column is lower case, everywhere.
 ##
-##     Two field-table legends used to disagree — functions.md published
+##     Two field-table legends used to disagree — the functions reference published
 ##     `yes`/`no` and channel-config.md published `Yes`/`No` — for the same
 ##     column, which meant no reader could tell whether the difference meant
 ##     anything. It does not. The Required column carries a controlled value
@@ -409,28 +411,37 @@ fi
 
 ## 18. Executable tutorials state the version they were actually run with,
 ##     and that version follows the workspace rather than becoming stale prose.
+##     (RELEASING.md's release checklist is what re-stamps them.)
 tutorial_report=$(python3 - <<'TUTORIALPY'
 import pathlib, re
 
 cargo = pathlib.Path('Cargo.toml').read_text()
 version = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M).group(1)
 paths = [
-    'getting-started/quickstart.md', 'getting-started/install.md',
-    'getting-started/first-service.md', 'getting-started/first-connector.md',
-    'getting-started/test-and-promote.md', 'getting-started/examples.md',
-    'getting-started/console.md', 'guides/orders-golden-path.md',
-    'guides/worked-examples.md', 'guides/kafka-channels.md',
-    'guides/ci-cd.md', 'ai/claude-code.md',
+    'get-started/quickstart.md', 'get-started/install.md',
+    'get-started/tutorials/first-service.md',
+    'get-started/tutorials/first-connector.md',
+    'get-started/tutorials/test-and-promote.md',
+    'get-started/tutorials/examples.md',
+    'get-started/tutorials/orders-api.md',
+    'guides/patterns/console.md', 'guides/ai/worked-examples.md',
+    'guides/patterns/kafka-channels.md', 'guides/patterns/ci-cd.md',
+    'guides/ai/claude-code.md',
 ]
 for rel in paths:
     path = pathlib.Path('docs/src') / rel
     text = path.read_text() if path.exists() else ''
-    match = re.search(r'^\*\*Tested with:\*\* Orion ([^ ]+) · \*\*Last reviewed:\*\* (\d{4}-\d{2}-\d{2})$', text, re.M)
+    # The version is a prerequisite fact in the page's own prose ("Tested
+    # with Orion 1.8.0."), where DOCUMENTATION_STANDARD.md §4.3 wants versions
+    # to be. The date is the page's `last_verified` stamp, checked by
+    # structure_lint.py; a second date here would be the third stamp §10.2
+    # forbids.
+    match = re.search(r'Tested with Orion (\S+)\.', text)
     if not match:
-        print(f'{path}: missing Tested with / Last reviewed metadata')
+        print(f'{path}: no "Tested with Orion <version>." line')
     elif match.group(1) != version:
         print(f'{path}: tested with {match.group(1)}, workspace version is {version}')
-    if rel.startswith('getting-started/') or rel == 'guides/orders-golden-path.md':
+    if rel.startswith('get-started/'):
         if not re.search(r'^## Next steps$', text, re.M):
             print(f'{path}: executable tutorial has no ## Next steps')
 TUTORIALPY
@@ -468,6 +479,24 @@ JSONPY
 if [ -n "$json_report" ]; then
   printf '%s\n' "$json_report" >&2
   err 'invalid JSON in a copyable repository example'
+fi
+
+## 21. Conformance to DOCUMENTATION_STANDARD.md: page types, per-type template
+##     sections, callout vocabulary, sentence length, hub size, navigation
+##     depth and title identity.
+##
+##     Checks 1-20 above are about *integrity* — that what the book claims
+##     exists does exist. This one is about *conformance*, and it needs two
+##     things no grep has: a page's declared type, and the navigation tree.
+##     It lives in docs/structure_lint.py.
+##
+##     DOCS_STRUCTURE_LEVEL was `report` while the rewrite ran and is
+##     `enforce` since it closed, which is §12's "start advisory and tighten to
+##     failing". Change it in one place; nothing else reads it.
+DOCS_STRUCTURE_LEVEL=enforce
+
+if ! python3 docs/structure_lint.py "$DOCS_STRUCTURE_LEVEL"; then
+  err 'page structure does not match DOCUMENTATION_STANDARD.md'
 fi
 
 if [ "$fail" -eq 0 ]; then

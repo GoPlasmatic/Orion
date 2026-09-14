@@ -1,0 +1,14 @@
+extends: existence
+message: "'%s' is not a limit. State the number and the scope (§6.5)."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - a large number of
+  - a small number of
+  - many requests
+  - lots of
+  - a few seconds
+  - a couple of seconds
+  - very large
+  - very small

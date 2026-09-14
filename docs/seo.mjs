@@ -91,12 +91,47 @@ const partOf = new Map(); // "reference/workflows" -> "Reference"
 // ── descriptions, read from the source markdown ──────────────────────────
 
 const descriptions = new Map(); // "reference/workflows" -> text
+const stamps = new Map(); // "reference/workflows" -> "Last verified 14 September 2026"
+
+// The freshness stamp (DOCUMENTATION_STANDARD.md §10.2). Two stamps, two
+// meanings, and no third: `last_verified` says a person ran the page and it
+// worked; `generated_from` says the page was produced from a source at that
+// version. Both live in the Markdown so the twin at `<page>.md` carries them
+// too, and both are rendered into the page footer below — mdBook has no
+// front-matter and no template hook, so this pass is where they reach a reader.
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+function readable(iso) {
+  const [y, m, d] = iso.split("-");
+  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
+}
+
 for (const md of walk(SRC, ".md")) {
   const rel = relative(SRC, md).split(sep).join("/");
   if (rel === "SUMMARY.md") continue;
-  const first = readFileSync(md, "utf8").split("\n", 1)[0];
-  const m = first.match(/^<!--\s*description:\s*([\s\S]*?)\s*-->\s*$/);
-  if (m) descriptions.set(rel.replace(/\.md$/, ""), m[1]);
+  const head = readFileSync(md, "utf8").split("\n", 6);
+  const slug = rel.replace(/\.md$/, "");
+
+  const d = head[0].match(/^<!--\s*description:\s*([\s\S]*?)\s*-->\s*$/);
+  if (d) descriptions.set(slug, d[1]);
+
+  for (const line of head) {
+    const verified = line.match(/^<!--\s*last_verified:\s*(\d{4}-\d{2}-\d{2})\s*-->$/);
+    if (verified) {
+      stamps.set(slug, `Last verified ${readable(verified[1])}`);
+      break;
+    }
+    const generated = line.match(
+      /^<!--\s*generated_from:\s*(\S+) on (\d{4}-\d{2}-\d{2})\s*-->$/,
+    );
+    if (generated) {
+      stamps.set(slug, `Generated from ${generated[1]} on ${readable(generated[2])}`);
+      break;
+    }
+  }
 }
 
 // ── the pass ─────────────────────────────────────────────────────────────
@@ -218,6 +253,29 @@ for (const file of walk(BOOK, ".html")) {
     .join("\n        ");
 
   html = html.replace("</head>", `        ${tags}\n    </head>`);
+
+  // The stamp goes at the end of the prose, above mdBook's previous/next rail,
+  // so it reads as a property of the page rather than of the site. `<time>`
+  // carries the machine-readable date for anything parsing the page.
+  const stamp = stamps.get(slug);
+  if (stamp && !/class="page-stamp"/.test(html)) {
+    const marker = "</main>";
+    if (html.includes(marker)) {
+      const iso = stamp.match(/(\d{4}-\d{2}-\d{2})/);
+      const date = iso
+        ? `<time datetime="${iso[1]}">${esc(stamp)}</time>`
+        : esc(stamp);
+      html = html.replace(
+        marker,
+        `    <p class="page-stamp">${date}</p>\n                    ${marker}`,
+      );
+    } else {
+      // mdBook changed its page skeleton. Say so rather than shipping a book
+      // whose every page silently lost its freshness stamp.
+      skipped.push(`${relHtml}: no </main> to anchor the freshness stamp`);
+    }
+  }
+
   writeFileSync(file, html);
   injected++;
 

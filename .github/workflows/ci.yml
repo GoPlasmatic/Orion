@@ -519,9 +519,33 @@ jobs:
         run: bash docs/build.sh
 
       # The docs estate's structural guard: include/link integrity, redirect
-      # coverage for hard site links, and the one-owner-per-fact guard greps.
+      # coverage for hard site links, the one-owner-per-fact guard greps, and
+      # (check 21) conformance to DOCUMENTATION_STANDARD.md — page types, the
+      # template sections each type must carry, callout vocabulary, sentence
+      # length, hub size and navigation depth.
       - name: Docs lint
         run: bash docs/lint.sh
+
+      # The prose half of DOCUMENTATION_STANDARD.md §12. Vale carries the
+      # Google developer documentation style guide plus docs/styles/Orion —
+      # the words §6.7 bans, the link text §10.6 requires, and the vocabulary
+      # §6.4 holds constant. `vale sync` fetches the Google package, which is
+      # not vendored: it is a third-party style with its own release cadence,
+      # and pinning a copy here would mean maintaining it.
+      #
+      # Failing, per §12's "start advisory and tighten to failing over one
+      # quarter": the flag came off when docs/lint.sh's DOCS_STRUCTURE_LEVEL
+      # became `enforce`, and the two switch together.
+      - name: Install Vale
+        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
+        with:
+          tool: vale@3.21.0
+
+      - name: Docs prose
+        working-directory: docs
+        run: |
+          vale sync
+          vale --output=line src
 
   # The chart's guards — two `{{- fail }}`s, two `required`s and
   # values.schema.json — only fire at render time, so before this job a typo

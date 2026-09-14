@@ -1,0 +1,11 @@
+extends: substitution
+message: "Use '%s' instead of '%s' — and finish the list."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: false
+nonword: true
+swap:
+  '\be\.g\.': for example
+  '\bi\.e\.': that is
+  '\betc\.': 'name the rest of the list'
+  '\bvia\b': through

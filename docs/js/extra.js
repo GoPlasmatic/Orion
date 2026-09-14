@@ -60,10 +60,19 @@
       );
     issue.textContent = "Was this helpful? Send feedback";
 
+    // The Markdown twin docs/build.sh copies beside every page
+    // (DOCUMENTATION_STANDARD.md §10.5): the same document, for a reader who
+    // wants the source or an agent that wants it without the chrome.
+    var twin = document.createElement("a");
+    twin.href = window.location.pathname.replace(/\.html$/, ".md").replace(/\/$/, "/introduction.md");
+    if (/\/index\.md$/.test(twin.href) && sourcePath === "introduction.md") twin.href = twin.href.replace(/index\.md$/, "introduction.md");
+    twin.textContent = "View as Markdown";
+
     var feedback = document.createElement("aside");
     feedback.className = "page-feedback";
     feedback.setAttribute("aria-label", "Documentation feedback");
     feedback.appendChild(edit);
+    feedback.appendChild(twin);
     feedback.appendChild(issue);
     main.appendChild(feedback);
   }
@@ -72,56 +81,6 @@
     document.addEventListener("DOMContentLoaded", injectFeedback);
   } else {
     injectFeedback();
-  }
-})();
-
-// ── Page type and audience ──
-// The source tree is deliberately organized by documentation purpose. Surface
-// that purpose on every rendered page so a reader can tell whether they are in
-// a tutorial, explanation, task guide, or exact contract before reading on.
-(function () {
-  function injectPageMeta() {
-    var main = document.querySelector(".content main");
-    var heading = main && main.querySelector("h1");
-    if (!heading) return;
-
-    var next = heading.nextElementSibling;
-    if (next && next.textContent.trim().indexOf("Page type:") === 0) {
-      next.classList.add("page-meta");
-      return;
-    }
-
-    var path = window.location.pathname;
-    var meta = { type: "Overview", audience: "Developers evaluating Orion" };
-
-    if (path.indexOf("/getting-started/") !== -1) {
-      meta = { type: "Tutorial", audience: "Developers getting started" };
-    } else if (path.indexOf("/concepts/") !== -1) {
-      meta = { type: "Concept", audience: "Service authors" };
-    } else if (path.indexOf("/reference/") !== -1) {
-      meta = { type: "Reference", audience: "Developers looking up an exact contract" };
-    } else if (path.indexOf("/operate/upgrading-") !== -1) {
-      meta = { type: "Upgrade guide", audience: "Operators upgrading Orion" };
-    } else if (path.indexOf("/operate/") !== -1) {
-      meta = { type: "How-to guide", audience: "Developers and platform operators" };
-    } else if (path.indexOf("/build/") !== -1 || path.indexOf("/guides/") !== -1) {
-      meta = { type: "How-to guide", audience: "Service authors" };
-    } else if (path.indexOf("/ai/") !== -1) {
-      meta = { type: "Guide", audience: "Developers building with AI tools" };
-    } else if (path.indexOf("/compare/") !== -1 || /\/(comparison|characteristics)\.html$/.test(path)) {
-      meta = { type: "Evaluation guide", audience: "Developers assessing fit" };
-    }
-
-    var paragraph = document.createElement("p");
-    paragraph.className = "page-meta";
-    paragraph.textContent = meta.type + " · " + meta.audience;
-    heading.insertAdjacentElement("afterend", paragraph);
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectPageMeta);
-  } else {
-    injectPageMeta();
   }
 })();
 
@@ -1478,6 +1437,86 @@
         poster: "npt:0:02",
         idleTimeLimit: 2,
       });
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mount);
+  } else {
+    mount();
+  }
+})();
+
+// ── Tabs ──
+// Equivalent alternatives — an install method, a curl form beside a CLI form —
+// are tabs on one URL rather than repeated sections (DOCUMENTATION_STANDARD.md
+// §4.6, §7.4). The markup is plain HTML so the Markdown twin and llms-full.txt
+// carry every variant under its own label with no JavaScript:
+//
+//   <div class="tabs">
+//   <section data-tab="curl">…</section>
+//   <section data-tab="CLI">…</section>
+//   </div>
+//
+// This turns each set into a tablist, shows the first section, and remembers
+// the reader's choice per label in localStorage so picking "CLI" once holds on
+// every page. The site-wide order of surfaces is fixed by the contributor
+// guide (curl → CLI → Console), not here.
+(function () {
+  var KEY = "orion-docs-tab";
+
+  function remembered() {
+    try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; }
+  }
+  function remember(label) {
+    try { localStorage.setItem(KEY, label); } catch (e) { /* private mode */ }
+  }
+
+  function build(set) {
+    var sections = [].slice.call(set.children).filter(function (el) {
+      return el.tagName === "SECTION" && el.dataset.tab;
+    });
+    if (sections.length < 2) return;
+
+    var list = document.createElement("div");
+    list.className = "tabs-list";
+    list.setAttribute("role", "tablist");
+
+    var buttons = sections.map(function (section, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "tabs-tab";
+      b.setAttribute("role", "tab");
+      b.textContent = section.dataset.tab;
+      b.addEventListener("click", function () { select(i, true); });
+      section.setAttribute("role", "tabpanel");
+      list.appendChild(b);
+      return b;
+    });
+
+    function select(i, byUser) {
+      sections.forEach(function (s, j) {
+        s.hidden = j !== i;
+        buttons[j].setAttribute("aria-selected", j === i ? "true" : "false");
+      });
+      if (byUser) remember(sections[i].dataset.tab);
+    }
+
+    set.insertBefore(list, set.firstChild);
+    var want = remembered();
+    var start = -1;
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].dataset.tab === want) { start = i; break; }
+    }
+    select(start >= 0 ? start : 0, false);
+  }
+
+  function mount() {
+    var sets = document.querySelectorAll(".tabs");
+    for (var i = 0; i < sets.length; i++) {
+      if (sets[i].dataset.mounted) continue;
+      sets[i].dataset.mounted = "1";
+      build(sets[i]);
     }
   }
 

@@ -1,22 +1,21 @@
 <!-- description: Express a query or mutation once and run it unchanged against PostgreSQL, MySQL, SQLite, MongoDB or Elasticsearch — Orion's portable, injection-safe dialect. -->
-# Portable Data Dialect
+<!-- type: reference -->
+<!-- last_verified: 2026-09-14 -->
 
-The **portable data dialect** lets a workflow express a database query or
-mutation once — in a backend-neutral, JSONLogic-shaped envelope, and run it
-unchanged against **PostgreSQL, MySQL, SQLite, MongoDB, or Elasticsearch**.
-Switching backend is a connector change, not a rewrite.
+# Portable data dialect
+
+The portable data dialect lets a workflow express a database query or mutation once, in a backend-neutral, JSONLogic-shaped envelope. The same envelope runs unchanged against PostgreSQL, MySQL, SQLite, MongoDB or Elasticsearch. Switching backend is a connector change, not a rewrite.
+
+[Connectors](../concepts/connectors.md) is the concept and [Connect a database or API](../guides/author/connectors.md) the guide.
 
 Two functions implement it:
 
-- [`data_query`](./functions.md#data_query): reads: filter, project, sort,
+- [`data_query`](./functions/data_query.md): reads: filter, project, sort,
   paginate, and include related records.
-- [`data_write`](./functions.md#data_write): writes: insert, update, delete,
+- [`data_write`](./functions/data_write.md): writes: insert, update, delete,
   and upsert.
 
-The raw functions (`db_read`/`db_write` for SQL; `mongo_read`/`mongo_write`/
-`mongo_aggregate` for MongoDB) remain the **escape hatch** for anything
-outside the portable vocabulary — hand-written SQL, CTEs, multi-table
-statements, aggregation pipelines, nested document writes.
+The raw functions (`db_read` and `db_write` for SQL; `mongo_read`, `mongo_write` and `mongo_aggregate` for MongoDB) remain the escape hatch for anything outside the portable vocabulary. That covers hand-written SQL, CTEs, multi-table statements, aggregation pipelines and nested document writes.
 
 ```json
 {
@@ -38,10 +37,7 @@ statements, aggregation pipelines, nested document writes.
 }
 ```
 
-Point `connector` at Postgres and this renders parameterized SQL via sea-query;
-at MongoDB and it renders a `find` filter document; at Elasticsearch and it
-renders a Query DSL search body. The results come back as the same JSON row
-array either way.
+Point `connector` at PostgreSQL and this renders parameterized SQL through sea-query. Point it at MongoDB and it renders a `find` filter document; at Elasticsearch, a Query DSL search body. The results come back as the same JSON row array either way.
 
 A complete call does two more things. It binds request values through `params`,
 and it declares the entities it touches in `schema`. A call with no schema is
@@ -85,8 +81,7 @@ Three tokens appear inside envelopes, and they never collide:
 | `{ "param": "p" }` | A named value from the `params` map, resolved **before** rendering | `filter`, `values`, `set` |
 | `{ "var": "data.x" }` | An ordinary datalogic context lookup | only inside the `params` map |
 
-`params` is the single point where the message touches a query or mutation — it
-produces literal values, never SQL or query text:
+`params` is the single point where the message touches a query or mutation. It produces literal values, never SQL or query text:
 
 ```json
 {
@@ -95,41 +90,22 @@ produces literal values, never SQL or query text:
 }
 ```
 
-Every resolved value is a **bound parameter** (SQL) or a document value
-(Mongo/ES). No user value is ever string-interpolated — the dialect is
-injection-safe by construction.
+Every resolved value is a bound parameter (SQL) or a document value (MongoDB, Elasticsearch). No user value is ever string-interpolated; the dialect is injection-safe by construction.
 
 ### Extended-JSON values
 
-Two extended-JSON wrappers are accepted wherever a scalar value is — filter
-comparisons, `in` haystacks, and `data_write`'s `values`/`set`:
+Two extended-JSON wrappers are accepted wherever a scalar value is: filter comparisons, `in` haystacks, and `data_write`'s `values` and `set`:
 
 | Wrapper | Meaning | Accepted payloads |
 |---------|---------|-------------------|
 | `{ "$oid": "<24 hex>" }` | A BSON ObjectId | hex string |
 | `{ "$date": … }` | A BSON typed date | RFC 3339 string, epoch milliseconds, or canonical `{"$numberLong": "<millis>"}` |
 
-The payload may itself be a `{ "param": "p" }` node, so a per-request id
-composes as `{ "$oid": { "param": "id" } }`; and a param whose *value* is a
-wrapper object (message data echoing a `mongo_read` result, which serializes
-ObjectIds and dates in exactly these spellings) coerces the same way.
+The payload may itself be a `{ "param": "p" }` node, so a per-request id composes as `{ "$oid": { "param": "id" } }`. A param whose value is a wrapper object coerces the same way. Message data echoing a `mongo_read` result serializes ObjectIds and dates in exactly these spellings.
 
-On PostgreSQL a filter value is bound to the type the server declares for the
-column it is compared against, so `{"eq": 5}` and `{"eq": "5"}` reach an
-integer column as the same query. The schema's own `type` stays a declaration
-rather than the source of truth — the database is asked directly. See
-[parameters](./functions.md#column-types) for the types this covers and what
-happens outside them.
+On PostgreSQL a filter value is bound to the type the server declares for the column it is compared against. `{"eq": 5}` and `{"eq": "5"}` therefore reach an integer column as the same query. The schema's own `type` stays a declaration rather than the source of truth; the database is asked directly. See [column types](./functions/db_read.md#column-types) for the types this covers and what happens outside them.
 
-The payload is validated during lowering — a malformed `$oid` is a located
-envelope error on every backend. On **MongoDB** the wrappers render as native
-BSON values, so filtering on a real `_id` or a date range matches typed data
-instead of silently missing. On **SQL and Elasticsearch** they raise the
-standard capability error (`FeatureUnsupportedByTarget`) — an ISO date on
-those backends is already expressible as a plain string; the wrapper exists
-for BSON's typed values, and rendering it as anything else would compare
-differently than on Mongo. Any other object or array value remains
-not-representable, exactly as before.
+The payload is validated during lowering; a malformed `$oid` is a located envelope error on every backend. On MongoDB the wrappers render as native BSON values. Filtering on a real `_id` or a date range then matches typed data instead of silently missing. On SQL and Elasticsearch they raise the standard capability error (`FeatureUnsupportedByTarget`). An ISO date on those backends is already expressible as a plain string. The wrapper exists for BSON's typed values, and rendering it as anything else would compare differently than on MongoDB. Any other object or array value remains not representable.
 
 ## Query envelope (`data_query`)
 
@@ -144,26 +120,15 @@ not-representable, exactly as before.
 | `include` | object | Relation name → `{ "fields": [..], "sort": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
 | `count` | boolean | Answer `{ "count": n }` — how many rows match — instead of returning them. See [Counting](#counting) |
 
-Null-first ordering is the native order of SQLite, MySQL, and MongoDB;
-PostgreSQL and Elasticsearch receive an explicit `NULLS FIRST` / `missing`
-clause to match. No hidden sort key is added, so a page containing nulls comes
-back in the same order on every backend.
+Null-first ordering is the native order of SQLite, MySQL and MongoDB; PostgreSQL and Elasticsearch receive an explicit `NULLS FIRST` or `missing` clause to match. No hidden sort key is added, so a page containing nulls comes back in the same order on every backend.
 
 ### Paging
 
 Two modes, and they mean different things by "where the page starts".
 
-`limit` / `skip` is **offset paging**: the database walks and discards `skip`
-rows to find the page start, so a page costs more the deeper it is, and the
-position is a row *count* — insert a row ahead of the cursor and every later
-page shifts by one, so a row is served twice or skipped entirely. `skip` is
-capped at `query.max_skip` for that reason, and on Elasticsearch `skip + limit`
-beyond the 10 000-document result window is refused outright.
+`limit` and `skip` is offset paging. The database walks and discards `skip` rows to find the page start, so a page costs more the deeper it is. The position is a row count. Insert a row ahead of the cursor and every later page shifts by one, so a row is served twice or skipped entirely. `skip` is capped at `query.max_skip` for that reason, and on Elasticsearch `skip + limit` beyond the 10,000-document result window is refused outright.
 
-`after` is **keyset paging**: the position is the previous page's last row, one
-value per `sort` key. It never counts, so it is not bounded by `query.max_skip`
-and never reaches Elasticsearch's result window — a keyset walk sets no offset
-at all, however deep it goes. It is the way to read a large table.
+`after` is keyset paging: the position is the previous page's last row, one value per `sort` key. It never counts, so it is not bounded by `query.max_skip` and never reaches Elasticsearch's result window. A keyset walk sets no offset at all, however deep it goes. It is the way to read a large table.
 
 ```json
 { "name": "data_query", "input": {
@@ -177,44 +142,17 @@ at all, however deep it goes. It is the way to read a large table.
       "limit":  20 } } }
 ```
 
-The first page passes no cursor: `after` resolving to `null` means "from the
-beginning", so **one task serves every page**. For the next page, read the sort
-keys out of the last row returned and send them back — which is why every sort
-key must be in `fields`, and why a projection that drops one is refused rather
-than silently handing back a cursor that cannot be built. There is no
-`next_cursor` in the response: the answer is a row array, and the position is
-already in it. A page shorter than `limit` is the last one.
+The first page passes no cursor: `after` resolving to `null` means "from the beginning", so one task serves every page. For the next page, read the sort keys out of the last row returned and send them back. That is why every sort key must be in `fields`. A projection that drops one is refused rather than silently handing back a cursor that cannot be built. There is no `next_cursor` in the response. The answer is a row array, and the position is already in it. A page shorter than `limit` is the last one.
 
-A cursor value spells exactly as a filter value, so a value read out of one page
-binds into the next unchanged — including `{"$oid": …}` and `{"$date": …}`, and
-`{"param": …}` per key if you would rather carry them separately.
+A cursor value spells exactly as a filter value, so a value read out of one page binds into the next unchanged. That includes `{"$oid": …}` and `{"$date": …}`, and `{"param": …}` per key if you would rather carry them separately.
 
 Three things `after` cannot check for you:
 
-- **The sort must be unique per row.** End it with a key that is — a primary key
-  is the usual answer, as in `[{"created_at": "desc"}, {"id": "asc"}]`. This
-  dialect adds no hidden sort key, so on a non-unique sort a keyset page *skips*
-  the rows tying with the cursor row on every key — silently, with no error,
-  even with no concurrent writes. It never returns one twice; the position is
-  strictly after the whole tuple. (Offset paging on the same query degrades
-  worse: it can both skip *and* repeat.) A schema declares column names, types
-  and permissions, not keys, so Orion cannot detect this.
-- **Do not seek on a column that is rewritten in place.** A cursor is a position
-  in an ordering, and a position only means something if rows hold still. A
-  status column that is updated on every change lets a row cross the cursor
-  between two fetches; `created_at` and an id do not. The same argument, at
-  length, is in [Design Notes › Cursor paging](./design-notes.md#cursor-paging).
-- **The value has to round-trip.** This is the one place in the dialect where a
-  value a result returned becomes a value in the next filter. Seek on a column
-  whose rendered value spells back as itself. In particular `"numeric_as":
-  "string"` on a numeric sort key turns the seek into a string comparison, and
-  the default `"number"` rounds a `numeric` column beyond 2^53 — so for a
-  decimal score, seek on an exact column (an integer id, `float8`) instead.
+- **The sort must be unique per row.** End it with a key that is; a primary key is the usual answer, as in `[{"created_at": "desc"}, {"id": "asc"}]`. This dialect adds no hidden sort key, so on a non-unique sort a keyset page skips the rows tying with the cursor row on every key: silently, with no error, even with no concurrent writes. It never returns one twice; the position is strictly after the whole tuple. Offset paging on the same query degrades worse, because it can both skip and repeat. A schema declares column names, types and permissions, not keys, so Orion cannot detect this.
+- **Do not seek on a column that is rewritten in place.** A cursor is a position in an ordering, and a position only means something if rows hold still. A status column that is updated on every change lets a row cross the cursor between two fetches; `created_at` and an id do not. The same argument, at length, is in [Cursor paging](../concepts/design-notes.md#cursor-paging).
+- **The value has to round-trip.** This is the one place in the dialect where a value a result returned becomes a value in the next filter. Seek on a column whose rendered value spells back as itself. In particular `"numeric_as": "string"` on a numeric sort key turns the seek into a string comparison, and the default `"number"` rounds a `numeric` column beyond 2^53. For a decimal score, seek on an exact column (an integer id, `float8`) instead.
 
-Nulls need no special care from the caller: a null sorts as the smallest value
-(above), and `after` derives the matching comparison from the sort direction —
-including reaching the null group at the end of a `desc` key, which is a clause
-a hand-written filter has to remember.
+Nulls need no special care from the caller. A null sorts as the smallest value, and `after` derives the matching comparison from the sort direction. That includes reaching the null group at the end of a `desc` key, which is a clause a hand-written filter has to remember.
 
 `after` behaves identically on all five backends and adds no row to the
 divergence table below; the walk is asserted equal across them in
@@ -234,20 +172,11 @@ divergence table below; the walk is asserted equal across them in
       "filter": { "==": [{ "field": "status" }, { "param": "status" }] } } } }
 ```
 
-The result is `{ "count": 12 }` — one object, one key, on every backend.
-`filter` means exactly what it means for a row query, so a list endpoint and
-its total are the same predicate written once.
+The result is `{ "count": 12 }`: one object, one key, on every backend. `filter` means exactly what it means for a row query, so a list endpoint and its total are the same predicate written once.
 
-Every key that shapes a row set — `fields`, `sort`, `limit`, `skip`, `after`,
-`include` — is **rejected** alongside `count`, naming the key. `{"count": true,
-"limit": 10}` has two readings ("count the first ten" and "count them all, and
-also give me ten"), a projection over a single number has none, and choosing
-between them silently is what this dialect does not do. A page and its total
-are two calls.
+Every key that shapes a row set (`fields`, `sort`, `limit`, `skip`, `after`, `include`) is rejected beside `count`, naming the key. `{"count": true, "limit": 10}` has two readings: "count the first ten" and "count them all, and also give me ten". A projection over a single number has none. Choosing between them silently is what this dialect does not do. A page and its total are two calls.
 
-There is no `group_by` or aggregate function: `count` is the whole of it. For
-anything more, the raw escape hatches (`db_read`, `mongo_aggregate`) are the
-answer — at the cost of leaving the dialect's schema allowlist behind.
+There is no `group_by` or aggregate function: `count` is the whole of it. For anything more, the raw escape hatches (`db_read`, `mongo_aggregate`) are the answer, at the cost of leaving the dialect's schema allowlist behind.
 
 ### Operator vocabulary
 
@@ -258,19 +187,14 @@ answer — at the cost of leaving the dialect's schema allowlist behind.
 | `<`/`<=` (ternary) | Range: `{ "<=": [1, { "field": "x" }, 10] }` → BETWEEN |
 | `in` | Membership (list haystack) or substring containment (string haystack) |
 | `starts_with`, `ends_with` | Text anchors (rendered as `LIKE` / `$regex` / `prefix`+`wildcard`). Case sensitivity is **backend-defined** — see the parity table |
-| `missing` | Field(s) have no meaningful value |
+| `missing` | The named fields have no meaningful value |
 | `some`, `all`, `none` | Quantifiers over a declared relation |
 
-An operator outside this vocabulary is rejected with a **located error**
-naming the operator and its position — never silently ignored. An unknown key
-in a query or write envelope (a `"fileds"` typo, say) is rejected naming the
-key: a silently dropped key would be a filter or projection silently not
-applying.
+An operator outside this vocabulary is rejected with a located error naming the operator and its position, never silently ignored. An unknown key in a query or write envelope (a `"fileds"` typo, say) is rejected naming the key. A silently dropped key would be a filter or projection silently not applying.
 
 ### Range, null and quantifier semantics
 
-These rules are **normative**: every renderer implements them, and the
-cross-backend parity suite pins them:
+These rules are normative. Every renderer implements them, and the cross-backend parity suite pins them:
 
 - **Chained ranges keep each bound's strictness.** An inclusive chain
   `{ "<=": [1, {"field": "x"}, 10] }` renders as an inclusive `BETWEEN` (or
@@ -296,11 +220,7 @@ cross-backend parity suite pins them:
 
 ## Write envelope (`data_write`)
 
-The envelope is nested under `write`, mirroring `data_query`'s `query`; the
-handler's own keys — `connector`, `schema`, `params`, `database`, `output` —
-stay at the top level. `write` is required: a task without it is refused at
-create, update, import, `POST /admin/workflows/validate`, and
-`orion-server lint`.
+The envelope is nested under `write`, mirroring `data_query`'s `query`. The handler's own keys (`connector`, `schema`, `params`, `database`, `output`) stay at the top level. `write` is required: a task without it is refused at create, update, import, `POST /admin/workflows/validate`, and `orion-server lint`.
 
 | Field | Used by | Description |
 |-------|---------|-------------|
@@ -310,7 +230,7 @@ create, update, import, `POST /admin/workflows/validate`, and
 | `set` | update, upsert | Column → value/param assignments |
 | `filter` | update, delete | Row selection — **the query dialect's filter**, same operators, same rendering |
 | `on_conflict` | upsert | `{ "target": ["email"], "action": "update" \| "nothing" }` |
-| `returning` | all | Columns to return from mutated rows (capability-gated, see below) |
+| `returning` | all | Columns to return from mutated rows; capability-gated per backend, see [Parity or error](#parity-or-error) |
 | `all` | update, delete | Explicit acknowledgement for an intentionally unfiltered mutation |
 
 One task per operation:
@@ -341,17 +261,10 @@ One task per operation:
 
 ### Safety guards
 
-- **Unfiltered mutations are rejected.** An `update`/`delete` with no `filter`
-  would rewrite or truncate the whole table. It fails unless the envelope
-  carries `"all": true` **and** the server enables `write.allow_unfiltered`
-  (default `false`) — a deliberate double opt-in.
+- **Unfiltered mutations are rejected.** An `update` or `delete` with no `filter` would rewrite or truncate the whole table. It fails unless the envelope carries `"all": true` and the server enables `write.allow_unfiltered` (default `false`), a deliberate double opt-in.
 - **Bulk inserts are capped.** A `values` array longer than `write.max_rows`
   (default 1000) is rejected — never silently truncated.
-- **`returning` sets are capped.** An `update`/`delete` returns one row per row
-  *matched*, which the row cap on the way in says nothing about. A `returning`
-  set longer than `query.max_limit` (default 1000) is rejected the same way a
-  `data_query` page is, and the statement runs inside a transaction, so a
-  refused write leaves nothing behind.
+- **`returning` sets are capped.** An `update` or `delete` returns one row per row matched, which the row cap on the way in says nothing about. A `returning` set longer than `query.max_limit` (default 1000) is rejected the same way a `data_query` page is. The statement runs inside a transaction, so a refused write leaves nothing behind.
 - **Connector operation gates.** A connector's config can disable operation
   types entirely (`operations: { "delete": false }`). See
   [Connector operation gates](#connector-operation-gates).
@@ -372,16 +285,9 @@ a query's `WHERE` — including relation predicates (`some` → SQL `EXISTS`).
 
 ### Parity or error
 
-The dialect's governing rule: **match the reference semantics where a backend
-can; raise a precise, located capability error where it cannot; never
-approximate silently.**
+The dialect's governing rule: match the reference semantics where a backend can; raise a precise, located capability error where it cannot; never approximate silently.
 
-Everything not listed below returns the **same row set on all five backends**,
-and that claim is executable:
-`crates/orion-server/tests/integration/data_parity_test.rs` runs one
-fixture dataset through a table of envelopes and asserts an identical result —
-or an identical capability error — on SQLite, PostgreSQL, MySQL, MongoDB and
-Elasticsearch. The table below is the complete list of divergences.
+Everything not listed in the table returns the same row set on all five backends, and that claim is executable. `crates/orion-server/tests/integration/data_parity_test.rs` runs one fixture dataset through a table of envelopes. It asserts an identical result, or an identical capability error, on SQLite, PostgreSQL, MySQL, MongoDB and Elasticsearch. The table is the complete list of divergences.
 
 | Feature | Behaviour |
 |---------|----------|
@@ -399,7 +305,7 @@ Elasticsearch. The table below is the complete list of divergences.
 
 <details><summary>Why case sensitivity is not normalized</summary>
 
-Case behaviour is a property of the stored data rather than of the query — no
+Case behaviour is a property of the stored data rather than of the query. No
 query-time flag can make an analyzed Elasticsearch field case-sensitive again.
 The dialect states the divergence instead of half-normalizing it.
 
@@ -433,14 +339,11 @@ Written to the task's `output` path:
 | SQL write | `{ "status": "ok", "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
 | MongoDB / ES write | `"status"` plus doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
 
-Every write result carries a **`status`**: `"ok"` or `"partial"`, so one
-check works across all backends.
+Every write result carries a `status`, `"ok"` or `"partial"`, so one check works across all backends.
 
 ## Bulk writes
 
-A bulk `insert` — an array of `values` — reports through one shape on every
-backend. The underlying guarantee differs, and no envelope can make the three
-models the same:
+A bulk `insert`, an array of `values`, reports through one shape on every backend. The underlying guarantee differs, and no envelope can make the three models the same:
 
 | Backend | Model | On failure |
 |---|---|---|
@@ -448,10 +351,7 @@ models the same:
 | MongoDB | **Prefix-applied** | `insert_many` is ordered, so the server stops at the first rejected document. Everything before it is committed; everything after is never attempted |
 | Elasticsearch | **Arbitrary-applied** | `_bulk` attempts every action independently, so any subset can land |
 
-When a call applies **some but not all** of its items, the result is
-`"status": "partial"` and carries a per-item array, and the task reports audit
-status **`207`** rather than `200` — visible in the trace, not fatal, so the
-workflow can compensate:
+When a call applies some but not all of its items, the result is `"status": "partial"` and carries a per-item array. The task reports audit status `207` rather than `200`: visible in the trace, not fatal, so the workflow can compensate:
 
 ```json
 {
@@ -470,25 +370,13 @@ workflow can compensate:
 }
 ```
 
-`index` is the position in the `values` array you sent. `skipped` means the
-backend never attempted the item — only ordered MongoDB produces it. `items`
-and the `failed`/`skipped` counters appear only when there is something to
-report; a clean bulk is just `status`/`inserted`/`ids`.
+`index` is the position in the `values` array you sent. `skipped` means the backend never attempted the item; only ordered MongoDB produces it. `items` and the `failed` and `skipped` counters appear only when there is something to report. A clean bulk is only `status`, `inserted` and `ids`.
 
-**A partial write does not fail the task.** Failing would abort the workflow
-without naming the applied prefix — the thing this result reports. A workflow
-that writes in bulk to MongoDB or Elasticsearch should check `status` and
-compensate. A bulk where *nothing* landed is still a hard error: there is no
-partial state to describe.
+A partial write does not fail the task. Failing would abort the workflow without naming the applied prefix, which is the thing this result reports. A workflow that writes in bulk to MongoDB or Elasticsearch should check `status` and compensate. A bulk where nothing landed is still a hard error: there is no partial state to describe.
 
 ## The schema registry
 
-Both functions take an inline `schema` — **privileged configuration authored
-alongside the workflow, never built from request input**. It is what bounds the
-call: the dialect **rejects undeclared names by default**, so a task with no
-`schema` reaches nothing. Identity mode — every logical name passing through
-as the physical one — must be requested explicitly:
-`"schema": { "unmapped": "identity" }`.
+Both functions take an inline `schema`: privileged configuration authored beside the workflow, never built from request input. It is what bounds the call. The dialect rejects undeclared names by default, so a task with no `schema` reaches nothing. Identity mode, every logical name passing through as the physical one, must be requested explicitly with `"schema": { "unmapped": "identity" }`.
 
 An undeclared name reports what to add, naming both routes:
 
@@ -499,12 +387,7 @@ task uses, or add "unmapped": "identity" to that schema to accept undeclared
 names as physical ones (pre-1.0 behaviour)
 ```
 
-A relation's `to` target does not itself need declaring for the relation to
-resolve — like its join keys, it is structure the schema's author wrote, not a
-caller-supplied name. Naming one of its **columns** is caller input again:
-`include: { "orders": {} }` works against an undeclared `orders`, while
-`include: { "orders": { "fields": ["id"] } }`, or any `some`/`all`/`none`
-predicate over it — needs `orders` declared.
+A relation's `to` target does not itself need declaring for the relation to resolve. Like its join keys, it is structure the schema's author wrote, not a caller-supplied name. Naming one of its columns is caller input again. `include: { "orders": {} }` works against an undeclared `orders`, while `include: { "orders": { "fields": ["id"] } }`, or any `some`, `all` or `none` predicate over it, needs `orders` declared.
 
 ```json
 "schema": {
@@ -528,20 +411,10 @@ predicate over it — needs `orders` declared.
 - **Renames**: logical entity/column names map to physical tables/columns
   (`id` → `user_id`, or `id` → `_id` on both document stores. See the
   parity table).
-- **Types**: declared hints (`int`, `text`, …), validated at parse time but
-  not consumed: values keep their natural JSON types end to end, and no
-  backend coerces on the hint. The key is reserved for value coercion in a
-  later version; an unknown type name is a hard error.
-- **Allowlist**: under `"unmapped": "reject"` (the default), only declared
-  entities and columns are usable. `queryable: false` hides a column from
-  reads; `writable: false` protects it from writes (generated/identity
-  columns). A read that names no `fields` returns exactly the entity's
-  queryable columns — a projection, not a wildcard. An entity that declares
-  *no* columns has no column allowlist and still reads every column; one whose
-  declared columns are all non-queryable is refused rather than widened back
-  to `SELECT *`.
+- **Types**: declared hints (`int`, `text`, …), validated at parse time but not consumed. Values keep their natural JSON types end to end, and no backend coerces on the hint. The key is reserved for value coercion in a later version; an unknown type name is a hard error.
+- **Allowlist**: under `"unmapped": "reject"` (the default), only declared entities and columns are usable. `queryable: false` hides a column from reads; `writable: false` protects it from writes (generated and identity columns). A read that names no `fields` returns exactly the entity's queryable columns: a projection, not a wildcard. An entity that declares no columns has no column allowlist and still reads every column. One whose declared columns are all non-queryable is refused rather than widened back to `SELECT *`.
 - **Relations**: declare `has_one` / `has_many` / `many_to_many` (the latter
-  via `through`) so `some`/`all`/`none` predicates and `include` work.
+  with a `through` table) so `some`/`all`/`none` predicates and `include` work.
 
 ## Relations and includes
 
@@ -559,22 +432,13 @@ themselves, hydrated with one child query per relation:
 "include": { "orders": { "fields": ["id", "total"], "sort": [{ "total": "desc" }], "limit": 10 } }
 ```
 
-**`sort` is required.** The per-parent page is cut inside the database
-(`ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`), so without an order
-key "the first 10 orders" has no defined answer. `limit` follows the envelope's
-own page policy: absent means `query.default_limit` **per parent**, and a value
-above `query.max_limit` is rejected rather than clamped. Hydration is therefore
-bounded by `parents × limit` rows, not by the whole child table.
+`sort` is required. The per-parent page is cut inside the database (`ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`), so without an order key "the first 10 orders" has no defined answer. `limit` follows the envelope's own page policy: absent means `query.default_limit` per parent, and a value above `query.max_limit` is rejected rather than clamped. Hydration is therefore bounded by `parents × limit` rows, not by the whole child table.
 
-`sort` may name a column that `fields` does not: it is projected internally so
-the database can order by it, then removed again, so the nested objects carry
-exactly the `fields` that were asked for (and every column when `fields` is
-absent). The join key is handled the same way.
+`sort` may name a column that `fields` does not. It is projected internally so the database can order by it, then removed again. The nested objects carry exactly the `fields` that were asked for, and every column when `fields` is absent. The join key is handled the same way.
 
 ## Connector operation gates
 
-A `db` or `es` connector's config can en/disable operation types, regardless
-of what workflows ask for. Everything defaults to allowed:
+A `db` or `es` connector's config can enable or disable operation types, regardless of what workflows ask for. Everything defaults to allowed:
 
 ```json
 {
@@ -601,49 +465,21 @@ of what workflows ask for. Everything defaults to allowed:
 | `insert` / `update` / `delete` / `upsert` | the matching `data_write` op, and the matching `mongo_write` op |
 | `raw_write` | the raw-SQL `db_write` escape hatch |
 
-A gated call fails with a validation error naming the operation and connector
-(`operation 'delete' is disabled on connector 'orders-db-readonly'`). Because
-raw SQL cannot be classified per-statement, `db_write` has its own `raw_write`
-gate — to make a connector fully delete-proof, disable both `delete` and
-`raw_write`.
+A gated call fails with a validation error naming the operation and connector (`operation 'delete' is disabled on connector 'orders-db-readonly'`). Because raw SQL cannot be classified per statement, `db_write` has its own `raw_write` gate. To make a connector fully delete-proof, disable both `delete` and `raw_write`.
 
-That pair is only sufficient because **`db_read` refuses to run a write.** Its
-statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH`
-carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is
-refused too. Without that check `db_read` was a second write path — `fetch`
-executes whatever statement it is handed, so `DELETE … RETURNING` ran under the
-`read` gate, and the bound below could not hold. `EXPLAIN` is not admitted
-either: `EXPLAIN ANALYZE DELETE …` executes the delete.
+That pair is only sufficient because `db_read` refuses to run a write. Its statement must open with `SELECT`, `WITH`, `VALUES` or `TABLE`, and a `WITH` carrying a data-modifying CTE (`WITH gone AS (DELETE … RETURNING …) …`) is refused too. Without that check `db_read` was a second write path. `fetch` executes whatever statement it is handed, so `DELETE … RETURNING` ran under the `read` gate, and the bound in [Schema guards](#schema-guards) could not hold. `EXPLAIN` is not admitted either: `EXPLAIN ANALYZE DELETE …` executes the delete.
 
-The gates above are the `db` / `es` set — the set the portable dialect runs
-through. Other connector types carry gates for their own operations
-(`read`/`write` on `cache`, `publish` on `kafka`, a method allowlist on
-`http`), documented per type in [Connectors](./connectors.md).
+These gates are the `db` and `es` set, the set the portable dialect runs through. Other connector types carry gates for their own operations: `read` and `write` on `cache`, `publish` on `kafka`, a method allowlist on `http`. [Connector types](./connectors/index.md) documents each.
 
 ### Schema guards
 
-`operations` answers *which verbs*; the `dialect` block answers *which tables
-the portable dialect may name*. A `read`-only connector is otherwise unbounded
-through `data_query` — nothing stops a workflow from selecting the whole
-database.
+`operations` answers which verbs; the `dialect` block answers which tables the portable dialect may name. A `read`-only connector is otherwise unbounded through `data_query`; nothing stops a workflow from selecting the whole database.
 
-**These guards bound `data_query`/`data_write`, not the connector.** The raw
-escape hatches — `db_read`, `db_write`, and the `mongo_read`/`mongo_write`/
-`mongo_aggregate` trio — run on the same connector, carry no entity name a
-guard could match, and are bounded only by `operations`. So:
+These guards bound `data_query` and `data_write`, not the connector. The raw escape hatches (`db_read`, `db_write`, and the `mongo_read`, `mongo_write` and `mongo_aggregate` trio) run on the same connector. They carry no entity name a guard could match, and are bounded only by `operations`. So:
 
-- **SQL writes** are fully bounded by `allowed_entities` once
-  `"raw_write": false` leaves `data_write` as the only write path; on MongoDB
-  the per-op gates also cover `mongo_write`, but its collection names are not
-  matched against the guard.
-- **Reads are not**, because `read` gates `data_query`, `db_read`,
-  `mongo_read` and `mongo_aggregate` together: a connector that permits the
-  dialect permits raw SQL and raw `find` too. Bound those at the database
-  credential — a role that can only see the allowlisted tables, or keep raw
-  reads on a separate connector.
-- On MongoDB the task's `database` field is not checked against the guard
-  either, so an allowlisted collection name can be read from any database the
-  credential can see. Scope the credential, not just the list.
+- **SQL writes** are fully bounded by `allowed_entities` once `"raw_write": false` leaves `data_write` as the only write path. On MongoDB the per-op gates also cover `mongo_write`, but its collection names are not matched against the guard.
+- **Reads are not**, because `read` gates `data_query`, `db_read`, `mongo_read` and `mongo_aggregate` together. A connector that permits the dialect permits raw SQL and raw `find` too. Bound those at the database credential, with a role that can only see the allowlisted tables, or keep raw reads on a separate connector.
+- On MongoDB the task's `database` field is not checked against the guard either, so an allowlisted collection name can be read from any database the credential can see. Scope the credential, not only the list.
 
 ```json
 "config": {
@@ -661,27 +497,14 @@ guard could match, and are bounded only by `operations`. So:
 | `require_schema` | `false` | Refuse any dialect call that did not declare a real schema — no `entities`, or an explicit `"unmapped": "identity"`. Closes the per-task opt-out, so one forgotten `schema` key cannot reopen the connector |
 | `allowed_entities` | `[]` (unrestricted) | Physical table/collection/index names `data_query`/`data_write` may name through this connector |
 
-`allowed_entities` matches the name **after** schema renames apply, because the
-allowlist is the connector owner's and the schema is authored per task — a
-rename (`"orders"` → physical `secrets`) must not be able to step around it. It
-covers every table a call reaches: the envelope's `source`/`target`, relation
-targets, and many-to-many junction tables.
+`allowed_entities` matches the name after schema renames apply. The allowlist is the connector owner's and the schema is authored per task. A rename (`"orders"` → physical `secrets`) must not be able to step around it. It covers every table a call reaches: the envelope's `source` and `target`, relation targets, and many-to-many junction tables.
 
-Both default to off. They bound what the schema default cannot: a task can
-write `"schema": { "unmapped": "identity" }` itself, and only the connector's
-owner can refuse that through `require_schema`.
-
-## Configuration
-
-The `[query]` and `[write]` sections — `default_limit`, `max_limit`,
-`max_skip`, `max_rows`, `allow_unfiltered` — are documented in the
-[Configuration Reference](./configuration.md).
+Both default to off. They bound what the schema default cannot. A task can write `"schema": { "unmapped": "identity" }` itself, and only the connector's owner can refuse that through `require_schema`.
 
 ## Related
 
-- [Function Reference](./functions.md#data_query): the `data_query` and
-  `data_write` task fields that carry these envelopes.
-- [Connectors](./connectors.md): `db`/`es` connector configuration, including
-  the operation gates each type carries.
-- [Configuration Reference](./configuration.md): the `[query]`/`[write]`
-  server bounds and their environment overrides.
+- [Connectors](../concepts/connectors.md): the concept behind the connector a call names.
+- [Add your first connector](../get-started/tutorials/first-connector.md): the tutorial that writes an insert and a relation-hydrated read.
+- [Task functions › `data_query`](./functions/data_query.md): the `data_query` and `data_write` task fields that carry these envelopes.
+- [Connector types](./connectors/index.md): `db` and `es` connector configuration, including the operation gates each type carries.
+- [Configuration › Query and write bounds](./configuration/query.md): the `[query]` and `[write]` server bounds (`default_limit`, `max_limit`, `max_skip`, `max_rows`, `allow_unfiltered`) and their environment overrides.

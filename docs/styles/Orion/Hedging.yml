@@ -1,0 +1,13 @@
+extends: existence
+message: "'%s' hedges. Say what is uncertain, or state the fact (§6.9)."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - should probably
+  - might want to
+  - may want to
+  - generally speaking
+  - in most cases
+  - typically you
+  - tends to be

@@ -1,42 +1,21 @@
 <!-- description: The complete JSONLogic operator vocabulary Orion compiles — core, dates, strings, arrays, encoding and randomness — plus the operators that fail silently. -->
-# Expression Language (JSONLogic)
+<!-- type: reference -->
+<!-- last_verified: 2026-09-14 -->
 
-[JSONLogic](https://jsonlogic.com) is Orion's expression language. Expressions
-decide whether a workflow matches, whether a task runs, and what a `map`
-mapping writes. See the [Workflow Reference](./workflows.md). Channels use the
-same language for `validation_logic` and rate-limit `key_logic`. See
-[Channel Configuration](./channel-config.md). Every expression is evaluated by
-[datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) and compiled once,
-at engine build time.
+# Expression language
+
+[JSONLogic](https://jsonlogic.com) is Orion's expression language, evaluated by [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) and compiled once, at engine build time. Expressions decide whether a workflow matches, whether a task runs, and what a `map` mapping writes. Channels use the same language for `validation_logic` and rate-limit `key_logic`.
+
+[Workflows](../concepts/workflows.md) is the concept and [Author a workflow](../guides/author/workflows.md) the guide.
+
+What an expression can read depends on where it appears. Workflow and task expressions read the [data context](./workflows.md#the-data-context). `validation_logic` and `key_logic` each see a smaller, dedicated context, which [Channel configuration](./channel-config/index.md) documents. `key_logic`'s header set is closed by default and extended per channel with [`rate_limit.key_headers`](./channel-config/rate_limit.md). A path outside it resolves to `null`, which is refused rather than used as a key.
 
 > [!WARNING]
-> **A misspelled operator inside a `map` mapping is not an error.** JSONLogic
-> cannot distinguish `{ "upper": [...] }` used as an operator from a data
-> object that happens to have one key. Mappings render through a templating
-> path: inner expressions resolve, and the unknown object is written through as
-> a *literal*. So `{ "uppr": [...] }` puts `{"uppr": "widget"}` at the target
-> path — no error, no failed task, `200` to the caller. When a mapping yields a
-> JSON object where you expected a scalar, check the operator name against the
-> tables below first.
->
-> Conditions behave differently. They are compiled and evaluated strictly, so
-> the same misspelling there is a hard error rather than a silent literal.
-
-> [!NOTE]
-> What an expression can read depends on where it appears. Workflow and task
-> expressions read the [data context](./workflows.md); `validation_logic` and
-> `key_logic` each see a smaller, dedicated context —
-> [Channel Configuration](./channel-config.md) documents both. `key_logic`'s
-> header set is closed by default and extended per channel with
-> [`rate_limit.key_headers`](./channel-config.md#rate-limiting); a path outside
-> it resolves to `null`, which is refused rather than used as a key.
+> A misspelled operator inside a `map` mapping is not an error. JSONLogic cannot distinguish `{ "upper": [...] }` used as an operator from a data object that happens to have one key. Mappings render through a templating path: inner expressions resolve, and the unknown object is written through as a literal. So `{ "uppr": [...] }` puts `{"uppr": "widget"}` at the target path, with no error, no failed task, and `200` to the caller. When a mapping yields a JSON object where you expected a scalar, check the operator name against the tables first. Conditions behave differently: they are compiled and evaluated strictly, so the same misspelling there is a hard error.
 
 ## Available operators
 
-The tables below are the **complete** set Orion compiles. They are not the
-whole JSONLogic spec. See [Feature boundary](#feature-boundary).
-`crates/orion-server/tests/integration/jsonlogic_operators_test.rs` asserts
-this table against the engine, so it cannot drift from what actually runs.
+These tables are the complete set Orion compiles. They are not the whole JSONLogic spec; see [Compatibility](#compatibility). `crates/orion-server/tests/integration/jsonlogic_operators_test.rs` asserts this table against the engine, so it cannot drift from what runs.
 
 ### Core
 
@@ -48,7 +27,7 @@ this table against the engine, so it cannot drift from what actually runs.
 | `===` / `!==` | `{ "===": [{ "var": "data.qty" }, 1] }` | Strict equality (no type coercion) |
 | `>` `>=` `<` `<=` | `{ ">": [{ "var": "data.order.total" }, 10000] }` | Comparison |
 | `and` / `or` / `!` | `{ "and": [a, b] }` | Boolean logic |
-| `!!` | `{ "!!": [{ "var": "data.order.id" }] }` | Truthiness (e.g. "is present") |
+| `!!` | `{ "!!": [{ "var": "data.order.id" }] }` | Truthiness (for example "is present") |
 | `if` / `?:` | `{ "if": [cond, then, else] }` | Conditional value |
 | `+` `-` `*` `/` `%` | `{ "*": [{ "var": "data.qty" }, 1.1] }` | Arithmetic |
 | `max` / `min` | `{ "max": [1, 2, 3] }` | Largest / smallest |
@@ -71,17 +50,9 @@ this table against the engine, so it cannot drift from what actually runs.
 | `date_diff` | `{ "date_diff": [a, b, "days"] }` | Whole units between two datetimes |
 | `timestamp` | `{ "timestamp": ["1d"] }` | Build a **duration** from a duration string |
 
-Format strings use the JSONLogic vocabulary: `yyyy`, `MM`, `dd`, `HH`, `mm`,
-`ss`. Orion translates it to the underlying `strftime` spec, so raw
-`%Y`-style patterns also work. Prefer the `yyyy` form; it is the documented
-one.
+Format strings use the JSONLogic vocabulary: `yyyy`, `MM`, `dd`, `HH`, `mm`, `ss`. Orion translates it to the underlying `strftime` spec, so raw `%Y`-style patterns also work. Prefer the `yyyy` form; it is the documented one.
 
-`format_date` and `parse_date` accept an optional trailing IANA zone name
-(`"Asia/Kolkata"`, `"America/New_York"`): `format_date` renders the instant as
-that zone's wall-clock (DST-correct), and `parse_date` reads a naive input as
-wall-clock time *in* that zone. A misspelled literal zone fails when the
-expression is compiled, not per request. Do not add fixed offsets by hand —
-`{ "+": [ts, { "timestamp": "5h30m" }] }` is wrong in any zone with DST.
+`format_date` and `parse_date` accept an optional trailing IANA zone name, such as `"Asia/Kolkata"` or `"America/New_York"`. `format_date` renders the instant as that zone's wall clock, DST-correct, and `parse_date` reads a naive input as wall-clock time in that zone. A misspelled literal zone fails when the expression is compiled, not per request. Do not add fixed offsets by hand; `{ "+": [ts, { "timestamp": "5h30m" }] }` is wrong in any zone with DST.
 
 ### Strings (`ext-string`)
 
@@ -104,10 +75,7 @@ expression is compiled, not per request. Do not add fixed offsets by hand —
 | `group_by` | `{ "group_by": [{ "var": "data.meetings" }, { "format_date": [{ "var": "start" }, "dd MMM yyyy", "Asia/Kolkata" ] }] }` | Collapse on a computed key → array of `{key, items}` rows, insertion-ordered |
 | `distinct` | `{ "distinct": [{ "var": "data.tags" }] }` | Deduplicate, first occurrence wins; add a key expression to dedupe by computed key |
 
-`group_by`'s second argument is evaluated **per element**: inside it, `var`
-paths are element-relative and `{ "var": "" }` is the element itself. The
-result is an *array* of `{key, items}` groups (not an object), so it composes
-directly with `map` / `filter` / `sort`.
+`group_by`'s second argument is evaluated per element. Inside it, `var` paths are element-relative and `{ "var": "" }` is the element itself. The result is an array of `{key, items}` groups, not an object, so it composes directly with `map`, `filter` and `sort`.
 
 ### Objects (`ext-object`)
 
@@ -122,36 +90,18 @@ directly with `map` / `filter` / `sort`.
 |----------|---------|---------|
 | `??` | `{ "??": [{ "var": "data.nickname" }, "anonymous"] }` | Coalesce — first non-null |
 | `type` | `{ "type": [{ "var": "data.price" }] }` | Type name as a string |
-| `exists` | `{ "exists": ["data", "order", "id"] }` | Path presence — see [Sharp edges](#sharp-edges) |
-| `switch` / `match` | see [Sharp edges](#sharp-edges) | Multi-way branch |
+| `exists` | `{ "exists": ["data", "order", "id"] }` | Path presence; see [Caveats](#caveats) |
+| `switch` / `match` | see [Caveats](#caveats) | Multi-way branch |
 | `try` / `throw` | `{ "try": [expr, fallback] }` | Catch / raise an evaluation error |
 
 ### Tensors (`tensor`)
 
-A tensor is a dtype, a shape and one contiguous buffer — the value a model
-consumes and produces. JSON has no such thing, so this family is the bridge:
-twenty operators that build one from JSON, reshape it, and read it back out.
-There is deliberately **no arithmetic** here; every operator's cost is
-proportional to the data it moves, which is what lets
-[`engine.ops_budget`](./configuration.md#engine) price it. Compute belongs in
-the model the tensor is handed to — [`model_infer`](./functions.md#model_infer)
-runs one, its manifest's adapters building the tensors with exactly these
-operators — not in the expression that builds it.
+A tensor is a dtype, a shape and one contiguous buffer: the value a model consumes and produces. JSON has no such thing, so this family is the bridge, twenty operators that build one from JSON, reshape it, and read it back out. There is deliberately no arithmetic here. Every operator's cost is proportional to the data it moves, which is what lets [`engine.ops_budget`](./configuration/engine.md) price it. Compute belongs in the model the tensor is handed to, not in the expression that builds it. [`model_infer`](./functions/model_infer.md) runs one, and its manifest's adapters build the tensors with exactly these operators.
 
-On the wire a tensor is `{"tensor": {"dtype": "f32", "shape": [1, 7], "data":
-"<base64>"}}`, which is what a response body or a trace snapshot shows and what
-the `tensor` operator reads back. Dtypes: `bool`, `i8`, `u8`, `i16`, `u16`,
-`i32`, `u32`, `i64`, `u64`, `f32`, `f64` (`f16`/`bf16` are carried but not
-decoded).
+On the wire a tensor is `{"tensor": {"dtype": "f32", "shape": [1, 7], "data": "<base64>"}}`. That is what a response body or a trace snapshot shows, and what the `tensor` operator reads back. Dtypes: `bool`, `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `i64`, `u64`, `f32`, `f64` (`f16` and `bf16` are carried but not decoded).
 
-> [!IMPORTANT]
-> Seven of these names are ordinary JSON keys — `shape`, `full`, `cast`,
-> `pad`, `crop`, `concat`, `stack`. In a `map` mapping or any other template
-> position, a **single-key object** whose key is one of the twenty is an
-> operator call, not data. To emit the literal key, prefix it: `{"$shape":
-> [6, 7]}` emits `{"shape": [6, 7]}`. Multi-key objects are unaffected.
-> `orion-server lint` and `preflight` list every such key as
-> `logic.tensor_operator_key` — see [Upgrading to 1.8.0](../operate/upgrading-to-1.8.md).
+> [!NOTE]
+> Seven of these names are ordinary JSON keys: `shape`, `full`, `cast`, `pad`, `crop`, `concat`, `stack`. In a `map` mapping or any other template position, a single-key object whose key is one of the twenty is an operator call, not data. To emit the literal key, prefix it: `{"$shape": [6, 7]}` emits `{"shape": [6, 7]}`. Multi-key objects are unaffected. `orion-server lint` and `preflight` list every such key as `logic.tensor_operator_key`; see [Upgrade to 1.8.0](../releases/upgrade-to-1.8.md).
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -174,13 +124,7 @@ decoded).
 
 ### Encoding (Orion operators)
 
-Registered by Orion itself rather than gated by a cargo feature — available on
-every expression surface (conditions, `map` logic, `body_logic`, channel
-guards). A string encodes as its UTF-8 bytes; any other value encodes as its
-compact-JSON text (key order preserved); `null` is an error. Decoders are
-strict: the input must be valid for the alphabet — base64 accepts padded and
-unpadded input, and the decoded bytes must be valid UTF-8. Binary payloads
-belong to the `crypto` function's `input_encoding` instead.
+Registered by Orion itself rather than gated by a cargo feature, so available on every expression surface: conditions, `map` logic, `body_logic`, channel guards. A string encodes as its UTF-8 bytes; any other value encodes as its compact-JSON text with key order preserved; `null` is an error. Decoders are strict. The input must be valid for the alphabet (base64 accepts padded and unpadded input), and the decoded bytes must be valid UTF-8. Binary payloads belong to the `crypto` function's `input_encoding` instead.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -190,29 +134,17 @@ belong to the `crypto` function's `input_encoding` instead.
 
 ### Randomness (Orion operators)
 
-CSPRNG-backed value generation — never constant-folded, so every evaluation
-draws fresh; there is deliberately no seed parameter, and range/alphabet
-sampling is uniform (no modulo bias). The first argument selects the
-generator kind; a new kind is a table row, never a new operator. Bad
-arguments (unknown kind, inverted bounds, out-of-range length, an alphabet
-with duplicate characters) are evaluation-time errors naming what is
-allowed. Values are drawn live in dry-run and `orion-server test` too — like
-`now`, avoid asserting exact outputs in regression cases.
+CSPRNG-backed value generation, never constant-folded, so every evaluation draws fresh. There is deliberately no seed parameter, and range and alphabet sampling is uniform, with no modulo bias. The first argument selects the generator kind; a new kind is a table row, never a new operator. Bad arguments (an unknown kind, inverted bounds, an out-of-range length, an alphabet with duplicate characters) are evaluation-time errors naming what is allowed. Values are drawn live in dry-run and `orion-server test` too. Like `now`, avoid asserting exact outputs in regression cases.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
-| `random` | `{ "random": ["digits", 6] }` | Kind-selected generation: `["uuid"]` / `["uuid", "v7"]` (canonical UUID; v7 is time-sortable), `["digits", n]` (exactly-n digits, leading zeros kept — the OTP shape, n ≤ 64), `["int", min, max]` (inclusive, within ±2⁵³−1), `["string", len, alphabet?]` (len ≤ 1024; named sets `alphanumeric` (default) / `hex` / `numeric` / `url-safe`, or a custom string of 2–256 distinct characters), `["bytes", n, encoding?]` (n ≤ 1024; `hex` default / `base64` / `base64url` per the encoding table above) |
+| `random` | `{ "random": ["digits", 6] }` | Kind-selected generation: `["uuid"]` / `["uuid", "v7"]` (canonical UUID; v7 is time-sortable), `["digits", n]` (exactly n digits, leading zeros kept — the OTP shape, n ≤ 64), `["int", min, max]` (inclusive, within ±2⁵³−1), `["string", len, alphabet?]` (len ≤ 1024; named sets `alphanumeric` (default) / `hex` / `numeric` / `url-safe`, or a custom string of 2–256 distinct characters), `["bytes", n, encoding?]` (n ≤ 1024; `hex` default / `base64` / `base64url` per the encoding table above) |
 
 ### Strings (Orion operators)
 
-Registered by Orion, so — like the encoding and randomness operators above and
-unlike [`ext-string`](#strings-ext-string): they are not gated by a cargo
-feature and are available on every expression surface.
+Registered by Orion. Like the encoding and randomness operators and unlike [`ext-string`](#strings-ext-string), they are not gated by a cargo feature and are available on every expression surface.
 
-`url_encode` follows the same text model as the encoders: a string encodes as
-its UTF-8 bytes, any other value as its compact-JSON text, and `null` is an
-error rather than an empty value. `url_decode` is strict — a malformed `%XX`
-sequence or a non-UTF-8 result is an evaluation error, never a lossy guess.
+`url_encode` follows the same text model as the encoders. A string encodes as its UTF-8 bytes, any other value as its compact-JSON text, and `null` is an error rather than an empty value. `url_decode` is strict. A malformed `%XX` sequence or a non-UTF-8 result is an evaluation error, never a lossy guess.
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
@@ -220,43 +152,24 @@ sequence or a non-UTF-8 result is an evaluation error, never a lossy guess.
 | `url_decode` | `{ "url_decode": [{ "var": "data.state" }] }` | The exact inverse of `url_encode` |
 | `join` | `{ "join": [{ "var": "data.tags" }, ", "] }` | Join an array's elements with a separator |
 
-**`url_encode` is RFC 3986, not form-encoding.** A space becomes `%20`, never
-`+`, and a literal `+` becomes `%2B`. It is also *stricter* than JavaScript's
-`encodeURIComponent`, which leaves `!'()*` literal — that is the comparison
-most authors will make. `url_decode` correspondingly does **not** treat `+` as
-a space.
+`url_encode` is RFC 3986, not form-encoding. A space becomes `%20`, never `+`, and a literal `+` becomes `%2B`. It is also stricter than JavaScript's `encodeURIComponent`, which leaves `!'()*` literal, and that is the comparison most authors make. `url_decode` correspondingly does not treat `+` as a space.
 
-Reach for `url_encode` whenever a value is interpolated into an outbound query
-string, which today means building `path` or `path_logic` with `cat`:
+Reach for `url_encode` whenever a value is interpolated into an outbound query string, which means building `path` or `path_logic` with `cat`:
 
 ```json
 { "cat": ["/search?q=", { "url_encode": [{ "var": "data.term" }] }] }
 ```
 
-Without it, a value containing `&` or `#` silently restructures or truncates
-the query — a correctness and injection hole with no other mitigation, since
-`http_call` has no `query` field.
+Without it, a value containing `&` or `#` silently restructures or truncates the query. That is a correctness and injection hole with no other mitigation, since `http_call` has no `query` field.
 
-**`join` takes both arguments.** A missing separator is an error, not an
-implicit `""`, and a non-array first argument is an error too (`cat` already
-handles scalars). Elements render exactly as `cat` renders them, so
-`{"join": [arr, ""]}` is precisely `{"cat": [arr]}`.
+`join` takes both arguments. A missing separator is an error, not an implicit `""`, and a non-array first argument is an error too, because `cat` already handles scalars. Elements render exactly as `cat` renders them, so `{"join": [arr, ""]}` is precisely `{"cat": [arr]}`.
 
-Two idioms follow from `join` and are worth knowing instead of asking for more
-operators:
+Two idioms follow from `join`, and are worth knowing instead of asking for more operators:
 
-- **`replace(s, from, to)` is `{"join": [{"split": [s, from]}, to]}`**: literal
-  substring replacement, not a regex. (`{"cat": [{"split": [s, from]}]}` is the
-  delete-all form and worked before `join` existed.) Splitting on an empty
-  delimiter explodes into characters, so guard against that.
+- **`replace(s, from, to)` is `{"join": [{"split": [s, from]}, to]}`**: literal substring replacement, not a regex. `{"cat": [{"split": [s, from]}]}` is the delete-all form and worked before `join` existed. Splitting on an empty delimiter explodes into characters, so guard against that.
 - **`{"cat": [arr]}`** remains the fastest spelling of `join(arr, "")`.
 
-> [!WARNING]
-> `{"cat": [arr, "|"]}` does **not** join with `|` — `cat` flattens the array
-> and then appends the separator once, at the end. The `reduce`-with-sentinel
-> workaround is also wrong: it cannot distinguish "first element" from "first
-> element is empty", so `["", "b"]` joins to `"b"` rather than `", b"`. Use
-> `join`.
+`{"cat": [arr, "|"]}` does not join with `|`. `cat` flattens the array and then appends the separator once, at the end. The `reduce`-with-sentinel workaround is also wrong: it cannot distinguish "first element" from "first element is empty", so `["", "b"]` joins to `"b"` rather than `", b"`. Use `join`.
 
 ### Secrets
 
@@ -264,66 +177,27 @@ operators:
 |----------|---------|---------|
 | `secret` | `{ "secret": "partner_hmac" }` | Read a value the operator declared in the `[secrets]` config section |
 
-`secret` is the only operator that reads from outside the message. Its argument
-is a name, not a path into the data context, and the value it returns is never
-recorded: the store is held by the engine rather than by the message, so a
-secret cannot reach a trace, a `map` mapping clone or a response body — there
-is nothing to strip.
+`secret` is the only operator that reads from outside the message. Its argument is a name, not a path into the data context, and the value it returns is never recorded. The store is held by the engine rather than by the message. A secret cannot reach a trace, a `map` mapping clone or a response body, so there is nothing to strip.
 
-That guarantee is enforced, not advised. A workflow that reads a secret
-anywhere the engine would record the result — a `map` mapping, a `log` message
-or field — is refused when the engine is built, and so is a workflow naming a
-secret the instance does not declare. Both surface as a quarantined channel
-with the reason named, not as a value that silently goes missing. So read a
-secret in a **condition**, or in one of the five function fields that take key
-material — `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys[].key`,
-`issuer` and `audience`, and nowhere else. A value *derived* from a secret
-belongs inside a function, not in a mapping.
+That guarantee is enforced, not advised. A workflow that reads a secret anywhere the engine would record the result is refused when the engine is built. A `map` mapping and a `log` message or field are the recorded places. So is a workflow naming a secret the instance does not declare. Both surface as a quarantined channel with the reason named, not as a value that silently goes missing. Read a secret in a condition, or in one of the five function fields that take key material. Those are `crypto.key`, `jwt_sign.key`, and `jwt_verify`'s `keys[].key`, `issuer` and `audience`. A value derived from a secret belongs inside a function, not in a mapping.
 
 Three limits worth knowing:
 
-- **`env://` and `vault://` resolve in five function fields, not every one.**
-  Those five read a *reference string* themselves, because their handlers do —
-  and inside `jwt_verify.keys` it is each entry's `key`, not the entry: a
-  reference in a sibling `kid` or `key_encoding` is read verbatim and is refused
-  like any other stray one. The `{"secret": …}` **operator** is separate and
-  wider: it resolves wherever the engine evaluates JSONLogic, which now includes
-  a connector task's expression fields, so
-  `{"cat": ["Bearer ", {"secret": "partner_token"}]}` works in an `http_call`
-  header. It still resolves nothing in a document-shaped field, which folds
-  `{"var": …}` only. A credential a remote system needs generally belongs on the
-  **connector**, which is what connectors are for.
-- **Channel guards read them too.** `validation_logic`, `authorization_logic`
-  and the rate-limit and cache `key_logic` compile on an engine built over the
-  same store the workflow engines get, so `{"secret": …}` resolves there as
-  well. Secrets are start-time config, resolved before any channel loads, so a
-  guard sees exactly what a workflow sees.
-- **Deployment values are not secrets.** A topic prefix or a partner's base URL
-  belongs in `[vars]`, read as `{"var": "metadata.vars.name"}`, which *is*
-  recorded, on purpose, because an operator reading a trace needs to see it.
-  See [Environment Variables](./environment-variables.md).
+- **`env://` and `vault://` resolve in five function fields, not every one.** Those five read a reference string themselves, because their handlers do. Inside `jwt_verify.keys` it is each entry's `key`, not the entry: a reference in a sibling `kid` or `key_encoding` is read verbatim and is refused like any other stray one. The `{"secret": …}` operator is separate and wider. It resolves wherever the engine evaluates JSONLogic, which includes a connector task's expression fields, so `{"cat": ["Bearer ", {"secret": "partner_token"}]}` works in an `http_call` header. It still resolves nothing in a document-shaped field, which folds `{"var": …}` only. A credential a remote system needs generally belongs on the connector, which is what connectors are for.
+- **Channel guards read them too.** `validation_logic`, `authorization_logic` and the rate-limit and cache `key_logic` compile on an engine built over the same store the workflow engines get, so `{"secret": …}` resolves there as well. Secrets are start-time config, resolved before any channel loads, so a guard sees exactly what a workflow sees.
+- **Deployment values are not secrets.** A topic prefix or a partner's base URL belongs in `[vars]`, read as `{"var": "metadata.vars.name"}`. That is recorded, on purpose, because an operator reading a trace needs to see it. See [Environment variables](./environment-variables.md).
 
-## Sharp edges
+## Caveats
 
-Five operators take a shape or a value that is easy to get wrong. Each bullet
-states the failure mode; most fail quietly, with a plausible answer rather
-than an error.
+Five operators take a shape or a value that is often got wrong. Each bullet states the failure mode; most fail quietly, with a plausible answer rather than an error.
 
-- **`exists` takes path segments, not a dotted path.** Unlike `var`, it does
-  not split on `.`, and it evaluates its arguments as literals rather than as
-  expressions. `{ "exists": ["data.order.id"] }` looks for a single top-level
-  key literally named `data.order.id` and returns `false`. Wrapping the
-  argument in a `var` returns `false` too, because the *value* is not a path.
-  Spell it out:
+- **`exists` takes path segments, not a dotted path.** Unlike `var`, it does not split on `.`, and it evaluates its arguments as literals rather than as expressions. `{ "exists": ["data.order.id"] }` looks for a single top-level key literally named `data.order.id` and returns `false`. Wrapping the argument in a `var` returns `false` too, because the value is not a path. Spell it out:
 
   ```json
   { "exists": ["data", "order", "id"] }
   ```
 
-- **`switch` takes an array of `[case, result]` pairs**, not a flat
-  alternating list. A flat list is not rejected: the second element is read as
-  the case array, fails to match, and the third element is returned as the
-  default arm. You silently get one fixed branch for every input.
+- **`switch` takes an array of `[case, result]` pairs**, not a flat alternating list. A flat list is not rejected. The second element is read as the case array, fails to match, and the third element is returned as the default arm. You silently get one fixed branch for every input.
 
   ```json
   { "switch": [
@@ -333,43 +207,24 @@ than an error.
   ] }
   ```
 
-- **`date_diff` units are plural.** The accepted set is `"days"`, `"hours"`,
-  `"minutes"`, `"seconds"`, `"milliseconds"`. Any other unit — including the
-  singular `"day"` — fails the task with `Invalid arguments: date_diff: unknown
-  unit "day"`, which names the accepted set. The refusal matters because the
-  alternative is worse than an error: a unit the engine does not know would
-  otherwise measure `0`, and `0` reads exactly like "the two datetimes are the
-  same", so the typo would ship and answer plausibly forever.
+- **`date_diff` units are plural.** The accepted set is `"days"`, `"hours"`, `"minutes"`, `"seconds"`, `"milliseconds"`. Any other unit, including the singular `"day"`, fails the task with `Invalid arguments: date_diff: unknown unit "day"`, which names the accepted set. The refusal matters because the alternative is worse than an error. A unit the engine does not know would otherwise measure `0`, and `0` reads exactly like "the two datetimes are the same", so the typo would ship and answer plausibly forever.
 
-- **`timestamp` is not a datetime-to-epoch conversion.** It parses a
-  *duration* (`"1d"` → `"1d:0h:0m:0s"`) for use in date arithmetic. Passing it
-  a datetime is an `Invalid duration format` error.
+- **`timestamp` is not a datetime-to-epoch conversion.** It parses a duration (`"1d"` → `"1d:0h:0m:0s"`) for use in date arithmetic. Passing it a datetime is an `Invalid duration format` error.
 
-- **`now` is evaluated per call**, so two `now` mappings in one workflow can
-  land on different instants. Compute it once into a field and read that field
-  if you need a single consistent stamp.
+- **`now` is evaluated per call**, so two `now` mappings in one workflow can land on different instants. Compute it once into a field and read that field if you need a single consistent stamp.
 
 ## Connector fields: expressions, and documents
 
-Most of a connector task's fields are JSONLogic, evaluated against the message
-like anything else on this page — a cache key, a storage key, an email
-subject or recipient, a TTL, a JWT audience, the data going into `crypto`:
+Most of a connector task's fields are JSONLogic, evaluated against the message like anything else on this page. A cache key, a storage key, an email subject or recipient, a TTL, a JWT audience and the data going into `crypto` all are:
 
 ```json
 { "connector": "redis",
   "key": { "cat": ["tenant:", { "var": "data.tenant" }, ":order:", { "var": "data.id" }] } }
 ```
 
-A field written as a plain literal is JSONLogic for itself, so the static
-spelling is unchanged and costs nothing: it folds once when the engine is built,
-and only a field that actually reads the message is evaluated per request.
+A field written as a plain literal is JSONLogic for itself, so the static spelling is unchanged and costs nothing. It folds once when the engine is built, and only a field that reads the message is evaluated per request.
 
-**The document-shaped fields are the exception, and deliberately so.** A MongoDB
-`document`, `documents`, `update`, `filter`, `array_filters`, `projection` or
-`sort`; an aggregation `pipeline`; `cache_write`'s `value`; `jwt_sign`'s
-`claims`; the `params` of the SQL and dialect functions — these fold
-`{"var": "some.path"}` nodes against the message, at any depth, and treat
-**every other node as a literal**.
+The document-shaped fields are the exception, and deliberately so. A MongoDB `document`, `documents`, `update`, `filter`, `array_filters`, `projection` or `sort`; an aggregation `pipeline`; `cache_write`'s `value`; `jwt_sign`'s `claims`; the `params` of the SQL and dialect functions. These fold `{"var": "some.path"}` nodes against the message, at any depth, and treat every other node as a literal.
 
 ```json
 { "op": "insert_one",
@@ -379,17 +234,9 @@ and only a field that actually reads the message is evaluated per request.
   } }
 ```
 
-`userId` gets the value. `expiresAt` gets the *object* `{"cat": [...]}`, stored
-in MongoDB verbatim, and in a `filter`, a node like that matches nothing.
-There is no error at write time. Note that `{"val": …}` is folded no more than
-`cat` is, despite being a documented operator: only `var` is.
+`userId` gets the value. `expiresAt` gets the object `{"cat": [...]}`, stored in MongoDB verbatim, and in a `filter`, a node like that matches nothing. There is no error at write time. `{"val": …}` is folded no more than `cat` is, despite being a documented operator: only `var` is.
 
-The reason is `$`. These are exactly the fields that carry MongoDB operators and
-extended-JSON wrappers — `$set`, `$push`, `$oid`, `$date`, and one `$` is
-stripped from every key in a position the engine evaluates. Making them
-expressions would turn `{"$set": …}` into `{"set": …}` in every stored
-definition that was not hand-corrected, silently. The scalar fields carry no
-such keys, so they carry the capability instead.
+The reason is `$`. These are exactly the fields that carry MongoDB operators and extended-JSON wrappers such as `$set`, `$push`, `$oid` and `$date`. One `$` is stripped from every key in a position the engine evaluates. Making them expressions would turn `{"$set": …}` into `{"set": …}` in every stored definition that was not hand-corrected, silently. The scalar fields carry no such keys, so they carry the capability instead.
 
 Compute the value in a `map` task first and reference the result:
 
@@ -402,27 +249,16 @@ Compute the value in a `map` task first and reference the result:
 { "expiresAt": { "var": "temp_data.expires_at" } }
 ```
 
-`orion-server lint` warns when it finds one of these, and
-`orion-server test` can assert on the resolved payload with `expect_calls` —
-see [Test Workflows Offline](../build/testing.md#assert-on-what-a-workflow-writes).
+`orion-server lint` warns when it finds one of these, and `orion-server test` can assert on the resolved payload with `expect_calls`; see [Assert on what a workflow writes](../guides/author/testing.md#assert-on-what-a-workflow-writes).
 
-## Feature boundary
+## Compatibility
 
-The extension categories — `datetime`, `ext-string`, `ext-array`, `ext-math`,
-`ext-control`, `error-handling`, `tensor` — are Cargo features of datalogic-rs.
-
-> [!NOTE]
-> Orion reaches datalogic-rs through dataflow-rs and cannot enable a datalogic
-> feature on its own. The extension operators are available only as dataflow-rs
-> enables them; Orion turns them all on through dataflow-rs's `all-operators`
-> feature, plus `tensor` and `budget` (both outside `all-operators` upstream)
-> since 1.8. A build without those features compiles only the [Core](#core) set.
+The extension categories (`datetime`, `ext-string`, `ext-array`, `ext-math`, `ext-control`, `error-handling`, `tensor`) are Cargo features of datalogic-rs. Orion reaches datalogic-rs through dataflow-rs and cannot enable a datalogic feature on its own. Orion turns them all on through dataflow-rs's `all-operators` feature, plus `tensor` and `budget` (both outside `all-operators` upstream) since 1.8. A build without those features compiles only the [Core](#core) set.
 
 ## Related
 
-- [Workflow Reference](./workflows.md): the workflow object and the data
-  context that conditions and mappings read.
-- [Channel Configuration](./channel-config.md): `validation_logic` and
-  `key_logic`, and the dedicated context each one sees.
-- [Function Reference](./functions.md): every function's `input` schema,
-  including the fields that accept logic values.
+- [Workflows](../concepts/workflows.md): the concept the conditions and mappings belong to.
+- [Author a workflow](../guides/author/workflows.md): the guide that writes them.
+- [Workflow definition](./workflows.md): the workflow object and the data context that conditions and mappings read.
+- [Channel configuration](./channel-config/index.md): `validation_logic` and `key_logic`, and the dedicated context each one sees.
+- [Task functions](./functions/index.md): every function's `input` schema, including the fields that accept logic values.

@@ -88,3 +88,42 @@ Run this study after major navigation changes and before each minor release.
 Store completed observation logs with the release research notes, then turn
 accepted findings into tracked documentation issues. Do not mark a finding
 resolved until the affected task is rerun with a new participant.
+
+## Measured timings
+
+§11.1.18 asks that a quickstart's stated time be *measured*, not estimated.
+Record each measurement here so the next person to change the quickstart can
+re-run it rather than guess.
+
+### Quickstart, 2026-09-14
+
+Walked `src/get-started/quickstart.md` verbatim — every command copied from the
+page, in order, with no edits — against `ghcr.io/goplasmatic/orion:latest`
+(Orion 1.8.0, digest `sha256:8498b81c…`).
+
+| Measurement | Result |
+|---|---|
+| Host | macOS 15 (Darwin 25.6.0), Docker Engine 29.7.2, curl 8.7.1 |
+| Image size | 204 MB |
+| Commands, image already local | 2 s wall clock, start to last response |
+| Steps that failed | none, after the fix below |
+| Output drift | none — every response matched what the page prints |
+
+The page now says the commands run in under 5 seconds once the image is local,
+and that the first run also pulls 204 MB. The reader's five minutes is the pull
+plus reading and pasting, not the commands.
+
+**One defect the walk found.** The documented readiness probe failed on every
+cold start, 3 times out of 3:
+
+```console
+$ curl --retry 10 --retry-delay 1 --retry-connrefused -fsS http://localhost:8080/healthz
+curl: (56) Recv failure: Connection reset by peer
+```
+
+Docker's port proxy accepts the connection before the server is listening and
+then resets it. `--retry-connrefused` covers a refused connection, not a reset,
+so curl gave up on the first attempt. `--retry-all-errors` (curl 7.71 and
+later) covers both, and succeeded 3 times out of 3 from cold. Fixed on the
+quickstart and on `get-started/tutorials/orders-api.md`, which carried the same
+command.

@@ -15,7 +15,7 @@
 //! the config passed with `-c` — and it declares the shapes on which that
 //! proof does not hold, where it stays silent. Patterns over strings,
 //! "usually a mistake" and near-matches are not admitted;
-//! `docs/src/reference/clippy.md` keeps the list of what was turned down
+//! `docs/src/reference/clippy/index.md` keeps the list of what was turned down
 //! and why. Silence is never wrong; a wrong warning is.
 //!
 //! ## Adding a rule
@@ -26,7 +26,7 @@
 //! fires on and one it must stay silent on, the second being the proof's
 //! exclusions written down. `clippy_registry_test` fails on a rule missing
 //! either; `clippy_docs_drift_test` fails while
-//! `docs/src/reference/clippy.md` does not list it.
+//! `docs/src/reference/clippy/index.md` does not list it.
 
 pub mod rules;
 

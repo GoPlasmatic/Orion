@@ -1,7 +1,7 @@
 //! Documentation drift guard for the configuration surface (proposal C2).
 //!
 //! Three documents describe the same structs and had drifted apart:
-//! `docs/src/reference/configuration.md` claimed `storage.max_connections = 25`,
+//! the configuration reference claimed `storage.max_connections = 25`,
 //! `config.toml.example` claimed `10`, and `StorageConfig::default()` — the only
 //! one that runs — is `50`. This module makes the code authoritative and fails
 //! the build when either document disagrees with it again.
@@ -30,18 +30,19 @@
 //! (`#   key = value`) marks it as an illustrative snippet and excludes it, which
 //! is how worked examples live in the file without pretending to be defaults.
 //!
-//! `docs/src/reference/configuration.md` is read from its settings tables: a row
-//! whose first cell is a backticked dotted path is a setting row, and its second
-//! and third cells are the default and the env override.
+//! `docs/src/reference/configuration/*.md` (one page per config section, plus
+//! the hubs) is read from its settings tables: a row whose first cell is a
+//! backticked dotted path is a setting row, and its second and third cells are
+//! the default and the env override.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use orion::config::AppConfig;
 
 // The docs tree lives at the repo root, two levels above this crate.
-const REFERENCE_MD: &str = concat!(
+const REFERENCE_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/configuration.md"
+    "/../../docs/src/reference/configuration"
 );
 const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
 const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/env_overrides.rs");
@@ -334,17 +335,17 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
     ),
     (
         "ORION_SERVER__PORTT",
-        "docs/src/reference/configuration.md",
+        "docs/src/reference/configuration/how-settings-are-resolved.md",
         "the worked example of the misspelling C4d refuses",
     ),
     (
         "ORION_ENVIRONMEN",
-        "docs/src/reference/configuration.md",
+        "docs/src/reference/configuration/how-settings-are-resolved.md",
         "the worked example of the top-level near-miss C4d also refuses",
     ),
     (
         "ORION_SERVER_PORT",
-        "docs/src/reference/configuration.md",
+        "docs/src/reference/configuration/how-settings-are-resolved.md",
         "the worked example of the one shape C4d cannot refuse — a setting typed \
          with a single underscore, which is also exactly the service link a \
          Service named `orion-server` produces",
@@ -361,25 +362,25 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
     // for the reason the doc comment above gives.
     (
         "ORION_SERVER__PORTT",
-        "docs/src/operate/upgrading-to-1.0.md",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
         "the misspelling C4d refuses, quoted in the error message the section \
          shows an operator",
     ),
     (
         "ORION_SERVER_PORT",
-        "docs/src/operate/upgrading-to-1.0.md",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
         "the one shape C4d cannot refuse, quoted as the caveat: a setting typed \
          with a single underscore is indistinguishable from a service link",
     ),
     (
         "ORION_ADMIN_AUTH__API_KEY",
-        "docs/src/operate/upgrading-to-1.0.md",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
         "quoted as the mistake, telling readers who copied it that the real \
          name is the plural ORION_ADMIN_AUTH__API_KEYS",
     ),
     (
         "ORION_DB__PASSWORD",
-        "docs/src/operate/upgrading-to-1.0.md",
+        "docs/src/releases/upgrade-to-1.0/config-keys.md",
         "a connector's `env://` secret, not a setting — the example of the one \
          class of name that has to move under ORION_SECRET_* because it \
          follows the override grammar",
@@ -607,6 +608,8 @@ struct Documented {
     path: String,
     /// `None` when the document states no default (the `—` marker).
     value: Option<String>,
+    /// The file the row was read from, repository-relative.
+    file: String,
     line: usize,
 }
 
@@ -635,6 +638,7 @@ fn example_settings() -> Vec<Documented> {
         found.push(Documented {
             path,
             value: Some(value.to_string()),
+            file: "config.toml.example".to_string(),
             line: index + 1,
         });
     }
@@ -647,40 +651,58 @@ fn example_settings() -> Vec<Documented> {
     found
 }
 
-/// Settings parsed out of the reference page's tables, paired with the env
+/// Every page of the configuration reference, sorted by name.
+fn reference_pages() -> Vec<std::path::PathBuf> {
+    let mut pages: Vec<_> = std::fs::read_dir(REFERENCE_DIR)
+        .expect("list docs/src/reference/configuration")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    pages.sort();
+    pages
+}
+
+/// Settings parsed out of the reference pages' tables, paired with the env
 /// override each row claims.
 fn reference_settings() -> Vec<(Documented, Option<String>)> {
-    let source = read(REFERENCE_MD);
     let mut found = Vec::new();
 
-    for (index, line) in source.lines().enumerate() {
-        let Some(cells) = table_cells(line) else {
-            continue;
-        };
-        if cells.len() < 3 {
-            continue;
+    for page in reference_pages() {
+        let source = std::fs::read_to_string(&page).unwrap();
+        let file = format!(
+            "docs/src/reference/configuration/{}",
+            page.file_name().unwrap().to_string_lossy()
+        );
+        for (index, line) in source.lines().enumerate() {
+            let Some(cells) = table_cells(line) else {
+                continue;
+            };
+            if cells.len() < 3 {
+                continue;
+            }
+            let Some(path) = backticked(cells[0]).filter(|p| is_setting_path(p)) else {
+                continue;
+            };
+            let default = backticked(cells[1]).map(str::to_string);
+            if default.is_none() && cells[1] != NONE_MARKER {
+                continue; // not a settings row after all
+            }
+            let env = backticked(cells[2]).map(str::to_string);
+            found.push((
+                Documented {
+                    path: path.to_string(),
+                    value: default,
+                    file: file.clone(),
+                    line: index + 1,
+                },
+                env,
+            ));
         }
-        let Some(path) = backticked(cells[0]).filter(|p| is_setting_path(p)) else {
-            continue;
-        };
-        let default = backticked(cells[1]).map(str::to_string);
-        if default.is_none() && cells[1] != NONE_MARKER {
-            continue; // not a settings row after all
-        }
-        let env = backticked(cells[2]).map(str::to_string);
-        found.push((
-            Documented {
-                path: path.to_string(),
-                value: default,
-                line: index + 1,
-            },
-            env,
-        ));
     }
 
     assert!(
         found.len() > 50,
-        "only {} settings parsed out of reference.md — the parser is broken",
+        "only {} settings parsed out of docs/src/reference/configuration/ — the parser is broken",
         found.len()
     );
     found
@@ -780,7 +802,7 @@ fn parse_value(raw: &str) -> Option<toml::Value> {
 // ---------------------------------------------------------------------------
 
 /// Compare one document's settings against the struct defaults.
-fn assert_values_match(document: &str, settings: &[Documented]) {
+fn assert_values_match(settings: &[Documented]) {
     let defaults = all_defaults();
     let mut problems = Vec::new();
 
@@ -788,8 +810,8 @@ fn assert_values_match(document: &str, settings: &[Documented]) {
         // Checked for every row, including rows that state no default.
         if !defaults.contains_key(&setting.path) && !is_no_default(&setting.path) {
             problems.push(format!(
-                "{document}:{} documents `{}`, which is not a field of any config struct",
-                setting.line, setting.path
+                "{}:{} documents `{}`, which is not a field of any config struct",
+                setting.file, setting.line, setting.path
             ));
             continue;
         }
@@ -801,16 +823,16 @@ fn assert_values_match(document: &str, settings: &[Documented]) {
         }
         let Some(parsed) = parse_value(raw) else {
             problems.push(format!(
-                "{document}:{} value for `{}` is not valid TOML: {raw}",
-                setting.line, setting.path
+                "{}:{} value for `{}` is not valid TOML: {raw}",
+                setting.file, setting.line, setting.path
             ));
             continue;
         };
         let expected = &defaults[&setting.path];
         if &parsed != expected {
             problems.push(format!(
-                "{document}:{} documents `{} = {raw}` but the struct default is `{expected:?}`",
-                setting.line, setting.path
+                "{}:{} documents `{} = {raw}` but the struct default is `{expected:?}`",
+                setting.file, setting.line, setting.path
             ));
         }
     }
@@ -842,7 +864,7 @@ fn assert_coverage(document: &str, settings: &[Documented]) {
 
 #[test]
 fn config_example_matches_struct_defaults() {
-    assert_values_match("config.toml.example", &example_settings());
+    assert_values_match(&example_settings());
 }
 
 #[test]
@@ -853,13 +875,13 @@ fn config_example_documents_every_setting() {
 #[test]
 fn reference_page_matches_struct_defaults() {
     let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_values_match("docs/src/reference/configuration.md", &settings);
+    assert_values_match(&settings);
 }
 
 #[test]
 fn reference_page_documents_every_setting() {
     let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_coverage("docs/src/reference/configuration.md", &settings);
+    assert_coverage("docs/src/reference/configuration/", &settings);
 }
 
 /// The env-var column is checked three ways: the name must be the one the
@@ -877,15 +899,15 @@ fn reference_page_matches_env_overrides() {
             Some(name) => {
                 if name != expected {
                     problems.push(format!(
-                        "reference.md:{} documents `{name}` for `{}`, but the \
+                        "{}:{} documents `{name}` for `{}`, but the \
                          override for that setting is `{expected}`",
-                        setting.line, setting.path
+                        setting.file, setting.line, setting.path
                     ));
                 } else if !names.contains(&name) {
                     problems.push(format!(
-                        "reference.md:{} documents `{name}` for `{}`, but no such \
+                        "{}:{} documents `{name}` for `{}`, but no such \
                          override exists in src/config/env_overrides.rs",
-                        setting.line, setting.path
+                        setting.file, setting.line, setting.path
                     ));
                 }
                 documented.insert(name);
@@ -893,9 +915,9 @@ fn reference_page_matches_env_overrides() {
             None => {
                 if names.contains(&expected) {
                     problems.push(format!(
-                        "reference.md:{} says `{}` has no env override, but \
+                        "{}:{} says `{}` has no env override, but \
                          `{expected}` exists in src/config/env_overrides.rs",
-                        setting.line, setting.path
+                        setting.file, setting.line, setting.path
                     ));
                 }
             }
@@ -981,20 +1003,23 @@ fn config_example_loads_through_the_real_entry_point() {
 #[test]
 fn the_documented_tract_devices_are_the_ones_the_code_knows() {
     let known = orion::model::runtimes::devices_of("tract").expect("tract is a known runtime");
-    let reference = read(REFERENCE_MD);
+    let reference = read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/src/reference/configuration/models.md"
+    ));
 
     // The row and the section both enumerate them; the row is the normative
     // one, so it is what is compared.
     let row = reference
         .lines()
         .find(|line| line.contains("`models.runtimes.tract.device`"))
-        .expect("configuration.md must document models.runtimes.tract.device");
+        .expect("configuration/models.md must document models.runtimes.tract.device");
 
     for device in known {
         assert!(
             row.contains(&format!("`{device}`")),
             "device '{device}' is in devices_of(\"tract\") but not in the \
-             models.runtimes.tract.device row of configuration.md — document it, with what it \
+             models.runtimes.tract.device row of configuration/models.md — document it, with what it \
              costs and whether it reproduces the CPU path"
         );
     }
@@ -1006,7 +1031,7 @@ fn the_documented_tract_devices_are_the_ones_the_code_knows() {
         }
         assert!(
             known.contains(&quoted),
-            "configuration.md offers device '{quoted}' for tract, which devices_of(\"tract\") \
+            "configuration/models.md offers device '{quoted}' for tract, which devices_of(\"tract\") \
              does not list"
         );
     }

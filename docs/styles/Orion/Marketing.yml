@@ -1,0 +1,23 @@
+extends: existence
+message: "'%s' is positioning, not documentation. Positioning lives on the marketing site."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: true
+tokens:
+  - powerful
+  - seamless
+  - seamlessly
+  - robust
+  - blazing
+  - blazingly
+  - enterprise-grade
+  - best-in-class
+  - world-class
+  - cutting-edge
+  - state-of-the-art
+  - leverage
+  - leveraging
+  - unlock
+  - supercharge
+  - effortless
+  - effortlessly

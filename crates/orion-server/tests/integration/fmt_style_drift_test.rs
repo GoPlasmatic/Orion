@@ -21,9 +21,9 @@ const WORKFLOWS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/src/reference/workflows.md"
 );
-const FUNCTIONS_MD: &str = concat!(
+const FUNCTIONS_DIR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/functions.md"
+    "/../../docs/src/reference/functions"
 );
 
 fn schema_properties(name: &str) -> BTreeSet<String> {
@@ -134,19 +134,28 @@ fn every_builtin_input_table_names_an_engine_builtin_and_only_those() {
     );
 }
 
-/// The reference page lists each function's fields in a table; the
+/// Each function's reference page lists its fields in a table; the
 /// formatter orders an input by the registry (Orion functions) or
 /// `BUILTIN_INPUT_KEYS` (engine built-ins). Both are canonical order, so
 /// they must agree — a reader who learned the fields from the page should
 /// see them in that order in every formatted file.
 #[test]
 fn documented_field_order_is_the_formatters() {
-    let doc = std::fs::read_to_string(FUNCTIONS_MD).unwrap();
     let mut checked = 0;
     let mut mismatches = Vec::new();
-    for section in doc.split("\n### `").skip(1) {
-        let name = section.split('`').next().unwrap();
-        // The section's *first* table: `data_write` follows its field table
+    let mut pages: Vec<_> = std::fs::read_dir(FUNCTIONS_DIR)
+        .expect("list reference/functions")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "md"))
+        .collect();
+    pages.sort();
+    for path in pages {
+        // The page is named after the function; the hub and the discovery
+        // page name no function and are skipped by `input_key_order`.
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let name = name.as_str();
+        let section = std::fs::read_to_string(&path).unwrap();
+        // The page's *first* table: `data_write` follows its field table
         // with one for the `write` envelope's own members.
         // A row may document several fields at once (`cc` / `bcc`); every
         // backticked name in its first cell counts, in order.

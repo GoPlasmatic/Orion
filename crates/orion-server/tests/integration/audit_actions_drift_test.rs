@@ -10,7 +10,7 @@
 //! The call sites are the authority. This module walks `src/`, reads the
 //! action and resource type out of every `audit_log` / `audit_log_draft_only` /
 //! `audit_and_reload` / `audited_write` call, and asserts against the table in
-//! `operate/audit-logs.md`:
+//! `operate/run/audit-logs.md`:
 //!
 //! 1. Every emitted `(action, resource_type)` pair is documented.
 //! 2. Every documented action is one some call site emits.
@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 const SRC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
 const AUDIT_LOGS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/operate/audit-logs.md"
+    "/../../docs/src/operate/run/audit-logs.md"
 );
 
 /// The helpers that write an audit row. Each takes the action as its third
@@ -209,7 +209,7 @@ fn actions(arg: &str) -> Vec<String> {
 /// The page carries other tables, so this locks onto the one whose header
 /// names both columns and stops at the first line that is not a table row.
 fn documented() -> (BTreeSet<String>, BTreeSet<String>) {
-    let page = std::fs::read_to_string(AUDIT_LOGS_MD).expect("read operate/audit-logs.md");
+    let page = std::fs::read_to_string(AUDIT_LOGS_MD).expect("read operate/run/audit-logs.md");
     let mut actions = BTreeSet::new();
     let mut resource_types = BTreeSet::new();
     let mut in_table = false;
@@ -234,7 +234,7 @@ fn documented() -> (BTreeSet<String>, BTreeSet<String>) {
 
     assert!(
         !actions.is_empty() && !resource_types.is_empty(),
-        "the vocabulary table in operate/audit-logs.md did not parse — its header \
+        "the vocabulary table in operate/run/audit-logs.md did not parse — its header \
          must name `action` and `resource_type` in the first two columns"
     );
     (actions, resource_types)
@@ -277,7 +277,7 @@ fn every_emitted_audit_action_is_documented() {
     assert!(
         missing.is_empty(),
         "the server writes audit rows the vocabulary table in \
-         docs/src/operate/audit-logs.md does not list:\n  {}\n\
+         docs/src/operate/run/audit-logs.md does not list:\n  {}\n\
          `action` and `resource_type` are exact-match filters, so an undocumented \
          value is a query that silently returns nothing.",
         missing.join("\n  ")
@@ -303,7 +303,7 @@ fn no_documented_audit_action_is_a_ghost() {
 
     assert!(
         ghost_actions.is_empty() && ghost_types.is_empty(),
-        "docs/src/operate/audit-logs.md documents audit values no call site writes — \
+        "docs/src/operate/run/audit-logs.md documents audit values no call site writes — \
          actions {ghost_actions:?}, resource types {ghost_types:?}. \
          An operator filtering on one of these waits forever for rows that never come."
     );

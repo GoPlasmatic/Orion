@@ -1,0 +1,18 @@
+extends: existence
+message: "'%s' delays the sentence. Delete it and start with the fact."
+link: ../DOCUMENTATION_STANDARD.md
+level: error
+ignorecase: true
+tokens:
+  - in this guide
+  - in this section
+  - in this article
+  - it is worth noting that
+  - it's worth noting that
+  - please note
+  - note that
+  - as mentioned above
+  - as we saw
+  - as you can see
+  - keep in mind that
+  - it should be noted

@@ -1,0 +1,9 @@
+extends: existence
+message: "'%s' describes behaviour in the future. The product acts in the present tense (§6.1)."
+link: ../DOCUMENTATION_STANDARD.md
+level: warning
+ignorecase: true
+tokens:
+  - will (?:be )?(?:return|send|sent|creat|fail|caus|reject|refus|answer|reload|retr|record|emit|writ|read|delet|remov|ignor|skip|run|start|stop|match|evaluat|serve)\w*
+  - won't (?:be )?\w+
+  - will not (?:be )?\w+
