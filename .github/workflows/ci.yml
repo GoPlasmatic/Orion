@@ -536,10 +536,32 @@ jobs:
       # Failing, per §12's "start advisory and tighten to failing over one
       # quarter": the flag came off when docs/lint.sh's DOCS_STRUCTURE_LEVEL
       # became `enforce`, and the two switch together.
+      # vale is a Go binary published to GitHub Releases, and it is not one of
+      # the tools `taiki-e/install-action` manages. Asking that action for it
+      # falls through to cargo-binstall, which resolves the name on crates.io
+      # — where `vale` is an unrelated 0.0.0 crate of the same name — so the
+      # step could only ever fail with "no version matching requirement". It
+      # never ran: the `Docs lint` step above it was failing first, and the
+      # install-action bump in #322 is what surfaced it.
+      #
+      # Taken from the release directly, against the checksum the release
+      # publishes. That pins the bytes the way the SHA-pinned actions above
+      # are pinned; the cost is that a version bump here needs its checksum
+      # updated with it, which the two `VALE_` values keep in one place.
       - name: Install Vale
-        uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2
-        with:
-          tool: vale@3.21.0
+        env:
+          VALE_VERSION: 3.21.0
+          VALE_SHA256: 96997d19a4ca6981673b0d4c5ca7f3ede4a9f97964a96edc29fba9e28a328336
+        run: |
+          set -euo pipefail
+          archive="vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          curl -sSfL -o "$archive" \
+            "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/${archive}"
+          echo "${VALE_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" vale
+          sudo install -m 0755 vale /usr/local/bin/vale
+          rm -f "$archive" vale
+          vale --version
 
       - name: Docs prose
         working-directory: docs
