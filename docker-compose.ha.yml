@@ -119,7 +119,7 @@ services:
       ORION_CLUSTER__INSTANCE_ID: "node-b"
 
   lb:
-    image: nginx:1.30-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
+    image: nginx:1.30-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
     ports:
       - "8080:8080"
     volumes:

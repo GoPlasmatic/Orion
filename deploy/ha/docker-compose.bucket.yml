@@ -14,7 +14,7 @@
 
 services:
   bucket:
-    image: nginx:1.30-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
+    image: nginx:1.30-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
     restart: unless-stopped
     volumes:
       - ./crates/orion-server/tests/fixtures/models/c4-tiny/c4-tiny.onnx:/usr/share/nginx/html/models/c4-tiny.onnx:ro
