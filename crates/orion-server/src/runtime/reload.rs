@@ -189,10 +189,15 @@ pub async fn reload_engine_with_opts(
 
         // The model half, compiled on the engine just built — never carried
         // across, because a `datalogic` program is bound to the engine that
-        // compiled it and both paths above produced a fresh one. A workflow
-        // naming a model the set does not serve is quarantined with the
-        // reason, the way a workflow naming an unavailable plugin function
-        // is.
+        // compiled it and both paths above produced a fresh one, including
+        // the cheap one: `with_new_workflows` compiles on a fresh expression
+        // engine too. So there is no model equivalent of the plugin
+        // fingerprint comparison above, and a set is rebuilt whether or not
+        // the rows moved; `ModelSet`'s own docs carry the reason, and
+        // `a_reload_hands_the_model_set_a_new_expression_engine` pins the
+        // upstream fact it rests on. A workflow naming a model the set does
+        // not serve is quarantined with the reason, the way a workflow
+        // naming an unavailable plugin function is.
         let model_rows = state.repos.models.list_active().await?;
         let models = Arc::new(crate::model::ModelSet::load_active(
             &model_rows,

@@ -81,13 +81,25 @@ pub struct ModelLoadIssue {
     pub reason: String,
 }
 
-/// The model half of a generation: what loaded, what did not, and the
-/// fingerprint of the rows it was built from.
+/// The model half of a generation: what loaded, and what did not.
+///
+/// Deliberately without an identity of its own, unlike [`PluginSet`]. That
+/// fingerprint exists so a reload can tell an unchanged plugin set from a
+/// changed one and skip rebuilding the engine; a model set has no such
+/// shortcut available to it, because **both** reload paths hand it a fresh
+/// expression engine — `Engine::with_new_workflows` compiles on one of its
+/// own, exactly as a full rebuild does — and a compiled `datalogic` program
+/// belongs to the engine that compiled it. A set carried across would hold
+/// adapters no generation evaluates on. One was here once, computed on
+/// every load and read by nothing, which is an invitation to write that
+/// bug; if a cheaper path is wanted, the thing to change is what a model
+/// set is compiled on, not what a reload compares.
+///
+/// [`PluginSet`]: crate::plugin::PluginSet
 #[derive(Default)]
 pub struct ModelSet {
     models: HashMap<String, Arc<ModelEntry>>,
     pub issues: Vec<ModelLoadIssue>,
-    fingerprint: String,
 }
 
 impl ModelSet {
@@ -109,17 +121,21 @@ impl ModelSet {
         enabled: bool,
         datalogic: &datalogic::Engine,
     ) -> Self {
-        let mut set = ModelSet {
-            fingerprint: Self::fingerprint_of(rows),
-            ..ModelSet::default()
-        };
+        let mut set = ModelSet::default();
         for row in rows {
             let compiled = decode_row(row, enabled).and_then(|item| {
                 compile_entry(item, config, datalogic).map_err(|reason| ("adapter", reason))
             });
             match compiled {
                 Ok(entry) => {
-                    tracing::info!(
+                    // Per model at debug and the count at info: this runs
+                    // on every generation build, so an estate of any size
+                    // would otherwise put one line per model into the log
+                    // every time any workflow, channel or connector
+                    // changed. A model that does *not* load still gets its
+                    // own line, because that one is about something being
+                    // wrong.
+                    tracing::debug!(
                         model = %row.model_id,
                         version = row.version,
                         digest = %row.digest,
@@ -146,6 +162,13 @@ impl ModelSet {
                     });
                 }
             }
+        }
+        if !rows.is_empty() {
+            tracing::info!(
+                ready = set.models.len(),
+                unavailable = set.issues.len(),
+                "Model set compiled on this generation"
+            );
         }
         set
     }
@@ -202,25 +225,7 @@ impl ModelSet {
                 }),
             }
         }
-        parts.sort();
-        set.fingerprint = parts.join(";");
         set
-    }
-
-    /// The identity of a set of active rows: sorted `id@version:digest`, so
-    /// any change — a new version, a digest, an activation — is a different
-    /// set.
-    pub fn fingerprint_of(rows: &[Model]) -> String {
-        let mut parts: Vec<String> = rows
-            .iter()
-            .map(|r| format!("{}@{}:{}", r.model_id, r.version, r.digest))
-            .collect();
-        parts.sort();
-        parts.join(";")
-    }
-
-    pub fn fingerprint(&self) -> &str {
-        &self.fingerprint
     }
 
     /// The entry serving `model_id` — the active version — if this node
@@ -582,7 +587,6 @@ mod tests {
         );
         assert_eq!(set.ids().collect::<Vec<_>>(), ["ada.c4-tiny"]);
         assert!(set.issue_for("ada.c4-tiny").is_none());
-        assert_eq!(set.fingerprint(), "ada.c4-tiny@3:sha256:abc");
 
         // The adapters evaluate on the engine they were compiled on, and
         // produce the declared tensor from the fixture's `data.board` shape.
@@ -701,7 +705,6 @@ mod tests {
         assert_eq!(loaded.digest, "sha256:abc");
         assert_eq!(loaded.artifact.key, "c4-tiny.onnx");
         assert_eq!(loaded.adapters.len(), 1);
-        assert_eq!(set.fingerprint(), "ada.c4-tiny@0:sha256:abc");
 
         let bare = datalogic::Engine::builder().build();
         let set = ModelSet::from_manifests(
@@ -718,23 +721,29 @@ mod tests {
         assert_eq!(issue.version, 0);
     }
 
-    /// Order-independent, version- and digest-sensitive.
+    /// Why a model set has no identity to compare, and why comparing one
+    /// would be a bug.
+    ///
+    /// A reload that leaves the plugins alone takes the cheap engine path,
+    /// `Engine::with_new_workflows`, and the tempting saving is to carry the
+    /// previous model set across when the rows have not changed — the
+    /// plugin half skips its rebuild on exactly that comparison. It is
+    /// unsound here, and this is the fact that makes it so: that path
+    /// compiles on a *fresh* expression engine, as a full rebuild does, and
+    /// a compiled program belongs to the engine that compiled it. A carried
+    /// set would hold adapters no generation evaluates on.
+    ///
+    /// If this ever fails, upstream has changed and the saving is worth
+    /// revisiting.
     #[test]
-    fn the_fingerprint_identifies_the_row_set() {
-        let a = row(passed(), fixture::MANIFEST);
-        let mut b = row(passed(), fixture::MANIFEST);
-        b.model_id = "ada.other".to_string();
-        assert_eq!(
-            ModelSet::fingerprint_of(&[a.clone(), b.clone()]),
-            ModelSet::fingerprint_of(&[b.clone(), a.clone()])
+    fn a_reload_hands_the_model_set_a_new_expression_engine() {
+        let engine = dataflow_rs::Engine::builder().build().expect("builds");
+        let next = engine.with_new_workflows(Vec::new()).expect("reloads");
+        assert!(
+            !Arc::ptr_eq(engine.datalogic(), next.datalogic()),
+            "the cheap reload path reused its expression engine, so a model \
+             set could now be carried across one"
         );
-        let mut later = a.clone();
-        later.version = 4;
-        assert_ne!(
-            ModelSet::fingerprint_of(std::slice::from_ref(&a)),
-            ModelSet::fingerprint_of(&[later])
-        );
-        assert_eq!(ModelSet::empty().fingerprint(), "");
         assert!(ModelSet::empty().is_empty());
     }
 

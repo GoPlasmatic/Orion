@@ -50,6 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   given expression, data and engine version but **not** stable across
   versions, so it sizes a budget rather than defining one.
 
+### Changed
+
+- **A model set no longer computes an identity nothing can use.**
+  `ModelSet::fingerprint()` and `fingerprint_of()` were computed on every
+  generation build, public, unit-tested, and called from nowhere. They
+  existed because the plugin half has the same pair and skips its rebuild on
+  the comparison — but a model set cannot: **both** reload paths hand it a
+  fresh expression engine (the cheap one, `Engine::with_new_workflows`,
+  compiles on one of its own just as a full rebuild does), and a compiled
+  `datalogic` program belongs to the engine that compiled it, so a carried
+  set would hold adapters nothing evaluates on. A dead accessor that exists
+  to be compared, and cannot correctly be compared, is a trap; the reason is
+  now in `ModelSet`'s own documentation and pinned by a test against the
+  upstream behaviour it rests on, so the day that changes, it fails. Loading
+  a model set also stopped writing one `info` line per model — it is one line
+  per *set* now, with the per-model line at `debug` — because that log ran on
+  every workflow activation, channel edit and connector change. A model that
+  does not load still gets its own line.
+
 ### Fixed
 
 - **`model_infer`'s `timeout_ms` takes JSONLogic**, as `channel_call`'s and
