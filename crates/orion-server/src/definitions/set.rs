@@ -242,18 +242,26 @@ pub struct ModelDefinition {
     pub graph: Option<Result<crate::model::GraphStats, String>>,
 }
 
+/// Why a file whose `abi` says model is not a usable manifest.
+///
+/// Two cases rather than one string, because they report differently: a
+/// validation failure has a problem per field and a path for each, which is
+/// what an author fixes from, and an unreadable file has neither.
+pub enum ModelReadError {
+    /// The manifest file, or the artifact beside it, could not be read.
+    Unreadable(String),
+    /// It is JSON and it did not validate: every problem, each with its path
+    /// into the document.
+    Invalid(Vec<crate::errors::FieldError>),
+}
+
 impl ModelDefinition {
     /// The manifest read from `path`, with the artifact beside it hashed
     /// and read when it is there.
-    pub fn from_file(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let manifest = crate::model::Manifest::parse(&text).map_err(|errors| {
-            errors
-                .iter()
-                .map(|e| format!("{}: {}", e.path, e.message))
-                .collect::<Vec<_>>()
-                .join("; ")
-        })?;
+    pub fn from_file(path: &Path) -> Result<Self, ModelReadError> {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| ModelReadError::Unreadable(e.to_string()))?;
+        let manifest = crate::model::Manifest::parse(&text).map_err(ModelReadError::Invalid)?;
         let artifact_path = manifest
             .artifact
             .as_deref()
@@ -261,8 +269,9 @@ impl ModelDefinition {
             .filter(|p| p.is_file());
         let (digest, artifact_bytes, graph) = match &artifact_path {
             Some(p) => {
-                let bytes =
-                    std::fs::read(p).map_err(|e| format!("reading '{}': {e}", p.display()))?;
+                let bytes = std::fs::read(p).map_err(|e| {
+                    ModelReadError::Unreadable(format!("reading '{}': {e}", p.display()))
+                })?;
                 (
                     Some(crate::crypto::sha256_digest(&bytes)),
                     Some(bytes.len() as u64),
@@ -438,11 +447,38 @@ impl DefinitionSet {
                 }
                 self.models.push(model);
             }
-            Err(reason) => findings.push(super::diagnostic::Diagnostic::error(
-                "parse.model",
-                path.display().to_string(),
-                format!("not a valid model manifest: {reason}"),
-            )),
+            // A file the walk recognised as a manifest and the validator
+            // then refused is a definition with a problem, not a file that
+            // was never one: every field error is reported under its own
+            // path, the way a workflow's schema refusal is, so the author
+            // reads the same message here as `POST /admin/models` gives.
+            Err(ModelReadError::Invalid(problems)) => {
+                let origin = path.display().to_string();
+                let spans = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|text| super::json::Document::parse(&text).ok());
+                findings.extend(problems.iter().map(|problem| {
+                    let d = super::diagnostic::Diagnostic::from_field_error(
+                        "parse.model",
+                        "model manifest",
+                        problem,
+                    );
+                    let line = d
+                        .path
+                        .as_deref()
+                        .and_then(|p| spans.as_ref()?.locate(p))
+                        .map(|span| spans.as_ref().expect("located in it").line_col(span.start));
+                    let path = d.path.clone();
+                    d.with_location(&origin, path.as_deref(), line)
+                }));
+            }
+            Err(ModelReadError::Unreadable(reason)) => {
+                findings.push(super::diagnostic::Diagnostic::error(
+                    "parse.model",
+                    "model manifest",
+                    format!("not a valid model manifest: {reason}"),
+                ))
+            }
         }
     }
 
@@ -890,17 +926,35 @@ mod tests {
         assert_eq!(by_flag.models.len(), 2);
 
         // A file that is a model by `abi` but not a valid manifest is a
-        // parse finding, not a skip.
+        // parse finding, not a skip — one per problem, each keeping the path
+        // and the file it is in, so the author reads what the admin API
+        // would have told them rather than a joined string.
         std::fs::write(
             dir.join("elsewhere/broken.json"),
-            r#"{"abi":"orion:model@1.0.0","name":"Bad.Name","inputs":[]}"#,
+            "{\n  \"abi\": \"orion:model@1.0.0\",\n  \"name\": \"Bad.Name\",\n  \"version\": \"\"\n}",
         )
         .expect("test fixture");
         let (_, report) = DefinitionSet::from_directory(&dir).expect("loads");
+        let parse: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|f| f.check == "parse.model")
+            .collect();
+        let paths: Vec<_> = parse.iter().filter_map(|f| f.path.as_deref()).collect();
+        assert_eq!(paths, ["name", "version", "inputs"], "{parse:?}");
         assert!(
-            report.findings.iter().any(|f| f.check == "parse.model"),
-            "{:?}",
-            report.findings
+            parse.iter().all(|f| f
+                .file
+                .as_deref()
+                .is_some_and(|p| p.ends_with("broken.json"))),
+            "every problem names the file it is in: {parse:?}"
+        );
+        // A path the document has is located; `inputs` is missing rather than
+        // wrong, so there is no line to point at and none is invented.
+        assert_eq!(
+            parse.iter().map(|f| f.line.is_some()).collect::<Vec<_>>(),
+            [true, true, false],
+            "{parse:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

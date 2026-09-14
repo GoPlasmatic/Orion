@@ -2648,6 +2648,77 @@ fn lint_checks_model_references_and_reports_the_graphs_stats() {
     );
 }
 
+/// A manifest the validator refuses is a definition with a problem, not a
+/// file that was never a definition (#330).
+///
+/// The walk recognises a model by its `abi`, so a manifest that then fails
+/// to validate leaves the set empty — and `lint` reported that as "no
+/// definitions found", citing the `abi` rule the file satisfies as the
+/// reason the file was ignored. Every field error reaches the author
+/// instead, under its own path and at the line it is on, which is what the
+/// admin API has always answered for the same document.
+#[test]
+fn lint_reports_a_broken_model_manifest_rather_than_calling_it_nothing() {
+    // Only the manifest in the tree: an empty set is what made the message
+    // wrong, so the workflow that would have filled it goes.
+    let scratch = model_set("ada.c4-tiny");
+    std::fs::remove_file(scratch.path().join("score.json")).unwrap();
+    let manifest = scratch.path().join("models/model.json");
+    let original = std::fs::read_to_string(&manifest).unwrap();
+
+    // Several problems at once, reported in one round.
+    std::fs::write(
+        &manifest,
+        original
+            .replace(r#""dtype": "f32""#, r#""dtype": "f33""#)
+            .replace(r#""version": "0.1.0""#, r#""version": """#),
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(!ok, "{report}");
+    assert!(
+        !report.contains("no definitions found"),
+        "the file is a manifest by its abi, so it is never 'not a definition': {report}"
+    );
+    assert!(report.contains("[parse.model]"), "{report}");
+    assert!(
+        report.contains("inputs[0].dtype") && report.contains("unknown dtype 'f33'"),
+        "the field error reaches the author with its path: {report}"
+    );
+    assert!(
+        report.contains("outputs[0].dtype")
+            && report.contains("version must not be empty")
+            && report.contains("3 error(s)"),
+        "every problem in the document, in one round: {report}"
+    );
+    assert!(
+        report.contains("model.json:"),
+        "and the file it is in, with the line: {report}"
+    );
+
+    // An abi this build does not implement is the same class of answer.
+    std::fs::write(
+        &manifest,
+        original.replace(r#""orion:model@1.0.0""#, r#""orion:model@9.9.9""#),
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("unsupported abi 'orion:model@9.9.9'")
+            && report.contains("orion:model@1.0.0"),
+        "{report}"
+    );
+    assert!(!report.contains("no definitions found"), "{report}");
+
+    // Restored, the same tree lints clean — so what failed above was the
+    // manifest, not the shape of the directory.
+    std::fs::write(&manifest, &original).unwrap();
+    let (ok, report) = lint_dir(scratch.path(), &[]);
+    assert!(ok, "{report}");
+    assert!(report.contains("1 model(s)"), "{report}");
+}
+
 /// With `--model-dir` the model runs for real: the result expression's
 /// shape lands at `output`, the stats name the fixture, and nothing was
 /// stubbed. Without it the run is refused by name before it starts — unless

@@ -882,19 +882,26 @@ fn load_and_gate(
         eprintln!("{notice}");
     }
 
-    if report.set.is_empty() && report.set.models.is_empty() {
+    let errors = report.errors();
+    let warnings = report.warnings();
+    for finding in &report.findings {
+        eprintln!("{finding}");
+    }
+
+    // "Nothing here" is only true when nothing was *rejected* either. A file
+    // the walk recognised and the validator then refused leaves the set
+    // empty while the reason sits in the findings above, and returning here
+    // first reported a manifest with a bad shape as not a manifest at all —
+    // citing, as the reason it was ignored, the `abi` rule the file
+    // satisfied. A set that refused everything it read fails below with what
+    // was wrong.
+    if report.set.is_empty() && report.set.models.is_empty() && errors == 0 {
         return Err(format!(
             "no definitions found under '{dir}'. A definition is a JSON object with \
              'tasks' (workflow), 'channel_type' (channel), 'connector_type' (connector) or \
              an 'abi' of orion:model@… (model manifest)."
         )
         .into());
-    }
-
-    let errors = report.errors();
-    let warnings = report.warnings();
-    for finding in &report.findings {
-        eprintln!("{finding}");
     }
 
     for (pass, count) in &report.compiled {
