@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`model_infer` reports what a call's expressions charged.** `stats_output`
+  gains `ops` — every input adapter plus the result — and `peak_ops`, the
+  heaviest single evaluation. `engine.ops_budget` is what makes it safe to
+  run a manifest written by a tenant or a competitor, and the configuration
+  reference says to size it from the heaviest legitimate expression in the
+  estate; nothing reported what one spent, so the only way to find the number
+  was to set a budget, replay, and raise it until the call stopped failing —
+  a config change and a reload per probe, node-wide, and impossible for a
+  manifest already serving. The two numbers answer different questions: `ops`
+  is what the message cost, and `peak_ops` is what a ceiling must clear,
+  because the budget bounds one evaluation and a call is several. Neither
+  costs anything to produce — the engine charges whether or not a ceiling is
+  set, and the count was being discarded. Note that it is deterministic for a
+  given expression, data and engine version but **not** stable across
+  versions, so it sizes a budget rather than defining one.
+
 ### Fixed
 
 - **`model_infer`'s `timeout_ms` takes JSONLogic**, as `channel_call`'s and

@@ -377,9 +377,32 @@ fn evaluate(
     engine: &datalogic::Engine,
     logic: &datalogic::Logic,
     root: &OwnedDataValue,
-) -> Result<OwnedDataValue, datalogic::Error> {
+) -> Result<(OwnedDataValue, u64), datalogic::Error> {
     let arena = datalogic::bumpalo::Bump::new();
-    engine.evaluate(logic, root, &arena).map(|v| v.to_owned())
+    engine
+        .evaluate_metered(logic, root, &arena, engine.resolve_ops_budget(None))
+        .map(|metered| (metered.value.to_owned(), metered.ops))
+}
+
+/// What one call's expressions charged: every input adapter and, unless the
+/// task asked for `raw`, the result.
+///
+/// Two numbers because they answer different questions. `total` is what the
+/// message cost. `peak` is what a ceiling has to clear, because
+/// `engine.ops_budget` bounds one *evaluation* and a call is several: a
+/// manifest with four adapters at 300 operations each is refused by a
+/// budget of 250 and admitted by one of 400, whatever the total says.
+#[derive(Default)]
+struct Charged {
+    total: u64,
+    peak: u64,
+}
+
+impl Charged {
+    fn add(&mut self, ops: u64) {
+        self.total = self.total.saturating_add(ops);
+        self.peak = Ord::max(self.peak, ops);
+    }
 }
 
 /// A permit from `permits` before `deadline`, or a `permit` refusal naming
@@ -580,8 +603,13 @@ impl ModelInferHandler {
         };
         let mut tensors: Vec<OwnedDataTensor> = Vec::with_capacity(entry.adapters.len());
         let mut input_elements = 0usize;
+        // What the manifest's own half of the call spends. The adapters run
+        // here, before the load and the permits, so their cost is in
+        // neither `queued_ms` nor `inference_ms` — and without this it was
+        // in nothing at all.
+        let mut charged = Charged::default();
         for ((name, logic), decl) in entry.adapters.iter().zip(&entry.manifest.inputs) {
-            let value = evaluate(datalogic, logic, &root).map_err(|e| {
+            let (value, ops) = evaluate(datalogic, logic, &root).map_err(|e| {
                 evaluation_refused(
                     Some(&labels),
                     Category::Adapter,
@@ -589,6 +617,7 @@ impl ModelInferHandler {
                     &e,
                 )
             })?;
+            charged.add(ops);
             let tensor = match value {
                 OwnedDataValue::Tensor(tensor) => {
                     Arc::try_unwrap(tensor).unwrap_or_else(|shared| (*shared).clone())
@@ -774,14 +803,16 @@ impl ModelInferHandler {
         let value = if raw {
             object
         } else {
-            evaluate(datalogic, &entry.result, &object).map_err(|e| {
+            let (value, ops) = evaluate(datalogic, &entry.result, &object).map_err(|e| {
                 evaluation_refused(
                     Some(&labels),
                     Category::Adapter,
                     "the result expression failed",
                     &e,
                 )
-            })?
+            })?;
+            charged.add(ops);
+            value
         };
 
         // Written last, together: nothing lands on a failure above.
@@ -797,6 +828,8 @@ impl ModelInferHandler {
                     "device": device,
                     "parameters": entry.stats.as_ref().map(|s| s.parameters),
                     "artifact_bytes": entry.stats.as_ref().map(|s| s.artifact_bytes),
+                    "ops": charged.total,
+                    "peak_ops": charged.peak,
                     "queued_ms": queued_for.as_secs_f64() * 1000.0,
                     "inference_ms": inference_took.as_secs_f64() * 1000.0,
                     "cold_load": cold_load,

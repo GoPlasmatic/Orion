@@ -203,6 +203,19 @@ async fn an_inference_runs_end_to_end_and_the_node_reports_it_loaded() {
     assert!(stats["artifact_bytes"].as_u64().unwrap_or(0) > 0, "{stats}");
     assert_eq!(stats["cold_load"], true, "{stats}");
     assert!(stats["inference_ms"].is_number() && stats["queued_ms"].is_number());
+    // What the manifest's own half of the call charged (#324). The board is
+    // 84 elements and the tensor family prices an operator by the data it
+    // moves, so the adapter alone is at least that; `ops` adds the result
+    // expression on top, and `peak_ops` is the one number a per-evaluation
+    // ceiling has to clear. The exact values move with the expression
+    // engine, so what is pinned here is the relationship between them.
+    let ops = stats["ops"].as_u64().unwrap_or(0);
+    let peak = stats["peak_ops"].as_u64().unwrap_or(0);
+    assert!(
+        peak >= 84,
+        "the adapter is priced by the board it reads: {stats}"
+    );
+    assert!(ops > peak, "the result expression is charged too: {stats}");
     assert!(
         stats["digest"]
             .as_str()
@@ -380,6 +393,78 @@ async fn the_ops_budget_prices_the_adapter() {
     );
     assert!(body.get("data").is_none(), "{body}");
     cleanup(&h);
+}
+
+/// `peak_ops` is the ceiling the call needs, read rather than searched for
+/// (#324).
+///
+/// `engine.ops_budget` is what makes it safe to run a manifest someone else
+/// wrote, and the configuration reference says to size it from the heaviest
+/// legitimate expression in the estate. Nothing reported what an evaluation
+/// spent, so the only way to find that number was to set a budget, replay,
+/// and raise it until the call stopped failing — O(log n) replays, each one
+/// a config change and a reload, node-wide, and impossible for a manifest
+/// already serving.
+///
+/// So: run once with no ceiling and read the number; set exactly that and
+/// the call is admitted; set one below and it is refused. The budget bounds
+/// one evaluation, which is why the number that matters is the peak and not
+/// the total.
+#[tokio::test]
+async fn the_peak_ops_a_call_reports_is_the_budget_it_needs() {
+    let measure = async || {
+        let mut config = models_config(true);
+        config.models.preload = orion::config::ModelPreload::None;
+        let h = harness_with(config).await;
+        activate_fixture(&h).await;
+        let channel = deploy(
+            &h.app,
+            "measure",
+            tasks(json!(FIXTURE_ID), json!({"stats_output": "data.stats"})),
+        )
+        .await;
+        let (status, body) = call(&h.app, &channel, board()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let stats = &body["data"]["stats"];
+        let peak = stats["peak_ops"].as_u64().expect("peak_ops");
+        let ops = stats["ops"].as_u64().expect("ops");
+        cleanup(&h);
+        (peak, ops)
+    };
+    let (peak, ops) = measure().await;
+    assert!(peak > 0 && ops >= peak, "peak {peak}, total {ops}");
+
+    let run_under = async |budget: u64| {
+        let mut config = models_config(true);
+        config.models.preload = orion::config::ModelPreload::None;
+        config.engine.ops_budget = budget;
+        let h = harness_with(config).await;
+        activate_fixture(&h).await;
+        let channel = deploy(&h.app, "budgeted", tasks(json!(FIXTURE_ID), json!({}))).await;
+        let (status, body) = call(&h.app, &channel, board()).await;
+        cleanup(&h);
+        (status, body)
+    };
+
+    let (status, body) = run_under(peak).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the budget the call reported it needed admits it: {body}"
+    );
+    let (status, body) = run_under(peak - 1).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "one operation short refuses it: {body}"
+    );
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains(&format!("budget of {}", peak - 1)),
+        "{body}"
+    );
 }
 
 /// A workflow naming, by literal id, a model this node cannot serve is

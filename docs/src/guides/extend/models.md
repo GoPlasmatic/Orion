@@ -134,7 +134,7 @@ Name the model, the JSON root the adapters read, and where the result goes:
 
 ## 8. Read the stats
 
-`stats_output` writes, per call, what the workflow author cannot otherwise see. That is which version and digest answered, on which runtime and device, and the parameter count and artifact size the node measured at admission. It also writes `queued_ms`, `inference_ms` and `cold_load` for this call. A workflow that scores a competition reads `parameters` from here rather than trusting the entrant's own claim. A workflow tuning a deadline reads `inference_ms`.
+`stats_output` writes, per call, what the workflow author cannot otherwise see. That is which version and digest answered, on which runtime and device, and the parameter count and artifact size the node measured at admission. It also writes `queued_ms`, `inference_ms` and `cold_load` for this call, and what the manifest's own expressions charged: `ops` for all of them together, `peak_ops` for the heaviest one. A deployment running manifests it did not write sizes [`engine.ops_budget`](../../reference/configuration/engine.md#ops_budget) from `peak_ops`, because the ceiling bounds one evaluation rather than the call. A workflow that scores a competition reads `parameters` from here rather than trusting the entrant's own claim. A workflow tuning a deadline reads `inference_ms`.
 
 ## 9. Chain with `raw`
 

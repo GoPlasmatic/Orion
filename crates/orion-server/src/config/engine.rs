@@ -79,7 +79,9 @@ pub struct EngineConfig {
     /// evaluation has no error channel; a ceiling low enough to trip an
     /// ordinary condition therefore reads as "no workflow matched". Size it
     /// from the heaviest legitimate expression in the estate, not from the
-    /// smallest.
+    /// smallest — a `model_infer` task's `stats_output` reports `peak_ops`,
+    /// which is what one call's heaviest evaluation charged and therefore
+    /// what this ceiling has to clear.
     pub ops_budget: u64,
 }
 

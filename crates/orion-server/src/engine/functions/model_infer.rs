@@ -66,8 +66,8 @@ pub(super) const MODEL_INFER_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "stats_output",
         description: "Path for `{id, version, digest, runtime, device, parameters, \
-                      artifact_bytes, queued_ms, inference_ms, cold_load}`; absent means not \
-                      written.",
+                      artifact_bytes, ops, peak_ops, queued_ms, inference_ms, cold_load}`; \
+                      absent means not written.",
         kind: FieldKind::String,
         ..FieldSchema::DEFAULT
     },
