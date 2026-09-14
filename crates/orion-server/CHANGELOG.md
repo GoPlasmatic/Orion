@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A model's `parameters` counts every value its graph carries, not only
+  its initializers.** The reader summed `GraphProto.initializer` alone, so a
+  graph that carried identical weights as `Constant` node attributes — a few
+  lines of `onnx.helper`, computing the same function and answering the same
+  numbers — reported **zero**, and `models.max_parameters`, the only
+  graph-shape ceiling admission has, was bounded by that zero. The same held
+  for every `ai.onnx.ml` model without any rewrite at all: a
+  `LinearRegressor`'s coefficients and a `TreeEnsembleClassifier`'s whole
+  forest travel in repeated scalar attributes and such a graph has no
+  initializer, so an entire family of models the node runs read as
+  parameterless. The count is now of every value the document carries,
+  wherever it carries it — initializers dense and sparse, the tensors and
+  number lists a node holds in its attributes, the bodies of `If`, `Loop`
+  and `Scan`, and a model-local function — decided by whether a field can
+  hold an unbounded number of values rather than by a table of operators
+  that an operator could be missing from. `nodes` is now the whole document's
+  too, where it was the top-level graph's. A graph whose weights are
+  initializers, which is what every honest exporter writes, reports exactly
+  what it reported before. One that carried them elsewhere now reports more,
+  so a model sitting just under a `max_parameters` ceiling can be refused on
+  re-admission, and a leaderboard ordering on the field can move. Stored
+  stats are written at admission and not recomputed, so a row keeps the
+  number the node that admitted it measured until it is admitted again.
+  `examples/packages/c4-tournament` states the guarantee this makes good on,
+  and its wording is corrected to what is now true.
+
 ## [1.8.0] - 2026-09-13
 
 ### Added

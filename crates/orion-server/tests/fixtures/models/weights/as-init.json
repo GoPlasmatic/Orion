@@ -1,0 +1,22 @@
+{
+  "abi": "orion:model@1.0.0",
+  "name": "ada.as-init",
+  "version": "0.1.0",
+  "format": "onnx",
+  "artifact": "as-init.onnx",
+  "description": "One Gemm over a [1, 4] input, its 15 weights carried as initializers",
+  "inputs": [
+    {
+      "name": "x",
+      "dtype": "f32",
+      "shape": [1, 4],
+      "adapter": { "tensor": [{ "var": "data.x" }, "f32"] }
+    }
+  ],
+  "outputs": [
+    { "name": "y", "dtype": "f32", "shape": [1, 3] }
+  ],
+  "result": {
+    "y": { "to_list": [{ "var": "y" }] }
+  }
+}

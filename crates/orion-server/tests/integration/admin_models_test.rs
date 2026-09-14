@@ -12,8 +12,9 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::models::{
-    FIXTURE_ID, FIXTURE_KEY, FIXTURE_ONNX, admit, create_storage_connector, fixture_digest,
-    harness, harness_with, manifest, models_config, register_fixture, registration, spawn_bucket,
+    AS_CONST_ID, AS_CONST_MANIFEST, AS_CONST_ONNX, FIXTURE_ID, FIXTURE_KEY, FIXTURE_ONNX, admit,
+    create_storage_connector, fixture_digest, harness, harness_serving, harness_with, manifest,
+    models_config, register_fixture, registration, spawn_bucket,
 };
 use crate::common::{body_json, json_request, test_app_with_config};
 use orion::model::AdmissionState;
@@ -270,6 +271,61 @@ async fn a_parameter_count_over_the_ceiling_fails_admission_at_parse() {
         "{outcome:?}"
     );
     assert_failed_at(&h.app, "parse").await;
+    let models = h.state.models.as_ref().expect("enabled");
+    let _ = std::fs::remove_dir_all(models.store.cache_dir());
+}
+
+/// Weights carried as `Constant` node attributes are measured like any
+/// other, and the ceiling applies to them (#325).
+///
+/// `as-const.onnx` is the `weights` fixture's second encoding: the same
+/// single `Gemm` as `as-init.onnx` over the same fifteen numbers, moved out
+/// of the graph's initializers and into its nodes' attributes. It computes
+/// the same function and answers identically. While the reader counted only
+/// the initializers it reported zero, so a graph of any size admitted under
+/// any `models.max_parameters` — the one graph-shape ceiling admission has
+/// — by being re-exported.
+#[tokio::test]
+async fn weights_carried_in_attributes_are_counted_and_the_ceiling_holds() {
+    let digest = orion::crypto::sha256_digest(AS_CONST_ONNX);
+    let registration = json!({
+        "manifest": serde_json::from_str::<Value>(AS_CONST_MANIFEST).expect("manifest parses"),
+        "artifact": { "connector": "bucket", "key": FIXTURE_KEY, "digest": digest },
+    });
+
+    // What the node measures, with nothing in the way.
+    let h = harness_serving(AS_CONST_ONNX.to_vec(), models_config(true)).await;
+    let (status, body) = send(
+        &h.app,
+        "POST",
+        "/api/v1/admin/models",
+        Some(registration.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let outcome = admit(&h.state, AS_CONST_ID).await;
+    let AdmissionState::Passed { stats } = &outcome.state else {
+        panic!("{outcome:?}")
+    };
+    assert_eq!(stats.parameters, 15);
+    // The rewrite shows where it actually costs something: two more nodes.
+    assert_eq!(stats.nodes, 3);
+    let models = h.state.models.as_ref().expect("enabled");
+    let _ = std::fs::remove_dir_all(models.store.cache_dir());
+
+    // And a ceiling under that count refuses it, where it used to admit at
+    // zero whatever the ceiling was.
+    let mut config = models_config(true);
+    config.models.max_parameters = 10;
+    let h = harness_serving(AS_CONST_ONNX.to_vec(), config).await;
+    let (status, body) = send(&h.app, "POST", "/api/v1/admin/models", Some(registration)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let outcome = admit(&h.state, AS_CONST_ID).await;
+    assert!(
+        matches!(&outcome.state, AdmissionState::Failed { stage: "parse", reason }
+            if reason.contains("15 parameters") && reason.contains("models.max_parameters (10)")),
+        "{outcome:?}"
+    );
     let models = h.state.models.as_ref().expect("enabled");
     let _ = std::fs::remove_dir_all(models.store.cache_dir());
 }

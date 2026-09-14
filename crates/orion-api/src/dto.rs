@@ -227,12 +227,16 @@ pub struct ModelAdmission {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 pub struct ModelStats {
-    /// Total parameter count across the model's initializers — the sum of
-    /// the product of each initializer's dimensions. A tensor a `Constant`
-    /// node carries in an attribute is not counted.
+    /// Every value the graph carries, counted from the graph itself: each
+    /// initializer, each tensor or list of numbers a node holds in an
+    /// attribute, through every subgraph body and every model-local
+    /// function. Moving weights from one of those fields to another does
+    /// not move this number, which is what lets `models.max_parameters`
+    /// bound it.
     #[serde(default)]
     pub parameters: u64,
-    /// Node count of the top-level graph.
+    /// Node count of the graph, of every subgraph body it carries (`If`,
+    /// `Loop`, `Scan`) and of every model-local function.
     #[serde(default)]
     pub nodes: u64,
     /// The artifact's size as fetched — the confirmed twin of

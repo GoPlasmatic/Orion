@@ -37,6 +37,14 @@ pub fn manifest() -> Value {
     serde_json::from_str(FIXTURE_MANIFEST).expect("fixture manifest parses")
 }
 
+/// The `weights` fixture's `Constant`-attribute encoding, and the manifest
+/// that describes it: fifteen weights carried where a parameter count that
+/// read only the initializers could not see them.
+pub const AS_CONST_ONNX: &[u8] = include_bytes!("../../fixtures/models/weights/as-const.onnx");
+pub const AS_CONST_MANIFEST: &str = include_str!("../../fixtures/models/weights/as-const.json");
+/// The model id `AS_CONST_MANIFEST` declares.
+pub const AS_CONST_ID: &str = "ada.as-const";
+
 /// A bucket standing in for the connector's: serves `body` under every key,
 /// counts the GETs, and asserts every request arrived SigV4-signed.
 pub struct Bucket {
@@ -166,7 +174,14 @@ pub async fn harness() -> ModelHarness {
 /// [`harness`] over a config of the caller's — `models_config(true)` with
 /// a ceiling changed, typically.
 pub async fn harness_with(config: AppConfig) -> ModelHarness {
-    let bucket = spawn_bucket(FIXTURE_ONNX.to_vec()).await;
+    harness_serving(FIXTURE_ONNX.to_vec(), config).await
+}
+
+/// [`harness_with`] over an artifact of the caller's, for a test whose
+/// point is the graph rather than the route — the bucket serves `body`
+/// under every key, so a registration still claims [`FIXTURE_KEY`].
+pub async fn harness_serving(body: Vec<u8>, config: AppConfig) -> ModelHarness {
+    let bucket = spawn_bucket(body).await;
     let state = super::test_state_with_config(config).await;
     let app = orion::server::build_router(state.clone());
     create_storage_connector(&app, "bucket", bucket.addr).await;

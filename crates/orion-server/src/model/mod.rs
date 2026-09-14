@@ -93,6 +93,18 @@ pub(crate) mod fixture {
     pub const TWO_OUT_A: &str = include_str!("../../tests/fixtures/models/two-out/order-a.json");
     pub const TWO_OUT_B: &str = include_str!("../../tests/fixtures/models/two-out/order-b.json");
 
+    /// The `weights` fixture: one network — a single `Gemm` over a [1, 4]
+    /// input — written three ways, its 15 weights carried as initializers,
+    /// as `Constant` node attributes, and as the `value_floats` /
+    /// `value_ints` lists. The three that compute the same function and
+    /// must all be counted.
+    pub const AS_INIT_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/weights/as-init.onnx");
+    pub const AS_CONST_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/weights/as-const.onnx");
+    pub const AS_LIST_ONNX: &[u8] =
+        include_bytes!("../../tests/fixtures/models/weights/as-list.onnx");
+
     pub fn manifest() -> super::Manifest {
         super::Manifest::parse(MANIFEST).expect("the fixture manifest is valid")
     }

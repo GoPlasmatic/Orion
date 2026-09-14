@@ -10872,7 +10872,7 @@
           "nodes": {
             "type": "integer",
             "format": "int64",
-            "description": "Node count of the top-level graph.",
+            "description": "Node count of the graph, of every subgraph body it carries (`If`,\n`Loop`, `Scan`) and of every model-local function.",
             "minimum": 0
           },
           "opset": {
@@ -10883,7 +10883,7 @@
           "parameters": {
             "type": "integer",
             "format": "int64",
-            "description": "Total parameter count across the model's initializers — the sum of\nthe product of each initializer's dimensions. A tensor a `Constant`\nnode carries in an attribute is not counted.",
+            "description": "Every value the graph carries, counted from the graph itself: each\ninitializer, each tensor or list of numbers a node holds in an\nattribute, through every subgraph body and every model-local\nfunction. Moving weights from one of those fields to another does\nnot move this number, which is what lets `models.max_parameters`\nbound it.",
             "minimum": 0
           },
           "probe_ms": {

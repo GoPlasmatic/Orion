@@ -41,7 +41,7 @@ The adapters and the result are compiled on the serving generation's own express
 
 On the CPU path the runtime is deterministic: the same bytes over the same inputs land the same outputs on every node. An accelerator (`metal`, `cuda`) reorders the same arithmetic and agrees with the CPU to about `f32` epsilon rather than to the bit. A deployment whose answers are scored, compared or audited should keep its whole fleet on one [device](../reference/configuration/models.md#devices). That is also the faster choice for a graph this size.
 
-Whatever the manifest declares, the node measures. The parameter and node counts, the IR version and the opset are read from the graph at admission and recorded as `stats`. The [`models.max_parameters`](../reference/configuration/models.md) ceiling applies to what was read, not what was claimed.
+Whatever the manifest declares, the node measures. The parameter and node counts, the IR version and the opset are read from the graph at admission and recorded as `stats`. The parameter count is every value the graph carries, wherever it carries it — its initializers, the tensors and lists of numbers its nodes hold in attributes, the bodies of `If`, `Loop` and `Scan` — so re-exporting the same weights into a different field of the format does not change it. The [`models.max_parameters`](../reference/configuration/models.md) ceiling applies to what was read, not what was claimed.
 
 ## The entity
 

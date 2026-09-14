@@ -2837,6 +2837,37 @@ fn dry_run_executes_a_model_from_disk_or_refuses_by_name() {
 }
 
 /// The fixture directory holding one graph and the two manifests over it.
+fn weights_model_dir() -> String {
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/weights").to_string()
+}
+
+/// One network, three encodings, one report — where a manifest's author
+/// sees the number before submitting it (#325).
+///
+/// `as-init`, `as-const` and `as-list` are the same single `Gemm` over the
+/// same fifteen numbers, carried as initializers, as `Constant` node
+/// attributes, and as the `value_floats` / `value_ints` lists. They answer
+/// identically. A count that read only the initializers reported 15, 0 and
+/// 0, which is what `models.max_parameters` was bounded by.
+#[test]
+fn lint_counts_a_graphs_weights_wherever_the_graph_carries_them() {
+    let dir = weights_model_dir();
+    let (ok, report) = lint_dir(std::path::Path::new(&dir), &[]);
+    assert!(ok, "{report}");
+    for model in ["ada.as-init", "ada.as-const", "ada.as-list"] {
+        assert!(
+            report.contains(&format!("[model.stats] model '{model}'")),
+            "{report}"
+        );
+    }
+    // Two of them read 15. The third reads 17, and honestly: the list form
+    // has to carry the two-element shape its reshape reads, and that is
+    // data the document holds like any other.
+    assert_eq!(report.matches("15 parameters").count(), 2, "{report}");
+    assert!(report.contains("17 parameters"), "{report}");
+    assert!(report.contains("3 model(s)"), "{report}");
+}
+
 fn two_out_model_dir() -> String {
     concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/two-out").to_string()
 }

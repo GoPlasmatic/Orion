@@ -131,8 +131,13 @@ orion-cli channels trigger c4-round         # a round now, rather than at the to
 ## What Orion guarantees
 
 - **`parameters` is the node's number.** It is read from the graph at
-  admission and carried in `stats_output`; the manifest cannot claim a
-  smaller network than it is, and `models.max_parameters` caps the field.
+  admission and carried in `stats_output`, and it counts every value the
+  graph carries — its initializers, the tensors and lists of numbers its
+  nodes hold in attributes, every subgraph body — so an entrant cannot
+  report a smaller network by re-exporting the same weights into another
+  field of the format. `models.max_parameters` caps what is counted. What
+  it does not bound is what a graph builds while it runs, which is the
+  probe's business and `models.max_timeout_ms`'s.
 - **The adapters are budgeted.** An entrant's adapter and result are
   JSONLogic compiled on the serving engine and priced by `engine.ops_budget`,
   so a manifest cannot make a turn arbitrarily expensive.
