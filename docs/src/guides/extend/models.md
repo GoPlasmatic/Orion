@@ -64,9 +64,9 @@ A dimension may be a **name** instead of a count, for a graph exported with a dy
 }
 ```
 
-A name binds to whatever the call brings on its first occurrence, and every later occurrence — in another input, or in an output — must equal that binding. So `["N", 3]` on the output means *the same* N the input had, while the 3 stays exact: naming one axis costs nothing on the others. One session serves every size, so this is not the same as registering the model once per shape, and what bounds a single call is `models.max_input_elements` rather than the declaration.
+A name binds to whatever the call brings on its first occurrence. Every later occurrence — in another input, or in an output — must equal that binding. So `["N", 3]` on the output means *the same* N the input had, while the 3 stays exact: naming one axis costs nothing on the others. One session serves every size, so this is not the same as registering the model once per shape. What bounds a single call is `models.max_input_elements` rather than the declaration.
 
-`probe_dims` is only for admission, which needs concrete tensors to run its five probe inferences. A name it leaves out is probed at 1; a graph needing more — a convolution with a kernel wider than its input — says so there. The binding is recorded in `stats.probe_dims`, because `probe_ms` over a variable axis means nothing without the size behind it.
+`probe_dims` is only for admission, which needs concrete tensors to run its five probe inferences. A name it leaves out is probed at 1. A graph needing more — a convolution with a kernel wider than its input — says so there. The binding is recorded in `stats.probe_dims`, because `probe_ms` over a variable axis means nothing without the size behind it.
 
 ## 3. Validate it offline
 
@@ -146,11 +146,11 @@ Name the model, the JSON root the adapters read, and where the result goes:
 }
 ```
 
-`input` is the JSON root every adapter reads: `{"var": ""}` hands over the whole context, a path hands over one object. A literal `model` is what the dependency list, the quarantine and the preload see. A computed one (`{"var": "data.mover_model"}`) routes per message and is checked per message instead. `timeout_ms` is the call's deadline, capped by `models.max_timeout_ms`, and a cold load is charged to it; it is JSONLogic too, so a workflow running several inferences under one budget can hand each call what is left of it. The failure classes are on the [function's page](../../reference/functions/model_infer.md).
+`input` is the JSON root every adapter reads: `{"var": ""}` hands over the whole context, a path hands over one object. A literal `model` is what the dependency list, the quarantine and the preload see. A computed one (`{"var": "data.mover_model"}`) routes per message and is checked per message instead. `timeout_ms` is the call's deadline, capped by `models.max_timeout_ms`, and a cold load is charged to it. It is JSONLogic too, so a workflow running several inferences under one budget can hand each call what is left. The failure classes are on the [function's page](../../reference/functions/model_infer.md).
 
 ## 8. Read the stats
 
-`stats_output` writes, per call, what the workflow author cannot otherwise see. That is which version and digest answered, on which runtime and device, and the parameter count and artifact size the node measured at admission. It also writes `queued_ms`, `inference_ms` and `cold_load` for this call, and what the manifest's own expressions charged: `ops` for all of them together, `peak_ops` for the heaviest one. A deployment running manifests it did not write sizes [`engine.ops_budget`](../../reference/configuration/engine.md#ops_budget) from `peak_ops`, because the ceiling bounds one evaluation rather than the call. A workflow that scores a competition reads `parameters` from here rather than trusting the entrant's own claim. A workflow tuning a deadline reads `inference_ms`.
+`stats_output` writes, per call, what the workflow author cannot otherwise see. That is which version and digest answered, on which runtime and device, and the parameter count and artifact size the node measured at admission. It also writes `queued_ms`, `inference_ms` and `cold_load` for this call. And it writes what the manifest's own expressions charged: `ops` for all of them together, `peak_ops` for the heaviest one. A deployment running manifests it did not write sizes [`engine.ops_budget`](../../reference/configuration/engine.md#ops_budget) from `peak_ops`, because the ceiling bounds one evaluation rather than the call. A workflow that scores a competition reads `parameters` from here rather than trusting the entrant's own claim. A workflow tuning a deadline reads `inference_ms`.
 
 ## 9. Chain with `raw`
 
