@@ -15,7 +15,7 @@ This is the fastest way to experience "AI writes services, not code". Install th
 
 ## Before you start
 
-Tested with Orion 1.8.1. You need Claude Code, a POSIX shell, the Orion agent skill source, and [Orion and the CLI installed](../../get-started/install.md). Start the server locally, then configure the CLI and install the skill:
+Tested with Orion 1.8.2. You need Claude Code, a POSIX shell, the Orion agent skill source, and [Orion and the CLI installed](../../get-started/install.md). Start the server locally, then configure the CLI and install the skill:
 
 ```bash
 orion-cli config set-server http://localhost:8080

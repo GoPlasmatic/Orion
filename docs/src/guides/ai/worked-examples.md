@@ -15,7 +15,7 @@ Four services, each described in a sentence, generated as JSON, and deployed. Th
 
 ## Before you start
 
-Tested with Orion 1.8.1. You need Git, `curl`, Python 3, a POSIX shell (on Windows, WSL), and an Orion server on `http://localhost:8080`. The examples use the shipped packages, so start from a clone:
+Tested with Orion 1.8.2. You need Git, `curl`, Python 3, a POSIX shell (on Windows, WSL), and an Orion server on `http://localhost:8080`. The examples use the shipped packages, so start from a clone:
 
 ```bash
 git clone https://github.com/GoPlasmatic/Orion.git

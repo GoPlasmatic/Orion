@@ -8,7 +8,7 @@ Start Orion, define one service as two JSON documents, and call it over HTTP. Th
 
 ## Before you start
 
-Tested with Orion 1.8.1. You need:
+Tested with Orion 1.8.2. You need:
 
 - Docker Engine or Docker Desktop
 - `curl`
