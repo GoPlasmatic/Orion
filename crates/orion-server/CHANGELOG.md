@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A refused bearer token that was never presented gets the bare
+  challenge.** A `jwt` channel answering a request with no token, or with a
+  header carrying another scheme, now sends `WWW-Authenticate: Bearer` with no
+  error code, as RFC 6750 §3.1 says such a request should receive; it used to
+  send `Bearer error="invalid_token"` for every cause. A presented token that
+  fails still gets `invalid_token`, expiry still carries its
+  `error_description`, and the response body is unchanged. A wrong scheme is
+  counted as `orion_jwt_rejections_total{reason="scheme_mismatch"}` rather
+  than `malformed`, so a dashboard tells a client's presentation apart from its
+  token.
+
+- **`auth.scheme` and `auth.source.scheme` must be a scheme name.** A value
+  that is not an RFC 9110 token — `"Key="`, `"Bearer:"` — is a `400` at create,
+  update, validate and import and an error from `lint` and `package lint`. A
+  channel already stored with one is quarantined at load; the new `preflight`
+  check `channel-auth` lists it beforehand, along with any other stored `auth`
+  block that no longer builds.
+
+### Fixed
+
+- **Conforming `Authorization` headers are accepted on `api_key` and `jwt`
+  channels** ([#331]). The credential was taken with a byte-exact
+  `strip_prefix` of the configured scheme, so a correctly configured
+  `"scheme": "Bearer "` refused `bearer <token>`, `BEARER <token>` and
+  `Bearer  <token>` — all valid under RFC 9110 §11.1 — and the natural
+  spelling `"Bearer"`, with no trailing space, refused **every** caller with a
+  bare 401 while every offline check passed. The header value is now parsed:
+  the scheme compares case-insensitively and any run of spaces separates it
+  from the credential, so `"Bearer"` and `"Bearer "` are the same scheme and
+  stored configs keep working. The admin API's `Authorization` header goes
+  through the same parser, and the `jwt` row of the `auth` reference, which
+  showed the broken spelling, now documents the field.
+
+[#331]: https://github.com/GoPlasmatic/Orion/issues/331
+
 ## [1.8.1] - 2026-09-14
 
 ### Added

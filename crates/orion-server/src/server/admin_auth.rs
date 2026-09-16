@@ -292,12 +292,12 @@ fn extract_api_key(
         .ok_or_else(|| OrionError::Unauthorized(format!("Missing {} header", config.header)))?;
 
     if config.header.eq_ignore_ascii_case("authorization") {
-        // Expect "Bearer <token>" format
-        header_value
-            .strip_prefix("Bearer ")
-            .or_else(|| header_value.strip_prefix("bearer "))
-            .map(|t| t.to_string())
-            .ok_or_else(|| {
+        // "Bearer <token>", parsed the way RFC 9110 defines it — the channel
+        // `auth` parser, so `BEARER <token>` and `Bearer  <token>` are
+        // accepted here exactly as they are on the data plane (#331).
+        crate::channel::auth::scheme_credential(header_value, "Bearer")
+            .map(str::to_string)
+            .map_err(|_| {
                 OrionError::Unauthorized(
                     "Authorization header must use 'Bearer <token>' format".into(),
                 )
@@ -356,6 +356,33 @@ mod tests {
         assert!(keys.iter().any(|k| constant_time_eq(&presented, &k.digest)));
         let wrong = digest("not-the-key");
         assert!(!keys.iter().any(|k| constant_time_eq(&wrong, &k.digest)));
+    }
+
+    /// RFC 9110 §11.1: the scheme is case-insensitive and any run of spaces
+    /// separates it from the key. The first of these used to be the only
+    /// accepted spelling besides `bearer `.
+    #[test]
+    fn the_bearer_scheme_is_parsed_not_prefix_matched() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_keys: vec!["k".to_string()],
+            read_only_api_keys: Vec::new(),
+            header: "Authorization".to_string(),
+        };
+        let extract = |value: &str| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::header::AUTHORIZATION,
+                axum::http::HeaderValue::from_str(value).expect("test"),
+            );
+            extract_api_key(&headers, &config).ok()
+        };
+        for accepted in ["Bearer key", "bearer key", "BEARER key", "Bearer   key"] {
+            assert_eq!(extract(accepted).as_deref(), Some("key"), "{accepted}");
+        }
+        for refused in ["Bearerkey", "Basic key", "Bearer", "key"] {
+            assert_eq!(extract(refused), None, "{refused}");
+        }
     }
 
     // -- guarded surface (O12) -------------------------------------------

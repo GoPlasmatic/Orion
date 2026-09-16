@@ -11,6 +11,31 @@ use orion_api::{ErrorBody, ErrorEnvelope, codes};
 
 pub use orion_api::FieldError;
 
+/// The RFC 6750 §3 `WWW-Authenticate` challenge a refused bearer token
+/// answers with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BearerChallenge {
+    /// `Bearer`, with no error code: the request presented no bearer
+    /// credential at all (§3.1).
+    Bare,
+    /// `Bearer error="invalid_token"`, with the one description a client acts
+    /// on when there is one.
+    InvalidToken(Option<&'static str>),
+}
+
+impl BearerChallenge {
+    /// The header value.
+    pub fn header_value(self) -> String {
+        match self {
+            Self::Bare => "Bearer".to_string(),
+            Self::InvalidToken(None) => "Bearer error=\"invalid_token\"".to_string(),
+            Self::InvalidToken(Some(desc)) => {
+                format!("Bearer error=\"invalid_token\", error_description=\"{desc}\"")
+            }
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum OrionError {
     #[error("Not found: {0}")]
@@ -38,13 +63,12 @@ pub enum OrionError {
     Unauthorized(String),
 
     /// A refused bearer token (#267): 401 carrying `WWW-Authenticate: Bearer`
-    /// (RFC 6750). `wire_description` is the one cause named on the wire —
-    /// expiry, which a client answers with a refresh; every other cause stays
-    /// uniform.
+    /// (RFC 6750). `challenge` is everything the wire says about the cause —
+    /// see `jwt::RejectReason::challenge`; the body stays uniform.
     #[error("Unauthorized: {message}")]
     UnauthorizedToken {
         message: String,
-        wire_description: Option<&'static str>,
+        challenge: BearerChallenge,
     },
 
     #[error("Forbidden: {0}")]
@@ -435,14 +459,7 @@ impl IntoResponse for OrionError {
             _ => Vec::new(),
         };
         let bearer_challenge = match &self {
-            OrionError::UnauthorizedToken {
-                wire_description, ..
-            } => Some(match wire_description {
-                Some(desc) => {
-                    format!("Bearer error=\"invalid_token\", error_description=\"{desc}\"")
-                }
-                None => "Bearer error=\"invalid_token\"".to_string(),
-            }),
+            OrionError::UnauthorizedToken { challenge, .. } => Some(challenge.header_value()),
             _ => None,
         };
 
@@ -1087,7 +1104,7 @@ mod tests {
             (
                 OrionError::UnauthorizedToken {
                     message: "Channel authentication failed".into(),
-                    wire_description: Some("token expired"),
+                    challenge: BearerChallenge::InvalidToken(Some("token expired")),
                 },
                 StatusCode::UNAUTHORIZED,
                 "UNAUTHORIZED",
@@ -1226,6 +1243,37 @@ mod tests {
             assert_eq!(
                 body["error"]["code"], want_code,
                 "{name} did not put its code on the wire (body: {body})"
+            );
+        }
+    }
+
+    /// RFC 6750 §3: no error code when no bearer credential was presented
+    /// (§3.1), `invalid_token` otherwise, and a description only for expiry.
+    #[test]
+    fn a_refused_token_answers_with_its_challenge() {
+        for (challenge, want) in [
+            (BearerChallenge::Bare, "Bearer"),
+            (
+                BearerChallenge::InvalidToken(None),
+                "Bearer error=\"invalid_token\"",
+            ),
+            (
+                BearerChallenge::InvalidToken(Some("token expired")),
+                "Bearer error=\"invalid_token\", error_description=\"token expired\"",
+            ),
+        ] {
+            let response = OrionError::UnauthorizedToken {
+                message: "Channel authentication failed".into(),
+                challenge,
+            }
+            .into_response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::WWW_AUTHENTICATE)
+                    .and_then(|v| v.to_str().ok()),
+                Some(want)
             );
         }
     }

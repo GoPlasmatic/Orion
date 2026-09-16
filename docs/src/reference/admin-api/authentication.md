@@ -1,12 +1,12 @@
 <!-- description: The admin API key: the single header the server reads, the plain and sha256 key forms, rotation, and the per-source backoff after failures. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-16 -->
 
 # Authentication
 
 The credential every admin endpoint requires when `admin_auth.enabled` is true, and what happens when one is wrong.
 
-Admin API endpoints require an API key when `admin_auth.enabled` is true. The server reads the key from **exactly one header**: the one named by `admin_auth.header`, which defaults to `Authorization` (with or without a `Bearer ` prefix):
+Admin API endpoints require an API key when `admin_auth.enabled` is true. The server reads the key from **exactly one header**: the one named by `admin_auth.header`, which defaults to `Authorization`. There the key follows the `Bearer` scheme, parsed as RFC 9110 §11.1 defines it. The scheme matches case-insensitively, and one or more spaces separate it from the key. So `bearer <key>` is accepted and a bare key is not:
 
 ```bash
 # Default configuration (admin_auth.header = "Authorization")

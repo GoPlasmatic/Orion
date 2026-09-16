@@ -235,7 +235,12 @@ pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Diagnostic> {
         &value,
         &crate::channel::registry::is_expression_field,
     ) {
-        Ok(_) => Vec::new(),
+        Ok(parsed) => parsed
+            .auth
+            .as_ref()
+            .and_then(|auth| check_channel_auth(name, auth))
+            .into_iter()
+            .collect(),
         Err(e) => vec![
             Diagnostic::error(
                 "3",
@@ -245,6 +250,36 @@ pub fn check_channel_config(name: &str, config_json: &str) -> Vec<Diagnostic> {
             .with_remedy(pick_config_remedy(config_json)),
         ],
     }
+}
+
+/// A stored `auth` block the structural check now refuses.
+///
+/// Such a channel parses, and is quarantined at load: `CompiledAuth::compile`
+/// runs the same rules. A row written before the check existed is the case —
+/// #331 made `scheme` a scheme *name*, so a stored `"Key="` that once worked
+/// as a byte prefix no longer builds — and so is any auth block stored before
+/// create-time validation (#264). The check is `validate_config` itself, so
+/// this report and the create path cannot disagree.
+fn check_channel_auth(
+    name: &str,
+    auth: &crate::channel::config::ChannelAuthConfig,
+) -> Option<Diagnostic> {
+    let message = crate::channel::auth::CompiledAuth::validate_config(auth).err()?;
+    let remedy = if message.contains("scheme") {
+        "set the scheme to its bare name, such as \"Bearer\", or remove it for a bare \
+         credential"
+    } else {
+        "correct the auth field the message names; until then the channel is \
+         quarantined at load rather than served without authentication"
+    };
+    Some(
+        Diagnostic::error(
+            "channel-auth",
+            format!("channel '{name}'"),
+            format!("its auth block no longer builds: {message}"),
+        )
+        .with_remedy(remedy.to_string()),
+    )
 }
 
 /// Name the specific rename when the config carries one, since those have a
@@ -581,6 +616,47 @@ mod tests {
             "the serde message names the key: {}",
             found[0].message
         );
+    }
+
+    /// #331: a scheme stored while it was a byte prefix that cannot be a
+    /// scheme name parses, and would be quarantined at load.
+    #[test]
+    fn a_stored_auth_block_that_no_longer_builds_is_reported() {
+        let found = check_channel_config(
+            "partner",
+            r#"{"auth": {"mode": "api_key", "keys": ["k"], "header": "X-Key", "scheme": "Key="}}"#,
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].check, "channel-auth");
+        assert!(found[0].entity.contains("partner"));
+        assert!(
+            found[0].message.contains("auth.scheme"),
+            "{}",
+            found[0].message
+        );
+        assert!(
+            found[0]
+                .remedy
+                .as_deref()
+                .unwrap_or_default()
+                .contains("bare name"),
+            "{:?}",
+            found[0].remedy
+        );
+
+        // The old prefix spelling and the natural one both still build.
+        for scheme in ["Bearer ", "Bearer"] {
+            let config = json!({"auth": {
+                "mode": "jwt",
+                "algorithms": ["HS256"],
+                "jwt_keys": [{"algorithm": "HS256", "key": "env://SECRET"}],
+                "source": {"header": "Authorization", "scheme": scheme}
+            }});
+            assert!(
+                check_channel_config("api", &config.to_string()).is_empty(),
+                "{scheme:?}"
+            );
+        }
     }
 
     #[test]

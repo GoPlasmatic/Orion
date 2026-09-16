@@ -37,8 +37,8 @@ use crate::errors::OrionError;
 pub enum CompiledAuth {
     ApiKey {
         header: String,
-        /// Prefix stripped from the header value before comparison, e.g.
-        /// `"Bearer "`.
+        /// The authentication scheme the header value must carry, e.g.
+        /// `"Bearer"` — a name, parsed by `scheme_credential`, not a prefix.
         scheme: Option<String>,
         /// SHA-256 of each accepted key. Digests rather than keys so the
         /// comparison is over a fixed width and reveals neither the length nor
@@ -173,16 +173,7 @@ impl CompiledAuth {
                     .header
                     .clone()
                     .unwrap_or_else(|| "Authorization".to_string());
-                // `Authorization: Bearer <key>` is the conventional spelling and
-                // the one an unset `scheme` should produce; a custom header like
-                // `X-API-Key` carries the bare key.
-                let scheme = match cfg.scheme {
-                    Some(ref s) => Some(s.clone()),
-                    None if header.eq_ignore_ascii_case("authorization") => {
-                        Some("Bearer ".to_string())
-                    }
-                    None => None,
-                };
+                let scheme = api_key_scheme(cfg, &header)?;
 
                 let mut digests = Vec::with_capacity(keys.len());
                 for key in keys {
@@ -300,6 +291,7 @@ impl CompiledAuth {
                 if keys.iter().any(|k| k.trim().is_empty()) {
                     return Err("auth.keys contains an empty key".to_string());
                 }
+                api_key_scheme(cfg, cfg.header.as_deref().unwrap_or("Authorization"))?;
                 Ok(())
             }
             AuthMode::Hmac => hmac_plan(cfg).map(|_| ()),
@@ -356,14 +348,11 @@ impl CompiledAuth {
                 digests,
             } => {
                 let presented = header(name).ok_or_else(refused)?;
-                let presented = match scheme {
-                    Some(prefix) => presented
-                        .strip_prefix(prefix.as_str())
-                        .ok_or_else(refused)?
-                        .to_string(),
-                    None => presented,
+                let credential = match scheme {
+                    Some(scheme) => scheme_credential(&presented, scheme).map_err(|_| refused())?,
+                    None => presented.as_str(),
                 };
-                let digest: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
+                let digest: [u8; 32] = Sha256::digest(credential.as_bytes()).into();
                 if digests.iter().any(|d| constant_time_eq(&digest, d)) {
                     Ok(AuthOutcome::default())
                 } else {
@@ -394,15 +383,17 @@ impl CompiledJwt {
             } => match header(name) {
                 None => None,
                 Some(value) => match scheme {
-                    Some(prefix) => {
-                        // A present header with the wrong scheme is a
-                        // malformed presentation, not a missing token.
-                        Some(
-                            value
-                                .strip_prefix(prefix.as_str())
-                                .ok_or_else(|| self.refuse(RejectReason::Malformed))?
-                                .to_string(),
-                        )
+                    Some(scheme) => {
+                        // A present header with the wrong scheme is a bad
+                        // presentation, not a missing token, so `required:
+                        // false` does not admit it.
+                        let credential = scheme_credential(&value, scheme).map_err(|refusal| {
+                            self.refuse(match refusal {
+                                SchemeRefusal::Mismatch => RejectReason::SchemeMismatch,
+                                SchemeRefusal::NoCredential => RejectReason::Malformed,
+                            })
+                        })?;
+                        Some(credential.to_string())
                     }
                     None => Some(value),
                 },
@@ -481,14 +472,14 @@ impl CompiledJwt {
         })
     }
 
-    /// One uniform 401 for every cause; the typed reason goes to metrics and
-    /// the trace, and — for expiry only — to `error_description`.
+    /// One uniform 401 body for every cause; the typed reason goes to metrics
+    /// and the trace, and its RFC 6750 challenge to `WWW-Authenticate`.
     fn refuse(&self, reason: crate::jwt::RejectReason) -> OrionError {
         crate::metrics::record_jwt_rejection(reason.as_str());
         tracing::debug!(reason = reason.as_str(), "JWT rejected");
         OrionError::UnauthorizedToken {
             message: "Channel authentication failed".to_string(),
-            wire_description: reason.wire_description(),
+            challenge: reason.challenge(),
         }
     }
 }
@@ -1010,20 +1001,28 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
         ));
     }
 
-    let source = cfg.source.clone().unwrap_or(JwtSource::Header {
-        header: "authorization".to_string(),
-        scheme: Some("Bearer ".to_string()),
-    });
-    if let JwtSource::Header { header, .. } = &source
-        && header.trim().is_empty()
-    {
-        return Err("auth.source.header must name a header".to_string());
-    }
-    if let JwtSource::Cookie { cookie } = &source
-        && cookie.trim().is_empty()
-    {
-        return Err("auth.source.cookie must name a cookie".to_string());
-    }
+    let source = match cfg.source.clone() {
+        None => JwtSource::Header {
+            header: "authorization".to_string(),
+            scheme: Some("Bearer".to_string()),
+        },
+        Some(JwtSource::Header { header, scheme }) => {
+            if header.trim().is_empty() {
+                return Err("auth.source.header must name a header".to_string());
+            }
+            let scheme = match scheme.as_deref() {
+                Some(raw) => scheme_name("auth.source.scheme", raw)?,
+                None => None,
+            };
+            JwtSource::Header { header, scheme }
+        }
+        Some(JwtSource::Cookie { cookie }) => {
+            if cookie.trim().is_empty() {
+                return Err("auth.source.cookie must name a cookie".to_string());
+            }
+            JwtSource::Cookie { cookie }
+        }
+    };
 
     Ok(JwtPlan {
         keys,
@@ -1047,6 +1046,73 @@ fn jwt_plan(cfg: &ChannelAuthConfig) -> Result<JwtPlan, String> {
             .max_token_bytes
             .unwrap_or(crate::jwt::DEFAULT_MAX_TOKEN_BYTES),
     })
+}
+
+/// Why a presented header yielded no credential under a scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemeRefusal {
+    /// The value names another scheme, or none: `Basic …`, `Bearer<token>`.
+    Mismatch,
+    /// The scheme, with nothing after it.
+    NoCredential,
+}
+
+/// The credential `value` presents under `scheme`, parsed as RFC 9110 §11.1
+/// defines an `Authorization` value: `auth-scheme [ 1*SP ( token68 /
+/// #auth-param ) ]`.
+///
+/// The scheme is an ABNF literal, so it compares case-insensitively, and any
+/// run of spaces separates it from the credential. This used to be a byte
+/// `strip_prefix` over a configured `"Bearer "`, which refused `bearer <tok>`
+/// and `Bearer  <tok>` from spec-conforming clients and made the delimiter
+/// part of the configured value (#331). The credential comes back byte-exact:
+/// an `api_key` digest is over exactly what was sent.
+pub(crate) fn scheme_credential<'v>(
+    value: &'v str,
+    scheme: &str,
+) -> Result<&'v str, SchemeRefusal> {
+    let (name, rest) = value.split_once(' ').unwrap_or((value, ""));
+    if !name.eq_ignore_ascii_case(scheme) {
+        return Err(SchemeRefusal::Mismatch);
+    }
+    match rest.trim_start_matches(' ') {
+        "" => Err(SchemeRefusal::NoCredential),
+        credential => Ok(credential),
+    }
+}
+
+/// A configured scheme, normalised to the name [`scheme_credential`] compares.
+///
+/// Surrounding whitespace is dropped, so the old prefix spelling `"Bearer "`
+/// and the natural one, `"Bearer"`, are the same scheme — while the field was a
+/// byte prefix, the second refused every caller and passed every offline check
+/// (#331). An empty value is no scheme: the bare credential it always meant.
+/// Anything else must be an RFC 9110 token, because a value like `"Key="` can
+/// never match a scheme name and would otherwise refuse every request without
+/// saying why.
+fn scheme_name(field: &str, raw: &str) -> Result<Option<String>, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if !name.bytes().all(super::cookies::is_token_byte) {
+        return Err(format!(
+            "{field} '{raw}' is not an HTTP authentication scheme name — a scheme is a \
+             token such as \"Bearer\", and the space before the credential is not part of it"
+        ));
+    }
+    Ok(Some(name.to_string()))
+}
+
+/// The scheme an `api_key` header must carry: the configured one, else
+/// `Bearer` on `Authorization` — the conventional spelling — and none on a
+/// custom header like `X-API-Key`, which carries the bare key.
+fn api_key_scheme(cfg: &ChannelAuthConfig, header: &str) -> Result<Option<String>, String> {
+    match cfg.scheme.as_deref() {
+        Some(raw) => scheme_name("auth.scheme", raw),
+        None if header.eq_ignore_ascii_case("authorization") => Ok(Some("Bearer".to_string())),
+        None => Ok(None),
+    }
 }
 
 /// Resolve an `env://VAR` reference, or pass a literal through.
@@ -1126,6 +1192,123 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    /// RFC 9110 §11.1 over the header value: a case-insensitive scheme, a run
+    /// of spaces, and the credential byte-exact after it.
+    #[test]
+    fn the_scheme_is_parsed_not_prefix_stripped() {
+        use SchemeRefusal::{Mismatch, NoCredential};
+        for (value, want) in [
+            ("Bearer tok", Ok("tok")),
+            ("bearer tok", Ok("tok")),
+            ("BEARER tok", Ok("tok")),
+            ("Bearer   tok", Ok("tok")),
+            // Only the run after the scheme separates; the rest is the
+            // credential, as presented.
+            ("Bearer a b ", Ok("a b ")),
+            ("Bearer<tok>", Err(Mismatch)),
+            ("Bearertok", Err(Mismatch)),
+            ("Bearerish tok", Err(Mismatch)),
+            ("Basic tok", Err(Mismatch)),
+            ("tok", Err(Mismatch)),
+            ("", Err(Mismatch)),
+            ("Bearer", Err(NoCredential)),
+            ("Bearer ", Err(NoCredential)),
+            ("bearer   ", Err(NoCredential)),
+        ] {
+            assert_eq!(scheme_credential(value, "Bearer"), want, "{value:?}");
+        }
+    }
+
+    /// `"Bearer"` and the old prefix spelling `"Bearer "` are one scheme; an
+    /// empty value is none; a value that cannot be a name is refused by field.
+    #[test]
+    fn a_configured_scheme_is_normalised_to_its_name() {
+        for raw in ["Bearer", "Bearer ", " Bearer  "] {
+            assert_eq!(
+                scheme_name("auth.scheme", raw),
+                Ok(Some("Bearer".to_string())),
+                "{raw:?}"
+            );
+        }
+        assert_eq!(scheme_name("auth.scheme", ""), Ok(None));
+        assert_eq!(scheme_name("auth.scheme", "  "), Ok(None));
+        for raw in ["Key=", "Bearer:", "Two Words", "sha256="] {
+            let err = scheme_name("auth.source.scheme", raw).expect_err(raw);
+            assert!(err.starts_with("auth.source.scheme"), "{err}");
+            assert!(err.contains(raw), "{err}");
+        }
+    }
+
+    /// The #331 matrix on an `api_key` channel: conforming spellings admit,
+    /// whichever way the scheme was configured.
+    #[tokio::test]
+    async fn api_key_accepts_every_conforming_bearer_spelling() {
+        for scheme in [None, Some("Bearer"), Some("Bearer "), Some("bearer")] {
+            let mut cfg = api_key_config(&["s3cret"]);
+            cfg.scheme = scheme.map(str::to_string);
+            let auth = CompiledAuth::compile(&cfg, None, None)
+                .await
+                .expect("compiles");
+            for value in [
+                "Bearer s3cret",
+                "bearer s3cret",
+                "BEARER s3cret",
+                "Bearer  s3cret",
+            ] {
+                assert!(
+                    auth.authenticate(&lookup(&[("Authorization", value)]), None, &dl())
+                        .await
+                        .is_ok(),
+                    "scheme {scheme:?}, header {value:?}"
+                );
+            }
+            assert!(
+                auth.authenticate(&lookup(&[("Authorization", "Bearers3cret")]), None, &dl())
+                    .await
+                    .is_err(),
+                "scheme {scheme:?}: no separator is not the scheme"
+            );
+        }
+    }
+
+    /// An empty `scheme` on `Authorization` is no scheme — the bare key, which
+    /// is what it meant while the field was a prefix.
+    #[tokio::test]
+    async fn an_empty_scheme_takes_the_bare_key_on_authorization() {
+        let mut cfg = api_key_config(&["s3cret"]);
+        cfg.scheme = Some(String::new());
+        let auth = CompiledAuth::compile(&cfg, None, None)
+            .await
+            .expect("compiles");
+        assert!(
+            auth.authenticate(&lookup(&[("Authorization", "s3cret")]), None, &dl())
+                .await
+                .is_ok()
+        );
+    }
+
+    /// A scheme that can never match a name is refused by the structural
+    /// check (create, validate, lint) *and* at compile, so a stored one
+    /// quarantines its channel instead of refusing every caller silently.
+    #[tokio::test]
+    async fn a_scheme_that_cannot_be_a_name_is_refused() {
+        let mut api_key = api_key_config(&["s3cret"]);
+        api_key.scheme = Some("Key=".to_string());
+        let mut jwt = jwt_config(&["HS512"], HS_SECRET);
+        jwt.source = Some(JwtSource::Header {
+            header: "Authorization".to_string(),
+            scheme: Some("Bearer:".to_string()),
+        });
+        for (cfg, field) in [(api_key, "auth.scheme"), (jwt, "auth.source.scheme")] {
+            let err = CompiledAuth::validate_config(&cfg).expect_err("structural");
+            assert!(err.starts_with(field), "{err}");
+            let err = CompiledAuth::compile(&cfg, Some(&dl()), None)
+                .await
+                .expect_err("compile");
+            assert!(err.starts_with(field), "{err}");
+        }
     }
 
     #[tokio::test]
@@ -1790,14 +1973,13 @@ mod tests {
                 .await
                 .expect_err("must refuse");
             match err {
-                OrionError::UnauthorizedToken {
-                    message,
-                    wire_description,
-                } => {
+                OrionError::UnauthorizedToken { message, challenge } => {
                     assert_eq!(message, "Channel authentication failed");
                     assert_eq!(
-                        wire_description,
-                        expect_expired_hint.then_some("token expired"),
+                        challenge,
+                        crate::errors::BearerChallenge::InvalidToken(
+                            expect_expired_hint.then_some("token expired")
+                        ),
                         "only expiry is named on the wire"
                     );
                 }
@@ -1805,12 +1987,23 @@ mod tests {
             }
         }
 
-        // And a missing token under the default required: true.
-        assert!(
-            auth.authenticate(&lookup(&[]), None, &dl_engine)
-                .await
-                .is_err()
-        );
+        // No bearer credential at all — no header, another scheme, or the
+        // scheme glued to the token — is RFC 6750 §3.1's case: the bare
+        // challenge, with no error code. The body is the same as above.
+        for headers in [
+            vec![],
+            vec![("Authorization", "Basic dXNlcjpwYXNz".to_string())],
+            vec![("Authorization", "Bearerx.y.z".to_string())],
+        ] {
+            let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            match auth.authenticate(&lookup(&pairs), None, &dl_engine).await {
+                Err(OrionError::UnauthorizedToken { message, challenge }) => {
+                    assert_eq!(message, "Channel authentication failed");
+                    assert_eq!(challenge, crate::errors::BearerChallenge::Bare, "{pairs:?}");
+                }
+                other => unreachable!("expected UnauthorizedToken, got {other:?}"),
+            }
+        }
     }
 
     #[tokio::test]
@@ -1915,6 +2108,47 @@ mod tests {
             auth.authenticate(&lookup(&pairs), None, &dl_engine).await,
             Err(OrionError::Forbidden(_))
         ));
+    }
+
+    /// The #331 matrix on a `jwt` channel, including its reproduction: a
+    /// source configured as `"scheme": "Bearer"` — no trailing space — used to
+    /// refuse every caller.
+    #[tokio::test]
+    async fn jwt_accepts_every_conforming_bearer_spelling() {
+        let token = mint(jsonwebtoken::Algorithm::HS512, HS_SECRET, fresh_claims());
+        for scheme in [None, Some("Bearer"), Some("Bearer ")] {
+            let mut cfg = jwt_config(&["HS512"], HS_SECRET);
+            if let Some(scheme) = scheme {
+                cfg.source = Some(JwtSource::Header {
+                    header: "Authorization".to_string(),
+                    scheme: Some(scheme.to_string()),
+                });
+            }
+            let auth = jwt_auth(&cfg).await;
+            for spelling in ["Bearer", "bearer", "BEARER", "Bearer "] {
+                let value = format!("{spelling} {token}");
+                assert!(
+                    auth.authenticate(&lookup(&[("Authorization", value.as_str())]), None, &dl())
+                        .await
+                        .is_ok(),
+                    "scheme {scheme:?}, header {spelling:?} <token>"
+                );
+            }
+        }
+    }
+
+    /// `required: false` admits a request with no header — not one whose
+    /// header carries another scheme, which is a bad presentation.
+    #[tokio::test]
+    async fn optional_jwt_still_refuses_a_foreign_scheme() {
+        let mut cfg = jwt_config(&["HS512"], HS_SECRET);
+        cfg.required = Some(false);
+        let auth = jwt_auth(&cfg).await;
+        assert!(
+            auth.authenticate(&lookup(&[("Authorization", "Basic dXNlcg==")]), None, &dl())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

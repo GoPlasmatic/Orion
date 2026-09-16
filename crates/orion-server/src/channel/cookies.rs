@@ -188,8 +188,9 @@ pub(crate) fn format_set_cookie(spec: &Value) -> Result<String, String> {
 }
 
 /// RFC 6265 §4.1.1 `cookie-name` is an RFC 2616 token: no CTLs, no space, and
-/// none of the separator characters.
-fn is_token_byte(b: u8) -> bool {
+/// none of the separator characters. The set is exactly RFC 9110's `tchar`, so
+/// `channel::auth` checks an authentication scheme name with it too.
+pub(super) fn is_token_byte(b: u8) -> bool {
     b.is_ascii_graphic() && !br#"()<>@,;:\"/[]?={}"#.contains(&b)
 }
 

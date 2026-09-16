@@ -1,6 +1,6 @@
 <!-- description: The auth block of a channel: the api_key, hmac and jwt modes, every field each takes, the webhook presets, and the rules a failure and a rotation follow. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-16 -->
 
 # `auth`
 
@@ -14,7 +14,7 @@
 | `mode` | string | yes | — | `api_key`, `hmac`, or `jwt`. |
 | `keys` | array of strings | `api_key` | — | Accepted keys; any match authorizes. Each entry is a literal or an `env://VAR` reference. |
 | `header` | string | no | `Authorization` (`api_key`) / `X-Signature` (`hmac`) | Header carrying the credential. |
-| `scheme` | string | no | `Bearer ` when `header` is `Authorization`; none otherwise | `api_key` only: expected prefix on the header value. |
+| `scheme` | string | no | `Bearer` when `header` is `Authorization`; none otherwise | `api_key` only: the [authentication scheme](#the-scheme) the header value must carry. An empty string means none — the bare key. |
 | `secret` | string | `hmac` | — | Shared secret; literal or `env://VAR`. |
 | `secrets` | array of strings | no | — | `hmac` only: additional accepted secrets, each tried in constant time — zero-downtime rotation. Merged with `secret`; at least one of the two is required. |
 | `signature_prefix` | string | no | none | `hmac` only: prefix stripped from the signature before decoding, for example `sha256=`. Mutually exclusive with `signature_key`. |
@@ -32,7 +32,7 @@
 | `leeway_secs` | integer | no | `30` | `jwt` only: clock-skew allowance for `exp`/`nbf`, capped at 300. |
 | `require_exp` | boolean | no | `true` | `jwt` only: tokens must carry `exp` (RFC 8725); opting out is deliberate config. |
 | `required` | boolean | no | `true` | `jwt` only: `false` admits token-less requests with no `metadata.auth` key; a present-but-invalid token is still rejected. |
-| `source` | object | no | `Authorization: Bearer` | `jwt` only: `{"header": …, "scheme": …}` or `{"cookie": …}`. Query parameters are deliberately not offered (RFC 6750 §2.3). |
+| `source` | object | no | `{"header": "Authorization", "scheme": "Bearer"}` | `jwt` only: `{"header": …, "scheme": …}` or `{"cookie": …}`. `scheme` is the [authentication scheme](#the-scheme) the header value must carry; omit it to read the whole header value as the token. Query parameters are deliberately not offered (RFC 6750 §2.3). |
 | `max_token_bytes` | integer | no | `8192` | `jwt` only: token size cap. |
 | `claims_to_metadata` | array | no | all claims | `jwt` only: which verified claims reach `metadata.auth.claims`. |
 | `authorization_logic` | JSONLogic | no | — | `jwt` only: evaluated over `{"claims": …}` after verification; falsy → **403** `insufficient_scope`. An evaluation error fails closed. |
@@ -100,7 +100,7 @@ One named non-goal: **Twilio**, whose base string needs the full public URL plus
 }
 ```
 
-Verification is fail-fast (RFC 8725): extract, then the allowlist (`alg: none` and downgrades die here), `kid` routing, the signature, then `exp`/`nbf`/`iss`/`aud` with leeway, then `authorization_logic`. A falsy `authorization_logic` answers 403; everything before it answers 401 with `WWW-Authenticate: Bearer`. Only **expiry** is named on the wire, as `error_description="token expired"`, because it is the one failure a client answers with a refresh. Every other reason is uniform, and typed only in metrics and traces. Verified claims propagate through `channel_call`: one request, one identity. Static-key rotation is old + new entries under distinct `kid`s; issuer-side JWKS rotation is absorbed by the cache's refetch. Login and refresh flows are the [`jwt_sign` / `jwt_verify`](../functions/jwt_sign.md) task functions over the same core.
+Verification is fail-fast (RFC 8725): extract, then the allowlist (`alg: none` and downgrades die here), `kid` routing, the signature, then `exp`/`nbf`/`iss`/`aud` with leeway, then `authorization_logic`. A falsy `authorization_logic` answers 403; everything before it answers 401 with a `WWW-Authenticate: Bearer` challenge. A request with no bearer credential, meaning no token or another scheme, gets the bare `Bearer` challenge with no error code (RFC 6750 §3.1). A presented token that fails gets `Bearer error="invalid_token"`. Only **expiry** is described, as `error_description="token expired"`, because a client answers it with a refresh. The response body is the same for every cause, which is typed only in metrics (`orion_jwt_rejections_total{reason}`, where a wrong scheme is `scheme_mismatch`) and traces. Verified claims propagate through `channel_call`: one request, one identity. Static-key rotation is old + new entries under distinct `kid`s; issuer-side JWKS rotation is absorbed by the cache's refetch. Login and refresh flows are the [`jwt_sign` / `jwt_verify`](../functions/jwt_sign.md) task functions over the same core.
 
 Rules:
 
@@ -110,6 +110,21 @@ Rules:
 - **`auth.keys`, `auth.secret`/`auth.secrets`, and `auth.jwt_keys[].key` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
 - **Kafka and `channel_call` are exempt by design.** A Kafka record carries no header and no signature; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.
 - OIDC flows (discovery, PKCE, userinfo) and mTLS stay out of scope — the `jwt` mode verifies tokens; it is not an IdP. See [Secure an Instance](../../operate/run/security.md).
+
+## The scheme
+
+`scheme` (for `api_key`) and `source.scheme` (for `jwt`) name an HTTP authentication scheme. The header value is parsed as RFC 9110 §11.1 defines it: the scheme, one or more spaces, then the credential. The scheme matches case-insensitively, so with `"scheme": "Bearer"` all of these are accepted:
+
+```text
+Authorization: Bearer <credential>
+Authorization: bearer <credential>
+Authorization: BEARER <credential>
+Authorization: Bearer  <credential>
+```
+
+`Authorization: Bearer<credential>`, with no space, is refused: the text before the first space is not the scheme. The credential after the spaces is compared byte-for-byte.
+
+The value is a scheme name, not a prefix, so `"Bearer"` and `"Bearer "` are the same scheme. A value that is not an RFC 9110 token, such as `"Key="` or `"Bearer:"`, cannot be a scheme name. It is a `400` at create, update, validate and import, and an error from `lint` and `package lint`. A channel already stored with one is quarantined at load. `orion-server preflight` reports a stored one as `channel-auth`.
 
 ## Related
 

@@ -9,7 +9,9 @@
 //! are compile-time (config) errors; HS secrets shorter than the hash length
 //! are refused (RFC 7518 §3.2). Verification errors carry a typed
 //! [`RejectReason`] — surfaced in metrics and traces, never on the wire
-//! except for expiry (the one failure a well-behaved client acts on).
+//! except for expiry (the one failure a well-behaved client acts on) and the
+//! RFC 6750 §3.1 difference between presenting no bearer credential and
+//! presenting a bad one.
 
 pub mod jwks;
 
@@ -39,10 +41,15 @@ pub fn validate_jwks_url(url: &str) -> Result<(), String> {
 }
 
 /// Why a token was refused. `as_str` feeds metrics/trace labels; the wire
-/// response stays uniform (see `RejectReason::wire_description`).
+/// response stays uniform (see `RejectReason::challenge`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
     Missing,
+    /// The credential header is present but does not carry the configured
+    /// scheme — `Basic …` on a `Bearer` channel, or `Bearer<token>` with no
+    /// space. Named apart from `Malformed` because the fix is in the client's
+    /// presentation, not its token (#331).
+    SchemeMismatch,
     Oversized,
     Malformed,
     AlgRejected,
@@ -62,6 +69,7 @@ impl RejectReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Missing => "missing",
+            Self::SchemeMismatch => "scheme_mismatch",
             Self::Oversized => "oversized",
             Self::Malformed => "malformed",
             Self::AlgRejected => "alg_rejected",
@@ -76,12 +84,35 @@ impl RejectReason {
         }
     }
 
-    /// The one reason named on the wire: expiry, which a client answers with
-    /// a refresh. Every other cause is uniform — distinguishing them tells an
-    /// attacker which half they got right, while an expired token's holder
-    /// already knows its `exp`.
-    pub fn wire_description(self) -> Option<&'static str> {
-        matches!(self, Self::Expired).then_some("token expired")
+    /// The `WWW-Authenticate` challenge this refusal answers with.
+    ///
+    /// Two distinctions reach the wire, and neither says anything about the
+    /// credential. A request that presents **no bearer credential** — no
+    /// token, or another scheme — gets the bare challenge: RFC 6750 §3.1 says
+    /// such a request SHOULD NOT receive an error code, and the only thing it
+    /// learns is the scheme, which the challenge names anyway. **Expiry** is
+    /// the one invalid-token cause described, because a client answers it
+    /// with a refresh and the holder already knows its `exp`. Every other
+    /// cause is a uniform `invalid_token` — distinguishing them tells an
+    /// attacker which half they got right.
+    pub fn challenge(self) -> crate::errors::BearerChallenge {
+        use crate::errors::BearerChallenge;
+        match self {
+            Self::Missing | Self::SchemeMismatch => BearerChallenge::Bare,
+            Self::Expired => BearerChallenge::InvalidToken(Some("token expired")),
+            // No wildcard: a reason added later is classified here, not
+            // defaulted into one of the two.
+            Self::Oversized
+            | Self::Malformed
+            | Self::AlgRejected
+            | Self::UnknownKid
+            | Self::BadSignature
+            | Self::NotYetValid
+            | Self::IssuerMismatch
+            | Self::AudienceMismatch
+            | Self::MissingClaim
+            | Self::KeysUnavailable => BearerChallenge::InvalidToken(None),
+        }
     }
 }
 

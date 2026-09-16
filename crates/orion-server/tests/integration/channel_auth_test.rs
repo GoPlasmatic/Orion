@@ -533,6 +533,12 @@ async fn broken_auth_configs_are_refused_at_create_not_quarantined() {
                    "signature_prefix": "v0=", "signature_key": "v1"}),
             "mutually exclusive",
         ),
+        // #331: a scheme is a name. This one could never match one, and used
+        // to refuse every caller while every offline check passed.
+        (
+            json!({"mode": "api_key", "keys": ["k"], "header": "X-Key", "scheme": "Key="}),
+            "auth.scheme",
+        ),
     ] {
         let resp = app
             .clone()
@@ -661,13 +667,8 @@ async fn a_verified_jwt_exposes_claims_to_the_workflow() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    let challenge = resp
-        .headers()
-        .get("www-authenticate")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    assert!(challenge.starts_with("Bearer"), "{challenge}");
+    // No credential at all: RFC 6750 §3.1's bare challenge, no error code.
+    assert_eq!(challenge_of(&resp), "Bearer");
 
     // A valid token → the workflow reads claims.sub from its context.
     let token = mint_jwt(fresh_claims());
@@ -784,6 +785,112 @@ async fn optional_jwt_admits_tokenless_and_still_rejects_invalid() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
+fn challenge_of(resp: &axum::response::Response) -> String {
+    resp.headers()
+        .get("www-authenticate")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// #331 over the wire. RFC 9110 §11.1 makes the scheme case-insensitive and
+/// lets any run of spaces separate it from the credential; the channel used to
+/// strip a byte-exact `"Bearer "` and refuse all three of the spellings below.
+/// The jwt channel is the issue's reproduction — `"scheme": "Bearer"`, no
+/// trailing space, which refused every caller.
+#[tokio::test]
+async fn conforming_authorization_headers_are_accepted() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "bearer-key",
+        common::echo_workflow("bearer-key-wf"),
+        json!({ "auth": { "mode": "api_key", "keys": ["s3cret"] } }),
+    )
+    .await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "bearer-jwt",
+        claims_echo_workflow("bearer-jwt-wf"),
+        jwt_channel_config(json!({
+            "source": { "header": "Authorization", "scheme": "Bearer" }
+        })),
+    )
+    .await;
+    let token = mint_jwt(fresh_claims());
+
+    for (channel, credential) in [("bearer-key", "s3cret"), ("bearer-jwt", token.as_str())] {
+        let uri = format!("/api/v1/data/{channel}");
+        for spelling in ["Bearer", "bearer", "BEARER", "Bearer "] {
+            let resp = app
+                .clone()
+                .oneshot(request_with_header(
+                    &uri,
+                    ("Authorization", &format!("{spelling} {credential}")),
+                    json!({"data": {}}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "{channel}: {spelling:?} <credential>"
+            );
+        }
+        // No separator is not the scheme.
+        let resp = app
+            .clone()
+            .oneshot(request_with_header(
+                &uri,
+                ("Authorization", &format!("Bearer{credential}")),
+                json!({"data": {}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "{channel}: Bearer<credential>"
+        );
+    }
+}
+
+/// What a refused bearer presentation says on the wire: the bare challenge
+/// when no bearer credential was presented (RFC 6750 §3.1), `invalid_token`
+/// when one was — and the body the same either way.
+#[tokio::test]
+async fn a_foreign_scheme_gets_the_bare_challenge_and_a_bad_token_does_not() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel_with_config(
+        &app,
+        "challenged",
+        claims_echo_workflow("challenged-wf"),
+        jwt_channel_config(json!({})),
+    )
+    .await;
+
+    let mut bodies = Vec::new();
+    for (value, want) in [
+        ("Basic dXNlcjpwYXNz", "Bearer"),
+        ("Bearer not.a.token", "Bearer error=\"invalid_token\""),
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(request_with_header(
+                "/api/v1/data/challenged",
+                ("Authorization", value),
+                json!({"data": {}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{value}");
+        assert_eq!(challenge_of(&resp), want, "{value}");
+        let body = body_json(resp).await;
+        bodies.push(body["error"]["message"].clone());
+    }
+    assert_eq!(bodies[0], bodies[1], "the body never names the cause");
+}
+
 #[tokio::test]
 async fn broken_jwt_configs_are_refused_at_create() {
     let app = common::test_app().await;
@@ -802,6 +909,12 @@ async fn broken_jwt_configs_are_refused_at_create() {
             json!({"mode": "jwt", "algorithms": ["RS256"],
                    "jwks_url": "http://issuer.example.com/jwks"}),
             "HTTPS",
+        ),
+        (
+            json!({"mode": "jwt", "algorithms": ["HS256"],
+                   "jwt_keys": [{"algorithm": "HS256", "key": "k"}],
+                   "source": {"header": "Authorization", "scheme": "Bearer:"}}),
+            "auth.source.scheme",
         ),
     ] {
         let resp = app

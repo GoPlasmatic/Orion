@@ -160,9 +160,11 @@ pub struct ChannelAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
 
-    /// **`api_key`** — expected prefix on the header value, e.g. `Bearer `.
-    /// Defaults to `Bearer ` when the header is `Authorization`, and to none
-    /// otherwise (an `X-API-Key` header carries a bare key).
+    /// **`api_key`** — the authentication scheme the header value carries,
+    /// e.g. `Bearer`: a name matched case-insensitively and separated from the
+    /// key by one or more spaces (RFC 9110 §11.1), not a byte prefix. Defaults
+    /// to `Bearer` when the header is `Authorization`, and to none otherwise
+    /// (an `X-API-Key` header carries a bare key); an empty string is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheme: Option<String>,
 
@@ -327,7 +329,8 @@ pub struct JwtKeyEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, untagged)]
 pub enum JwtSource {
-    /// A header, minus an optional scheme prefix (`Bearer `).
+    /// A header, carrying an optional authentication scheme (`Bearer`) —
+    /// parsed as RFC 9110 §11.1 defines it, like `api_key`'s `scheme`.
     Header {
         header: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
