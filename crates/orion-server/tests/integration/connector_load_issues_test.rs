@@ -458,3 +458,117 @@ async fn a_stored_0x_storage_connector_reports_its_missing_fields() {
         issues[0].reason
     );
 }
+
+/// Create an http connector through the admin API, returning its status.
+async fn create_http(app: &axum::Router, name: &str, config: serde_json::Value) -> StatusCode {
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({"id": name, "name": name, "connector_type": "http", "config": config})),
+        ))
+        .await
+        .unwrap()
+        .status()
+}
+
+/// The `failed_to_load` entry `/health` reports for `name`, if any.
+async fn load_failure(app: &axum::Router, name: &str) -> Option<serde_json::Value> {
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    body["connectors"]["failed_to_load"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|f| f["connector"] == name)
+        .cloned()
+}
+
+/// #338: nothing judged an endpoint after its reference resolved, so an
+/// `env://` URL resolving to `ftp://…` reached the client unjudged. It is
+/// now an `endpoint` load issue naming the scheme — and never the value,
+/// which may carry userinfo.
+#[tokio::test]
+async fn a_reference_url_resolving_to_a_bad_scheme_is_an_endpoint_load_issue() {
+    // SAFETY: a variable no other test reads; set before the app loads it.
+    unsafe {
+        std::env::set_var(
+            "ORION_T338_BAD_SCHEME_URL",
+            "ftp://user:hunter2@files.example.com/",
+        )
+    };
+    let app = test_app().await;
+    assert_eq!(
+        create_http(
+            &app,
+            "t338-ftp",
+            json!({"url": "env://ORION_T338_BAD_SCHEME_URL"})
+        )
+        .await,
+        StatusCode::CREATED,
+        "a reference is judged at load, not at create"
+    );
+    let failure = load_failure(&app, "t338-ftp").await.expect("a load issue");
+    assert_eq!(failure["stage"], "endpoint", "{failure}");
+    let reason = failure["reason"].as_str().unwrap();
+    assert!(reason.contains("'ftp'"), "{reason}");
+    assert!(!reason.contains("hunter2"), "{reason}");
+}
+
+/// A boolean opt-out may be a reference: `true` or `false` is the boolean,
+/// and the connector loads with it.
+#[tokio::test]
+async fn a_boolean_reference_resolving_to_true_loads() {
+    // SAFETY: variables no other test reads.
+    unsafe {
+        std::env::set_var("ORION_T338_PEER_URL", "http://127.0.0.1:9");
+        std::env::set_var("ORION_T338_PEER_PRIVATE", "true");
+    }
+    let app = test_app().await;
+    assert_eq!(
+        create_http(
+            &app,
+            "t338-peer",
+            json!({
+                "url": "env://ORION_T338_PEER_URL",
+                "allow_private_urls": "env://ORION_T338_PEER_PRIVATE",
+            }),
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    assert!(load_failure(&app, "t338-peer").await.is_none());
+}
+
+/// Anything else there is refused at load, naming the field and withholding
+/// what the reference resolved to — it may be a credential a reference was
+/// mis-pointed at.
+#[tokio::test]
+async fn a_boolean_reference_resolving_to_garbage_is_a_deserialize_load_issue() {
+    // SAFETY: a variable no other test reads.
+    unsafe { std::env::set_var("ORION_T338_NOT_A_BOOL", "sk_live_hunter2") };
+    let app = test_app().await;
+    assert_eq!(
+        create_http(
+            &app,
+            "t338-garbage",
+            json!({
+                "url": "https://api.example.com",
+                "allow_private_urls": "env://ORION_T338_NOT_A_BOOL",
+            }),
+        )
+        .await,
+        StatusCode::CREATED
+    );
+    let failure = load_failure(&app, "t338-garbage")
+        .await
+        .expect("a load issue");
+    assert_eq!(failure["stage"], "deserialize", "{failure}");
+    let reason = failure["reason"].as_str().unwrap();
+    assert!(reason.contains("allow_private_urls"), "{reason}");
+    assert!(!reason.contains("hunter2"), "{reason}");
+}

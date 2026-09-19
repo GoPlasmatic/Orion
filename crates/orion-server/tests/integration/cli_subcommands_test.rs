@@ -2150,6 +2150,47 @@ fn an_env_reference_is_reported_without_failing_deny_warnings() {
     );
 }
 
+/// #338: a connector whose URL and private-address opt-out are references
+/// lints clean, each reference inventoried; a reference inside a longer
+/// string is a warning — it would be sent literally — and gates
+/// `--deny-warnings`.
+#[test]
+fn a_referenced_url_lints_clean_and_an_embedded_reference_warns() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("peer.json"),
+        r#"{"name":"peer-api","connector_type":"http","config":{
+             "url":"env://PEER_API_URL",
+             "allow_private_urls":"env://PEER_API_PRIVATE","timeout_ms":10000}}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("PEER_API_URL") && report.contains("PEER_API_PRIVATE"),
+        "{report}"
+    );
+
+    std::fs::write(
+        dir.join("crm.json"),
+        r#"{"name":"crm","connector_type":"http","config":{
+             "url":"https://example.com",
+             "headers":{"Authorization":"Bearer env://CRM_TOKEN"}}}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "a warning alone does not fail: {report}");
+    assert!(
+        report.contains("[env.embedded_reference]")
+            && report.contains("config.headers.Authorization")
+            && report.contains("\"type\": \"bearer\""),
+        "{report}"
+    );
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(!ok, "{report}");
+}
+
 /// The other half of the deployment checklist: a `{"secret": …}` node names an
 /// entry the serving instance must declare in `[secrets]`, and an instance
 /// that lacks one quarantines the channel. A separate check id, because the

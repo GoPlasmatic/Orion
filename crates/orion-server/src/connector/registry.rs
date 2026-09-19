@@ -69,9 +69,10 @@ pub struct ConnectorRegistry {
 pub struct ConnectorLoadIssue {
     pub connector: String,
     pub connector_id: String,
-    /// Which step failed: `env_substitution`, `json_parse`,
-    /// `secret_resolution` or `deserialize`. A bounded set, so it is safe as
-    /// a metric or log label.
+    /// Which step failed: `env_substitution`, `json_parse`, `var_reference`,
+    /// `secret_resolution`, `deserialize` or `endpoint` (a resolved endpoint
+    /// whose scheme its backend cannot serve). A bounded set, so it is safe
+    /// as a metric or log label.
     pub stage: &'static str,
     pub reason: String,
 }
@@ -352,6 +353,10 @@ impl ConnectorRegistry {
                 issues.push(issue("var_reference", e));
                 continue;
             }
+            // Where the references are, before they are replaced: the typed
+            // parse below coerces a resolved `true`/`false` to a boolean at
+            // these paths, and nowhere else.
+            let sites = super::secrets::reference_sites(&value, resolvers);
             if let Err(e) =
                 super::secrets::resolve_in_place(&mut value, resolvers, &source_label).await
             {
@@ -367,26 +372,37 @@ impl ConnectorRegistry {
                 issues.push(issue("secret_resolution", e.to_string()));
                 continue;
             }
-            // `ConnectorConfig` is internally tagged on `type`, but the type
-            // lives in its own column and the create/update API takes it as
-            // `connector_type` alongside the config. Inject it, exactly as
-            // `validate_connector_config` does, so the column is the single
-            // source of truth.
+            // The type lives in its own column, and the create/update API
+            // takes it as `connector_type` alongside the config, so the column
+            // is the single source of truth: the config is typed as the
+            // variant it names, whatever `"type"` the stored document carries
+            // or lacks. (Deserializing the tagged enum needed a `type`
+            // injected first — a connector authored the documented way, with
+            // none inside `config`, once failed with "missing field `type`"
+            // and silently never loaded.)
             //
-            // Without this, a connector authored the documented way — with no
-            // redundant `"type"` inside `config` — failed to deserialize with
-            // "missing field `type`" and silently never loaded, which is the
-            // shape every example and every admin UI produces.
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "type".to_string(),
-                    serde_json::Value::String(connector.connector_type.clone()),
-                );
-            }
-            match serde_json::from_value::<ConnectorConfig>(value) {
-                Ok(config) => {
-                    new_configs.insert(connector.name.clone(), Arc::new(config));
-                }
+            // Typed per variant, through the resolved-reference parse, so a
+            // boolean field whose reference resolved to `true` or `false`
+            // takes the boolean — and anything else there is refused naming
+            // the field, never the value.
+            let Some(connector_type) = super::ConnectorType::from_stored(&connector.connector_type)
+            else {
+                issues.push(issue(
+                    "deserialize",
+                    format!(
+                        "unknown connector type '{}', expected one of {}",
+                        connector.connector_type,
+                        super::VALID_CONNECTOR_TYPES.join(", ")
+                    ),
+                ));
+                continue;
+            };
+            let config = match ConnectorConfig::parse_variant(
+                connector_type,
+                &value,
+                &super::secrets::ResolvedReferences { sites: &sites },
+            ) {
+                Ok(config) => config,
                 Err(e) => {
                     tracing::warn!(
                         connector_id = %connector.id,
@@ -395,8 +411,29 @@ impl ConnectorRegistry {
                         "Failed to parse connector config, skipping"
                     );
                     issues.push(issue("deserialize", e.to_string()));
+                    continue;
                 }
+            };
+            // Nothing judged the endpoint after its references resolved: a
+            // stored `env://` URL that resolves to `ftp://…` reached the
+            // client unjudged and failed late and obscurely. The scheme is
+            // checked here, on the final value; the private-address check
+            // stays on the request and pool-open paths, which resolve DNS
+            // and see every redirect.
+            if let Err(e) = crate::validation::endpoints::validate_endpoint_schemes(
+                &config,
+                crate::validation::endpoints::EndpointPhase::Load,
+            ) {
+                tracing::warn!(
+                    connector_id = %connector.id,
+                    connector_name = %connector.name,
+                    error = %e.client_message(),
+                    "Connector endpoint refused at load, skipping"
+                );
+                issues.push(issue("endpoint", e.client_message()));
+                continue;
             }
+            new_configs.insert(connector.name.clone(), Arc::new(config));
         }
 
         // Minimal write lock — compare, then swap only if this load actually

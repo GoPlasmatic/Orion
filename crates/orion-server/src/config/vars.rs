@@ -134,8 +134,20 @@ pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
     value: &serde_json::Value,
     skip: &dyn Fn(&str) -> bool,
 ) -> Result<T, String> {
+    parse_with_unresolved_refs(value, skip, &|s| s.starts_with(VAR_SCHEME))
+}
+
+/// [`parse_with_unresolved_vars`] for any reference `is_site` recognises —
+/// a connector config also stands `env://` and `vault://` references in
+/// fields that are not strings (`"allow_private_urls": "env://PEER_PRIVATE"`),
+/// and those resolve at load exactly as a var does.
+pub fn parse_with_unresolved_refs<T: serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+    skip: &dyn Fn(&str) -> bool,
+    is_site: &dyn Fn(&str) -> bool,
+) -> Result<T, String> {
     let mut sites = Vec::new();
-    collect_var_sites(value, skip, &mut Vec::new(), &mut sites);
+    collect_var_sites(value, skip, is_site, &mut Vec::new(), &mut sites);
     let mut doc = value.clone();
     // How many placeholders each reference has been through.
     let mut tried: HashMap<Vec<Seg>, usize> = HashMap::new();
@@ -205,7 +217,7 @@ pub fn parse_with_unresolved_vars<T: serde::de::DeserializeOwned>(
 
 /// One step of a path into a JSON document.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Seg {
+pub(crate) enum Seg {
     Key(String),
     Index(usize),
 }
@@ -213,7 +225,7 @@ enum Seg {
 impl Seg {
     /// `None` for an enum variant or an untracked step: neither addresses a
     /// value in the document, so an error there is nobody's reference.
-    fn from_segment(segment: &serde_path_to_error::Segment) -> Option<Self> {
+    pub(crate) fn from_segment(segment: &serde_path_to_error::Segment) -> Option<Self> {
         match segment {
             serde_path_to_error::Segment::Map { key } => Some(Self::Key(key.clone())),
             serde_path_to_error::Segment::Seq { index } => Some(Self::Index(*index)),
@@ -225,25 +237,26 @@ impl Seg {
 fn collect_var_sites(
     value: &serde_json::Value,
     skip: &dyn Fn(&str) -> bool,
+    is_site: &dyn Fn(&str) -> bool,
     path: &mut Vec<Seg>,
     sites: &mut Vec<Vec<Seg>>,
 ) {
     match value {
-        serde_json::Value::String(s) if s.starts_with(VAR_SCHEME) => sites.push(path.clone()),
+        serde_json::Value::String(s) if is_site(s) => sites.push(path.clone()),
         serde_json::Value::Object(map) => {
             for (key, v) in map {
                 if skip(key) {
                     continue;
                 }
                 path.push(Seg::Key(key.clone()));
-                collect_var_sites(v, skip, path, sites);
+                collect_var_sites(v, skip, is_site, path, sites);
                 path.pop();
             }
         }
         serde_json::Value::Array(items) => {
             for (index, v) in items.iter().enumerate() {
                 path.push(Seg::Index(index));
-                collect_var_sites(v, skip, path, sites);
+                collect_var_sites(v, skip, is_site, path, sites);
                 path.pop();
             }
         }
@@ -273,7 +286,10 @@ fn names_missing_field(err: &serde_json::Error, key: &str) -> bool {
     message.starts_with("missing field") && message.contains(&format!("`{key}`"))
 }
 
-fn slot_at<'a>(doc: &'a mut serde_json::Value, path: &[Seg]) -> Option<&'a mut serde_json::Value> {
+pub(crate) fn slot_at<'a>(
+    doc: &'a mut serde_json::Value,
+    path: &[Seg],
+) -> Option<&'a mut serde_json::Value> {
     path.iter().try_fold(doc, |current, seg| match seg {
         Seg::Key(key) => current.get_mut(key.as_str()),
         Seg::Index(index) => current.get_mut(*index),
@@ -306,7 +322,7 @@ fn reference_at(doc: &serde_json::Value, path: &[Seg]) -> String {
         .to_string()
 }
 
-fn display_path(path: &[Seg]) -> String {
+pub(crate) fn display_path(path: &[Seg]) -> String {
     let mut out = String::new();
     for seg in path {
         match seg {

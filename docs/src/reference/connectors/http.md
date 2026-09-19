@@ -1,6 +1,6 @@
 <!-- description: The `http` connector config: the base URL, default method and headers, query parameters, auth, retries and the response size cap. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `http` connectors
 
@@ -23,7 +23,7 @@ Calls REST APIs and webhooks through [`http_call`](../functions/http_call.md).
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
-| `url` | string | yes | — | Base URL for every request through this connector |
+| `url` | string or reference | yes | — | Base URL for every request through this connector. An `env://` reference is scheme-checked when it resolves at load |
 | `method` | string | no | `""` | Default HTTP method when the task sets none |
 | `headers` | object | no | `{}` | Default headers for every request — see [Header precedence](./request-layering.md#header-precedence) |
 | `query_params` | object | no | `{}` | Query parameters appended to every request — see [Query-parameter precedence](./request-layering.md#query-parameter-precedence). Values are secret-resolvable and masked on reads |
@@ -31,7 +31,7 @@ Calls REST APIs and webhooks through [`http_call`](../functions/http_call.md).
 | `retry` | object | no | `{"max_retries": 3, "retry_delay_ms": 1000}` | Retry policy — see [Retries](./reliability.md#retries) |
 | `retry_non_idempotent` | boolean | no | `false` | Also retry POST and PATCH — see [Retries](./reliability.md#retries) |
 | `max_response_size` | integer | no | `10485760` | Maximum response body size in bytes (10 MB); a larger response fails the call. Governs a **successful** body only — a non-2xx body contributes at most 512 bytes to the error message, marked `… (truncated)` when cut |
-| `allow_private_urls` | boolean | no | `false` | Allow requests to private and internal IP addresses (SSRF protection) |
+| `allow_private_urls` | boolean or reference | no | `false` | Allow requests to private and internal IP addresses (SSRF protection). A reference must resolve to `true` or `false`; see [References in fields that are not strings](./secrets.md#references-in-fields-that-are-not-strings) |
 | `operations` | object | no | all methods allowed | Method allow-list — see [Operation gates](./operation-gates.md) |
 
 ## Related

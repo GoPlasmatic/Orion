@@ -280,6 +280,16 @@ fn check_connectors(
                 &e,
             ));
         }
+        for embedded in crate::connector::secrets::embedded_references(&req.config) {
+            findings.push(
+                Diagnostic::warning(
+                    "env.embedded_reference",
+                    format!("connector '{}' config.{}", req.name, embedded.path),
+                    embedded.message(),
+                )
+                .with_remedy(embedded.remedy()),
+            );
+        }
         if seen.contains(&req.name) {
             findings.push(Diagnostic::error(
                 "duplicate.connector_name",

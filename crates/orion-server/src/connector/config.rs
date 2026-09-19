@@ -23,7 +23,47 @@ pub enum ConnectorConfig {
     Storage(StorageConnectorConfig),
 }
 
+/// One parse of a connector variant's struct — the hook
+/// [`ConnectorConfig::parse_variant`] types each variant through.
+pub trait VariantParse {
+    type Error;
+    fn parse<T: serde::de::DeserializeOwned>(
+        &self,
+        value: &serde_json::Value,
+    ) -> Result<T, Self::Error>;
+}
+
 impl ConnectorConfig {
+    /// Type `value` as `connector_type`'s variant, through `parser`.
+    ///
+    /// The same result as deserializing the enum with `type` injected, except
+    /// that the variant's struct is deserialized directly. That matters to a
+    /// parse that needs error *paths* — the authoring parse that stands a
+    /// placeholder in for a reference, the load parse that coerces a resolved
+    /// boolean: serde buffers an internally tagged document before handing it
+    /// to the variant, and the path is lost there. A `type` key in `value` is
+    /// ignored, as the tag is.
+    pub fn parse_variant<P: VariantParse>(
+        connector_type: ConnectorType,
+        value: &serde_json::Value,
+        parser: &P,
+    ) -> Result<Self, P::Error> {
+        let mut untagged = value.clone();
+        if let Some(obj) = untagged.as_object_mut() {
+            obj.remove("type");
+        }
+        let value = &untagged;
+        Ok(match connector_type {
+            ConnectorType::Http => Self::Http(parser.parse(value)?),
+            ConnectorType::Kafka => Self::Kafka(parser.parse(value)?),
+            ConnectorType::Db => Self::Db(parser.parse(value)?),
+            ConnectorType::Cache => Self::Cache(parser.parse(value)?),
+            ConnectorType::Es => Self::Es(parser.parse(value)?),
+            ConnectorType::Smtp => Self::Smtp(parser.parse(value)?),
+            ConnectorType::Storage => Self::Storage(parser.parse(value)?),
+        })
+    }
+
     /// The wire `type` this config is. The stored `connectors.connector_type`
     /// column says the same thing, but the registry holds parsed configs — this
     /// is how a caller with only the parsed form (F52's activation-time type
@@ -863,6 +903,14 @@ impl ConnectorType {
 impl std::fmt::Display for ConnectorType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl ConnectorType {
+    /// The type a stored `connector_type` column names — exactly as the
+    /// config enum's tag matches it, so the two cannot disagree on a row.
+    pub fn from_stored(s: &str) -> Option<Self> {
+        Self::ALL.iter().find(|t| t.as_str() == s).copied()
     }
 }
 

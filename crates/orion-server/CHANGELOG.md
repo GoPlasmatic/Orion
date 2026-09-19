@@ -61,7 +61,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signatures — does not move the version; `compile` notes it when a workflow
   carries a rollout.
 
+- **An `http` connector's `url`, and any connector boolean, may be a
+  reference** ([#338]). Every other endpoint already deferred an `env://`
+  reference to load; `http.url` (and an OAuth2 `token_url`) was parsed raw
+  and refused with `must use http or https scheme, got 'env'`. It now follows
+  the same rule. A reference also stands in a field that is not a string —
+  `"allow_private_urls": "env://PEER_API_PRIVATE"` — through the placeholder
+  parse channel configs already use for `var://`: authoring accepts it, and
+  at load a reference that resolved to `true` or `false` becomes the boolean.
+  Anything else there is a `deserialize` load issue naming the field, never
+  the resolved value. `var://` works in the same fields, typed.
+- **`env.embedded_reference`**: `lint`, `package lint` and `POST
+  /connectors/validate` warn on a connector string with a reference *inside*
+  it — `"Bearer env://API_KEY"` — which is not a reference and is sent
+  literally; the remedy names the `auth` block.
+
 ### Changed
+
+- **A connector's endpoint is scheme-checked again after its references
+  resolve** ([#338]). Nothing judged a resolved endpoint, so an `env://` URL
+  that resolved to `ftp://…` reached the client unjudged and failed late. It
+  is now an `endpoint` load issue naming the scheme (never the value, which
+  may carry userinfo). Any connector this refuses was already
+  non-functional.
 
 - **`compile` and `package export` refuse a package name or version the
   target would refuse.** A version outside letters, digits, `.`, `_` and `-`,
@@ -105,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can change — wrapping it in a task group would change which steps run.
   Both rules are now silent there.
 
+[#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346

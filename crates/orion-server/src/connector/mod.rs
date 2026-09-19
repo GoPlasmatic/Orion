@@ -23,7 +23,7 @@ pub use config::{
     KafkaConnectorConfig, KafkaOperationGates, OAuth2ClientAuth, OAuth2Config, OAuth2Grant,
     OperationGates, RetryConfig, SmtpAuth, SmtpConnectorConfig, SmtpTls, StorageConnectorConfig,
     StorageOperationGates, StorageProvider, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
-    VALID_HTTP_METHODS, is_mongo_url,
+    VALID_HTTP_METHODS, VariantParse, is_mongo_url,
 };
 pub use kind::{ConnectorKind, ConnectorTarget, DataBackend, PoolSlot};
 pub(crate) use masking::MASK;
