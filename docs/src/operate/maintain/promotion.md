@@ -1,6 +1,6 @@
 <!-- description: Move an Orion service between instances as one versioned package — export the closure, lint and plan with zero writes, then apply and record a receipt. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Promote between environments
 
@@ -107,7 +107,7 @@ Re-apply the previous artifact version:
 orion-server package apply -s https://prod.orion.internal -f payments-1.3.0.json
 ```
 
-Entities roll *forward* carrying the older content; nothing moves backward, and the receipt history records both moves. That is the whole rollback procedure. There is no separate command, because a rollback is a promotion of something you already shipped. Keep the artifacts. A rollback you cannot perform is a rollback you do not have, and the artifact file is the only thing needed to perform one.
+`apply` sees that `1.3.0` is applied here but that `1.4.0` superseded it. It therefore stages and activates `1.3.0`'s content again rather than stopping at the receipt, and `plan` reports the same verdict first. Entities roll *forward* carrying the older content; nothing moves backward, and the receipt history records both moves. That is the whole rollback procedure. There is no separate command, because a rollback is a promotion of something you already shipped. Keep the artifacts. A rollback you cannot perform is a rollback you do not have, and the artifact file is the only thing needed to perform one.
 
 ## Verify
 

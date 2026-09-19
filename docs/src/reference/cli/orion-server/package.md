@@ -1,6 +1,6 @@
 <!-- description: orion-server package exports, lints, plans, applies and diffs a promotion artifact of channels, workflows, connectors, plugins and models between instances. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server package`
 
@@ -29,7 +29,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `export` | Compute the dependency closure from a running instance and write the artifact. |
 | `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
 | `plan` | Pre-flight an artifact against a target with zero writes. |
-| `apply` | Stage all entities, activate in dependency order, reload once, record the receipt. Idempotent. |
+| `apply` | Stage all entities, activate in dependency order, reload once, record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. |
 | `diff` | Report drift between an artifact and a running instance. Exits non-zero when anything differs. |
 
 ## Options

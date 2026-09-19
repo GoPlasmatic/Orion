@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`package apply` of a superseded version is a rollback again.** Re-applying
+  an artifact whose version is applied on the target with the same content
+  printed `already applied with identical content — nothing to do` even when a
+  later version had been applied since, so the documented rollback — "re-apply
+  the previous artifact" — left the newer content serving. `apply` now tells
+  the package's `current` version apart from a superseded one: the current
+  version is still the no-op, and a superseded one is staged, activated and
+  reloaded like any apply, after which its receipt is `current` again. `plan`
+  names the version that superseded it.
+
 ## [1.8.2] - 2026-09-16
 
 ### Changed

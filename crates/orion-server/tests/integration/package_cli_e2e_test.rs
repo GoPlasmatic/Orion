@@ -363,6 +363,43 @@ async fn package_promotes_between_real_instances() {
         !out.status.success(),
         "the superseded artifact must show drift"
     );
+
+    // Rollback is a re-apply: 1.0.0's receipt is applied with this very
+    // content, but 1.1.0 superseded it, so apply must put 1.0.0's content
+    // back rather than stop at the receipt. SQLite timestamps are
+    // second-granular; the touch must land strictly after 1.1.0's for
+    // `current` to move back.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stdout = assert_ok(
+        &package_cmd(&["plan", "-s", &target.url(), "-f", artifact]),
+        "plan the rollback",
+    );
+    assert!(stdout.contains("superseded by e2e@1.1.0"), "{stdout}");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", artifact]),
+        "apply the rollback",
+    );
+    assert!(!stdout.contains("nothing to do"), "{stdout}");
+    assert!(stdout.contains("applied e2e@1.0.0"), "{stdout}");
+    assert_ok(
+        &package_cmd(&["diff", "-s", &target.url(), "-f", artifact]),
+        "diff after the rollback",
+    );
+    let receipt: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/e2e", target.url()))
+        .send()
+        .await
+        .expect("receipt")
+        .json()
+        .await
+        .expect("receipt json");
+    assert_eq!(receipt["data"]["current"]["version"], "1.0.0", "{receipt}");
+    // …and once it is current again, applying it is the no-op.
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", artifact]),
+        "re-apply the current version",
+    );
+    assert!(stdout.contains("nothing to do"), "{stdout}");
 }
 
 /// A package with a plugin in it: the fourth member travels with its

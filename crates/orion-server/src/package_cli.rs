@@ -943,7 +943,14 @@ async fn missing_storage(
 enum ReceiptState {
     Fresh,
     Staged,
-    AppliedSame,
+    /// Applied with this content, and still the package's `current` version:
+    /// the target already serves it, so apply is a no-op.
+    AppliedCurrent,
+    /// Applied with this content once, but a later version has been applied
+    /// since (`current` names it): re-applying is the documented rollback.
+    AppliedSuperseded {
+        current: String,
+    },
     AppliedConflict,
 }
 
@@ -955,23 +962,36 @@ async fn check_receipt(
     let Some(receipts) = receipts else {
         return Ok(ReceiptState::Fresh);
     };
+    Ok(receipt_state(&receipts, artifact))
+}
+
+/// The verdict for `artifact` from a `GET /packages/{name}` body.
+fn receipt_state(receipts: &Value, artifact: &PackageArtifact) -> ReceiptState {
+    let version = artifact.package.version.as_str();
     let row = receipts["versions"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|r| r["version"] == artifact.package.version.as_str())
-        .cloned();
-    Ok(match row {
+        .find(|r| r["version"] == version);
+    match row {
         None => ReceiptState::Fresh,
         Some(row) if row["state"] == "applied" => {
-            if row["content_hash"] == artifact.package.content_hash.as_str() {
-                ReceiptState::AppliedSame
-            } else {
-                ReceiptState::AppliedConflict
+            if row["content_hash"] != artifact.package.content_hash.as_str() {
+                return ReceiptState::AppliedConflict;
+            }
+            // `current` is the newest applied receipt. An applied version that
+            // is not it was superseded, and its entities may no longer be what
+            // the target serves — a hash match on the receipt alone says
+            // nothing about the estate.
+            match receipts["current"]["version"].as_str() {
+                Some(current) if current != version => ReceiptState::AppliedSuperseded {
+                    current: current.to_string(),
+                },
+                _ => ReceiptState::AppliedCurrent,
             }
         }
         Some(_) => ReceiptState::Staged,
-    })
+    }
 }
 
 pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
@@ -990,8 +1010,15 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             )
             .into());
         }
-        ReceiptState::AppliedSame => {
+        ReceiptState::AppliedCurrent => {
             println!("{package} is already applied with identical content — apply is a no-op");
+        }
+        ReceiptState::AppliedSuperseded { current } => {
+            println!(
+                "{package} is applied here but superseded by {}@{current} — apply will roll \
+                 the entities back to this content",
+                artifact.package.name
+            );
         }
         ReceiptState::Staged => {
             println!("{package} is staged here; apply may update it in place");
@@ -1334,12 +1361,17 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     // Phase 1 — claim the receipt as staged. This is the atomic
     // same-version-different-content rejection (K14), and doubles as the
     // guard against two concurrent applies.
-    if matches!(
-        check_receipt(&client, &artifact).await?,
-        ReceiptState::AppliedSame
-    ) {
-        println!("{package} is already applied with identical content — nothing to do");
-        return Ok(());
+    let receipt = check_receipt(&client, &artifact).await?;
+    match &receipt {
+        ReceiptState::AppliedCurrent => {
+            println!("{package} is already applied with identical content — nothing to do");
+            return Ok(());
+        }
+        ReceiptState::AppliedSuperseded { current } => println!(
+            "{package} was superseded by {}@{current} — re-applying it as a rollback",
+            artifact.package.name
+        ),
+        _ => {}
     }
     // Before the claim: a model import fails at write without its storage
     // connector, and that is better learned with nothing claimed.
@@ -1350,17 +1382,25 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
                 .into(),
         );
     }
-    client
-        .put_data::<Value>(
-            &receipt_path(&artifact),
-            &json!({
-                "version": artifact.package.version,
-                "content_hash": artifact.package.content_hash,
-                "state": "staged",
-            }),
-        )
-        .await
-        .map_err(|e| format!("could not claim the receipt: {e}"))?;
+    // A superseded version is re-applied without the claim: the receipt
+    // store refuses applied → staged, and the hash already matches, so the
+    // K14 check has nothing to reject. Without the claim two concurrent
+    // rollbacks to one version are not excluded — both stage and activate
+    // the same content, and phase 5's put is an idempotent touch, so they
+    // converge rather than conflict.
+    if !matches!(receipt, ReceiptState::AppliedSuperseded { .. }) {
+        client
+            .put_data::<Value>(
+                &receipt_path(&artifact),
+                &json!({
+                    "version": artifact.package.version,
+                    "content_hash": artifact.package.content_hash,
+                    "state": "staged",
+                }),
+            )
+            .await
+            .map_err(|e| format!("could not claim the receipt: {e}"))?;
+    }
 
     // Phase 2 — stage everything as drafts, in dependency order. Plugins
     // first, so their components are stored before anything names their
@@ -1843,5 +1883,43 @@ mod tests {
             members(&with).map(|(k, _)| k),
             ["plugins", "connectors", "models", "workflows", "channels"]
         );
+    }
+
+    /// An applied receipt is a no-op only while it is the package's
+    /// `current` version; once a later version superseded it, re-applying it
+    /// is the rollback and must run.
+    #[test]
+    fn an_applied_receipt_is_a_no_op_only_while_current() {
+        let mut artifact = artifact(Vec::new());
+        artifact.package.content_hash = "sha256:aaa".to_string();
+        let receipts = |current: &str| {
+            json!({
+                "name": "p",
+                "current": {"version": current, "state": "applied"},
+                "versions": [
+                    {"version": "1.1.0", "content_hash": "sha256:bbb", "state": "applied"},
+                    {"version": "1.0.0", "content_hash": "sha256:aaa", "state": "applied"},
+                ],
+            })
+        };
+        assert!(matches!(
+            receipt_state(&receipts("1.0.0"), &artifact),
+            ReceiptState::AppliedCurrent
+        ));
+        assert!(matches!(
+            receipt_state(&receipts("1.1.0"), &artifact),
+            ReceiptState::AppliedSuperseded { current } if current == "1.1.0"
+        ));
+
+        artifact.package.content_hash = "sha256:ccc".to_string();
+        assert!(matches!(
+            receipt_state(&receipts("1.1.0"), &artifact),
+            ReceiptState::AppliedConflict
+        ));
+        artifact.package.version = "2.0.0".to_string();
+        assert!(matches!(
+            receipt_state(&receipts("1.1.0"), &artifact),
+            ReceiptState::Fresh
+        ));
     }
 }

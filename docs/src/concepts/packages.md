@@ -1,6 +1,6 @@
 <!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors, plugins and models — and the boundary along which a service ships. -->
 <!-- type: concept -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Packages
 
@@ -69,7 +69,7 @@ The hash is computed over importable content only. Versions, statuses and timest
 
 A target instance remembers what was applied to it: one *receipt* per package version. Receipts make two guarantees mechanical rather than procedural:
 
-- **An applied version is content-immutable.** Re-applying an identical artifact is a no-op; a changed artifact reusing an applied version is refused. Content changes ride a version bump.
+- **An applied version is content-immutable.** Re-applying the version a target currently runs is a no-op; a changed artifact reusing an applied version is refused. Content changes ride a version bump.
 - **Rollback is a re-apply.** Applying the previous version makes it current again. Entities roll forward carrying the old content, and the receipt history records both moves.
 
 ## Next steps
