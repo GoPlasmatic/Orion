@@ -50,6 +50,7 @@ pub mod json;
 pub mod provenance;
 mod set;
 mod shared;
+pub mod statements;
 
 pub use check::check;
 pub use compile::{Cx, Pass, Residue};
@@ -58,7 +59,7 @@ pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
 pub use provenance::{SourceMap, SourceRef, Via};
 pub use set::{
-    Boundary, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
+    Boundary, Definition, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
     is_plugin_manifest, json_files,
 };
 pub use shared::{Fragment, FragmentBody, PackageDecl, SharedDefinitions, first_reference};

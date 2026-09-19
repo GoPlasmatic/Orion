@@ -25,6 +25,8 @@ Silent when `params` is computed, and when the statement has no `$n`. Silent whe
 
 ## Related
 
+- [`orion-server sql check`](../cli/orion-server/sql-check.md): the same count, and the schema and grants, against a real database.
+
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.
 - [`orion-server clippy`](../cli/orion-server/clippy.md): the command, its flags and exit codes.
 - [Test workflows offline](../../guides/author/testing.md): running the rules against a set.

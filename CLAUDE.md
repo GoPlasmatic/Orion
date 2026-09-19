@@ -80,6 +80,7 @@ src/
 ├── bootstrap.rs         # Startup sequence: config → pools → repos → engine → HTTP server
 ├── cli.rs               # Diagnostic subcommands: validate-config, migrate, lint, dry-run, test, test-connectivity, dump-openapi
 ├── preflight.rs         # `orion-server preflight` — scans the stored estate for upgrade breaks
+├── sql_cli.rs           # `orion-server sql check` — every `db_read`/`db_write` statement (`definitions::statements`) prepared against a real database as its connector's role, connectors resolved by `connector::resolve_connector_config` (the registry's own sequence); PostgreSQL 16+ proves grants with `EXPLAIN (GENERIC_PLAN)`, each statement in a savepoint of a `READ ONLY` session; `--schema` builds a scratch schema in one rolled-back transaction
 ├── package_cli.rs       # `orion-server package` — the CLI shell over the library's `package/`: flags, the HTTP client, and the operator-only verbs (export, plan, diff); lint and apply are thin calls into the library
 ├── signing_cli.rs       # `orion-server plugin|model digest|keygen|pubkey|sign|verify` — produce what `[plugins.trust]`/`[models.trust]` verify
 ├── lib.rs               # Public module declarations
@@ -268,6 +269,7 @@ orion-server test examples/workflow-tests # Run offline *.case.json workflow reg
 orion-server compile ./definitions --name p --version 1.0.0 -o dist/package.json  # Compile a definition set ($from/use resolved, plugin.toml + component inlined, model manifests written as reference + digest) into a package artifact (--format dir|bulk for POST-per-file / bulk-import shapes)
 orion-server compile ./definitions --name p --version content -o dist/package.json  # Version = content-<12 hex> of the content hash (--version-prefix 1.4.0 → 1.4.0-<hex>)
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
+orion-server sql check ./definitions      # Prepare every db_read/db_write statement as its connector's role (--connector NAME=URL, --skip-connector, --schema DIR [--database URL --role NAME=ROLE]); executes nothing
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec
 orion-server package <export|lint|plan|apply|diff>  # Promote a package of channels+workflows+connectors+plugins+models between instances (models travel as a reference, and apply waits for the target to admit each one); `plan|apply --signatures <dir>` attaches deployment-held `.sig` files (not content: the hash does not move); `plan|apply --prune[=delete]` removes what the package's current receipt carried and the artifact does not

@@ -95,7 +95,10 @@ both; `clippy_docs_drift_test.rs` pins `docs/src/reference/clippy/index.md`'s
 table to the registry; `clippy_cli_test.rs` drives the binary (exit codes,
 `--list`, `--explain`, JSON, the lint-error short-circuit); and
 `clippy_examples_test.rs` is the acceptance gate — the example packages and
-the e2e workflow fixtures must trip nothing.
+the e2e workflow fixtures must trip nothing. `clippy_fix_test.rs` runs
+`clippy --fix` over `tests/fixtures/clippy-fix/<case>/{before,after}/`.
+`sql_check_cli_test.rs` drives `sql check` against SQLite, which needs no
+container.
 
 ```bash
 cargo test --test integration                     # the whole binary
@@ -136,6 +139,7 @@ just test-containers    # all of the below, in CI's exact invocations
 | Suite | Covers |
 |-------|--------|
 | `integration -- --ignored <filters>` | Portable-dialect parity/round-trips on Postgres/MySQL/Mongo/ES, raw-SQL backends, Redis cache/dedup, column-type matrix, dynamic inputs, Kafka channels |
+| `integration -- --ignored sql_check_test` | `sql check` against PostgreSQL 16 (grants proven), an older PostgreSQL (schema only), a rolled-back `--schema`, and MySQL |
 | `storage_postgres` / `storage_mysql` | Orion's own repositories on the other two backends |
 | `schema_parity` | The three migration sets produce agreeing schemas (columns, typed+ordered indexes, views) |
 | `cluster` | Multi-node contracts: two AppStates over shared Postgres + Redis, epoch watching, job leases, the cron ledger — one occurrence per instant under two reconcilers, and a `forbid` singleton that holds across nodes — and model propagation: one admission on node A, node B carrying the model on that verdict without re-probing, and B fetching the artifact for itself into its own cache (`--test-threads=1`) |

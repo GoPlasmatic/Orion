@@ -40,6 +40,8 @@ placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 
 **The statement can live in a file.** A long statement is easier to review as SQL than as one JSON string: write `"query": {"$sql": "sql/settle.sql"}` and keep comments and indentation in the file. [`orion-server compile`](../cli/orion-server/compile.md) inlines it in normal form, so the server only ever sees the string. See [Statements in `.sql` files](../cli/shared-definitions.md#statements-in-sql-files).
 
+**Check it before deploy.** [`orion-server sql check`](../cli/orion-server/sql-check.md) prepares every statement against a real database as the connector's role, and on PostgreSQL 16 proves its grants.
+
 ## Fields
 
 | Field | Type | Required | Default | Description |

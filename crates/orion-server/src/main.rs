@@ -12,6 +12,7 @@ use orion::config;
 mod cli;
 mod package_cli;
 mod signing_cli;
+mod sql_cli;
 
 use orion::bootstrap;
 
@@ -403,6 +404,11 @@ enum Command {
         #[arg(long, requires = "fix")]
         check: bool,
     },
+    /// SQL tooling over a definition set.
+    Sql {
+        #[command(subcommand)]
+        command: SqlCommand,
+    },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
     /// Needs no config, database, or running server. Redirect it to refresh
@@ -437,6 +443,56 @@ enum Command {
     /// deploy. Config-file and ORION_* problems are reported by
     /// `validate-config`; this reads what only the database knows.
     Preflight,
+}
+
+#[derive(clap::Subcommand)]
+enum SqlCommand {
+    /// Prepare every db_read/db_write statement of a definition set against
+    /// a real database, as the connector's own role. PostgreSQL 16+ also
+    /// proves the role's grants (EXPLAIN (GENERIC_PLAN)); older PostgreSQL,
+    /// MySQL and SQLite prove the schema. Nothing is executed: sessions are
+    /// read-only and rolled back.
+    Check {
+        /// A directory of definitions.
+        path: String,
+        /// Override a connector's connection string: `name=<url>`.
+        /// Repeatable.
+        #[arg(long = "connector", value_name = "NAME=URL")]
+        connectors: Vec<String>,
+        /// Do not check this connector's statements; list them as unchecked.
+        /// Repeatable.
+        #[arg(long = "skip-connector", value_name = "NAME")]
+        skip: Vec<String>,
+        /// Build a scratch schema from this directory of migrations (`*.sql`,
+        /// applied in filename order) and check against it. With no
+        /// --database, a SQLite schema in memory.
+        #[arg(long, value_name = "DIR")]
+        schema: Option<String>,
+        /// The PostgreSQL server the scratch schema is built on, in one
+        /// transaction that is always rolled back.
+        #[arg(long, value_name = "URL", requires = "schema")]
+        database: Option<String>,
+        /// With --schema: the role a connector's statements run as,
+        /// `name=<role>`. Defaults to the user of the connector's URL.
+        /// Repeatable.
+        #[arg(long = "role", value_name = "NAME=ROLE")]
+        roles: Vec<String>,
+        /// `text` (default) or `json` — one object per finding, then a summary.
+        #[arg(long, value_enum, default_value = "text")]
+        format: cli::ClippyFormat,
+        /// Channel name that may be referenced without being in the set.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
+        /// Directory of plugin manifests beyond the set's own tree.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
+        /// Directory of model manifests beyond the set's own tree.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -786,6 +842,43 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             unreachable!("the signing verbs return before config is loaded")
         }
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
+        Some(Command::Sql { command }) => {
+            let SqlCommand::Check {
+                path,
+                connectors,
+                skip,
+                schema,
+                database,
+                roles,
+                format,
+                requires_channels,
+                requires_connectors,
+                plugin_dirs,
+                model_dirs,
+            } = command;
+            let code = sql_cli::run_sql_check(sql_cli::SqlCheckRequest {
+                path: &path,
+                connectors: &connectors,
+                skip: &skip,
+                schema: schema.as_deref(),
+                database: database.as_deref(),
+                roles: &roles,
+                format,
+                boundary: orion::definitions::Boundary {
+                    channels: requires_channels,
+                    connectors: requires_connectors,
+                    ..orion::definitions::Boundary::default()
+                },
+                plugin_dirs: &plugin_dirs,
+                model_dirs: &model_dirs,
+                config: &config,
+            })
+            .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
         Some(Command::Package { command }) => {
             return match command {
                 PackageCommand::Export {

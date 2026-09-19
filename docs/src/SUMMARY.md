@@ -224,6 +224,7 @@
     - [`orion-server dry-run`](./reference/cli/orion-server/dry-run.md)
     - [`orion-server test`](./reference/cli/orion-server/test.md)
     - [`orion-server test-connectivity`](./reference/cli/orion-server/test-connectivity.md)
+    - [`orion-server sql check`](./reference/cli/orion-server/sql-check.md)
     - [`orion-server preflight`](./reference/cli/orion-server/preflight.md)
     - [`orion-server dump-openapi`](./reference/cli/orion-server/dump-openapi.md)
     - [`orion-server package`](./reference/cli/orion-server/package.md)

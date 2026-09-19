@@ -18,6 +18,7 @@
 | [`dry-run`](./dry-run.md) | Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace |
 | [`test`](./test.md) | Runs a directory of offline workflow test cases |
 | [`test-connectivity`](./test-connectivity.md) | Probes the configured database with a no-op query, and Kafka when `kafka.enabled = true` |
+| [`sql check`](./sql-check.md) | Prepares every `db_read`/`db_write` statement of a set against a real database, as the connector's role |
 | [`preflight`](./preflight.md) | Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema` |
 | [`dump-openapi`](./dump-openapi.md) | Prints the public HTTP API's OpenAPI 3.1 spec as JSON to stdout |
 | [`package`](./package.md) | Exports a package — selected channels, their workflows, and every connector those workflows reference, and promotes it between instances |

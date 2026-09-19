@@ -317,6 +317,16 @@ orion-server preflight -c config.toml          # stored channels and workflows t
 
 `validate-config` prints the full effective config, which is the defaults plus the file plus `ORION_*` overrides, with secrets masked. You can see what the process runs with.
 
+## Check the SQL against a real schema
+
+`lint` never sees the schema a `db_read` or `db_write` statement runs on. [`orion-server sql check`](../../reference/cli/orion-server/sql-check.md) prepares every statement as its connector's role and executes nothing. In CI, build the schema from the migrations in a transaction that is rolled back:
+
+```bash
+orion-server sql check ./definitions --schema ./migrations --database "$ADMIN_DATABASE_URL"
+```
+
+On PostgreSQL 16 or later it also proves each connector's role holds the grants its statements need.
+
 ## Wire it into CI
 
 One job, no server, no database, no secrets:

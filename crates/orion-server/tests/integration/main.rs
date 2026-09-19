@@ -125,6 +125,8 @@ mod security_test;
 mod shutdown_test;
 mod signing_cli_test;
 mod source_form_refusal_test;
+mod sql_check_cli_test;
+mod sql_check_test;
 mod sqlite_busy_snapshot_test;
 mod sqlite_upgrade_test;
 mod status_dry_run_test;

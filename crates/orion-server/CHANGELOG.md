@@ -166,6 +166,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like the status endpoints: the row goes at once and the engine keeps
   serving it until `POST /engine/reload`.
 
+- **`orion-server sql check <dir>`** ([#335]). A schema change that broke
+  a `db_read`/`db_write` statement, or a connector role without the grant a
+  statement needs, passed every gate and failed on the next request. `sql
+  check` prepares every statement of a set — task groups included — on the
+  database it runs on, as the role its connector connects as, resolving the
+  connector exactly as the server does. PostgreSQL 16+ also proves the
+  role's table and column grants with `EXPLAIN (GENERIC_PLAN)`; earlier
+  PostgreSQL, MySQL and SQLite prove the schema, and the report says which.
+  Nothing is executed: PostgreSQL sessions are `READ ONLY`, each statement
+  in its own savepoint and all of it rolled back, and a SQLite file is
+  opened read-only. Every failure is reported, a `params` count mismatch is
+  an error (a warning on SQLite), and a type PostgreSQL cannot infer is a
+  warning naming the run-time fallback. `--connector NAME=URL` overrides a
+  connection string, `--skip-connector` lists a connector's statements as
+  unchecked, and `--schema DIR --database URL [--role NAME=ROLE]` builds a
+  scratch schema from migrations in one transaction that is always rolled
+  back — refusing, before anything is sent, a migration that would leave
+  it. `connector::resolve_connector_config` is the registry's resolution
+  sequence, now callable on its own.
+
 - **`clippy --fix`** ([#337]). `perf.redundant_step_condition` proved a
   run of steps repeats one condition none of them can change, and then only
   suggested the task group. `--fix` now writes it: the run becomes
@@ -313,6 +333,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#332]: https://github.com/GoPlasmatic/Orion/issues/332
 [#333]: https://github.com/GoPlasmatic/Orion/issues/333
 [#334]: https://github.com/GoPlasmatic/Orion/issues/334
+[#335]: https://github.com/GoPlasmatic/Orion/issues/335
 [#337]: https://github.com/GoPlasmatic/Orion/issues/337
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
