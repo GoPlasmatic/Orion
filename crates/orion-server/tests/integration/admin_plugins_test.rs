@@ -991,3 +991,83 @@ async fn workflow_dependencies_name_the_plugin_version_and_digest() {
         "{deps}"
     );
 }
+
+/// #340 Gap A: a signature is not content, but an import item carrying a
+/// different one is not `unchanged` — `unchanged` writes nothing, so a
+/// signature attached at deploy time would never reach the row.
+#[tokio::test]
+async fn an_import_with_a_new_signature_is_not_unchanged() {
+    use orion::plugin::trust::SigningKey;
+    let first = SigningKey::generate();
+    let second = SigningKey::generate();
+    let (_state, open) = app(true).await;
+    let (_state, app) =
+        trusting_app(vec![first.public_key_base64(), second.public_key_base64()]).await;
+    let digest = orion::plugin::WasmRuntime::digest(COMPONENT);
+    let signed_by = |key: &SigningKey| {
+        let mut item = upload();
+        item["plugin_id"] = json!("test.fixture");
+        item["signature"] = json!(key.sign(&digest));
+        item
+    };
+    let import = |item: Value| {
+        let app = app.clone();
+        async move {
+            let (status, body) = post(
+                &app,
+                "/api/v1/admin/plugins/import?on_conflict=new_version",
+                json!([item]),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(body["data"]["failed"], 0, "{body}");
+            body["data"]["results"][0]["action"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        }
+    };
+    let stored = || {
+        let app = app.clone();
+        async move {
+            let (_, body) = get(&app, "/api/v1/admin/plugins/test.fixture").await;
+            body["data"]["signature"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        }
+    };
+
+    assert_eq!(import(signed_by(&first)).await, "created");
+    assert_eq!(import(signed_by(&first)).await, "unchanged");
+    // Another key's signature over the same content replaces the draft's.
+    assert_eq!(import(signed_by(&second)).await, "updated_draft");
+    assert_eq!(stored().await, second.sign(&digest));
+    // Over an active row it is a new version, carrying the new signature.
+    let (status, body) = set_status(&app, "test.fixture", "active").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(import(signed_by(&first)).await, "new_version");
+    assert_eq!(stored().await, first.sign(&digest));
+
+    // An item carrying no signature keeps the stored one, as `PUT` does —
+    // shown on a node with no keys, since a trusting node refuses the
+    // unsigned item before it compares anything.
+    let (status, body) = post(
+        &open,
+        "/api/v1/admin/plugins/import?on_conflict=new_version",
+        json!([signed_by(&first)]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut unsigned = upload();
+    unsigned["plugin_id"] = json!("test.fixture");
+    let (_, body) = post(
+        &open,
+        "/api/v1/admin/plugins/import?on_conflict=new_version",
+        json!([unsigned]),
+    )
+    .await;
+    assert_eq!(body["data"]["results"][0]["action"], "unchanged", "{body}");
+    let (_, body) = get(&open, "/api/v1/admin/plugins/test.fixture").await;
+    assert_eq!(body["data"]["signature"], json!(first.sign(&digest)));
+}

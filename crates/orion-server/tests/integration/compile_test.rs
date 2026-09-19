@@ -648,6 +648,106 @@ fn plugin_set(label: &str, with_component: bool) -> ScratchDir {
     scratch
 }
 
+/// #340: a build-time signer's `.sig` files land in the artifact's entries,
+/// and — a signature not being content — the hash does not move.
+#[test]
+fn compile_signatures_lands_in_the_entries_and_package_lint_accepts_it() {
+    let scratch = plugin_set("compile-signatures", true);
+    let dir = scratch.path();
+    let sigs = ScratchDir::new("compile-signatures-sigs");
+    let key = orion::crypto::ed25519::SigningKey::generate();
+    let signature = key.sign(&orion::crypto::sha256_digest(PLUGIN_COMPONENT));
+    std::fs::write(
+        sigs.path().join("fixture.wasm.sig"),
+        format!("{signature}\n"),
+    )
+    .unwrap();
+
+    let compile = |out: &str, extra: &[&str]| -> serde_json::Value {
+        let target = dir.join(out);
+        let mut args = vec![
+            "compile",
+            dir.to_str().unwrap(),
+            "--name",
+            "codec",
+            "--version",
+            "1.0.0",
+            "-o",
+            target.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, report) = run(&args);
+        assert!(ok, "{report}");
+        serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+    };
+    let unsigned = compile("unsigned.json", &[]);
+    let signed = compile(
+        "signed.json",
+        &["--signatures", sigs.path().to_str().unwrap()],
+    );
+    assert_eq!(signed["plugins"][0]["signature"], signature);
+    assert!(unsigned["plugins"][0].get("signature").is_none());
+    assert_eq!(
+        signed["package"]["content_hash"],
+        unsigned["package"]["content_hash"]
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("signed.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // A carried signature that is not one is caught offline.
+    let mut garbage = signed.clone();
+    garbage["plugins"][0]["signature"] = serde_json::json!("not base64!");
+    std::fs::write(dir.join("garbage.json"), garbage.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("garbage.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(
+        report.contains("plugins[0].signature: not base64"),
+        "{report}"
+    );
+}
+
+/// A misnamed `.sig` must not leave a plugin silently unsigned: the file no
+/// subject claims stops the compile, naming the names that would match.
+#[test]
+fn an_orphan_sig_fails_compile_and_writes_nothing() {
+    let scratch = plugin_set("compile-orphan-sig", true);
+    let dir = scratch.path();
+    let sigs = ScratchDir::new("compile-orphan-sigs");
+    let key = orion::crypto::ed25519::SigningKey::generate();
+    std::fs::write(sigs.path().join("fixtures.wasm.sig"), key.sign("sha256:00")).unwrap();
+    let out = dir.join("out.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "codec",
+        "--version",
+        "1.0.0",
+        "--signatures",
+        sigs.path().to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("fixtures.wasm.sig matches no plugin or model")
+            && report.contains("test.fixture.sig")
+            && report.contains("fixture.wasm.sig"),
+        "{report}"
+    );
+    assert!(!out.exists());
+}
+
 /// A `plugin.toml` in the set compiles into the artifact with its component
 /// inlined and its digest computed, marked for activation like the workflow
 /// that calls it — and `package lint` accepts the result, validating the

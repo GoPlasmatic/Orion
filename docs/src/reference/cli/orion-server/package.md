@@ -44,7 +44,26 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `--version <ver>` | `export` | Package version. Applied versions are immutable; any content change needs a bump. `content` derives it from the content hash, as [`compile`](./compile.md#content-versions) does. |
 | `--version-prefix <prefix>` | `export` | With `--version content`, `<prefix>-<12 hex>` instead of `content-<12 hex>`. |
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
+| `--signatures <dir>` | `plan`, `apply` | Attach the detached signatures in `<dir>` to the artifact's plugins and models before anything is sent. See [Signatures at deploy time](#signatures-at-deploy-time). |
 | `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
+
+## Signatures at deploy time
+
+A signature belongs to whoever holds the key, which is the deployment, not the package. One image can serve several deployments, each trusting its own key, so the signatures cannot live in the definition set. `plan` and `apply` read them from a directory with `--signatures <dir>` instead.
+
+Each file is the base64 Ed25519 signature over one artifact's digest, as [`orion-server plugin sign -o <dir>`](./plugin.md) writes it. A plugin's file is `<plugin id>.sig` or `<component file>.sig`, and a model's is `<model id>.sig` or the file name of its bucket key. The id form wins when both exist. Only `.sig` files directly in the directory count, so a mounted Kubernetes secret reads by the names it shows.
+
+The signatures are attached in memory. The artifact file, its version and its `content_hash` do not move, because a signature is not content. Before anything is sent, each plugin and model is reported on one line:
+
+```
+signed    acme.scoring   <- /run/plugin-signatures/scoring.wasm.sig
+carried   acme.legacy    (signature from the artifact; none in /run/plugin-signatures)
+unsigned  acme.pairing   (no acme.pairing.sig or pairing.wasm.sig)
+```
+
+A file in the directory takes precedence over a signature the artifact already carries: an export's signature was made for the source's keys. A file that matches nothing is an error listing the names that would have matched. A misnamed file must not leave a plugin silently unsigned. So is a file two entries claim, and one that is not a signature. An unsigned plugin is only reported, and a target with trust keys refuses it naming the plugin.
+
+A re-apply of the version the target already runs still compares signatures. When one differs from what the target stores, as after a key rotation, `apply` imports and activates only those plugins and models. It then reloads and prints `re-signed plugins '<id>'`. The receipt does not move, because the content did not.
 
 ## Examples
 

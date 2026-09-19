@@ -264,6 +264,6 @@ orion-server compile ./definitions --name p --version content -o dist/package.js
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec
-orion-server package <export|lint|plan|apply|diff>  # Promote a package of channels+workflows+connectors+plugins+models between instances (models travel as a reference, and apply waits for the target to admit each one)
+orion-server package <export|lint|plan|apply|diff>  # Promote a package of channels+workflows+connectors+plugins+models between instances (models travel as a reference, and apply waits for the target to admit each one); `plan|apply --signatures <dir>` attaches deployment-held `.sig` files (not content: the hash does not move)
 orion-server plugin sign plugins/ --key signer.pem  # Sign each component's digest for [plugins.trust] (also digest|keygen|pubkey|verify; `model …` for [models.trust])
 ```

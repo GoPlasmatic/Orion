@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 
 use orion_client::{OrionClient, StatusCode, paths, query_string};
 
+use orion::signatures::{Kind, Outcome, SignatureDir, Subject};
 use orion::storage::content;
 use orion::storage::repositories::channels::CreateChannelRequest;
 use orion::storage::repositories::connectors::CreateConnectorRequest;
@@ -94,7 +95,7 @@ pub(crate) struct ModelRequirement {
     pub(crate) digest: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PackageMeta {
     pub(crate) name: String,
     pub(crate) version: String,
@@ -875,6 +876,18 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
         Err(e) => errors.push(e.to_string()),
     }
 
+    // A signature is not content, so the hash cannot vouch for it: a garbage
+    // value would otherwise surface only when the target refuses the import.
+    for (kind, entries) in [("plugins", &artifact.plugins), ("models", &artifact.models)] {
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(signature) = entry.get("signature").and_then(Value::as_str)
+                && let Err(e) = orion::crypto::ed25519::normalize_signature(signature)
+            {
+                errors.push(format!("{kind}[{index}].signature: {e}"));
+            }
+        }
+    }
+
     // Everything below the package envelope is a definition set, checked by
     // the shared pass. `requires` is this container's boundary: names the
     // target instance is expected to already have. The set's plugins are the
@@ -1021,6 +1034,158 @@ async fn missing_storage(
 }
 
 // ============================================================
+// signatures
+// ============================================================
+
+/// The signature subjects of an artifact: its `plugins[]` then its
+/// `models[]`, in order. A plugin is named by its manifest and its
+/// component's file name; a model by its id and the file name of its bucket
+/// key — at apply time the local file a model was compiled from is gone.
+fn signature_subjects(artifact: &PackageArtifact) -> Result<Vec<Subject>, CliError> {
+    let file_name = |path: &str| {
+        std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+    };
+    let carried = |entry: &Value| {
+        entry["signature"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let mut subjects = Vec::new();
+    for entry in &artifact.plugins {
+        let content = plugin_import_content(entry)?;
+        let manifest: orion::plugin::Manifest =
+            serde_json::from_value(content["manifest"].clone())?;
+        subjects.push(Subject {
+            kind: Kind::Plugin,
+            file_names: manifest
+                .component
+                .as_deref()
+                .and_then(file_name)
+                .into_iter()
+                .collect(),
+            id: manifest.name,
+            digest: content["digest"].as_str().unwrap_or_default().to_string(),
+            carried: carried(entry),
+        });
+    }
+    for entry in &artifact.models {
+        subjects.push(Subject {
+            kind: Kind::Model,
+            id: entry["model_id"].as_str().unwrap_or_default().to_string(),
+            file_names: entry["artifact"]["key"]
+                .as_str()
+                .and_then(file_name)
+                .into_iter()
+                .collect(),
+            digest: entry["artifact"]["digest"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            carried: carried(entry),
+        });
+    }
+    Ok(subjects)
+}
+
+/// Attach the signatures `dir` holds to the artifact's `plugins[]` and
+/// `models[]` entries, in memory. The artifact's version and `content_hash`
+/// do not move — a signature is not content. `more_names` adds candidate
+/// file names per subject (`compile` still knows a model's local file).
+///
+/// # Errors
+///
+/// Every orphan, ambiguous and malformed `.sig` file, each printed; or a
+/// directory that cannot be read.
+pub(crate) fn attach_signatures(
+    artifact: &mut PackageArtifact,
+    dir: &std::path::Path,
+    more_names: &dyn Fn(&Subject) -> Vec<String>,
+) -> Result<Vec<(Subject, Outcome)>, CliError> {
+    let sigs = SignatureDir::open(dir)?;
+    let mut subjects = signature_subjects(artifact)?;
+    for subject in &mut subjects {
+        for name in more_names(subject) {
+            if !subject.file_names.contains(&name) {
+                subject.file_names.push(name);
+            }
+        }
+    }
+    let outcomes = sigs.resolve(&subjects).map_err(|errors| {
+        for error in &errors {
+            eprintln!("error: {error}");
+        }
+        format!(
+            "{} problem(s) with the signatures in {} — nothing was sent",
+            errors.len(),
+            dir.display()
+        )
+    })?;
+    let entries = artifact
+        .plugins
+        .iter_mut()
+        .chain(artifact.models.iter_mut());
+    for (entry, outcome) in entries.zip(&outcomes) {
+        if let Outcome::Signed { signature, .. } = outcome
+            && let Some(obj) = entry.as_object_mut()
+        {
+            obj.insert("signature".to_string(), json!(signature));
+        }
+    }
+    Ok(subjects.into_iter().zip(outcomes).collect())
+}
+
+/// One line per subject: where its signature came from, or that it has none.
+fn print_signature_report(report: &[(Subject, Outcome)], dir: &std::path::Path) {
+    let width = report.iter().map(|(s, _)| s.id.len()).max().unwrap_or(0);
+    for (subject, outcome) in report {
+        match outcome {
+            Outcome::Signed {
+                file,
+                replaced_carried,
+                ..
+            } => println!(
+                "signed    {:width$}  <- {}{}",
+                subject.id,
+                file.display(),
+                if *replaced_carried {
+                    " (replaces the signature the artifact carried)"
+                } else {
+                    ""
+                }
+            ),
+            Outcome::Carried => println!(
+                "carried   {:width$}  (signature from the artifact; none in {})",
+                subject.id,
+                dir.display()
+            ),
+            Outcome::Unsigned { looked_for } => println!(
+                "unsigned  {:width$}  (no {})",
+                subject.id,
+                looked_for.join(" or ")
+            ),
+        }
+    }
+}
+
+/// `--signatures <dir>`: attach and report, or do nothing without the flag.
+fn attach_from_flag(
+    artifact: &mut PackageArtifact,
+    signatures: Option<&str>,
+) -> Result<Vec<(Subject, Outcome)>, CliError> {
+    let Some(dir) = signatures else {
+        return Ok(Vec::new());
+    };
+    let dir = std::path::Path::new(dir);
+    let report = attach_signatures(artifact, dir, &|_| Vec::new())?;
+    print_signature_report(&report, dir);
+    Ok(report)
+}
+
+// ============================================================
 // plan
 // ============================================================
 
@@ -1079,9 +1244,16 @@ fn receipt_state(receipts: &Value, artifact: &PackageArtifact) -> ReceiptState {
     }
 }
 
-pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
-    let artifact = read_artifact(file)?;
+pub(crate) async fn run_plan(
+    server: &str,
+    file: &str,
+    signatures: Option<&str>,
+) -> Result<(), CliError> {
+    let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
+    // Before anything is asked of the target: the dry-run imports below run
+    // the trust check, so `plan` needs the signatures as much as `apply`.
+    attach_from_flag(&mut artifact, signatures)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
     let client = admin_client(server, format!("package={package} plan"))?;
 
@@ -1437,10 +1609,16 @@ fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, 
 // apply
 // ============================================================
 
-pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> {
-    let artifact = read_artifact(file)?;
+pub(crate) async fn run_apply(
+    server: &str,
+    file: &str,
+    signatures: Option<&str>,
+) -> Result<(), CliError> {
+    let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
+    // Before anything is sent: an orphan or malformed `.sig` stops here.
+    let signed = attach_from_flag(&mut artifact, signatures)?;
     let client = admin_client(server, format!("package={package}"))?;
 
     // Phase 1 — claim the receipt as staged. This is the atomic
@@ -1449,7 +1627,26 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     let receipt = check_receipt(&client, &artifact).await?;
     match &receipt {
         ReceiptState::AppliedCurrent => {
-            println!("{package} is already applied with identical content — nothing to do");
+            // The content is applied, but a signature is not content: a
+            // re-apply with a new key's signatures must still reach the rows.
+            let resign = resigned_members(&client, &artifact, &signed).await?;
+            if resign.plugins.is_empty() && resign.models.is_empty() {
+                println!("{package} is already applied with identical content — nothing to do");
+                return Ok(());
+            }
+            for (kind, entries) in [("plugins", &resign.plugins), ("models", &resign.models)] {
+                for entry in entries {
+                    let id = entry["plugin_id"]
+                        .as_str()
+                        .or(entry["model_id"].as_str())
+                        .unwrap_or("?");
+                    println!("re-signed {kind} '{id}'");
+                }
+            }
+            // Only the re-signed members, and the receipt stays as it is:
+            // the content it records did not move.
+            stage_activate_reload(&client, &resign).await?;
+            println!("applied the new signatures of {package} to {server}");
             return Ok(());
         }
         ReceiptState::AppliedSuperseded { current } => println!(
@@ -1487,13 +1684,37 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
             .map_err(|e| format!("could not claim the receipt: {e}"))?;
     }
 
+    stage_activate_reload(&client, &artifact).await?;
+
+    // Phase 5 — flip the receipt.
+    client
+        .put_data::<Value>(
+            &receipt_path(&artifact),
+            &json!({
+                "version": artifact.package.version,
+                "content_hash": artifact.package.content_hash,
+                "state": "applied",
+            }),
+        )
+        .await?;
+
+    println!("applied {package} to {server}");
+    Ok(())
+}
+
+/// Phases 2–4 of `apply`: stage every member as drafts in dependency order,
+/// activate in dependency order with the reload deferred, then reload once.
+async fn stage_activate_reload(
+    client: &OrionClient,
+    artifact: &PackageArtifact,
+) -> Result<(), CliError> {
     // Phase 2 — stage everything as drafts, in dependency order. Plugins
     // first, so their components are stored before anything names their
     // functions; connector import reloads the connector registry
     // server-side, so a model's reference resolves and workflow
     // activation's registry gate sees them; models before the workflows
     // that name them.
-    for (kind, items) in members(&artifact) {
+    for (kind, items) in members(artifact) {
         if items.is_empty() {
             continue;
         }
@@ -1530,7 +1751,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         // place apply activates before all staging is done — a plugin that
         // no workflow names yet is harmless to have active.
         if kind == "plugins" {
-            for (_, id, _) in activation_intents(&artifact)
+            for (_, id, _) in activation_intents(artifact)
                 .into_iter()
                 .filter(|(k, _, _)| *k == "plugins")
             {
@@ -1562,11 +1783,11 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         // until the verdict is `passed`. Wait for it here, model by model,
         // so phase 3 can activate them in order with everything else.
         if kind == "models" {
-            for (_, id, _) in activation_intents(&artifact)
+            for (_, id, _) in activation_intents(artifact)
                 .into_iter()
                 .filter(|(k, _, _)| *k == "models")
             {
-                wait_for_admission(&client, &id).await?;
+                wait_for_admission(client, &id).await?;
             }
         }
     }
@@ -1574,7 +1795,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     // Phase 3 — activate in dependency order with the reload deferred (K4):
     // one engine rebuild and one cluster epoch bump at the end, not one per
     // entity. Plugins were activated in phase 2, above.
-    for (kind, id, rollout) in activation_intents(&artifact)
+    for (kind, id, rollout) in activation_intents(artifact)
         .into_iter()
         .filter(|(k, _, _)| *k != "plugins")
     {
@@ -1640,21 +1861,71 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         .post_data_empty::<Value>(paths::ENGINE_RELOAD)
         .await
         .map_err(|e| format!("entities are active but the engine reload failed: {e}"))?;
-
-    // Phase 5 — flip the receipt.
-    client
-        .put_data::<Value>(
-            &receipt_path(&artifact),
-            &json!({
-                "version": artifact.package.version,
-                "content_hash": artifact.package.content_hash,
-                "state": "applied",
-            }),
-        )
-        .await?;
-
-    println!("applied {package} to {server}");
     Ok(())
+}
+
+/// The members whose signature `--signatures` changed against what the
+/// target's latest version holds — what a re-apply of an applied version
+/// must still write. Everything else is left out, so the partial artifact
+/// stages only them.
+async fn resigned_members(
+    client: &OrionClient,
+    artifact: &PackageArtifact,
+    signed: &[(Subject, Outcome)],
+) -> Result<PackageArtifact, CliError> {
+    let mut resign = PackageArtifact {
+        package: artifact.package.clone(),
+        requires: Requires::default(),
+        plugins: Vec::new(),
+        models: Vec::new(),
+        connectors: Vec::new(),
+        workflows: Vec::new(),
+        channels: Vec::new(),
+    };
+    if !signed
+        .iter()
+        .any(|(_, outcome)| matches!(outcome, Outcome::Signed { .. }))
+    {
+        return Ok(resign);
+    }
+    let stored = |rows: &Value, key: &str, id: &str| -> Option<(String, String)> {
+        rows.as_array()?
+            .iter()
+            .find(|row| row[key] == id)
+            .map(|row| {
+                (
+                    row["signature"].as_str().unwrap_or_default().to_string(),
+                    row["status"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+    };
+    let plugins: Value = if artifact.plugins.is_empty() {
+        Value::Null
+    } else {
+        client.get_data(paths::PLUGINS_EXPORT).await?
+    };
+    let models: Value = if artifact.models.is_empty() {
+        Value::Null
+    } else {
+        client.get_data(paths::MODELS_EXPORT).await?
+    };
+    let entries = artifact.plugins.iter().chain(artifact.models.iter());
+    for (entry, (subject, outcome)) in entries.zip(signed) {
+        let Outcome::Signed { signature, .. } = outcome else {
+            continue;
+        };
+        let (rows, key, into) = match subject.kind {
+            Kind::Plugin => (&plugins, "plugin_id", &mut resign.plugins),
+            Kind::Model => (&models, "model_id", &mut resign.models),
+        };
+        let current = stored(rows, key, &subject.id);
+        if current.as_ref().is_none_or(|(stored_signature, status)| {
+            stored_signature != signature || status != orion_api::STATUS_ACTIVE
+        }) {
+            into.push(entry.clone());
+        }
+    }
+    Ok(resign)
 }
 
 /// Poll `GET /models/{id}` until the target's admission of the latest
@@ -2006,5 +2277,51 @@ mod tests {
             receipt_state(&receipts("1.1.0"), &artifact),
             ReceiptState::Fresh
         ));
+    }
+
+    /// A plugin's subject is the same whether its manifest travels as TOML
+    /// text or as the object an export writes; a model's falls back to its
+    /// bucket key's file name. Attaching a signature leaves the hash alone.
+    #[test]
+    fn signature_subjects_read_either_manifest_form_and_attaching_keeps_the_hash() {
+        use base64::Engine as _;
+        let toml = include_str!("../tests/fixtures/plugins/fixture-upload.toml");
+        let component = include_bytes!("../tests/fixtures/plugins/fixture.wasm");
+        let digest = orion::crypto::sha256_digest(component);
+        let object = serde_json::to_value(orion::plugin::Manifest::parse(toml).expect("manifest"))
+            .expect("object");
+        let mut artifact = artifact(vec![model_entry()]);
+        artifact.plugins = vec![
+            json!({"plugin_id": "test.fixture", "manifest": toml,
+                   "component": base64::engine::general_purpose::STANDARD.encode(component)}),
+            json!({"plugin_id": "test.fixture", "manifest": object, "digest": digest}),
+        ];
+        let subjects = signature_subjects(&artifact).expect("subjects");
+        assert_eq!(subjects.len(), 3);
+        for plugin in &subjects[..2] {
+            assert_eq!(plugin.id, "test.fixture");
+            assert_eq!(plugin.file_names, ["fixture.wasm"]);
+            assert_eq!(plugin.digest, digest);
+        }
+        assert_eq!(subjects[2].id, "ada.c4-tiny");
+        assert_eq!(subjects[2].file_names, ["0.1.0.onnx"]);
+
+        let dir = std::env::temp_dir().join(format!("orion-attach-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let key = orion::crypto::ed25519::SigningKey::generate();
+        std::fs::write(dir.join("test.fixture.sig"), key.sign(&digest)).expect("sig");
+        std::fs::write(dir.join("ada.c4-tiny.sig"), key.sign("sha256:abc")).expect("sig");
+        artifact.plugins.truncate(1);
+        let hash = artifact_content_hash(&artifact).expect("hash");
+        let report = attach_signatures(&mut artifact, &dir, &|_| Vec::new()).expect("attach");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            report
+                .iter()
+                .all(|(_, o)| matches!(o, Outcome::Signed { .. }))
+        );
+        assert_eq!(artifact.plugins[0]["signature"], key.sign(&digest));
+        assert_eq!(artifact.models[0]["signature"], key.sign("sha256:abc"));
+        assert_eq!(artifact_content_hash(&artifact).expect("hash"), hash);
     }
 }

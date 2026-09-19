@@ -1061,6 +1061,8 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) version: Option<&'a str>,
     /// With `--version content`, what stands before the hex.
     pub(crate) version_prefix: Option<&'a str>,
+    /// A directory of detached signatures to write into the entries.
+    pub(crate) signatures: Option<&'a str>,
     /// Names the set may reference without containing — the linter's boundary,
     /// and the artifact's `requires`.
     pub(crate) boundary: orion::definitions::Boundary,
@@ -1121,6 +1123,7 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
             version,
             requires,
             req.no_activate,
+            req.signatures,
             req.output,
         ),
         CompileFormat::Dir => emit_dir(&set, req.dir, require_output(req.output, "--format dir")?),
@@ -1143,6 +1146,7 @@ fn require_output<'a>(
 /// `artifact_content_hash`, so an artifact this command writes and one
 /// `package export` writes are the same kind of document — including the
 /// hash, which `plan`, `apply` and `diff` all verify before doing anything.
+#[allow(clippy::too_many_arguments)]
 fn emit_artifact(
     set: &orion::definitions::DefinitionSet,
     dir: &str,
@@ -1150,6 +1154,7 @@ fn emit_artifact(
     version: crate::package_cli::VersionSpec<'_>,
     requires: orion::definitions::Boundary,
     no_activate: bool,
+    signatures: Option<&str>,
     output: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::definitions::Entity;
@@ -1218,6 +1223,36 @@ fn emit_artifact(
         workflows,
         channels,
     };
+    // A build-time signer's signatures, before anything is written — an
+    // orphan or malformed `.sig` stops the compile. The set still knows each
+    // model's local artifact file, so its name is a candidate too.
+    if let Some(dir) = signatures {
+        let dir = std::path::Path::new(dir);
+        let local_name = |subject: &orion::signatures::Subject| -> Vec<String> {
+            if subject.kind != orion::signatures::Kind::Model {
+                return Vec::new();
+            }
+            set.models
+                .iter()
+                .filter(|m| m.manifest.name == subject.id)
+                .filter_map(|m| m.artifact_path.as_deref()?.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect()
+        };
+        let report = crate::package_cli::attach_signatures(&mut artifact, dir, &local_name)?;
+        for (subject, outcome) in &report {
+            if let orion::signatures::Outcome::Unsigned { looked_for } = outcome {
+                eprintln!(
+                    "note: {} '{}' is unsigned (no {} in {})",
+                    subject.kind.noun(),
+                    subject.id,
+                    looked_for.join(" or "),
+                    dir.display()
+                );
+            }
+        }
+    }
+
     // The version is outside the hash, so it can be derived from it: hash
     // first, name second.
     artifact.package.content_hash = crate::package_cli::artifact_content_hash(&artifact)?;

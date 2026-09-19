@@ -3040,7 +3040,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently and carries a manifest and an artifact reference, never bytes — what an export produces. Every item written is queued for admission on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an active model whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently and carries a manifest and an artifact reference, never bytes — what an export produces. Every item written is queued for admission on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an active model whose content differs gets a new draft version, identical content is reported `unchanged`. A `signature` is not content, but an item whose signature differs from the stored one is not `unchanged`: it is written, so a signature attached at deploy time reaches the row.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4459,7 +4459,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently. An item may carry its component inline (base64) or name a digest this instance already holds — what an export produces with and without `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is replaced, an active plugin whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently. An item may carry its component inline (base64) or name a digest this instance already holds — what an export produces with and without `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is replaced, an active plugin whose content differs gets a new draft version, identical content is reported `unchanged`. A `signature` is not content, but an item whose signature differs from the stored one is not `unchanged`: it is written, so a signature attached at deploy time reaches the row.",
             "content": {
               "application/json": {
                 "schema": {

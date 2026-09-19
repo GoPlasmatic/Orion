@@ -76,7 +76,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it — `"Bearer env://API_KEY"` — which is not a reference and is sent
   literally; the remedy names the `auth` block.
 
+- **`package plan|apply --signatures <dir>` and `compile --signatures
+  <dir>`** ([#340]). A signature belongs to the deployment that holds the
+  key, not to the package, so packages patched `signature` into a compiled
+  artifact with inline scripts before `apply`. The flag reads detached
+  `.sig` files — `<id>.sig` or `<artifact file>.sig`, as `orion-server plugin
+  sign -o <dir>` writes them — and attaches them in memory: the artifact, its
+  version and its hash do not move. Each plugin and model is reported as
+  `signed`, `carried` or `unsigned` before anything is sent; a file that
+  matches nothing, one claimed twice and one that is not a signature are all
+  errors. A re-apply of the applied version with a rotated key's signatures
+  re-signs just those members and reloads, leaving the receipt alone.
+  `package lint` shape-checks a signature an artifact carries.
+
 ### Changed
+
+- **An import item whose signature differs is no longer `unchanged`**
+  ([#340]). `POST /plugins/import` and `POST /models/import` under
+  `on_conflict=new_version` compared content only, and the signature is not
+  content, so a signature attached at deploy time never reached a row stored
+  unsigned or signed by another key. A differing signature now writes —
+  `updated_draft`, or `new_version` over an active row. An item with no
+  signature, or the same one, is still `unchanged` and keeps what is stored.
 
 - **A connector's endpoint is scheme-checked again after its references
   resolve** ([#338]). Nothing judged a resolved endpoint, so an `env://` URL
@@ -129,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
+[#340]: https://github.com/GoPlasmatic/Orion/issues/340
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
 [#347]: https://github.com/GoPlasmatic/Orion/issues/347

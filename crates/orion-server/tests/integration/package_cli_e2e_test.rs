@@ -45,6 +45,11 @@ struct Server {
 
 impl Server {
     fn start(label: &'static str) -> Self {
+        Self::start_with(label, &[])
+    }
+
+    /// A server with extra `ORION_*` settings in its environment.
+    fn start_with(label: &'static str, envs: &[(&str, &str)]) -> Self {
         let dir = ScratchDir::new("db");
         // Bind-then-drop to pick a free port; the tiny race is acceptable in
         // a test that retries readiness anyway.
@@ -81,6 +86,7 @@ impl Server {
                 dir.path().join("models-cache").display().to_string(),
             )
             .env("ORION_LOGGING__LEVEL", "warn")
+            .envs(envs.iter().copied())
             .stdout(std::process::Stdio::from(out))
             .stderr(std::process::Stdio::from(err))
             .spawn()
@@ -509,6 +515,210 @@ async fn a_content_versioned_revert_rolls_back() {
         "no drift after the revert",
     );
     assert_eq!(current().await, version_a);
+}
+
+/// #340: a target whose `[plugins.trust]` names keys refuses an unsigned
+/// plugin; `--signatures <dir>` attaches the deployment's signatures at
+/// plan and apply without touching the artifact, and a re-apply with a
+/// rotated key's signatures re-signs the applied plugin.
+#[tokio::test]
+async fn package_apply_attaches_signatures_from_a_directory() {
+    use orion::crypto::ed25519::SigningKey;
+    let first = SigningKey::generate();
+    let second = SigningKey::generate();
+    let keys = format!(
+        "{},{}",
+        first.public_key_base64(),
+        second.public_key_base64()
+    );
+    let client = reqwest::Client::new();
+    let target = Server::start_with(
+        "trust-target",
+        &[("ORION_PLUGINS__TRUST__PUBLIC_KEYS", keys.as_str())],
+    );
+    target.wait_ready(&client).await;
+
+    // A set with a plugin, compiled without signatures: the build does not
+    // hold the deployment's key.
+    let defs = ScratchDir::new("sig-defs");
+    let dir = defs.path();
+    std::fs::create_dir_all(dir.join("codec")).expect("dir");
+    std::fs::write(
+        dir.join("codec/plugin.toml"),
+        include_str!("../fixtures/plugins/fixture-upload.toml"),
+    )
+    .expect("manifest");
+    let component = include_bytes!("../fixtures/plugins/fixture.wasm");
+    std::fs::write(dir.join("codec/fixture.wasm"), component).expect("component");
+    std::fs::write(
+        dir.join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "wrap", "name": "Wrap",
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "input"}}},
+                {"id": "wrap", "name": "Wrap", "function": {"name": "test.fixture.wrap",
+                    "input": {"message": {"var": "data.input.msg"}, "output": "data.result"}}}
+            ],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    std::fs::write(
+        dir.join("ch.json"),
+        serde_json::json!({
+            "channel_id": "wrap-api", "name": "wrap-api", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/wrap",
+            "workflow_id": "wrap",
+        })
+        .to_string(),
+    )
+    .expect("channel");
+    let out = ScratchDir::new("sig-out");
+    let artifact = out.path().join("codec.json");
+    let artifact = artifact.to_str().expect("utf8");
+    let compiled = Command::new(orion_bin())
+        .args([
+            "compile",
+            dir.to_str().expect("utf8"),
+            "--name",
+            "codec",
+            "--version",
+            "1.0.0",
+            "-o",
+            artifact,
+        ])
+        .output()
+        .expect("compile");
+    assert_ok(&compiled, "compile");
+    let before = std::fs::read_to_string(artifact).expect("artifact");
+
+    let digest = orion::crypto::sha256_digest(component);
+    let sign_into = |key: &SigningKey, label: &str| {
+        let sigs = ScratchDir::new(label);
+        std::fs::write(
+            sigs.path().join("fixture.wasm.sig"),
+            format!("{}\n", key.sign(&digest)),
+        )
+        .expect("sig");
+        sigs
+    };
+    let stored_signature = || async {
+        let row: serde_json::Value = client
+            .get(format!(
+                "{}/api/v1/admin/plugins/test.fixture",
+                target.url()
+            ))
+            .send()
+            .await
+            .expect("plugin")
+            .json()
+            .await
+            .expect("json");
+        row["data"]["signature"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Unsigned, the target refuses at plan.
+    let out = package_cmd(&["plan", "-s", &target.url(), "-f", artifact]);
+    assert!(!out.status.success(), "an unsigned plugin must be refused");
+
+    let sigs = sign_into(&first, "sigs-first");
+    let sigs_path = sigs.path().to_str().expect("utf8");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "plan",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "plan with signatures",
+    );
+    assert!(stdout.contains("signed    test.fixture"), "{stdout}");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "apply with signatures",
+    );
+    assert!(stdout.contains("applied codec@1.0.0"), "{stdout}");
+    assert_eq!(stored_signature().await, first.sign(&digest));
+    assert_eq!(
+        std::fs::read_to_string(artifact).expect("artifact"),
+        before,
+        "the artifact file is untouched"
+    );
+    let resp = client
+        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .json(&serde_json::json!({"data": {"msg": "hi"}}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    // The same signatures again: nothing to do.
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "re-apply",
+    );
+    assert!(stdout.contains("nothing to do"), "{stdout}");
+
+    // A rotated key's signatures re-sign the applied plugin; the content,
+    // and so the receipt, does not move.
+    let rotated = sign_into(&second, "sigs-second");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            rotated.path().to_str().expect("utf8"),
+        ]),
+        "apply a rotated key",
+    );
+    assert!(
+        stdout.contains("re-signed plugins 'test.fixture'"),
+        "{stdout}"
+    );
+    assert_eq!(stored_signature().await, second.sign(&digest));
+    let resp = client
+        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .json(&serde_json::json!({"data": {"msg": "hi"}}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
 }
 
 /// A package with a plugin in it: the fourth member travels with its

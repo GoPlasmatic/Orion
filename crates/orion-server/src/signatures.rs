@@ -89,6 +89,25 @@ impl Subject {
     }
 }
 
+/// What a directory of signatures said about one [`Subject`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// A file in the directory signs it. `replaced_carried` when the entry
+    /// already carried a different signature: the deployment's key wins over
+    /// one an export made for the source's.
+    Signed {
+        signature: String,
+        file: PathBuf,
+        replaced_carried: bool,
+    },
+    /// Nothing in the directory; the entry's own signature is kept.
+    Carried,
+    /// Nothing in the directory and nothing carried. Not refused here: a
+    /// target without trust keys accepts it, and one with keys refuses the
+    /// import naming the plugin.
+    Unsigned { looked_for: Vec<String> },
+}
+
 /// A directory of detached signatures: every `*.sig` file directly in it.
 ///
 /// Only regular files (or links to them) with the `.sig` extension are
@@ -146,6 +165,82 @@ impl SignatureDir {
             .iter()
             .find_map(|name| self.files.get(name))
             .map(PathBuf::as_path)
+    }
+
+    /// Resolve every subject, then account for every file.
+    ///
+    /// # Errors
+    ///
+    /// All of them, not the first: a file no subject matches (an orphan — a
+    /// misnamed file must not leave a plugin silently unsigned), a file two
+    /// subjects both match, and a file that is not a signature.
+    pub fn resolve(&self, subjects: &[Subject]) -> Result<Vec<Outcome>, Vec<String>> {
+        let mut errors = Vec::new();
+        let mut claimed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut outcomes = Vec::with_capacity(subjects.len());
+        for subject in subjects {
+            let found = subject
+                .candidates()
+                .into_iter()
+                .find_map(|name| self.files.get_key_value(&name));
+            let Some((name, path)) = found else {
+                outcomes.push(match &subject.carried {
+                    Some(_) => Outcome::Carried,
+                    None => Outcome::Unsigned {
+                        looked_for: subject.candidates(),
+                    },
+                });
+                continue;
+            };
+            claimed.entry(name.as_str()).or_default().push(&subject.id);
+            match read_sig_file(path) {
+                Ok(signature) => outcomes.push(Outcome::Signed {
+                    replaced_carried: subject
+                        .carried
+                        .as_deref()
+                        .is_some_and(|carried| carried.trim() != signature),
+                    signature,
+                    file: path.clone(),
+                }),
+                Err(e) => {
+                    errors.push(e);
+                    outcomes.push(Outcome::Unsigned {
+                        looked_for: subject.candidates(),
+                    });
+                }
+            }
+        }
+        for (name, ids) in &claimed {
+            if ids.len() > 1 {
+                errors.push(format!(
+                    "{} is claimed by both '{}' and '{}' — name them {} and {}",
+                    self.root.join(name).display(),
+                    ids[0],
+                    ids[1],
+                    sig_file_name(ids[0]),
+                    sig_file_name(ids[1]),
+                ));
+            }
+        }
+        let expected: Vec<String> = subjects.iter().flat_map(Subject::candidates).collect();
+        for name in self.files.keys() {
+            if !claimed.contains_key(name.as_str()) {
+                errors.push(format!(
+                    "{} matches no plugin or model in this artifact (expected one of: {})",
+                    self.root.join(name).display(),
+                    if expected.is_empty() {
+                        "nothing — the artifact carries no plugin or model".to_string()
+                    } else {
+                        expected.join(", ")
+                    }
+                ));
+            }
+        }
+        if errors.is_empty() {
+            Ok(outcomes)
+        } else {
+            Err(errors)
+        }
     }
 }
 
@@ -242,6 +337,72 @@ mod tests {
         let bad = dir.write("b.sig", "not base64!");
         let err = read_sig_file(&bad).expect_err("garbage");
         assert!(err.contains("b.sig") && err.contains("not base64"), "{err}");
+    }
+
+    #[test]
+    fn resolving_reports_every_problem_not_the_first() {
+        let dir = Scratch::new();
+        let key = crate::crypto::ed25519::SigningKey::generate();
+        let sig = key.sign("sha256:00");
+        dir.write("acme.scoring.sig", &format!("{sig}\n"));
+        dir.write("model.onnx.sig", &sig);
+        dir.write("typo.sig", &sig);
+        dir.write("acme.broken.sig", "not base64!");
+        let sigs = SignatureDir::open(&dir.0).expect("open");
+        let mut a = subject("acme.a", &["model.onnx"]);
+        a.kind = Kind::Model;
+        let mut b = subject("acme.b", &["model.onnx"]);
+        b.kind = Kind::Model;
+        let errors = sigs
+            .resolve(&[
+                subject("acme.scoring", &["scoring.wasm"]),
+                subject("acme.broken", &[]),
+                a,
+                b,
+            ])
+            .expect_err("three problems");
+        assert_eq!(errors.len(), 3, "{errors:#?}");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("acme.broken.sig") && e.contains("not base64"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("claimed by both 'acme.a' and 'acme.b'"))
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("typo.sig matches no plugin or model")
+                    && e.contains("acme.scoring.sig"))
+        );
+    }
+
+    #[test]
+    fn a_dir_signature_replaces_a_carried_one_and_absence_keeps_it() {
+        let dir = Scratch::new();
+        let key = crate::crypto::ed25519::SigningKey::generate();
+        let sig = key.sign("sha256:00");
+        dir.write("scoring.wasm.sig", &sig);
+        let sigs = SignatureDir::open(&dir.0).expect("open");
+        let mut signed = subject("acme.scoring", &["scoring.wasm"]);
+        signed.carried = Some("c291cmNl".to_string());
+        let mut carried = subject("acme.legacy", &["legacy.wasm"]);
+        carried.carried = Some("c291cmNl".to_string());
+        let outcomes = sigs
+            .resolve(&[signed, carried, subject("acme.pairing", &["pairing.wasm"])])
+            .expect("resolves");
+        assert!(matches!(
+            &outcomes[0],
+            Outcome::Signed { signature, replaced_carried: true, .. } if *signature == sig
+        ));
+        assert_eq!(outcomes[1], Outcome::Carried);
+        assert!(matches!(
+            &outcomes[2],
+            Outcome::Unsigned { looked_for } if looked_for == &["acme.pairing.sig", "pairing.wasm.sig"]
+        ));
     }
 
     #[test]

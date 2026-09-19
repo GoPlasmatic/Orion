@@ -124,6 +124,17 @@ orion-cli packages get payments    # current applied version + history
 
 `diff` prints `no drift` and exits `0`. Receipts are what enforce immutability and what make rollback mechanical. They are also the answer to "what is running here", which a database dump cannot give you as directly.
 
+## Sign at deploy time
+
+A target whose `[plugins.trust]` or `[models.trust]` names keys refuses an unsigned plugin or model. The key belongs to the deployment, so sign where the key is and attach the signatures at apply:
+
+```bash
+orion-server plugin sign definitions/ --key /run/secrets/signer.pem -o sigs/
+orion-server package apply -s https://prod.orion.internal -f payments-1.4.0.json --signatures sigs/
+```
+
+The artifact is not changed and its hash does not move. Rotating the key is the same apply with the new signatures. See [Signatures at deploy time](../../reference/cli/orion-server/package.md#signatures-at-deploy-time).
+
 ## Secrets survive the trip, if authored as references
 
 Connector exports are masked, which is what makes them safe to commit. It also decides how a connector must be authored to be promotable at all:

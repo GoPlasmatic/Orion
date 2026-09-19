@@ -170,6 +170,12 @@ enum Command {
         /// `content-<12 hex>`.
         #[arg(long, value_name = "PREFIX")]
         version_prefix: Option<String>,
+        /// Directory of detached signatures to write into the artifact's
+        /// `plugins[]` and `models[]` entries, for a build-time signer:
+        /// `<id>.sig` or `<artifact file>.sig`. Signatures are not content,
+        /// so the hash and a content version do not move.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
         /// Channel name that may be referenced without being in the set —
         /// recorded in the artifact's `requires`. Repeatable.
         #[arg(long = "requires-channel", value_name = "NAME")]
@@ -473,6 +479,13 @@ enum PackageCommand {
         /// Path to the artifact file.
         #[arg(short, long)]
         file: String,
+        /// Directory of detached signatures to attach before anything is
+        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
+        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// `orion-server plugin sign -o <dir>` writes them. The artifact
+        /// file, its version and its hash are untouched.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
     },
     /// Apply an artifact: claim the receipt as staged, stage all entities
     /// (connectors → workflows → channels), activate in dependency order
@@ -485,6 +498,13 @@ enum PackageCommand {
         /// Path to the artifact file.
         #[arg(short, long)]
         file: String,
+        /// Directory of detached signatures to attach before anything is
+        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
+        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// `orion-server plugin sign -o <dir>` writes them. The artifact
+        /// file, its version and its hash are untouched.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
     },
     /// Report drift between an artifact and a running instance, comparing
     /// the server's content hashes against the artifact's. Exits non-zero
@@ -598,6 +618,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             name,
             version,
             version_prefix,
+            signatures,
             requires_channels,
             requires_connectors,
             deny_warnings,
@@ -617,6 +638,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 name: name.as_deref(),
                 version: version.as_deref(),
                 version_prefix: version_prefix.as_deref(),
+                signatures: signatures.as_deref(),
                 boundary,
                 deny_warnings,
                 no_activate,
@@ -733,12 +755,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .await
                 }
                 PackageCommand::Lint { file } => package_cli::run_lint(&file),
-                PackageCommand::Plan { server, file } => {
-                    package_cli::run_plan(&server, &file).await
-                }
-                PackageCommand::Apply { server, file } => {
-                    package_cli::run_apply(&server, &file).await
-                }
+                PackageCommand::Plan {
+                    server,
+                    file,
+                    signatures,
+                } => package_cli::run_plan(&server, &file, signatures.as_deref()).await,
+                PackageCommand::Apply {
+                    server,
+                    file,
+                    signatures,
+                } => package_cli::run_apply(&server, &file, signatures.as_deref()).await,
                 PackageCommand::Diff { server, file } => {
                     package_cli::run_diff(&server, &file).await
                 }
