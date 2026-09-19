@@ -655,8 +655,9 @@ pub(crate) struct StatusChangeQuery {
     pub reload: ReloadMode,
 }
 
-/// Query parameter accepted by `PATCH /workflows/{id}/rollout` (K4) — the
-/// other active-set mutation a bundle apply performs per entity.
+/// Query parameter accepted by `PATCH /workflows/{id}/rollout` (K4) and by
+/// the channel, workflow, plugin and model `DELETE`s — the other active-set
+/// mutations a bundle apply performs per entity.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct ReloadQuery {
@@ -813,11 +814,11 @@ fn audit_log_draft_only(
 /// [`audit_log_draft_only`] in those code paths.
 ///
 /// K4: `reload` is [`ReloadMode::Defer`] only where the caller opted in via
-/// query parameter (status changes, rollout); the row is committed and the
-/// audit event recorded, but the engine keeps serving the previous active set
-/// — on this node *and* every peer, since the epoch bump is deferred with the
-/// rebuild — until `POST /engine/reload` runs. Deletes always reload: nothing
-/// batches a delete.
+/// query parameter (status changes, rollout, and the channel, workflow,
+/// plugin and model deletes `package apply --prune` batches); the row is
+/// committed and the audit event recorded, but the engine keeps serving the
+/// previous active set — on this node *and* every peer, since the epoch bump
+/// is deferred with the rebuild — until `POST /engine/reload` runs.
 ///
 /// **A failed reload IS returned to the caller here** — the opposite of
 /// [`reload_after_commit`], and the reason the two are separate functions.

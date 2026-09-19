@@ -197,3 +197,102 @@ async fn receipt_puts_are_audited() {
     assert_eq!(row["action"], "package_applied");
     assert_eq!(row["resource_id"], "audited-pkg@1.0.0");
 }
+
+/// A receipt records what its version carried; the package's detail and
+/// `?current=true` return it, and the plain listing leaves it out.
+#[tokio::test]
+async fn receipts_carry_the_inventory_and_current_lists_it() {
+    let app = test_app().await;
+    let put = |name: &'static str, version: &'static str, inventory: Value| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(json_request(
+                    "PUT",
+                    &format!("/api/v1/admin/packages/{name}"),
+                    Some(json!({"version": version, "content_hash": "sha256:x",
+                        "state": "applied", "inventory": inventory})),
+                ))
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, body_json(resp).await)
+        }
+    };
+    let (s, body) = put("orders", "1.0.0", json!({"channels": ["b", "a"]})).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["data"]["inventory"],
+        json!({"plugins": [], "models": [], "connectors": [], "workflows": [], "channels": ["a", "b"]})
+    );
+    let (s, _) = put("billing", "2.0.0", json!({"connectors": ["crm"]})).await;
+    assert_eq!(s, StatusCode::OK);
+    // Written without one: reads back without the key.
+    let (s, body) = put_receipt(&app, "legacy", "0.1.0", "sha256:x", "applied").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body["data"].get("inventory").is_none(), "{body}");
+
+    let get = |uri: &'static str| {
+        let app = app.clone();
+        async move {
+            let resp = app.oneshot(json_request("GET", uri, None)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            body_json(resp).await
+        }
+    };
+    let detail = get("/api/v1/admin/packages/orders").await;
+    assert_eq!(
+        detail["data"]["current"]["inventory"]["channels"],
+        json!(["a", "b"])
+    );
+
+    let listed = get("/api/v1/admin/packages").await;
+    assert!(
+        listed["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("inventory").is_none()),
+        "{listed}"
+    );
+
+    let current = get("/api/v1/admin/packages?current=true").await;
+    let rows = current["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "{current}");
+    assert_eq!(rows[0]["name"], "billing");
+    assert_eq!(rows[0]["inventory"]["connectors"], json!(["crm"]));
+}
+
+/// An inventory list is bounded like the import it describes.
+#[tokio::test]
+async fn an_oversized_or_malformed_inventory_is_refused() {
+    let app = test_app().await;
+    let put = |inventory: Value| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(json_request(
+                    "PUT",
+                    "/api/v1/admin/packages/pkg",
+                    Some(json!({"version": "1.0.0", "content_hash": "sha256:x",
+                        "state": "staged", "inventory": inventory})),
+                ))
+                .await
+                .unwrap();
+            let status = resp.status();
+            (status, body_json(resp).await)
+        }
+    };
+    let many: Vec<String> = (0..1001).map(|i| format!("wf-{i}")).collect();
+    let (s, body) = put(json!({"workflows": many})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("inventory.workflows"),
+        "{body}"
+    );
+    let (s, body) = put(json!({"channels": [""]})).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+}

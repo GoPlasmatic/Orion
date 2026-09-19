@@ -329,6 +329,9 @@ pub struct PackageReceipt {
     pub principal: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    /// What this version carried, as a `PackageInventory` in JSON. `None`
+    /// for a receipt written before receipts recorded it.
+    pub inventory_json: Option<String>,
 }
 
 // ============================================================

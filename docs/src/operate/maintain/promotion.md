@@ -77,7 +77,7 @@ Knowing the phases is what lets you interpret a failure:
 2. **Stage every entity as a draft**, in dependency order: plugins, then connectors, then models, then workflows, then channels. A package that carries [plugins](../../concepts/plugins.md) activates them here, reload included, before anything else is staged. A workflow's create-time gate validates every function it names against the registry the engine is serving, so a workflow calling a plugin function cannot be staged until the plugin is active and loaded. Connector import reloads the connector registry server-side, so workflow activation later sees them.
 3. **Activate in dependency order, with the reload deferred.** Each activation is marked in the database but the engine is not rebuilt yet.
 4. **Reload the engine once**, which is also one config-epoch bump in a cluster.
-5. **Flip the receipt to `applied`.**
+5. **Flip the receipt to `applied`.** The receipt records the version's inventory: the ids of every entity it carried.
 
 Two properties fall out of that ordering. However many entities the package carries, the running engine rebuilds once. A package that brings plugins rebuilds it twice: once to admit them and once for everything else. Every replica converges on the whole package, never on a half-applied one. And every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`, so the [audit trail](../run/audit-logs.md) filters back into the promotion that caused it.
 
@@ -102,6 +102,19 @@ In every case the receipt stays `staged`, which is what makes a corrected re-run
 > [!TIP]
 > A failed apply that you cannot fix at once is not an emergency: nothing is serving the half-applied estate. Leave it staged, fix the artifact, and re-run.
 
+## Retire what a package no longer carries
+
+Removing a channel from the definitions does not remove it from a target, because `apply` only adds and updates. `--prune` removes what the package's current version carried and the new one does not. Preview it with `plan`, then apply it:
+
+```bash
+orion-server package plan  -s https://prod.orion.internal -f payments-1.5.0.json --prune
+orion-server package apply -s https://prod.orion.internal -f payments-1.5.0.json --prune
+```
+
+Removed channels are archived before activation, so a route can move to a new channel id in one apply. Workflows, plugins, models and connectors go after activation. Every removal lands in the same single reload. An entity another package now carries is kept. A workflow or connector something outside the package still uses stops the apply before anything is written. `--prune=delete` deletes instead of archiving. The rules are in [Prune what a version dropped](../../reference/cli/orion-server/package.md#prune-what-a-version-dropped).
+
+Pass `--prune` on every apply. It measures from the version being replaced, so an entity an apply without it left behind is not seen again.
+
 ## Roll back
 
 Re-apply the previous artifact version:
@@ -110,7 +123,7 @@ Re-apply the previous artifact version:
 orion-server package apply -s https://prod.orion.internal -f payments-1.3.0.json
 ```
 
-`apply` sees that `1.3.0` is applied here but that `1.4.0` superseded it. It therefore stages and activates `1.3.0`'s content again rather than stopping at the receipt, and `plan` reports the same verdict first. Entities roll *forward* carrying the older content; nothing moves backward, and the receipt history records both moves. That is the whole rollback procedure. There is no separate command, because a rollback is a promotion of something you already shipped. Keep the artifacts. A rollback you cannot perform is a rollback you do not have, and the artifact file is the only thing needed to perform one.
+`apply` sees that `1.3.0` is applied here but that `1.4.0` superseded it. It therefore stages and activates `1.3.0`'s content again rather than stopping at the receipt, and `plan` reports the same verdict first. Entities roll *forward* carrying the older content; nothing moves backward, and the receipt history records both moves. With `--prune`, the rollback also archives what only `1.4.0` carried. That is the whole rollback procedure. There is no separate command, because a rollback is a promotion of something you already shipped. Keep the artifacts. A rollback you cannot perform is a rollback you do not have, and the artifact file is the only thing needed to perform one.
 
 ## Verify
 

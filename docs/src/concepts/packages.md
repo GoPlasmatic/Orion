@@ -73,6 +73,7 @@ A target instance remembers what was applied to it: one *receipt* per package ve
 - **A package can require an Orion version.** A set's [`package` document](../reference/cli/shared-definitions.md#the-package-document) declares a range such as `>=1.8.2, <2`. Offline commands check the running binary against it, and `plan` and `apply` check the target.
 - **Applied means serving.** `apply` records a version as applied only after the reload it caused serves every member of the package. A member the reload quarantined fails the apply and leaves the receipt `staged`.
 - **Rollback is a re-apply.** Applying the previous version makes it current again. Entities roll forward carrying the old content, and the receipt history records both moves.
+- **A receipt records what its version carried.** That inventory is what [`apply --prune`](../reference/cli/orion-server/package.md#prune-what-a-version-dropped) measures from. It removes what the previous version carried and the new one does not, and never touches what another package carries.
 
 ## Next steps
 

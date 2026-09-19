@@ -19,8 +19,9 @@ use crate::errors::OrionError;
 pub use orion_api::dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
     CronOccurrenceSummaryResponse, CronScheduleStatusResponse, ModelAdmission, ModelArtifactRef,
-    ModelHealth, ModelResponse, ModelStats, PackageReceiptResponse, PluginHealth, PluginResponse,
-    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    ModelHealth, ModelResponse, ModelStats, PackageInventory, PackageReceiptResponse, PluginHealth,
+    PluginResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse,
+    WorkflowResponse,
 };
 
 impl From<&CronOccurrence> for CronOccurrenceSummaryResponse {
@@ -319,6 +320,21 @@ impl From<&PackageReceipt> for PackageReceiptResponse {
             principal: receipt.principal.clone(),
             created_at: receipt.created_at,
             updated_at: receipt.updated_at,
+            // Tolerant: a column this binary cannot read is a receipt with
+            // no inventory — `--prune` then prunes nothing and says so —
+            // not a failed read of every receipt of the package.
+            inventory: receipt.inventory_json.as_deref().and_then(|json| {
+                serde_json::from_str(json)
+                    .inspect_err(|e| {
+                        tracing::warn!(
+                            package = %receipt.name,
+                            version = %receipt.version,
+                            error = %e,
+                            "unreadable package receipt inventory — treated as absent"
+                        )
+                    })
+                    .ok()
+            }),
         }
     }
 }

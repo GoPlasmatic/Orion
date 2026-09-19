@@ -26,12 +26,14 @@ use serde_json::{Value, json};
 
 use orion_client::{OrionClient, StatusCode, paths, query_string};
 
+use orion::package::{Baseline, PruneMode, PrunePlan};
 use orion::signatures::{Kind, Outcome, SignatureDir, Subject};
 use orion::storage::content;
 use orion::storage::repositories::channels::CreateChannelRequest;
 use orion::storage::repositories::connectors::CreateConnectorRequest;
 use orion::storage::repositories::plugins::CreatePluginRequest;
 use orion::storage::repositories::workflows::CreateWorkflowRequest;
+use orion_api::PackageInventory;
 
 type CliError = Box<dyn std::error::Error>;
 
@@ -1272,15 +1274,17 @@ enum ReceiptState {
     AppliedConflict,
 }
 
+/// The verdict, and the `GET /packages/{name}` body it came from (`null`
+/// for a package with no receipts) — `--prune` reads its baseline there.
 async fn check_receipt(
     client: &OrionClient,
     artifact: &PackageArtifact,
-) -> Result<ReceiptState, CliError> {
+) -> Result<(ReceiptState, Value), CliError> {
     let receipts: Option<Value> = client.get_data_opt(&receipt_path(artifact)).await?;
     let Some(receipts) = receipts else {
-        return Ok(ReceiptState::Fresh);
+        return Ok((ReceiptState::Fresh, Value::Null));
     };
-    Ok(receipt_state(&receipts, artifact))
+    Ok((receipt_state(&receipts, artifact), receipts))
 }
 
 /// The verdict for `artifact` from a `GET /packages/{name}` body.
@@ -1362,6 +1366,7 @@ pub(crate) async fn run_plan(
     server: &str,
     file: &str,
     signatures: Option<&str>,
+    prune: Option<PruneMode>,
 ) -> Result<(), CliError> {
     let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
@@ -1374,7 +1379,8 @@ pub(crate) async fn run_plan(
 
     // The immutability gate first: a reused applied version is dead on
     // arrival, and nothing below can change that.
-    match check_receipt(&client, &artifact).await? {
+    let (receipt, receipts) = check_receipt(&client, &artifact).await?;
+    match &receipt {
         ReceiptState::AppliedConflict => {
             return Err(format!(
                 "{package} is already applied on {server} with different content — an \
@@ -1384,6 +1390,9 @@ pub(crate) async fn run_plan(
         }
         ReceiptState::AppliedCurrent => {
             println!("{package} is already applied with identical content — apply is a no-op");
+            if prune.is_some() {
+                println!("{package} is already applied — nothing to prune");
+            }
         }
         ReceiptState::AppliedSuperseded { current } => {
             println!(
@@ -1413,6 +1422,41 @@ pub(crate) async fn run_plan(
     // (the exports are unpaginated K12 snapshots, so no listing clamp can
     // hide a boundary on a large estate).
     let mut failures = 0usize;
+
+    // What the previous applied version carried and this artifact does not.
+    // Without `--prune` it is only mentioned; with it, every removal is
+    // listed and one something else still depends on is a blocking issue.
+    let prune_plan = prune_plan_for(&client, &artifact, &receipts, &receipt).await?;
+    match prune {
+        Some(mode) => {
+            print_prune_plan(&prune_plan, mode);
+            for refusal in prune_refusals(&client, &artifact, &prune_plan).await? {
+                eprintln!("error: {refusal}");
+                failures += 1;
+            }
+        }
+        None if !prune_plan.is_empty() => {
+            let count = prune_plan.removals().count();
+            println!(
+                "note: {count} {} of {} {} not in this artifact; apply --prune would remove {}",
+                if count == 1 { "entity" } else { "entities" },
+                prune_plan
+                    .baseline
+                    .as_deref()
+                    .unwrap_or("the current version"),
+                if count == 1 { "is" } else { "are" },
+                if count == 1 { "it" } else { "them" },
+            );
+        }
+        None => {}
+    }
+    // Channels `--prune` archives before activation: a route or name gate
+    // naming one of them is resolved by the prune, not a conflict.
+    let pruned_early: Vec<&str> = if prune.is_some() {
+        prune_plan.early.iter().map(|r| r.id.as_str()).collect()
+    } else {
+        Vec::new()
+    };
     if !artifact.requires.connectors.is_empty() {
         let stored = names_of(&client.get_data(paths::CONNECTORS_EXPORT).await?, "name");
         for name in &artifact.requires.connectors {
@@ -1656,7 +1700,14 @@ pub(crate) async fn run_plan(
                     || (existence
                         && resolved_by_order
                             .iter()
-                            .any(|name| message.contains(&format!("'{name}'"))));
+                            .any(|name| message.contains(&format!("'{name}'"))))
+                    // A collision with a channel `--prune` archives first —
+                    // the two spellings of the name and route gates.
+                    || (kind == "channels"
+                        && pruned_early.iter().any(|held| {
+                            message.contains(&format!("active channel id '{held}'"))
+                                || message.contains(&format!("(id {held})"))
+                        }));
             if pending {
                 println!("  {kind:<10} {id:<28} gate pending apply order: {message}");
             } else {
@@ -1729,6 +1780,289 @@ fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, 
         }
     }
     intents
+}
+
+// ============================================================
+// prune
+// ============================================================
+
+/// `--prune`'s value on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum PruneArg {
+    /// Archive what is no longer carried, and disable a connector.
+    Archive,
+    /// Delete what is no longer carried, every version of it.
+    Delete,
+}
+
+impl From<PruneArg> for PruneMode {
+    fn from(arg: PruneArg) -> Self {
+        match arg {
+            PruneArg::Archive => PruneMode::Archive,
+            PruneArg::Delete => PruneMode::Delete,
+        }
+    }
+}
+
+/// The receipt `--prune` measures from, in a `GET /packages/{name}` body:
+/// the package's `current` one — for a rollback, the version being rolled
+/// back from — as its version and, when it recorded one, its inventory.
+/// `None` on the no-op path: re-running the same deploy must not re-archive
+/// what someone re-created since.
+fn prune_baseline(
+    receipts: &Value,
+    state: &ReceiptState,
+) -> Option<(String, Option<PackageInventory>)> {
+    if matches!(
+        state,
+        ReceiptState::AppliedCurrent | ReceiptState::AppliedConflict
+    ) {
+        return None;
+    }
+    let current = receipts.get("current").filter(|c| !c.is_null())?;
+    let version = current["version"].as_str()?.to_string();
+    let inventory = current
+        .get("inventory")
+        .filter(|i| !i.is_null())
+        .and_then(|i| serde_json::from_value(i.clone()).ok());
+    Some((version, inventory))
+}
+
+/// What `--prune` would remove on this apply, measured from
+/// [`prune_baseline`].
+async fn prune_plan_for(
+    client: &OrionClient,
+    artifact: &PackageArtifact,
+    receipts: &Value,
+    state: &ReceiptState,
+) -> Result<PrunePlan, CliError> {
+    let Some((version, inventory)) = prune_baseline(receipts, state) else {
+        return Ok(PrunePlan::default());
+    };
+    let baseline = format!("{}@{version}", artifact.package.name);
+    let next = package_members(artifact).inventory();
+    let measure = |others: &[(String, PackageInventory)]| {
+        orion::package::prune_plan(
+            Some(Baseline {
+                package: &baseline,
+                inventory: inventory.as_ref(),
+            }),
+            &next,
+            others,
+        )
+    };
+    let plan = measure(&[]);
+    if plan.is_empty() {
+        return Ok(plan);
+    }
+    // The ownership guard: an entity that moved to another package is that
+    // package's now, whatever this one's receipt says.
+    let rows: Value = client
+        .get_data(&format!(
+            "{}{}",
+            paths::PACKAGES,
+            query_string(&[
+                ("current", Some("true".to_string())),
+                ("limit", Some("1000".to_string())),
+            ])
+        ))
+        .await?;
+    let others: Vec<(String, PackageInventory)> = rows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["name"] != artifact.package.name.as_str())
+        .filter_map(|row| {
+            let inventory = serde_json::from_value(row.get("inventory")?.clone()).ok()?;
+            Some((
+                format!(
+                    "{}@{}",
+                    row["name"].as_str()?,
+                    row["version"].as_str().unwrap_or("?")
+                ),
+                inventory,
+            ))
+        })
+        .collect();
+    Ok(measure(&others))
+}
+
+/// The removals something outside the prune still depends on. A workflow
+/// or a connector is checked here, against the target's active rows,
+/// because no server gate refuses its removal; a plugin or a model the
+/// server refuses itself, with a `409`.
+async fn prune_refusals(
+    client: &OrionClient,
+    artifact: &PackageArtifact,
+    plan: &PrunePlan,
+) -> Result<Vec<orion::package::Refusal>, CliError> {
+    let active = |path: &str| {
+        format!(
+            "{path}{}",
+            query_string(&[("status", Some(orion_api::STATUS_ACTIVE.to_string()))])
+        )
+    };
+    let fetch = |wanted: bool, path: &'static str| async move {
+        if wanted {
+            client.get_data::<Vec<Value>>(&active(path)).await
+        } else {
+            Ok(Vec::new())
+        }
+    };
+    let workflows_pruned = plan.removals().any(|r| r.kind == "workflows");
+    let connectors_pruned = plan.removals().any(|r| r.kind == "connectors");
+    let channels = fetch(workflows_pruned, paths::CHANNELS_EXPORT).await?;
+    let workflows = fetch(connectors_pruned, paths::WORKFLOWS_EXPORT).await?;
+    let models = fetch(connectors_pruned, paths::MODELS_EXPORT).await?;
+    Ok(orion::package::refusals(
+        plan,
+        &orion::package::References {
+            carried_channels: &artifact.channels,
+            carried_workflows: &artifact.workflows,
+            carried_models: &artifact.models,
+            active_channels: &channels,
+            active_workflows: &workflows,
+            active_models: &models,
+        },
+        orion::engine::FunctionRegistry::builtin(),
+    ))
+}
+
+/// What a removal does to one kind, as a verb.
+fn prune_verb(kind: &str, mode: PruneMode) -> &'static str {
+    match (mode, kind) {
+        (PruneMode::Delete, _) => "delete",
+        (PruneMode::Archive, "connectors") => "disable",
+        (PruneMode::Archive, _) => "archive",
+    }
+}
+
+/// `plan`'s and `apply`'s account of a prune before anything is removed.
+fn print_prune_plan(plan: &PrunePlan, mode: PruneMode) {
+    let baseline = plan.baseline.as_deref().unwrap_or("the current version");
+    if plan.baseline_without_inventory {
+        println!(
+            "note: {baseline} was applied before receipts recorded what they carried — nothing \
+             to prune this time; this apply records an inventory, so the next one can"
+        );
+    }
+    for (kind, count) in &plan.emptied {
+        eprintln!(
+            "warning: this artifact carries no {kind} — all {count} {kind} of {baseline} will be \
+             pruned"
+        );
+    }
+    for removal in plan.removals() {
+        println!(
+            "  {:<10} {:<28} prune: {} (in {baseline}, not in this artifact)",
+            removal.kind,
+            removal.id,
+            prune_verb(removal.kind, mode)
+        );
+    }
+    for (removal, owner) in &plan.kept {
+        println!(
+            "  {:<10} {:<28} keep: now carried by {owner}",
+            removal.kind, removal.id
+        );
+    }
+}
+
+/// The admin path of one entity, for its `DELETE`.
+fn entity_path_for(kind: &str, id: &str) -> String {
+    match kind {
+        "plugins" => paths::plugin(id),
+        "models" => paths::model(id),
+        "workflows" => paths::workflow(id),
+        _ => paths::channel(id),
+    }
+}
+
+/// Carry out `removals`, in order, with every engine reload deferred to the
+/// apply's one. An entity already archived or gone is not an error — a
+/// re-run after a failure finds the first removals done. Any other refusal
+/// stops the apply, naming the entity.
+async fn run_removals(
+    client: &OrionClient,
+    removals: &[orion::package::Removal],
+    mode: PruneMode,
+) -> Result<(), CliError> {
+    if removals.is_empty() {
+        return Ok(());
+    }
+    let stop = |removal: &orion::package::Removal, e: &dyn std::fmt::Display| -> CliError {
+        eprintln!(
+            "error: pruning {} '{}' was refused: {e}",
+            removal.kind, removal.id
+        );
+        format!(
+            "prune stopped at {} '{}'. Removals and activations before it are committed but \
+             the engine has NOT been reloaded; the receipt stays staged — remove the outside \
+             reference (or drop --prune) and re-run apply (idempotent)",
+            removal.kind, removal.id
+        )
+        .into()
+    };
+    // A connector is addressed by its row id, a package names it by name.
+    let connectors: Vec<Value> = if removals.iter().any(|r| r.kind == "connectors") {
+        client.get_data(paths::CONNECTORS_EXPORT).await?
+    } else {
+        Vec::new()
+    };
+    for removal in removals {
+        let (kind, id) = (removal.kind, removal.id.as_str());
+        let verb = prune_verb(kind, mode);
+        let result = if kind == "connectors" {
+            let Some(row) = connectors.iter().find(|c| c["name"] == id) else {
+                println!("pruned {kind} '{id}' (already gone)");
+                continue;
+            };
+            let row_id = row["id"].as_str().unwrap_or_default();
+            match mode {
+                PruneMode::Archive if row["enabled"] == false => {
+                    println!("pruned {kind} '{id}' (already disabled)");
+                    continue;
+                }
+                PruneMode::Archive => client
+                    .put_data::<Value>(&paths::connector(row_id), &json!({"enabled": false}))
+                    .await
+                    .map(|_| ()),
+                PruneMode::Delete => client.delete(&paths::connector(row_id)).await,
+            }
+        } else {
+            match mode {
+                PruneMode::Archive => client
+                    .patch_data::<Value>(
+                        &format!("{}?reload=defer", status_path_for(kind, id)),
+                        &json!({"status": orion_api::STATUS_ARCHIVED}),
+                    )
+                    .await
+                    .map(|_| ()),
+                PruneMode::Delete => {
+                    client
+                        .delete(&format!("{}?reload=defer", entity_path_for(kind, id)))
+                        .await
+                }
+            }
+        };
+        match result {
+            Ok(()) => println!("pruned {kind} '{id}' ({verb}d)"),
+            // Archive answers 404 for "no active version", delete for
+            // "no such entity": either way the removal already happened.
+            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
+                println!("pruned {kind} '{id}' (already {verb}d)")
+            }
+            Err(e) => return Err(stop(removal, &e)),
+        }
+    }
+    Ok(())
+}
+
+/// The prune a `stage_activate_reload` runs around its activations.
+struct PruneRun<'a> {
+    client: &'a OrionClient,
+    plan: &'a PrunePlan,
+    mode: PruneMode,
 }
 
 // ============================================================
@@ -1810,6 +2144,7 @@ pub(crate) async fn run_apply(
     server: &str,
     file: &str,
     signatures: Option<&str>,
+    prune: Option<PruneMode>,
 ) -> Result<(), CliError> {
     let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
@@ -1824,9 +2159,12 @@ pub(crate) async fn run_apply(
     // Phase 1 — claim the receipt as staged. This is the atomic
     // same-version-different-content rejection (K14), and doubles as the
     // guard against two concurrent applies.
-    let receipt = check_receipt(&client, &artifact).await?;
+    let (receipt, receipts) = check_receipt(&client, &artifact).await?;
     match &receipt {
         ReceiptState::AppliedCurrent => {
+            if prune.is_some() {
+                println!("{package} is already applied — nothing to prune");
+            }
             // The content is applied, but a signature is not content: a
             // re-apply with a new key's signatures must still reach the rows.
             let resign = resigned_members(&client, &artifact, &signed).await?;
@@ -1862,7 +2200,7 @@ pub(crate) async fn run_apply(
             }
             // Only the re-signed members, and the receipt stays as it is:
             // the content it records did not move.
-            let reloaded = stage_activate_reload(&client, &resign).await?;
+            let reloaded = stage_activate_reload(&client, &resign, None).await?;
             verify_serving(
                 &client,
                 server,
@@ -1890,6 +2228,30 @@ pub(crate) async fn run_apply(
                 .into(),
         );
     }
+    // Also before the claim: what `--prune` removes, measured from the
+    // receipt read above, and every removal something outside it still
+    // depends on — refused with nothing written, so nothing is half-pruned.
+    let prune_plan = match prune {
+        Some(mode) => {
+            let plan = prune_plan_for(&client, &artifact, &receipts, &receipt).await?;
+            print_prune_plan(&plan, mode);
+            let refusals = prune_refusals(&client, &artifact, &plan).await?;
+            if !refusals.is_empty() {
+                for refusal in &refusals {
+                    eprintln!("error: {refusal}");
+                }
+                return Err(format!(
+                    "--prune refused {} removal(s); nothing was written — remove the outside \
+                     reference, or drop --prune",
+                    refusals.len()
+                )
+                .into());
+            }
+            Some((plan, mode))
+        }
+        None => None,
+    };
+    let inventory = package_members(&artifact).inventory();
     // A superseded version is re-applied without the claim: the receipt
     // store refuses applied → staged, and the hash already matches, so the
     // K14 check has nothing to reject. Without the claim two concurrent
@@ -1904,13 +2266,22 @@ pub(crate) async fn run_apply(
                     "version": artifact.package.version,
                     "content_hash": artifact.package.content_hash,
                     "state": "staged",
+                    "inventory": inventory,
                 }),
             )
             .await
             .map_err(|e| format!("could not claim the receipt: {e}"))?;
     }
 
-    let reloaded = stage_activate_reload(&client, &artifact).await?;
+    // The removals travel with the change context of their own, so the
+    // audit trail groups them apart from the activations.
+    let prune_client = admin_client(server, format!("package={package} prune"))?;
+    let prune_run = prune_plan.as_ref().map(|(plan, mode)| PruneRun {
+        client: &prune_client,
+        plan,
+        mode: *mode,
+    });
+    let reloaded = stage_activate_reload(&client, &artifact, prune_run.as_ref()).await?;
 
     // Phase 4b — "applied" must mean serving. The reload succeeds when an
     // entity does not load: it is quarantined and everything else serves.
@@ -1938,6 +2309,7 @@ pub(crate) async fn run_apply(
                 "version": artifact.package.version,
                 "content_hash": artifact.package.content_hash,
                 "state": "applied",
+                "inventory": inventory,
             }),
         )
         .await?;
@@ -1948,10 +2320,13 @@ pub(crate) async fn run_apply(
 
 /// Phases 2–4 of `apply`: stage every member as drafts in dependency order,
 /// activate in dependency order with the reload deferred, then reload once.
+/// With `prune`, the removed channels go between staging and activation and
+/// everything else it removes after activation, inside the same reload.
 /// Returns the reload's answer.
 async fn stage_activate_reload(
     client: &OrionClient,
     artifact: &PackageArtifact,
+    prune: Option<&PruneRun<'_>>,
 ) -> Result<orion_api::EngineReloadedResponse, CliError> {
     // Phase 2 — stage everything as drafts, in dependency order. Plugins
     // first, so their components are stored before anything names their
@@ -2037,6 +2412,15 @@ async fn stage_activate_reload(
         }
     }
 
+    // Phase 2b — the channels `--prune` removes, before activation: the
+    // route and name gates read active rows, so a route moving to a new
+    // channel id could not activate while the old channel still holds it.
+    // The reload is deferred, so traffic sees the swap at phase 4 only.
+    if let Some(run) = prune {
+        run_removals(run.client, &run.plan.early, run.mode).await?;
+    }
+    let archived_early = prune.is_some_and(|run| !run.plan.early.is_empty());
+
     // Phase 3 — activate in dependency order with the reload deferred (K4):
     // one engine rebuild and one cluster epoch bump at the end, not one per
     // entity. Plugins were activated in phase 2, above.
@@ -2092,13 +2476,24 @@ async fn stage_activate_reload(
                 return Err(format!(
                     "activation stopped at {kind} '{id}'. Everything before it is \
                      active but the engine has NOT been reloaded; everything after is \
-                     staged as drafts. The receipt stays staged — fix the cause and \
+                     staged as drafts.{} The receipt stays staged — fix the cause and \
                      re-run apply (idempotent), or run POST /engine/reload to serve \
-                     what did activate"
+                     what did activate",
+                    if archived_early {
+                        " The channels --prune archived are still served until that reload."
+                    } else {
+                        ""
+                    }
                 )
                 .into());
             }
         }
+    }
+
+    // Phase 3b — the rest of what `--prune` removes: workflows first, then
+    // what they called, once the new versions no longer name them.
+    if let Some(run) = prune {
+        run_removals(run.client, &run.plan.late, run.mode).await?;
     }
 
     // Phase 4 — one reload, one epoch bump. The answer describes the
@@ -2523,6 +2918,35 @@ mod tests {
             receipt_state(&receipts("1.1.0"), &artifact),
             ReceiptState::Fresh
         ));
+    }
+
+    /// `--prune` measures from the package's `current` receipt — for a
+    /// rollback, the version rolled back from — and from nothing on the
+    /// no-op path.
+    #[test]
+    fn prune_measures_from_the_current_receipt_except_on_the_no_op_path() {
+        let receipts = json!({
+            "current": {"version": "1.1.0", "state": "applied",
+                        "inventory": {"channels": ["only-in-1.1.0"]}},
+        });
+        let superseded = ReceiptState::AppliedSuperseded {
+            current: "1.1.0".to_string(),
+        };
+        let (version, inventory) =
+            prune_baseline(&receipts, &superseded).expect("a rollback has a baseline");
+        assert_eq!(version, "1.1.0");
+        assert_eq!(
+            inventory.expect("recorded").channels,
+            ["only-in-1.1.0".to_string()]
+        );
+        assert!(prune_baseline(&receipts, &ReceiptState::AppliedCurrent).is_none());
+        let (_, inventory) = prune_baseline(
+            &json!({"current": {"version": "0.9.0"}}),
+            &ReceiptState::Fresh,
+        )
+        .expect("a baseline");
+        assert!(inventory.is_none(), "a receipt from before inventories");
+        assert!(prune_baseline(&Value::Null, &ReceiptState::Fresh).is_none());
     }
 
     /// A plugin's subject is the same whether its manifest travels as TOML

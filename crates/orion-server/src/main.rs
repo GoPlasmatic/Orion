@@ -498,11 +498,25 @@ enum PackageCommand {
         /// file, its version and its hash are untouched.
         #[arg(long, value_name = "DIR")]
         signatures: Option<String>,
+        /// Show what `apply --prune` would remove — what the package's
+        /// current applied version carried and this artifact does not —
+        /// and any removal that would be refused.
+        #[arg(
+            long,
+            value_enum,
+            value_name = "MODE",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "archive"
+        )]
+        prune: Option<package_cli::PruneArg>,
     },
     /// Apply an artifact: claim the receipt as staged, stage all entities
     /// (connectors → workflows → channels), activate in dependency order
     /// with one engine reload at the end, then flip the receipt to applied.
-    /// Idempotent — re-running an identical artifact is a no-op.
+    /// Idempotent — re-running an identical artifact is a no-op. With
+    /// `--prune`, also remove what the previous applied version carried and
+    /// this one does not, inside the same reload.
     Apply {
         /// Base URL of the target instance.
         #[arg(short, long)]
@@ -517,6 +531,20 @@ enum PackageCommand {
         /// file, its version and its hash are untouched.
         #[arg(long, value_name = "DIR")]
         signatures: Option<String>,
+        /// Remove what the package's current applied version carried and
+        /// this artifact does not. `--prune` archives (reversible, and it
+        /// frees the route or schedule; a connector is disabled);
+        /// `--prune=delete` deletes. Nothing another package's current
+        /// version carries is touched.
+        #[arg(
+            long,
+            value_enum,
+            value_name = "MODE",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "archive"
+        )]
+        prune: Option<package_cli::PruneArg>,
     },
     /// Report drift between an artifact and a running instance, comparing
     /// the server's content hashes against the artifact's. Exits non-zero
@@ -775,12 +803,30 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     server,
                     file,
                     signatures,
-                } => package_cli::run_plan(&server, &file, signatures.as_deref()).await,
+                    prune,
+                } => {
+                    package_cli::run_plan(
+                        &server,
+                        &file,
+                        signatures.as_deref(),
+                        prune.map(Into::into),
+                    )
+                    .await
+                }
                 PackageCommand::Apply {
                     server,
                     file,
                     signatures,
-                } => package_cli::run_apply(&server, &file, signatures.as_deref()).await,
+                    prune,
+                } => {
+                    package_cli::run_apply(
+                        &server,
+                        &file,
+                        signatures.as_deref(),
+                        prune.map(Into::into),
+                    )
+                    .await
+                }
                 PackageCommand::Diff { server, file } => {
                     package_cli::run_diff(&server, &file).await
                 }

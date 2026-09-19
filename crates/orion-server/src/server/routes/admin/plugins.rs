@@ -300,9 +300,11 @@ pub(crate) async fn update_plugin(
     delete,
     path = "/api/v1/admin/plugins/{id}",
     tag = "Plugins",
-    params(("id" = String, Path, description = "Plugin ID")),
+    params(("id" = String, Path, description = "Plugin ID"), super::ReloadQuery),
     responses(
-        (status = 204, description = "Plugin deleted (all versions), and any component nothing names any more"),
+        (status = 204, description = "Plugin deleted (all versions), and any component nothing \
+            names any more. With `?reload=defer` the engine keeps serving it until \
+            `POST /engine/reload`"),
         (status = 404, description = "Plugin not found"),
         (status = 409, description = "An active workflow still calls one of its functions"),
     )
@@ -310,6 +312,7 @@ pub(crate) async fn update_plugin(
 #[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_plugin(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -326,12 +329,8 @@ pub(crate) async fn delete_plugin(
     state.repos.plugins.delete_tx(write.tx(), &id).await?;
     write.commit().await?;
 
-    super::reload_after_commit_scoped(
-        &state,
-        super::ReloadMode::Now,
-        crate::cluster::EpochScope::Plugins,
-    )
-    .await?;
+    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Plugins)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

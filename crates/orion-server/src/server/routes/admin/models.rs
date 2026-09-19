@@ -309,10 +309,11 @@ pub(crate) async fn update_model(
     delete,
     path = "/api/v1/admin/models/{id}",
     tag = "Models",
-    params(("id" = String, Path, description = "Model ID")),
+    params(("id" = String, Path, description = "Model ID"), super::ReloadQuery),
     responses(
         (status = 204, description = "Model deleted (all versions). The cached artifact, if any, \
-            stays in this node's cache until swept"),
+            stays in this node's cache until swept. With `?reload=defer` the engine keeps \
+            serving it until `POST /engine/reload`"),
         (status = 404, description = "Model not found"),
         (status = 409, description = "An active workflow still names it"),
     )
@@ -320,6 +321,7 @@ pub(crate) async fn update_model(
 #[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_model(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -330,12 +332,8 @@ pub(crate) async fn delete_model(
     state.repos.models.delete_tx(write.tx(), &id).await?;
     write.commit().await?;
 
-    super::reload_after_commit_scoped(
-        &state,
-        super::ReloadMode::Now,
-        crate::cluster::EpochScope::Models,
-    )
-    .await?;
+    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Models)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

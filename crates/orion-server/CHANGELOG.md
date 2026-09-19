@@ -145,6 +145,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (warn, needs `-c`) fires on a literal `model_infer` `timeout_ms` above the
   ceiling `[models]` gives that model, which the handler clamps silently.
 
+- **`package apply --prune`** ([#341]). `apply` only ever added and updated,
+  so a channel dropped from a package kept its route or schedule until a
+  sweep script removed it. Each receipt now records its version's
+  **inventory** — the ids it carried, per kind — and `--prune` removes what
+  the package's current version carried and the artifact does not:
+  archived by default (a connector is disabled), deleted with
+  `--prune=delete`. Removed channels go before activation, so a route can
+  move to a new channel id in one apply; workflows, plugins, models and
+  connectors go after it; all of it inside the apply's one reload. What
+  another package's current version carries is kept, a workflow or
+  connector something outside the prune still uses is refused before
+  anything is written, and a receipt from before inventories prunes
+  nothing and says so. `plan --prune` lists every decision; `plan` without
+  it notes what `--prune` would remove. The inventory is one nullable
+  column (migration `package_receipt_inventory`), expand-only.
+- **`GET /packages?current=true`** lists each package's current receipt
+  with its `inventory`, and a receipt PUT may carry one.
+- **`DELETE ?reload=defer`** on channels, workflows, plugins and models,
+  like the status endpoints: the row goes at once and the engine keeps
+  serving it until `POST /engine/reload`.
+
 ### Changed
 
 - **`clippy` may newly fail a set that passed.** The two deny rules above
@@ -231,6 +252,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#334]: https://github.com/GoPlasmatic/Orion/issues/334
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
+[#341]: https://github.com/GoPlasmatic/Orion/issues/341
 [#340]: https://github.com/GoPlasmatic/Orion/issues/340
 [#342]: https://github.com/GoPlasmatic/Orion/issues/342
 [#343]: https://github.com/GoPlasmatic/Orion/issues/343

@@ -929,11 +929,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Channel deleted"
+            "description": "Channel deleted. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -3337,11 +3346,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Model deleted (all versions). The cached artifact, if any, stays in this node's cache until swept"
+            "description": "Model deleted (all versions). The cached artifact, if any, stays in this node's cache until swept. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -3900,11 +3918,20 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "current",
+            "in": "query",
+            "description": "When true, one row per package — its `current` receipt, the newest\napplied one — with the `inventory` it recorded. A package whose\nreceipts are all staged is left out.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Paginated receipt rows, ordered by package name, newest first within a package.",
+            "description": "Paginated receipt rows, ordered by package name, newest first within a package, without their `inventory`. With `?current=true`, each package's current receipt with its `inventory`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4050,7 +4077,7 @@
             }
           },
           "400": {
-            "description": "Invalid name, version, content hash, or state",
+            "description": "Invalid name, version, content hash, state, or inventory (more than 1000 ids in one list, or an empty or over-long id)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4756,11 +4783,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Plugin deleted (all versions), and any component nothing names any more"
+            "description": "Plugin deleted (all versions), and any component nothing names any more. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -6341,11 +6377,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Workflow deleted"
+            "description": "Workflow deleted. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -9274,6 +9319,17 @@
               "created_at": {
                 "type": "string"
               },
+              "inventory": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PackageInventory",
+                    "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                  }
+                ]
+              },
               "name": {
                 "type": "string"
               },
@@ -11220,6 +11276,42 @@
           }
         }
       },
+      "PackageInventory": {
+        "type": "object",
+        "description": "The entities one package version carried, by the key each kind is\nmatched on: `plugin_id`, `model_id`, the connector's `name`,\n`workflow_id`, `channel_id`. Each list is sorted and free of\nduplicates, so two applies of one artifact record identical JSON.",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "PackageReceiptResponse": {
         "type": "object",
         "description": "A package receipt as the admin API shows it (K14).",
@@ -11239,6 +11331,17 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "inventory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageInventory",
+                "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+              }
+            ]
           },
           "name": {
             "type": "string"
@@ -11813,6 +11916,17 @@
                 },
                 "created_at": {
                   "type": "string"
+                },
+                "inventory": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PackageInventory",
+                      "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                    }
+                  ]
                 },
                 "name": {
                   "type": "string"
@@ -12469,6 +12583,17 @@
           "content_hash": {
             "type": "string",
             "description": "Canonical content hash of the artifact, e.g. `sha256:…`. Compared for\nequality against later PUTs of the same version; never parsed."
+          },
+          "inventory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageInventory",
+                "description": "What this version carries. Stored on insert and on a staged re-put;\non an applied version it only fills a receipt recorded without one,\nsince the hash is equal and so is what the version carried."
+              }
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/PackageState",

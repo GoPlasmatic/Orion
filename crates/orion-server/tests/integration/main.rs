@@ -55,6 +55,7 @@ mod data_query_test;
 mod data_roundtrip_test;
 mod data_write_test;
 mod db_column_types_test;
+mod delete_reload_defer_test;
 mod dialect_schema_test;
 mod docs_link_test;
 mod docs_routes_drift_test;

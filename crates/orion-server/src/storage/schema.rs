@@ -245,6 +245,7 @@ pub enum Packages {
     Principal,
     CreatedAt,
     UpdatedAt,
+    InventoryJson,
 }
 
 // ============================================================

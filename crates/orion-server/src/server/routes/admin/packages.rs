@@ -20,7 +20,7 @@ use crate::server::routes::openapi::{DataEnvelope, PaginatedEnvelope};
 use crate::server::routes::response_helpers::{data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{PackageReceiptResponse, PackageState};
-use crate::storage::repositories::helpers::{VersionFilter, clamp_pagination};
+use crate::storage::repositories::helpers::clamp_pagination;
 use crate::storage::repositories::packages::PutPackageReceiptRequest;
 
 use super::audit_log;
@@ -35,6 +35,27 @@ pub(crate) struct PackageDetail {
     /// Every receipt for this package, newest first.
     versions: Vec<PackageReceiptResponse>,
 }
+
+/// Query parameters of `GET /api/v1/admin/packages`.
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct PackageListQuery {
+    /// Page size, clamped to [1, 1000] (default 50).
+    pub limit: Option<i64>,
+    /// Pagination offset (default 0).
+    pub offset: Option<i64>,
+    /// When true, one row per package — its `current` receipt, the newest
+    /// applied one — with the `inventory` it recorded. A package whose
+    /// receipts are all staged is left out.
+    #[serde(default)]
+    pub current: bool,
+}
+
+/// The most ids one inventory list may hold — the import cap an artifact's
+/// member arrays are already bound by.
+const MAX_INVENTORY_IDS: usize = super::MAX_IMPORT_ITEMS;
+/// The longest id an inventory may name.
+const MAX_INVENTORY_ID_LEN: usize = 255;
 
 /// A receipt key: the one rule `compile` and `package export` also apply,
 /// as a `400`. The MySQL column widths
@@ -62,6 +83,26 @@ fn validate_put(name: &str, req: &PutPackageReceiptRequest) -> Result<(), OrionE
         &req.content_hash.replacen(':', "", 1),
         crate::validation::MAX_PACKAGE_HASH_LEN,
     )?;
+    if let Some(inventory) = &req.inventory {
+        for (kind, ids) in inventory.kinds() {
+            if ids.len() > MAX_INVENTORY_IDS {
+                return Err(OrionError::validation(format!(
+                    "inventory.{kind} lists {} ids — at most {MAX_INVENTORY_IDS}",
+                    ids.len()
+                )));
+            }
+            if let Some(bad) = ids
+                .iter()
+                .find(|id| id.is_empty() || id.len() > MAX_INVENTORY_ID_LEN)
+            {
+                return Err(OrionError::validation(format!(
+                    "inventory.{kind} holds an id of {} bytes — each must be 1 to \
+                     {MAX_INVENTORY_ID_LEN}",
+                    bad.len()
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -69,21 +110,34 @@ fn validate_put(name: &str, req: &PutPackageReceiptRequest) -> Result<(), OrionE
     get,
     path = "/api/v1/admin/packages",
     tag = "Packages",
-    params(VersionFilter),
+    params(PackageListQuery),
     responses(
         (status = 200, description = "Paginated receipt rows, ordered by package name, \
-            newest first within a package.", body = PaginatedEnvelope<PackageReceiptResponse>),
+            newest first within a package, without their `inventory`. With \
+            `?current=true`, each package's current receipt with its `inventory`.",
+            body = PaginatedEnvelope<PackageReceiptResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_packages(
     State(state): State<AppState>,
-    OrionQuery(filter): OrionQuery<VersionFilter>,
+    OrionQuery(filter): OrionQuery<PackageListQuery>,
 ) -> Result<Json<Value>, OrionError> {
     let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
+    if filter.current {
+        let result = state.repos.packages.list_current(limit, offset).await?;
+        return paginated_into(result, |r| {
+            Ok::<_, OrionError>(PackageReceiptResponse::from(r))
+        });
+    }
+    // Every version of every package: the inventories would dominate the
+    // page, and a caller that needs one reads its package.
     let result = state.repos.packages.list(limit, offset).await?;
     paginated_into(result, |r| {
-        Ok::<_, OrionError>(PackageReceiptResponse::from(r))
+        Ok::<_, OrionError>(PackageReceiptResponse {
+            inventory: None,
+            ..PackageReceiptResponse::from(r)
+        })
     })
 }
 
@@ -126,7 +180,8 @@ pub(crate) async fn get_package(
     request_body = PutPackageReceiptRequest,
     responses(
         (status = 200, description = "The receipt as stored", body = DataEnvelope<PackageReceiptResponse>),
-        (status = 400, description = "Invalid name, version, content hash, or state"),
+        (status = 400, description = "Invalid name, version, content hash, state, or \
+            inventory (more than 1000 ids in one list, or an empty or over-long id)"),
         (status = 409, description = "The version is already applied with different \
             content (an applied package version is immutable — bump the package \
             version), already applied and asked to go back to staged, or was written \

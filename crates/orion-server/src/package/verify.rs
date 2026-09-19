@@ -81,6 +81,18 @@ impl PackageMembers {
             channels: channel_members,
         }
     }
+
+    /// What a receipt records: every kind's keys, sorted, a channel by id.
+    pub fn inventory(&self) -> orion_api::PackageInventory {
+        orion_api::PackageInventory {
+            plugins: self.plugins.clone(),
+            models: self.models.clone(),
+            connectors: self.connectors.clone(),
+            workflows: self.workflows.clone(),
+            channels: self.channels.iter().map(|c| c.channel_id.clone()).collect(),
+        }
+        .normalized()
+    }
 }
 
 /// A plugin manifest's `name`, whether the entry carries it as TOML text or

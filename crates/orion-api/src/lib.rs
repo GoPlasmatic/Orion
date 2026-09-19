@@ -57,8 +57,9 @@ pub mod import;
 
 pub use dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
-    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageInventory,
+    PackageReceiptResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse,
+    WorkflowResponse,
 };
 pub use engine::{
     ChannelLoadIssueResponse, ConnectorLoadIssueResponse, EngineCapabilities, EngineLoadIssues,

@@ -1485,3 +1485,336 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
     );
     assert!(stdout.contains("nothing to do"), "{stdout}");
 }
+
+/// A definition set on disk, compiled at an explicit version: the shape a
+/// deploy pipeline feeds `apply` from.
+struct DefinitionSet {
+    defs: ScratchDir,
+    out: ScratchDir,
+    name: &'static str,
+}
+
+impl DefinitionSet {
+    fn new(name: &'static str) -> Self {
+        Self {
+            defs: ScratchDir::new("prune-defs"),
+            out: ScratchDir::new("prune-artifacts"),
+            name,
+        }
+    }
+
+    fn write(&self, file: &str, value: serde_json::Value) {
+        std::fs::write(self.defs.path().join(file), value.to_string()).expect("write definition");
+    }
+
+    fn remove(&self, file: &str) {
+        std::fs::remove_file(self.defs.path().join(file)).expect("remove definition");
+    }
+
+    fn workflow(&self, id: &str) {
+        self.write(
+            &format!("wf-{id}.json"),
+            serde_json::json!({
+                "workflow_id": id, "name": id,
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": id}}}],
+            }),
+        );
+    }
+
+    fn channel(&self, id: &str, route: &str, workflow: &str) {
+        self.write(
+            &format!("ch-{id}.json"),
+            serde_json::json!({
+                "channel_id": id, "name": id, "channel_type": "sync", "protocol": "rest",
+                "methods": ["POST"], "route_pattern": route, "workflow_id": workflow,
+            }),
+        );
+    }
+
+    fn connector(&self, name: &str) {
+        self.write(
+            &format!("conn-{name}.json"),
+            serde_json::json!({
+                "name": name, "connector_type": "http",
+                "config": {"type": "http", "url": "https://example.com"},
+            }),
+        );
+    }
+
+    /// Compile the set as `version` and return the artifact's path.
+    fn compile(&self, version: &str) -> String {
+        let path = self.out.path().join(format!("{version}.json"));
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                self.defs.path().to_str().expect("utf8"),
+                "--name",
+                self.name,
+                "--version",
+                version,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    }
+}
+
+async fn get_json(client: &reqwest::Client, url: String) -> (u16, serde_json::Value) {
+    let resp = client.get(url).send().await.expect("GET");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or_default())
+}
+
+#[track_caller]
+fn assert_fails(out: &std::process::Output, what: &str) -> (String, String) {
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !out.status.success(),
+        "{what} should have failed\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    (stdout, stderr)
+}
+
+/// #341: `--prune` removes what the previous applied version carried and
+/// this one does not — a dropped channel archived before activation, so its
+/// route can move to a new channel id in the same apply, and a dropped
+/// connector disabled — and `--prune=delete` deletes.
+#[tokio::test]
+async fn prune_removes_what_the_previous_version_held() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+    let base = target.url();
+
+    let set = DefinitionSet::new("orders");
+    set.workflow("wf-a");
+    set.workflow("wf-b");
+    set.channel("ch-a", "/prune-a", "wf-a");
+    set.channel("ch-old", "/prune-moved", "wf-b");
+    set.connector("spare");
+    let v1 = set.compile("1.0.0");
+    assert_ok(&package_cmd(&["apply", "-s", &base, "-f", &v1]), "apply v1");
+    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    assert_eq!(
+        receipt["data"]["current"]["inventory"]["channels"],
+        serde_json::json!(["ch-a", "ch-old"]),
+        "{receipt}"
+    );
+
+    // v2 moves ch-old's route to a new channel id and drops the connector.
+    set.remove("ch-ch-old.json");
+    set.channel("ch-new", "/prune-moved", "wf-b");
+    set.remove("conn-spare.json");
+    let v2 = set.compile("1.1.0");
+
+    let stdout = assert_ok(&package_cmd(&["plan", "-s", &base, "-f", &v2]), "plan v2");
+    assert!(
+        stdout.contains("note: 2 entities of orders@1.0.0 are not in this artifact"),
+        "{stdout}"
+    );
+    let stdout = assert_ok(
+        &package_cmd(&["plan", "-s", &base, "-f", &v2, "--prune"]),
+        "plan v2 --prune",
+    );
+    assert!(
+        stdout.contains("prune: archive (in orders@1.0.0, not in this artifact)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("prune: disable"), "{stdout}");
+    assert!(
+        stdout.contains("gate pending apply order"),
+        "the route collision with ch-old is resolved by the prune: {stdout}"
+    );
+
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(
+        stdout.contains("pruned channels 'ch-old' (archived)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("pruned connectors 'spare' (disabled)"),
+        "{stdout}"
+    );
+    let (_, old) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-old")).await;
+    assert_eq!(old["data"]["status"], "archived", "{old}");
+    let (_, connectors) = get_json(&client, format!("{base}/api/v1/admin/connectors")).await;
+    let spare = connectors["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["name"] == "spare")
+        .expect("the connector is disabled, not deleted");
+    assert_eq!(spare["enabled"], false, "{spare}");
+    // The route is served by the new channel.
+    let resp = client
+        .post(format!("{base}/api/v1/data/prune-moved"))
+        .json(&serde_json::json!({"data": {}}))
+        .send()
+        .await
+        .expect("data call");
+    assert_eq!(resp.status(), 200);
+    let (_, status) = get_json(&client, format!("{base}/api/v1/admin/engine/status")).await;
+    assert!(
+        status["data"]["load_issues"]["channels"]
+            .as_array()
+            .is_none_or(|c| c.is_empty()),
+        "{status}"
+    );
+
+    // Re-running the same deploy prunes nothing.
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "re-apply v2 --prune",
+    );
+    assert!(stdout.contains("nothing to prune"), "{stdout}");
+
+    // v3 drops wf-b and its channel, deleted this time.
+    set.remove("wf-wf-b.json");
+    set.remove("ch-ch-new.json");
+    let v3 = set.compile("1.2.0");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v3, "--prune=delete"]),
+        "apply v3 --prune=delete",
+    );
+    assert!(
+        stdout.contains("pruned channels 'ch-new' (deleted)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("pruned workflows 'wf-b' (deleted)"),
+        "{stdout}"
+    );
+    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-b")).await;
+    assert_eq!(code, 404);
+    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-new")).await;
+    assert_eq!(code, 404);
+}
+
+/// #341: a removal something outside the prune depends on is refused with
+/// nothing written; an entity another package now carries is kept; and a
+/// receipt from before inventories prunes nothing and says so.
+#[tokio::test]
+async fn prune_refuses_keeps_and_explains() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+    let base = target.url();
+
+    let set = DefinitionSet::new("orders");
+    set.workflow("wf-x");
+    set.workflow("wf-y");
+    set.channel("ch-x", "/refuse-x", "wf-x");
+    set.connector("shared");
+    let v1 = set.compile("1.0.0");
+    assert_ok(&package_cmd(&["apply", "-s", &base, "-f", &v1]), "apply v1");
+
+    // Another package takes over the connector.
+    let billing = DefinitionSet::new("billing");
+    billing.connector("shared");
+    let billing_v1 = billing.compile("2.1.0");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &billing_v1]),
+        "apply billing",
+    );
+
+    // A channel outside any package routes to wf-y.
+    let resp = client
+        .post(format!("{base}/api/v1/admin/channels"))
+        .json(&serde_json::json!({
+            "channel_id": "outside", "name": "outside", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/outside",
+            "workflow_id": "wf-y",
+        }))
+        .send()
+        .await
+        .expect("create outside channel");
+    assert_eq!(resp.status(), 201);
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/channels/outside/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate outside channel");
+    assert_eq!(resp.status(), 200);
+
+    set.remove("wf-wf-y.json");
+    set.remove("conn-shared.json");
+    let v2 = set.compile("1.1.0");
+    let (_, stderr) = assert_fails(
+        &package_cmd(&["plan", "-s", &base, "-f", &v2, "--prune"]),
+        "plan v2 --prune",
+    );
+    assert!(
+        stderr.contains(
+            "cannot prune workflows/wf-y: active channel 'outside' (not in this package) still \
+             routes to it"
+        ),
+        "{stderr}"
+    );
+    let (stdout, stderr) = assert_fails(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(stderr.contains("nothing was written"), "{stderr}");
+    assert!(
+        stdout.contains("keep: now carried by billing@2.1.0"),
+        "{stdout}"
+    );
+    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    assert_eq!(
+        receipt["data"]["versions"].as_array().map(Vec::len),
+        Some(1),
+        "the refused apply claimed no receipt: {receipt}"
+    );
+    let (_, wf) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-y")).await;
+    assert_eq!(wf["data"]["status"], "active", "{wf}");
+
+    // Once the outside channel is gone, the prune goes through and keeps
+    // the connector billing carries.
+    let resp = client
+        .delete(format!("{base}/api/v1/admin/channels/outside"))
+        .send()
+        .await
+        .expect("delete outside channel");
+    assert_eq!(resp.status(), 204);
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(
+        stdout.contains("pruned workflows 'wf-y' (archived)"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("pruned connectors"), "{stdout}");
+
+    // A receipt recorded before inventories: nothing to measure from.
+    let resp = client
+        .put(format!("{base}/api/v1/admin/packages/legacy"))
+        .json(&serde_json::json!({
+            "version": "0.9.0", "content_hash": "sha256:old", "state": "applied",
+        }))
+        .send()
+        .await
+        .expect("legacy receipt");
+    assert_eq!(resp.status(), 200);
+    let legacy = DefinitionSet::new("legacy");
+    legacy.workflow("wf-legacy");
+    let legacy_v1 = legacy.compile("1.0.0");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &legacy_v1, "--prune"]),
+        "apply legacy --prune",
+    );
+    assert!(
+        stdout.contains("legacy@0.9.0 was applied before receipts recorded what they carried"),
+        "{stdout}"
+    );
+}

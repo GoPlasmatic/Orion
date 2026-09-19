@@ -15,7 +15,7 @@ use sea_query::{Asterisk, Expr, ExprTrait, Order, Query};
 use serde::Deserialize;
 
 use crate::errors::OrionError;
-use crate::storage::models::{PackageReceipt, PackageState};
+use crate::storage::models::{PackageInventory, PackageReceipt, PackageState};
 use crate::storage::{DbPool, build_sqlx, schema::Packages};
 
 use super::helpers::{fetch_required_tx, sql_now};
@@ -32,6 +32,22 @@ pub struct PutPackageReceiptRequest {
     pub content_hash: String,
     /// `staged` before the artifact's entities are activated, `applied` after.
     pub state: PackageState,
+    /// What this version carries. Stored on insert and on a staged re-put;
+    /// on an applied version it only fills a receipt recorded without one,
+    /// since the hash is equal and so is what the version carried.
+    #[serde(default)]
+    pub inventory: Option<PackageInventory>,
+}
+
+impl PutPackageReceiptRequest {
+    /// The inventory in its stored form, or `None` when none was sent.
+    fn inventory_json(&self) -> Result<Option<String>, OrionError> {
+        self.inventory
+            .clone()
+            .map(|inventory| serde_json::to_string(&inventory.normalized()))
+            .transpose()
+            .map_err(OrionError::from)
+    }
 }
 
 // -- Repository trait --
@@ -64,6 +80,13 @@ pub trait PackageRepository: Send + Sync {
     ) -> Result<super::helpers::PaginatedResult<PackageReceipt>, OrionError>;
     /// All of one package's receipts, newest first. `NotFound` when none.
     async fn get_by_name(&self, name: &str) -> Result<Vec<PackageReceipt>, OrionError>;
+    /// One page of each package's `current` receipt — its newest `applied`
+    /// one — ordered by name. A package with only staged receipts has none.
+    async fn list_current(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<super::helpers::PaginatedResult<PackageReceipt>, OrionError>;
 }
 
 // -- SQL implementation --
@@ -106,6 +129,7 @@ impl PackageRepository for SqlPackageRepository {
     ) -> Result<PackageReceipt, OrionError> {
         crate::metrics::timed_db_op("packages.put", async {
             let backend = self.pool.backend();
+            let inventory = req.inventory_json()?;
             let mut tx = self.pool.begin_write_tx().await?;
 
             let (sql, values) =
@@ -124,6 +148,7 @@ impl PackageRepository for SqlPackageRepository {
                                 Packages::ContentHash,
                                 Packages::State,
                                 Packages::Principal,
+                                Packages::InventoryJson,
                             ])
                             .values_panic([
                                 name.into(),
@@ -131,6 +156,7 @@ impl PackageRepository for SqlPackageRepository {
                                 req.content_hash.as_str().into(),
                                 req.state.as_str().into(),
                                 principal.into(),
+                                super::helpers::optional_string_value(inventory.as_deref()).into(),
                             ]),
                     );
                     // A concurrent PUT that inserted first surfaces as the
@@ -161,12 +187,23 @@ impl PackageRepository for SqlPackageRepository {
                     // path re-applies an older version). The state and hash
                     // predicates make the touch a no-op — refused, not
                     // absorbed — if the row changed underneath us.
+                    let mut update = Query::update();
+                    update
+                        .table(Packages::Table)
+                        .value(Packages::Principal, principal)
+                        .value(Packages::UpdatedAt, Expr::cust(sql_now(backend)));
+                    // A receipt applied before receipts recorded inventories
+                    // gains one here and nowhere else: the hash is equal, so
+                    // the inventory is the one it always had. A recorded one
+                    // is never replaced — applied stays immutable.
+                    if row.inventory_json.is_none()
+                        && let Some(inventory) = &inventory
+                    {
+                        update.value(Packages::InventoryJson, inventory.as_str());
+                    }
                     let (sql, values) = build_sqlx(
                         self.pool.backend(),
-                        Query::update()
-                            .table(Packages::Table)
-                            .value(Packages::Principal, principal)
-                            .value(Packages::UpdatedAt, Expr::cust(sql_now(backend)))
+                        update
                             .and_where(Expr::col(Packages::Name).eq(name))
                             .and_where(Expr::col(Packages::Version).eq(req.version.as_str()))
                             .and_where(
@@ -184,14 +221,21 @@ impl PackageRepository for SqlPackageRepository {
                     // Staged: content and state may move — only a draft can be
                     // updated. The state predicate refuses the update if a
                     // concurrent PUT applied this version after our read.
+                    // The inventory moves with the content; a PUT without
+                    // one leaves what is recorded.
+                    let mut update = Query::update();
+                    update
+                        .table(Packages::Table)
+                        .value(Packages::ContentHash, req.content_hash.as_str())
+                        .value(Packages::State, req.state.as_str())
+                        .value(Packages::Principal, principal)
+                        .value(Packages::UpdatedAt, Expr::cust(sql_now(backend)));
+                    if let Some(inventory) = &inventory {
+                        update.value(Packages::InventoryJson, inventory.as_str());
+                    }
                     let (sql, values) = build_sqlx(
                         self.pool.backend(),
-                        Query::update()
-                            .table(Packages::Table)
-                            .value(Packages::ContentHash, req.content_hash.as_str())
-                            .value(Packages::State, req.state.as_str())
-                            .value(Packages::Principal, principal)
-                            .value(Packages::UpdatedAt, Expr::cust(sql_now(backend)))
+                        update
                             .and_where(Expr::col(Packages::Name).eq(name))
                             .and_where(Expr::col(Packages::Version).eq(req.version.as_str()))
                             .and_where(
@@ -281,6 +325,48 @@ impl PackageRepository for SqlPackageRepository {
         })
         .await
     }
+
+    async fn list_current(
+        &self,
+        limit: i64,
+        offset: i64,
+    ) -> Result<super::helpers::PaginatedResult<PackageReceipt>, OrionError> {
+        crate::metrics::timed_db_op("packages.list_current", async {
+            // Every applied row, newest first within a name, and the first
+            // per name kept here: receipts are few, and the order is the
+            // one `get_by_name` reads `current` from.
+            let (sql, values) = build_sqlx(
+                self.pool.backend(),
+                Query::select()
+                    .column(Asterisk)
+                    .from(Packages::Table)
+                    .and_where(Expr::col(Packages::State).eq(PackageState::Applied.as_str()))
+                    .order_by(Packages::Name, Order::Asc)
+                    .order_by(Packages::UpdatedAt, Order::Desc)
+                    .order_by(Packages::Version, Order::Desc),
+            );
+            let rows: Vec<PackageReceipt> = self.pool.fetch_all_as(&sql, values).await?;
+            let mut current: Vec<PackageReceipt> = Vec::new();
+            for row in rows {
+                if current.last().is_none_or(|last| last.name != row.name) {
+                    current.push(row);
+                }
+            }
+            let total = current.len() as i64;
+            let data = current
+                .into_iter()
+                .skip(Ord::max(offset, 0) as usize)
+                .take(Ord::max(limit, 0) as usize)
+                .collect();
+            Ok(super::helpers::PaginatedResult {
+                data,
+                total,
+                limit,
+                offset,
+            })
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -296,7 +382,22 @@ mod tests {
             version: version.to_string(),
             content_hash: hash.to_string(),
             state,
+            inventory: None,
         }
+    }
+
+    fn with_channels(mut req: PutPackageReceiptRequest, ids: &[&str]) -> PutPackageReceiptRequest {
+        req.inventory = Some(PackageInventory {
+            channels: ids.iter().map(|id| id.to_string()).collect(),
+            ..Default::default()
+        });
+        req
+    }
+
+    fn channels_of(receipt: &PackageReceipt) -> Option<Vec<String>> {
+        let json = receipt.inventory_json.as_deref()?;
+        let inventory: PackageInventory = serde_json::from_str(json).expect("stored inventory");
+        Some(inventory.channels)
     }
 
     /// The receipt table's whole purpose is the applied-version immutability
@@ -495,5 +596,120 @@ mod tests {
         );
         let page = repo.list(50, 0).await.expect("list");
         assert_eq!(page.total, 2);
+    }
+
+    /// The inventory follows the receipt's own mutability: stored on insert,
+    /// replaced while staged, and on an applied version written only where
+    /// none was recorded.
+    #[tokio::test]
+    async fn the_inventory_is_stored_replaced_while_staged_and_frozen_once_applied() {
+        let repo = repo().await;
+        let staged = repo
+            .put(
+                "orders",
+                &with_channels(
+                    put("1.0.0", "sha256:aaa", PackageState::Staged),
+                    &["b", "a", "a"],
+                ),
+                "ci",
+            )
+            .await
+            .expect("stage");
+        assert_eq!(
+            channels_of(&staged),
+            Some(vec!["a".to_string(), "b".to_string()]),
+            "stored sorted and de-duplicated"
+        );
+
+        let restaged = repo
+            .put(
+                "orders",
+                &with_channels(put("1.0.0", "sha256:bbb", PackageState::Staged), &["c"]),
+                "ci",
+            )
+            .await
+            .expect("re-stage");
+        assert_eq!(channels_of(&restaged), Some(vec!["c".to_string()]));
+
+        let applied = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:bbb", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect("apply without an inventory");
+        assert_eq!(
+            channels_of(&applied),
+            Some(vec!["c".to_string()]),
+            "a PUT without an inventory leaves the recorded one"
+        );
+
+        let touched = repo
+            .put(
+                "orders",
+                &with_channels(put("1.0.0", "sha256:bbb", PackageState::Applied), &["z"]),
+                "ci",
+            )
+            .await
+            .expect("re-apply");
+        assert_eq!(
+            channels_of(&touched),
+            Some(vec!["c".to_string()]),
+            "an applied version's recorded inventory is never replaced"
+        );
+    }
+
+    /// A receipt applied before inventories existed gains one on its next
+    /// idempotent re-apply — the only write an applied row takes.
+    #[tokio::test]
+    async fn an_applied_receipt_without_an_inventory_is_backfilled() {
+        let repo = repo().await;
+        let applied = repo
+            .put(
+                "orders",
+                &put("1.0.0", "sha256:aaa", PackageState::Applied),
+                "ci",
+            )
+            .await
+            .expect("apply");
+        assert_eq!(channels_of(&applied), None);
+        let touched = repo
+            .put(
+                "orders",
+                &with_channels(put("1.0.0", "sha256:aaa", PackageState::Applied), &["a"]),
+                "ci",
+            )
+            .await
+            .expect("re-apply");
+        assert_eq!(channels_of(&touched), Some(vec!["a".to_string()]));
+    }
+
+    /// `list_current` is each package's newest applied receipt, and a
+    /// package with only staged receipts has none.
+    #[tokio::test]
+    async fn list_current_is_the_newest_applied_receipt_per_package() {
+        let repo = repo().await;
+        for (name, version, state) in [
+            ("orders", "1.0.0", PackageState::Applied),
+            ("orders", "1.1.0", PackageState::Applied),
+            ("orders", "1.2.0", PackageState::Staged),
+            ("billing", "2.0.0", PackageState::Applied),
+            ("drafts", "0.1.0", PackageState::Staged),
+        ] {
+            repo.put(name, &put(version, "sha256:aaa", state), "ci")
+                .await
+                .expect("put");
+        }
+        let page = repo.list_current(50, 0).await.expect("list_current");
+        let current: Vec<(&str, &str)> = page
+            .data
+            .iter()
+            .map(|r| (r.name.as_str(), r.version.as_str()))
+            .collect();
+        assert_eq!(current, [("billing", "2.0.0"), ("orders", "1.1.0")]);
+        assert_eq!(page.total, 2);
+        let second = repo.list_current(1, 1).await.expect("second page");
+        assert_eq!(second.data[0].name, "orders");
     }
 }

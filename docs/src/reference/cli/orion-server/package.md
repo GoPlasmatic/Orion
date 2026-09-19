@@ -29,7 +29,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `export` | Compute the dependency closure from a running instance and write the artifact. |
 | `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, a `content-<12 hex>` version against that hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
 | `plan` | Pre-flight an artifact against a target with zero writes. |
-| `apply` | Stage all entities, activate in dependency order, reload once, check the reloaded generation serves them, then record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. |
+| `apply` | Stage all entities, activate in dependency order, reload once, check the reloaded generation serves them, then record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. With `--prune`, it also removes what the previous version carried and this one does not. |
 | `diff` | Report drift between an artifact and a running instance. Exits non-zero when anything differs. |
 
 ## Options
@@ -45,6 +45,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `--version-prefix <prefix>` | `export` | With `--version content`, `<prefix>-<12 hex>` instead of `content-<12 hex>`. |
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
 | `--signatures <dir>` | `plan`, `apply` | Attach the detached signatures in `<dir>` to the artifact's plugins and models before anything is sent. See [Signatures at deploy time](#signatures-at-deploy-time). |
+| `--prune[=delete]` | `plan`, `apply` | Remove what the package's current version carried and this artifact does not: archive by default, delete with `=delete`. `plan` lists each removal and every refusal. See [Prune what a version dropped](#prune-what-a-version-dropped). |
 | `--requires-orion <range>` | `export` | The Orion version range the artifact requires of a target, written to `requires.orion`. |
 | `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
 
@@ -61,6 +62,33 @@ Error: nightly@2.0.0 is not serving on https://prod.orion.internal — the recei
 The receipt is flipped to `applied` only after that check, so a failed apply leaves it `staged` and a re-run after the fix completes it. A member counts when its own row is refused: a plugin, model or connector the package carries, or a channel. A workflow counts when a channel of another package bound to it is refused.
 
 Re-applying the version a target already runs is not blind either. `apply` reads `GET /engine/status` and fails the same way when a member is quarantined, for example after the node restarted with `cron.enabled = false`. That receipt is already `applied` and stays so, so the message says to fix the cause and reload. `plan` reads the same endpoint and warns when the target has cron, plugins or models switched off for something the package needs. It also warns when the target already quarantines one of the package's members. A target older than these fields cannot say, and `apply` prints a warning rather than fail.
+
+## Prune what a version dropped
+
+`apply` adds and updates; it never removes. A channel dropped from a package keeps its route or schedule until something removes it, and `--prune` is that something. It works from receipts alone. Each receipt records its version's **inventory**, the ids of every entity it carried. `--prune` removes the entities in the package's current version's inventory that this artifact does not carry. Tags and listings of the estate play no part, so nothing the package never recorded is a candidate.
+
+`--prune` archives a channel, workflow, plugin or model, and disables a connector. Archiving frees a route or a schedule and can be undone by a re-apply. `--prune=delete` deletes every version instead. `plan --prune` prints each decision after the per-entity actions:
+
+```
+  channels   orders-legacy-export         prune: archive (in orders@1.3.0, not in this artifact)
+  connectors shared-db                    keep: now carried by billing@2.1.0
+```
+
+The removals ride the apply's single reload, in two steps:
+
+1. **Channels, before activation.** The route and name gates read active rows, so a route moving from a dropped channel to a new channel id could not activate while the old one still held it. The reload is deferred, so traffic sees the swap all at once.
+2. **Workflows, then plugins, models and connectors, after activation.** A plugin or a model is refused while an active workflow names it, and the new versions stop naming it only once they are active.
+
+Some removals are skipped or refused:
+
+- **Owned elsewhere.** An entity that another package's current version carries is kept and reported with that package's name.
+- **Still referenced.** A workflow an active channel outside the prune routes to, or a connector a remaining workflow or model uses, is refused. Both are checked before the receipt is claimed, so a refusal writes nothing. The server refuses a plugin or model with a live dependant itself, and that stops the apply at the removal, before the reload.
+- **No baseline.** A first apply has nothing to prune. A current receipt from before inventories existed prunes nothing, and says so. The apply records an inventory, so the next `--prune` works.
+- **No-op.** Re-applying the current version prunes nothing, so re-running a deploy never removes something re-created since.
+
+A warning names any kind the baseline carried that the artifact carries none of, such as a checkout missing its plugins directory. Rolling back with `--prune` removes what only the newer version carried. A channel **name** cannot move to a new channel id in one apply, even with `--prune=delete`. Names stay reserved by archived channels, and staging runs before any removal. Rename the old channel first.
+
+`--prune` measures only from the version it replaces. An entity a version applied without `--prune` left behind stays until you remove it by hand, so use the flag on every apply.
 
 ## A target's version
 
