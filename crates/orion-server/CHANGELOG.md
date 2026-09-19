@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reloaded like any apply, after which its receipt is `current` again. `plan`
   names the version that superseded it.
 
+- **`perf.redundant_step_condition` and `perf.group_condition_repeated` no
+  longer fire on a condition that reads `metadata.progress`.** The engine
+  overwrites that path after every task, so a run of steps conditioned on
+  `metadata.progress.status_code` is not a run whose condition none of them
+  can change — wrapping it in a task group would change which steps run.
+  Both rules are now silent there.
+
 ## [1.8.2] - 2026-09-16
 
 ### Changed

@@ -1,0 +1,28 @@
+{
+  "workflow_id": "progress",
+  "name": "progress",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "g",
+      "condition": { "==": [{ "var": "metadata.progress.status_code" }, 200] },
+      "tasks": [
+        {
+          "id": "a",
+          "name": "A",
+          "function": { "name": "log", "input": { "message": "x" } }
+        },
+        {
+          "id": "b",
+          "name": "B",
+          "condition": { "==": [{ "var": "metadata.progress.status_code" }, 200] },
+          "function": { "name": "log", "input": { "message": "x" } }
+        }
+      ]
+    }
+  ]
+}

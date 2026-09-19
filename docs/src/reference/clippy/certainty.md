@@ -1,6 +1,6 @@
 <!-- description: The six proof sources a clippy rule may rest on — engine evaluation, ingress facts, engine semantics, the registry, structural identity, the config. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Where certainty comes from
 
@@ -20,7 +20,8 @@ Every rule's proof is one of these, and nothing else is admitted — no patterns
   context at all.
 - **Engine semantics read from source.** A terminal task halts after it
   ran; a terminal group halts when its span closes; `channel_call` fails at
-  `max_channel_call_depth`; `map` applies mappings in order.
+  `max_channel_call_depth`; `map` applies mappings in order; every task
+  overwrites `metadata.progress`.
 - **The function registry.** Which functions write only their target;
   which input fields the engine evaluates.
 - **Structural identity.** Byte-identical after ids and names are
