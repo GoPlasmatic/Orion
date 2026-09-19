@@ -935,6 +935,78 @@ async fn apply_fails_when_a_carried_connector_does_not_load() {
     assert!(receipts["data"]["current"].is_null(), "{receipts}");
 }
 
+/// #343: an artifact's `requires.orion` holds the target to a range —
+/// `plan` and `apply` refuse one outside it, naming both, before anything is
+/// written; a satisfied range applies as before.
+#[tokio::test]
+async fn plan_and_apply_refuse_a_target_outside_the_declared_range() {
+    let client = reqwest::Client::new();
+    let target = Server::start("range-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("range-defs");
+    std::fs::write(
+        defs.path().join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "ranged", "name": "Ranged",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": "hi"}}}],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    let out = ScratchDir::new("range-out");
+    let compile = |file: &str, range: &str| -> String {
+        let path = out.path().join(file);
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                defs.path().to_str().expect("utf8"),
+                "--name",
+                "ranged",
+                "--version",
+                "1.0.0",
+                "--requires-orion",
+                range,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    };
+
+    let too_new = compile("too-new.json", ">=99.0.0");
+    for verb in ["plan", "apply"] {
+        let result = package_cmd(&[verb, "-s", &target.url(), "-f", &too_new]);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "{verb}: {stderr}");
+        assert!(
+            stderr.contains("ranged@1.0.0 requires Orion >=99.0.0; the target")
+                && stderr.contains(&format!("runs {}", env!("CARGO_PKG_VERSION"))),
+            "{verb}: {stderr}"
+        );
+    }
+    let receipt = client
+        .get(format!("{}/api/v1/admin/packages/ranged", target.url()))
+        .send()
+        .await
+        .expect("receipt");
+    assert_eq!(receipt.status(), 404, "no receipt may have been claimed");
+
+    let satisfied = compile(
+        "satisfied.json",
+        &format!(">={}", env!("CARGO_PKG_VERSION")),
+    );
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &satisfied]),
+        "apply within range",
+    );
+    assert!(stdout.contains("applied ranged@1.0.0"), "{stdout}");
+}
+
 /// A package with a plugin in it: the fourth member travels with its
 /// component, installs on a target that has never seen it, and activates
 /// before the workflow that calls it — so the promoted channel serves

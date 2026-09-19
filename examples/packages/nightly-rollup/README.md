@@ -24,6 +24,11 @@ summarise the wrong day.
 the whole cluster. If the rollup takes longer than a day, the next occurrence is
 recorded `skipped_singleton` rather than piling on.
 
+**`package.json` says which Orion the set needs.** Cron channels arrived in
+1.6.0, so the set declares `">=1.6.0, <2"`. `lint`, `compile` and `fmt` check
+the running binary against it first, and `compile` carries it into the
+artifact's `requires.orion`, where `package plan` and `apply` check the target.
+
 ## Deploy it
 
 ```bash

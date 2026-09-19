@@ -116,6 +116,12 @@ pub(crate) struct PackageMeta {
 /// they exist and are active in the target.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Requires {
+    /// The Orion version range the definition set declared
+    /// (`package.requires.orion`), or `--requires-orion`. `plan` and `apply`
+    /// refuse a target outside it; `package lint` refuses a binary outside
+    /// it. Not content: a range-only change moves no hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) orion: Option<String>,
     #[serde(default)]
     pub(crate) channels: Vec<String>,
     #[serde(default)]
@@ -510,6 +516,7 @@ pub(crate) async fn run_export(
     name: &str,
     version: &str,
     version_prefix: Option<&str>,
+    requires_orion: Option<&str>,
     output: Option<&str>,
     include_artifacts: bool,
 ) -> Result<(), CliError> {
@@ -518,6 +525,15 @@ pub(crate) async fn run_export(
     }
     orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
     let version = VersionSpec::parse(version, version_prefix)?;
+    // An export has no set to read a range from; the flag is the only way to
+    // declare one.
+    let requires_orion = requires_orion
+        .map(|range| {
+            orion::version::OrionRequirement::parse(range)
+                .map(|r| r.as_str().to_string())
+                .map_err(|e| format!("--requires-orion {e}"))
+        })
+        .transpose()?;
     let client = admin_client(server, format!("package={name}@{} export", version.label()))?;
 
     // 1. The selected channels.
@@ -786,6 +802,7 @@ pub(crate) async fn run_export(
             exported_at: chrono::Utc::now().to_rfc3339(),
         },
         requires: Requires {
+            orion: requires_orion,
             channels: required_channels,
             connectors: required_connectors,
             plugins: required_plugins,
@@ -842,8 +859,59 @@ pub(crate) fn member_counts(artifact: &PackageArtifact) -> String {
 // lint (offline)
 // ============================================================
 
+/// The artifact's `requires.orion`, parsed — `None` when it declares none.
+fn declared_range(
+    artifact: &PackageArtifact,
+) -> Result<Option<orion::version::OrionRequirement>, CliError> {
+    artifact
+        .requires
+        .orion
+        .as_deref()
+        .map(|range| {
+            orion::version::OrionRequirement::parse(range)
+                .map_err(|e| format!("requires.orion {e}").into())
+        })
+        .transpose()
+}
+
+/// `plan` and `apply` hold the target to the artifact's `requires.orion`,
+/// before anything is written. The version is read from `GET
+/// /engine/status`, on the admin plane these verbs already use — not
+/// `/health`, which answers `503` on a degraded database. In a cluster the
+/// answer is the version of whichever node served the request, so apply
+/// after a rolling upgrade has finished.
+async fn check_target_version(
+    client: &OrionClient,
+    server: &str,
+    artifact: &PackageArtifact,
+    package: &str,
+) -> Result<(), CliError> {
+    let Some(range) = declared_range(artifact)? else {
+        return Ok(());
+    };
+    let status: orion_api::EngineStatusResponse = client.get_data(paths::ENGINE_STATUS).await?;
+    if status.version.is_empty() {
+        return Err(format!(
+            "could not read the target's version from {server} — refusing to apply a package \
+             that declares requires.orion"
+        )
+        .into());
+    }
+    range.check_target(package, server, &status.version)?;
+    Ok(())
+}
+
 pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
     let artifact = read_artifact(file)?;
+    // This binary's validators are about to judge the entities: an artifact
+    // declaring a range it is outside of says so first, in one line, rather
+    // than as the errors of features this binary predates.
+    if let Some(range) = declared_range(&artifact)? {
+        range.check_this_binary(&format!(
+            "{}@{}",
+            artifact.package.name, artifact.package.version
+        ))?;
+    }
     let mut errors: Vec<String> = Vec::new();
 
     if artifact.package.name.trim().is_empty() {
@@ -1302,6 +1370,7 @@ pub(crate) async fn run_plan(
     attach_from_flag(&mut artifact, signatures)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
     let client = admin_client(server, format!("package={package} plan"))?;
+    check_target_version(&client, server, &artifact, &package).await?;
 
     // The immutability gate first: a reused applied version is dead on
     // arrival, and nothing below can change that.
@@ -1748,6 +1817,9 @@ pub(crate) async fn run_apply(
     // Before anything is sent: an orphan or malformed `.sig` stops here.
     let signed = attach_from_flag(&mut artifact, signatures)?;
     let client = admin_client(server, format!("package={package}"))?;
+    // Before the receipt is claimed: a target outside the declared range
+    // gets zero writes.
+    check_target_version(&client, server, &artifact, &package).await?;
 
     // Phase 1 — claim the receipt as staged. This is the atomic
     // same-version-different-content rejection (K14), and doubles as the

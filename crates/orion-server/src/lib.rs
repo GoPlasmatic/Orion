@@ -62,3 +62,4 @@ pub mod storage;
 pub(crate) mod text;
 pub mod trace_context;
 pub mod validation;
+pub mod version;

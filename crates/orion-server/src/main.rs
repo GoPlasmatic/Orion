@@ -156,7 +156,9 @@ enum Command {
         /// What to write.
         #[arg(long, value_enum, default_value = "artifact")]
         format: cli::CompileFormat,
-        /// Package name, e.g. payments. Required for --format artifact.
+        /// Package name, e.g. payments. Required for --format artifact
+        /// unless the set declares `package.name`; the flag wins when both
+        /// are given.
         #[arg(long)]
         name: Option<String>,
         /// Package version, e.g. 1.4.0 — or `content` to derive it from the
@@ -176,6 +178,11 @@ enum Command {
         /// so the hash and a content version do not move.
         #[arg(long, value_name = "DIR")]
         signatures: Option<String>,
+        /// The Orion version range the artifact requires of a target
+        /// (`requires.orion`) over the set's own `package.requires.orion`, e.g. ">=1.8.2, <2". `plan` and `apply` refuse
+        /// a target outside it.
+        #[arg(long, value_name = "RANGE")]
+        requires_orion: Option<String>,
         /// Channel name that may be referenced without being in the set —
         /// recorded in the artifact's `requires`. Repeatable.
         #[arg(long = "requires-channel", value_name = "NAME")]
@@ -450,6 +457,11 @@ enum PackageCommand {
         /// `content-<12 hex>`.
         #[arg(long, value_name = "PREFIX")]
         version_prefix: Option<String>,
+        /// The Orion version range the artifact requires of a target
+        /// (`requires.orion`), e.g. ">=1.8.2, <2". `plan` and `apply` refuse
+        /// a target outside it.
+        #[arg(long, value_name = "RANGE")]
+        requires_orion: Option<String>,
         /// Write the artifact here instead of stdout.
         #[arg(short, long)]
         output: Option<String>,
@@ -619,6 +631,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             version,
             version_prefix,
             signatures,
+            requires_orion,
             requires_channels,
             requires_connectors,
             deny_warnings,
@@ -639,6 +652,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 version: version.as_deref(),
                 version_prefix: version_prefix.as_deref(),
                 signatures: signatures.as_deref(),
+                requires_orion: requires_orion.as_deref(),
                 boundary,
                 deny_warnings,
                 no_activate,
@@ -739,6 +753,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     name,
                     version,
                     version_prefix,
+                    requires_orion,
                     output,
                     include_artifacts,
                 } => {
@@ -749,6 +764,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &name,
                         &version,
                         version_prefix.as_deref(),
+                        requires_orion.as_deref(),
                         output.as_deref(),
                         include_artifacts,
                     )

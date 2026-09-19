@@ -57,4 +57,4 @@ pub use set::{
     Boundary, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
     is_plugin_manifest, json_files,
 };
-pub use shared::{Fragment, SharedDefinitions, first_reference};
+pub use shared::{Fragment, PackageDecl, SharedDefinitions, first_reference};

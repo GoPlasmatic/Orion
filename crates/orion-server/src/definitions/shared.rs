@@ -72,13 +72,52 @@ pub struct Fragment {
     pub tasks: Vec<Value>,
 }
 
-/// Everything a set shares: value namespaces, and fragments.
+/// The reserved key of the set's package declaration — see
+/// [`SharedDefinitions::is_package_declaration`].
+pub const PACKAGE_KEY: &str = "package";
+
+/// What a set declares about itself: `{"package": {"name": "orders",
+/// "requires": {"orion": ">=1.8.2, <2"}}}`. At most one per set.
+#[derive(Debug, Clone, Default)]
+pub struct PackageDecl {
+    /// The document that declared it, for messages.
+    pub origin: String,
+    pub name: Option<String>,
+    /// As written; parsed where it is checked, so a malformed range is a
+    /// finding on the surface that reads it rather than a load failure.
+    pub requires_orion: Option<String>,
+}
+
+impl PackageDecl {
+    /// The declared `requires.orion` range against this binary — the check
+    /// every offline command runs first, so a set this binary is too old for
+    /// is reported as that, in one line, rather than as the schema errors of
+    /// the features it predates.
+    ///
+    /// # Errors
+    ///
+    /// The range does not admit this binary, or is not a range.
+    pub fn check_this_binary(&self) -> Result<(), String> {
+        let Some(range) = &self.requires_orion else {
+            return Ok(());
+        };
+        crate::version::OrionRequirement::parse(range)
+            .map_err(|e| format!("{}: package.requires.orion {e}", self.origin))?
+            .check_this_binary(&format!("the definition set ({})", self.origin))
+    }
+}
+
+/// Everything a set shares: value namespaces, fragments, and the package
+/// declaration.
 #[derive(Debug, Clone, Default)]
 pub struct SharedDefinitions {
     /// namespace → key → value. Open: `constants` and `errors` are two
     /// entries, not two fields.
     pub namespaces: BTreeMap<String, BTreeMap<String, Value>>,
     pub fragments: BTreeMap<String, Fragment>,
+    /// The set's `package` document, when it has one. Not a `$from`
+    /// namespace: `{"$from": "package.name"}` resolves nothing.
+    pub package: Option<PackageDecl>,
 }
 
 impl SharedDefinitions {
@@ -117,7 +156,24 @@ impl SharedDefinitions {
         let Some(obj) = doc.as_object() else {
             return false;
         };
-        super::Entity::classify(doc).is_none() && SHARED_KEYS.iter().any(|k| obj.contains_key(*k))
+        super::Entity::classify(doc).is_none()
+            && (SHARED_KEYS.iter().any(|k| obj.contains_key(*k))
+                || Self::is_package_declaration(doc))
+    }
+
+    /// Whether a document carries the set's package declaration, told apart
+    /// from a promotion artifact, which also has a top-level `package`: an
+    /// artifact's always carries `content_hash`, and its root always has
+    /// `workflows`. An artifact lying inside a definitions tree therefore
+    /// stays what it was — a file that is not part of the set.
+    pub fn is_package_declaration(doc: &Value) -> bool {
+        let Some(obj) = doc.as_object() else {
+            return false;
+        };
+        obj.get(PACKAGE_KEY)
+            .and_then(Value::as_object)
+            .is_some_and(|package| !package.contains_key("content_hash"))
+            && !obj.contains_key("workflows")
     }
 
     /// Merge one shared document into this one.
@@ -133,6 +189,10 @@ impl SharedDefinitions {
         for (key, value) in obj {
             if key == "fragments" {
                 self.merge_fragments(value, origin, findings);
+                continue;
+            }
+            if key == PACKAGE_KEY {
+                self.merge_package(value, origin, findings);
                 continue;
             }
             let Some(entries) = value.as_object() else {
@@ -156,6 +216,90 @@ impl SharedDefinitions {
                 ns.insert(name.clone(), val.clone());
             }
         }
+    }
+
+    /// The package declaration: one per set, with a closed shape — a typo
+    /// like `require` must not silently switch the version gate off.
+    fn merge_package(&mut self, value: &Value, origin: &str, findings: &mut Vec<Diagnostic>) {
+        if let Some(existing) = &self.package {
+            findings.push(Diagnostic::error(
+                "package.duplicate",
+                origin,
+                format!("'package' is already declared in {}", existing.origin),
+            ));
+            return;
+        }
+        let Some(obj) = value.as_object() else {
+            findings.push(Diagnostic::error(
+                "package.shape",
+                origin,
+                "'package' must be an object: {\"name\": …, \"requires\": {\"orion\": …}}",
+            ));
+            return;
+        };
+        let mut decl = PackageDecl {
+            origin: origin.to_string(),
+            ..PackageDecl::default()
+        };
+        for (key, member) in obj {
+            match key.as_str() {
+                "name" => match member.as_str() {
+                    Some(name) => {
+                        if let Err(e) = crate::validation::package_key(
+                            "package.name",
+                            name,
+                            crate::validation::MAX_PACKAGE_NAME_LEN,
+                        ) {
+                            findings.push(Diagnostic::error("package.shape", origin, e));
+                        } else {
+                            decl.name = Some(name.to_string());
+                        }
+                    }
+                    None => findings.push(Diagnostic::error(
+                        "package.shape",
+                        origin,
+                        "'package.name' must be a string",
+                    )),
+                },
+                "requires" => {
+                    let Some(requires) = member.as_object() else {
+                        findings.push(Diagnostic::error(
+                            "package.shape",
+                            origin,
+                            "'package.requires' must be an object",
+                        ));
+                        continue;
+                    };
+                    for (requirement, range) in requires {
+                        match (requirement.as_str(), range.as_str()) {
+                            ("orion", Some(range)) => decl.requires_orion = Some(range.to_string()),
+                            ("orion", None) => findings.push(Diagnostic::error(
+                                "package.shape",
+                                origin,
+                                "'package.requires.orion' must be a version range string, like \
+                                 \">=1.8.2, <2\"",
+                            )),
+                            (other, _) => findings.push(Diagnostic::error(
+                                "package.shape",
+                                origin,
+                                format!(
+                                    "'package.requires.{other}' is not a requirement this \
+                                     version understands (only 'orion')"
+                                ),
+                            )),
+                        }
+                    }
+                }
+                other => findings.push(Diagnostic::error(
+                    "package.shape",
+                    origin,
+                    format!(
+                        "'package.{other}' is not a package field (expected 'name', 'requires')"
+                    ),
+                )),
+            }
+        }
+        self.package = Some(decl);
     }
 
     fn merge_fragments(&mut self, value: &Value, origin: &str, findings: &mut Vec<Diagnostic>) {
@@ -522,6 +666,96 @@ fn substitute_params(value: &mut Value, args: &BTreeMap<String, Value>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn declaration() -> Value {
+        json!({"package": {"name": "orders", "requires": {"orion": ">=1.8.2, <2"}}})
+    }
+
+    #[test]
+    fn a_package_only_document_is_shared() {
+        assert!(SharedDefinitions::is_shared_document(&declaration()));
+        let mut s = SharedDefinitions::default();
+        let mut findings = Vec::new();
+        s.merge(&declaration(), "package.json", &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+        let decl = s.package.expect("declared");
+        assert_eq!(decl.name.as_deref(), Some("orders"));
+        assert_eq!(decl.requires_orion.as_deref(), Some(">=1.8.2, <2"));
+        assert_eq!(decl.origin, "package.json");
+        assert!(
+            s.namespaces.is_empty(),
+            "'package' is not a value namespace"
+        );
+    }
+
+    /// An artifact also has a top-level `package`; it must stay what it was.
+    #[test]
+    fn a_promotion_artifact_is_not_a_package_declaration() {
+        let artifact = json!({
+            "package": {"name": "orders", "version": "1.0.0", "content_hash": "sha256:x"},
+            "requires": {}, "connectors": [], "workflows": [], "channels": [],
+        });
+        assert!(!SharedDefinitions::is_package_declaration(&artifact));
+        assert!(!SharedDefinitions::is_shared_document(&artifact));
+        // Even with the hash missing, an artifact's `workflows` gives it away.
+        let mut hashless = artifact.clone();
+        hashless["package"]
+            .as_object_mut()
+            .expect("object")
+            .remove("content_hash");
+        assert!(!SharedDefinitions::is_package_declaration(&hashless));
+    }
+
+    #[test]
+    fn package_is_not_a_from_namespace() {
+        let mut s = SharedDefinitions::default();
+        s.merge(&declaration(), "package.json", &mut Vec::new());
+        let mut doc = json!({"x": {"$from": "package.name"}});
+        let mut findings = Vec::new();
+        s.expand(&mut doc, "wf.json", &mut findings);
+        assert!(
+            findings.iter().any(Diagnostic::is_error),
+            "`package.name` must not resolve: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn two_package_documents_are_a_duplicate() {
+        let mut s = SharedDefinitions::default();
+        let mut findings = Vec::new();
+        s.merge(&declaration(), "a/package.json", &mut findings);
+        s.merge(&declaration(), "b/package.json", &mut findings);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "package.duplicate");
+        assert!(
+            findings[0].message.contains("a/package.json"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_under_package_is_named() {
+        let mut s = SharedDefinitions::default();
+        let mut findings = Vec::new();
+        s.merge(
+            &json!({"package": {"name": "orders", "require": {"orion": ">=1"},
+                                "requires": {"orion": ">=1", "dataflow": ">=3"}}}),
+            "package.json",
+            &mut findings,
+        );
+        let messages: Vec<&str> = findings.iter().map(|f| f.message.as_str()).collect();
+        assert!(
+            messages.iter().any(|m| m.contains("'package.require'")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("'package.requires.dataflow'")),
+            "{messages:?}"
+        );
+        assert!(findings.iter().all(|f| f.check == "package.shape"));
+    }
 
     fn shared() -> (SharedDefinitions, Vec<Diagnostic>) {
         let mut s = SharedDefinitions::default();

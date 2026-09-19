@@ -97,6 +97,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published; status adds `capabilities` (`cron`, `plugins`, `models`).
   `orion-cli engine status|reload` lists them.
 
+- **A definition set can declare the Orion it needs** ([#343]). A shared
+  document `{"package": {"name": "orders", "requires": {"orion": ">=1.8.2,
+  <2"}}}` — one per set, closed shape, not a `$from` namespace, told apart
+  from a promotion artifact's `package` block by its `content_hash`. `lint`,
+  `clippy`, `compile`, `fmt`, and `dry-run`/`test` with `--definitions` check
+  the running binary against the range first and stop with one line naming
+  both, instead of reporting the schema errors of features the binary
+  predates; `fmt` then formats nothing. `compile` carries the range into the
+  artifact's `requires.orion` (not content — the hash does not move) and
+  takes `package.name` when `--name` is absent; `compile` and `package
+  export` gain `--requires-orion`. `package lint` checks the binary, and
+  `plan`/`apply` read the target's version from `GET /engine/status` and
+  refuse one outside the range with zero writes. A pre-release binary is
+  judged as its release. `package` is a newly reserved shared-document key.
+
 ### Changed
 
 - **`package apply` fails when the reload quarantines what it carries**
@@ -173,6 +188,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#340]: https://github.com/GoPlasmatic/Orion/issues/340
 [#342]: https://github.com/GoPlasmatic/Orion/issues/342
+[#343]: https://github.com/GoPlasmatic/Orion/issues/343
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
 [#347]: https://github.com/GoPlasmatic/Orion/issues/347

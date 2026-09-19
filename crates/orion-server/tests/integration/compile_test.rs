@@ -648,6 +648,103 @@ fn plugin_set(label: &str, with_component: bool) -> ScratchDir {
     scratch
 }
 
+/// #343: the set's `package` document names the artifact and carries its
+/// range into `requires.orion`, which is not content; `--name` and
+/// `--requires-orion` win over it.
+#[test]
+fn compile_carries_the_declared_package_into_the_artifact() {
+    let scratch = sugared_set("compile-package-decl");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"package": {"name": "orders", "requires": {"orion": ">=1.0.0, <99"}}}"#,
+    )
+    .unwrap();
+    let compile = |out: &str, extra: &[&str]| -> (bool, String, serde_json::Value) {
+        let target = dir.join(out);
+        let mut args = vec![
+            "compile",
+            dir.to_str().unwrap(),
+            "--version",
+            "1.0.0",
+            "-o",
+            target.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, report) = run(&args);
+        let artifact = if ok {
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+        } else {
+            serde_json::Value::Null
+        };
+        (ok, report, artifact)
+    };
+    let (ok, report, declared) = compile("a.json", &[]);
+    assert!(ok, "{report}");
+    assert_eq!(declared["package"]["name"], "orders");
+    assert_eq!(declared["requires"]["orion"], ">=1.0.0, <99");
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // The flags win, with a note for the name.
+    let (ok, report, flagged) = compile(
+        "b.json",
+        &["--name", "billing", "--requires-orion", ">=1.2, <99"],
+    );
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("--name 'billing' overrides package.name 'orders'"),
+        "{report}"
+    );
+    assert_eq!(flagged["package"]["name"], "billing");
+    assert_eq!(flagged["requires"]["orion"], ">=1.2, <99");
+    // A range is a gate, not content.
+    assert_eq!(
+        flagged["package"]["content_hash"],
+        declared["package"]["content_hash"]
+    );
+
+    // An artifact this binary is too old for stops `package lint` first.
+    let mut too_new = declared.clone();
+    too_new["requires"]["orion"] = serde_json::json!(">=99.0.0");
+    std::fs::write(dir.join("too-new.json"), too_new.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("too-new.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(
+        report.contains("orders@1.0.0 requires Orion >=99.0.0"),
+        "{report}"
+    );
+    too_new["requires"]["orion"] = serde_json::json!("not a range");
+    std::fs::write(dir.join("bad.json"), too_new.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("bad.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(report.contains("is not a version range"), "{report}");
+
+    // Without the document, the name is required.
+    std::fs::remove_file(dir.join("package.json")).unwrap();
+    let (ok, report, _) = compile("c.json", &[]);
+    assert!(!ok);
+    assert!(
+        report.contains("or declare package.name in the set"),
+        "{report}"
+    );
+}
+
 /// #340: a build-time signer's `.sig` files land in the artifact's entries,
 /// and — a signature not being content — the hash does not move.
 #[test]

@@ -74,6 +74,18 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "crypto.rs",
         &["crate::server::", "crate::engine::", "crate::channel::"],
     ),
+    // The version this build is, and the range a set may require: read by
+    // the offline commands, the package verbs and (at boot) the loader.
+    (
+        "version.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::channel::",
+            "crate::definitions::",
+            "crate::storage::",
+        ],
+    ),
     // The detached-signature convention is read by the signing CLI, the
     // package verbs and (at boot) the package loader: it names `crypto` and
     // nothing that serves.

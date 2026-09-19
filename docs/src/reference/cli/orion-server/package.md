@@ -45,6 +45,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `--version-prefix <prefix>` | `export` | With `--version content`, `<prefix>-<12 hex>` instead of `content-<12 hex>`. |
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
 | `--signatures <dir>` | `plan`, `apply` | Attach the detached signatures in `<dir>` to the artifact's plugins and models before anything is sent. See [Signatures at deploy time](#signatures-at-deploy-time). |
+| `--requires-orion <range>` | `export` | The Orion version range the artifact requires of a target, written to `requires.orion`. |
 | `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
 
 ## Applied means serving
@@ -60,6 +61,16 @@ Error: nightly@2.0.0 is not serving on https://prod.orion.internal — the recei
 The receipt is flipped to `applied` only after that check, so a failed apply leaves it `staged` and a re-run after the fix completes it. A member counts when its own row is refused: a plugin, model or connector the package carries, or a channel. A workflow counts when a channel of another package bound to it is refused.
 
 Re-applying the version a target already runs is not blind either. `apply` reads `GET /engine/status` and fails the same way when a member is quarantined, for example after the node restarted with `cron.enabled = false`. That receipt is already `applied` and stays so, so the message says to fix the cause and reload. `plan` reads the same endpoint and warns when the target has cron, plugins or models switched off for something the package needs. It also warns when the target already quarantines one of the package's members. A target older than these fields cannot say, and `apply` prints a warning rather than fail.
+
+## A target's version
+
+An artifact may carry `requires.orion`, a version range that [`compile`](./compile.md) copies from the set's [`package` document](../shared-definitions.md#the-package-document) or that `--requires-orion` sets. `plan` and `apply` read the target's version from `GET /engine/status` before anything else, and refuse a target outside the range with zero writes:
+
+```
+Error: orders@1.4.0 requires Orion >=1.9.0, <2; the target https://prod.orion.internal runs 1.8.2
+```
+
+`package lint` holds the running binary to the same range, because its validators are about to judge the entities. In a cluster the answer comes from whichever node served the request, so run `apply` after a rolling upgrade has finished. An older `package` binary ignores the field.
 
 ## Signatures at deploy time
 

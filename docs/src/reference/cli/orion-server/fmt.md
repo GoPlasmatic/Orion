@@ -1,6 +1,6 @@
 <!-- description: orion-server fmt rewrites definition files to the one house style, with --check for CI and --stdin for editors; the exit codes and what it refuses. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server fmt`
 
@@ -30,7 +30,7 @@ Files are rewritten atomically: a sibling temp file is renamed over the original
 |---|---|
 | `0` | Every file is formatted, or has been written by this run. |
 | `1` | `--check` found at least one file it would rewrite. |
-| `2` | A file could not be read, parsed or written. The other files are still processed. |
+| `2` | A file could not be read, parsed or written. The other files are still processed. Also: a directory holds a [`package` document](../shared-definitions.md#the-package-document) whose `requires.orion` excludes this binary, and nothing was formatted. |
 
 ## Examples
 

@@ -172,6 +172,7 @@ fn layout_object(
         | Role::Channel
         | Role::Connector
         | Role::SharedDoc
+        | Role::PackageDecl
         | Role::NamedValues
         | Role::FragmentMap
         | Role::Fragment

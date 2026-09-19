@@ -35,9 +35,10 @@ Entities must carry explicit ids for `artifact` only. `apply` activates a channe
 |------|-------------|
 | `-o, --output` | A file for `--format artifact` (default: stdout); a directory for `dir` and `bulk`, where it is required. |
 | `--format` | `artifact` (default), `dir`, or `bulk`; each is described under [Output formats](#output-formats). |
-| `--name` | Package name. Required for `--format artifact`. |
+| `--name` | Package name. Required for `--format artifact` unless the set declares `package.name`; the flag wins, with a note, when both are given. |
 | `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. `content` derives the version from the content hash instead; see [Content versions](#content-versions). A version the target would refuse (outside letters, digits, `.`, `_` and `-`, or over 64 characters) is refused here. |
 | `--version-prefix` | With `--version content`, writes `<PREFIX>-<12 hex>` instead of `content-<12 hex>`. At most 51 characters. |
+| `--requires-orion <range>` | The Orion version range the artifact requires of a target, written to `requires.orion`. Overrides the set's own [`package.requires.orion`](../shared-definitions.md#the-package-document). |
 | `--signatures <dir>` | Write the detached signatures in `<dir>` into the artifact's `plugins[]` and `models[]` entries, for a signer that runs at build time. The files are named as [`package apply --signatures`](./package.md#signatures-at-deploy-time) reads them, and a model's local artifact file name also matches. The hash and a content version do not move. |
 | `--requires-channel` | Channel name that may be referenced without being in the set; recorded in the artifact's `requires`. Repeatable. |
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable. |

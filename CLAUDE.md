@@ -89,7 +89,7 @@ src/
 ├── auth.rs              # Admin authentication: the API-key comparison and the per-source failure tracker
 ├── cron/                # Scheduled channels: the reconciler (schedules -> durable occurrences), the workers (claim -> guards -> `execute_admitted` -> settle), the trigger metadata and the scheduler's own health. The *schedule* is not here — it is authored content on a cron channel, compiled by `ChannelLoader` into `channel/cron.rs`'s `CronDescriptor` and carried on the runtime generation
 ├── crypto.rs            # Shared primitives: the base64/hex encoding table, HMAC compute/verify, the rustls provider. A leaf — `engine::operators`, `channel::auth`, `connector::sigv4` and `jwt` all consume it
-├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver, whose expansion descends into task groups via `engine::is_group` — a flat loop there namespaces only a fragment's top-level ids and leaks the rest into the host workflow
+├── definitions/         # A definition set (channels+workflows+connectors) and the cross-reference pass over it: `lint <dir>` and `package lint` share it; shared.rs holds the `$from` / fragment resolver and the set's `package` declaration (a fourth reserved shared key, told apart from an artifact's `package` by `content_hash`; one per set, closed shape — ids `package.duplicate`, `package.shape`), whose expansion descends into task groups via `engine::is_group` — a flat loop there namespaces only a fragment's top-level ids and leaks the rest into the host workflow
 │   ├── json.rs          # Order-preserving, span-carrying JSON front end (own parser; `serde_json::Value` is BTreeMap-backed and loses author order). `fmt` parses with it; `Document::locate(path)` maps a finding's path to line:col
 │   ├── analysis/        # Facts every clippy rule reads: flattened steps with reads/writes/certainty (`Reads::uncertain` = a computed or element-scoped read — a rule needing complete reads must then stay silent), every expression compiled by datalogic (`is_constant`, evaluate-against-context), the channel→workflow binding. `operators.rs` classifies every operator as scoping or not; a new operator fails a test until classified
 │   ├── clippy/          # `orion-server clippy`: `Rule` trait + `rules::ALL` registry. No configuration, no suppression — a rule ships only with a proof (`explain()` must say "Proof" and "Silent when") and `tests/fixtures/clippy/<id>/{fires,quiet}/`. Duplication rules read the *source* form (`from_directory_raw`); semantic rules the compiled form
@@ -118,7 +118,8 @@ src/
 │   └── repositories/    # workflows, channels, connectors, plugins, models, cron, packages, traces, trace_dlq, audit_logs, cluster
 ├── text.rs              # String similarity (edit distance) shared by the "did you mean" suggestions
 ├── trace_context.rs     # W3C trace propagation over string maps (Kafka, the trace queue, http_call); the axum middleware is in server/
-└── validation/          # Input validation, SSRF protection
+├── validation/          # Input validation, SSRF protection
+└── version.rs           # `ORION_VERSION` and `OrionRequirement` — the `package.requires.orion` range a set declares (in its `package` shared document) and an artifact carries: every offline command checks this binary against it first, `plan`/`apply` check the target. A leaf
 ```
 
 ### Startup Sequence (main.rs → bootstrap.rs)

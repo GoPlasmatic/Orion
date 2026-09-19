@@ -1,0 +1,1 @@
+{"constants":{"region":"eu"},"package":{"requires":{"orion":">=1.8.2, <2"},"name":"orders"}}

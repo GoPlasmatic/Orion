@@ -26,6 +26,8 @@ pub enum Role {
     Channel,
     Connector,
     SharedDoc,
+    /// A set's `package` declaration inside a shared document.
+    PackageDecl,
     /// A `constants`/`errors`/… namespace: one named value per line.
     NamedValues,
     /// The `fragments` map: one fragment per line.
@@ -176,6 +178,7 @@ pub fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -
         }
         Role::SharedDoc => match key {
             Some("fragments") if child.as_object().is_some() => Role::FragmentMap,
+            Some("package") if child.as_object().is_some() => Role::PackageDecl,
             Some(_) if child.as_object().is_some() => Role::NamedValues,
             _ => generic_or_scalar_array(child),
         },
@@ -234,6 +237,7 @@ pub fn key_order(role: Role) -> Option<&'static [&'static str]> {
         Role::Channel => style::CHANNEL_KEYS,
         Role::Connector => style::CONNECTOR_KEYS,
         Role::SharedDoc => style::SHARED_DOC_KEYS,
+        Role::PackageDecl => style::PACKAGE_DECL_KEYS,
         Role::Fragment => style::FRAGMENT_KEYS,
         Role::CaseFile => style::CASE_KEYS,
         Role::Artifact => style::ARTIFACT_KEYS,
@@ -264,6 +268,18 @@ fn entity_role(node: &Node) -> Option<Role> {
     }
     if has("package") && has("workflows") {
         return Some(Role::Artifact);
+    }
+    // A set's package declaration — `SharedDefinitions::is_package_declaration`
+    // — is told apart from an artifact's `package` block by `content_hash`,
+    // which only an artifact carries.
+    if members.iter().any(|m| {
+        m.key.node == "package"
+            && m.value
+                .node
+                .as_object()
+                .is_some_and(|package| package.iter().all(|p| p.key.node != "content_hash"))
+    }) {
+        return Some(Role::SharedDoc);
     }
     None
 }

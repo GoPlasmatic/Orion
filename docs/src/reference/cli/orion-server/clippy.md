@@ -1,6 +1,6 @@
 <!-- description: orion-server clippy runs the advisory rules beyond lint, only where certain, with --list, --explain, JSON output and the -c config for the vars rules. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server clippy`
 
@@ -16,6 +16,8 @@ orion-server clippy --explain <rule>
 ```
 
 ## Description
+
+A set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before any rule runs. One line names the range and this version.
 
 Needs no database or server. It takes the serving config with `-c` for the two rules that read `[vars]` and `[secrets]`.
 

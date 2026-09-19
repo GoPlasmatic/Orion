@@ -551,6 +551,11 @@ impl Catalog {
         if let Some(dir) = dir {
             let (loaded, shared_findings) =
                 orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+            // Before anything the catalog reports: a set this binary is too
+            // old for says so in one line.
+            if let Some(decl) = &loaded.package {
+                decl.check_this_binary()?;
+            }
             shared = loaded;
             findings.extend(shared_findings);
             // The manifests in the definitions tree are part of its catalog
@@ -943,7 +948,13 @@ fn load_and_gate(
     deny_warnings: bool,
     plugin_dirs: &[String],
     model_dirs: &[String],
-) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        orion::definitions::DefinitionSet,
+        Option<orion::definitions::PackageDecl>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let report = orion::definitions::gate_directory(
         std::path::Path::new(dir),
         &boundary,
@@ -1022,7 +1033,7 @@ fn load_and_gate(
     if deny_warnings && warnings > 0 {
         return Err(format!("{warnings} warning(s) in '{dir}' and --deny-warnings is set").into());
     }
-    Ok(report.set)
+    Ok((report.set, report.shared.package))
 }
 
 /// What `compile` writes.
@@ -1063,6 +1074,8 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) version_prefix: Option<&'a str>,
     /// A directory of detached signatures to write into the entries.
     pub(crate) signatures: Option<&'a str>,
+    /// `--requires-orion`: the range the artifact declares, over the set's.
+    pub(crate) requires_orion: Option<&'a str>,
     /// Names the set may reference without containing — the linter's boundary,
     /// and the artifact's `requires`.
     pub(crate) boundary: orion::definitions::Boundary,
@@ -1086,27 +1099,32 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // and letting the server derive it is an ordinary way to author a set, and
     // it is what the sets that motivated this command do.
     let requires_ids = req.format == CompileFormat::Artifact;
-    let (name, version) = match req.format {
-        CompileFormat::Artifact => match (req.name, req.version) {
-            (Some(n), Some(v)) => {
-                // Refused here rather than by the target at `apply`.
-                orion::validation::package_key(
-                    "--name",
-                    n,
-                    orion::validation::MAX_PACKAGE_NAME_LEN,
-                )?;
-                (
-                    n,
-                    crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
-                )
+    let version = match req.format {
+        CompileFormat::Artifact => match req.version {
+            Some(v) => crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
+            None => {
+                return Err("--version is required for --format artifact (and --name, \
+                            unless the set declares package.name)"
+                    .into());
             }
-            _ => return Err("--name and --version are required for --format artifact".into()),
         },
-        _ => ("", crate::package_cli::VersionSpec::Literal("")),
+        _ => crate::package_cli::VersionSpec::Literal(""),
     };
+    if let Some(name) = req.name {
+        // Refused here rather than by the target at `apply`.
+        orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
+    }
+    let requires_orion = req
+        .requires_orion
+        .map(|range| {
+            orion::version::OrionRequirement::parse(range)
+                .map(|r| r.as_str().to_string())
+                .map_err(|e| format!("--requires-orion {e}"))
+        })
+        .transpose()?;
 
     let requires = req.boundary.clone();
-    let set = load_and_gate(
+    let (set, package) = load_and_gate(
         req.dir,
         req.boundary,
         requires_ids,
@@ -1115,13 +1133,42 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
         req.model_dirs,
     )?;
 
+    // The name: the flag, else what the set declares. The range: the flag,
+    // else the set's — carried into `requires.orion`, where `plan` and
+    // `apply` hold the target to it.
+    let declared_name = package.as_ref().and_then(|p| p.name.clone());
+    let name = match (req.name, &declared_name) {
+        (Some(flag), Some(declared)) if flag != declared => {
+            eprintln!(
+                "note: --name '{flag}' overrides package.name '{declared}' ({})",
+                package
+                    .as_ref()
+                    .map(|p| p.origin.as_str())
+                    .unwrap_or_default()
+            );
+            flag.to_string()
+        }
+        (Some(flag), _) => flag.to_string(),
+        (None, Some(declared)) => declared.clone(),
+        (None, None) if req.format == CompileFormat::Artifact => {
+            return Err(
+                "--name is required for --format artifact (or declare package.name in the set)"
+                    .into(),
+            );
+        }
+        (None, None) => String::new(),
+    };
+    let requires_orion =
+        requires_orion.or_else(|| package.as_ref().and_then(|p| p.requires_orion.clone()));
+
     match req.format {
         CompileFormat::Artifact => emit_artifact(
             &set,
             req.dir,
-            name,
+            &name,
             version,
             requires,
+            requires_orion,
             req.no_activate,
             req.signatures,
             req.output,
@@ -1153,6 +1200,7 @@ fn emit_artifact(
     name: &str,
     version: crate::package_cli::VersionSpec<'_>,
     requires: orion::definitions::Boundary,
+    requires_orion: Option<String>,
     no_activate: bool,
     signatures: Option<&str>,
     output: Option<&str>,
@@ -1211,6 +1259,7 @@ fn emit_artifact(
             exported_at: chrono::Utc::now().to_rfc3339(),
         },
         requires: crate::package_cli::Requires {
+            orion: requires_orion,
             channels: requires.channels,
             connectors: requires.connectors,
             plugins: Vec::new(),
@@ -1552,6 +1601,37 @@ pub(crate) fn run_fmt(
         } else {
             eprintln!("error: '{}' is not a file or directory", path.display());
             errors += 1;
+        }
+    }
+
+    // A set declaring a range this binary is outside of is not formatted at
+    // all: the style tables differ between versions, so formatting with the
+    // wrong binary is itself the failure. Only a directory's files are
+    // consulted — `fmt examples/` spans many sets, each checked on its own.
+    for path in paths {
+        let path = std::path::Path::new(path);
+        if !path.is_dir() {
+            continue;
+        }
+        for file in orion::definitions::json_files(path).unwrap_or_default() {
+            let Some(doc) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .filter(orion::definitions::SharedDefinitions::is_package_declaration)
+            else {
+                continue;
+            };
+            let decl = orion::definitions::PackageDecl {
+                origin: file.display().to_string(),
+                name: None,
+                requires_orion: doc["package"]["requires"]["orion"]
+                    .as_str()
+                    .map(str::to_string),
+            };
+            if let Err(e) = decl.check_this_binary() {
+                eprintln!("error: {e} — nothing was formatted");
+                return Ok(2);
+            }
         }
     }
 

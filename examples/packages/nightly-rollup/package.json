@@ -1,0 +1,6 @@
+{
+  "package": {
+    "name": "nightly-rollup",
+    "requires": { "orion": ">=1.6.0, <2" }
+  }
+}
