@@ -235,6 +235,44 @@ fn validate_config_layering_env_beats_file_beats_default() {
     let _ = std::fs::remove_file(&toml);
 }
 
+/// `${VAR:?message}` stops `validate-config` with one line naming the
+/// variable, the reason and the position — and a placeholder that only a
+/// comment mentions requires nothing.
+#[test]
+fn validate_config_reports_a_required_with_message_failure() {
+    let toml = write_temp_toml(
+        "# the url below reads ${ORION_TEST_ONLY_IN_A_COMMENT}\n\
+         [storage]\n\
+         url = \"${ORION_TEST_STATE_DB:?set it to the state database}\"\n",
+        "required-message",
+    );
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env_remove("ORION_TEST_STATE_DB")
+        .output()
+        .expect("invoke validate-config");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("ORION_TEST_STATE_DB is required: set it to the state database"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":3:8)"), "{stderr}");
+    assert!(!stderr.contains("ORION_TEST_ONLY_IN_A_COMMENT"), "{stderr}");
+
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env("ORION_TEST_STATE_DB", "sqlite::memory:")
+        .output()
+        .expect("invoke validate-config");
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_file(&toml);
+}
+
 /// O15: the default TOML dump is serialized from the config structs, so it
 /// carries the whole surface — including the sections the hand-maintained
 /// summary silently omitted (`[cluster]`, the DLQ knobs, `[trace_storage]`)

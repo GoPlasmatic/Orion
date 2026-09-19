@@ -263,8 +263,8 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
             context: format!("Failed to read config file '{p}'"),
             source: Some(Box::new(e)),
         })?;
-        referenced_by_config_file = env_substitute::referenced_vars(&raw);
-        let content = env_substitute::substitute(&raw, p)?;
+        referenced_by_config_file = env_substitute::referenced_vars_toml(&raw);
+        let content = env_substitute::substitute_toml(&raw, p)?;
         // Parsed to a value tree first so references resolve against *values*
         // rather than text: `url = "env://DB"` is one whole value, and a
         // textual pass could not tell it from a substring.
@@ -389,6 +389,61 @@ format = "json"
         let result = load_config(None);
         unsafe { std::env::remove_var("ORION_SECRET_SOME_TOKEN") };
         result.expect("ORION_SECRET_* is never interpreted as configuration");
+    }
+
+    /// Write `text` to a scratch config file and load it through the real
+    /// entry point. The env lock must already be held.
+    fn load_text(text: &str) -> Result<AppConfig, OrionError> {
+        let path = std::env::temp_dir().join(format!("orion-config-{}.toml", uuid::Uuid::new_v4()));
+        std::fs::write(&path, text).expect("write scratch config");
+        let result = load_config(Some(path.to_str().expect("utf8 path")));
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    /// A placeholder mentioned in a comment is documentation, not a
+    /// requirement: it must not stop the boot.
+    #[test]
+    fn a_commented_placeholder_does_not_block_boot() {
+        let _guard = env_guard();
+        let config = load_text(
+            "# point [storage] url at ${ORION_TEST_NEVER_SET_R2_ENDPOINT}\n\
+             [server]\n\
+             port = ${ORION_TEST_NEVER_SET_PORT:-3123} # or ${ORION_TEST_NEVER_SET_OTHER}\n",
+        )
+        .expect("a comment requires nothing");
+        assert_eq!(config.server.port, 3123);
+    }
+
+    /// C4d: a name read only through a nested default is still a name the
+    /// file reads, so the unknown-variable guard must not refuse it.
+    #[test]
+    fn a_nested_orion_variable_passes_the_unknown_variable_guard() {
+        let _guard = env_guard();
+        // SAFETY: the env lock is held for the whole test.
+        unsafe { std::env::set_var("ORION_TEST__NESTED_PORT", "3124") };
+        let result =
+            load_text("[server]\nport = ${ORION_TEST__OUTER_PORT:-${ORION_TEST__NESTED_PORT}}\n");
+        unsafe { std::env::remove_var("ORION_TEST__NESTED_PORT") };
+        assert_eq!(
+            result.expect("the nested name is referenced").server.port,
+            3124
+        );
+    }
+
+    #[test]
+    fn required_with_message_stops_the_boot_with_that_message() {
+        let _guard = env_guard();
+        let err = load_text(
+            "[storage]\nurl = \"${ORION_TEST_NEVER_SET_DB:?set it to the state database}\"\n",
+        )
+        .expect_err("a required variable is unset")
+        .to_string();
+        assert!(
+            err.contains("ORION_TEST_NEVER_SET_DB is required: set it to the state database"),
+            "{err}"
+        );
+        assert!(err.contains(":2:8)"), "{err}");
     }
 
     // -- C4b: unknown keys are a hard error, not a silent default --

@@ -1,6 +1,6 @@
 <!-- description: The five ways Orion reads the environment — ORION_* overrides, ${VAR} substitution, env://, vault:// and var:// references, and declared vars and secrets. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Environment variables
 
@@ -9,7 +9,7 @@ Orion reads the process environment five ways, and which one applies is decided 
 | Mechanism | Syntax | Where you write it | Read |
 |---|---|---|---|
 | Setting override | `ORION_SECTION__KEY` | the environment itself | once, at startup |
-| Text substitution | `${VAR}`, `${VAR:-default}`, `$$` | the config file, a connector `config` *(deprecated)* | before the text is parsed |
+| Text substitution | `${VAR}`, `${VAR:-default}`, `${VAR:?message}`, `$$` | the config file, a connector `config` *(deprecated)* | before the text is parsed |
 | Secret reference | `env://VAR`, `vault://…` | selected parsed string fields | at every load and reload |
 | Var reference | `var://name` | a stored connector or channel config | at every load and reload |
 | Declared value | `[vars]` / `[secrets]` | the config file, read by name from a workflow | once, at startup |
@@ -175,6 +175,7 @@ Name them anything, with one restriction. Orion refuses to start on an `ORION_*`
 |---|---|
 | Config file, `${VAR}` | Startup fails, naming the file and the position. |
 | Config file, `${VAR:-default}` | The default is used. An empty default is legal. |
+| Config file, `${VAR:?message}` | Startup fails, quoting the message, the file and the position. An empty value fails the same way. |
 | Config file, `[secrets]` | **Startup fails**, naming the entry and never its value. The alternative is an instance that runs and fails at the remote system with nothing pointing back here. |
 | Connector `config` | That connector is **skipped at load**. The server still starts and every other connector serves; `/health` reports `components.connectors: degraded`, and the connector's row in `GET /api/v1/admin/connectors` carries `load_status: "failed"` with a `load_error`. Every task using it fails. |
 | Channel `auth` | The channel is **quarantined** — refused at every ingress rather than served with the guard missing. `/health` reports `components.channels: degraded`. |

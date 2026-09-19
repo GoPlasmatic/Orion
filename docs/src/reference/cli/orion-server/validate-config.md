@@ -1,6 +1,6 @@
 <!-- description: orion-server validate-config checks the merged configuration without starting and prints it with secrets masked, as TOML, JSON or a short summary. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server validate-config`
 
@@ -22,6 +22,13 @@ orion-server validate-config [--format <toml|json|summary>]
 
 ```bash
 orion-server -c config.toml validate-config --format summary
+```
+
+A placeholder that cannot be resolved fails the command with the file, line and column. The line below is a `${VAR:?message}` whose variable is unset:
+
+```console
+$ orion-server -c config.toml validate-config
+Error: Configuration error: ORION_STATE_DB_URL is required: set it to the state database (config.toml:12:7)
 ```
 
 ## Related

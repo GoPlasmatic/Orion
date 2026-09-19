@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`${VAR:?message}` and nested defaults in the config file** ([#344]). A
+  placeholder may now say why a variable is required — `${DB_URL:?set it to
+  the state database}` stops the boot with `DB_URL is required: set it to the
+  state database (config.toml:12:7)` when the variable is unset *or empty* —
+  and a default or a message may nest another placeholder, `${A:-${B:-c}}`,
+  up to eight levels. Both are evaluated only when used, so `${A:-${B}}`
+  requires `B` only while `A` is unset, and a name read only through a nested
+  default passes the unknown-`ORION_*` guard. Other shell forms (`${VAR:+x}`,
+  `${VAR-x}`) are refused with an error listing the three supported ones,
+  where they used to be reported as an invalid name. `:-` still falls back
+  only when the variable is unset.
+
+### Changed
+
+- **Placeholders in config-file comments are no longer substituted**
+  ([#344]). Substitution ran over the raw text, so a comment mentioning
+  `${R2_ENDPOINT}` made that variable required at boot, and the shipped
+  `config.toml.example` wrote its comments with `$${…}` to survive it. The
+  file's `#` comments are now skipped — a `#` inside a quoted value or a
+  placeholder's default is still text — and `$$` in a comment stays as
+  written. Every substitution error now names the file, line and column
+  instead of a byte offset. Connector `config_json` and connection strings
+  keep treating `#` as data.
+
 ### Fixed
 
 - **`package apply` of a superseded version is a rollback again.** Re-applying
@@ -25,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `metadata.progress.status_code` is not a run whose condition none of them
   can change — wrapping it in a task group would change which steps run.
   Both rules are now silent there.
+
+[#344]: https://github.com/GoPlasmatic/Orion/issues/344
 
 ## [1.8.2] - 2026-09-16
 
