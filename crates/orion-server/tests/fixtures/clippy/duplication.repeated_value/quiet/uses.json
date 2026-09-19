@@ -1,0 +1,20 @@
+{
+  "workflow_id": "uses",
+  "name": "uses",
+  "tasks": [
+    {
+      "id": "a",
+      "name": "A",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.a", "logic": { "$use": "window", "with": { "days": 7 } } },
+            { "path": "data.b", "logic": { "$use": "window", "with": { "days": 7 } } },
+            { "path": "data.c", "logic": { "$use": "window", "with": { "days": 7 } } }
+          ]
+        }
+      }
+    }
+  ]
+}

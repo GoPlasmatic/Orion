@@ -166,6 +166,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like the status endpoints: the row goes at once and the engine keeps
   serving it until `POST /engine/reload`.
 
+- **Value fragments, `$each`, `{{name}}`, and composition** ([#333]). A
+  fragment may hold one `value` instead of `tasks`, spliced anywhere a value
+  goes by `{"$use": "name", "with": {…}}` under `$from`'s rule (siblings
+  win). `{"$each": {"p": [..]}, "do": <element>}` repeats one element of any
+  array — a step, a mapping, an operator argument — once per value; the
+  list may be a `$from` constant or a `$param`, and nesting gives a product
+  in written order. Inside a fragment or an `$each`, `"{{name}}"` in a
+  string interpolates a bound scalar, while `$param` keeps inserting the
+  value typed. Fragments may now use fragments (ids carry both call sites,
+  `outer.inner.id`) and constants may reference constants and value
+  fragments, grounded once when the set loads so one `compile` resolves
+  them. Cycles are named once; nesting is capped at 16 and one document at
+  4096 `$each` copies. All of it is compiled away by the `shared.fragments`
+  pass; the admin API refuses an uncompiled `$use` or `$each` with
+  `UNCOMPILED_SOURCE`. New checks: `shared.fragment_kind`,
+  `shared.param_unbound` (a warning), `shared.interpolate_non_scalar`,
+  `shared.each_shape`, `shared.each_list`, `shared.each_position`,
+  `shared.each_limit`, `shared.binding_shadowed`, `shared.cycle`,
+  `shared.depth`. A lint finding inside an expansion names its trail, such
+  as `(fragment 'guard' › $each p = 3)`, and is located at the source line
+  even after an expansion shifted the steps. Example:
+  `examples/packages/unrolled-seats`.
+
 - **`[packages] apply`: a node applies its own packages at startup**
   ([#345]). An image that carries its definitions no longer needs an
   entrypoint that forks the server, polls `/readyz`, applies over HTTP and
@@ -185,6 +208,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with admin detail.
 
 ### Changed
+
+- **A fragment may include a fragment** ([#333]). `shared.fragment_nested`
+  is retired: a `use` inside a fragment, at any depth, now expands. Inside a
+  task fragment, text `{{x}}` where `x` is one of its parameters is now
+  interpolated, which can move a recompiled package's content hash. A
+  string-valued `$use` and an object-valued `$each` are newly reserved at
+  the admin API.
 
 - **`clippy` may newly fail a set that passed.** The two deny rules above
   exit non-zero where they fire; each fires only on a definition that fails
@@ -267,6 +297,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both rules are now silent there.
 
 [#332]: https://github.com/GoPlasmatic/Orion/issues/332
+[#333]: https://github.com/GoPlasmatic/Orion/issues/333
 [#334]: https://github.com/GoPlasmatic/Orion/issues/334
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339

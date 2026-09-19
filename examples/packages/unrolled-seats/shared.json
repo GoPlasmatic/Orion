@@ -1,0 +1,11 @@
+{
+  "constants": {
+    "seats": [0, 1, 2, 3]
+  },
+  "fragments": {
+    "seat-score": {
+      "params": { "seat": {}, "weight": { "default": 10 } },
+      "value": { "*": [{ "var": ["data.input.points.{{seat}}", 0] }, { "$param": "weight" }] }
+    }
+  }
+}

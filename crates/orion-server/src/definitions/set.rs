@@ -138,14 +138,29 @@ impl Definition {
     /// lookup; without it every field path resolved to nothing and every
     /// schema finding came back with a file but no line.
     ///
-    /// A node a pass brought in from another file is located at the
-    /// reference that brought it — the `{"$sql": …}` object — since the
+    /// The compiled path is translated to the source one first: a step an
+    /// expansion shifted is located at the index it was written at, and one
+    /// a fragment brought in from another file is not located here at all —
+    /// the finding names that file instead. A `$sql` statement is the
+    /// exception: it is located at the `{"$sql": …}` reference, since the
     /// compiled coordinate is still where the author typed that.
     pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
         let doc = self.spans.as_ref()?;
         let prefix = format!("{}.", self.entity.as_str());
         let path = path.strip_prefix(&prefix).unwrap_or(path);
-        let span = doc.locate(path)?;
+        let source = self.provenance.resolve(&self.origin, path);
+        let at = if source.file == self.origin {
+            source.path?
+        } else if source
+            .via
+            .iter()
+            .all(|via| matches!(via, super::provenance::Via::Sql { .. }))
+        {
+            path.to_string()
+        } else {
+            return None;
+        };
+        let span = doc.locate(&at)?;
         Some(doc.line_col(span.start))
     }
 }

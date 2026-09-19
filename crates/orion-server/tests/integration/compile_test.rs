@@ -1273,3 +1273,52 @@ fn an_artifact_refuses_a_model_missing_its_reference_or_its_bytes() {
     );
     assert!(!out.exists(), "nothing is written on refusal");
 }
+
+/// #333: the example package's `$each`, value fragment and `{{seat}}`
+/// compile to four ordinary steps, and the compiled workflow runs.
+#[test]
+fn the_unrolled_example_compiles_to_one_step_per_seat_and_runs() {
+    let out = ScratchDir::new("unrolled-out");
+    let example = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/packages/unrolled-seats"
+    );
+    let dir = out.path().join("compiled");
+    let (ok, report) = run(&[
+        "compile",
+        example,
+        "--format",
+        "dir",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let compiled = std::fs::read_to_string(dir.join("workflow.json")).expect("compiled workflow");
+    let workflow: serde_json::Value = serde_json::from_str(&compiled).expect("json");
+    let ids: Vec<&str> = workflow["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["parse", "score0", "score1", "score2", "score3"]);
+    assert!(
+        orion::definitions::compile::residue(&workflow, "").is_empty(),
+        "{workflow}"
+    );
+
+    let input = out.path().join("input.json");
+    std::fs::write(&input, r#"{"points": [3, 5, 0, 2]}"#).unwrap();
+    let (ok, report) = run(&[
+        "dry-run",
+        "-w",
+        dir.join("workflow.json").to_str().unwrap(),
+        "-i",
+        input.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains(r#""seat1": 50"#) && report.contains(r#""seat3": 20"#),
+        "{report}"
+    );
+}

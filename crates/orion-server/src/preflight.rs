@@ -438,6 +438,26 @@ pub fn check_workflow_tasks(
                 )
             }),
     );
+    // `$use` and `$each` the same way (#333): a stored literal is data a
+    // definition set would now read as sugar.
+    findings.extend(
+        crate::definitions::compile::residue(&tasks, "tasks")
+            .into_iter()
+            .filter(|r| r.key == "$use" || r.key == "$each")
+            .map(|r| {
+                Diagnostic::warning(
+                    "source.fragment_key",
+                    format!("workflow '{name}' {}", r.path),
+                    format!(
+                        "holds {} — '{}' is now a reserved key, so the next update of this \
+                         workflow is refused as uncompiled source",
+                        r.syntax(),
+                        r.key
+                    ),
+                )
+                .with_remedy("rename the key if it is data")
+            }),
+    );
     findings
 }
 
@@ -712,6 +732,25 @@ mod tests {
                 .entity
                 .contains("tasks[0].function.input.mappings[0].logic")
         );
+    }
+
+    #[test]
+    fn a_stored_use_or_each_key_is_an_advisory() {
+        let tasks = serde_json::json!([{"id": "t", "name": "T", "function": {"name": "map",
+            "input": {"mappings": [
+                {"path": "data.x", "logic": {"$use": "window"}},
+                {"path": "data.y", "logic": [{"$each": {"p": [1]}, "do": 1}]}]}}}]);
+        let findings = check_workflow_tasks(
+            "w",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
+        let advisories: Vec<_> = findings
+            .iter()
+            .filter(|f| f.check == "source.fragment_key")
+            .collect();
+        assert_eq!(advisories.len(), 2, "{findings:?}");
+        assert!(advisories.iter().all(|f| !f.is_error()));
     }
 
     #[test]

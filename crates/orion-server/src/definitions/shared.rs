@@ -40,6 +40,16 @@
 //! A `$from` alone in its object, pointing at a scalar or array, replaces the
 //! whole node — the same rule with no siblings to lose to.
 //!
+//! ## Fragments, and what composes
+//!
+//! A fragment is a task sequence (`tasks`, included by a `use` step) or a
+//! value (`value`, spliced by `$use` under the same rule as `$from`), either
+//! with parameters. Fragments may use fragments, constants may reference
+//! constants and value fragments, and an `$each` repeats one element over a
+//! list — the expansion itself is [`super::expand`]. Constants are grounded
+//! once, when the catalog is complete ([`SharedDefinitions::finish`]), so
+//! the value splicer only ever copies closed values.
+//!
 //! ## Where this runs
 //!
 //! Strictly in the authoring and deploy path, never in the engine. Expansion
@@ -63,16 +73,43 @@ use super::diagnostic::Diagnostic;
 /// the task expander rather than the value splicer, so it is held separately.
 const SHARED_KEYS: [&str; 3] = ["constants", "errors", "fragments"];
 
-/// A named, parameterised task sequence.
-#[derive(Debug, Clone, Default)]
+/// What a fragment expands to.
+#[derive(Debug, Clone)]
+pub enum FragmentBody {
+    /// A task fragment: steps, included by a `use` step.
+    Tasks(Vec<Value>),
+    /// A value fragment: one value, spliced by `$use`.
+    Value(Value),
+}
+
+/// A named, parameterised task sequence or value.
+#[derive(Debug, Clone)]
 pub struct Fragment {
     /// Parameter name → default. A parameter with no default is required at
     /// every call site.
     pub params: BTreeMap<String, Option<Value>>,
-    pub tasks: Vec<Value>,
+    pub body: FragmentBody,
     /// The shared document that declared it — what a relative file reference
     /// inside it (`$sql`) was written against.
     pub origin: String,
+}
+
+impl Fragment {
+    /// The steps of a task fragment; `None` for a value fragment.
+    pub fn tasks(&self) -> Option<&[Value]> {
+        match &self.body {
+            FragmentBody::Tasks(tasks) => Some(tasks),
+            FragmentBody::Value(_) => None,
+        }
+    }
+
+    /// `task` or `value`, for messages.
+    pub fn kind(&self) -> &'static str {
+        match self.body {
+            FragmentBody::Tasks(_) => "task",
+            FragmentBody::Value(_) => "value",
+        }
+    }
 }
 
 /// The reserved key of the set's package declaration — see
@@ -124,6 +161,10 @@ pub struct SharedDefinitions {
     /// `(namespace, key)` → the shared document that declared the value, so
     /// a `$sql` inside a spliced constant resolves against its own file.
     pub value_origins: BTreeMap<(String, String), String>,
+    /// Values [`Self::finish`] could not ground — members of a reference
+    /// cycle, or nested too deep. Reported once, there; a reference to one
+    /// is dropped without a second finding.
+    pub poisoned: BTreeSet<(String, String)>,
 }
 
 impl SharedDefinitions {
@@ -144,6 +185,7 @@ impl SharedDefinitions {
         for (origin, doc) in &docs {
             shared.merge(doc, origin, &mut findings);
         }
+        shared.finish(&mut findings);
         Ok((shared, findings))
     }
 
@@ -326,7 +368,7 @@ impl SharedDefinitions {
             findings.push(Diagnostic::error(
                 "shared.namespace",
                 origin,
-                "'fragments' must be an object of named task sequences",
+                "'fragments' must be an object of named task sequences and values",
             ));
             return;
         };
@@ -339,13 +381,29 @@ impl SharedDefinitions {
                 ));
                 continue;
             }
-            let Some(tasks) = spec.get("tasks").and_then(Value::as_array) else {
-                findings.push(Diagnostic::error(
-                    "shared.fragment",
-                    origin,
-                    format!("fragment '{name}' has no 'tasks' array"),
-                ));
-                continue;
+            let body = match (spec.get("tasks"), spec.get("value")) {
+                (Some(Value::Array(tasks)), None) => FragmentBody::Tasks(tasks.clone()),
+                (None, Some(value)) => FragmentBody::Value(value.clone()),
+                (Some(_), None) => {
+                    findings.push(Diagnostic::error(
+                        "shared.fragment",
+                        origin,
+                        format!("fragment '{name}': 'tasks' must be an array of steps"),
+                    ));
+                    continue;
+                }
+                _ => {
+                    findings.push(Diagnostic::error(
+                        "shared.fragment",
+                        origin,
+                        format!(
+                            "fragment '{name}' must declare exactly one of 'tasks' (a task \
+                             fragment, included with `use`) or 'value' (a value fragment, \
+                             spliced with `$use`)"
+                        ),
+                    ));
+                    continue;
+                }
             };
             let mut params = BTreeMap::new();
             if let Some(declared) = spec.get("params").and_then(Value::as_object) {
@@ -357,7 +415,7 @@ impl SharedDefinitions {
                 name.clone(),
                 Fragment {
                     params,
-                    tasks: tasks.clone(),
+                    body,
                     origin: origin.to_string(),
                 },
             );
@@ -374,109 +432,6 @@ impl SharedDefinitions {
     /// guarantees.
     pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Diagnostic>) {
         super::compile::compile(doc, &super::compile::Cx::detached(self, origin), findings);
-    }
-
-    /// Replace every `{"use": ..}` entry with the named fragment's tasks.
-    ///
-    /// Not recursive: a fragment that includes a fragment needs cycle
-    /// detection and a depth cap, and nothing has asked for it. Refused with a
-    /// message rather than silently ignored, so the restriction is visible at
-    /// the point it bites — at every depth of the fragment, not just its top
-    /// level, which is where [`namespace_fragment_step`] enforces it.
-    pub(super) fn expand_tasks(
-        &self,
-        tasks: &[Value],
-        cx: &super::compile::Cx<'_>,
-        findings: &mut Vec<Diagnostic>,
-    ) -> Vec<Value> {
-        let origin = cx.origin;
-        let mut out = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let Some(name) = task.get("use").and_then(Value::as_str) else {
-                // A task group holds steps of its own, and a fragment is as
-                // usable inside a guard clause as outside one. The group test
-                // is the engine's own, so a step this expander declines to
-                // descend into is exactly one the flattener calls a task —
-                // a malformed group is left alone here and reported as the
-                // broken step it is by validation, rather than being quietly
-                // reshaped on the way through.
-                if crate::engine::is_group(task) {
-                    let mut group = task.clone();
-                    if let Some(inner) = task.get("tasks").and_then(Value::as_array) {
-                        group["tasks"] = Value::Array(self.expand_tasks(inner, cx, findings));
-                    }
-                    out.push(group);
-                    continue;
-                }
-                out.push(task.clone());
-                continue;
-            };
-            let instance = task.get("id").and_then(Value::as_str).unwrap_or(name);
-            let Some(fragment) = self.fragments.get(name) else {
-                findings.push(Diagnostic::error(
-                    "closure.fragment",
-                    format!("{origin} task '{instance}'"),
-                    format!("fragment '{name}' is not defined in the set"),
-                ));
-                continue;
-            };
-
-            let args = self.fragment_args(fragment, task, name, instance, origin, findings);
-
-            for inner in &fragment.tasks {
-                let mut expanded = inner.clone();
-                substitute_params(&mut expanded, &args);
-                reanchor_sql(&mut expanded, &fragment.origin, cx.base_dir);
-                if namespace_fragment_step(&mut expanded, instance, name, findings) {
-                    out.push(expanded);
-                }
-            }
-        }
-        out
-    }
-
-    /// A call site's arguments: declared defaults, overridden by `with`, with
-    /// both an unsatisfied parameter and an unknown one reported.
-    fn fragment_args(
-        &self,
-        fragment: &Fragment,
-        task: &Value,
-        name: &str,
-        instance: &str,
-        origin: &str,
-        findings: &mut Vec<Diagnostic>,
-    ) -> BTreeMap<String, Value> {
-        let supplied = task
-            .get("with")
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        let declared: BTreeSet<&String> = fragment.params.keys().collect();
-
-        for key in supplied.keys() {
-            if !declared.contains(key) {
-                findings.push(Diagnostic::error(
-                    "shared.fragment_param",
-                    format!("{origin} task '{instance}'"),
-                    format!("fragment '{name}' declares no parameter '{key}'"),
-                ));
-            }
-        }
-
-        let mut args = BTreeMap::new();
-        for (param, default) in &fragment.params {
-            match supplied.get(param).or(default.as_ref()) {
-                Some(value) => {
-                    args.insert(param.clone(), value.clone());
-                }
-                None => findings.push(Diagnostic::error(
-                    "shared.fragment_param",
-                    format!("{origin} task '{instance}'"),
-                    format!("fragment '{name}' requires parameter '{param}', which has no default"),
-                )),
-            }
-        }
-        args
     }
 
     /// Walk a value, splicing every `$from` against the namespaces.
@@ -502,6 +457,11 @@ impl SharedDefinitions {
                     return;
                 };
                 let replacement = match self.lookup(&path) {
+                    // Reported once, where the catalog was grounded.
+                    None if self.is_poisoned(&path) => {
+                        map.remove("$from");
+                        None
+                    }
                     Some(target) => {
                         let mut target = target.clone();
                         if let Some(declared_in) = path.split_once('.').and_then(|(ns, key)| {
@@ -534,10 +494,191 @@ impl SharedDefinitions {
     /// `namespace.key` — one dot, because a namespace is a flat catalog and a
     /// deeper path would make the reference ambiguous with a key containing a
     /// dot.
-    fn lookup(&self, path: &str) -> Option<&Value> {
+    pub(super) fn lookup(&self, path: &str) -> Option<&Value> {
         let (namespace, key) = path.split_once('.')?;
+        if self
+            .poisoned
+            .contains(&(namespace.to_string(), key.to_string()))
+        {
+            return None;
+        }
         self.namespaces.get(namespace)?.get(key)
     }
+
+    fn is_poisoned(&self, path: &str) -> bool {
+        path.split_once('.')
+            .is_some_and(|(ns, key)| self.poisoned.contains(&(ns.to_string(), key.to_string())))
+    }
+
+    /// Ground every shared value, once, after the last [`Self::merge`]: a
+    /// constant that references a constant, uses a value fragment or holds
+    /// an `$each` becomes the closed value it stands for, so the value
+    /// splicer copies it in one step and compiling stays idempotent.
+    ///
+    /// A reference cycle — `constants.a → constants.b → constants.a`, or
+    /// through a fragment — is reported once, at the file that declares
+    /// it, and its members are poisoned.
+    pub fn finish(&mut self, findings: &mut Vec<Diagnostic>) {
+        let keys: Vec<(String, String)> = self
+            .namespaces
+            .iter()
+            .flat_map(|(ns, entries)| entries.keys().map(move |key| (ns.clone(), key.clone())))
+            .collect();
+        let mut state = Grounding::default();
+        for key in &keys {
+            self.ground(key, &mut state, findings);
+        }
+        for (key, value) in state.done {
+            match value {
+                Some(value) => {
+                    if let Some(slot) = self
+                        .namespaces
+                        .get_mut(&key.0)
+                        .and_then(|ns| ns.get_mut(&key.1))
+                    {
+                        *slot = value;
+                    }
+                }
+                None => {
+                    self.poisoned.insert(key);
+                }
+            }
+        }
+    }
+
+    fn ground(
+        &self,
+        key: &(String, String),
+        state: &mut Grounding,
+        findings: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        if let Some(done) = state.done.get(key) {
+            return done.clone();
+        }
+        let label = format!("{}.{}", key.0, key.1);
+        let origin = self.value_origins.get(key).cloned().unwrap_or_default();
+        if let Some(pos) = state.stack.iter().position(|s| *s == label) {
+            let chain: Vec<&str> = state.stack[pos..]
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(label.as_str()))
+                .collect();
+            findings.push(Diagnostic::error(
+                "shared.cycle",
+                &origin,
+                format!("'{label}' refers to itself: {}", chain.join(" → ")),
+            ));
+            for member in &state.stack[pos..] {
+                state.cyclic.insert(member.clone());
+            }
+            return None;
+        }
+        if state.stack.len() >= super::expand::MAX_EXPANSION_DEPTH {
+            findings.push(Diagnostic::error(
+                "shared.depth",
+                &origin,
+                format!(
+                    "'{label}' references values nested more than {} deep: {}",
+                    super::expand::MAX_EXPANSION_DEPTH,
+                    state.stack.join(" → ")
+                ),
+            ));
+            state.done.insert(key.clone(), None);
+            return None;
+        }
+        let mut value = self.namespaces.get(&key.0)?.get(&key.1)?.clone();
+        state.stack.push(label.clone());
+        // `$use`, `$each` and `{{name}}` first, at the constant's own file.
+        let base_dir = std::path::Path::new(&origin).parent();
+        let cx = super::compile::Cx {
+            shared: self,
+            origin: &origin,
+            base_dir,
+            root: None,
+        };
+        let mut map = super::provenance::SourceMap::default();
+        super::expand::Expander::new(&cx, findings, &mut map).closed_value(&mut value, &label);
+        // Then every `$from`, each target grounded first.
+        self.ground_from(&mut value, &origin, state, findings);
+        state.stack.pop();
+        let grounded = if state.cyclic.contains(&label) {
+            None
+        } else {
+            Some(value)
+        };
+        state.done.insert(key.clone(), grounded.clone());
+        grounded
+    }
+
+    fn ground_from(
+        &self,
+        value: &mut Value,
+        origin: &str,
+        state: &mut Grounding,
+        findings: &mut Vec<Diagnostic>,
+    ) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    self.ground_from(item, origin, state, findings);
+                }
+            }
+            Value::Object(map) => {
+                for member in map.values_mut() {
+                    self.ground_from(member, origin, state, findings);
+                }
+                let Some(path) = map.get("$from").and_then(Value::as_str).map(str::to_string)
+                else {
+                    return;
+                };
+                let key = path
+                    .split_once('.')
+                    .map(|(ns, key)| (ns.to_string(), key.to_string()))
+                    .filter(|(ns, key)| {
+                        self.namespaces
+                            .get(ns)
+                            .is_some_and(|entries| entries.contains_key(key))
+                    });
+                let Some(key) = key else {
+                    findings.push(Diagnostic::error(
+                        "closure.shared_value",
+                        origin,
+                        format!("'{path}' is not defined in the set"),
+                    ));
+                    map.remove("$from");
+                    return;
+                };
+                let replacement = match self.ground(&key, state, findings) {
+                    Some(mut target) => {
+                        if let Some(declared_in) = self.value_origins.get(&key) {
+                            reanchor_sql(
+                                &mut target,
+                                declared_in,
+                                std::path::Path::new(origin).parent(),
+                            );
+                        }
+                        apply_splice(map, &target)
+                    }
+                    None => {
+                        map.remove("$from");
+                        None
+                    }
+                };
+                if let Some(replacement) = replacement {
+                    *value = replacement;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// [`SharedDefinitions::finish`]'s working state.
+#[derive(Default)]
+struct Grounding {
+    done: BTreeMap<(String, String), Option<Value>>,
+    stack: Vec<String>,
+    cyclic: BTreeSet<String>,
 }
 
 /// Rewrite every relative `$sql` path in `value` — written relative to the
@@ -545,7 +686,7 @@ impl SharedDefinitions {
 /// directory of the document it is being copied into. With no `to_dir`
 /// nothing is rewritten, and the `$sql` pass reports that the reference
 /// cannot be resolved.
-fn reanchor_sql(value: &mut Value, declared_in: &str, to_dir: Option<&std::path::Path>) {
+pub(super) fn reanchor_sql(value: &mut Value, declared_in: &str, to_dir: Option<&std::path::Path>) {
     let Some(to_dir) = to_dir else {
         return;
     };
@@ -674,79 +815,6 @@ fn apply_splice(map: &mut Map<String, Value>, target: &Value) -> Option<Value> {
     }
 }
 
-/// Prefix every id one fragment step contributes with the call-site id — at
-/// **every** depth — and refuse a nested `use` wherever it sits. Returns
-/// `false` when the step must be dropped.
-///
-/// Both halves used to stop at the fragment's top level, which is what made
-/// the namespacing contract — "a fragment cannot collide with the including
-/// workflow, or with a second instance of itself" — false for any fragment
-/// holding a task group (#294). Only the group's own `id` was rewritten, so
-/// the tasks inside it landed in the host workflow's namespace: using such a
-/// fragment twice produced duplicate ids, and using it once collided with any
-/// host task sharing a name with one of its nested tasks. The author could not
-/// see either coming, because the colliding name is private to the fragment.
-///
-/// The group test is the engine's own, so a step this walk descends into is
-/// exactly one the flattener calls a group. That is already the rule the
-/// non-`use` branch of [`SharedDefinitions::expand_tasks`] follows, and the
-/// discrepancy between the two branches *was* the bug.
-///
-/// Ids are prefixed flat — `{call-site}.{id}` regardless of depth — rather
-/// than accumulating one segment per enclosing group. One rule, and ids stay
-/// short: a step id is a metric label, a trace step id and a
-/// `metadata.progress` key, and groups nest up to
-/// [`MAX_STEP_DEPTH`](crate::engine::MAX_STEP_DEPTH). Flat prefixing also
-/// keeps "a fragment is authored exactly like a workflow" true — a fragment
-/// that reuses one id across two of its own groups still surfaces as a
-/// duplicate, as it would if you inlined it by hand, where per-group
-/// prefixing would silently mask it.
-fn namespace_fragment_step(
-    step: &mut Value,
-    instance: &str,
-    fragment: &str,
-    findings: &mut Vec<Diagnostic>,
-) -> bool {
-    // Checked after `substitute_params` rather than before it, which is
-    // equivalent: both test for the key, so a `{"use": {"$param": ..}}` is
-    // refused either way.
-    if step.get("use").is_some() {
-        findings.push(Diagnostic::error(
-            "shared.fragment_nested",
-            format!("fragment '{fragment}'"),
-            "a fragment cannot include another fragment",
-        ));
-        return false;
-    }
-    if let Some(id) = step.get("id").and_then(Value::as_str) {
-        step["id"] = Value::String(format!("{instance}.{id}"));
-    }
-    if crate::engine::is_group(step)
-        && let Some(members) = step.get_mut("tasks").and_then(Value::as_array_mut)
-    {
-        members.retain_mut(|member| namespace_fragment_step(member, instance, fragment, findings));
-    }
-    true
-}
-
-/// Replace `{"$param": "name"}` nodes with the call site's argument.
-fn substitute_params(value: &mut Value, args: &BTreeMap<String, Value>) {
-    match value {
-        Value::Array(items) => items.iter_mut().for_each(|v| substitute_params(v, args)),
-        Value::Object(map) => {
-            if map.len() == 1
-                && let Some(name) = map.get("$param").and_then(Value::as_str)
-                && let Some(arg) = args.get(name)
-            {
-                *value = arg.clone();
-                return;
-            }
-            map.values_mut().for_each(|v| substitute_params(v, args));
-        }
-        _ => {}
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,8 +849,8 @@ mod tests {
             base_dir: Some(base),
             root: None,
         };
-        let tasks = doc["tasks"].as_array().expect("tasks").clone();
-        doc["tasks"] = Value::Array(shared.expand_tasks(&tasks, &cx, &mut findings));
+        let mut map = crate::definitions::provenance::SourceMap::default();
+        crate::definitions::expand::Expander::new(&cx, &mut findings, &mut map).document(&mut doc);
         shared.splice(&mut doc, &cx, &mut findings);
         assert!(findings.is_empty(), "{findings:?}");
         assert_eq!(
@@ -1065,19 +1133,19 @@ mod tests {
         assert!(f.is_empty(), "{f:?}");
     }
 
-    /// The other half of #294: a fragment's *own* task list is not the only
-    /// place a `use` can hide. Nested inside a group it escaped the
-    /// no-nested-fragments refusal entirely and survived expansion, reaching
-    /// the host workflow as a step the engine cannot parse.
+    /// A fragment may use a fragment (#333), inside a group as at its top
+    /// level; the inner steps carry both call sites, `outer.inner.id`, so
+    /// neither expansion can collide with the host or with itself.
     #[test]
-    fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
+    fn a_fragment_may_use_a_fragment_and_carries_both_prefixes() {
         let mut s = SharedDefinitions::default();
         let mut f = Vec::new();
         s.merge(
             &json!({ "fragments": {
                 "outer": { "tasks": [
+                    { "id": "i", "use": "inner" },
                     { "id": "span", "condition": true, "tasks": [
-                        { "id": "i", "use": "inner" }] }] },
+                        { "id": "g", "use": "inner" }] }] },
                 "inner": { "tasks": [{ "id": "t", "name": "t",
                     "function": { "name": "map", "input": { "mappings": [] } } }] } } }),
             "common.json",
@@ -1085,14 +1153,11 @@ mod tests {
         );
         let mut doc = json!({ "tasks": [{ "id": "o", "use": "outer" }] });
         s.expand(&mut doc, "wf.json", &mut f);
-        assert!(
-            f.iter().any(|x| x.check == "shared.fragment_nested"),
-            "the restriction must be reported where it bites, not left to \
-             surface as an uncompiled reference the set can actually resolve: {f:?}"
-        );
-        // Dropped, not carried through: a step that survived here would leave
-        // source form in a compiled document.
-        assert_eq!(doc["tasks"][0]["tasks"].as_array().map(Vec::len), Some(0));
+        assert!(f.is_empty(), "{f:?}");
+        assert_eq!(doc["tasks"][0]["id"], "o.i.t");
+        assert_eq!(doc["tasks"][1]["id"], "o.span");
+        assert_eq!(doc["tasks"][1]["tasks"][0]["id"], "o.g.t");
+        assert!(crate::definitions::compile::residue(&doc, "").is_empty());
     }
 
     /// A parameter with a default may be omitted; one without cannot.
@@ -1153,24 +1218,28 @@ mod tests {
         assert!(!SharedDefinitions::is_shared_document(&json!({"data": {}})));
     }
 
-    /// v1 refuses nesting rather than looping forever on a cycle.
+    /// A fragment that includes itself, directly or through another, is
+    /// named with its chain and dropped rather than expanded for ever.
     #[test]
-    fn a_fragment_including_a_fragment_is_refused() {
+    fn a_fragment_cycle_is_named() {
         let mut s = SharedDefinitions::default();
         let mut f = Vec::new();
         s.merge(
             &json!({ "fragments": {
-                "outer": { "tasks": [{ "id": "i", "use": "inner" }] },
-                "inner": { "tasks": [{ "id": "t", "name": "t",
-                    "function": { "name": "map", "input": { "mappings": [] } } }] } } }),
+                "a": { "tasks": [{ "id": "b", "use": "b" }] },
+                "b": { "tasks": [{ "id": "a", "use": "a" }] } } }),
             "common.json",
             &mut f,
         );
-        let mut doc = json!({ "tasks": [{ "id": "o", "use": "outer" }] });
+        let mut doc = json!({ "tasks": [{ "id": "x", "use": "a" }] });
         s.expand(&mut doc, "wf.json", &mut f);
+        let cycle: Vec<_> = f.iter().filter(|x| x.check == "shared.cycle").collect();
+        assert_eq!(cycle.len(), 1, "{f:?}");
         assert!(
-            f.iter().any(|x| x.check == "shared.fragment_nested"),
-            "{f:?}"
+            cycle[0].message.contains("'a' → 'b' → 'a'"),
+            "{:?}",
+            cycle[0]
         );
+        assert!(crate::definitions::compile::residue(&doc, "").is_empty());
     }
 }

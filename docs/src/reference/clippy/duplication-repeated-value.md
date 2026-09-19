@@ -19,7 +19,7 @@ An object with ≥ 2 keys, byte-identical in ≥ 3 places.
 
 ## Caveats
 
-Silent for structure: steps, `function` headers, mapping and rule entries, operator nodes, roots. Silent for the input of an engine built-in, for a `use` step's `with` block, and for anything containing a `$from` or a `$sql`. Silent for an object whose every occurrence sits inside a larger reported one.
+Silent for structure: steps, `function` headers, mapping and rule entries, operator nodes, roots. Silent for the input of an engine built-in and for a `use` step's `with` block. Silent for anything containing a `$from`, a `$sql`, a `$use` or an `$each`. Silent for an object whose every occurrence sits inside a larger reported one.
 
 ## Related
 

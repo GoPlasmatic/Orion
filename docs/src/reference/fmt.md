@@ -57,7 +57,7 @@ The nesting of an expression is visible in its indentation. A leaf comparison, w
 
 ## Canonical key order
 
-Known keys of known shapes are written in the order in the table. Keys not in a table follow them, in the order you wrote them. `$from` is written first in any object it appears in, because it is the base the rest of the object overrides.
+Known keys of known shapes are written in the order in the table. Keys not in a table follow them, in the order you wrote them. `$each`, `$from` and `$use` are written first in any object they appear in. Each is the base the rest of the object overrides or repeats. A `$use`'s `with` follows it.
 
 | Shape | Order |
 |---|---|
@@ -74,7 +74,8 @@ Known keys of known shapes are written in the order in the table. Keys not in a 
 | Connector | `id`, `name`, `connector_type`, `enabled`, `tags`, `config` |
 | Shared document | `package`, `constants`, `errors`, `fragments` |
 | Package declaration | `name`, `requires` |
-| Fragment | `params`, `tasks` |
+| Fragment | `params`, `tasks`, `value` |
+| `$each` element | `$each`, `do` |
 | Case file | `name`, `workflow`, `input`, `metadata`, `secrets`, `stubs`, `stubs_file`, `expect`, `expect_errors`, `expect_calls`, `expect_tasks` |
 | Package artifact | `package`, `requires`, `connectors`, `workflows`, `channels` |
 

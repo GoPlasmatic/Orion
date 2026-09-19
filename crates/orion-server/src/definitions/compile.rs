@@ -1,7 +1,9 @@
 //! The authoring layer: source form in, canonical form out.
 //!
 //! An author writes conveniences a definition set understands — `$from`
-//! splices a shared value, `use` expands a task fragment (#285). The admin
+//! splices a shared value, `use` expands a task fragment (#285), `$use` a
+//! value fragment and `$each` repeats one element (#333), `$sql` inlines a
+//! statement file (#332). The admin
 //! API, the engine, traces and the UI understand none of them, and are not
 //! meant to: a runtime that had to know about authoring sugar would have to
 //! keep knowing about every future piece of it.
@@ -111,6 +113,10 @@ impl Residue {
     /// Rendered rather than sliced out of the source so the message shows the
     /// reference alone, without whichever siblings happened to sit beside it.
     pub fn syntax(&self) -> String {
+        if self.key == "$each" {
+            // `target` is the name bound, and the list is not the point.
+            return format!("{{\"$each\": {{{}: …}}}}", Value::from(&*self.target));
+        }
         format!(
             "{{{}: {}}}",
             Value::from(self.key),
@@ -122,6 +128,8 @@ impl Residue {
     pub fn describe(&self) -> String {
         match self.key {
             "use" => format!("a reference to fragment '{}'", self.target),
+            "$use" => format!("a reference to value fragment '{}'", self.target),
+            "$each" => format!("a repetition over '{}'", self.target),
             "$sql" => format!("a reference to SQL file '{}'", self.target),
             _ => format!("a reference to '{}'", self.target),
         }
@@ -210,7 +218,7 @@ pub fn residue(doc: &Value, root: &str) -> Vec<Residue> {
 }
 
 // ============================================================
-// shared.fragments — `{"id": "_x", "use": "f", "with": {..}}`
+// shared.fragments — `use`, `$use`, `$each`, `$param`, `{{name}}`
 // ============================================================
 
 struct Fragments;
@@ -221,6 +229,8 @@ impl Fragments {
     /// reports cannot drift apart.
     const ID: &'static str = "shared.fragments";
     const NOUN: &'static str = "a task-fragment reference";
+    const VALUE_NOUN: &'static str = "a value-fragment reference";
+    const EACH_NOUN: &'static str = "a repetition";
 }
 
 impl Pass for Fragments {
@@ -232,13 +242,16 @@ impl Pass for Fragments {
         Self::NOUN
     }
 
-    /// Walks the authored step tree, and only that.
+    /// `use` in the authored step tree, and `$use`/`$each` at every depth —
+    /// the three the expander rewrites, recognised by the same functions.
     ///
     /// `use` names a fragment where the expander reads it — an element of a
     /// `tasks` array — and nowhere else, so a payload field that happens to be
-    /// called `use` is left alone. The descent into a group mirrors
-    /// `expand_tasks`: `is_group` is the engine's own test, so a step this
-    /// walk declines to enter is exactly one the expander calls a task.
+    /// called `use` is left alone. The descent into a group mirrors the
+    /// expander's: `is_group` is the engine's own test, so a step this walk
+    /// declines to enter is exactly one the expander calls a task. A
+    /// non-string `$use` and a non-object `$each` are not references, to
+    /// either side.
     fn residue(&self, doc: &Value, root: &str) -> Vec<Residue> {
         let mut out = Vec::new();
         // `root == "tasks"` says the caller already stepped through the key
@@ -253,6 +266,7 @@ impl Pass for Fragments {
             };
             steps(tasks, &at, &mut out);
         }
+        value_sugar(doc, root, &mut out);
         out
     }
 
@@ -261,12 +275,52 @@ impl Pass for Fragments {
         doc: &mut Value,
         cx: &Cx<'_>,
         findings: &mut Vec<Diagnostic>,
-        _map: &mut SourceMap,
+        map: &mut SourceMap,
     ) {
-        if let Some(tasks) = doc.get_mut("tasks").and_then(Value::as_array_mut) {
-            let expanded = cx.shared.expand_tasks(tasks, cx, findings);
-            *tasks = expanded;
+        super::expand::Expander::new(cx, findings, map).document(doc);
+    }
+}
+
+/// Every `$use` and `$each`, at any depth.
+fn value_sugar(value: &Value, path: &str, out: &mut Vec<Residue>) {
+    match value {
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                value_sugar(item, &format!("{path}[{i}]"), out);
+            }
         }
+        Value::Object(map) => {
+            if let Some(binding) = super::expand::as_each(map) {
+                out.push(Residue {
+                    pass: Fragments::ID,
+                    noun: Fragments::EACH_NOUN,
+                    key: "$each",
+                    target: binding.keys().next().cloned().unwrap_or_default(),
+                    path: path.to_string(),
+                });
+                // The copies replace the element; its insides are not the
+                // document's own.
+                return;
+            }
+            if let Some(name) = super::expand::as_value_use(map) {
+                out.push(Residue {
+                    pass: Fragments::ID,
+                    noun: Fragments::VALUE_NOUN,
+                    key: "$use",
+                    target: name.to_string(),
+                    path: path.to_string(),
+                });
+            }
+            for (key, v) in map {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                value_sugar(v, &at, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -276,7 +330,7 @@ fn steps(tasks: &Value, path: &str, out: &mut Vec<Residue>) {
     };
     for (i, item) in items.iter().enumerate() {
         let at = format!("{path}[{i}]");
-        if let Some(name) = item.get("use").and_then(Value::as_str) {
+        if let Some(name) = super::expand::as_use_step(item) {
             out.push(Residue {
                 pass: Fragments::ID,
                 noun: Fragments::NOUN,

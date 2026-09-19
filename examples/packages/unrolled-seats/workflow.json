@@ -1,0 +1,30 @@
+{
+  "workflow_id": "score-seats",
+  "name": "Score every seat",
+  "tags": ["pkg:unrolled-seats"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse the request",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "$each": { "seat": { "$from": "constants.seats" } },
+      "do": {
+        "id": "score{{seat}}",
+        "name": "Score seat {{seat}}",
+        "function": {
+          "name": "map",
+          "input": {
+            "mappings": [
+              {
+                "path": "data.scores.seat{{seat}}",
+                "logic": { "$use": "seat-score", "with": { "seat": "{{seat}}" } }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

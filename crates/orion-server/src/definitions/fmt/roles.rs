@@ -40,6 +40,9 @@ pub enum Role {
     Task,
     Group,
     UseStep,
+    /// An array element carrying `$each`: its `do` takes the role the
+    /// element itself would have had.
+    Each(EachOf),
     // ---- inline when they fit ----
     FunctionHeader,
     Input(InputKind),
@@ -59,6 +62,14 @@ pub enum Role {
     PathMap,
     /// Anything unrecognised: author order, fits-or-break.
     Generic,
+}
+
+/// What an `$each` element repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EachOf {
+    Step,
+    Mapping,
+    ValidationRule,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +159,20 @@ pub fn child_role(parent: Role, key: Option<&str>, child: &Node, depth: usize) -
             Some("tasks") => Role::TaskList,
             _ => generic_or_scalar_array(child),
         },
+        Role::TaskList if has_each(child) => Role::Each(EachOf::Step),
         Role::TaskList => step_role(child),
+        Role::Each(of) => match (key, of) {
+            (Some("do"), EachOf::Step) => step_role(child),
+            (Some("do"), EachOf::Mapping) if child.as_object().is_some() => Role::Mapping,
+            (Some("do"), EachOf::ValidationRule) if child.as_object().is_some() => {
+                Role::ValidationRule
+            }
+            _ => generic_or_scalar_array(child),
+        },
+        Role::EntryList(EntryKind::Mapping) if has_each(child) => Role::Each(EachOf::Mapping),
+        Role::EntryList(EntryKind::ValidationRule) if has_each(child) => {
+            Role::Each(EachOf::ValidationRule)
+        }
         Role::Task => match key {
             Some("function") if child.as_object().is_some() => Role::FunctionHeader,
             _ => generic_or_scalar_array(child),
@@ -230,6 +254,7 @@ pub fn key_order(role: Role) -> Option<&'static [&'static str]> {
         Role::Task => style::TASK_KEYS,
         Role::Group => style::GROUP_KEYS,
         Role::UseStep => style::USE_STEP_KEYS,
+        Role::Each(_) => style::EACH_KEYS,
         Role::FunctionHeader => style::FUNCTION_KEYS,
         Role::Mapping => style::MAPPING_KEYS,
         Role::ValidationRule => style::VALIDATION_RULE_KEYS,
@@ -382,7 +407,17 @@ fn is_read_node(node: &Node) -> bool {
     matches!(node.as_object(), Some([m]) if READ_OPERATORS.contains(&m.key.node.as_str()))
 }
 
-/// Reorder `members` so `$from` comes first, then `order`'s keys in table
+/// An object element carrying an object-valued `$each`.
+fn has_each(node: &Node) -> bool {
+    node.as_object().is_some_and(|members| {
+        members
+            .iter()
+            .any(|m| m.key.node == "$each" && m.value.node.as_object().is_some())
+    })
+}
+
+/// Reorder `members` so the reference keys come first — `$each`, `$from`,
+/// `$use`, and `with` right after a `$use` — then `order`'s keys in table
 /// order, then everything else in author order. Author order is the only
 /// thing that changes; nothing is added or dropped.
 pub fn order_members<'a>(members: &'a [Member], order: Option<&[&str]>) -> Vec<&'a Member> {
@@ -396,7 +431,14 @@ pub fn order_members<'a>(members: &'a [Member], order: Option<&[&str]>) -> Vec<&
             }
         }
     };
-    take(&|k| k == style::FROM_KEY, &mut out);
+    for key in style::REFERENCE_KEYS {
+        take(&|k| k == *key, &mut out);
+    }
+    // A `$use`'s arguments read beside it; elsewhere `with` is an ordinary
+    // key — a `use` step's, placed by its table.
+    if members.iter().any(|m| m.key.node == "$use") {
+        take(&|k| k == "with", &mut out);
+    }
     if let Some(order) = order {
         for key in order {
             take(&|k| k == *key, &mut out);

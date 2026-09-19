@@ -1,10 +1,10 @@
-<!-- description: How a definition set says a thing once: $from splices a shared constant or error, use expands a parameterised task fragment, and compile resolves both. -->
+<!-- description: How a definition set says a thing once: $from splices a constant, use and $use expand fragments, $each repeats, and compile resolves them all. -->
 <!-- type: reference -->
 <!-- last_verified: 2026-09-19 -->
 
 # Shared definitions
 
-A definition set can say a thing once. Two mechanisms, one resolution pass, both expanded **before** validation. `lint`, `dry-run` and `test` all check and run the expanded form, and the server, the admin API, traces and the UI never see a reference.
+A definition set can say a thing once: a shared value, a task sequence, a parameterised value, or one element repeated. All of it is expanded **before** validation. `lint`, `dry-run` and `test` check and run the expanded form, and the server, the admin API and traces never see a reference.
 
 ## Synopsis
 
@@ -37,14 +37,66 @@ resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users
 { "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
 ```
 
-Expanded task ids are namespaced by the call-site id (`_session.check`). A fragment therefore cannot collide with the including workflow or with a second instance of itself. **Every** id the fragment contributes is prefixed, including those inside a task group, a group's own id and its members' alike. The prefix is flat rather than one segment per enclosing group, so `refused`/`deny` become `_session.refused` and `_session.deny`. A parameter with no `default` is required at every call site. A fragment cannot include another fragment, at any depth.
+Expanded task ids are namespaced by the call-site id (`_session.check`). A fragment therefore cannot collide with the including workflow or with a second instance of itself. **Every** id the fragment contributes is prefixed, including those inside a task group, a group's own id and its members' alike. The prefix is flat rather than one segment per enclosing group, so `refused`/`deny` become `_session.refused` and `_session.deny`. A parameter with no `default` is required at every call site. A fragment may use another fragment, at any depth, and the inner ids carry both call sites: `_session.inner.check`.
 
 A shared document is one carrying `constants`, `errors`, `fragments` or a `package` declaration, and no entity field. A `.sql` file is not a shared document. It is read only when a `$sql` names it. It is found by shape, like entities, and split across as many files as you like. A name defined twice is an error rather than a silent last-write-wins.
 
 Every unresolved reference is a lint error, which is why set mode resolves the catalog with no flag; the single-file commands take `--definitions <dir>`.
 
+## Value fragments (`$use`)
+
+A fragment may hold one `value` instead of `tasks`. It is spliced by `$use` wherever a value goes, under the same rule as `$from`:
+
+```json
+{ "fragments": { "wrote": {
+    "params": { "slot": {} },
+    "value": { ">": [{ "var": "{{slot}}.rows_affected" }, 0] } } } }
+```
+
+```json
+{ "condition": { "$use": "wrote", "with": { "slot": "temp_data.fold" } } }
+```
+
+An object value merges into the call site, and the call site's other keys win. Any other value replaces a call site that has no other keys. A fragment declares exactly one of `tasks` and `value`. `use` of a value fragment and `$use` of a task fragment are both errors naming the kind. In a `tasks` array, a `$use` whose value is a step is a step.
+
+## Parameters: `$param` and `{{name}}`
+
+Inside a fragment, `{"$param": "name"}` is replaced by the argument itself, keeping its type. `"{{name}}"` inside a string is replaced by its text: a string as it is, a number or boolean as JSON. Interpolating an object, an array or `null` is an error; use `$param` for those. A `{{…}}` naming nothing in scope stays text, so a PostgreSQL array literal `'{{1,2}}'` is safe. Object keys are never interpolated.
+
+Scope is closed. A fragment sees its own parameters and nothing from the call site, unless the call site passes it through `with`. An argument written as `{"$from": "constants.x"}` is the constant itself, so it can be interpolated or repeated over. A `$param` naming nothing in scope inside a fragment is a warning, since it would write that object into the data.
+
+## Repetition (`$each`)
+
+An `$each` element of any array is replaced by one copy of its `do` per value:
+
+```json
+{ "$each": { "p": [0, 1, 2, 3] },
+  "do": { "id": "infer{{p}}", "name": "Infer {{p}}", "function": { "name": "map", "input": {
+    "mappings": [{ "path": "data.out{{p}}", "logic": { "val": ["seats", { "$param": "p" }] } }] } } } }
+```
+
+The list is a literal array, a `$from` constant or a `$param`. An empty list produces nothing. The element holds exactly `$each`, with one name, and `do`. For a product, nest one `$each` in another's `do`: object keys have no order to repeat by. A `do` is one element. In a `tasks` array it is a step, so it may be a `use` step or a group. Duplicate ids are left to the validator, which is why ids interpolate a binding. An `$each` outside an array is an error, and so is rebinding a name already in scope.
+
+## Composition and limits
+
+A constant may reference another constant, use a value fragment or hold an `$each`. Every constant is resolved once, when the set is loaded, so one `compile` resolves it fully. A cycle among constants or fragments is reported once, with its chain, and every reference into it is dropped. Fragments and `$each` nest at most 16 deep, and one document makes at most 4096 `$each` copies.
+
+| Check | When |
+|---|---|
+| `shared.fragment` | A fragment declares both or neither of `tasks` and `value` |
+| `shared.fragment_kind` | `use` names a value fragment, or `$use` a task fragment |
+| `shared.fragment_param` | An unknown argument, or a required parameter left unbound |
+| `shared.param_unbound` | A `$param` naming nothing in scope, inside a fragment or an `$each` (a warning) |
+| `shared.interpolate_non_scalar` | `{{name}}` bound to an object, an array or `null` |
+| `shared.each_shape`, `shared.each_list`, `shared.each_position` | A malformed `$each`, a list that is not an array, or an `$each` outside an array |
+| `shared.each_limit`, `shared.depth` | More than 4096 copies, or nesting past 16 levels |
+| `shared.binding_shadowed` | An `$each` rebinding a name already in scope |
+| `shared.cycle` | A fragment or constant that reaches itself |
+
+A finding inside an expansion names the trail that produced it, such as `(fragment 'guard' › $each p = 3)`.
+
 > [!NOTE]
-> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from` or `use`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
+> Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from`, `use`, `$use` or `$each`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
 
 ## Statements in `.sql` files
 
@@ -92,7 +144,7 @@ That line replaces the errors a set would otherwise draw from features the binar
 
 A binary that predates the document skips the file with a note, so the protection starts with the first release that reads it.
 
-Both mechanisms are passes in one pipeline, and the pipeline is the place a future authoring convenience is added. A new pass is compiled by `compile`, reported in its per-pass summary, and named by the admin API's refusal. None of those three has to learn about it.
+These mechanisms are passes in one pipeline, and the pipeline is the place a future authoring convenience is added. Fragments, `$use` and `$each` expand first, in one walk, then `$from` splices, then `$sql` inlines. A new pass is compiled by `compile`, reported in its per-pass summary, and named by the admin API's refusal. None of those three has to learn about it.
 
 ## Related
 

@@ -51,8 +51,36 @@ fn step_lists<'a>(tasks: &'a Value, path: &str, out: &mut Vec<(String, &'a [Valu
     }
 }
 
-fn is_use_step(step: &Value) -> bool {
-    step.get("use").is_some()
+/// A step that is authoring sugar rather than a step: a `use`, a `$use`
+/// or an `$each`. Its expansion is not what the source says, so no window
+/// holding one compares structurally.
+fn is_sugar_step(step: &Value) -> bool {
+    step.get("use").is_some() || step.get("$use").is_some() || step.get("$each").is_some()
+}
+
+/// Whether a fragment's steps are comparable, step for step, with source
+/// steps: not when they use a fragment, splice a value fragment, repeat, or
+/// interpolate a parameter into a string — their expansion is not what
+/// they say.
+fn is_plain_fragment(fragment: &Fragment) -> bool {
+    fn plain(value: &Value, params: &BTreeMap<String, Option<Value>>) -> bool {
+        match value {
+            Value::String(text) => !params
+                .keys()
+                .any(|p| text.contains(&format!("{{{{{p}}}}}"))),
+            Value::Array(items) => items.iter().all(|v| plain(v, params)),
+            Value::Object(map) => {
+                !map.contains_key("use")
+                    && !map.contains_key("$use")
+                    && !map.contains_key("$each")
+                    && map.values().all(|v| plain(v, params))
+            }
+            _ => true,
+        }
+    }
+    fragment
+        .tasks()
+        .is_some_and(|tasks| tasks.iter().all(|t| plain(t, &fragment.params)))
 }
 
 // ============================================================
@@ -84,7 +112,9 @@ impl Rule for FragmentAvailable {
          Proof: structural identity on the source form with step ids ignored (expansion \
          namespaces them); a `$param` hole matches any leaf and the same leaf everywhere \
          the hole recurs; a parameter with no default must be bound.\n\n\
-         Silent when: the set has no fragments; the steps already come from a `use`. \
+         Silent when: the set has no fragments; the steps already come from a `use`, a \
+         `$use` or an `$each`; the fragment is a value fragment, or its steps use a \
+         fragment, repeat, or interpolate a parameter with `{{name}}`. \
          A suggestion, not a rewrite: the expanded ids become `<use id>.<inner id>`, which \
          traces and `expect_tasks` would then name."
     }
@@ -106,7 +136,10 @@ impl Rule for FragmentAvailable {
             step_lists(tasks, "tasks", &mut lists);
             for (list_path, steps) in lists {
                 for (fragment_name, fragment) in &cx.shared.fragments {
-                    let n = fragment.tasks.len();
+                    if !is_plain_fragment(fragment) {
+                        continue;
+                    }
+                    let n = fragment.tasks().map_or(0, <[Value]>::len);
                     if n == 0 || steps.len() < n {
                         continue;
                     }
@@ -142,11 +175,11 @@ impl Rule for FragmentAvailable {
 /// `Some(with)` when `window` is what `fragment` expands to, with the
 /// `with` arguments the call site would need.
 fn matches_fragment(window: &[Value], fragment: &Fragment) -> Option<Map<String, Value>> {
-    if window.iter().any(is_use_step) {
+    if window.iter().any(is_sugar_step) {
         return None;
     }
     let mut bound: BTreeMap<String, Value> = BTreeMap::new();
-    for (step, template) in window.iter().zip(&fragment.tasks) {
+    for (step, template) in window.iter().zip(fragment.tasks().unwrap_or_default()) {
         if !match_step(step, template, &mut bound) {
             return None;
         }
@@ -284,7 +317,8 @@ impl Rule for RepeatedTaskSequence {
          Proof: structural identity of the whole step — every key it carries but `id` and \
          `name`, which are stripped recursively through groups.\n\n\
          Silent when: fewer than three occurrences, or a run shorter than two steps; any \
-         run that includes a `use` step. The fact is certain; whether it should be a \
+         run that includes a `use`, `$use` or `$each` step. The fact is certain; whether it \
+         should be a \
          fragment is the author's call — the message says what it found, and no more."
     }
 
@@ -303,7 +337,7 @@ impl Rule for RepeatedTaskSequence {
             for (list_path, steps) in lists {
                 let keys: Vec<Option<String>> = steps
                     .iter()
-                    .map(|s| (!is_use_step(s)).then(|| step_key(s)))
+                    .map(|s| (!is_sugar_step(s)).then(|| step_key(s)))
                     .collect();
                 for start in 0..keys.len() {
                     for len in Self::MIN_TASKS..=keys.len() - start {
@@ -431,7 +465,8 @@ impl Rule for RepeatedValue {
          an operator node, an entity root; it is the input of an engine built-in \
          (`parse_json`'s `{\"source\", \"target\"}` is the idiom, not a value); it is a \
          `use` step's `with` block (arguments, repeated because the call is); it contains a \
-         `$from` or a `$sql` at any depth (already shared); every occurrence sits inside a \
+         `$from`, a `$sql`, a `$use` or an `$each` at any depth (already shared); every \
+         occurrence sits inside a \
          larger object that is itself reported."
     }
 
@@ -559,6 +594,8 @@ fn contains_reference(value: &Value) -> bool {
         Value::Object(map) => {
             map.contains_key("$from")
                 || map.contains_key("$sql")
+                || map.contains_key("$use")
+                || map.contains_key("$each")
                 || map.values().any(contains_reference)
         }
         Value::Array(items) => items.iter().any(contains_reference),
@@ -612,7 +649,9 @@ mod tests {
                 .iter()
                 .map(|(k, d)| (k.to_string(), d.clone()))
                 .collect(),
-            tasks: tasks.as_array().expect("array").clone(),
+            body: crate::definitions::shared::FragmentBody::Tasks(
+                tasks.as_array().expect("array").clone(),
+            ),
             origin: String::new(),
         }
     }

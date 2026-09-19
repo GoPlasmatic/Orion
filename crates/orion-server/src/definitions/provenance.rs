@@ -1,8 +1,9 @@
 //! Where a compiled document's parts were authored.
 //!
 //! The authoring passes rewrite a document — a `$sql` reference becomes the
-//! statement its file holds — so a coordinate in the compiled form no longer
-//! always names text in the entity's own file. The passes record, per
+//! statement its file holds, a `use` step the fragment's steps, an `$each`
+//! its copies — so a coordinate in the compiled form no longer always names
+//! text in the entity's own file, or the same index in its own arrays. The passes record, per
 //! compiled coordinate, where that subtree came from; a finding raised on the
 //! compiled form asks here which file an author should open.
 
@@ -13,14 +14,30 @@ use std::collections::BTreeMap;
 pub enum Via {
     /// Inlined from a `.sql` file by `$sql`.
     Sql { file: String },
+    /// Expanded from a fragment by `use` or `$use`.
+    Use { fragment: String },
+    /// One copy an `$each` made, with the value its name was bound to.
+    Each { name: String, value: String },
 }
 
 impl std::fmt::Display for Via {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Via::Sql { file } => f.write_str(file),
+            Via::Use { fragment } => write!(f, "fragment '{fragment}'"),
+            Via::Each { name, value } => write!(f, "$each {name} = {value}"),
         }
     }
+}
+
+/// A trail as a finding names it, outermost first:
+/// `fragment 'guard' › $each p = 3`.
+pub fn trail_suffix(trail: &[Via]) -> String {
+    trail
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" › ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,18 +139,13 @@ impl SourceRef<'_> {
     }
 
     /// A short phrase naming where the text came from, for a finding — the
-    /// `.sql` file, say — or `None` when it is the document itself.
+    /// `.sql` file, or the expansion trail — or `None` when it is the
+    /// document itself.
     pub fn describe(&self) -> Option<String> {
         if self.via.is_empty() {
             return None;
         }
-        Some(
-            self.via
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-        )
+        Some(trail_suffix(self.via))
     }
 }
 

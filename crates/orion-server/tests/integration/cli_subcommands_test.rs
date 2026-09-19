@@ -2423,12 +2423,12 @@ fn a_fragments_nested_ids_are_namespaced_by_the_call_site() {
     let _ = std::fs::remove_file(&input);
 }
 
-/// The other half of #294. The no-nested-fragments rule read only a
-/// fragment's top-level steps, so a `use` inside a group was neither refused
-/// nor expanded: it survived into the host workflow, where it is a step the
-/// engine cannot parse. The restriction must hold at every depth.
+/// #333: a fragment may use a fragment, inside a group as at its top level
+/// (#294 was the same shape surviving expansion unrefused). The nested step
+/// carries both call sites, and a single-file `lint` sees the whole thing
+/// compiled. A cycle is named rather than expanded for ever.
 #[test]
-fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
+fn a_fragment_may_use_a_fragment_and_a_cycle_is_named() {
     let scratch = temp_defs();
     let dir = scratch.path();
     std::fs::write(
@@ -2438,7 +2438,9 @@ fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
                  "input": { "mappings": [ { "path": "temp_data.l", "logic": 1 } ] } } } ] },
              "outer": { "tasks": [
                  { "id": "span", "condition": true, "tasks": [
-                     { "id": "nested", "use": "leaf" } ] } ] } } }"#,
+                     { "id": "nested", "use": "leaf" } ] } ] },
+             "ping": { "tasks": [ { "id": "p", "use": "pong" } ] },
+             "pong": { "tasks": [ { "id": "q", "use": "ping" } ] } } }"#,
     )
     .unwrap();
     std::fs::write(
@@ -2446,14 +2448,19 @@ fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
         r#"{ "workflow_id": "nest", "name": "Nest", "tasks": [ { "id": "a", "use": "outer" } ] }"#,
     )
     .unwrap();
+    let (ok, report) = lint_with_definitions(dir);
+    assert!(ok, "{report}");
 
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "nest", "name": "Nest", "tasks": [ { "id": "a", "use": "ping" } ] }"#,
+    )
+    .unwrap();
     let (ok, report) = lint_with_definitions(dir);
     assert!(!ok, "{report}");
     assert!(
-        report.contains("shared.fragment_nested")
-            && report.contains("a fragment cannot include another fragment"),
-        "the restriction must be reported where it bites, rather than surfacing \
-         as an uncompiled reference against a set that can actually resolve it: {report}"
+        report.contains("shared.cycle") && report.contains("'ping' → 'pong' → 'ping'"),
+        "{report}"
     );
 }
 

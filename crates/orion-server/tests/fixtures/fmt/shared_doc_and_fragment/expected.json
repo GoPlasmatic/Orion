@@ -19,6 +19,10 @@
           }
         }
       ]
+    },
+    "wrote": {
+      "params": { "slot": {} },
+      "value": { ">": [{ "var": "{{slot}}.rows_affected" }, 0] }
     }
   }
 }

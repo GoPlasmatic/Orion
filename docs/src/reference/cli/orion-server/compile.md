@@ -4,7 +4,7 @@
 
 # `orion-server compile`
 
-Compiles a definition set into files the admin API accepts, resolving its authoring conveniences: `$from`, `use` and `$sql`. Needs no config, database, or server.
+Compiles a definition set into files the admin API accepts, resolving its authoring conveniences: `$from`, `use`, `$use`, `$each` and `$sql`. Needs no config, database, or server.
 
 ## Synopsis
 

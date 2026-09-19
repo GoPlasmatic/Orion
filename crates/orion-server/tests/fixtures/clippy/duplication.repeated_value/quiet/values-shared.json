@@ -1,0 +1,8 @@
+{
+  "fragments": {
+    "window": {
+      "params": { "days": {} },
+      "value": { "from": "now", "days": { "$param": "days" }, "unit": "day", "tz": "UTC" }
+    }
+  }
+}
