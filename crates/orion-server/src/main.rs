@@ -392,6 +392,16 @@ enum Command {
         /// `lint` gate that runs first. Repeatable.
         #[arg(long = "model-dir", value_name = "DIR")]
         model_dirs: Vec<String>,
+        /// Apply the fixes the rules can prove — today, folding a run of
+        /// steps that repeat one condition into a task group — to the source
+        /// files, each verified by recompiling the edited file, then report
+        /// what remains.
+        #[arg(long, conflicts_with_all = ["list", "explain"])]
+        fix: bool,
+        /// With --fix: print the diff of each file that would change, write
+        /// nothing, and exit 1 when anything would.
+        #[arg(long, requires = "fix")]
+        check: bool,
     },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
@@ -732,6 +742,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_connectors,
             plugin_dirs,
             model_dirs,
+            fix,
+            check,
         }) => {
             let code = if list {
                 cli::run_clippy_list()?
@@ -758,6 +770,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // Only a config the operator named counts as "the serving
                     // config": the defaults say nothing about [vars]/[secrets].
                     config: cli.config.is_some().then_some(&config),
+                    fix,
+                    fix_check: check,
                 })?
             };
             if code != 0 {

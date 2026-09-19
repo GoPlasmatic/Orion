@@ -36,6 +36,8 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 | [`duplication.repeated_value`](./duplication-repeated-value.md) | warn | set | the same object literal appears three or more times across the set |
 | [`style.terminal_on_last_step`](./style-terminal-on-last-step.md) | warn | workflow | terminal: true on the last top-level step is a no-op |
 
+`perf.redundant_step_condition` carries an exact fix, which [`clippy --fix`](../cli/orion-server/clippy.md#fixes) applies to the source files after proving each edit.
+
 | Page | Holds |
 |---|---|
 | [Levels](./levels.md) | `deny` and `warn`, what each does to the exit code, and how a rule is promoted. |

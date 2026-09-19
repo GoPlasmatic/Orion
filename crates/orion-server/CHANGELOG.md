@@ -166,6 +166,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like the status endpoints: the row goes at once and the engine keeps
   serving it until `POST /engine/reload`.
 
+- **`clippy --fix`** ([#337]). `perf.redundant_step_condition` proved a
+  run of steps repeats one condition none of them can change, and then only
+  suggested the task group. `--fix` now writes it: the run becomes
+  `{"id": "when_<first>", "condition": …, "tasks": [ … ]}` in the source
+  file, each member keeping everything but its condition (its own
+  `terminal` included), the condition moved as written (a `$from` stays a
+  reference), and the file formatted. Every edit is proven before it is
+  written — the edited file is recompiled and must equal the folded
+  compiled workflow, and the set is linted with it in place — and a run a
+  fragment or an `$each` produced is reported, not edited. The exit code is
+  the analysis after fixing, so a refused fix still fails
+  `--deny-warnings`. `--fix --check` prints the diffs and writes nothing.
+  `clippy --format json` gains `"fixable"`.
+
 - **Value fragments, `$each`, `{{name}}`, and composition** ([#333]). A
   fragment may hold one `value` instead of `tasks`, spliced anywhere a value
   goes by `{"$use": "name", "with": {…}}` under `$from`'s rule (siblings
@@ -299,6 +313,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#332]: https://github.com/GoPlasmatic/Orion/issues/332
 [#333]: https://github.com/GoPlasmatic/Orion/issues/333
 [#334]: https://github.com/GoPlasmatic/Orion/issues/334
+[#337]: https://github.com/GoPlasmatic/Orion/issues/337
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#341]: https://github.com/GoPlasmatic/Orion/issues/341

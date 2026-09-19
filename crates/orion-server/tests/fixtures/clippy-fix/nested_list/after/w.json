@@ -1,0 +1,39 @@
+{
+  "workflow_id": "nested",
+  "name": "Nested",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "outer",
+      "condition": { "var": "data.input" },
+      "tasks": [
+        {
+          "id": "when_claim",
+          "condition": { "==": [{ "var": "data.input.kind" }, "claim"] },
+          "tasks": [
+            {
+              "id": "claim",
+              "name": "Claim",
+              "function": {
+                "name": "map",
+                "input": { "mappings": [{ "path": "data.claim", "logic": 1 }] }
+              }
+            },
+            {
+              "id": "read",
+              "name": "Read",
+              "function": {
+                "name": "map",
+                "input": { "mappings": [{ "path": "data.read", "logic": 1 }] }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

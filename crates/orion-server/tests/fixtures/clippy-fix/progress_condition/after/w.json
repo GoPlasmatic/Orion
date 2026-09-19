@@ -1,0 +1,23 @@
+{
+  "workflow_id": "progress",
+  "name": "Progress",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "claim",
+      "name": "Claim",
+      "condition": { "==": [{ "var": "metadata.progress.status_code" }, 200] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.claim", "logic": 1 }] } }
+    },
+    {
+      "id": "read",
+      "name": "Read",
+      "condition": { "==": [{ "var": "metadata.progress.status_code" }, 200] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.read", "logic": 1 }] } }
+    }
+  ]
+}

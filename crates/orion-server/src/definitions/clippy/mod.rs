@@ -151,6 +151,7 @@ impl Diagnostic {
             message: message.into(),
             remedy: None,
             via: path.and_then(|p| cx.via(&wf.origin, p)),
+            fix: None,
         }
     }
 
@@ -173,6 +174,7 @@ impl Diagnostic {
             message: message.into(),
             remedy: None,
             via: path.and_then(|p| cx.via(origin, p)),
+            fix: None,
         }
     }
 }

@@ -6,6 +6,7 @@
 //! `tests/integration/` and declare them below.
 
 mod boot_packages_test;
+mod clippy_fix_test;
 mod common;
 
 mod admin_channels_test;

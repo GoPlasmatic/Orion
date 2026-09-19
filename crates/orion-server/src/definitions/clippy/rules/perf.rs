@@ -172,7 +172,12 @@ impl Rule for RedundantStepCondition {
          Silent when: the condition has a computed or element-scoped read, a nondeterministic \
          operator, or is already constant; any step in the run writes a path the condition \
          reads or anything inside or above it; the condition reads `metadata.progress`, which \
-         the engine overwrites after every task. Suggestion only: no automatic rewrite."
+         the engine overwrites after every task.\n\n\
+         Fix: `clippy --fix` folds the run into `{\"id\": \"when_<first>\", \"condition\": …, \
+         \"tasks\": [ … ]}`, each member keeping everything but its condition, the group \
+         taking no `terminal`. Refused, and reported, when the steps are not written in the \
+         file (a fragment's or an `$each`'s), when the group id is already taken, or when \
+         it would nest groups past the engine's limit."
     }
 
     fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
@@ -223,8 +228,13 @@ impl Rule for RedundantStepCondition {
                                 )
                                 .with_remedy(
                                     "wrap them in a task group carrying the condition once: \
-                                     { \"id\": …, \"condition\": …, \"tasks\": [ … ] }",
-                                ),
+                                     { \"id\": …, \"condition\": …, \"tasks\": [ … ] } — \
+                                     `clippy --fix` does it",
+                                )
+                                .with_fix(crate::definitions::fix::Fix::FoldRun {
+                                    members: ids.iter().map(|id| id.to_string()).collect(),
+                                    group_id: format!("when_{}", run[0].id),
+                                }),
                             );
                         }
                     }

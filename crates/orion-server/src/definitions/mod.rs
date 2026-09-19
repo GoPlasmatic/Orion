@@ -43,6 +43,7 @@ pub mod clippy;
 pub mod compile;
 mod diagnostic;
 mod expand;
+pub mod fix;
 pub mod fmt;
 mod gate;
 pub mod json;

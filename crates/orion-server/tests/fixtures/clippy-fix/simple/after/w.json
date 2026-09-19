@@ -1,0 +1,39 @@
+{
+  "workflow_id": "claims",
+  "name": "Claims",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "when_claim",
+      "condition": { "==": [{ "var": "data.input.kind" }, "claim"] },
+      "tasks": [
+        {
+          "id": "claim",
+          "name": "Claim",
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.claim", "logic": 1 }] }
+          }
+        },
+        {
+          "id": "read",
+          "name": "Read",
+          "terminal": true,
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.read", "logic": 1 }] }
+          }
+        }
+      ]
+    },
+    {
+      "id": "done",
+      "name": "Done",
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.done", "logic": 1 }] } }
+    }
+  ]
+}

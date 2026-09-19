@@ -1846,6 +1846,10 @@ pub(crate) struct ClippyRequest<'a> {
     /// The serving instance's config when `-c` named one — the rules that
     /// need it are skipped otherwise, and say so.
     pub(crate) config: Option<&'a orion::config::AppConfig>,
+    /// Apply the fixes the rules proved to the source files.
+    pub(crate) fix: bool,
+    /// With `fix`: print the diffs and write nothing.
+    pub(crate) fix_check: bool,
 }
 
 /// `clippy --list`: the registry as a table.
@@ -1875,6 +1879,20 @@ pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::
     }
 }
 
+/// How many times `clippy --fix` re-analyses after writing: one pass to fix
+/// and one to verify, normally; the cap bounds a fix that keeps exposing
+/// another.
+const MAX_FIX_PASSES: usize = 8;
+
+/// What `clippy` loaded: the source set, the compiled one, the catalog and
+/// the gate's findings.
+struct ClippyLoaded {
+    raw: orion::definitions::DefinitionSet,
+    compiled: orion::definitions::DefinitionSet,
+    shared: orion::definitions::SharedDefinitions,
+    findings: Vec<orion::definitions::clippy::Diagnostic>,
+}
+
 /// `clippy <path>`: `lint`'s gate first, then every rule over the set.
 ///
 /// Exit `1` on any error — a `lint` error or a `deny` rule — and on a
@@ -1882,12 +1900,94 @@ pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::
 /// set. Rules run only when `lint` is clean: a rule over a document the API
 /// would refuse produces a second finding about the same mistake, and a
 /// false one.
+///
+/// With `--fix`, the fixes the rules proved are applied to the source files
+/// — each verified by recompiling the edited file — and the set is analysed
+/// again; what is reported, and the exit code, are the last analysis. With
+/// `--fix --check` nothing is written: the diffs are printed, and exit `1`
+/// says something would change.
 pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::error::Error>> {
-    use orion::definitions::clippy::Diagnostic;
+    use orion::definitions::Entity;
+    let mut pass = 0usize;
+    let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut would_change = false;
+    loop {
+        let Some(loaded) = clippy_load(&req, pass == 0)? else {
+            return Ok(2);
+        };
+        let ClippyAnalysis {
+            diagnostics,
+            skipped,
+            lint_errors,
+        } = clippy_analyse(&req, &loaded)?;
+        let fixing = req.fix && lint_errors == 0 && pass < MAX_FIX_PASSES;
+        let changed = if fixing {
+            clippy_fix(&req, &loaded, &diagnostics, &mut reported)?
+        } else {
+            0
+        };
+        if changed > 0 && !req.fix_check {
+            pass += 1;
+            continue;
+        }
+        would_change |= changed > 0;
+
+        let errors = diagnostics.iter().filter(|d| d.is_error()).count();
+        let warnings = diagnostics.iter().filter(|d| d.is_warning()).count();
+        match req.format {
+            ClippyFormat::Json => {
+                for d in &diagnostics {
+                    println!("{}", d.render_json());
+                }
+            }
+            ClippyFormat::Text => {
+                for d in &diagnostics {
+                    eprintln!("{}", d.render_text());
+                }
+                for rule in &skipped {
+                    eprintln!(
+                        "note: [{rule}] skipped — needs the serving config (-c <config.toml>)"
+                    );
+                }
+                if lint_errors > 0 {
+                    println!(
+                        "{}: {lint_errors} lint error(s) — fix those first; clippy's rules did not \
+                         run",
+                        req.path
+                    );
+                } else {
+                    println!(
+                        "{}: {} workflow(s), {} channel(s), {} connector(s) — {errors} error(s), \
+                         {warnings} warning(s) from {} rule(s)",
+                        req.path,
+                        loaded.compiled.count(Entity::Workflow),
+                        loaded.compiled.count(Entity::Channel),
+                        loaded.compiled.count(Entity::Connector),
+                        orion::definitions::clippy::registry().len() - skipped.len()
+                    );
+                }
+            }
+        }
+        return Ok(
+            if errors > 0 || (req.deny_warnings && warnings > 0) || would_change {
+                1
+            } else {
+                0
+            },
+        );
+    }
+}
+
+/// Load the set (or the one file) `clippy` was pointed at. `None` when the
+/// path cannot be read as a set — already reported, exit `2`.
+fn clippy_load(
+    req: &ClippyRequest<'_>,
+    report_notices: bool,
+) -> Result<Option<ClippyLoaded>, Box<dyn std::error::Error>> {
     use orion::definitions::{DefinitionSet, Entity, SharedDefinitions};
 
     let path = std::path::Path::new(req.path);
-    let (raw, compiled, shared, mut findings) = if path.is_dir() {
+    if path.is_dir() {
         // The same gate `lint <dir>` runs — one sequence, so a file this
         // command cannot read is reported by both or by neither. `want_raw`
         // because the duplication rules read the *source* form: two documents
@@ -1902,135 +2002,266 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             req.plugin_dirs,
             req.model_dirs,
         )?;
-        for notice in report.notices() {
-            eprintln!("{notice}");
+        if report_notices {
+            for notice in report.notices() {
+                eprintln!("{notice}");
+            }
         }
         if report.set.is_empty() {
             eprintln!("error: no definitions found under '{}'", req.path);
-            return Ok(2);
+            return Ok(None);
         }
         let raw = report
             .raw
             .unwrap_or_else(|| DefinitionSet::from_entries([]));
-        (raw, report.set, report.shared, report.findings)
-    } else if path.is_file() {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
-        let doc: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("'{}' is not valid JSON: {e}", req.path))?;
-        let Some(entity) = Entity::classify(&doc) else {
-            eprintln!(
-                "error: '{}' is not a channel, workflow or connector (no 'tasks', 'channel_type' \
-                 or 'connector_type')",
-                req.path
-            );
-            return Ok(2);
-        };
-        let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs, req.model_dirs)?;
-        let (shared, plugins, models) = catalog
-            .map(|c| (c.shared, c.plugins, c.models))
-            .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
-        let mut findings = Vec::new();
-        let mut compiled_doc = doc.clone();
-        let base_dir = path.parent().map(|p| {
-            if p.as_os_str().is_empty() {
-                std::path::PathBuf::from(".")
-            } else {
-                p.to_path_buf()
-            }
-        });
-        let mut provenance = orion::definitions::SourceMap::default();
-        orion::definitions::compile::compile_with_map(
-            &mut compiled_doc,
-            &orion::definitions::Cx {
-                shared: &shared,
-                origin: req.path,
-                base_dir: base_dir.as_deref(),
-                root: req.definitions.map(std::path::Path::new),
-            },
-            &mut findings,
-            &mut provenance,
-        );
-        let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
-        let mut compiled =
-            DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
-        if let Some(def) = compiled.definitions.first_mut() {
-            def.provenance = provenance;
-        }
-        compiled.plugins = plugins;
-        compiled.models = models;
-        let registry = compiled.function_registry()?;
-        findings.extend(orion::definitions::check(
-            &compiled,
-            &req.boundary,
-            false,
-            &registry,
-        ));
-        (raw, compiled, shared, findings)
-    } else {
+        return Ok(Some(ClippyLoaded {
+            raw,
+            compiled: report.set,
+            shared: report.shared,
+            findings: report.findings,
+        }));
+    }
+    if !path.is_file() {
         eprintln!("error: '{}' is not a file or directory", req.path);
-        return Ok(2);
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
+    let doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("'{}' is not valid JSON: {e}", req.path))?;
+    let Some(entity) = Entity::classify(&doc) else {
+        eprintln!(
+            "error: '{}' is not a channel, workflow or connector (no 'tasks', 'channel_type' \
+             or 'connector_type')",
+            req.path
+        );
+        return Ok(None);
     };
+    let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs, req.model_dirs)?;
+    let (shared, plugins, models) = catalog
+        .map(|c| (c.shared, c.plugins, c.models))
+        .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
+    let mut findings = Vec::new();
+    let mut compiled_doc = doc.clone();
+    let base_dir = clippy_base_dir(req.path);
+    let mut provenance = orion::definitions::SourceMap::default();
+    orion::definitions::compile::compile_with_map(
+        &mut compiled_doc,
+        &orion::definitions::Cx {
+            shared: &shared,
+            origin: req.path,
+            base_dir: base_dir.as_deref(),
+            root: req.definitions.map(std::path::Path::new),
+        },
+        &mut findings,
+        &mut provenance,
+    );
+    let mut raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
+    // The source text, for `--fix` — the edit lands in it.
+    if let Some(def) = raw.definitions.first_mut() {
+        def.spans = orion::definitions::json::Document::parse(&text).ok();
+    }
+    let mut compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+    if let Some(def) = compiled.definitions.first_mut() {
+        def.provenance = provenance;
+    }
+    compiled.plugins = plugins;
+    compiled.models = models;
+    let registry = compiled.function_registry()?;
+    findings.extend(orion::definitions::check(
+        &compiled,
+        &req.boundary,
+        false,
+        &registry,
+    ));
+    Ok(Some(ClippyLoaded {
+        raw,
+        compiled,
+        shared,
+        findings,
+    }))
+}
 
-    // No conversion: `check` and the clippy rules now report the same type, so
-    // a clippy run is a superset of a lint run by construction rather than by
-    // an upcast that dropped the location half of every field it copied.
-    let mut diagnostics: Vec<Diagnostic> = std::mem::take(&mut findings);
+/// The directory a file's relative references resolve against.
+fn clippy_base_dir(path: &str) -> Option<std::path::PathBuf> {
+    std::path::Path::new(path).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            p.to_path_buf()
+        }
+    })
+}
+
+/// What one analysis produced: every diagnostic, the rules skipped for want
+/// of `-c`, and how many of the diagnostics are `lint` errors.
+struct ClippyAnalysis {
+    diagnostics: Vec<orion::definitions::clippy::Diagnostic>,
+    skipped: Vec<&'static str>,
+    lint_errors: usize,
+}
+
+/// The gate's findings plus, when `lint` is clean, every rule's.
+fn clippy_analyse(
+    req: &ClippyRequest<'_>,
+    loaded: &ClippyLoaded,
+) -> Result<ClippyAnalysis, Box<dyn std::error::Error>> {
+    // No conversion: `check` and the clippy rules report the same type, so
+    // a clippy run is a superset of a lint run by construction.
+    let mut diagnostics = loaded.findings.clone();
     let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
-    let mut skipped: Vec<&str> = Vec::new();
+    let mut skipped = Vec::new();
     if lint_errors == 0 {
         // The same registry the gate read: the set's own manifests join the
         // built-ins, so a plugin function's template fields are analysed
         // exactly as the server would evaluate them.
-        let registry = compiled.function_registry()?;
+        let registry = loaded.compiled.function_registry()?;
         let analysis = orion::definitions::analysis::Analysis::new(
-            &raw, &compiled, &shared, req.config, &registry,
+            &loaded.raw,
+            &loaded.compiled,
+            &loaded.shared,
+            req.config,
+            &registry,
         );
         let report = orion::definitions::clippy::run(&analysis);
         diagnostics.extend(report.diagnostics);
         skipped = report.skipped;
     }
+    Ok(ClippyAnalysis {
+        diagnostics,
+        skipped,
+        lint_errors,
+    })
+}
 
-    let errors = diagnostics.iter().filter(|d| d.is_error()).count();
-    let warnings = diagnostics.iter().filter(|d| d.is_warning()).count();
-
-    match req.format {
-        ClippyFormat::Json => {
-            for d in &diagnostics {
-                println!("{}", d.render_json());
-            }
-        }
-        ClippyFormat::Text => {
-            for d in &diagnostics {
-                eprintln!("{}", d.render_text());
-            }
-            for rule in &skipped {
-                eprintln!("note: [{rule}] skipped — needs the serving config (-c <config.toml>)");
-            }
-            if lint_errors > 0 {
-                println!(
-                    "{}: {lint_errors} lint error(s) — fix those first; clippy's rules did not run",
-                    req.path
-                );
-            } else {
-                println!(
-                    "{}: {} workflow(s), {} channel(s), {} connector(s) — {errors} error(s), \
-                     {warnings} warning(s) from {} rule(s)",
-                    req.path,
-                    compiled.count(Entity::Workflow),
-                    compiled.count(Entity::Channel),
-                    compiled.count(Entity::Connector),
-                    orion::definitions::clippy::registry().len() - skipped.len()
-                );
-            }
+/// Apply every fix the rules proved, file by file, each verified against
+/// the compiler; then re-check the whole set with the edits in place and
+/// drop the edit of any file an error names. Writes the files — or, with
+/// `--check`, prints their diffs — and returns how many changed.
+fn clippy_fix(
+    req: &ClippyRequest<'_>,
+    loaded: &ClippyLoaded,
+    diagnostics: &[orion::definitions::clippy::Diagnostic],
+    reported: &mut std::collections::BTreeSet<String>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    use orion::definitions::fix::{Fix, Refusal};
+    let mut by_file: std::collections::BTreeMap<&str, Vec<(&'static str, Fix)>> =
+        std::collections::BTreeMap::new();
+    for d in diagnostics {
+        if let (Some(fix), Some(file)) = (&d.fix, &d.file) {
+            by_file
+                .entry(file.as_str())
+                .or_default()
+                .push((d.check, fix.clone()));
         }
     }
+    let mut note = |rule: &str, file: &str, fix: &Fix, refusal: &Refusal| {
+        let line = format!("note: [{rule}] {file}: not fixed — {refusal}");
+        if reported.insert(format!("{file}\u{1f}{fix}")) {
+            eprintln!("{line}");
+        }
+    };
+    let mut edits: Vec<(String, String, serde_json::Value, Vec<Fix>)> = Vec::new();
+    for (file, fixes) in &by_file {
+        let rule_of = |fix: &Fix| {
+            fixes
+                .iter()
+                .find(|(_, f)| f == fix)
+                .map_or("clippy", |(rule, _)| *rule)
+        };
+        let source = loaded.raw.definitions.iter().find(|d| d.origin == *file);
+        let Some(compiled) = loaded
+            .compiled
+            .definitions
+            .iter()
+            .find(|d| d.origin == *file)
+        else {
+            continue;
+        };
+        let base_dir = clippy_base_dir(file);
+        let root = if std::path::Path::new(req.path).is_dir() {
+            Some(std::path::Path::new(req.path))
+        } else {
+            req.definitions.map(std::path::Path::new)
+        };
+        let recompile = |value: &serde_json::Value| {
+            let mut doc = value.clone();
+            let mut findings = Vec::new();
+            orion::definitions::compile::compile(
+                &mut doc,
+                &orion::definitions::Cx {
+                    shared: &loaded.shared,
+                    origin: file,
+                    base_dir: base_dir.as_deref(),
+                    root,
+                },
+                &mut findings,
+            );
+            (!findings.iter().any(|f| f.is_error())).then_some(doc)
+        };
+        let only: Vec<Fix> = fixes.iter().map(|(_, fix)| fix.clone()).collect();
+        let outcome = orion::definitions::fix::apply(
+            source.and_then(|d| d.spans.as_ref()),
+            &compiled.doc,
+            &only,
+            &recompile,
+        );
+        for (fix, refusal) in &outcome.refused {
+            note(rule_of(fix), file, fix, refusal);
+        }
+        if let (Some(text), Some(folded)) = (outcome.text, outcome.compiled) {
+            edits.push((file.to_string(), text, folded, outcome.applied));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(0);
+    }
 
-    Ok(if errors > 0 || (req.deny_warnings && warnings > 0) {
-        1
-    } else {
-        0
-    })
+    // The set with every edit in place: anything set-level — a duplicate id
+    // across the estate, a depth the per-file fold could not see — refuses
+    // the edit of the file it names.
+    let mut edited = loaded.compiled.clone();
+    for (file, _, folded, _) in &edits {
+        if let Some(def) = edited.definitions.iter_mut().find(|d| d.origin == *file) {
+            def.doc = folded.clone();
+        }
+    }
+    let registry = edited.function_registry()?;
+    let broken: std::collections::BTreeMap<String, String> =
+        orion::definitions::check(&edited, &req.boundary, false, &registry)
+            .into_iter()
+            .filter(|f| f.is_error())
+            .filter_map(|f| Some((f.file.clone()?, f.message.clone())))
+            .collect();
+
+    let mut changed = 0usize;
+    for (file, text, _, applied) in edits {
+        if let Some(reason) = broken.get(&file) {
+            for fix in &applied {
+                note(
+                    "clippy",
+                    &file,
+                    fix,
+                    &Refusal::Format(format!("the set would not lint afterwards: {reason}")),
+                );
+            }
+            continue;
+        }
+        let before = std::fs::read_to_string(&file).map_err(|e| format!("read '{file}': {e}"))?;
+        if before == text {
+            continue;
+        }
+        changed += 1;
+        if req.fix_check {
+            print!("{}", unified_diff(&file, &before, &text));
+            continue;
+        }
+        write_atomically(std::path::Path::new(&file), &text)
+            .map_err(|e| format!("write '{file}': {e}"))?;
+        for fix in &applied {
+            eprintln!("fixed {file}: {fix}");
+        }
+    }
+    Ok(changed)
 }
 
 /// Print the OpenAPI spec to stdout. Backs the checked-in `docs/openapi.json`

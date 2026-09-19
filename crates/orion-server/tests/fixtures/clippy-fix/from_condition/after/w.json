@@ -1,0 +1,33 @@
+{
+  "workflow_id": "fc",
+  "name": "From condition",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "when_claim",
+      "condition": { "$from": "constants.is_claim" },
+      "tasks": [
+        {
+          "id": "claim",
+          "name": "Claim",
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.claim", "logic": 1 }] }
+          }
+        },
+        {
+          "id": "read",
+          "name": "Read",
+          "function": {
+            "name": "map",
+            "input": { "mappings": [{ "path": "data.read", "logic": 1 }] }
+          }
+        }
+      ]
+    }
+  ]
+}

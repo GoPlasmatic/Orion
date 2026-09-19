@@ -19,9 +19,18 @@ Consecutive steps in one list with a byte-identical condition that none of them 
 
 The rule is silent when the condition reads `metadata.progress`. The engine overwrites that path after every task, so each step in the run changes what the next one's condition sees.
 
-## Caveats
+## Fix
 
-Suggestion only.
+`clippy --fix` folds the run into one task group:
+
+```json
+{ "id": "when_claim", "condition": { "==": [{ "var": "data.input.kind" }, "claim"] },
+  "tasks": [ { "id": "claim", … }, { "id": "read", "terminal": true, … } ] }
+```
+
+The group is named `when_` and the first member's id. It carries the condition as the first member wrote it, so a `$from` stays a reference. Each member keeps everything but its condition, its own `terminal` included. The group takes no `terminal`, so the workflow halts where it did. Member ids do not change, so traces and metric labels read the same.
+
+The fix is refused, and reported, when the steps are not written in the file, such as those from a fragment or an `$each`. It is also refused when the group id is taken or the group would nest too deep. So is a step whose condition is not written on it.
 
 ## Related
 

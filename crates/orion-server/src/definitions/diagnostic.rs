@@ -89,6 +89,9 @@ pub struct Diagnostic {
     /// `.sql` file a `$sql` reference inlined. Rendered `(in …)` after the
     /// path.
     pub via: Option<String>,
+    /// The exact rewrite the rule proved, when it can offer one —
+    /// `clippy --fix` applies it.
+    pub fix: Option<super::fix::Fix>,
 }
 
 impl Diagnostic {
@@ -103,6 +106,7 @@ impl Diagnostic {
             message,
             remedy: None,
             via: None,
+            fix: None,
         }
     }
 
@@ -133,6 +137,12 @@ impl Diagnostic {
 
     pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
+        self
+    }
+
+    /// Offer an exact rewrite `clippy --fix` may apply.
+    pub fn with_fix(mut self, fix: super::fix::Fix) -> Self {
+        self.fix = Some(fix);
         self
     }
 
@@ -240,6 +250,7 @@ impl Diagnostic {
             "message": self.message,
             "remedy": self.remedy,
             "via": self.via,
+            "fixable": self.fix.is_some(),
         })
     }
 
