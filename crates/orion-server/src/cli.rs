@@ -1059,6 +1059,8 @@ pub(crate) struct CompileRequest<'a> {
     /// for the other two, which emit no package envelope.
     pub(crate) name: Option<&'a str>,
     pub(crate) version: Option<&'a str>,
+    /// With `--version content`, what stands before the hex.
+    pub(crate) version_prefix: Option<&'a str>,
     /// Names the set may reference without containing — the linter's boundary,
     /// and the artifact's `requires`.
     pub(crate) boundary: orion::definitions::Boundary,
@@ -1084,10 +1086,21 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     let requires_ids = req.format == CompileFormat::Artifact;
     let (name, version) = match req.format {
         CompileFormat::Artifact => match (req.name, req.version) {
-            (Some(n), Some(v)) => (n, v),
+            (Some(n), Some(v)) => {
+                // Refused here rather than by the target at `apply`.
+                orion::validation::package_key(
+                    "--name",
+                    n,
+                    orion::validation::MAX_PACKAGE_NAME_LEN,
+                )?;
+                (
+                    n,
+                    crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
+                )
+            }
             _ => return Err("--name and --version are required for --format artifact".into()),
         },
-        _ => ("", ""),
+        _ => ("", crate::package_cli::VersionSpec::Literal("")),
     };
 
     let requires = req.boundary.clone();
@@ -1134,7 +1147,7 @@ fn emit_artifact(
     set: &orion::definitions::DefinitionSet,
     dir: &str,
     name: &str,
-    version: &str,
+    version: crate::package_cli::VersionSpec<'_>,
     requires: orion::definitions::Boundary,
     no_activate: bool,
     output: Option<&str>,
@@ -1186,7 +1199,7 @@ fn emit_artifact(
     let mut artifact = crate::package_cli::PackageArtifact {
         package: crate::package_cli::PackageMeta {
             name: name.to_string(),
-            version: version.to_string(),
+            version: String::new(),
             orion: env!("CARGO_PKG_VERSION").to_string(),
             content_hash: String::new(),
             exported_from: dir.to_string(),
@@ -1205,7 +1218,11 @@ fn emit_artifact(
         workflows,
         channels,
     };
+    // The version is outside the hash, so it can be derived from it: hash
+    // first, name second.
     artifact.package.content_hash = crate::package_cli::artifact_content_hash(&artifact)?;
+    artifact.package.version = version.resolve(&artifact.package.content_hash)?;
+    version.note_what_the_hash_excludes(&artifact);
 
     let rendered = serde_json::to_string_pretty(&artifact)?;
     match output {

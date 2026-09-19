@@ -446,6 +446,173 @@ fn compilation_is_reproducible() {
     assert_eq!(hash("a.json"), hash("b.json"));
 }
 
+/// Compile `dir` with `--version <version>` (and any extra flags) into
+/// `out`, returning the artifact and the report.
+fn compile_versioned(
+    dir: &std::path::Path,
+    out: &str,
+    extra: &[&str],
+) -> (bool, String, serde_json::Value) {
+    let target = dir.join(out);
+    let mut args = vec![
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "demo",
+        "-o",
+        target.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let (ok, report) = run(&args);
+    let artifact = if ok {
+        serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+    } else {
+        serde_json::Value::Null
+    };
+    (ok, report, artifact)
+}
+
+/// #339: `--version content` names the package after its own content hash.
+#[test]
+fn a_content_version_is_the_hash_prefix() {
+    let scratch = sugared_set("compile-content-version");
+    let dir = scratch.path();
+    let (ok, report, artifact) = compile_versioned(dir, "a.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    let hash = artifact["package"]["content_hash"].as_str().unwrap();
+    let version = artifact["package"]["version"].as_str().unwrap();
+    assert_eq!(version, format!("content-{}", &hash[7..19]));
+    assert!(
+        report.contains(&format!("wrote demo@{version} (")),
+        "{report}"
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // A hand-edited version that names other content is caught offline.
+    let mut edited = artifact.clone();
+    edited["package"]["version"] = serde_json::json!("content-000000000000");
+    std::fs::write(dir.join("edited.json"), edited.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("edited.json").to_str().unwrap(),
+    ]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("names content the entities do not hash to") && report.contains(version),
+        "{report}"
+    );
+
+    // With a prefix.
+    let (ok, report, artifact) = compile_versioned(
+        dir,
+        "b.json",
+        &["--version", "content", "--version-prefix", "1.4.0"],
+    );
+    assert!(ok, "{report}");
+    assert_eq!(
+        artifact["package"]["version"],
+        format!("1.4.0-{}", &hash[7..19])
+    );
+}
+
+/// The version moves exactly when the content does: a second compile of the
+/// same tree, or one whose files were only reformatted, keeps it; a task
+/// edit moves it.
+#[test]
+fn a_content_version_is_stable_across_compiles_and_moves_with_content() {
+    let scratch = sugared_set("compile-content-stable");
+    let dir = scratch.path();
+    let version = |out: &str| {
+        let (ok, report, artifact) = compile_versioned(dir, out, &["--version", "content"]);
+        assert!(ok, "{report}");
+        artifact["package"]["version"].as_str().unwrap().to_string()
+    };
+    let first = version("a.json");
+    assert_eq!(version("b.json"), first);
+
+    // Whitespace and key order are not content.
+    let wf = dir.join("wf.json");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&wf).unwrap()).unwrap();
+    std::fs::write(&wf, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    assert_eq!(version("c.json"), first);
+
+    // A task edit is.
+    let text = std::fs::read_to_string(&wf).unwrap();
+    std::fs::write(&wf, text.replace("\"users\"", "\"accounts\"")).unwrap();
+    assert_ne!(version("d.json"), first);
+}
+
+#[test]
+fn a_version_prefix_needs_the_content_keyword() {
+    let scratch = sugared_set("compile-prefix-alone");
+    let (ok, report, _) = compile_versioned(
+        scratch.path(),
+        "a.json",
+        &["--version", "1.0.0", "--version-prefix", "1.4.0"],
+    );
+    assert!(!ok);
+    assert!(
+        report.contains("--version-prefix only applies with --version content"),
+        "{report}"
+    );
+}
+
+/// A version the target would refuse with a `400` at `apply` is refused
+/// where it is chosen, before anything is written.
+#[test]
+fn a_version_the_receipt_would_refuse_is_refused_at_compile() {
+    let scratch = sugared_set("compile-bad-version");
+    let dir = scratch.path();
+    for (flags, expected) in [
+        (
+            &["--version", "1.0/rc"][..],
+            "--version contains unsupported character '/'",
+        ),
+        (
+            &["--version", "content", "--version-prefix", "1.4.0+build"][..],
+            "--version-prefix contains unsupported character '+'",
+        ),
+    ] {
+        let (ok, report, _) = compile_versioned(dir, "a.json", flags);
+        assert!(!ok, "{flags:?}");
+        assert!(report.contains(expected), "{report}");
+        assert!(!dir.join("a.json").exists());
+    }
+}
+
+/// What the hash does not see cannot move a content version: a rollout-only
+/// change keeps it, and the compile says so rather than letting a re-apply
+/// be a silent no-op.
+#[test]
+fn a_rollout_does_not_move_a_content_version() {
+    let scratch = sugared_set("compile-content-rollout");
+    let dir = scratch.path();
+    let (ok, report, artifact) = compile_versioned(dir, "a.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    assert!(!report.contains("rollout_percentage"), "{report}");
+    let wf = dir.join("wf.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&wf).unwrap()).unwrap();
+    doc["rollout_percentage"] = serde_json::json!(25);
+    std::fs::write(&wf, doc.to_string()).unwrap();
+    let (ok, report, rolled) = compile_versioned(dir, "b.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    assert_eq!(rolled["package"]["version"], artifact["package"]["version"]);
+    assert!(
+        report.contains("rollout_percentage is not part of the content hash"),
+        "{report}"
+    );
+}
+
 /// The fixture plugin's upload manifest and component, as a set carries them:
 /// `plugin.toml` beside the component it names.
 const PLUGIN_MANIFEST: &str = include_str!("../fixtures/plugins/fixture-upload.toml");

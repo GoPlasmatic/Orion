@@ -436,19 +436,88 @@ fn names_of(export: &Value, field: &str) -> std::collections::HashSet<String> {
 // export
 // ============================================================
 
+/// What `--version` asked for: a literal version, or the keyword `content`
+/// for one derived from the artifact's content hash.
+pub(crate) enum VersionSpec<'a> {
+    Literal(&'a str),
+    Content { prefix: Option<&'a str> },
+}
+
+impl<'a> VersionSpec<'a> {
+    /// `--version` and `--version-prefix`, checked against the receipt rule
+    /// now rather than at `apply`, where the target would refuse them.
+    pub(crate) fn parse(version: &'a str, prefix: Option<&'a str>) -> Result<Self, CliError> {
+        use orion::storage::content::{CONTENT_VERSION_KEYWORD, check_version_prefix};
+        if version == CONTENT_VERSION_KEYWORD {
+            if let Some(prefix) = prefix {
+                check_version_prefix(prefix)?;
+            }
+            return Ok(Self::Content { prefix });
+        }
+        if prefix.is_some() {
+            return Err("--version-prefix only applies with --version content".into());
+        }
+        orion::validation::package_key(
+            "--version",
+            version,
+            orion::validation::MAX_PACKAGE_VERSION_LEN,
+        )?;
+        Ok(Self::Literal(version))
+    }
+
+    /// The version for an artifact whose content hashes to `content_hash`.
+    pub(crate) fn resolve(&self, content_hash: &str) -> Result<String, CliError> {
+        Ok(match self {
+            Self::Literal(version) => (*version).to_string(),
+            Self::Content { prefix } => {
+                orion::storage::content::content_version(content_hash, *prefix)?
+            }
+        })
+    }
+
+    /// How to name the version before the hash is known.
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Literal(version) => version,
+            Self::Content { .. } => orion::storage::content::CONTENT_VERSION_KEYWORD,
+        }
+    }
+
+    /// With a derived version, say what the hash — and so the version —
+    /// does not see: a rollout-only change keeps it.
+    pub(crate) fn note_what_the_hash_excludes(&self, artifact: &PackageArtifact) {
+        if matches!(self, Self::Content { .. })
+            && artifact
+                .workflows
+                .iter()
+                .any(|w| w.get("rollout_percentage").is_some())
+        {
+            eprintln!(
+                "note: rollout_percentage is not part of the content hash — a rollout-only \
+                 change keeps this version and re-applies as a no-op; change --version-prefix \
+                 to force a new one"
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_export(
     server: &str,
     tag: Option<&str>,
     channel_ids: &[String],
     name: &str,
     version: &str,
+    version_prefix: Option<&str>,
     output: Option<&str>,
     include_artifacts: bool,
 ) -> Result<(), CliError> {
     if tag.is_none() && channel_ids.is_empty() {
         return Err("select the package's channels with --tag or --channels".into());
     }
-    let client = admin_client(server, format!("package={name}@{version} export"))?;
+    orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
+    let version = VersionSpec::parse(version, version_prefix)?;
+    let client = admin_client(server, format!("package={name}@{} export", version.label()))?;
 
     // 1. The selected channels.
     let mut channels: Vec<Value> = Vec::new();
@@ -709,7 +778,7 @@ pub(crate) async fn run_export(
     let mut artifact = PackageArtifact {
         package: PackageMeta {
             name: name.to_string(),
-            version: version.to_string(),
+            version: String::new(),
             orion: env!("CARGO_PKG_VERSION").to_string(),
             content_hash: String::new(),
             exported_from: server.to_string(),
@@ -728,7 +797,10 @@ pub(crate) async fn run_export(
         workflows,
         channels,
     };
+    // The version is outside the hash, so it can be derived from it.
     artifact.package.content_hash = artifact_content_hash(&artifact)?;
+    artifact.package.version = version.resolve(&artifact.package.content_hash)?;
+    version.note_what_the_hash_excludes(&artifact);
 
     let rendered = serde_json::to_string_pretty(&artifact)?;
     match output {
@@ -786,7 +858,20 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
         Ok(actual) if actual != artifact.package.content_hash => errors.push(format!(
             "package.content_hash does not match the entities — expected {actual}"
         )),
-        Ok(_) => {}
+        Ok(actual) => {
+            // A `content-<12 hex>` version names the content it was derived
+            // from; one that names other content was edited by hand.
+            if let Some(hex) =
+                orion::storage::content::content_version_hex(&artifact.package.version)
+                && let Ok(expected) = orion::storage::content::content_version(&actual, None)
+                && expected != artifact.package.version
+            {
+                errors.push(format!(
+                    "package.version 'content-{hex}' names content the entities do not hash \
+                     to — expected {expected}"
+                ));
+            }
+        }
         Err(e) => errors.push(e.to_string()),
     }
 

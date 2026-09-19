@@ -27,7 +27,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | Subcommand | Description |
 |------------|-------------|
 | `export` | Compute the dependency closure from a running instance and write the artifact. |
-| `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
+| `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, a `content-<12 hex>` version against that hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
 | `plan` | Pre-flight an artifact against a target with zero writes. |
 | `apply` | Stage all entities, activate in dependency order, reload once, record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. |
 | `diff` | Report drift between an artifact and a running instance. Exits non-zero when anything differs. |
@@ -41,7 +41,8 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `--tag <tag>` | `export` | Select every channel carrying this tag. |
 | `--channels <ids>` | `export` | Select channels by id, comma-separated or repeated. |
 | `--name <name>` | `export` | Package name. |
-| `--version <ver>` | `export` | Package version. Applied versions are immutable; any content change needs a bump. |
+| `--version <ver>` | `export` | Package version. Applied versions are immutable; any content change needs a bump. `content` derives it from the content hash, as [`compile`](./compile.md#content-versions) does. |
+| `--version-prefix <prefix>` | `export` | With `--version content`, `<prefix>-<12 hex>` instead of `content-<12 hex>`. |
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
 | `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
 

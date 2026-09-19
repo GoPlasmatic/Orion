@@ -49,7 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   config's own trust keys, and having no key is an error rather than a false
   `ok`.
 
+- **`compile --version content`** ([#339]). A package deployed from every
+  image build needs a version that moves exactly when its content does:
+  `content` derives it from the artifact's own `content_hash` —
+  `content-<12 hex>`, or `<prefix>-<12 hex>` with `--version-prefix`. A
+  rebuild of unchanged definitions compiles to the version already applied,
+  so the apply is the no-op, and a revert compiles to the earlier version and
+  rolls back to it. `package export` takes the same two flags, and `package
+  lint` refuses a `content-<12 hex>` version that names other content. What
+  the hash does not cover — activation, `rollout_percentage`, `requires`,
+  signatures — does not move the version; `compile` notes it when a workflow
+  carries a rollout.
+
 ### Changed
+
+- **`compile` and `package export` refuse a package name or version the
+  target would refuse.** A version outside letters, digits, `.`, `_` and `-`,
+  or longer than 64 characters, was only caught by the receipt route with a
+  `400` at `apply` phase 1; it is now refused before an artifact is written.
+  `content` is a reserved `--version` value.
 
 - **`migrate` and `test-connectivity` say what they are waiting for.**
   Without `--wait` they already retried an unreachable database for
@@ -87,6 +105,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can change — wrapping it in a task group would change which steps run.
   Both rules are now silent there.
 
+[#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
 [#347]: https://github.com/GoPlasmatic/Orion/issues/347

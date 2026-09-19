@@ -260,6 +260,7 @@ orion-server lint ./definitions           # Validate a whole definition set and 
 orion-server dry-run -w wf.json -i in.json --stubs s.json --metadata m.json  # Execute a workflow offline with canned connector replies (--plugin-dir <dir>: plugin functions run for real, never stubbed; --model-dir <dir>: so does model_infer, over the artifact beside the manifest, with no admission)
 orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests (--definitions <dir> to resolve $from/use; --plugin-dir <dir> for the components; --model-dir <dir> for the model artifacts)
 orion-server compile ./definitions --name p --version 1.0.0 -o dist/package.json  # Compile a definition set ($from/use resolved, plugin.toml + component inlined, model manifests written as reference + digest) into a package artifact (--format dir|bulk for POST-per-file / bulk-import shapes)
+orion-server compile ./definitions --name p --version content -o dist/package.json  # Version = content-<12 hex> of the content hash (--version-prefix 1.4.0 → 1.4.0-<hex>)
 orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec

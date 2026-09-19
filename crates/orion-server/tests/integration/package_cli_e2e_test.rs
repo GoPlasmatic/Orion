@@ -402,6 +402,115 @@ async fn package_promotes_between_real_instances() {
     assert!(stdout.contains("nothing to do"), "{stdout}");
 }
 
+/// #339's motivating case: a package compiled with `--version content`
+/// goes A → B → (revert) → A. The revert compiles to A's own version, whose
+/// receipt is applied with that content — and superseded — so the third
+/// apply must put A's content back rather than report "nothing to do".
+#[tokio::test]
+async fn a_content_versioned_revert_rolls_back() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("content-defs");
+    let write_workflow = |message: &str| {
+        std::fs::write(
+            defs.path().join("wf.json"),
+            serde_json::json!({
+                "workflow_id": "cv-flow", "name": "CV Flow",
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": message}}}],
+            })
+            .to_string(),
+        )
+        .expect("write workflow");
+    };
+    std::fs::write(
+        defs.path().join("ch.json"),
+        serde_json::json!({
+            "channel_id": "cv-intake", "name": "cv-intake", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/cv",
+            "workflow_id": "cv-flow",
+        })
+        .to_string(),
+    )
+    .expect("write channel");
+    let out = ScratchDir::new("content-artifacts");
+    let compile = |file: &str| -> (String, String) {
+        let path = out.path().join(file);
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                defs.path().to_str().expect("utf8"),
+                "--name",
+                "cv",
+                "--version",
+                "content",
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("artifact")).expect("json");
+        let version = artifact["package"]["version"]
+            .as_str()
+            .expect("version")
+            .to_string();
+        (path, version)
+    };
+    let current = || async {
+        let receipt: serde_json::Value = client
+            .get(format!("{}/api/v1/admin/packages/cv", target.url()))
+            .send()
+            .await
+            .expect("receipt")
+            .json()
+            .await
+            .expect("receipt json");
+        receipt["data"]["current"]["version"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    write_workflow("a");
+    let (a, version_a) = compile("a.json");
+    assert!(version_a.starts_with("content-"), "{version_a}");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &a]),
+        "apply A",
+    );
+
+    write_workflow("b");
+    let (b, version_b) = compile("b.json");
+    assert_ne!(version_a, version_b);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &b]),
+        "apply B",
+    );
+    assert_eq!(current().await, version_b);
+
+    // The revert: same content as A, so the same version.
+    write_workflow("a");
+    let (reverted, version_reverted) = compile("reverted.json");
+    assert_eq!(version_reverted, version_a);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &reverted]),
+        "apply the revert",
+    );
+    assert!(!stdout.contains("nothing to do"), "{stdout}");
+    assert_ok(
+        &package_cmd(&["diff", "-s", &target.url(), "-f", &reverted]),
+        "no drift after the revert",
+    );
+    assert_eq!(current().await, version_a);
+}
+
 /// A package with a plugin in it: the fourth member travels with its
 /// component, installs on a target that has never seen it, and activates
 /// before the workflow that calls it — so the promoted channel serves

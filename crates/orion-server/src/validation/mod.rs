@@ -3,6 +3,7 @@ pub(crate) mod common;
 mod connectors;
 mod cron;
 pub mod endpoints;
+pub mod packages;
 pub mod ssrf;
 mod workflows;
 
@@ -24,6 +25,9 @@ pub use connectors::{
 };
 pub use endpoints::{
     check_broker_endpoints, check_cache_endpoint, check_db_endpoint, check_mongo_hosts,
+};
+pub use packages::{
+    MAX_PACKAGE_HASH_LEN, MAX_PACKAGE_NAME_LEN, MAX_PACKAGE_VERSION_LEN, package_key,
 };
 pub use ssrf::{PinnedDnsResolver, validate_hostport_not_private, validate_url_not_private};
 pub use workflows::{

@@ -159,10 +159,17 @@ enum Command {
         /// Package name, e.g. payments. Required for --format artifact.
         #[arg(long)]
         name: Option<String>,
-        /// Package version, e.g. 1.4.0. Required for --format artifact.
-        /// Applied versions are immutable — any content change needs a bump.
+        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
+        /// artifact's content hash (`content-<12 hex>`), so it moves exactly
+        /// when `plan`, `apply` and `diff` would see a change. Required for
+        /// --format artifact. Applied versions are immutable — any content
+        /// change needs a bump.
         #[arg(long)]
         version: Option<String>,
+        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
+        /// `content-<12 hex>`.
+        #[arg(long, value_name = "PREFIX")]
+        version_prefix: Option<String>,
         /// Channel name that may be referenced without being in the set —
         /// recorded in the artifact's `requires`. Repeatable.
         #[arg(long = "requires-channel", value_name = "NAME")]
@@ -428,10 +435,15 @@ enum PackageCommand {
         /// Package name, e.g. payments.
         #[arg(long)]
         name: String,
-        /// Package version, e.g. 1.4.0. Applied versions are immutable —
-        /// any content change needs a bump.
+        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
+        /// artifact's content hash (`content-<12 hex>`). Applied versions are
+        /// immutable — any content change needs a bump.
         #[arg(long)]
         version: String,
+        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
+        /// `content-<12 hex>`.
+        #[arg(long, value_name = "PREFIX")]
+        version_prefix: Option<String>,
         /// Write the artifact here instead of stdout.
         #[arg(short, long)]
         output: Option<String>,
@@ -585,6 +597,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             format,
             name,
             version,
+            version_prefix,
             requires_channels,
             requires_connectors,
             deny_warnings,
@@ -603,6 +616,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 format,
                 name: name.as_deref(),
                 version: version.as_deref(),
+                version_prefix: version_prefix.as_deref(),
                 boundary,
                 deny_warnings,
                 no_activate,
@@ -702,6 +716,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     channels,
                     name,
                     version,
+                    version_prefix,
                     output,
                     include_artifacts,
                 } => {
@@ -711,6 +726,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &channels,
                         &name,
                         &version,
+                        version_prefix.as_deref(),
                         output.as_deref(),
                         include_artifacts,
                     )

@@ -36,46 +36,31 @@ pub(crate) struct PackageDetail {
     versions: Vec<PackageReceiptResponse>,
 }
 
-/// Shared caps for the receipt key fields. The MySQL column widths
-/// (`migrations/mysql/013_package_receipts.sql`) are sized to these, so the
-/// route layer must refuse anything longer before it reaches the driver.
-const MAX_NAME_LEN: usize = 128;
-const MAX_VERSION_LEN: usize = 64;
-const MAX_HASH_LEN: usize = 128;
-
-/// A receipt key: non-empty, bounded, and drawn from a charset that stays
-/// unambiguous in URLs, shell commands and audit rows.
+/// A receipt key: the one rule `compile` and `package export` also apply,
+/// as a `400`. The MySQL column widths
+/// (`migrations/mysql/013_package_receipts.sql`) are sized to its caps, so
+/// the route layer must refuse anything longer before it reaches the driver.
 fn validate_key_field(field: &str, value: &str, max_len: usize) -> Result<(), OrionError> {
-    if value.trim().is_empty() {
-        return Err(OrionError::validation(format!("{field} must not be empty")));
-    }
-    if value.len() > max_len {
-        return Err(OrionError::validation(format!(
-            "{field} must be at most {max_len} characters, got {}",
-            value.len()
-        )));
-    }
-    if let Some(bad) = value
-        .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
-    {
-        return Err(OrionError::validation(format!(
-            "{field} contains unsupported character '{bad}' — use letters, digits, \
-             '.', '_' and '-'"
-        )));
-    }
-    Ok(())
+    crate::validation::package_key(field, value, max_len).map_err(OrionError::validation)
 }
 
 fn validate_put(name: &str, req: &PutPackageReceiptRequest) -> Result<(), OrionError> {
-    validate_key_field("package name", name, MAX_NAME_LEN)?;
-    validate_key_field("version", &req.version, MAX_VERSION_LEN)?;
+    validate_key_field(
+        "package name",
+        name,
+        crate::validation::MAX_PACKAGE_NAME_LEN,
+    )?;
+    validate_key_field(
+        "version",
+        &req.version,
+        crate::validation::MAX_PACKAGE_VERSION_LEN,
+    )?;
     // `sha256:<hex>` is the expected spelling — strip the one legitimate ':'
     // and hold the rest to the shared charset.
     validate_key_field(
         "content_hash",
         &req.content_hash.replacen(':', "", 1),
-        MAX_HASH_LEN,
+        crate::validation::MAX_PACKAGE_HASH_LEN,
     )?;
     Ok(())
 }

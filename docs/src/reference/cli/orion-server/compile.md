@@ -1,6 +1,6 @@
 <!-- description: orion-server compile resolves $from and use in a definition set and writes a package artifact, a directory of request bodies, or bulk-import files. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server compile`
 
@@ -10,7 +10,7 @@ Compiles a definition set into files the admin API accepts. It resolves the auth
 
 ```bash
 orion-server compile <dir> [-o <PATH>] [--format artifact|dir|bulk]
-                           [--name NAME] [--version VERSION]
+                           [--name NAME] [--version VERSION|content [--version-prefix PREFIX]]
                            [--requires-channel NAME]... [--requires-connector NAME]...
                            [--deny-warnings] [--no-activate]
 ```
@@ -36,7 +36,8 @@ Entities must carry explicit ids for `artifact` only. `apply` activates a channe
 | `-o, --output` | A file for `--format artifact` (default: stdout); a directory for `dir` and `bulk`, where it is required. |
 | `--format` | `artifact` (default), `dir`, or `bulk`; each is described under [Output formats](#output-formats). |
 | `--name` | Package name. Required for `--format artifact`. |
-| `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. |
+| `--version` | Package version. Required for `--format artifact`. Applied versions are immutable — any content change needs a bump. `content` derives the version from the content hash instead; see [Content versions](#content-versions). A version the target would refuse (outside letters, digits, `.`, `_` and `-`, or over 64 characters) is refused here. |
+| `--version-prefix` | With `--version content`, writes `<PREFIX>-<12 hex>` instead of `content-<12 hex>`. At most 51 characters. |
 | `--requires-channel` | Channel name that may be referenced without being in the set; recorded in the artifact's `requires`. Repeatable. |
 | `--requires-connector` | Connector name that may be referenced without being in the set. Repeatable. |
 | `--deny-warnings` | Exit non-zero on advisory findings too, not only errors. |
@@ -51,6 +52,21 @@ Entities must carry explicit ids for `artifact` only. `apply` activates a channe
 | `artifact` | One promotion artifact, hashed exactly as `package export` hashes one | `orion-server package plan\|apply\|diff` |
 | `dir` | The input tree mirrored, one file per entity, shared documents consumed | a POST per file — `orion-cli workflows import -f …` |
 | `bulk` | `connectors.json`, `workflows.json`, `channels.json` — plus `plugins.json` and `models.json` when the set carries any | the bulk import endpoints, in that order (plugins first, models after connectors) |
+
+### Content versions
+
+`--version content` names the package after its own content hash: `content-` and the first 12 hex of `content_hash`. The version therefore moves exactly when `plan`, `apply` and `diff` would see a change. A rebuild of unchanged definitions compiles to the version already applied. A deploy that runs on every image build needs no version scheme of its own.
+
+```console
+$ orion-server compile ./definitions --name orders --version content -o dist/orders.json
+wrote orders@content-3f9c2a1b7d04 (4 connectors, 53 workflows, 55 channels) to dist/orders.json
+```
+
+`--version-prefix 1.4.0` writes `1.4.0-3f9c2a1b7d04` instead. Package versions are opaque labels: a target decides `current` by when a version was applied, never by comparing versions, so nothing may assume these order. [`package lint`](./package.md) checks that a `content-<12 hex>` version names the content the artifact hashes to.
+
+**What a content version does not see.** The hash covers importable content only. A change to `activate`, `--no-activate`, a workflow's `rollout_percentage`, `requires` or a signature keeps the version. Applying such an artifact again reports the version as applied with identical content, and does nothing. `compile` prints a note when a workflow carries `rollout_percentage`. Change `--version-prefix` to force a new version.
+
+A revert is a rollback. Reverting the definitions compiles to the earlier version, whose receipt a later version superseded, and `apply` puts that content back.
 
 ## Examples
 

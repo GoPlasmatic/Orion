@@ -43,6 +43,9 @@ Use `lint` as the PR gate and `plan` as the pre-deploy gate. Use `diff` as the p
 > [!NOTE]
 > `export` is one way to obtain an artifact; [`orion-server compile`](../../reference/cli/orion-server/compile.md) is the other. It builds the same shape from a directory of definitions with no instance to export from, and resolves the set's shared `constants`, `errors` and `fragments` on the way, which is why it exists: the admin API has no set to resolve them against. `lint`, `plan`, `apply` and `diff` cannot tell the two apart.
 
+> [!TIP]
+> A deploy that runs on every image build can name the version after the content: `compile --version content` writes `content-<12 hex>` from the artifact's own hash. Unchanged definitions compile to the version already applied, so the apply is a no-op, and a revert compiles to the earlier version and rolls back to it. See [Content versions](../../reference/cli/orion-server/compile.md#content-versions).
+
 ## Select what ships
 
 Membership is a tag. Give every entity of a service the same label when you create it:
