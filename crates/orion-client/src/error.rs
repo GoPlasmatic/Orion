@@ -56,8 +56,10 @@ impl ClientError {
     }
 
     /// Classify a non-2xx response body: the Orion envelope when it parses
-    /// as one, the raw text otherwise. The one place this decision lives.
-    pub(crate) fn from_response(status: StatusCode, body: &[u8]) -> Self {
+    /// as one, the raw text otherwise. The one place this decision lives —
+    /// public so a transport that is not HTTP (the server applying a
+    /// package through its own router) classifies an answer the same way.
+    pub fn from_response(status: StatusCode, body: &[u8]) -> Self {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body)
             && value.get("error").is_some()
             && let Ok(envelope) = serde_json::from_value::<orion_api::ErrorEnvelope>(value)

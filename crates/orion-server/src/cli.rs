@@ -1314,7 +1314,12 @@ fn emit_artifact(
                 .map(|n| n.to_string_lossy().into_owned())
                 .collect()
         };
-        let report = crate::package_cli::attach_signatures(&mut artifact, dir, &local_name)?;
+        let report = orion::package::sign::attach_signatures(
+            &mut artifact,
+            dir,
+            &local_name,
+            &orion::package::Console,
+        )?;
         for (subject, outcome) in &report {
             if let orion::signatures::Outcome::Unsigned { looked_for } = outcome {
                 eprintln!(

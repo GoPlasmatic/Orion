@@ -95,6 +95,7 @@ mod output_field_test;
 mod p1_promotion_test;
 mod p2_api_test;
 mod package_cli_e2e_test;
+mod package_in_process_test;
 mod packages_test;
 mod pagination_contract_test;
 mod pipeline_test;
