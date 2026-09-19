@@ -21,7 +21,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where they used to be reported as an invalid name. `:-` still falls back
   only when the variable is unset.
 
+- **`migrate --wait <duration>` and `test-connectivity --wait <duration>`**
+  ([#346]). A deploy step no longer needs a shell loop around `migrate`: the
+  flag keeps retrying the state database connection for at most the given
+  time (`60`, `30s`, `5m`), retrying only failures that mean the database is
+  not accepting connections yet — a refused or reset connection, an
+  unresolvable host, a server starting up or out of connections — and
+  stopping at once on a wrong password, an unknown database, a TLS or URL
+  problem. Past the window it exits 1 with `state database not reachable
+  after <n>s` and the last error. `test-connectivity --wait` applies one
+  deadline to the database and Kafka together. A failed migration is never
+  retried, and SQLite ignores the flag.
+
 ### Changed
+
+- **`migrate` and `test-connectivity` say what they are waiting for.**
+  Without `--wait` they already retried an unreachable database for
+  `storage.connect_retry_secs` (60 s), silently, because the CLI never
+  initialises tracing. Each retry now prints `waiting for the state database
+  (<reason>) … <n>s` on stderr; the URL is never printed. The window and the
+  retry-everything policy are unchanged.
 
 - **Placeholders in config-file comments are no longer substituted**
   ([#344]). Substitution ran over the raw text, so a comment mentioning
@@ -53,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both rules are now silent there.
 
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
+[#346]: https://github.com/GoPlasmatic/Orion/issues/346
 
 ## [1.8.2] - 2026-09-16
 

@@ -1,6 +1,6 @@
 <!-- description: The [storage] settings: the storage.url that selects SQLite, PostgreSQL or MySQL, pool sizing, encryption at rest, backups and auto_migrate. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Storage settings
 
@@ -57,7 +57,7 @@ Migrations for all backends are embedded in the binary and the correct set is se
 | `storage.backup_dir` | `"./backups"` | `ORION_STORAGE__BACKUP_DIR` | Where `POST /api/v1/admin/backups` writes. SQLite only. |
 | `storage.backup_retention_count` | — | `ORION_STORAGE__BACKUP_RETENTION_COUNT` | Keep only the newest N backups, pruning older ones after each successful backup. Unset keeps every backup — they accumulate on the same disk as the live database. Set the variable to an empty string to clear it. |
 | `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step — required in a production cluster. |
-| `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. |
+| `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. [`migrate --wait`](../cli/orion-server/migrate.md) overrides it for one run. |
 
 **Use SQLite for:** a single instance — a development or design-time node, an appliance install, anything where one process owns the database file. It is the default, provisions nothing, and creates the file on first boot. It is also the only backend with an [in-product backup](../../operate/maintain/backup-restore.md#before-you-start).
 

@@ -250,6 +250,7 @@ orion-server -c config.toml               # Start with config
 orion-server validate-config              # Validate config (--format summary for a short view)
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
+orion-server migrate --wait 60s           # Wait for the state database first (retries connection failures only)
 orion-server fmt ./definitions            # Format definition files to the house style (--check for CI; one style, no configuration)
 orion-server lint workflow.json           # Strict-validate one workflow (--deny-warnings to fail on advisories)
 orion-server clippy ./definitions         # Advisory rules beyond lint, only where certain (--list, --explain <rule>; -c for the [vars]/[secrets] rules)

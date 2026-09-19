@@ -168,12 +168,92 @@ fn print_config_summary(config: &config::AppConfig) {
     );
 }
 
-/// `migrate [--dry-run]` subcommand: list or apply pending DB migrations.
+/// `--wait <DURATION>`: a bare integer is seconds (`60`); otherwise `<n>s`,
+/// `<n>m`, `<n>h` or `<n>d`. Zero is one attempt.
+pub(crate) fn parse_wait(value: &str) -> Result<std::time::Duration, String> {
+    let value = value.trim();
+    let secs = match value.parse::<u64>() {
+        Ok(secs) => secs,
+        Err(_) => orion::engine::functions::connector_helpers::parse_duration_secs(value)?,
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// Open the state database for a CLI subcommand, printing a line on stderr
+/// for every retry so a wait is never silent.
+///
+/// Without `wait` the window and the retry-everything policy are the
+/// server's own (`storage.connect_retry_secs`). With it, the window is the
+/// flag's, only connection failures are retried, and giving up says how
+/// long it waited.
+async fn open_state_db(
+    config: &config::AppConfig,
+    wait: Option<std::time::Duration>,
+) -> Result<orion::storage::DbPool, Box<dyn std::error::Error>> {
+    use orion::storage::{ConnectWait, RetryReport};
+
+    let started = std::time::Instant::now();
+    let on_retry = |report: &RetryReport<'_>| {
+        eprintln!(
+            "waiting for the state database ({}) … {}s",
+            report.reason,
+            report.elapsed.as_secs()
+        );
+    };
+    let policy = ConnectWait {
+        window: wait.unwrap_or(std::time::Duration::from_secs(
+            config.storage.connect_retry_secs,
+        )),
+        transient_only: wait.is_some(),
+        on_retry: Some(&on_retry),
+    };
+    match orion::storage::init_pool_no_migrate_waiting(&config.storage, policy).await {
+        Ok(pool) => Ok(pool),
+        Err(err) if wait.is_some() && orion::storage::is_transient_connect_error(&err) => {
+            Err(Box::new(WaitExhausted {
+                what: "state database",
+                waited: started.elapsed(),
+                source: Box::new(err),
+            }))
+        }
+        Err(err) => Err(Box::new(err)),
+    }
+}
+
+/// A dependency still unreachable when `--wait` ran out. The cause chain
+/// `main` prints carries the last error's own text.
+#[derive(Debug)]
+struct WaitExhausted {
+    what: &'static str,
+    waited: std::time::Duration,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for WaitExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} not reachable after {}s",
+            self.what,
+            self.waited.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for WaitExhausted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// `migrate [--dry-run] [--wait]` subcommand: list or apply pending DB
+/// migrations.
 pub(crate) async fn handle_migrate(
     config: &config::AppConfig,
     dry_run: bool,
+    wait: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
+    let pool = open_state_db(config, wait).await?;
     let backend = pool.backend();
     let pending = orion::storage::pending_migrations(&pool).await?;
 
@@ -2227,9 +2307,13 @@ pub(crate) async fn run_preflight(
 /// credentials surface only at first request" footgun.
 pub(crate) async fn run_test_connectivity(
     config: &config::AppConfig,
+    wait: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // One deadline for the whole command, not one per dependency: the flag
+    // answers "block until Orion's dependencies are up".
+    let started = std::time::Instant::now();
     eprintln!("Probing storage at {} ...", redacted(&config.storage.url));
-    let pool = orion::storage::init_pool_no_migrate(&config.storage)
+    let pool = open_state_db(config, wait)
         .await
         .map_err(|e| format!("storage: connection failed: {e}"))?;
     let pending = orion::storage::pending_migrations(&pool)
@@ -2242,13 +2326,41 @@ pub(crate) async fn run_test_connectivity(
     if config.kafka.enabled {
         let broker_list: Vec<String> = config.kafka.brokers.iter().map(|b| redacted(b)).collect();
         eprintln!("Probing Kafka brokers {} ...", broker_list.join(","));
-        let kafka_config = config.kafka.clone();
-        let brokers = tokio::task::spawn_blocking(move || {
-            orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
-        })
-        .await
-        .map_err(|e| format!("kafka: probe task failed: {e}"))?
-        .map_err(|e| format!("kafka: {e}"))?;
+        let deadline = wait.map(|w| started + w);
+        let mut failures = 0u32;
+        let brokers = loop {
+            let kafka_config = config.kafka.clone();
+            let probe = tokio::task::spawn_blocking(move || {
+                orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
+            })
+            .await
+            .map_err(|e| format!("kafka: probe task failed: {e}"))?;
+            match probe {
+                Ok(brokers) => break brokers,
+                Err(e) => {
+                    failures += 1;
+                    let backoff = std::time::Duration::from_millis(250u64 << failures.min(5))
+                        .min(std::time::Duration::from_secs(5));
+                    match deadline {
+                        Some(deadline) if std::time::Instant::now() + backoff <= deadline => {
+                            eprintln!(
+                                "waiting for Kafka ({e}) … {}s",
+                                (started.elapsed() + backoff).as_secs()
+                            );
+                            tokio::time::sleep(backoff).await;
+                        }
+                        Some(_) => {
+                            return Err(format!(
+                                "kafka: not reachable after {}s: {e}",
+                                started.elapsed().as_secs()
+                            )
+                            .into());
+                        }
+                        None => return Err(format!("kafka: {e}").into()),
+                    }
+                }
+            }
+        };
         println!("  kafka:           OK ({brokers} brokers visible)");
     } else {
         println!("  kafka:           disabled");
@@ -2749,5 +2861,28 @@ fn subset_mismatch(
         }
         _ if expected == actual => Vec::new(),
         _ => vec![format!("{path}: expected {expected}, got {actual}")],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn parse_wait_accepts_seconds_and_units() {
+        assert_eq!(parse_wait("60"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("60s"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("5m"), Ok(Duration::from_secs(300)));
+        assert_eq!(parse_wait("1h"), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_wait("0"), Ok(Duration::ZERO));
+        assert_eq!(parse_wait("0s"), Ok(Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_wait_refuses_garbage() {
+        for bad in ["", "soon", "5x", "-1", "1.5m"] {
+            assert!(parse_wait(bad).is_err(), "{bad}");
+        }
     }
 }

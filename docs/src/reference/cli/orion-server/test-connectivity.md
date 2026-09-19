@@ -1,6 +1,6 @@
 <!-- description: orion-server test-connectivity probes the configured database, and Kafka when enabled, so wrong credentials surface before the server tries to start. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server test-connectivity`
 
@@ -9,13 +9,22 @@ Probes the configured database with a no-op query, and Kafka when `kafka.enabled
 ## Synopsis
 
 ```bash
-orion-server [-c <config.toml>] test-connectivity
+orion-server [-c <config.toml>] test-connectivity [--wait <duration>]
 ```
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--wait <duration>` | Keep retrying until the database, and Kafka when enabled, accept connections: `60` (seconds), `30s`, `5m`. The duration bounds the whole command, not each dependency. Only connection failures are retried, as for [`migrate --wait`](./migrate.md). |
+
+Without `--wait`, the database connection is retried for `storage.connect_retry_secs`, printing a line on stderr for each retry, and Kafka is probed once.
 
 ## Examples
 
 ```bash
 orion-server -c config.toml test-connectivity
+orion-server -c config.toml test-connectivity --wait 2m
 ```
 
 ## Related

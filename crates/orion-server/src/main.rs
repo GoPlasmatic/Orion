@@ -36,6 +36,7 @@ EXAMPLES:\n    \
     orion-server validate-config --format summary  Short human summary instead\n    \
     orion-server -c config.toml migrate       Run pending database migrations\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
+    orion-server migrate --wait 60s           Wait up to 60s for the database, then migrate\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
     orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
@@ -79,6 +80,12 @@ enum Command {
         /// Preview pending migrations without applying them.
         #[arg(long)]
         dry_run: bool,
+        /// Keep retrying until the state database accepts connections, for at
+        /// most this long (`60`, `30s`, `5m`). Only connection failures are
+        /// retried; a wrong password or a failed migration stops at once.
+        /// Overrides `storage.connect_retry_secs` for this run.
+        #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
+        wait: Option<std::time::Duration>,
     },
     /// Statically validate a workflow JSON file (A6).
     ///
@@ -276,7 +283,13 @@ enum Command {
     /// Opens the configured database pool (using the same `storage.url`)
     /// and runs a no-op query. Catches "DB credentials wrong / file
     /// unreadable" before the server tries to start.
-    TestConnectivity,
+    TestConnectivity {
+        /// Keep retrying until the state database (and Kafka, when enabled)
+        /// accept connections, for at most this long in total (`60`, `30s`,
+        /// `5m`). Only connection failures are retried.
+        #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
+        wait: Option<std::time::Duration>,
+    },
     /// Format definition files to the house style (like `cargo fmt`).
     ///
     /// Every `.json` under each PATH is rewritten in place — entities, shared
@@ -508,7 +521,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::ValidateConfig { format }) => {
             return cli::handle_validate_config(&config, format);
         }
-        Some(Command::Migrate { dry_run }) => return cli::handle_migrate(&config, dry_run).await,
+        Some(Command::Migrate { dry_run, wait }) => {
+            return cli::handle_migrate(&config, dry_run, wait).await;
+        }
         Some(Command::Lint {
             workflow,
             deny_warnings,
@@ -593,7 +608,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             return cli::run_test(&path, definitions.as_deref(), &plugin_dirs, &model_dirs).await;
         }
-        Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
+        Some(Command::TestConnectivity { wait }) => {
+            return cli::run_test_connectivity(&config, wait).await;
+        }
         Some(Command::Clippy {
             path,
             deny_warnings,

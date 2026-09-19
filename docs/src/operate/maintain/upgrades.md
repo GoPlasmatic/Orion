@@ -1,6 +1,6 @@
 <!-- description: How to move an existing Orion deployment from one version to another: the per-version guides, the expand and contract migration rule, and the preflight scan. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Upgrade an instance
 
@@ -15,7 +15,7 @@ You need the new binary, admin access to the instance and its database, and the 
 1. **Back up the database.** Every later step is reversible if this one happened. See [Back up and restore](./backup-restore.md).
 2. **Run `orion-server preflight` with the new binary against the old database.** It is read-only, needs only `storage.url`, and names every stored channel and workflow the new version would refuse. This is the step that turns an upgrade's surprises into a list you can work through beforehand.
 3. **Run `orion-server validate-config`** against the config you will deploy. Preflight reads the database; this reads the config file and the `ORION_*` environment, which fail differently (see [How a rename fails, by surface](#how-a-rename-fails-by-surface)).
-4. **Migrate.** In a single-node deployment, migrations run at boot. In a cluster, run `orion-server migrate` as a deploy step and keep `storage.auto_migrate = false`. A production cluster that tries to migrate at boot is refused at startup rather than allowed to race.
+4. **Migrate.** In a single-node deployment, migrations run at boot. In a cluster, run `orion-server migrate` as a deploy step and keep `storage.auto_migrate = false`. `migrate --wait 60s` waits for a database that is still starting, so the step needs no retry loop around it. A production cluster that tries to migrate at boot is refused at startup rather than allowed to race.
 5. **Roll the fleet.** `/readyz` flips to `503` on `SIGTERM` while the node keeps serving through its drain window, so a rolling deploy sheds no requests.
 
 ## How a rename fails, by surface

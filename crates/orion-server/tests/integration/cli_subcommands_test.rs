@@ -509,6 +509,87 @@ fn migrate_applies_then_reports_nothing_pending() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A Postgres URL on a port nothing listens on: every attempt is refused,
+/// which sqlx reports as a pool timeout after `acquire_timeout_secs`.
+fn closed_postgres_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe port");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+    format!("postgres://orion:orion@127.0.0.1:{port}/orion")
+}
+
+/// #346: `--wait` retries a database that is not accepting connections,
+/// says so on stderr each time, and gives up past the window naming how
+/// long it waited and the last error.
+#[test]
+fn migrate_wait_gives_up_with_the_last_connection_error() {
+    let started = std::time::Instant::now();
+    let out = Command::new(orion_bin())
+        .args(["migrate", "--wait", "2s"])
+        .env("ORION_STORAGE__URL", closed_postgres_url())
+        .env("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", "1")
+        .output()
+        .expect("invoke orion-server migrate");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "the window must be waited out (elapsed {:?}): {stderr}",
+        started.elapsed()
+    );
+    assert!(
+        stderr.contains("waiting for the state database (not accepting connections within 1s)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("state database not reachable after"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("orion:orion@"),
+        "a progress line must never print the URL: {stderr}"
+    );
+}
+
+/// SQLite's failures do not heal by waiting, so `--wait` changes nothing
+/// there: a healthy file migrates at once, with no progress line.
+#[test]
+fn migrate_wait_is_a_no_op_on_sqlite() {
+    let (url, path) = temp_db_url();
+    let started = std::time::Instant::now();
+    let (ok, out) = run_migrate(&url, &["--wait", "30s"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("Migrations applied successfully"), "{out}");
+    assert!(!out.contains("waiting for"), "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_connectivity_accepts_wait() {
+    let (url, path) = temp_db_url();
+    let out = Command::new(orion_bin())
+        .args(["test-connectivity", "--wait", "5s"])
+        .env("ORION_STORAGE__URL", &url)
+        .env("ORION_KAFKA__ENABLED", "false")
+        .output()
+        .expect("invoke orion-server test-connectivity");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("storage:         OK"), "{stdout}");
+    let _ = std::fs::remove_file(&path);
+
+    let out = Command::new(orion_bin())
+        .args(["test-connectivity", "--wait", "soon"])
+        .output()
+        .expect("invoke orion-server test-connectivity");
+    assert!(!out.status.success(), "an unparseable duration is refused");
+}
+
 // ============================================================
 // dry-run --stubs, and the `test` runner built on it
 // ============================================================
