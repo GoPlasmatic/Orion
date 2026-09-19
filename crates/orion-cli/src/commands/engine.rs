@@ -80,8 +80,51 @@ async fn status(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Res
             }
         );
     }
+    print_load_issues(&resp);
 
     Ok(0)
+}
+
+/// The load issues a status or reload answer carries — absent from a
+/// server that predates them, in which case nothing is printed.
+fn print_load_issues(resp: &Value) {
+    let Some(value) = resp.get("load_issues").filter(|v| !v.is_null()) else {
+        return;
+    };
+    let Ok(issues) = serde_json::from_value::<orion_api::EngineLoadIssues>(value.clone()) else {
+        return;
+    };
+    if issues.is_empty() {
+        println!("  Load issues:     {}", "none".green());
+        return;
+    }
+    let lines: Vec<String> = issues
+        .channels
+        .iter()
+        .map(|c| format!("channels/{}: {}", c.channel, c.reason))
+        .chain(
+            issues
+                .plugins
+                .iter()
+                .map(|p| format!("plugins/{}: {}: {}", p.plugin, p.stage, p.reason)),
+        )
+        .chain(
+            issues
+                .models
+                .iter()
+                .map(|m| format!("models/{}: {}: {}", m.model, m.stage, m.reason)),
+        )
+        .chain(
+            issues
+                .connectors
+                .iter()
+                .map(|c| format!("connectors/{}: {}: {}", c.connector, c.stage, c.reason)),
+        )
+        .collect();
+    println!("  Load issues:     {}", lines.len().to_string().yellow());
+    for line in lines {
+        println!("    {line}");
+    }
 }
 
 async fn reload(client: &OrionClient, quiet: bool, yes: bool) -> Result<i32> {
@@ -99,6 +142,7 @@ async fn reload(client: &OrionClient, quiet: bool, yes: bool) -> Result<i32> {
             "{} Engine reloaded with {workflows} workflow(s)",
             "OK".green().bold()
         );
+        print_load_issues(&resp);
     }
 
     Ok(0)

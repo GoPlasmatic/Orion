@@ -1,6 +1,6 @@
 <!-- description: Structured logs, Prometheus metrics, OpenTelemetry spans and three health endpoints from one Orion binary, and what is actually worth alerting on. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Monitor and alert
 
@@ -120,7 +120,7 @@ readinessProbe:
 > [!WARNING]
 > Point monitors at `/health`'s `status` field, not only at its HTTP code. A failing database answers `503` with `"status": "degraded"`. But a failed connector load, a quarantined channel, or a dead Kafka consumer also report `"status": "degraded"` at HTTP 200. The instance still serves traffic, and a `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
 
-`/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*.
+`/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*. Each quarantined channel also carries its `channel_id` and `workflow_id`. Tooling that needs the lists should read [`GET /engine/status`](../../reference/admin-api/engine.md#what-a-generation-could-not-load), which carries the same four under `load_issues` on the admin plane.
 
 `components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. Like `config_propagation` it does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
 

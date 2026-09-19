@@ -29,7 +29,7 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `export` | Compute the dependency closure from a running instance and write the artifact. |
 | `lint` | Validate an artifact offline: entity shapes, closure completeness, content hash, a `content-<12 hex>` version against that hash, and the cross-reference checks `lint <dir>` runs. Exits non-zero on **errors**; warnings and inventory notes print without failing. |
 | `plan` | Pre-flight an artifact against a target with zero writes. |
-| `apply` | Stage all entities, activate in dependency order, reload once, record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. |
+| `apply` | Stage all entities, activate in dependency order, reload once, check the reloaded generation serves them, then record the receipt. Idempotent: re-applying the package's current version is a no-op, while re-applying a version a later one superseded rolls the entities back to it and makes it current again. `plan` names the version that superseded it. |
 | `diff` | Report drift between an artifact and a running instance. Exits non-zero when anything differs. |
 
 ## Options
@@ -46,6 +46,20 @@ Every subcommand except `lint` calls an instance's admin API, authenticating wit
 | `-o, --output <path>` | `export` | Write the artifact here instead of stdout. |
 | `--signatures <dir>` | `plan`, `apply` | Attach the detached signatures in `<dir>` to the artifact's plugins and models before anything is sent. See [Signatures at deploy time](#signatures-at-deploy-time). |
 | `--include-artifacts` | `export` | Inline each plugin's component as base64, so the artifact installs the plugin on a target that has never seen it. Without it a plugin travels as manifest and digest, and `plan` fails unless the target already holds that digest. |
+
+## Applied means serving
+
+A reload succeeds even when an entity it loads does not: the entity is quarantined and everything else serves. `apply` therefore reads what the generation it published could not load, and fails when any of that is a member of the package:
+
+```
+error: 1 entity of nightly@2.0.0 is quarantined on https://prod.orion.internal:
+  connectors/crm: secret_resolution: environment variable 'CRM_TOKEN' is not set
+Error: nightly@2.0.0 is not serving on https://prod.orion.internal — the receipt stays staged; fix the cause and re-run apply
+```
+
+The receipt is flipped to `applied` only after that check, so a failed apply leaves it `staged` and a re-run after the fix completes it. A member counts when its own row is refused: a plugin, model or connector the package carries, or a channel. A workflow counts when a channel of another package bound to it is refused.
+
+Re-applying the version a target already runs is not blind either. `apply` reads `GET /engine/status` and fails the same way when a member is quarantined, for example after the node restarted with `cron.enabled = false`. That receipt is already `applied` and stays so, so the message says to fix the cause and reload. `plan` reads the same endpoint and warns when the target has cron, plugins or models switched off for something the package needs. It also warns when the target already quarantines one of the package's members. A target older than these fields cannot say, and `apply` prints a warning rather than fail.
 
 ## Signatures at deploy time
 

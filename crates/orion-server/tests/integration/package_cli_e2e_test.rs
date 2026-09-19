@@ -40,7 +40,8 @@ struct Server {
     port: u16,
     label: &'static str,
     log: std::path::PathBuf,
-    _dir: ScratchDir,
+    /// Holds the database; `None` only while a restart moves it on.
+    dir: Option<ScratchDir>,
 }
 
 impl Server {
@@ -50,7 +51,19 @@ impl Server {
 
     /// A server with extra `ORION_*` settings in its environment.
     fn start_with(label: &'static str, envs: &[(&str, &str)]) -> Self {
-        let dir = ScratchDir::new("db");
+        Self::spawn(label, ScratchDir::new("db"), envs)
+    }
+
+    /// Stop this server and start another on the same database, with
+    /// `envs` — a node whose configuration changed under a stored estate.
+    fn restart_with(mut self, envs: &[(&str, &str)]) -> Self {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let dir = self.dir.take().expect("the database dir");
+        Self::spawn(self.label, dir, envs)
+    }
+
+    fn spawn(label: &'static str, dir: ScratchDir, envs: &[(&str, &str)]) -> Self {
         // Bind-then-drop to pick a free port; the tiny race is acceptable in
         // a test that retries readiness anyway.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -96,7 +109,7 @@ impl Server {
             port,
             label,
             log,
-            _dir: dir,
+            dir: Some(dir),
         }
     }
 
@@ -123,7 +136,7 @@ impl Drop for Server {
         let _ = self.child.wait();
         // Only on the way out of a failing test: replay what the server logged
         // so the panic message and the cause land in the same CI output. This
-        // runs before `_dir` is dropped (Rust runs a type's own Drop before its
+        // runs before `dir` is dropped (Rust runs a type's own Drop before its
         // fields'), so the scratch dir still exists to read from.
         if std::thread::panicking()
             && let Ok(text) = std::fs::read_to_string(&self.log)
@@ -719,6 +732,207 @@ async fn package_apply_attaches_signatures_from_a_directory() {
         "{}",
         resp.text().await.unwrap_or_default()
     );
+}
+
+/// #342: "applied" must mean serving. A node restarted with the scheduler
+/// off quarantines the cron channel an applied package carries: re-applying
+/// the same version fails naming it (instead of "nothing to do"), and a new
+/// version's apply fails after the reload with its receipt left `staged`.
+/// Turn the scheduler back on and the same apply completes.
+#[tokio::test]
+async fn apply_fails_when_the_reload_quarantines_what_it_carries() {
+    let client = reqwest::Client::new();
+    let target = Server::start("cron-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("cron-defs");
+    let dir = defs.path();
+    let write_workflow = |message: &str| {
+        std::fs::write(
+            dir.join("wf.json"),
+            serde_json::json!({
+                "workflow_id": "nightly", "name": "Nightly",
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": message}}}],
+            })
+            .to_string(),
+        )
+        .expect("workflow");
+    };
+    write_workflow("v1");
+    std::fs::write(
+        dir.join("ch.json"),
+        serde_json::json!({
+            "channel_id": "nightly-sweep", "name": "nightly-sweep", "channel_type": "async",
+            "protocol": "cron", "workflow_id": "nightly",
+            "transport_config": {"schedule": "0 15 2 * * *", "timezone": "UTC", "payload": {}},
+        })
+        .to_string(),
+    )
+    .expect("channel");
+    let out = ScratchDir::new("cron-out");
+    let compile = |version: &str| -> String {
+        let path = out.path().join(format!("{version}.json"));
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                dir.to_str().expect("utf8"),
+                "--name",
+                "nightly",
+                "--version",
+                version,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    };
+    let v1 = compile("1.0.0");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &v1]),
+        "apply with the scheduler on",
+    );
+
+    // The same database, the scheduler off.
+    let target = target.restart_with(&[("ORION_CRON__ENABLED", "false")]);
+    target.wait_ready(&client).await;
+
+    // (a) The applied version is not "nothing to do" any more.
+    let out_a = package_cmd(&["apply", "-s", &target.url(), "-f", &v1]);
+    let stderr = String::from_utf8_lossy(&out_a.stderr);
+    assert!(!out_a.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("channels/nightly-sweep") && stderr.contains("cron.enabled = false"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("already applied and stays so"), "{stderr}");
+
+    // plan predicts it.
+    write_workflow("v2");
+    let v2 = compile("2.0.0");
+    let planned = package_cmd(&["plan", "-s", &target.url(), "-f", &v2]);
+    let stderr = String::from_utf8_lossy(&planned.stderr);
+    assert!(
+        stderr.contains("target has cron.enabled = false")
+            || stderr.contains("already quarantined on the target"),
+        "{stderr}"
+    );
+
+    // (b) A new version fails — on the node that answers, the channel's
+    // activation gate refuses it before the reload — and its receipt stays
+    // staged.
+    let out_b = package_cmd(&["apply", "-s", &target.url(), "-f", &v2]);
+    let stderr = String::from_utf8_lossy(&out_b.stderr);
+    assert!(!out_b.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("nightly-sweep") && stderr.contains("cron.enabled = false"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("the receipt stays staged"),
+        "{stderr}"
+    );
+    let receipts: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/nightly", target.url()))
+        .send()
+        .await
+        .expect("receipts")
+        .json()
+        .await
+        .expect("json");
+    let v2_state = receipts["data"]["versions"]
+        .as_array()
+        .expect("versions")
+        .iter()
+        .find(|r| r["version"] == "2.0.0")
+        .map(|r| r["state"].clone());
+    assert_eq!(v2_state, Some(serde_json::json!("staged")), "{receipts}");
+    assert_eq!(receipts["data"]["current"]["version"], "1.0.0");
+
+    // (c) With the scheduler back on, the same apply completes.
+    let target = target.restart_with(&[]);
+    target.wait_ready(&client).await;
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &v2]),
+        "apply with the scheduler back on",
+    );
+    assert!(stdout.contains("applied nightly@2.0.0"), "{stdout}");
+}
+
+/// #342, phase 4b: a member nothing refuses at activation — a connector,
+/// which has none — can still fail to load at the reload. Apply reads the
+/// reload's own answer, fails naming it, and leaves the receipt staged.
+#[tokio::test]
+async fn apply_fails_when_a_carried_connector_does_not_load() {
+    let client = reqwest::Client::new();
+    let target = Server::start("connector-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("connector-defs");
+    let dir = defs.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        serde_json::json!({
+            "name": "crm", "connector_type": "http",
+            "config": {"url": "https://crm.example.com",
+                       "auth": {"type": "bearer", "token": "env://ORION_T342_NEVER_SET"}},
+        })
+        .to_string(),
+    )
+    .expect("connector");
+    std::fs::write(
+        dir.join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "crm-flow", "name": "CRM",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": "hi"}}}],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    let out = ScratchDir::new("connector-out");
+    let artifact = out.path().join("crm.json");
+    let artifact = artifact.to_str().expect("utf8");
+    let compiled = Command::new(orion_bin())
+        .args([
+            "compile",
+            dir.to_str().expect("utf8"),
+            "--name",
+            "crm",
+            "--version",
+            "1.0.0",
+            "-o",
+            artifact,
+        ])
+        .output()
+        .expect("compile");
+    assert_ok(&compiled, "compile");
+
+    let applied = package_cmd(&["apply", "-s", &target.url(), "-f", artifact]);
+    let stderr = String::from_utf8_lossy(&applied.stderr);
+    assert!(!applied.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("connectors/crm: secret_resolution")
+            && stderr.contains("ORION_T342_NEVER_SET"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("the receipt stays staged"), "{stderr}");
+    let receipts: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/crm", target.url()))
+        .send()
+        .await
+        .expect("receipts")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        receipts["data"]["versions"][0]["state"], "staged",
+        "{receipts}"
+    );
+    assert!(receipts["data"]["current"].is_null(), "{receipts}");
 }
 
 /// A package with a plugin in it: the fourth member travels with its

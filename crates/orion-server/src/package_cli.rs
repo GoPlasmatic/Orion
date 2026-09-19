@@ -1244,6 +1244,52 @@ fn receipt_state(receipts: &Value, artifact: &PackageArtifact) -> ReceiptState {
     }
 }
 
+/// `plan`'s warnings about a target that would not serve part of the
+/// artifact: a capability it has switched off, or a member it already
+/// quarantines.
+fn plan_capability_warnings(artifact: &PackageArtifact, status: &orion_api::EngineStatusResponse) {
+    if let Some(caps) = &status.capabilities {
+        if !caps.cron {
+            for channel in &artifact.channels {
+                if channel["protocol"] == "cron"
+                    && channel["activate"] == true
+                    && let Some(id) = channel["channel_id"].as_str()
+                {
+                    eprintln!(
+                        "warning: target has cron.enabled = false — channels/{id} would be \
+                         refused at activation (and quarantined on any node that loads it)"
+                    );
+                }
+            }
+        }
+        if !caps.plugins && (!artifact.plugins.is_empty() || !artifact.requires.plugins.is_empty())
+        {
+            eprintln!(
+                "warning: target has plugins.enabled = false — the plugins this package \
+                 carries or requires cannot load there, and the workflows calling them would \
+                 be quarantined"
+            );
+        }
+        let names_models = artifact
+            .workflows
+            .iter()
+            .any(|w| !literal_model_ids(w).is_empty());
+        if !caps.models
+            && (!artifact.models.is_empty() || !artifact.requires.models.is_empty() || names_models)
+        {
+            eprintln!(
+                "warning: target has models.enabled = false — the models this package names \
+                 cannot load there, and the workflows naming them would be quarantined"
+            );
+        }
+    }
+    if let Some(issues) = &status.load_issues {
+        for entity in orion::package::quarantined_members(&package_members(artifact), issues) {
+            eprintln!("warning: {entity} (already quarantined on the target)");
+        }
+    }
+}
+
 pub(crate) async fn run_plan(
     server: &str,
     file: &str,
@@ -1281,6 +1327,17 @@ pub(crate) async fn run_plan(
             println!("{package} is staged here; apply may update it in place");
         }
         ReceiptState::Fresh => {}
+    }
+
+    // What the target is configured to run, and what it already refuses: a
+    // member this node would quarantine is predictable before anything is
+    // written. Warnings — the dry-run gates below are what fail a plan, and
+    // on the node that answers they already refuse most of these.
+    if let Ok(status) = client
+        .get_data::<orion_api::EngineStatusResponse>(paths::ENGINE_STATUS)
+        .await
+    {
+        plan_capability_warnings(&artifact, &status);
     }
 
     // `requires` boundaries must exist in the target — each set fetched once
@@ -1609,6 +1666,77 @@ fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, 
 // apply
 // ============================================================
 
+/// The members an artifact carries, as the verification matches them.
+fn package_members(artifact: &PackageArtifact) -> orion::package::PackageMembers {
+    orion::package::PackageMembers::from_entries(
+        &artifact.plugins,
+        &artifact.models,
+        &artifact.connectors,
+        &artifact.workflows,
+        &artifact.channels,
+    )
+}
+
+/// The load issues a server reports, when it reports them: from the answer
+/// in hand, or — from a server older than that field — the lists an admin's
+/// `/health` carries. `None` when neither says.
+async fn load_issues_or_health(
+    client: &OrionClient,
+    reported: Option<orion_api::EngineLoadIssues>,
+) -> Option<orion_api::EngineLoadIssues> {
+    if reported.is_some() {
+        return reported;
+    }
+    let health: Value = client.get(paths::HEALTH).await.ok()?;
+    // Detail withheld, or a server that predates the lists.
+    health.get("channels")?;
+    let list = |value: &Value| value.clone();
+    serde_json::from_value(json!({
+        "channels": list(&health["channels"]["quarantined"]),
+        "plugins": list(&health["plugins"]["failed_to_load"]),
+        "models": list(&health["models"]["failed_to_load"]),
+        "connectors": list(&health["connectors"]["failed_to_load"]),
+    }))
+    .ok()
+}
+
+/// Phase 4b: whether the generation the reload published serves what the
+/// artifact carries. `Err` names every member it quarantined.
+async fn verify_serving(
+    client: &OrionClient,
+    server: &str,
+    package: &str,
+    artifact: &PackageArtifact,
+    reported: Option<orion_api::EngineLoadIssues>,
+    receipt_note: &str,
+) -> Result<(), CliError> {
+    let Some(issues) = load_issues_or_health(client, reported).await else {
+        eprintln!(
+            "warning: {server} does not report load issues (older than this CLI?) — could not \
+             verify that {package} is serving; check its /health"
+        );
+        return Ok(());
+    };
+    let quarantined = orion::package::quarantined_members(&package_members(artifact), &issues);
+    if quarantined.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "error: {} {} of {package} {} quarantined on {server}:",
+        quarantined.len(),
+        if quarantined.len() == 1 {
+            "entity"
+        } else {
+            "entities"
+        },
+        if quarantined.len() == 1 { "is" } else { "are" },
+    );
+    for entity in &quarantined {
+        eprintln!("  {entity}");
+    }
+    Err(format!("{package} is not serving on {server} — {receipt_note}").into())
+}
+
 pub(crate) async fn run_apply(
     server: &str,
     file: &str,
@@ -1631,6 +1759,23 @@ pub(crate) async fn run_apply(
             // re-apply with a new key's signatures must still reach the rows.
             let resign = resigned_members(&client, &artifact, &signed).await?;
             if resign.plugins.is_empty() && resign.models.is_empty() {
+                // Applied is not serving: a node whose config changed since
+                // (cron switched off, trust keys rotated) quarantines what
+                // the receipt says is applied. One read, no writes.
+                let status: orion_api::EngineStatusResponse =
+                    client.get_data(paths::ENGINE_STATUS).await?;
+                if status.load_issues.is_some() {
+                    verify_serving(
+                        &client,
+                        server,
+                        &package,
+                        &artifact,
+                        status.load_issues,
+                        "the receipt is already applied and stays so; fix the cause, then \
+                         POST /engine/reload",
+                    )
+                    .await?;
+                }
                 println!("{package} is already applied with identical content — nothing to do");
                 return Ok(());
             }
@@ -1645,7 +1790,16 @@ pub(crate) async fn run_apply(
             }
             // Only the re-signed members, and the receipt stays as it is:
             // the content it records did not move.
-            stage_activate_reload(&client, &resign).await?;
+            let reloaded = stage_activate_reload(&client, &resign).await?;
+            verify_serving(
+                &client,
+                server,
+                &package,
+                &artifact,
+                reloaded.load_issues,
+                "the receipt is already applied and stays so; fix the cause and re-run apply",
+            )
+            .await?;
             println!("applied the new signatures of {package} to {server}");
             return Ok(());
         }
@@ -1684,7 +1838,25 @@ pub(crate) async fn run_apply(
             .map_err(|e| format!("could not claim the receipt: {e}"))?;
     }
 
-    stage_activate_reload(&client, &artifact).await?;
+    let reloaded = stage_activate_reload(&client, &artifact).await?;
+
+    // Phase 4b — "applied" must mean serving. The reload succeeds when an
+    // entity does not load: it is quarantined and everything else serves.
+    // A member of this package quarantined by the generation just published
+    // fails the apply here, before the flip, so the receipt stays staged.
+    verify_serving(
+        &client,
+        server,
+        &package,
+        &artifact,
+        reloaded.load_issues,
+        if matches!(receipt, ReceiptState::AppliedSuperseded { .. }) {
+            "the rollback's receipt was not moved; fix the cause and re-run apply"
+        } else {
+            "the receipt stays staged; fix the cause and re-run apply"
+        },
+    )
+    .await?;
 
     // Phase 5 — flip the receipt.
     client
@@ -1704,10 +1876,11 @@ pub(crate) async fn run_apply(
 
 /// Phases 2–4 of `apply`: stage every member as drafts in dependency order,
 /// activate in dependency order with the reload deferred, then reload once.
+/// Returns the reload's answer.
 async fn stage_activate_reload(
     client: &OrionClient,
     artifact: &PackageArtifact,
-) -> Result<(), CliError> {
+) -> Result<orion_api::EngineReloadedResponse, CliError> {
     // Phase 2 — stage everything as drafts, in dependency order. Plugins
     // first, so their components are stored before anything names their
     // functions; connector import reloads the connector registry
@@ -1856,12 +2029,13 @@ async fn stage_activate_reload(
         }
     }
 
-    // Phase 4 — one reload, one epoch bump.
-    client
-        .post_data_empty::<Value>(paths::ENGINE_RELOAD)
+    // Phase 4 — one reload, one epoch bump. The answer describes the
+    // generation this reload published, which is what phase 4b verifies.
+    let reloaded: orion_api::EngineReloadedResponse = client
+        .post_data_empty(paths::ENGINE_RELOAD)
         .await
         .map_err(|e| format!("entities are active but the engine reload failed: {e}"))?;
-    Ok(())
+    Ok(reloaded)
 }
 
 /// The members whose signature `--signatures` changed against what the

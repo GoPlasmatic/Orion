@@ -35,6 +35,7 @@
 //! downward on all of them.
 
 pub mod generation;
+pub mod load_issues;
 pub mod model_admission;
 pub mod models;
 pub mod reload;

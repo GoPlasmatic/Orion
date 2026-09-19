@@ -137,6 +137,18 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     ("storage", &["crate::runtime::"]),
+    // `package` is a top layer beside `bootstrap`: what an artifact carries
+    // and whether a target serves it. Nothing that serves may name it.
+    ("engine", &["crate::package::"]),
+    ("channel", &["crate::package::"]),
+    ("connector", &["crate::package::"]),
+    ("kafka", &["crate::package::"]),
+    ("queue", &["crate::package::"]),
+    ("jwt", &["crate::package::"]),
+    ("plugin", &["crate::package::"]),
+    ("model", &["crate::package::"]),
+    ("cron", &["crate::package::"]),
+    ("storage", &["crate::package::"]),
 ];
 
 /// Edges that are real, deliberate, and left alone — each with the reason.

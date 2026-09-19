@@ -77,6 +77,43 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
         StatusCode::OK,
         "reload must succeed and quarantine the broken channel, got body {body}"
     );
+    // #342: the answer says what *that* generation refused, with the row's
+    // identity — and `/engine/status` and `/health` say the same, from the
+    // one collector.
+    let issues = &body["data"]["load_issues"]["channels"];
+    assert_eq!(issues.as_array().map(Vec::len), Some(1), "{body}");
+    assert_eq!(issues[0]["channel"], bad_channel, "{body}");
+    assert_eq!(
+        issues[0]["channel_id"],
+        format!("ch_{bad_channel}"),
+        "{body}"
+    );
+    assert!(
+        body["data"]["generation"].as_u64().unwrap_or(0) > 0,
+        "{body}"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .await
+        .expect("status");
+    let status_body = body_json(resp).await;
+    assert_eq!(status_body["data"]["load_issues"]["channels"], *issues);
+    assert_eq!(
+        status_body["data"]["generation"],
+        body["data"]["generation"]
+    );
+    assert_eq!(
+        status_body["data"]["capabilities"]["cron"],
+        json!(orion::config::AppConfig::default().cron.enabled)
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .expect("health");
+    let health = body_json(resp).await;
+    assert_eq!(health["channels"]["quarantined"], *issues);
 
     // The broken channel must not be reachable...
     assert!(

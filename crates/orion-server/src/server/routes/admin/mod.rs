@@ -840,7 +840,7 @@ async fn audit_and_reload(
     resource_type: &str,
     resource_id: &str,
     reload: ReloadMode,
-) -> Result<(), crate::errors::OrionError> {
+) -> Result<Option<std::sync::Arc<crate::runtime::RuntimeGeneration>>, crate::errors::OrionError> {
     audit_log(
         &state.audit_queue,
         principal,
@@ -849,16 +849,16 @@ async fn audit_and_reload(
         resource_id,
     );
     if reload == ReloadMode::Defer {
-        return Ok(());
+        return Ok(None);
     }
     // `?`, where `reload_after_commit` deliberately discards: see the note
     // above. A manual reload that failed must not answer `200`.
-    reload_engine(state).await?;
+    let generation = reload_engine(state).await?;
     state
         .cluster
         .bump_config_epoch(crate::cluster::EpochScope::Definitions)
         .await;
-    Ok(())
+    Ok(Some(generation))
 }
 
 /// The half of [`audit_and_reload`] that runs *after* the row is committed:

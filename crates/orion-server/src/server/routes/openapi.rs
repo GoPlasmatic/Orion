@@ -778,26 +778,6 @@ pub(crate) struct ConnectorExportItem {
 // referencing it by its old path.
 pub(crate) use orion_api::ImportResult;
 
-/// `GET /api/v1/admin/engine/status`.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct EngineStatus {
-    version: String,
-    uptime_seconds: i64,
-    workflows_count: u64,
-    active_workflows: u64,
-    /// Distinct channel names across the loaded workflows.
-    channels: Vec<String>,
-}
-
-/// `POST /api/v1/admin/engine/reload`.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct EngineReloaded {
-    reloaded: bool,
-    workflows_count: u64,
-}
-
 /// `GET /api/v1/admin/connectors/circuit-breakers`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]

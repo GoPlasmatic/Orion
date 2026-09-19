@@ -189,21 +189,22 @@ pub(crate) async fn health_check(
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
 
+    // Every load issue, from the one collector `POST /engine/reload` and
+    // `GET /engine/status` answer from too, so the three surfaces cannot
+    // disagree about what is quarantined.
+    //
     // F16: enabled connectors that failed to load are absent from the
-    // registry, so every workflow using one fails at request time. Report
-    // them here rather than leaving a boot-time log line as the only signal.
-    let connector_issues = state.connector_registry.load_issues().await;
-
-    // F35: channels that failed to load are quarantined — refused at every
-    // ingress — while the rest of the instance serves normally. This is the
-    // only signal that they are not being served.
-    let quarantined_channels = generation.channels.quarantined();
-
-    // A plugin that did not load on this node — no artifact, a component
-    // that will not compile, a failed self-test, or the sandbox being off
-    // while an active row exists — quarantines the workflows naming its
-    // functions the same way; this is the signal for it.
-    let plugin_issues = &generation.plugins.issues;
+    // registry, so every workflow using one fails at request time. F35:
+    // channels that failed to load are quarantined — refused at every
+    // ingress — while the rest of the instance serves normally. A plugin that
+    // did not load on this node — no artifact, a component that will not
+    // compile, a failed self-test, or the sandbox being off while an active
+    // row exists — quarantines the workflows naming its functions the same
+    // way. Each list here is the only signal for its failure.
+    let issues = crate::runtime::load_issues::collect(&generation, &state.connector_registry).await;
+    let connector_issues = &issues.connectors;
+    let quarantined_channels = &issues.channels;
+    let plugin_issues = &issues.plugins;
 
     // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
     // 200s while no message is consumed. Absent entirely when Kafka is off.
@@ -219,7 +220,7 @@ pub(crate) async fn health_check(
     // decides whether a registration will ever get its verdict — and an
     // active model this generation could not carry quarantines the workflows
     // naming it, the same way a plugin that did not load does.
-    let model_issues = &generation.models.issues;
+    let model_issues = &issues.models;
     let models_state = models_component(&state, model_issues.is_empty());
 
     // Degraded, not unhealthy: the rest of the instance still serves traffic,

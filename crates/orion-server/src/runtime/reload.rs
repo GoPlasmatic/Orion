@@ -19,7 +19,9 @@ pub struct ReloadOpts {
 }
 
 /// Reload the engine with all active channels and workflows from the database.
-pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
+pub async fn reload_engine(
+    state: &AppState,
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     reload_engine_with_opts(state, ReloadOpts::default()).await
 }
 
@@ -47,7 +49,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 pub async fn resync_from_db(
     state: &AppState,
     scope: crate::cluster::EpochScope,
-) -> Result<(), crate::errors::OrionError> {
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     if scope.touches_connectors() {
         state
             .connector_registry
@@ -69,11 +71,15 @@ pub async fn resync_from_db(
     .await
 }
 
+/// Rebuild and publish the next generation, returning it: the caller that
+/// caused a reload learns what *that* generation could not load, with no
+/// window in which another reload's generation stands in for it — this is
+/// read under `reload_lock`, right after the publish.
 #[tracing::instrument(skip(state, opts))]
 pub async fn reload_engine_with_opts(
     state: &AppState,
     opts: ReloadOpts,
-) -> Result<(), crate::errors::OrionError> {
+) -> Result<Arc<super::RuntimeGeneration>, crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
     // One reload at a time, process-wide. Everything below is a
@@ -252,6 +258,7 @@ pub async fn reload_engine_with_opts(
             plugins,
             models,
         );
+        let published = state.runtime.load();
 
         // Warm what `models.preload` selects, off the publish's critical
         // path: the generation serves now, and a request that arrives before
@@ -276,7 +283,7 @@ pub async fn reload_engine_with_opts(
             channel_count = channels.len(),
             "Runtime generation published"
         );
-        Ok(())
+        Ok(published)
     }
     .await;
 
@@ -289,7 +296,7 @@ pub async fn reload_engine_with_opts(
     // leaves this node serving the *previous* generation: correct, but not what
     // the database says, and nothing else would report that.
     match &result {
-        Ok(()) => {
+        Ok(_) => {
             crate::metrics::record_engine_reload("success");
             state
                 .reload_degraded

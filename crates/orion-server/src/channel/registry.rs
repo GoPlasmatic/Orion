@@ -201,6 +201,28 @@ pub struct ChannelLoadIssue {
     pub reason: String,
 }
 
+/// Why a channel is quarantined, and which rows it is: the reason, plus the
+/// identities a caller matches on (`package apply` checks its own members by
+/// `channel_id`, and finds a channel of another package bound to one of its
+/// workflows by `workflow_id`) rather than by parsing the reason's prose.
+#[derive(Debug, Clone)]
+struct QuarantineEntry {
+    reason: String,
+    /// Empty when no stored row carries the name (never, in practice: every
+    /// issue comes from a row being loaded).
+    channel_id: String,
+    workflow_id: Option<String>,
+}
+
+/// One quarantined channel, as [`ChannelSnapshot::quarantined`] reports it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct QuarantinedChannel {
+    pub channel: String,
+    pub channel_id: String,
+    pub workflow_id: Option<String>,
+    pub reason: String,
+}
+
 /// The shared backends cluster mode provides to channel loading. `Some` on
 /// the registry means cluster mode: strict backend resolution (no silent
 /// in-memory fallbacks) with these as the defaults. Deliberately narrow —
@@ -325,7 +347,7 @@ pub struct ChannelSnapshot {
     /// Keeping them here instead of aborting the reload confines the blast
     /// radius to the broken channel: the other channels still load, and the
     /// admin mutations that trigger a reload still work.
-    quarantined: HashMap<String, String>,
+    quarantined: HashMap<String, QuarantineEntry>,
     /// The serviceable rows `route_table` was built from, in supplied order —
     /// the key that decides whether it can be carried over.
     route_key: Vec<ChannelRow>,
@@ -353,7 +375,7 @@ impl ChannelSnapshot {
 
     /// Why a channel is quarantined, or `None` when it is serviceable (F35).
     pub fn quarantine_reason(&self, name: &str) -> Option<String> {
-        self.quarantined.get(name).cloned()
+        self.quarantined.get(name).map(|entry| entry.reason.clone())
     }
 
     /// Every quarantined channel, for `/health` and the admin surface.
@@ -365,14 +387,21 @@ impl ChannelSnapshot {
     /// `Vec` could carry two entries for a channel broken in both the engine
     /// build and its own config while the map (last-write-wins) carried the
     /// more specific one.
-    pub fn quarantined(&self) -> Vec<ChannelLoadIssue> {
-        self.quarantined
+    pub fn quarantined(&self) -> Vec<QuarantinedChannel> {
+        let mut out: Vec<QuarantinedChannel> = self
+            .quarantined
             .iter()
-            .map(|(channel, reason)| ChannelLoadIssue {
+            .map(|(channel, entry)| QuarantinedChannel {
                 channel: channel.clone(),
-                reason: reason.clone(),
+                channel_id: entry.channel_id.clone(),
+                workflow_id: entry.workflow_id.clone(),
+                reason: entry.reason.clone(),
             })
-            .collect()
+            .collect();
+        // A stable order, so two reads of one generation — `/health`, the
+        // reload answer — list it the same way.
+        out.sort_by(|a, b| a.channel.cmp(&b.channel));
+        out
     }
 
     /// Every serviceable cron channel's compiled schedule, in a stable order.
@@ -434,10 +463,13 @@ impl ChannelSnapshot {
         &self,
         name: &str,
     ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
-        if let Some(reason) = self.quarantined.get(name) {
+        if let Some(entry) = self.quarantined.get(name) {
             return Err(crate::errors::OrionError::unavailable(
                 crate::errors::Unavailable::ChannelQuarantined,
-                format!("Channel '{name}' failed to load and is not being served: {reason}"),
+                format!(
+                    "Channel '{name}' failed to load and is not being served: {}",
+                    entry.reason
+                ),
             ));
         }
         Ok(self.by_name.get(name).cloned())
@@ -1242,9 +1274,21 @@ impl ChannelLoader {
             }
         }
 
-        let quarantined: HashMap<String, String> = issues
+        // The one place the identities are attached: every issue names a
+        // row being loaded, so its id and workflow come from that row.
+        let quarantined: HashMap<String, QuarantineEntry> = issues
             .iter()
-            .map(|i| (i.channel.clone(), i.reason.clone()))
+            .map(|i| {
+                let row = channels.iter().find(|c| c.name == i.channel);
+                (
+                    i.channel.clone(),
+                    QuarantineEntry {
+                        reason: i.reason.clone(),
+                        channel_id: row.map(|c| c.channel_id.clone()).unwrap_or_default(),
+                        workflow_id: row.and_then(|c| c.workflow_id.clone()),
+                    },
+                )
+            })
             .collect();
         // F33: a channel whose workflows failed to build must not serve even
         // when its own config loaded fine. The quarantine map is the one
@@ -1360,7 +1404,7 @@ mod tests {
             self.snapshot().get_by_name(name)
         }
 
-        fn quarantined(&self) -> Vec<ChannelLoadIssue> {
+        fn quarantined(&self) -> Vec<QuarantinedChannel> {
             self.snapshot().quarantined()
         }
 
@@ -1499,6 +1543,10 @@ mod tests {
             "the reason must name the setting: {}",
             issues[0].reason
         );
+        // The entry carries the row's identities, so a caller matches on
+        // them rather than on the reason's prose.
+        assert_eq!(issues[0].channel, "nightly");
+        assert!(!issues[0].channel_id.is_empty(), "{issues:?}");
     }
 
     /// The flag is part of the dependency fingerprint, so flipping it rebuilds
@@ -1779,7 +1827,7 @@ mod tests {
         assert!(registry.get_by_name("fallback-ch").is_some());
     }
 
-    async fn reload_single_node(channel: Channel) -> (TestRegistry, Vec<ChannelLoadIssue>) {
+    async fn reload_single_node(channel: Channel) -> (TestRegistry, Vec<QuarantinedChannel>) {
         let registry = TestRegistry::new();
         let issues = reload_into(&registry, channel).await;
         (registry, issues)
@@ -1793,7 +1841,7 @@ mod tests {
     /// a reload where the connectors changed too. That invalidates N17's
     /// whole-config cache, so these tests land on the rebuild path — the one
     /// where N6's field-level reuse is what preserves guard state.
-    async fn reload_into(registry: &TestRegistry, channel: Channel) -> Vec<ChannelLoadIssue> {
+    async fn reload_into(registry: &TestRegistry, channel: Channel) -> Vec<QuarantinedChannel> {
         TestDeps::new().reload(registry, &[channel]).await;
         registry.quarantined()
     }

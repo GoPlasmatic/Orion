@@ -2545,11 +2545,11 @@
         "operationId": "engine_reload",
         "responses": {
           "200": {
-            "description": "Engine reloaded",
+            "description": "Engine reloaded. `generation` is the id of the generation this reload published and `load_issues` is what *that* generation could not load — an entity quarantined by it is not serving, though the reload succeeded.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_EngineReloaded"
+                  "$ref": "#/components/schemas/DataEnvelope_EngineReloadedResponse"
                 }
               }
             }
@@ -2603,11 +2603,11 @@
         "operationId": "engine_status",
         "responses": {
           "200": {
-            "description": "Engine status",
+            "description": "Engine status: the generation this node serves, what it could not load (`load_issues` — the same lists `/health` shows an admin), and what this node is configured to run (`capabilities`). Describes the node that answered; peers reload on their own and may differ.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_EngineStatus"
+                  "$ref": "#/components/schemas/DataEnvelope_EngineStatusResponse"
                 }
               }
             }
@@ -7534,6 +7534,35 @@
           }
         }
       },
+      "ChannelLoadIssueResponse": {
+        "type": "object",
+        "description": "A channel a generation refused to serve.",
+        "required": [
+          "channel",
+          "channel_id",
+          "reason"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "The channel's name — what the quarantine is keyed by."
+          },
+          "channel_id": {
+            "type": "string",
+            "description": "The channel's id. Empty from a server that predates it."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The workflow the channel is bound to, when it names one."
+          }
+        }
+      },
       "ChannelProtocol": {
         "type": "string",
         "enum": [
@@ -7832,6 +7861,32 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "ConnectorLoadIssueResponse": {
+        "type": "object",
+        "description": "An enabled connector the registry could not load.",
+        "required": [
+          "connector",
+          "connector_id",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string",
+            "description": "The connector's name — what workflows reference it by."
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`env_substitution`, `json_parse`, `var_reference`,\n`secret_resolution`, `deserialize` or `endpoint`."
           }
         }
       },
@@ -8807,7 +8862,7 @@
           }
         }
       },
-      "DataEnvelope_EngineReloaded": {
+      "DataEnvelope_EngineReloadedResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -8819,9 +8874,27 @@
             "description": "`POST /api/v1/admin/engine/reload`.",
             "required": [
               "reloaded",
-              "workflows_count"
+              "workflows_count",
+              "generation"
             ],
             "properties": {
+              "generation": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The id of the generation this reload published. `0` from a server\nthat predates it.",
+                "minimum": 0
+              },
+              "load_issues": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineLoadIssues",
+                    "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  }
+                ]
+              },
               "reloaded": {
                 "type": "boolean"
               },
@@ -8834,7 +8907,7 @@
           }
         }
       },
-      "DataEnvelope_EngineStatus": {
+      "DataEnvelope_EngineStatusResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -8849,7 +8922,8 @@
               "uptime_seconds",
               "workflows_count",
               "active_workflows",
-              "channels"
+              "channels",
+              "generation"
             ],
             "properties": {
               "active_workflows": {
@@ -8857,12 +8931,40 @@
                 "format": "int64",
                 "minimum": 0
               },
+              "capabilities": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineCapabilities",
+                    "description": "What this node is configured to run. `None` from a server that\npredates the field."
+                  }
+                ]
+              },
               "channels": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
                 "description": "Distinct channel names across the loaded workflows."
+              },
+              "generation": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The id of the generation this node serves.",
+                "minimum": 0
+              },
+              "load_issues": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineLoadIssues",
+                    "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  }
+                ]
               },
               "uptime_seconds": {
                 "type": "integer",
@@ -10270,14 +10372,91 @@
           }
         }
       },
-      "EngineReloaded": {
+      "EngineCapabilities": {
+        "type": "object",
+        "description": "Node capabilities a plan can predict quarantines from.",
+        "required": [
+          "cron",
+          "plugins",
+          "models"
+        ],
+        "properties": {
+          "cron": {
+            "type": "boolean",
+            "description": "`cron.enabled`: whether this node schedules cron channels."
+          },
+          "models": {
+            "type": "boolean",
+            "description": "`models.enabled`: whether this node carries the model runtime."
+          },
+          "plugins": {
+            "type": "boolean",
+            "description": "`plugins.enabled`: whether this node runs the plugin sandbox."
+          }
+        }
+      },
+      "EngineLoadIssues": {
+        "type": "object",
+        "description": "What a runtime generation could not load, on the node that answered.",
+        "required": [
+          "channels",
+          "plugins",
+          "models",
+          "connectors"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelLoadIssueResponse"
+            }
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConnectorLoadIssueResponse"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelLoadIssueResponse"
+            }
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginLoadIssueResponse"
+            }
+          }
+        }
+      },
+      "EngineReloadedResponse": {
         "type": "object",
         "description": "`POST /api/v1/admin/engine/reload`.",
         "required": [
           "reloaded",
-          "workflows_count"
+          "workflows_count",
+          "generation"
         ],
         "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The id of the generation this reload published. `0` from a server\nthat predates it.",
+            "minimum": 0
+          },
+          "load_issues": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineLoadIssues",
+                "description": "What that generation could not load. `None` from a server that\npredates the field."
+              }
+            ]
+          },
           "reloaded": {
             "type": "boolean"
           },
@@ -10288,7 +10467,7 @@
           }
         }
       },
-      "EngineStatus": {
+      "EngineStatusResponse": {
         "type": "object",
         "description": "`GET /api/v1/admin/engine/status`.",
         "required": [
@@ -10296,7 +10475,8 @@
           "uptime_seconds",
           "workflows_count",
           "active_workflows",
-          "channels"
+          "channels",
+          "generation"
         ],
         "properties": {
           "active_workflows": {
@@ -10304,12 +10484,40 @@
             "format": "int64",
             "minimum": 0
           },
+          "capabilities": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineCapabilities",
+                "description": "What this node is configured to run. `None` from a server that\npredates the field."
+              }
+            ]
+          },
           "channels": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Distinct channel names across the loaded workflows."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The id of the generation this node serves.",
+            "minimum": 0
+          },
+          "load_issues": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineLoadIssues",
+                "description": "What that generation could not load. `None` from a server that\npredates the field."
+              }
+            ]
           },
           "uptime_seconds": {
             "type": "integer",
@@ -10736,6 +10944,36 @@
           "state": {
             "type": "string",
             "description": "`disabled` (models are off on this node); `pending` or `rejected`\nwhile the version's admission has not passed; `admitted` for the\nactive version and `inactive` for a draft or archived one; and, on a\nnode that loads models, `loaded` (resident in a runtime), `evicted`\n(was resident, dropped under `models.max_loaded_bytes`) or `failed`\n(the generation could not carry it) for the version it serves."
+          }
+        }
+      },
+      "ModelLoadIssueResponse": {
+        "type": "object",
+        "description": "A model version a generation could not carry.",
+        "required": [
+          "model",
+          "version",
+          "digest",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`disabled`, `admission`, `manifest`, `artifact` or `adapter`."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -11972,6 +12210,36 @@
           "state": {
             "type": "string",
             "description": "`loaded`, `failed`, `disabled` (plugins are off on this node) or\n`inactive` (the version is not the one this node's generation carries)."
+          }
+        }
+      },
+      "PluginLoadIssueResponse": {
+        "type": "object",
+        "description": "A plugin version a generation could not load.",
+        "required": [
+          "plugin",
+          "version",
+          "digest",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,\n`size` or `self_test`."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },

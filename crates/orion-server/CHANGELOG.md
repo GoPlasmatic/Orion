@@ -89,7 +89,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-signs just those members and reloads, leaving the receipt alone.
   `package lint` shape-checks a signature an artifact carries.
 
+- **`POST /engine/reload` and `GET /engine/status` report what the
+  generation could not load** ([#342]). Both answers gain `generation` (the
+  id published) and `load_issues` — the quarantined channels (now with their
+  `channel_id` and `workflow_id`), plugins, models and connectors, from the
+  same collector `/health` uses. The reload describes the generation *it*
+  published; status adds `capabilities` (`cron`, `plugins`, `models`).
+  `orion-cli engine status|reload` lists them.
+
 ### Changed
+
+- **`package apply` fails when the reload quarantines what it carries**
+  ([#342]). A reload succeeds when an entity does not load, so `apply` used
+  to print `applied` — and flip the receipt — while the node served the
+  package without a channel, a plugin or a connector. Apply now reads the
+  reloaded generation's load issues and fails naming each member it
+  quarantined (`connectors/crm: secret_resolution: …`), before the receipt
+  flip, so the receipt stays `staged` and a re-run after the fix completes
+  it. Re-applying the version a node already runs reads `GET
+  /engine/status` and fails the same way rather than reporting "nothing to
+  do". `plan` warns when the target has cron, plugins or models off for
+  something the package needs. An older server that cannot say produces a
+  warning, not a failure.
 
 - **An import item whose signature differs is no longer `unchanged`**
   ([#340]). `POST /plugins/import` and `POST /models/import` under
@@ -151,6 +172,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#340]: https://github.com/GoPlasmatic/Orion/issues/340
+[#342]: https://github.com/GoPlasmatic/Orion/issues/342
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
 [#347]: https://github.com/GoPlasmatic/Orion/issues/347

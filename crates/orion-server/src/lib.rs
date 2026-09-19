@@ -49,6 +49,7 @@ pub mod jwt;
 pub mod kafka;
 pub mod metrics;
 pub mod model;
+pub mod package;
 pub mod plugin;
 pub mod preflight;
 pub(crate) mod query;
