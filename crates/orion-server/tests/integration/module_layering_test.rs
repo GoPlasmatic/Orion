@@ -74,6 +74,18 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "crypto.rs",
         &["crate::server::", "crate::engine::", "crate::channel::"],
     ),
+    // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
+    // by the `$sql` pass and the clippy rules (above `engine`), and by the
+    // binary's `sql check`. None of them may reach the others for it.
+    (
+        "sql_lex.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::definitions::",
+            "crate::connector::",
+        ],
+    ),
     // The version this build is, and the range a set may require: read by
     // the offline commands, the package verbs and (at boot) the loader.
     (

@@ -1,0 +1,45 @@
+{
+  "workflow_id": "sql-shared",
+  "name": "sql-shared",
+  "tasks": [
+    {
+      "id": "a",
+      "name": "A",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "db",
+          "query": { "$sql": "sql/lookup.sql" },
+          "params": [{ "var": "data.a" }],
+          "output": "data.ra"
+        }
+      }
+    },
+    {
+      "id": "b",
+      "name": "B",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "db",
+          "query": { "$sql": "sql/lookup.sql" },
+          "params": [{ "var": "data.b" }],
+          "output": "data.rb"
+        }
+      }
+    },
+    {
+      "id": "c",
+      "name": "C",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "db",
+          "query": { "$sql": "sql/lookup.sql" },
+          "params": [{ "var": "data.c" }],
+          "output": "data.rc"
+        }
+      }
+    }
+  ]
+}

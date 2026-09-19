@@ -411,6 +411,33 @@ pub fn check_workflow_tasks(
     );
 
     findings.extend(check_dialect_schemas(name, &tasks));
+
+    // `$sql` became a reserved key when statements could live in `.sql`
+    // files: an object with a string `$sql` is a reference only `compile`
+    // resolves, and create and update refuse one with UNCOMPILED_SOURCE. A
+    // row stored before then — a literal `$sql` key in a payload, say — keeps
+    // serving, and its next update is refused. An advisory, so the gate stays
+    // green; it names the row before the refusal does.
+    findings.extend(
+        crate::definitions::compile::residue(&tasks, "tasks")
+            .into_iter()
+            .filter(|r| r.key == "$sql")
+            .map(|r| {
+                Diagnostic::warning(
+                    "source.sql_key",
+                    format!("workflow '{name}' {}", r.path),
+                    format!(
+                        "holds {} — '$sql' is now a reserved key, so the next update of this \
+                         workflow is refused as uncompiled source",
+                        r.syntax()
+                    ),
+                )
+                .with_remedy(
+                    "rename the key if it is data, or keep the statement in a .sql file and \
+                     deploy through `orion-server compile`",
+                )
+            }),
+    );
     findings
 }
 
@@ -664,6 +691,27 @@ mod tests {
         let found = check_channel_config("broken", "{not json");
         assert_eq!(found.len(), 1);
         assert!(found[0].message.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn a_stored_sql_key_is_an_advisory() {
+        let tasks = serde_json::json!([{"id": "t", "name": "T", "function": {"name": "map",
+            "input": {"mappings": [{"path": "data.x", "logic": {"$sql": "q.sql"}}]}}}]);
+        let findings = check_workflow_tasks(
+            "w",
+            &tasks.to_string(),
+            crate::engine::FunctionRegistry::builtin(),
+        );
+        let advisory = findings
+            .iter()
+            .find(|f| f.check == "source.sql_key")
+            .expect("reported");
+        assert!(!advisory.is_error(), "an advisory must not fail the gate");
+        assert!(
+            advisory
+                .entity
+                .contains("tasks[0].function.input.mappings[0].logic")
+        );
     }
 
     #[test]

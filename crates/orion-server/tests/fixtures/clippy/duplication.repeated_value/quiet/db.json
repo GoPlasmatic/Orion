@@ -1,0 +1,5 @@
+{
+  "name": "db",
+  "connector_type": "db",
+  "config": { "connection_string": "sqlite::memory:" }
+}

@@ -45,6 +45,7 @@ mod diagnostic;
 pub mod fmt;
 mod gate;
 pub mod json;
+pub mod provenance;
 mod set;
 mod shared;
 
@@ -53,6 +54,7 @@ pub use compile::{Cx, Pass, Residue};
 pub use diagnostic::{Diagnostic, Severity};
 pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
+pub use provenance::{SourceMap, SourceRef, Via};
 pub use set::{
     Boundary, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
     is_plugin_manifest, json_files,

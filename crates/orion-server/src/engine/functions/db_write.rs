@@ -130,7 +130,7 @@ impl ConnectorHandler for DbWriteHandler {
         // keyword is enough to know whether an id was generated at all.
         if let Some(id) = last_insert_id
             && matches!(
-                super::db_read::leading_keyword(query).as_deref(),
+                crate::sql_lex::leading_keyword(query).as_deref(),
                 Some("INSERT" | "REPLACE")
             )
         {

@@ -70,6 +70,9 @@ pub struct Fragment {
     /// every call site.
     pub params: BTreeMap<String, Option<Value>>,
     pub tasks: Vec<Value>,
+    /// The shared document that declared it — what a relative file reference
+    /// inside it (`$sql`) was written against.
+    pub origin: String,
 }
 
 /// The reserved key of the set's package declaration — see
@@ -118,6 +121,9 @@ pub struct SharedDefinitions {
     /// The set's `package` document, when it has one. Not a `$from`
     /// namespace: `{"$from": "package.name"}` resolves nothing.
     pub package: Option<PackageDecl>,
+    /// `(namespace, key)` → the shared document that declared the value, so
+    /// a `$sql` inside a spliced constant resolves against its own file.
+    pub value_origins: BTreeMap<(String, String), String>,
 }
 
 impl SharedDefinitions {
@@ -186,6 +192,17 @@ impl SharedDefinitions {
         let Some(obj) = doc.as_object() else {
             return;
         };
+        // A `$sql` path is re-read relative to whichever document the value
+        // lands in, which an absolute path would defeat — and after copying,
+        // one would be indistinguishable from the author's own. Reported here,
+        // against the shared file that holds it.
+        for bad in absolute_sql_paths(doc) {
+            findings.push(Diagnostic::error(
+                "shared.sql_path",
+                origin,
+                format!("'{bad}' must be a relative path to a .sql file"),
+            ));
+        }
         for (key, value) in obj {
             if key == "fragments" {
                 self.merge_fragments(value, origin, findings);
@@ -214,6 +231,8 @@ impl SharedDefinitions {
                     continue;
                 }
                 ns.insert(name.clone(), val.clone());
+                self.value_origins
+                    .insert((key.clone(), name.clone()), origin.to_string());
             }
         }
     }
@@ -339,6 +358,7 @@ impl SharedDefinitions {
                 Fragment {
                     params,
                     tasks: tasks.clone(),
+                    origin: origin.to_string(),
                 },
             );
         }
@@ -353,14 +373,7 @@ impl SharedDefinitions {
     /// [`super::compile::passes`] with everything else the pipeline
     /// guarantees.
     pub fn expand(&self, doc: &mut Value, origin: &str, findings: &mut Vec<Diagnostic>) {
-        super::compile::compile(
-            doc,
-            &super::compile::Cx {
-                shared: self,
-                origin,
-            },
-            findings,
-        );
+        super::compile::compile(doc, &super::compile::Cx::detached(self, origin), findings);
     }
 
     /// Replace every `{"use": ..}` entry with the named fragment's tasks.
@@ -373,9 +386,10 @@ impl SharedDefinitions {
     pub(super) fn expand_tasks(
         &self,
         tasks: &[Value],
-        origin: &str,
+        cx: &super::compile::Cx<'_>,
         findings: &mut Vec<Diagnostic>,
     ) -> Vec<Value> {
+        let origin = cx.origin;
         let mut out = Vec::with_capacity(tasks.len());
         for task in tasks {
             let Some(name) = task.get("use").and_then(Value::as_str) else {
@@ -389,7 +403,7 @@ impl SharedDefinitions {
                 if crate::engine::is_group(task) {
                     let mut group = task.clone();
                     if let Some(inner) = task.get("tasks").and_then(Value::as_array) {
-                        group["tasks"] = Value::Array(self.expand_tasks(inner, origin, findings));
+                        group["tasks"] = Value::Array(self.expand_tasks(inner, cx, findings));
                     }
                     out.push(group);
                     continue;
@@ -412,6 +426,7 @@ impl SharedDefinitions {
             for inner in &fragment.tasks {
                 let mut expanded = inner.clone();
                 substitute_params(&mut expanded, &args);
+                reanchor_sql(&mut expanded, &fragment.origin, cx.base_dir);
                 if namespace_fragment_step(&mut expanded, instance, name, findings) {
                     out.push(expanded);
                 }
@@ -465,23 +480,37 @@ impl SharedDefinitions {
     }
 
     /// Walk a value, splicing every `$from` against the namespaces.
-    pub(super) fn splice(&self, value: &mut Value, origin: &str, findings: &mut Vec<Diagnostic>) {
+    pub(super) fn splice(
+        &self,
+        value: &mut Value,
+        cx: &super::compile::Cx<'_>,
+        findings: &mut Vec<Diagnostic>,
+    ) {
+        let origin = cx.origin;
         match value {
             Value::Array(items) => {
                 for item in items {
-                    self.splice(item, origin, findings);
+                    self.splice(item, cx, findings);
                 }
             }
             Value::Object(map) => {
                 for v in map.values_mut() {
-                    self.splice(v, origin, findings);
+                    self.splice(v, cx, findings);
                 }
                 let Some(path) = map.get("$from").and_then(Value::as_str).map(str::to_string)
                 else {
                     return;
                 };
                 let replacement = match self.lookup(&path) {
-                    Some(target) => apply_splice(map, target),
+                    Some(target) => {
+                        let mut target = target.clone();
+                        if let Some(declared_in) = path.split_once('.').and_then(|(ns, key)| {
+                            self.value_origins.get(&(ns.to_string(), key.to_string()))
+                        }) {
+                            reanchor_sql(&mut target, declared_in, cx.base_dir);
+                        }
+                        apply_splice(map, &target)
+                    }
                     None => {
                         findings.push(Diagnostic::error(
                             "closure.shared_value",
@@ -509,6 +538,62 @@ impl SharedDefinitions {
         let (namespace, key) = path.split_once('.')?;
         self.namespaces.get(namespace)?.get(key)
     }
+}
+
+/// Rewrite every relative `$sql` path in `value` — written relative to the
+/// shared document `declared_in` — so it reads relative to `to_dir`, the
+/// directory of the document it is being copied into. With no `to_dir`
+/// nothing is rewritten, and the `$sql` pass reports that the reference
+/// cannot be resolved.
+fn reanchor_sql(value: &mut Value, declared_in: &str, to_dir: Option<&std::path::Path>) {
+    let Some(to_dir) = to_dir else {
+        return;
+    };
+    let from_dir = std::path::Path::new(declared_in)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                reanchor_sql(item, declared_in, Some(to_dir));
+            }
+        }
+        Value::Object(map) => {
+            if let Some(Value::String(target)) = map.get_mut("$sql") {
+                if super::compile::is_relative_sql_path(target) {
+                    let rewritten = super::compile::relative(to_dir, &from_dir.join(&*target));
+                    *target = rewritten.to_string_lossy().replace('\\', "/");
+                }
+                return;
+            }
+            for v in map.values_mut() {
+                reanchor_sql(v, declared_in, Some(to_dir));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every `$sql` path in `value` that is absolute.
+fn absolute_sql_paths(value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![value];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::Array(items) => stack.extend(items),
+            Value::Object(map) => {
+                if let Some(target) = map.get("$sql").and_then(Value::as_str)
+                    && !target.is_empty()
+                    && (std::path::Path::new(target).is_absolute() || target.starts_with('/'))
+                {
+                    out.push(target.to_string());
+                }
+                stack.extend(map.values());
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The first shared reference in a document, described for an error message,
@@ -666,6 +751,62 @@ fn substitute_params(value: &mut Value, args: &BTreeMap<String, Value>) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A `$sql` path inside a fragment or a constant was written against the
+    /// shared document's own directory; once copied into a workflow it must
+    /// read relative to the workflow's.
+    #[test]
+    fn a_sql_reference_is_reanchored_to_the_document_it_lands_in() {
+        let mut shared = SharedDefinitions::default();
+        let mut findings = Vec::new();
+        shared.merge(
+            &json!({
+                "constants": {"lookup": {"connector": "db", "query": {"$sql": "../sql/lookup.sql"}}},
+                "fragments": {"read": {"tasks": [
+                    {"id": "r", "name": "r", "function": {"name": "db_read",
+                     "input": {"connector": "db", "query": {"$sql": "../sql/read.sql"}}}}]}}
+            }),
+            "defs/shared/catalog.json",
+            &mut findings,
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+        let mut doc = json!({"workflow_id": "w", "name": "w", "tasks": [
+            {"id": "_r", "use": "read"},
+            {"id": "l", "name": "l", "function": {"name": "db_read",
+             "input": {"$from": "constants.lookup"}}}]});
+        let base = std::path::Path::new("defs/services/orders");
+        let cx = crate::definitions::compile::Cx {
+            shared: &shared,
+            origin: "defs/services/orders/w.json",
+            base_dir: Some(base),
+            root: None,
+        };
+        let tasks = doc["tasks"].as_array().expect("tasks").clone();
+        doc["tasks"] = Value::Array(shared.expand_tasks(&tasks, &cx, &mut findings));
+        shared.splice(&mut doc, &cx, &mut findings);
+        assert!(findings.is_empty(), "{findings:?}");
+        assert_eq!(
+            doc["tasks"][0]["function"]["input"]["query"]["$sql"],
+            "../../sql/read.sql"
+        );
+        assert_eq!(
+            doc["tasks"][1]["function"]["input"]["query"]["$sql"],
+            "../../sql/lookup.sql"
+        );
+    }
+
+    #[test]
+    fn an_absolute_sql_path_in_a_shared_document_is_reported_at_merge() {
+        let mut shared = SharedDefinitions::default();
+        let mut findings = Vec::new();
+        shared.merge(
+            &json!({"constants": {"q": {"$sql": "/srv/sql/q.sql"}}}),
+            "catalog.json",
+            &mut findings,
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, "shared.sql_path");
+    }
 
     fn declaration() -> Value {
         json!({"package": {"name": "orders", "requires": {"orion": ">=1.8.2, <2"}}})

@@ -1,0 +1,14 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "r",
+      "name": "r",
+      "function": {
+        "name": "db_read",
+        "input": { "connector": "db", "query": { "$sql": "sql/read.sql" }, "output": "data.rows" }
+      }
+    }
+  ]
+}

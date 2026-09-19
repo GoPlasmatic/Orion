@@ -431,8 +431,8 @@ impl Rule for RepeatedValue {
          an operator node, an entity root; it is the input of an engine built-in \
          (`parse_json`'s `{\"source\", \"target\"}` is the idiom, not a value); it is a \
          `use` step's `with` block (arguments, repeated because the call is); it contains a \
-         `$from` at any depth (already shared); every occurrence sits inside a larger object \
-         that is itself reported."
+         `$from` or a `$sql` at any depth (already shared); every occurrence sits inside a \
+         larger object that is itself reported."
     }
 
     fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
@@ -521,7 +521,7 @@ fn collect_values<'a>(
                 || is_entry
                 || builtin_input
                 || parent_key == Some("with")
-                || contains_from(value)
+                || contains_reference(value)
                 || map.len() < RepeatedValue::MIN_KEYS;
             if !structural {
                 out.push((path.to_string(), value));
@@ -550,13 +550,18 @@ fn collect_values<'a>(
     }
 }
 
-/// Whether a `$from` appears anywhere inside `value`: the object is already
-/// partly shared, and a constant built on a constant is not a suggestion
-/// this rule can vouch for.
-fn contains_from(value: &Value) -> bool {
+/// Whether a `$from` or a `$sql` appears anywhere inside `value`: the object
+/// is already partly shared — a constant, or a statement kept in its own
+/// file — and a constant built on a reference is not a suggestion this rule
+/// can vouch for.
+fn contains_reference(value: &Value) -> bool {
     match value {
-        Value::Object(map) => map.contains_key("$from") || map.values().any(contains_from),
-        Value::Array(items) => items.iter().any(contains_from),
+        Value::Object(map) => {
+            map.contains_key("$from")
+                || map.contains_key("$sql")
+                || map.values().any(contains_reference)
+        }
+        Value::Array(items) => items.iter().any(contains_reference),
         _ => false,
     }
 }
@@ -608,6 +613,7 @@ mod tests {
                 .map(|(k, d)| (k.to_string(), d.clone()))
                 .collect(),
             tasks: tasks.as_array().expect("array").clone(),
+            origin: String::new(),
         }
     }
 

@@ -50,9 +50,12 @@
 //! documents the compiler would have accepted; one that detects less lets
 //! source form reach the runtime.
 
+use std::path::{Component, Path, PathBuf};
+
 use serde_json::Value;
 
 use super::diagnostic::Diagnostic;
+use super::provenance::{SourceMap, Via};
 use super::shared::SharedDefinitions;
 
 /// What a pass may resolve against.
@@ -65,6 +68,25 @@ pub struct Cx<'a> {
     /// How to name this document in a finding: a file path, or
     /// `workflows[3]` for an artifact entry.
     pub origin: &'a str,
+    /// The directory of the file this document was read from — what a
+    /// relative file reference (`$sql`) resolves against. `None` for an
+    /// artifact entry or an in-memory document.
+    pub base_dir: Option<&'a Path>,
+    /// The definition set's root, which a file reference may not leave.
+    /// `None` when a command was given one file and no set.
+    pub root: Option<&'a Path>,
+}
+
+impl<'a> Cx<'a> {
+    /// A document with no file behind it: nothing file-relative resolves.
+    pub fn detached(shared: &'a SharedDefinitions, origin: &'a str) -> Self {
+        Self {
+            shared,
+            origin,
+            base_dir: None,
+            root: None,
+        }
+    }
 }
 
 /// One occurrence of a pass's source form in a document.
@@ -100,6 +122,7 @@ impl Residue {
     pub fn describe(&self) -> String {
         match self.key {
             "use" => format!("a reference to fragment '{}'", self.target),
+            "$sql" => format!("a reference to SQL file '{}'", self.target),
             _ => format!("a reference to '{}'", self.target),
         }
     }
@@ -122,31 +145,52 @@ pub trait Pass: Send + Sync {
     /// own — which is the shape the admin API's validators have.
     fn residue(&self, doc: &Value, root: &str) -> Vec<Residue>;
 
-    /// Rewrite `doc` in place, reporting what would not resolve.
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>);
+    /// Rewrite `doc` in place, reporting what would not resolve and
+    /// recording, in `map`, where a subtree it brought in was authored.
+    fn apply(
+        &self,
+        doc: &mut Value,
+        cx: &Cx<'_>,
+        findings: &mut Vec<Diagnostic>,
+        map: &mut SourceMap,
+    );
 }
 
 /// The pipeline, in order.
 ///
 /// Fragments before values: a fragment's tasks may themselves carry `$from`,
 /// and splicing afterwards means a fragment is written exactly the way a
-/// workflow is.
+/// workflow is. SQL files last, so a `$sql` that arrived through an inlined
+/// fragment or a spliced constant is resolved too.
 pub fn passes() -> &'static [&'static dyn Pass] {
     static FRAGMENTS: Fragments = Fragments;
     static VALUES: Values = Values;
-    static PASSES: &[&dyn Pass] = &[&FRAGMENTS, &VALUES];
+    static SQL: Sql = Sql;
+    static PASSES: &[&dyn Pass] = &[&FRAGMENTS, &VALUES, &SQL];
     PASSES
 }
 
 /// Run every pass over one authored document, returning the ids of those that
 /// had anything to do.
 pub fn compile(doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) -> Vec<&'static str> {
+    compile_with_map(doc, cx, findings, &mut SourceMap::default())
+}
+
+/// [`compile`], recording in `map` where each rewritten subtree was authored
+/// — what a finding on the compiled form reads to name the file an author
+/// should open.
+pub fn compile_with_map(
+    doc: &mut Value,
+    cx: &Cx<'_>,
+    findings: &mut Vec<Diagnostic>,
+    map: &mut SourceMap,
+) -> Vec<&'static str> {
     let mut applied = Vec::new();
     for pass in passes() {
         // Asked before the rewrite, because after it there is nothing left to
         // see — that is the point of the rewrite.
         let fired = !pass.residue(doc, "").is_empty();
-        pass.apply(doc, cx, findings);
+        pass.apply(doc, cx, findings, map);
         if fired {
             applied.push(pass.id());
         }
@@ -212,9 +256,15 @@ impl Pass for Fragments {
         out
     }
 
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) {
+    fn apply(
+        &self,
+        doc: &mut Value,
+        cx: &Cx<'_>,
+        findings: &mut Vec<Diagnostic>,
+        _map: &mut SourceMap,
+    ) {
         if let Some(tasks) = doc.get_mut("tasks").and_then(Value::as_array_mut) {
-            let expanded = cx.shared.expand_tasks(tasks, cx.origin, findings);
+            let expanded = cx.shared.expand_tasks(tasks, cx, findings);
             *tasks = expanded;
         }
     }
@@ -277,8 +327,14 @@ impl Pass for Values {
         out
     }
 
-    fn apply(&self, doc: &mut Value, cx: &Cx<'_>, findings: &mut Vec<Diagnostic>) {
-        cx.shared.splice(doc, cx.origin, findings);
+    fn apply(
+        &self,
+        doc: &mut Value,
+        cx: &Cx<'_>,
+        findings: &mut Vec<Diagnostic>,
+        _map: &mut SourceMap,
+    ) {
+        cx.shared.splice(doc, cx, findings);
     }
 }
 
@@ -310,6 +366,332 @@ fn spliceable(value: &Value, path: &str, out: &mut Vec<Residue>) {
         }
         _ => {}
     }
+}
+
+// ============================================================
+// shared.sql — `{"$sql": "sql/settle.sql"}`
+// ============================================================
+
+/// The largest `.sql` file a reference may inline. Real statements run to a
+/// few kilobytes; a file this size is a mistake, not a statement.
+pub const MAX_SQL_FILE_BYTES: u64 = 1024 * 1024;
+
+struct Sql;
+
+impl Sql {
+    const ID: &'static str = "shared.sql";
+    const NOUN: &'static str = "a SQL file reference";
+}
+
+impl Pass for Sql {
+    fn id(&self) -> &'static str {
+        Self::ID
+    }
+
+    fn noun(&self) -> &'static str {
+        Self::NOUN
+    }
+
+    /// Every object holding a string `$sql`, at any depth, siblings or not —
+    /// the rewrite replaces the object whole in both cases. A non-string
+    /// `$sql` is not a reference, as a non-string `$from` is not.
+    fn residue(&self, doc: &Value, root: &str) -> Vec<Residue> {
+        let mut out = Vec::new();
+        sql_references(doc, root, &mut out);
+        out
+    }
+
+    fn apply(
+        &self,
+        doc: &mut Value,
+        cx: &Cx<'_>,
+        findings: &mut Vec<Diagnostic>,
+        map: &mut SourceMap,
+    ) {
+        inline_sql(doc, "", cx, findings, map);
+    }
+}
+
+fn sql_references(value: &Value, path: &str, out: &mut Vec<Residue>) {
+    match value {
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                sql_references(item, &format!("{path}[{i}]"), out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(target) = map.get("$sql").and_then(Value::as_str) {
+                out.push(Residue {
+                    pass: Sql::ID,
+                    noun: Sql::NOUN,
+                    key: "$sql",
+                    target: target.to_string(),
+                    path: path.to_string(),
+                });
+                return;
+            }
+            for (key, v) in map {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                sql_references(v, &at, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Replace every `$sql` object under `value` with the normalised statement
+/// its file holds — or, when it does not resolve, with `""`: never left in
+/// place (a compiled document is canonical on the failure path too), and a
+/// string rather than nothing so a required `query` does not draw a second,
+/// misleading finding.
+fn inline_sql(
+    value: &mut Value,
+    path: &str,
+    cx: &Cx<'_>,
+    findings: &mut Vec<Diagnostic>,
+    map: &mut SourceMap,
+) {
+    match value {
+        Value::Array(items) => {
+            for (i, item) in items.iter_mut().enumerate() {
+                inline_sql(item, &format!("{path}[{i}]"), cx, findings, map);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(target) = object.get("$sql").and_then(Value::as_str) {
+                let target = target.to_string();
+                let sibling = object.keys().find(|k| *k != "$sql").cloned();
+                let text = match resolve_sql(&target, sibling.as_deref(), path, cx, findings) {
+                    Some((file, text)) => {
+                        map.record(path, &file, None, vec![Via::Sql { file: file.clone() }]);
+                        text
+                    }
+                    None => String::new(),
+                };
+                *value = Value::String(text);
+                return;
+            }
+            for (key, v) in object.iter_mut() {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                inline_sql(v, &at, cx, findings, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The file a `$sql` names and its statement in normal form, or `None` with
+/// the reason reported.
+fn resolve_sql(
+    target: &str,
+    sibling: Option<&str>,
+    path: &str,
+    cx: &Cx<'_>,
+    findings: &mut Vec<Diagnostic>,
+) -> Option<(String, String)> {
+    let report = |findings: &mut Vec<Diagnostic>, check: &'static str, message: String| {
+        findings.push(Diagnostic::error(check, cx.origin, message).with_location(
+            cx.origin,
+            Some(path),
+            None,
+        ));
+    };
+    if let Some(key) = sibling {
+        report(
+            findings,
+            "shared.sql_shape",
+            format!("'$sql' must be the only key in its object — found '{key}' beside it"),
+        );
+        return None;
+    }
+    if !is_relative_sql_path(target) {
+        report(
+            findings,
+            "shared.sql_path",
+            format!("'{target}' must be a relative path to a .sql file"),
+        );
+        return None;
+    }
+    let Some(base_dir) = cx.base_dir else {
+        report(
+            findings,
+            "closure.sql_file",
+            format!("'{target}' cannot be resolved: this document was not read from a file"),
+        );
+        return None;
+    };
+    let file = lexical_normalize(&base_dir.join(target));
+    if let Some(root) = cx.root {
+        // Compared absolute, so a root of `.` and a file of `sql/x.sql` —
+        // both relative to the working directory — are one comparison.
+        let absolute = |p: &Path| match std::env::current_dir() {
+            Ok(cwd) if p.is_relative() => lexical_normalize(&cwd.join(p)),
+            _ => lexical_normalize(p),
+        };
+        let escapes_lexically = !absolute(&file).starts_with(absolute(root));
+        let escapes_on_disk = match (std::fs::canonicalize(&file), std::fs::canonicalize(root)) {
+            (Ok(real), Ok(real_root)) => !real.starts_with(real_root),
+            _ => false,
+        };
+        if escapes_lexically || escapes_on_disk {
+            report(
+                findings,
+                "shared.sql_path",
+                format!(
+                    "'{target}' leaves the definition set ('{}')",
+                    root.display()
+                ),
+            );
+            return None;
+        }
+    }
+    let shown = file.display().to_string();
+    let unreadable = |reason: String| format!("'{target}' (resolved to '{shown}') {reason}");
+    let meta = match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_file() => meta,
+        Ok(_) => {
+            report(
+                findings,
+                "closure.sql_file",
+                unreadable("is not a file".to_string()),
+            );
+            return None;
+        }
+        Err(e) => {
+            report(
+                findings,
+                "closure.sql_file",
+                unreadable(format!("cannot be read: {e}")),
+            );
+            return None;
+        }
+    };
+    if meta.len() > MAX_SQL_FILE_BYTES {
+        report(
+            findings,
+            "closure.sql_file",
+            unreadable(format!(
+                "is {} bytes; a SQL file may be at most {MAX_SQL_FILE_BYTES}",
+                meta.len()
+            )),
+        );
+        return None;
+    }
+    let source = match std::fs::read(&file).map(String::from_utf8) {
+        Ok(Ok(source)) => source,
+        Ok(Err(_)) => {
+            report(
+                findings,
+                "closure.sql_file",
+                unreadable("is not UTF-8".to_string()),
+            );
+            return None;
+        }
+        Err(e) => {
+            report(
+                findings,
+                "closure.sql_file",
+                unreadable(format!("cannot be read: {e}")),
+            );
+            return None;
+        }
+    };
+    match crate::sql_lex::normalize(&source) {
+        Ok(normalized) if normalized.text.is_empty() => {
+            report(
+                findings,
+                "shared.sql_empty",
+                format!("'{target}' holds no statement (only comments or whitespace)"),
+            );
+            None
+        }
+        Ok(normalized) => Some((shown, normalized.text)),
+        Err(e) => {
+            let (line, col) = crate::sql_lex::line_col(&source, e.offset);
+            // Located in the `.sql` file, where the fix is; the entity names
+            // the document that referenced it.
+            findings.push(
+                Diagnostic::error("shared.sql_lex", cx.origin, e.kind.to_string()).with_location(
+                    &shown,
+                    None,
+                    Some((line, col)),
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// A relative path to a `.sql` file: not empty, not absolute, and ending in
+/// `.sql`.
+pub(super) fn is_relative_sql_path(target: &str) -> bool {
+    !target.is_empty()
+        && !Path::new(target).is_absolute()
+        && !target.starts_with('/')
+        && !target.starts_with('\\')
+        && Path::new(target)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("sql"))
+}
+
+/// `a/./b/../c` → `a/c`, without touching the filesystem. A `..` that would
+/// climb above a relative start is kept, so containment still sees it.
+pub(super) fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out: Vec<Component<'_>> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.last() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(component),
+            },
+            other => out.push(other),
+        }
+    }
+    if out.is_empty() {
+        return PathBuf::from(".");
+    }
+    out.iter().collect()
+}
+
+/// `to` expressed relative to `from_dir`, both lexically normalised — what
+/// a `$sql` path copied out of a fragment or a constant is rewritten to, so
+/// it reads relative to the document it landed in.
+pub(super) fn relative(from_dir: &Path, to: &Path) -> PathBuf {
+    let from = lexical_normalize(from_dir);
+    let to = lexical_normalize(to);
+    let from: Vec<Component<'_>> = from
+        .components()
+        .filter(|c| *c != Component::CurDir)
+        .collect();
+    let to_parts: Vec<Component<'_>> = to
+        .components()
+        .filter(|c| *c != Component::CurDir)
+        .collect();
+    let common = from
+        .iter()
+        .zip(&to_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = PathBuf::new();
+    for _ in common..from.len() {
+        out.push("..");
+    }
+    for part in &to_parts[common..] {
+        out.push(part.as_os_str());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -417,16 +799,13 @@ mod tests {
         let shared = catalog();
         let mut doc = sugared();
         let mut findings = Vec::new();
-        let applied = compile(
-            &mut doc,
-            &Cx {
-                shared: &shared,
-                origin: "wf.json",
-            },
-            &mut findings,
-        );
+        let applied = compile(&mut doc, &Cx::detached(&shared, "wf.json"), &mut findings);
         assert!(findings.is_empty(), "{findings:?}");
         assert_eq!(applied, vec!["shared.fragments", "shared.values"]);
+        assert_eq!(
+            passes().iter().map(|p| p.id()).collect::<Vec<_>>(),
+            vec!["shared.fragments", "shared.values", "shared.sql"]
+        );
         assert_eq!(
             residue(&doc, ""),
             vec![],
@@ -441,10 +820,7 @@ mod tests {
     #[test]
     fn compiling_is_idempotent() {
         let shared = catalog();
-        let cx = Cx {
-            shared: &shared,
-            origin: "wf.json",
-        };
+        let cx = Cx::detached(&shared, "wf.json");
         let mut once = sugared();
         let mut findings = Vec::new();
         compile(&mut once, &cx, &mut findings);
@@ -465,16 +841,153 @@ mod tests {
         let shared = SharedDefinitions::default();
         let mut doc = sugared();
         let mut findings = Vec::new();
-        compile(
-            &mut doc,
-            &Cx {
-                shared: &shared,
-                origin: "wf.json",
-            },
-            &mut findings,
-        );
+        compile(&mut doc, &Cx::detached(&shared, "wf.json"), &mut findings);
         assert!(findings.iter().any(|f| f.is_error()));
         assert_eq!(residue(&doc, ""), vec![]);
+    }
+
+    /// A scratch set on disk: `wf/` beside `sql/`.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("orion-sql-pass-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(root.join("wf")).expect("wf");
+            std::fs::create_dir_all(root.join("sql")).expect("sql");
+            Self(root)
+        }
+        fn write(&self, rel: &str, text: &str) {
+            std::fs::write(self.0.join(rel), text).expect("write");
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn with_sql(target: Value) -> Value {
+        json!({"workflow_id": "w", "name": "w", "tasks": [
+            {"id": "r", "name": "r", "function": {"name": "db_read",
+                "input": {"connector": "db", "query": target}}}]})
+    }
+
+    fn compile_in(scratch: &Scratch, doc: &mut Value) -> (Vec<Diagnostic>, SourceMap) {
+        let shared = SharedDefinitions::default();
+        let base = scratch.0.join("wf");
+        let mut findings = Vec::new();
+        let mut map = SourceMap::default();
+        compile_with_map(
+            doc,
+            &Cx {
+                shared: &shared,
+                origin: "wf/w.json",
+                base_dir: Some(&base),
+                root: Some(&scratch.0),
+            },
+            &mut findings,
+            &mut map,
+        );
+        (findings, map)
+    }
+
+    #[test]
+    fn a_sql_reference_compiles_to_the_normalised_statement() {
+        let scratch = Scratch::new();
+        scratch.write(
+            "sql/read.sql",
+            "-- orders\nSELECT id\n  FROM orders -- all\n WHERE a = $1;\n",
+        );
+        let mut doc = with_sql(json!({"$sql": "../sql/read.sql"}));
+        assert_eq!(residue(&doc, "")[0].key, "$sql");
+        assert_eq!(
+            residue(&doc, "")[0].describe(),
+            "a reference to SQL file '../sql/read.sql'"
+        );
+        let (findings, map) = compile_in(&scratch, &mut doc);
+        assert!(findings.is_empty(), "{findings:?}");
+        assert_eq!(
+            doc["tasks"][0]["function"]["input"]["query"],
+            "SELECT id FROM orders WHERE a = $1"
+        );
+        assert_eq!(residue(&doc, ""), vec![]);
+        let source = map.resolve("wf/w.json", "tasks[0].function.input.query");
+        assert!(source.file.ends_with("sql/read.sql"), "{source:?}");
+        assert!(!source.is_authored_here());
+    }
+
+    #[test]
+    fn nothing_survives_a_sql_reference_that_does_not_resolve() {
+        let scratch = Scratch::new();
+        scratch.write("sql/empty.sql", "-- nothing but a comment\n");
+        scratch.write("sql/ambiguous.sql", "SELECT 'it\\'s'");
+        for (target, check) in [
+            (json!({"$sql": "../sql/missing.sql"}), "closure.sql_file"),
+            (json!({"$sql": "../sql/empty.sql"}), "shared.sql_empty"),
+            (json!({"$sql": "../sql/ambiguous.sql"}), "shared.sql_lex"),
+            (json!({"$sql": "/etc/passwd.sql"}), "shared.sql_path"),
+            (json!({"$sql": "../sql/read.txt"}), "shared.sql_path"),
+            (json!({"$sql": "../../elsewhere.sql"}), "shared.sql_path"),
+            (
+                json!({"$sql": "../sql/empty.sql", "x": 1}),
+                "shared.sql_shape",
+            ),
+        ] {
+            let mut doc = with_sql(target.clone());
+            let (findings, _) = compile_in(&scratch, &mut doc);
+            assert!(
+                findings.iter().any(|f| f.check == check),
+                "{target}: {findings:?}"
+            );
+            assert_eq!(residue(&doc, ""), vec![], "{target}");
+            assert_eq!(doc["tasks"][0]["function"]["input"]["query"], "");
+        }
+        // With no file behind the document, nothing file-relative resolves.
+        let mut doc = with_sql(json!({"$sql": "sql/read.sql"}));
+        let mut findings = Vec::new();
+        compile(
+            &mut doc,
+            &Cx::detached(&SharedDefinitions::default(), "workflows[0]"),
+            &mut findings,
+        );
+        assert_eq!(findings[0].check, "closure.sql_file");
+    }
+
+    #[test]
+    fn a_non_string_sql_is_not_a_reference() {
+        let doc = json!({ "tasks": [ { "function": { "input": { "body": { "$sql": 5 } } } } ] });
+        assert_eq!(residue(&doc, ""), vec![]);
+    }
+
+    #[test]
+    fn paths_are_normalised_and_made_relative_lexically() {
+        assert_eq!(
+            lexical_normalize(Path::new("a/./b/../c")),
+            PathBuf::from("a/c")
+        );
+        assert_eq!(
+            lexical_normalize(Path::new("../a/../b")),
+            PathBuf::from("../b")
+        );
+        assert_eq!(lexical_normalize(Path::new("./")), PathBuf::from("."));
+        assert_eq!(
+            relative(
+                Path::new("defs/wf"),
+                Path::new("defs/fragments/../sql/x.sql")
+            ),
+            PathBuf::from("../sql/x.sql")
+        );
+        assert_eq!(
+            relative(Path::new("defs"), Path::new("defs/sql/x.sql")),
+            PathBuf::from("sql/x.sql")
+        );
+        assert!(is_relative_sql_path("sql/x.sql"));
+        assert!(is_relative_sql_path("../x.SQL"));
+        assert!(!is_relative_sql_path("/x.sql"));
+        assert!(!is_relative_sql_path("x.txt"));
+        assert!(!is_relative_sql_path(""));
     }
 
     #[test]

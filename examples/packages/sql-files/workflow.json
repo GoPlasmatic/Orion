@@ -1,0 +1,25 @@
+{
+  "workflow_id": "describe-word",
+  "name": "Describe a word",
+  "tags": ["pkg:sql-files"],
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse the request",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "describe",
+      "name": "Describe the word",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "sql-files-db",
+          "query": { "$sql": "sql/describe.sql" },
+          "params": [{ "var": "data.input.word" }],
+          "output": "data.result"
+        }
+      }
+    }
+  ]
+}

@@ -648,6 +648,104 @@ fn plugin_set(label: &str, with_component: bool) -> ScratchDir {
     scratch
 }
 
+/// A set with a statement kept in a `.sql` file and no shared document —
+/// the pipeline must still run.
+fn sql_set(label: &str) -> ScratchDir {
+    let scratch = ScratchDir::new(label);
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("sql")).unwrap();
+    std::fs::create_dir_all(dir.join("orders")).unwrap();
+    std::fs::write(
+        dir.join("sql/recent.sql"),
+        "-- The customer's orders, newest first.\nSELECT id,\n       total   -- cents\n  FROM orders\n WHERE customer_id = $1\n ORDER BY created_at DESC;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name": "orders-db", "connector_type": "db",
+            "config": {"connection_string": "sqlite::memory:"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("orders/wf.json"),
+        r#"{"workflow_id": "recent", "name": "Recent", "tasks": [
+             {"id": "read", "name": "Read", "function": {"name": "db_read",
+               "input": {"connector": "orders-db", "query": {"$sql": "../sql/recent.sql"},
+                         "params": [{"var": "data.customer"}], "output": "data.rows"}}}]}"#,
+    )
+    .unwrap();
+    scratch
+}
+
+/// #332: `$sql` compiles to the inline statement, in normal form; a comment
+/// edit moves neither the text nor the hash, and `package lint` accepts the
+/// result.
+#[test]
+fn a_sql_file_compiles_to_the_inline_query() {
+    let scratch = sql_set("compile-sql");
+    let dir = scratch.path();
+    let (ok, report, first) = compile_versioned(dir, "a.json", &["--version", "1.0.0"]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("compiled: shared.sql rewrote 1 document(s)"),
+        "{report}"
+    );
+    assert_eq!(
+        first["workflows"][0]["tasks"][0]["function"]["input"]["query"],
+        "SELECT id, total FROM orders WHERE customer_id = $1 ORDER BY created_at DESC"
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    std::fs::write(
+        dir.join("sql/recent.sql"),
+        "/* reworded */ SELECT id, total FROM orders -- still\nWHERE customer_id = $1 ORDER BY created_at DESC",
+    )
+    .unwrap();
+    let (ok, report, second) = compile_versioned(dir, "b.json", &["--version", "1.0.0"]);
+    assert!(ok, "{report}");
+    assert_eq!(
+        second["package"]["content_hash"],
+        first["package"]["content_hash"]
+    );
+
+    // `--format dir` consumes the file rather than copying it.
+    let out = dir.join("out-dir");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "dir",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(!out.join("sql/recent.sql").exists());
+}
+
+#[test]
+fn a_missing_or_escaping_sql_file_writes_nothing() {
+    let scratch = sql_set("compile-sql-missing");
+    let dir = scratch.path();
+    let wf = dir.join("orders/wf.json");
+    let text = std::fs::read_to_string(&wf).unwrap();
+    for (target, expected) in [
+        ("../sql/nope.sql", "closure.sql_file"),
+        ("../../outside.sql", "leaves the definition set"),
+    ] {
+        std::fs::write(&wf, text.replace("../sql/recent.sql", target)).unwrap();
+        let (ok, report, _) = compile_versioned(dir, "x.json", &["--version", "1.0.0"]);
+        assert!(!ok, "{target}: {report}");
+        assert!(report.contains(expected), "{target}: {report}");
+        assert!(!dir.join("x.json").exists());
+    }
+}
+
 /// #343: the set's `package` document names the artifact and carries its
 /// range into `requires.orion`, which is not content; `--name` and
 /// `--requires-orion` win over it.

@@ -1,0 +1,12 @@
+{
+  "name": "inlines the statement its .sql file holds",
+  "workflow": "../packages/sql-files/workflow.json",
+  "input": { "word": "orion" },
+  "stubs": { "db_read": { "sql-files-db": [{ "shout": "ORION", "letters": 5 }] } },
+  "expect": { "data.result": [{ "shout": "ORION", "letters": 5 }] },
+  "expect_calls": {
+    "db_read": [
+      { "query": "SELECT upper($1) AS shout, length($1) AS letters", "params": ["orion"] }
+    ]
+  }
+}

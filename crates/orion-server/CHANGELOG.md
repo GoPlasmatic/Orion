@@ -112,7 +112,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuse one outside the range with zero writes. A pre-release binary is
   judged as its release. `package` is a newly reserved shared-document key.
 
+- **Statements in `.sql` files: `{"$sql": "sql/settle.sql"}`** ([#332]). A
+  `db_read`/`db_write` statement no longer has to be one unreviewable JSON
+  string. A third authoring pass, `shared.sql`, inlines the file at compile
+  time in a normal form — comments and whitespace collapse to single
+  spaces, strings, quoted identifiers, dollar bodies and optimizer hints stay
+  byte-exact, one trailing `;` is dropped — so a comment edit moves neither
+  the statement nor the content hash. The path is relative to the file the
+  reference sits in (re-anchored when it comes through a fragment or a
+  shared constant), must end in `.sql` and may not leave the set; files are
+  capped at 1 MiB. The lexer refuses the two constructs PostgreSQL and MySQL
+  read differently — a backslash before a closing quote, and `--` glued to
+  the next character — naming the line in the `.sql` file. Single-file
+  `lint`, `dry-run` and `test` resolve `$sql` without `--definitions`, a set
+  with no shared document now runs the pipeline, and findings about a
+  statement say `(in sql/settle.sql)`. The admin API refuses an uncompiled
+  `$sql` with `UNCOMPILED_SOURCE`; see the reserved-key note below.
+- **`sql.read_only`**: `lint` refuses a literal `db_read` statement that is
+  not a read — which the handler refuses on every execution — offline.
+- **`orion::sql_lex`**, the one SQL lexer. `db_read`'s run-time read-only
+  check and `db_write`'s leading keyword now use it; it also reads `a$b$` as
+  one identifier and doubled backticks as MySQL does, where the old scanner
+  opened a dollar quote and ended the identifier early.
+
 ### Changed
+
+- **`$sql` is a reserved key.** An object with a string `$sql` anywhere in a
+  workflow's tasks, condition or loop, or a connector's or channel's config,
+  is refused at create and update with `UNCOMPILED_SOURCE`, as `$from` is.
+  Stored rows keep running; `preflight` reports a stored workflow holding
+  one as `source.sql_key`, since its next update would be refused.
 
 - **`package apply` fails when the reload quarantines what it carries**
   ([#342]). A reload succeeds when an entity does not load, so `apply` used
@@ -184,6 +213,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can change — wrapping it in a task group would change which steps run.
   Both rules are now silent there.
 
+[#332]: https://github.com/GoPlasmatic/Orion/issues/332
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#340]: https://github.com/GoPlasmatic/Orion/issues/340

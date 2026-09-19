@@ -452,21 +452,33 @@ pub(crate) fn read_expanded_workflow(
     let mut doc: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
 
-    let Some(catalog) = definitions.filter(|c| c.dir.is_some()) else {
-        // Without a catalog an unexpanded `use` reaches validation as a task
-        // with no `name` and no `function`, and is refused for *that* — an
-        // error that describes the symptom and hides the cause. Say the cause.
-        if let Some(reference) = orion::definitions::first_reference(&doc) {
-            return Err(format!(
-                "'{path}' contains {reference}, but no --definitions directory was \
-                 given to resolve it against"
-            )
-            .into());
+    // Every document runs the pipeline, catalog or not: a `$sql` file
+    // reference resolves against the workflow's own directory and needs no
+    // `--definitions`. The set root, when one is named, bounds where it may
+    // point.
+    let catalog = definitions.filter(|c| c.dir.is_some());
+    let empty = orion::definitions::SharedDefinitions::default();
+    let base_dir = std::path::Path::new(path).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            p.to_path_buf()
         }
-        return Ok(doc);
-    };
+    });
+    let root = catalog
+        .and_then(|c| c.dir.as_deref())
+        .map(std::path::Path::new);
     let mut findings = Vec::new();
-    catalog.shared.expand(&mut doc, path, &mut findings);
+    orion::definitions::compile::compile(
+        &mut doc,
+        &orion::definitions::Cx {
+            shared: catalog.map_or(&empty, |c| &c.shared),
+            origin: path,
+            base_dir: base_dir.as_deref(),
+            root,
+        },
+        &mut findings,
+    );
 
     let errors = findings.iter().filter(|f| f.is_error()).count();
     for finding in &findings {
@@ -475,10 +487,24 @@ pub(crate) fn read_expanded_workflow(
     if errors > 0 {
         // An unresolved reference cannot be run past — the document that
         // reaches the engine would be missing whatever the reference stood for.
-        return Err(format!(
-            "{errors} unresolved reference(s) expanding '{path}' against '{}'",
-            catalog.dir.as_deref().unwrap_or_default()
-        )
+        return Err(match catalog.and_then(|c| c.dir.as_deref()) {
+            Some(dir) => {
+                format!("{errors} unresolved reference(s) expanding '{path}' against '{dir}'")
+            }
+            // Without a catalog, a fragment or shared value cannot resolve —
+            // say that, rather than leave the author reading a finding about
+            // a name that is simply not in scope.
+            None if findings
+                .iter()
+                .any(|f| matches!(f.check, "closure.fragment" | "closure.shared_value")) =>
+            {
+                format!(
+                    "{errors} unresolved reference(s) in '{path}': no --definitions directory \
+                     was given to resolve it against"
+                )
+            }
+            None => format!("{errors} unresolved reference(s) in '{path}'"),
+        }
         .into());
     }
     Ok(doc)
@@ -1888,17 +1914,31 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
         let mut findings = Vec::new();
         let mut compiled_doc = doc.clone();
-        orion::definitions::compile::compile(
+        let base_dir = path.parent().map(|p| {
+            if p.as_os_str().is_empty() {
+                std::path::PathBuf::from(".")
+            } else {
+                p.to_path_buf()
+            }
+        });
+        let mut provenance = orion::definitions::SourceMap::default();
+        orion::definitions::compile::compile_with_map(
             &mut compiled_doc,
             &orion::definitions::Cx {
                 shared: &shared,
                 origin: req.path,
+                base_dir: base_dir.as_deref(),
+                root: req.definitions.map(std::path::Path::new),
             },
             &mut findings,
+            &mut provenance,
         );
         let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
         let mut compiled =
             DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+        if let Some(def) = compiled.definitions.first_mut() {
+            def.provenance = provenance;
+        }
         compiled.plugins = plugins;
         compiled.models = models;
         let registry = compiled.function_registry()?;

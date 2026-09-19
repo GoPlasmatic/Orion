@@ -4,7 +4,7 @@
 
 # `orion-server compile`
 
-Compiles a definition set into files the admin API accepts. It resolves the authoring conveniences a set may use: `$from` for a shared value, `use` for a task fragment. Needs no config, database, or server.
+Compiles a definition set into files the admin API accepts, resolving its authoring conveniences: `$from`, `use` and `$sql`. Needs no config, database, or server.
 
 ## Synopsis
 
@@ -76,6 +76,7 @@ A revert is a rollback. Reverting the definitions compiles to the earlier versio
 $ orion-server compile ./definitions --name payments --version 1.4.0 -o dist/package.json
 compiled: shared.fragments rewrote 23 document(s)
 compiled: shared.values rewrote 51 document(s)
+compiled: shared.sql rewrote 12 document(s)
 ./definitions: 4 connector(s), 62 workflow(s), 62 channel(s), 9 shared value(s), 3 fragment(s) — 0 error(s), 0 warning(s)
 wrote payments@1.4.0 (4 connectors, 62 workflows, 62 channels) to dist/package.json
 ```

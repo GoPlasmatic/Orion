@@ -39,12 +39,33 @@ resolves to `{"connector": "sias-mongo", "database": "app", "collection": "users
 
 Expanded task ids are namespaced by the call-site id (`_session.check`). A fragment therefore cannot collide with the including workflow or with a second instance of itself. **Every** id the fragment contributes is prefixed, including those inside a task group, a group's own id and its members' alike. The prefix is flat rather than one segment per enclosing group, so `refused`/`deny` become `_session.refused` and `_session.deny`. A parameter with no `default` is required at every call site. A fragment cannot include another fragment, at any depth.
 
-A shared document is one carrying `constants`, `errors`, `fragments` or a `package` declaration, and no entity field. It is found by shape, like entities, and split across as many files as you like. A name defined twice is an error rather than a silent last-write-wins.
+A shared document is one carrying `constants`, `errors`, `fragments` or a `package` declaration, and no entity field. A `.sql` file is not a shared document. It is read only when a `$sql` names it. It is found by shape, like entities, and split across as many files as you like. A name defined twice is an error rather than a silent last-write-wins.
 
 Every unresolved reference is a lint error, which is why set mode resolves the catalog with no flag; the single-file commands take `--definitions <dir>`.
 
 > [!NOTE]
 > Expansion is an **authoring and deploy** mechanism. The admin API takes one JSON body with no set to resolve against, so `POST /api/v1/admin/workflows` does not accept `$from` or `use`; it refuses them with [`UNCOMPILED_SOURCE`](../errors.md#field-error-codes), naming the reference and its coordinate. [`orion-server compile`](./orion-server/compile.md) is the step that produces what it does accept. `package export` needs no inlining step for the same reason: it exports what a server stored, which was already compiled.
+
+## Statements in `.sql` files
+
+A `db_read` or `db_write` statement can live in a file of its own:
+
+```json
+{ "query": { "$sql": "../sql/settle.sql" } }
+```
+
+`$sql` must be the only key in its object. The path is relative to the file the reference sits in, must end in `.sql`, and may not leave the definition set. A `$sql` inside a fragment or a shared constant is written relative to the shared document. It is re-read relative to each workflow it lands in. A file is at most 1 MiB.
+
+`compile` replaces the reference with the statement in **normal form**. Comments and every run of whitespace become one space, and none is left at either end. Strings, quoted identifiers, dollar-quoted bodies and optimizer hints (`/*+ … */`, `/*! … */`) are copied byte for byte. One trailing `;` is dropped. So a comment or an indentation change moves neither the statement nor the package's content hash. Nothing is interpolated into the file: values still travel in `params`.
+
+The lexer refuses what PostgreSQL and MySQL read differently, rather than guessing, and names the line in the `.sql` file:
+
+- **A backslash before a closing quote**, as in `'it\'s'`. PostgreSQL ends the string at that quote, and MySQL escapes it. Write `''` for a quote, or `E'…'` on PostgreSQL.
+- **`--` glued to the next character**, as in `--x`. PostgreSQL and SQLite start a comment, and MySQL reads two minus signs. Write `-- ` with a space.
+
+MySQL's `#` comments are not recognized, because `#` is an operator in PostgreSQL. A CRLF inside a string literal is data and is kept.
+
+`lint`, `dry-run` and `test` resolve `$sql` for a single workflow file with no `--definitions`, against the file's own directory. A finding about the statement names the `.sql` file it came from.
 
 ## The `package` document
 

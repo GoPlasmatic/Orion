@@ -94,6 +94,7 @@ src/
 │   ├── analysis/        # Facts every clippy rule reads: flattened steps with reads/writes/certainty (`Reads::uncertain` = a computed or element-scoped read — a rule needing complete reads must then stay silent), every expression compiled by datalogic (`is_constant`, evaluate-against-context), the channel→workflow binding. `operators.rs` classifies every operator as scoping or not; a new operator fails a test until classified
 │   ├── clippy/          # `orion-server clippy`: `Rule` trait + `rules::ALL` registry. No configuration, no suppression — a rule ships only with a proof (`explain()` must say "Proof" and "Silent when") and `tests/fixtures/clippy/<id>/{fires,quiet}/`. Duplication rules read the *source* form (`from_directory_raw`); semantic rules the compiled form
 │   ├── fmt/             # `orion-server fmt`: style.rs (the numbers + canonical key tables — no user configuration by design), roles.rs (shape classifier; operator nodes by structure, unary/leaf/compound), printer.rs (measure-then-emit, linear). `format_str` re-parses its output and refuses to return a document that differs from the input as a `Value`
+│   ├── provenance.rs    # `SourceMap`: where each part of a compiled document was authored (a `$sql` statement → its `.sql` file). Findings render it as `(in …)`
 │   └── compile.rs       # The authoring layer: an ordered pipeline of `Pass`es (source form → canonical form). A new simplification is a new pass; its `residue()` is what `compile` reports, what the pipeline test asserts empty, and what the admin API refuses by name
 ├── engine/              # Dataflow engine build, observer, custom function handlers, and `execute_admitted` — the one post-admission step every transport runs
 │   ├── steps.rs         # Flattens a `tasks` array of steps (task or task group) — every walk over tasks goes through it
@@ -113,6 +114,7 @@ src/
 ├── signatures.rs        # The detached `.sig` convention (`<artifact>.sig` / `<id>.sig`, base64 over the digest string) and `SignatureDir`. A leaf beside `crypto`
 ├── server/              # HTTP server, middleware, state
 │   └── routes/          # admin/ (workflows, channels, connectors, plugins, models, cron, packages, functions, engine, audit, backups, trace_dlq), data/
+├── sql_lex.rs           # The one SQL lexer (strict + lossy): `normalize` (`$sql`'s normal form + source map), `placeholders`, `statements`, `leading_keyword`, `read_only_violation`. `db_read`/`db_write`, the `$sql` pass and the SQL clippy rules all read SQL through it. A leaf
 ├── storage/             # Database abstraction, content hashing, config encryption
 │   ├── models/          # Row types, DTOs, enums — the *storage* module, unrelated to `model/` above
 │   └── repositories/    # workflows, channels, connectors, plugins, models, cron, packages, traces, trace_dlq, audit_logs, cluster

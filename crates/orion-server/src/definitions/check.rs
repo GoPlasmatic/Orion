@@ -68,9 +68,56 @@ fn schema_diagnostics(
             // workflow and leaving the author to find the field.
             let path = d.path.clone();
             let line = path.as_deref().and_then(|p| def.locate(p));
+            let via = path.as_deref().and_then(|p| def.source_of(p).describe());
             d.with_location(&def.origin, path.as_deref(), line)
+                .with_via(via)
         })
         .collect()
+}
+
+/// A literal `db_read` statement that is not a read — refused by the handler
+/// at run time on every execution, so certain to fail the moment it runs.
+/// Offline only: the admin API's validator is unchanged. A templated
+/// statement is skipped, since what runs is only known then.
+fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<Diagnostic>) {
+    use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
+    let Some(tasks) = def.doc.get("tasks") else {
+        return;
+    };
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        let function = task.get("function");
+        if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("db_read") {
+            continue;
+        }
+        let Some(query) = function
+            .and_then(|f| f.get("input"))
+            .and_then(|i| i.get("query"))
+            .and_then(Value::as_str)
+            .filter(|q| !q.contains("{{"))
+        else {
+            continue;
+        };
+        let message = match crate::sql_lex::read_only_violation(query) {
+            None | Some(ReadOnlyViolation::Empty) => continue,
+            Some(ReadOnlyViolation::NotARead { keyword }) => format!(
+                "db_read runs read statements only, but this one starts with '{keyword}' — use \
+                 db_write for INSERT/UPDATE/DELETE. Reads start with {}",
+                READ_STATEMENTS.join(", ")
+            ),
+            Some(ReadOnlyViolation::ModifyingCte { keyword }) => format!(
+                "db_read runs read statements only, but this one carries a data-modifying \
+                 '{keyword}' common table expression — use db_write"
+            ),
+        };
+        let at = format!("{path}.function.input.query");
+        let line = def.locate(&at);
+        let via = def.source_of(&at).describe();
+        findings.push(
+            Diagnostic::error("sql.read_only", format!("workflow '{name}'"), message)
+                .with_location(&def.origin, Some(&at), line)
+                .with_via(via),
+        );
+    }
 }
 
 pub fn check(
@@ -372,6 +419,7 @@ fn check_workflows(
                 None => {}
             }
         }
+        check_read_only_statements(def, &req.name, findings);
         if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
             let entity = format!("workflow '{}'", req.name);
             for d in schema_diagnostics("schema.workflow", &entity, def, &e) {
