@@ -1,6 +1,6 @@
 <!-- description: Serve an ONNX model: write the manifest, check it offline, put the bytes in a bucket, register and admit it, and call it from a workflow with model_infer. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Serve a model
 
@@ -10,7 +10,7 @@ The manifest does the marshalling. Its adapters build the tensors and its result
 
 ## Before you start
 
-You need a trained ONNX graph, an S3-compatible bucket and a client for it, and `orion-server` and `orion-cli`. The server must run with `models.enabled = true` and a `cache_dir`. A node that configures `[models.trust]` also needs a signing key; see [Configuration › Models](../../reference/configuration/models.md).
+You need a trained ONNX graph, an S3-compatible bucket and a client for it, and `orion-server` and `orion-cli`. The server must run with `models.enabled = true` and a `cache_dir`. A node that configures `[models.trust]` also needs a signing key, which [`orion-server model keygen`](../../reference/cli/orion-server/model.md) creates; see [Configuration › Models](../../reference/configuration/models.md).
 
 ## 1. Decide it is a model
 

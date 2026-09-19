@@ -731,6 +731,58 @@ async fn trusting_app(keys: Vec<String>) -> (AppState, axum::Router) {
     (state, router)
 }
 
+/// The contract between `orion-server plugin sign` and the upload check: a
+/// `.sig` file the verb wrote is accepted, as-is, by a node that trusts the
+/// key `plugin keygen` printed.
+#[tokio::test]
+async fn a_signature_from_plugin_sign_is_accepted_at_upload() {
+    let dir = std::env::temp_dir().join(format!("orion-plugin-sign-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let bin = env!("CARGO_BIN_EXE_orion-server");
+    let key = dir.join("signer.pem");
+    let component = dir.join("fixture.wasm");
+    std::fs::write(&component, COMPONENT).expect("component");
+    let run = |args: &[&std::ffi::OsStr]| {
+        let out = std::process::Command::new(bin)
+            .args(args)
+            .output()
+            .expect("invoke orion-server");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    run(&[
+        "plugin".as_ref(),
+        "keygen".as_ref(),
+        "-o".as_ref(),
+        key.as_os_str(),
+    ]);
+    let public = run(&[
+        "plugin".as_ref(),
+        "pubkey".as_ref(),
+        "--key".as_ref(),
+        key.as_os_str(),
+    ]);
+    run(&[
+        "plugin".as_ref(),
+        "sign".as_ref(),
+        component.as_os_str(),
+        "--key".as_ref(),
+        key.as_os_str(),
+    ]);
+    let signature = std::fs::read_to_string(dir.join("fixture.wasm.sig")).expect("sig");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let (_state, app) = trusting_app(vec![public.trim().to_string()]).await;
+    let mut signed = upload();
+    signed["signature"] = json!(signature);
+    let (status, body) = post(&app, "/api/v1/admin/plugins", signed).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
 /// `[plugins.trust]` end to end: refused without a signature, refused with
 /// one by a key the node does not trust, accepted with a good one and echoed
 /// back; and the node that *loads* the version checks again with its own

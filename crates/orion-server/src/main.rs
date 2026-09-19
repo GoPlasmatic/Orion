@@ -11,6 +11,7 @@ use orion::config;
 
 mod cli;
 mod package_cli;
+mod signing_cli;
 
 use orion::bootstrap;
 
@@ -46,7 +47,8 @@ EXAMPLES:\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
     orion-server package export -s <url> --tag payments --name payments --version 1.0.0 -o pkg.json\n                                              \
 Export a promotion package from an instance\n    \
-    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n\n\
+    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n    \
+    orion-server plugin sign plugins/ --key signer.pem  Sign every plugin component for [plugins.trust]\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -278,6 +280,18 @@ enum Command {
         #[arg(long = "model-dir", value_name = "DIR")]
         model_dirs: Vec<String>,
     },
+    /// Digest, sign and verify plugin components — what `[plugins.trust]`
+    /// checks. PATH is a `plugin.toml`, a directory of them, or any file.
+    Plugin {
+        #[command(subcommand)]
+        command: signing_cli::SigningCommand,
+    },
+    /// Digest, sign and verify model artifacts — what `[models.trust]`
+    /// checks. PATH is a model manifest, a directory of them, or any file.
+    Model {
+        #[command(subcommand)]
+        command: signing_cli::SigningCommand,
+    },
     /// Probe configured backends for reachability (A6).
     ///
     /// Opens the configured database pool (using the same `storage.url`)
@@ -487,7 +501,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // `fmt` reads files, not a server: no config, no "no config file" note.
     if let Some(Command::Fmt {
@@ -497,6 +511,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }) = &cli.command
     {
         let code = cli::run_fmt(paths, *check, *stdin)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // The signing verbs read artifacts and keys, not a server: `-c` is only
+    // consulted by `verify`, for the trust keys, and nothing else is loaded.
+    let signing = match cli.command.take() {
+        Some(Command::Plugin { command }) => Some((orion::signatures::Kind::Plugin, command)),
+        Some(Command::Model { command }) => Some((orion::signatures::Kind::Model, command)),
+        other => {
+            cli.command = other;
+            None
+        }
+    };
+    if let Some((kind, command)) = signing {
+        let code = signing_cli::run(kind, command, cli.config.as_deref())?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -658,6 +690,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         // Dispatched above, before the config load.
         Some(Command::Fmt { .. }) => unreachable!("fmt returns before config is loaded"),
+        Some(Command::Plugin { .. } | Command::Model { .. }) => {
+            unreachable!("the signing verbs return before config is loaded")
+        }
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
         Some(Command::Package { command }) => {
             return match command {

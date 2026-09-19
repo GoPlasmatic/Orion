@@ -74,6 +74,20 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "crypto.rs",
         &["crate::server::", "crate::engine::", "crate::channel::"],
     ),
+    // The detached-signature convention is read by the signing CLI, the
+    // package verbs and (at boot) the package loader: it names `crypto` and
+    // nothing that serves.
+    (
+        "signatures.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::channel::",
+            "crate::plugin::",
+            "crate::model::",
+            "crate::storage::",
+        ],
+    ),
     // Egress body reading is used by `engine` (http_call, Elasticsearch),
     // `connector` (OAuth2 token endpoints) and `jwt` (JWKS). None of those may
     // reach the others, which is why it is a leaf rather than living in the

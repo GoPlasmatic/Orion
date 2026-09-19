@@ -119,6 +119,7 @@ mod secret_references_test;
 mod secrets_and_vars_test;
 mod security_test;
 mod shutdown_test;
+mod signing_cli_test;
 mod source_form_refusal_test;
 mod sqlite_busy_snapshot_test;
 mod sqlite_upgrade_test;

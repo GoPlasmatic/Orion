@@ -226,6 +226,8 @@
     - [`orion-server preflight`](./reference/cli/orion-server/preflight.md)
     - [`orion-server dump-openapi`](./reference/cli/orion-server/dump-openapi.md)
     - [`orion-server package`](./reference/cli/orion-server/package.md)
+    - [`orion-server plugin`](./reference/cli/orion-server/plugin.md)
+    - [`orion-server model`](./reference/cli/orion-server/model.md)
   - [orion-cli](./reference/cli/orion-cli/index.md)
     - [Global flags](./reference/cli/orion-cli/global-flags.md)
     - [`orion-cli config`](./reference/cli/orion-cli/config.md)

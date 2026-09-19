@@ -1,6 +1,6 @@
 <!-- description: orion-cli plugins uploads, versions, activates, validates and exports WebAssembly plugins, with the signature and component flags an upload takes. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-cli plugins`
 
@@ -27,7 +27,7 @@ already holds those digests.
 |------------|-------------|
 | `list` | List plugins; filter with `--status`, `--tag`. Sorts by `plugin_id`, `status`, `created_at`, `updated_at`. |
 | `get <id>` | Show a plugin with this node's load state; `--verbose` includes the manifest. |
-| `create` | Upload a draft from `-f <plugin.toml>`. `--component <path>` overrides the manifest's `component`; `--signature <path>` supplies the base64 Ed25519 signature a server with `[plugins.trust]` keys requires; `--tag` is repeatable. |
+| `create` | Upload a draft from `-f <plugin.toml>`. `--component <path>` overrides the manifest's `component`; `--signature <path>` supplies the base64 Ed25519 signature a server with `[plugins.trust]` keys requires, as [`orion-server plugin sign`](../orion-server/plugin.md) writes it; `--tag` is repeatable. |
 | `update <id>` | Replace the draft's manifest and component. Same flags; `--tag` replaces the stored tags when given. |
 | `delete <id>` | Delete every version and any component nothing names; prompts unless `--yes`. |
 | `activate <id>` | Activate a draft. `--dry-run` pre-flights; `--defer-reload` batches. Refused when an active dependant no longer satisfies the new version's schema. |

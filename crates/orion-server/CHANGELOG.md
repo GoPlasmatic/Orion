@@ -33,6 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline to the database and Kafka together. A failed migration is never
   retried, and SQLite ignores the flag.
 
+- **`orion-server plugin` and `orion-server model`: `digest`, `keygen`,
+  `pubkey`, `sign` and `verify`** ([#347]). What `[plugins.trust]` and
+  `[models.trust]` check no longer needs a hand-rolled OpenSSL pipeline — the
+  step such a pipeline gets wrong is *what* is signed (the ASCII digest string
+  `sha256:<64 hex>`, not the bytes) and `base64` wrapping the 88-character
+  signature onto two lines. The verbs take a manifest, a directory of
+  manifests or a bare file, sign the component a `plugin.toml` names (or the
+  artifact a model manifest names) and write `<artifact>.sig` beside it or
+  into `-o <dir>` (`--by-id` names files `<id>.sig`). `keygen` writes an
+  unencrypted PKCS#8 PEM, owner-only, in the form `openssl genpkey
+  -algorithm ed25519` writes, so keys and signatures interoperate with the
+  OpenSSL recipe both ways; `sign` also reads the key from
+  `ORION_SIGNING_KEY`. `verify` checks against `--public-key` or the `-c`
+  config's own trust keys, and having no key is an error rather than a false
+  `ok`.
+
 ### Changed
 
 - **`migrate` and `test-connectivity` say what they are waiting for.**
@@ -73,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
+[#347]: https://github.com/GoPlasmatic/Orion/issues/347
 
 ## [1.8.2] - 2026-09-16
 

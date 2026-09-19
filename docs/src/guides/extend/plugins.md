@@ -1,6 +1,6 @@
 <!-- description: Build an Orion plugin: write a pure JSON → JSON function in Rust with the SDK, describe it in a manifest, test it offline, upload it, and promote it. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Build a plugin
 
@@ -10,7 +10,7 @@ The sandbox imports nothing: no filesystem, clock, randomness, sockets, connecto
 
 ## Before you start
 
-You need a Rust toolchain, `wasm-tools`, `orion-server` and `orion-cli`, and a server running with `plugins.enabled = true`. A node whose `[plugins.trust]` names keys also needs a signing key; see [Trust](../../reference/plugin-manifest.md#trust).
+You need a Rust toolchain, `wasm-tools`, `orion-server` and `orion-cli`, and a server running with `plugins.enabled = true`. A node whose `[plugins.trust]` names keys also needs a signing key, which [`orion-server plugin keygen`](../../reference/cli/orion-server/plugin.md) creates; see [Trust](../../reference/plugin-manifest.md#trust).
 
 ## 1. Decide it is a plugin
 

@@ -75,11 +75,12 @@ Paths below are relative to `crates/orion-server/`.
 
 ```
 src/
-├── main.rs              # clap CLI entrypoint; declares the binary-only cli/package_cli modules
+├── main.rs              # clap CLI entrypoint; declares the binary-only cli/package_cli/signing_cli modules
 ├── bootstrap.rs         # Startup sequence: config → pools → repos → engine → HTTP server
 ├── cli.rs               # Diagnostic subcommands: validate-config, migrate, lint, dry-run, test, test-connectivity, dump-openapi
 ├── preflight.rs         # `orion-server preflight` — scans the stored estate for upgrade breaks
 ├── package_cli.rs       # `orion-server package` — export/lint/plan/apply/diff promotion CLI
+├── signing_cli.rs       # `orion-server plugin|model digest|keygen|pubkey|sign|verify` — produce what `[plugins.trust]`/`[models.trust]` verify
 ├── lib.rs               # Public module declarations
 ├── channel/             # Channel registry, config, routing, rate limiting, request guards
 ├── cluster/             # Multi-node coordination: epoch watcher, job leases
@@ -108,6 +109,7 @@ src/
 ├── queue/               # Async trace/audit processing, DLQ retry
 ├── request_context.rs   # Per-request identity in a task-local, read by `errors` and channel error bodies; the middleware that fills it is in server/
 ├── runtime/             # Process-level concerns above engine/channel/kafka/queue: `generation.rs` (`RuntimeGeneration` = engine + channel estate + function registry + plugin set + model set, published as one value through `RuntimeHandle`), `tasks.rs` (the background-task supervisor behind `/readyz`), `reload.rs` (rebuilds that generation + the Kafka consumer), `models.rs` (which channels a model that did not load quarantines, and the `models.preload` warm-up), `model_admission.rs` (the supervised worker draining the admission queue), `handler_deps`
+├── signatures.rs        # The detached `.sig` convention (`<artifact>.sig` / `<id>.sig`, base64 over the digest string) and `SignatureDir`. A leaf beside `crypto`
 ├── server/              # HTTP server, middleware, state
 │   └── routes/          # admin/ (workflows, channels, connectors, plugins, models, cron, packages, functions, engine, audit, backups, trace_dlq), data/
 ├── storage/             # Database abstraction, content hashing, config encryption
@@ -262,4 +264,5 @@ orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 orion-server dump-openapi                 # Print the OpenAPI 3.1 spec
 orion-server package <export|lint|plan|apply|diff>  # Promote a package of channels+workflows+connectors+plugins+models between instances (models travel as a reference, and apply waits for the target to admit each one)
+orion-server plugin sign plugins/ --key signer.pem  # Sign each component's digest for [plugins.trust] (also digest|keygen|pubkey|verify; `model …` for [models.trust])
 ```

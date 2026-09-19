@@ -1,6 +1,6 @@
 <!-- description: The plugin manifest, the WebAssembly component ABI, the limits every invocation runs under, and what a plugin failure looks like. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Plugin manifest and ABI
 
@@ -164,13 +164,22 @@ is a `signature` load issue that quarantines the workflows naming its
 functions. A node with no keys configured checks nothing and stores whatever
 the upload sent.
 
-Signing with OpenSSL, given an Ed25519 private key in `signer.pem`:
+[`orion-server plugin`](./cli/orion-server/plugin.md) produces both halves
+with the server's own digest and signing code:
+
+```bash
+orion-server plugin keygen -o signer.pem          # prints the value for public_keys
+orion-server plugin sign plugin.toml --key signer.pem   # writes plugin.wasm.sig
+orion-cli plugins create -f plugin.toml --signature plugin.wasm.sig
+```
+
+The equivalent OpenSSL pipeline signs the same message with the same
+encodings, so its keys and `.sig` files are interchangeable with the verbs':
 
 ```bash
 digest=$(printf 'sha256:%s' "$(sha256sum plugin.wasm | cut -d' ' -f1)")
-printf '%s' "$digest" | openssl pkeyutl -sign -rawin -inkey signer.pem | base64 -w0 > plugin.sig
+printf '%s' "$digest" | openssl pkeyutl -sign -rawin -inkey signer.pem | base64 -w0 > plugin.wasm.sig
 openssl pkey -in signer.pem -pubout -outform DER | tail -c 32 | base64 -w0   # the value for public_keys
-orion-cli plugins create -f plugin.toml --signature plugin.sig
 ```
 
 `orion-cli plugins create --signature <file>` reads the base64 text from a

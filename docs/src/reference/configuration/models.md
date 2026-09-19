@@ -1,6 +1,6 @@
 <!-- description: The [models] settings: enabling ONNX models, the artifact cache, admission limits, inference ceilings, trust keys, runtimes, devices and overrides. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Model settings
 
@@ -63,7 +63,7 @@ Models are off by default, and turning them on changes nothing until a model is 
 | `models.admission_timeout_secs` | `900` | `ORION_MODELS__ADMISSION_TIMEOUT_SECS` | How long one admission may take end to end. A row still pending after this is marked failed with the stage it was in. |
 | `models.max_concurrency_per_model` | `16` | `ORION_MODELS__MAX_CONCURRENCY_PER_MODEL` | Inferences of one model that may run at once; beyond it a task waits until its deadline and fails as a limit. |
 | `models.max_concurrent_inferences` | `0` | `ORION_MODELS__MAX_CONCURRENT_INFERENCES` | Inferences that may run at once across every model. `0` means the host's available parallelism. |
-| `models.trust.public_keys` | `[]` | `ORION_MODELS__TRUST__PUBLIC_KEYS` | When set, a model row must carry an Ed25519 signature over its artifact digest by one of these keys, verified by the node that admits it. |
+| `models.trust.public_keys` | `[]` | `ORION_MODELS__TRUST__PUBLIC_KEYS` | When set, a model row must carry an Ed25519 signature over its artifact digest by one of these keys, verified by the node that admits it. [`orion-server model keygen`](../cli/orion-server/model.md) prints a new key's value. |
 | `models.default_runtime.onnx` | `"tract"` | — | The runtime a model whose manifest declares `format = "onnx"` runs on. One row per format; see [Runtimes and overrides](#runtimes-and-overrides). The `onnx` row is required: it is the only format a manifest can declare today. |
 | `models.runtimes.tract.enabled` | `true` | — | Whether models may run on tract here. A disabled runtime keeps its entry so a row naming it is refused by name. |
 | `models.runtimes.tract.device` | `"cpu"` | — | The device tract executes on: `cpu`, `metal` or `cuda`. A device the build lacks fails the load with the reason, not the config. Leave it at `cpu` unless you have measured otherwise — see [Devices](./models.md#devices). |
