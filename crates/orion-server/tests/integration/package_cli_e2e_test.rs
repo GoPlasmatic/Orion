@@ -1818,3 +1818,58 @@ async fn prune_refuses_keeps_and_explains() {
         "{stdout}"
     );
 }
+
+/// #345: `[packages] apply` on a real process — `/readyz` turns green only
+/// once the package serves; a tampered artifact makes the process exit
+/// non-zero; `validate-config` names a missing file.
+#[tokio::test]
+async fn a_node_applies_its_configured_packages_at_startup() {
+    let client = reqwest::Client::new();
+    let set = DefinitionSet::new("bootpkg");
+    set.workflow("wf-boot");
+    set.channel("ch-boot", "/boot-e2e", "wf-boot");
+    let artifact = set.compile("1.0.0");
+
+    let node = Server::start_with("boot", &[("ORION_PACKAGES__APPLY", &artifact)]);
+    node.wait_ready(&client).await;
+    let resp = client
+        .post(format!("{}/api/v1/data/boot-e2e", node.url()))
+        .json(&serde_json::json!({"data": {}}))
+        .send()
+        .await
+        .expect("data call");
+    assert_eq!(resp.status(), 200);
+    let (_, ready) = get_json(&client, format!("{}/readyz", node.url())).await;
+    assert_eq!(ready["components"]["packages"], "ok", "{ready}");
+
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact).expect("artifact")).expect("json");
+    doc["package"]["content_hash"] = serde_json::json!("sha256:00");
+    let tampered = set.out.path().join("tampered.json");
+    std::fs::write(&tampered, doc.to_string()).expect("write");
+    let tampered = tampered.to_str().expect("utf8").to_string();
+    let mut bad = Server::start_with("bad-boot", &[("ORION_PACKAGES__APPLY", &tampered)]);
+    let status = {
+        let mut waited = 0;
+        loop {
+            if let Some(status) = bad.child.try_wait().expect("try_wait") {
+                break status;
+            }
+            assert!(waited < 120, "a node whose package failed must exit");
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            waited += 1;
+        }
+    };
+    assert!(!status.success());
+    let log = std::fs::read_to_string(&bad.log).expect("log");
+    assert!(log.contains("failed to apply at startup"), "{log}");
+
+    let out = Command::new(orion_bin())
+        .arg("validate-config")
+        .env("ORION_PACKAGES__APPLY", "/nonexistent/orders.json")
+        .output()
+        .expect("validate-config");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("packages.apply[0]"), "{stderr}");
+}

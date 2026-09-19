@@ -166,6 +166,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   like the status endpoints: the row goes at once and the engine keeps
   serving it until `POST /engine/reload`.
 
+- **`[packages] apply`: a node applies its own packages at startup**
+  ([#345]). An image that carries its definitions no longer needs an
+  entrypoint that forks the server, polls `/readyz`, applies over HTTP and
+  kills the process on failure. The node applies each listed artifact once
+  its first generation is published — through the same sequence as
+  `package apply`, in-process through its own admin routes, with receipts
+  and audit rows naming `system:boot-packages` — and `/readyz` answers
+  `503` (`components.packages: "applying"`) until every one is applied and
+  serving. Any failure — a file that does not exist, hash or lint, a
+  refused import, a member the reload quarantines, or
+  `apply_timeout_secs` (default 1800) — stops the server and exits
+  non-zero. A restart with the same artifact writes nothing; a version a
+  later one superseded is left as it is rather than rolled back; in a
+  cluster one node per package applies while the others wait on its
+  receipt. `signatures_dir` attaches `.sig` files as `--signatures` does.
+  `validate-config` checks every listed file; `/health` lists each package
+  with admin detail.
+
 ### Changed
 
 - **`clippy` may newly fail a set that passed.** The two deny rules above
@@ -257,6 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#342]: https://github.com/GoPlasmatic/Orion/issues/342
 [#343]: https://github.com/GoPlasmatic/Orion/issues/343
 [#344]: https://github.com/GoPlasmatic/Orion/issues/344
+[#345]: https://github.com/GoPlasmatic/Orion/issues/345
 [#346]: https://github.com/GoPlasmatic/Orion/issues/346
 [#347]: https://github.com/GoPlasmatic/Orion/issues/347
 

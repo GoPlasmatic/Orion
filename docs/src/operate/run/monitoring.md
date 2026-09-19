@@ -101,7 +101,7 @@ Three endpoints answer three different questions:
 | Endpoint | Question | Behaviour |
 |----------|----------|-----------|
 | `GET /healthz` | Is the process alive? | Always `200` while the process runs. Liveness probe. |
-| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and, when enabled, cluster Redis answers and Kafka ingestion is not degraded. Readiness probe. |
+| `GET /readyz` | Should it receive traffic? | `200` only when the database is reachable, startup finished, no required background task has died, and, when enabled, cluster Redis answers and Kafka ingestion is not degraded. With `[packages] apply`, also once every configured package serves. Readiness probe. |
 | `GET /health` | What is the state of each part? | Component-level status with degradation detail. |
 
 Wire the first two into your orchestrator:
@@ -121,6 +121,8 @@ readinessProbe:
 > Point monitors at `/health`'s `status` field, not only at its HTTP code. A failing database answers `503` with `"status": "degraded"`. But a failed connector load, a quarantined channel, or a dead Kafka consumer also report `"status": "degraded"` at HTTP 200. The instance still serves traffic, and a `503` would eject a healthy node from its load balancer over a component nothing in flight may even use.
 
 `/health` is deliberately two-tier. Anonymous callers get the coarse component states. Detail fields are served only when admin auth is disabled or the caller presents a valid admin key. Those are `workflows_loaded`, the per-connector circuit-breaker map, failed connector loads and quarantined channel names. A monitor can see *that* something is degraded without learning *what*. Each quarantined channel also carries its `channel_id` and `workflow_id`. Tooling that needs the lists should read [`GET /engine/status`](../../reference/admin-api/engine.md#what-a-generation-could-not-load), which carries the same four under `load_issues` on the admin plane.
+
+`components.packages` appears only when [`[packages] apply`](../../reference/configuration/packages.md) names artifacts. It is `applying` until every one is applied and serving, and `/readyz` answers `503` meanwhile. It then turns `ok` and stays so, because readiness is a startup condition here. `failed` means a package did not apply; the node is on its way out with a non-zero exit. With admin detail, `/health` lists each package under `packages` by file, name, version and state.
 
 `components.cron` appears only when this node has something to say about schedules. That is when the scheduler is on, or when it is off while an active cron channel is quarantined. It is `degraded` when the reconciler has not completed a pass for long enough that occurrences are being missed. It is also `degraded` when the scheduler is off while cron channels are stored active. Both are states in which every liveness signal is green and the declared schedules are not running. Like `config_propagation` it does not fail `/readyz`. The node still serves every request correctly, and removing it from the load balancer would not make a single occurrence run. See [Cron occurrences](../../reference/admin-api/cron-occurrences.md).
 

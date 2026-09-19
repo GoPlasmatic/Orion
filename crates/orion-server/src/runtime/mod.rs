@@ -34,6 +34,7 @@
 //! consumer, and the engine is one of the things it swaps. Here it depends
 //! downward on all of them.
 
+pub mod boot_packages;
 pub mod generation;
 pub mod load_issues;
 pub mod model_admission;

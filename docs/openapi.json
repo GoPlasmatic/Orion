@@ -7294,7 +7294,7 @@
         "tags": [
           "Operational"
         ],
-        "description": "Detailed health report. Always reachable, but when `admin_auth.enabled` is true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, the circuit-breaker map, connector load failures and quarantined channels — names and failure reasons) is included only for requests presenting a valid admin credential; anonymous callers get status, version, uptime and coarse per-component states. Probes should use `/healthz` and `/readyz`.",
+        "description": "Detailed health report. Always reachable, but when `admin_auth.enabled` is true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, the circuit-breaker map, connector load failures and quarantined channels — names and failure reasons, and each `[packages] apply` entry by name, version and state) is included only for requests presenting a valid admin credential; anonymous callers get status, version, uptime and coarse per-component states. Probes should use `/healthz` and `/readyz`.",
         "operationId": "health_check",
         "responses": {
           "200": {
@@ -7413,7 +7413,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -10715,7 +10715,7 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in\ncluster mode."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10), `cluster_redis` in\ncluster mode, and `packages` when `[packages] apply` names artifacts."
           },
           "git_hash": {
             "type": [

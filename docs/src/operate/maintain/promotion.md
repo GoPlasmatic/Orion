@@ -102,6 +102,10 @@ In every case the receipt stays `staged`, which is what makes a corrected re-run
 > [!TIP]
 > A failed apply that you cannot fix at once is not an emergency: nothing is serving the half-applied estate. Leave it staged, fix the artifact, and re-run.
 
+## Apply at startup instead
+
+An image that carries its definitions does not need a deploy step to apply them. Compile the artifact at build time and name it in [`[packages] apply`](../../reference/configuration/packages.md). The node runs this same apply on itself at startup, through its own admin routes, before `/readyz` reports it ready. A restart is a no-op, and a failure exits the process.
+
 ## Retire what a package no longer carries
 
 Removing a channel from the definitions does not remove it from a target, because `apply` only adds and updates. `--prune` removes what the package's current version carried and the new one does not. Preview it with `plan`, then apply it:

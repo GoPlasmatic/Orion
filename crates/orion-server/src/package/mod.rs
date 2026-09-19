@@ -13,6 +13,7 @@
 
 pub mod apply;
 pub mod artifact;
+pub mod boot;
 pub mod lint;
 pub mod prune;
 pub mod sign;

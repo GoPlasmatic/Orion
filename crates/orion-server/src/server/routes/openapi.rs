@@ -944,8 +944,8 @@ pub(crate) struct HealthStatus {
     version: String,
     uptime_seconds: i64,
     /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`,
-    /// plus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in
-    /// cluster mode.
+    /// plus `kafka` when `kafka.enabled` (O10), `cluster_redis` in
+    /// cluster mode, and `packages` when `[packages] apply` names artifacts.
     components: Value,
     /// Build provenance and detail, served only to an admin caller (O9).
     #[serde(skip_serializing_if = "Option::is_none")]

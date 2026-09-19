@@ -1020,33 +1020,51 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Cluster background tasks (epoch watcher). None when disabled.
     orion::cluster::start_cluster_tasks(&state);
 
+    // `[packages] apply`: applied now that everything an apply needs is
+    // running — the audit writer, the model admission worker, the epoch
+    // watcher — and concurrently with serving, so `/healthz` answers during
+    // a long admission while `/readyz` holds at 503 until they serve.
+    let packages = state.packages.clone();
+    tokio::spawn(orion::package::boot::run(state.clone()));
+
     let router = orion::server::build_router(state.clone());
 
     // Optional dedicated metrics listener (O12), bound before the main server
     // starts (see `bootstrap::start_metrics_listener`).
     let metrics_server = bootstrap::start_metrics_listener(&config, &state)?;
 
-    if config.server.tls.enabled {
-        let handle = axum_server::Handle::new();
-        orion::server::serve::serve_tls(
-            config.clone(),
-            ready.clone(),
-            router,
-            handle,
-            orion::server::shutdown_signal(),
-        )
-        .await?;
-    } else {
-        let addr = format!("{}:{}", config.server.host, config.server.port);
-        let listener = orion::server::serve::create_tcp_listener(&addr)?;
-        orion::server::serve::serve_plain_http(
-            listener,
-            config.clone(),
-            ready.clone(),
-            router,
-            orion::server::shutdown_signal(),
-        )
-        .await?;
+    let serve = async {
+        if config.server.tls.enabled {
+            let handle = axum_server::Handle::new();
+            orion::server::serve::serve_tls(
+                config.clone(),
+                ready.clone(),
+                router,
+                handle,
+                orion::server::shutdown_signal(),
+            )
+            .await
+        } else {
+            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let listener = orion::server::serve::create_tcp_listener(&addr)?;
+            orion::server::serve::serve_plain_http(
+                listener,
+                config.clone(),
+                ready.clone(),
+                router,
+                orion::server::shutdown_signal(),
+            )
+            .await
+        }
+    };
+    tokio::select! {
+        served = serve => served?,
+        // A package that failed to apply: the node was never ready, so no
+        // load balancer routes here and the drain grace would only delay the
+        // restart. Stop serving at once and shut the rest down cleanly.
+        () = packages.failed() => {
+            ready.store(false, std::sync::atomic::Ordering::Release);
+        }
     }
 
     bootstrap::join_metrics_listener(metrics_server).await;
@@ -1080,6 +1098,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = provider.shutdown() {
             tracing::warn!(error = %e, "Error shutting down OTel tracer provider");
         }
+    }
+
+    // The exit status an orchestrator restarts on.
+    if let Some(failure) = packages.failure() {
+        return Err(failure.into());
     }
 
     tracing::info!("Orion shut down cleanly");

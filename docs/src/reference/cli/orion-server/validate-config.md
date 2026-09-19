@@ -31,6 +31,14 @@ $ orion-server -c config.toml validate-config
 Error: Configuration error: ORION_STATE_DB_URL is required: set it to the state database (config.toml:12:7)
 ```
 
+With `[packages] apply`, each artifact must also exist, match its hash and lint clean, and the command names the entry that does not:
+
+```console
+$ ORION_PACKAGES__APPLY=/pkg/orders.json orion-server validate-config
+error: packages.apply[0] '/pkg/orders.json': read '/pkg/orders.json': No such file or directory (os error 2)
+Error: 1 problem(s) with the [packages] artifacts
+```
+
 ## Related
 
 - [Server configuration](../../configuration/index.md): every setting, its default and its `ORION_*` override.

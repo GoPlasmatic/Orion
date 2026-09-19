@@ -21,6 +21,7 @@ Every setting Orion has, with its real default and its environment variable, one
 | Audit retention | [Audit log settings](./audit.md) |
 | Query safety bounds | [Query and write bounds](./query.md) |
 | Scheduled (cron) channels | [Cron scheduler settings](./cron.md) |
+| Packages a node applies to itself at startup | [Package settings](./packages.md) |
 | Kafka ingestion and broker auth | [Kafka settings](./kafka.md) |
 | Custom task functions in WebAssembly | [Plugin settings](./plugins.md) |
 | ONNX models and the artifact cache | [Model settings](./models.md) |

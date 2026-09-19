@@ -26,6 +26,19 @@ pub(crate) fn handle_validate_config(
     config: &config::AppConfig,
     format: ConfigFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The shape of `[packages]` was checked with the rest; its files only
+    // here and at startup, where they are about to be used.
+    let problems = orion::package::boot::check_files(&config.packages);
+    if !problems.is_empty() {
+        for (_, problem) in &problems {
+            eprintln!("error: {problem}");
+        }
+        return Err(format!(
+            "{} problem(s) with the [packages] artifacts",
+            problems.len()
+        )
+        .into());
+    }
     match format {
         ConfigFormat::Summary => print_config_summary(config),
         ConfigFormat::Toml => {

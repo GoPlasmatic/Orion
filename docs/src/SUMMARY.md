@@ -186,6 +186,7 @@
     - [Server settings](./reference/configuration/server.md)
     - [Storage settings](./reference/configuration/storage.md)
     - [Cluster settings](./reference/configuration/cluster.md)
+    - [Package settings](./reference/configuration/packages.md)
   - [Runtime settings](./reference/configuration/runtime.md)
     - [Engine settings](./reference/configuration/engine.md)
     - [Ingest settings](./reference/configuration/ingest.md)

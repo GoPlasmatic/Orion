@@ -57,6 +57,8 @@ environment:
   ORION_ENVIRONMENT: "production"
 ```
 
+An image that carries its own definitions names the compiled artifact in `ORION_PACKAGES__APPLY`. The container applies it at startup and reports ready once it serves. See [Package settings](../../reference/configuration/packages.md).
+
 A name that is not a real setting is refused at startup with the nearest match, rather than silently ignored. A typo costs you a boot rather than a week. Mount a TOML file and pass `-c` if you prefer files; the environment still overrides it.
 
 ## Give the container time to drain

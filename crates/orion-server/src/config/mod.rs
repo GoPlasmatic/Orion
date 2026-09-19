@@ -10,6 +10,7 @@ mod logging;
 mod models;
 mod oauth2_login;
 mod observability;
+mod packages;
 mod plugins;
 mod query;
 mod rate_limit;
@@ -37,6 +38,7 @@ pub use oauth2_login::OAuth2LoginConfig;
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };
+pub use packages::PackagesConfig;
 pub use plugins::{PluginOverride, PluginTrustConfig, PluginsConfig};
 pub use query::QueryConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
@@ -107,6 +109,9 @@ pub struct AppConfig {
     /// The ONNX model runtime, its artifact cache and its ceilings. Off by
     /// default.
     pub models: ModelsConfig,
+    /// Package artifacts this node applies at startup, before `/readyz`
+    /// turns green. None by default.
+    pub packages: PackagesConfig,
 }
 
 fn default_environment() -> String {
@@ -142,6 +147,7 @@ impl Default for AppConfig {
             secrets: SecretsConfig::default(),
             plugins: PluginsConfig::default(),
             models: ModelsConfig::default(),
+            packages: PackagesConfig::default(),
         }
     }
 }

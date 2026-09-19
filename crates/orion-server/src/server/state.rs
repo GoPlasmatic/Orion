@@ -179,6 +179,10 @@ pub struct AppStateInner {
     /// `models.enabled`. `None` makes every model route answer that models
     /// are disabled on this node, and a stored active model a load issue.
     pub models: Option<Arc<crate::model::ModelsRuntime>>,
+    /// What `[packages] apply` has done so far on this node: written by the
+    /// startup apply, read by `/readyz` (which answers `503` until every
+    /// package is serving) and `/health`. Empty when none is configured.
+    pub packages: Arc<crate::runtime::boot_packages::BootPackages>,
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::auth::FailedAuthTracker>,

@@ -211,6 +211,7 @@ Startup refusals are deliberate. Each one is a problem that would otherwise be s
 | `auto_migrate` in a production cluster | Replicas would race migrations at boot | Set `auto_migrate = false`, run `orion-server migrate` as a deploy step |
 | A pending migration | The binary is ahead of the schema | Run `orion-server migrate` |
 | Missing admin keys | `environment = "production"` with `admin_auth` unset | Supply keys, or do not claim production |
+| `failed to apply at startup` | A `[packages] apply` artifact is missing, fails its hash or lint, is refused, or does not serve | The message names the entry and the cause. Run `package plan` against a running node to see the same refusal |
 
 **How to verify.** `orion-server validate-config -c config.toml` reports all of these without starting the server, and `orion-server test-connectivity` proves the database and brokers are reachable before you find out the hard way.
 
