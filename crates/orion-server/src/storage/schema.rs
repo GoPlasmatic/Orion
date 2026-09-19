@@ -182,6 +182,8 @@ pub enum CronOccurrences {
     ClaimedUntil,
     SingletonKey,
     FencingToken,
+    /// The slot of `singleton_key` the attempt held; NULL under `allow`.
+    SingletonSlot,
     TraceId,
     ErrorMessage,
     StartedAt,
@@ -200,6 +202,19 @@ pub enum CronSingletons {
     FencingToken,
     LeaseUntil,
     UpdatedAt,
+}
+
+/// Slots `1..N` of a singleton key with `concurrency.slots > 1`. Slot 0 is
+/// the `cron_singletons` row.
+#[derive(Iden, Clone, Copy)]
+pub enum CronSingletonSlots {
+    Table,
+    SingletonKey,
+    Slot,
+    OccurrenceId,
+    Holder,
+    FencingToken,
+    LeaseUntil,
 }
 
 // ============================================================
@@ -490,6 +505,30 @@ mod tests {
                 "holder",
                 "fencing_token",
                 "lease_until",
+            ]
+        );
+
+        assert_eq!(
+            [
+                Iden::to_string(&CronSingletonSlots::Table),
+                Iden::to_string(&CronSingletonSlots::SingletonKey),
+                Iden::to_string(&CronSingletonSlots::Slot),
+                Iden::to_string(&CronSingletonSlots::OccurrenceId),
+                Iden::to_string(&CronSingletonSlots::Holder),
+                Iden::to_string(&CronSingletonSlots::FencingToken),
+                Iden::to_string(&CronSingletonSlots::LeaseUntil),
+                Iden::to_string(&CronOccurrences::SingletonSlot),
+            ]
+            .to_vec(),
+            [
+                "cron_singleton_slots",
+                "singleton_key",
+                "slot",
+                "occurrence_id",
+                "holder",
+                "fencing_token",
+                "lease_until",
+                "singleton_slot",
             ]
         );
 

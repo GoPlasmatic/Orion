@@ -241,6 +241,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validate-config` checks every listed file; `/health` lists each package
   with admin detail.
 
+- **Bounded concurrency for cron channels: `concurrency.slots`** ([#336]).
+  `"concurrency": {"policy": "forbid", "key": "worker", "slots": 4}` admits
+  up to four runs of the key at once, where `forbid` used to mean exactly
+  one — so a queue-draining worker no longer needs N cloned channels that
+  differ only in their key. The default, `1`, is today's `forbid`. A run
+  takes the lowest free slot (`0..slots`), holds it for the attempt and
+  reads it as `metadata.trigger.singleton_slot`; the occurrence records it
+  as `singleton_slot`, and a skip says `all 4 slots of singleton key
+  'worker' were held …`. Channels naming one key share its slots, each run
+  admitted only below its own channel's bound; `lint` warns
+  (`cron.slots_mismatch`) when they disagree. `slots` is 1–64 and refused
+  without `forbid`. `GET /cron/status` gains `concurrency_policy`,
+  `singleton_key`, `slots` and `slots_held`, and `orion-cli cron status` a
+  `Slots` column. Slot 0 is the existing `cron_singletons` row, addressed
+  as before, so a one-slot key behaves identically in any mix of versions;
+  slots 1 and up are a new table (migration `cron_singleton_slots`,
+  expand-only). **Upgrade every node before activating a channel that sets
+  `slots`**: an older node refuses the field and quarantines the channel.
+  To roll back, remove `slots` first.
+
 ### Changed
 
 - **A fragment may include a fragment** ([#333]). `shared.fragment_nested`
@@ -334,6 +354,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [#333]: https://github.com/GoPlasmatic/Orion/issues/333
 [#334]: https://github.com/GoPlasmatic/Orion/issues/334
 [#335]: https://github.com/GoPlasmatic/Orion/issues/335
+[#336]: https://github.com/GoPlasmatic/Orion/issues/336
 [#337]: https://github.com/GoPlasmatic/Orion/issues/337
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339

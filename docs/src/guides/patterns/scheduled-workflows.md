@@ -1,6 +1,6 @@
 <!-- description: Run a workflow on a schedule with a cron channel — the six-field expression, time zones and DST, misfire policies, non-overlapping runs, and seeing what ran. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-20 -->
 
 # Run work on a schedule
 
@@ -94,6 +94,21 @@ The key defaults to the channel's id. Naming the same key on several channels se
 ```json
 { "concurrency": { "policy": "forbid", "key": "order-pipeline" } }
 ```
+
+### Run a bounded number at once
+
+A queue-draining worker wants more than one run but fewer than unbounded. Give the key `slots`:
+
+```json
+{ "concurrency": { "policy": "forbid", "key": "invoice-worker", "slots": 4 } }
+```
+
+At most four runs of `invoice-worker` are admitted at a time, and a fifth is recorded `skipped_singleton`. Each run holds one slot, numbered `0` to `3`, and reads it as `metadata.trigger.singleton_slot`. A workflow can use it to take its own share of the queue, which is what a set of cloned "lane" channels did before. One channel replaces them.
+
+`orion-cli cron status` shows the slots held as `held/slots`. On SQLite the bound is per node. Nodes sharing PostgreSQL or MySQL share it across the cluster.
+
+> [!WARNING]
+> Upgrade every node before activating a channel that sets `slots`. An older node refuses the unknown field and quarantines the channel. Any occurrence of it that the node claims fails as `channel_unavailable`. To roll back, remove `slots` first.
 
 > [!NOTE]
 > Non-overlap is not exactly once. A worker that loses its lease cancels, but it cannot recall a connector call already in flight. Scheduled work that must not be applied twice needs an idempotent destination or an idempotency key. `metadata.trigger.scheduled_for` is a good one, because every attempt at an occurrence agrees on it.

@@ -290,7 +290,21 @@ pub async fn wait_for_body<F>(app: &axum::Router, uri: &str, pred: F) -> serde_j
 where
     F: Fn(&serde_json::Value) -> bool,
 {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    wait_for_body_within(app, uri, std::time::Duration::from_secs(5), pred).await
+}
+
+/// [`wait_for_body`] with a deadline of the caller's choosing, for a
+/// condition that takes several scheduled runs to become true.
+pub async fn wait_for_body_within<F>(
+    app: &axum::Router,
+    uri: &str,
+    within: std::time::Duration,
+    pred: F,
+) -> serde_json::Value
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + within;
     loop {
         let resp = app
             .clone()
@@ -303,7 +317,7 @@ where
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "condition on {uri} not met within 5s; last body: {body}"
+            "condition on {uri} not met within {within:?}; last body: {body}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }

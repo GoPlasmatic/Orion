@@ -777,6 +777,12 @@ pub struct CronOccurrenceResponse {
     /// own writes rather than a downstream side effect.
     #[serde(default)]
     pub fencing_token: Option<i64>,
+    /// Which of the key's `concurrency.slots` this attempt holds, from `0`.
+    /// Two occurrences of one key can share a fencing token when they hold
+    /// different slots, so the pair is what names a hold. `null` under
+    /// `allow`.
+    #[serde(default)]
+    pub singleton_slot: Option<i64>,
     /// The trace this attempt wrote, readable at
     /// `GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace
     /// storage dropped the row — the occurrence is kept either way, because it
@@ -843,6 +849,21 @@ pub struct CronScheduleStatusResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub pending: i64,
+    /// `allow` or `forbid`.
+    #[serde(default)]
+    pub concurrency_policy: String,
+    /// The lock this channel's runs take. Present under `forbid`.
+    #[serde(default)]
+    pub singleton_key: Option<String>,
+    /// How many runs of `singleton_key` this channel admits at once. Present
+    /// under `forbid`.
+    #[serde(default)]
+    pub slots: Option<u32>,
+    /// Live leases on `singleton_key` right now, across every channel that
+    /// shares the key — so it can exceed this channel's `slots` when another
+    /// channel declares more, or just after `slots` was lowered.
+    #[serde(default)]
+    pub slots_held: Option<u32>,
 }
 
 /// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).

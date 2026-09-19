@@ -58,6 +58,7 @@ impl From<&CronOccurrence> for CronOccurrenceResponse {
             claimed_until: row.claimed_until,
             singleton_key: row.singleton_key.clone(),
             fencing_token: row.fencing_token,
+            singleton_slot: row.singleton_slot,
             trace_id: row.trace_id.clone(),
             error_message: row.error_message.clone(),
             started_at: row.started_at,

@@ -8321,6 +8321,14 @@
               "null"
             ]
           },
+          "singleton_slot": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Which of the key's `concurrency.slots` this attempt holds, from `0`.\nTwo occurrences of one key can share a fencing token when they hold\ndifferent slots, so the pair is what names a hold. `null` under\n`allow`."
+          },
           "started_at": {
             "type": [
               "string",
@@ -8428,6 +8436,10 @@
           "channel_name": {
             "type": "string"
           },
+          "concurrency_policy": {
+            "type": "string",
+            "description": "`allow` or `forbid`."
+          },
           "last_completed_at": {
             "type": [
               "string",
@@ -8473,6 +8485,31 @@
           "schedule": {
             "type": "string",
             "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+          },
+          "singleton_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The lock this channel's runs take. Present under `forbid`."
+          },
+          "slots": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many runs of `singleton_key` this channel admits at once. Present\nunder `forbid`.",
+            "minimum": 0
+          },
+          "slots_held": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Live leases on `singleton_key` right now, across every channel that\nshares the key — so it can exceed this channel's `slots` when another\nchannel declares more, or just after `slots` was lowered.",
+            "minimum": 0
           },
           "timezone": {
             "type": "string"
@@ -8843,6 +8880,14 @@
                   "string",
                   "null"
                 ]
+              },
+              "singleton_slot": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "Which of the key's `concurrency.slots` this attempt holds, from `0`.\nTwo occurrences of one key can share a fencing token when they hold\ndifferent slots, so the pair is what names a hold. `null` under\n`allow`."
               },
               "started_at": {
                 "type": [
@@ -9831,6 +9876,10 @@
                 "channel_name": {
                   "type": "string"
                 },
+                "concurrency_policy": {
+                  "type": "string",
+                  "description": "`allow` or `forbid`."
+                },
                 "last_completed_at": {
                   "type": [
                     "string",
@@ -9876,6 +9925,31 @@
                 "schedule": {
                   "type": "string",
                   "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+                },
+                "singleton_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The lock this channel's runs take. Present under `forbid`."
+                },
+                "slots": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "How many runs of `singleton_key` this channel admits at once. Present\nunder `forbid`.",
+                  "minimum": 0
+                },
+                "slots_held": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "Live leases on `singleton_key` right now, across every channel that\nshares the key — so it can exceed this channel's `slots` when another\nchannel declares more, or just after `slots` was lowered.",
+                  "minimum": 0
                 },
                 "timezone": {
                   "type": "string"

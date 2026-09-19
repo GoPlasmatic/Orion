@@ -25,13 +25,15 @@
 
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use sea_query::{Asterisk, Condition, Expr, ExprTrait, Query, SimpleExpr};
+use sea_query::{Asterisk, Condition, Expr, ExprTrait, IntoIden, Query, SimpleExpr};
 
 use super::helpers::{self, Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
 use crate::storage::build_sqlx;
 use crate::storage::models::{CronOccurrence, CronScheduleState};
-use crate::storage::schema::{CronOccurrences, CronScheduleState as ScheduleState, CronSingletons};
+use crate::storage::schema::{
+    CronOccurrences, CronScheduleState as ScheduleState, CronSingletonSlots, CronSingletons,
+};
 use crate::storage::{DbBackend, DbPool};
 
 // ============================================================
@@ -126,16 +128,28 @@ pub struct SingletonRequest<'a> {
     pub key: &'a str,
     pub holder: &'a str,
     pub lease_secs: u64,
+    /// How many occurrences of `key` this channel may run at once: the
+    /// attempt may hold any slot below this, lowest free first.
+    pub slots: u32,
+}
+
+/// The slot of a singleton key an attempt holds, and the token it holds it
+/// under. Slot 0 is the `cron_singletons` row; the rest are
+/// `cron_singleton_slots` rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldSlot {
+    pub slot: u32,
+    pub fencing_token: i64,
 }
 
 /// What [`CronRepository::start_attempt`] decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptStart {
-    /// The occurrence is `running`. Under `forbid`, the singleton is held under
-    /// this token; under `allow` the token is `None` and no row was taken.
-    Started { fencing_token: Option<i64> },
-    /// The singleton key is held by a live lease belonging to another
-    /// occurrence. The caller applies the channel's policy.
+    /// The occurrence is `running`. Under `forbid`, it holds this slot of its
+    /// singleton key; under `allow` nothing is held and no row was taken.
+    Started { held: Option<HeldSlot> },
+    /// Every slot the channel may use is held by a live lease belonging to
+    /// another occurrence. The caller applies the channel's policy.
     SingletonBusy,
     /// The occurrence was not in the state the caller claimed it in — another
     /// node took it over after its lease expired, or an operator retried it.
@@ -247,7 +261,7 @@ pub trait CronRepository: Send + Sync {
         &self,
         occurrence_id: &str,
         claimant: &str,
-        fencing_token: Option<i64>,
+        held: Option<HeldSlot>,
         lease_secs: u64,
     ) -> Result<bool, OrionError>;
 
@@ -266,14 +280,21 @@ pub trait CronRepository: Send + Sync {
     /// worth of progress — used when a guard defers rather than refuses.
     async fn release_claim(&self, occurrence_id: &str, claimant: &str) -> Result<bool, OrionError>;
 
-    /// Drop a singleton row, but only if this occurrence still holds it under
-    /// this token.
+    /// Drop a singleton slot, but only if this occurrence still holds it
+    /// under this token.
     async fn release_singleton(
         &self,
         key: &str,
         occurrence_id: &str,
-        fencing_token: i64,
+        held: HeldSlot,
     ) -> Result<bool, OrionError>;
+
+    /// Live leases per singleton key, across slot 0 and the extra slots —
+    /// what `GET /cron/status` reports as held.
+    async fn singleton_holds(
+        &self,
+        keys: &[&str],
+    ) -> Result<std::collections::HashMap<String, u32>, OrionError>;
 
     /// Attach the trace this attempt wrote.
     async fn set_trace_id(&self, occurrence_id: &str, trace_id: &str) -> Result<(), OrionError>;
@@ -682,91 +703,55 @@ impl CronRepository for SqlCronRepository {
                 .await
                 .map_err(OrionError::Storage)?;
 
-            let mut fencing_token = None;
+            let mut held = None;
             if let Some(singleton) = singleton.as_ref() {
-                // Take the key: renew our own, or take over one whose lease has
-                // expired. `fencing_token + 1` on every acquisition, so a
-                // superseded holder's conditional writes match nothing.
-                let (sql, values) = build_sqlx(
-                    backend,
-                    Query::update()
-                        .table(CronSingletons::Table)
-                        .value(CronSingletons::OccurrenceId, occurrence.id.as_str())
-                        .value(CronSingletons::Holder, singleton.holder)
-                        .value(
-                            CronSingletons::FencingToken,
-                            Expr::col(CronSingletons::FencingToken).add(1),
-                        )
-                        .value(CronSingletons::LeaseUntil, Expr::cust(lease_until.clone()))
-                        .cond_where(
-                            Condition::all()
-                                .add(Expr::col(CronSingletons::SingletonKey).eq(singleton.key))
-                                // Ours to renew, or nobody's because the lease
-                                // ran out. Anything else is a live holder and
-                                // this matches nothing.
-                                .add(
-                                    Condition::any()
-                                        .add(
-                                            Expr::col(CronSingletons::OccurrenceId)
-                                                .eq(occurrence.id.as_str()),
-                                        )
-                                        .add(
-                                            Expr::col(CronSingletons::LeaseUntil)
-                                                .lt(Expr::cust(now)),
-                                        ),
-                                ),
-                        ),
-                );
-                let took = tx.execute_query(&sql, values).await? > 0;
-
-                if !took {
-                    // Either no row exists (the key is free) or a live lease
-                    // holds it. Insert-if-absent settles which, without a read.
-                    let insert = Query::insert()
-                        .into_table(CronSingletons::Table)
-                        .columns([
-                            CronSingletons::SingletonKey,
-                            CronSingletons::OccurrenceId,
-                            CronSingletons::Holder,
-                            CronSingletons::FencingToken,
-                            CronSingletons::LeaseUntil,
-                        ])
-                        .values_panic([
-                            singleton.key.into(),
-                            occurrence.id.as_str().into(),
-                            singleton.holder.into(),
-                            1i64.into(),
-                            Expr::cust(lease_until.clone()),
-                        ])
-                        .to_owned();
-                    let inserted = helpers::insert_if_absent_tx(
+                // One occurrence holds at most one slot. A re-started attempt
+                // of the same occurrence — its node died after this
+                // transaction committed and a peer re-claimed it while the
+                // dead node's lease is still live — re-takes the slot it
+                // already holds, fencing the dead holder, rather than a
+                // second one. With one slot there is nothing else to take,
+                // and the statements stay exactly those of a single lock.
+                let own = if singleton.slots > 1 {
+                    own_slot(&mut tx, backend, singleton.key, &occurrence.id).await?
+                } else {
+                    None
+                };
+                let candidates: Vec<u32> = match own {
+                    Some(slot) => vec![slot],
+                    None => (0..Ord::max(singleton.slots, 1)).collect(),
+                };
+                // Ascending, always: on MySQL an UPDATE that examined a row
+                // keeps its record lock to the end of the transaction even
+                // when the predicate failed, so every transaction taking
+                // slots in one order is what rules out a lock cycle. Never
+                // start from a random slot for "fairness".
+                for slot in candidates {
+                    if let Some(fencing_token) = take_slot(
                         &mut tx,
-                        insert,
-                        [CronSingletons::SingletonKey],
+                        backend,
+                        SlotRow::of(singleton.key, slot),
+                        &occurrence.id,
+                        singleton.holder,
+                        &lease_until,
+                        now,
                     )
-                    .await?;
-                    if inserted == 0 {
-                        // A live lease. Nothing was written; roll back so the
-                        // occurrence keeps its claim for the caller to settle.
-                        drop(tx);
-                        return Ok(AttemptStart::SingletonBusy);
+                    .await?
+                    {
+                        held = Some(HeldSlot {
+                            slot,
+                            fencing_token,
+                        });
+                        break;
                     }
                 }
-
-                // Read back the token we now hold. One extra statement inside
-                // the transaction, and it is what the heartbeat and the release
-                // are checked against for the rest of the attempt.
-                let (sql, values) = build_sqlx(
-                    backend,
-                    Query::select()
-                        .column(CronSingletons::FencingToken)
-                        .from(CronSingletons::Table)
-                        .and_where(Expr::col(CronSingletons::SingletonKey).eq(singleton.key)),
-                );
-                fencing_token = tx
-                    .fetch_optional_as::<FencingTokenRow>(&sql, values)
-                    .await?
-                    .map(|row| row.fencing_token);
+                if held.is_none() {
+                    // Live leases on every slot. Nothing was written; roll
+                    // back so the occurrence keeps its claim for the caller
+                    // to settle.
+                    drop(tx);
+                    return Ok(AttemptStart::SingletonBusy);
+                }
             }
 
             // …and move the occurrence to `running` in the same transaction.
@@ -789,8 +774,9 @@ impl CronRepository for SqlCronRepository {
             if let Some(singleton) = singleton.as_ref() {
                 update.value(CronOccurrences::SingletonKey, singleton.key);
             }
-            if let Some(token) = fencing_token {
-                update.value(CronOccurrences::FencingToken, token);
+            if let Some(held) = held {
+                update.value(CronOccurrences::FencingToken, held.fencing_token);
+                update.value(CronOccurrences::SingletonSlot, i64::from(held.slot));
             }
             let (sql, values) = build_sqlx(backend, &mut update);
             let started = tx.execute_query(&sql, values).await? > 0;
@@ -799,7 +785,7 @@ impl CronRepository for SqlCronRepository {
                 return Ok(AttemptStart::Lost);
             }
             tx.commit().await.map_err(OrionError::Storage)?;
-            Ok(AttemptStart::Started { fencing_token })
+            Ok(AttemptStart::Started { held })
         })
         .await
     }
@@ -808,7 +794,7 @@ impl CronRepository for SqlCronRepository {
         &self,
         occurrence_id: &str,
         claimant: &str,
-        fencing_token: Option<i64>,
+        held: Option<HeldSlot>,
         lease_secs: u64,
     ) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("cron.renew", async {
@@ -830,21 +816,31 @@ impl CronRepository for SqlCronRepository {
             if self.pool.execute_query(&sql, values).await? == 0 {
                 return Ok(false);
             }
-            let Some(token) = fencing_token else {
+            let Some(held) = held else {
                 return Ok(true);
             };
             // The singleton half. Conditional on the occurrence *and* the token,
             // so a holder superseded after a lease expiry cannot keep renewing
             // a key it no longer owns.
-            let (sql, values) = build_sqlx(
-                backend,
+            let mut update = if held.slot == 0 {
                 Query::update()
                     .table(CronSingletons::Table)
                     .value(CronSingletons::LeaseUntil, Expr::cust(lease_until))
                     .and_where(Expr::col(CronSingletons::OccurrenceId).eq(occurrence_id))
                     .and_where(Expr::col(CronSingletons::Holder).eq(claimant))
-                    .and_where(Expr::col(CronSingletons::FencingToken).eq(token)),
-            );
+                    .and_where(Expr::col(CronSingletons::FencingToken).eq(held.fencing_token))
+                    .to_owned()
+            } else {
+                Query::update()
+                    .table(CronSingletonSlots::Table)
+                    .value(CronSingletonSlots::LeaseUntil, Expr::cust(lease_until))
+                    .and_where(Expr::col(CronSingletonSlots::Slot).eq(i64::from(held.slot)))
+                    .and_where(Expr::col(CronSingletonSlots::OccurrenceId).eq(occurrence_id))
+                    .and_where(Expr::col(CronSingletonSlots::Holder).eq(claimant))
+                    .and_where(Expr::col(CronSingletonSlots::FencingToken).eq(held.fencing_token))
+                    .to_owned()
+            };
+            let (sql, values) = build_sqlx(backend, &mut update);
             Ok(self.pool.execute_query(&sql, values).await? > 0)
         })
         .await
@@ -912,21 +908,68 @@ impl CronRepository for SqlCronRepository {
         &self,
         key: &str,
         occurrence_id: &str,
-        fencing_token: i64,
+        held: HeldSlot,
     ) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("cron.release_singleton", async {
-            // Conditional on all three, which is what stops a slow holder that
-            // has already been superseded from deleting the *new* holder's row
-            // and letting a third occurrence in alongside it.
-            let (sql, values) = build_sqlx(
-                self.pool.backend(),
+            // Conditional on all of them, which is what stops a slow holder
+            // that has already been superseded from deleting the *new*
+            // holder's row and letting another occurrence in alongside it.
+            let mut delete = if held.slot == 0 {
                 Query::delete()
                     .from_table(CronSingletons::Table)
                     .and_where(Expr::col(CronSingletons::SingletonKey).eq(key))
                     .and_where(Expr::col(CronSingletons::OccurrenceId).eq(occurrence_id))
-                    .and_where(Expr::col(CronSingletons::FencingToken).eq(fencing_token)),
-            );
+                    .and_where(Expr::col(CronSingletons::FencingToken).eq(held.fencing_token))
+                    .to_owned()
+            } else {
+                Query::delete()
+                    .from_table(CronSingletonSlots::Table)
+                    .and_where(Expr::col(CronSingletonSlots::SingletonKey).eq(key))
+                    .and_where(Expr::col(CronSingletonSlots::Slot).eq(i64::from(held.slot)))
+                    .and_where(Expr::col(CronSingletonSlots::OccurrenceId).eq(occurrence_id))
+                    .and_where(Expr::col(CronSingletonSlots::FencingToken).eq(held.fencing_token))
+                    .to_owned()
+            };
+            let (sql, values) = build_sqlx(self.pool.backend(), &mut delete);
             Ok(self.pool.execute_query(&sql, values).await? > 0)
+        })
+        .await
+    }
+
+    async fn singleton_holds(
+        &self,
+        keys: &[&str],
+    ) -> Result<std::collections::HashMap<String, u32>, OrionError> {
+        crate::metrics::timed_db_op("cron.singleton_holds", async {
+            let mut out = std::collections::HashMap::new();
+            if keys.is_empty() {
+                return Ok(out);
+            }
+            let backend = self.pool.backend();
+            let now = helpers::sql_now(backend);
+            let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+            let (sql, values) = build_sqlx(
+                backend,
+                Query::select()
+                    .column(CronSingletons::SingletonKey)
+                    .from(CronSingletons::Table)
+                    .and_where(Expr::col(CronSingletons::SingletonKey).is_in(keys.clone()))
+                    .and_where(Expr::col(CronSingletons::LeaseUntil).gte(Expr::cust(now))),
+            );
+            let legacy: Vec<(String,)> = self.pool.fetch_all_as(&sql, values).await?;
+            let (sql, values) = build_sqlx(
+                backend,
+                Query::select()
+                    .column(CronSingletonSlots::SingletonKey)
+                    .from(CronSingletonSlots::Table)
+                    .and_where(Expr::col(CronSingletonSlots::SingletonKey).is_in(keys))
+                    .and_where(Expr::col(CronSingletonSlots::LeaseUntil).gte(Expr::cust(now))),
+            );
+            let extra: Vec<(String,)> = self.pool.fetch_all_as(&sql, values).await?;
+            for (key,) in legacy.into_iter().chain(extra) {
+                *out.entry(key).or_insert(0) += 1;
+            }
+            Ok(out)
         })
         .await
     }
@@ -993,6 +1036,7 @@ impl CronRepository for SqlCronRepository {
                     .value(CronOccurrences::ClaimedUntil, Option::<NaiveDateTime>::None)
                     .value(CronOccurrences::SingletonKey, Option::<String>::None)
                     .value(CronOccurrences::FencingToken, Option::<i64>::None)
+                    .value(CronOccurrences::SingletonSlot, Option::<i64>::None)
                     .value(CronOccurrences::CompletedAt, Option::<NaiveDateTime>::None)
                     .value(CronOccurrences::ErrorMessage, Option::<String>::None)
                     .and_where(Expr::col(CronOccurrences::Id).eq(id))
@@ -1141,6 +1185,202 @@ impl CronRepository for SqlCronRepository {
 #[derive(sqlx::FromRow)]
 struct FencingTokenRow {
     fencing_token: i64,
+}
+
+/// One slot of a singleton key.
+#[derive(Clone, Copy)]
+enum SlotRow<'a> {
+    /// Slot 0: the `cron_singletons` row, addressed exactly as before slots
+    /// existed, so an older binary contends for it with the same statements.
+    Legacy { key: &'a str },
+    /// Slot 1 and up: a `cron_singleton_slots` row.
+    Extra { key: &'a str, slot: u32 },
+}
+
+impl<'a> SlotRow<'a> {
+    fn of(key: &'a str, slot: u32) -> Self {
+        if slot == 0 {
+            Self::Legacy { key }
+        } else {
+            Self::Extra { key, slot }
+        }
+    }
+}
+
+/// The slot `occurrence_id` already holds on `key`, if any.
+async fn own_slot(
+    tx: &mut crate::storage::DbTransaction,
+    backend: crate::storage::DbBackend,
+    key: &str,
+    occurrence_id: &str,
+) -> Result<Option<u32>, OrionError> {
+    let (sql, values) = build_sqlx(
+        backend,
+        Query::select()
+            .column(CronSingletons::SingletonKey)
+            .from(CronSingletons::Table)
+            .and_where(Expr::col(CronSingletons::SingletonKey).eq(key))
+            .and_where(Expr::col(CronSingletons::OccurrenceId).eq(occurrence_id)),
+    );
+    if tx
+        .fetch_optional_as::<(String,)>(&sql, values)
+        .await?
+        .is_some()
+    {
+        return Ok(Some(0));
+    }
+    let (sql, values) = build_sqlx(
+        backend,
+        Query::select()
+            .column(CronSingletonSlots::Slot)
+            .from(CronSingletonSlots::Table)
+            .and_where(Expr::col(CronSingletonSlots::SingletonKey).eq(key))
+            .and_where(Expr::col(CronSingletonSlots::OccurrenceId).eq(occurrence_id)),
+    );
+    Ok(tx
+        .fetch_optional_as::<(i64,)>(&sql, values)
+        .await?
+        .map(|(slot,)| slot as u32))
+}
+
+/// Take one slot for `occurrence_id`: renew its own hold, take over one
+/// whose lease has expired, or insert a free one — `Some(token)` when this
+/// attempt now holds it. `fencing_token + 1` on every acquisition, so a
+/// superseded holder's conditional writes match nothing.
+async fn take_slot(
+    tx: &mut crate::storage::DbTransaction,
+    backend: crate::storage::DbBackend,
+    row: SlotRow<'_>,
+    occurrence_id: &str,
+    holder: &str,
+    lease_until: &str,
+    now: &'static str,
+) -> Result<Option<i64>, OrionError> {
+    // Ours to renew, or nobody's because the lease ran out. Anything else is
+    // a live holder and matches nothing.
+    let (mut update, (insert, conflict), mut token_query) = match row {
+        SlotRow::Legacy { key } => (
+            Query::update()
+                .table(CronSingletons::Table)
+                .value(CronSingletons::OccurrenceId, occurrence_id)
+                .value(CronSingletons::Holder, holder)
+                .value(
+                    CronSingletons::FencingToken,
+                    Expr::col(CronSingletons::FencingToken).add(1),
+                )
+                .value(
+                    CronSingletons::LeaseUntil,
+                    Expr::cust(lease_until.to_string()),
+                )
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(CronSingletons::SingletonKey).eq(key))
+                        .add(
+                            Condition::any()
+                                .add(Expr::col(CronSingletons::OccurrenceId).eq(occurrence_id))
+                                .add(Expr::col(CronSingletons::LeaseUntil).lt(Expr::cust(now))),
+                        ),
+                )
+                .to_owned(),
+            (
+                Query::insert()
+                    .into_table(CronSingletons::Table)
+                    .columns([
+                        CronSingletons::SingletonKey,
+                        CronSingletons::OccurrenceId,
+                        CronSingletons::Holder,
+                        CronSingletons::FencingToken,
+                        CronSingletons::LeaseUntil,
+                    ])
+                    .values_panic([
+                        key.into(),
+                        occurrence_id.into(),
+                        holder.into(),
+                        1i64.into(),
+                        Expr::cust(lease_until.to_string()),
+                    ])
+                    .to_owned(),
+                vec![CronSingletons::SingletonKey.into_iden()],
+            ),
+            Query::select()
+                .column(CronSingletons::FencingToken)
+                .from(CronSingletons::Table)
+                .and_where(Expr::col(CronSingletons::SingletonKey).eq(key))
+                .to_owned(),
+        ),
+        SlotRow::Extra { key, slot } => (
+            Query::update()
+                .table(CronSingletonSlots::Table)
+                .value(CronSingletonSlots::OccurrenceId, occurrence_id)
+                .value(CronSingletonSlots::Holder, holder)
+                .value(
+                    CronSingletonSlots::FencingToken,
+                    Expr::col(CronSingletonSlots::FencingToken).add(1),
+                )
+                .value(
+                    CronSingletonSlots::LeaseUntil,
+                    Expr::cust(lease_until.to_string()),
+                )
+                .cond_where(
+                    Condition::all()
+                        .add(Expr::col(CronSingletonSlots::SingletonKey).eq(key))
+                        .add(Expr::col(CronSingletonSlots::Slot).eq(i64::from(slot)))
+                        .add(
+                            Condition::any()
+                                .add(Expr::col(CronSingletonSlots::OccurrenceId).eq(occurrence_id))
+                                .add(Expr::col(CronSingletonSlots::LeaseUntil).lt(Expr::cust(now))),
+                        ),
+                )
+                .to_owned(),
+            (
+                Query::insert()
+                    .into_table(CronSingletonSlots::Table)
+                    .columns([
+                        CronSingletonSlots::SingletonKey,
+                        CronSingletonSlots::Slot,
+                        CronSingletonSlots::OccurrenceId,
+                        CronSingletonSlots::Holder,
+                        CronSingletonSlots::FencingToken,
+                        CronSingletonSlots::LeaseUntil,
+                    ])
+                    .values_panic([
+                        key.into(),
+                        i64::from(slot).into(),
+                        occurrence_id.into(),
+                        holder.into(),
+                        1i64.into(),
+                        Expr::cust(lease_until.to_string()),
+                    ])
+                    .to_owned(),
+                vec![
+                    CronSingletonSlots::SingletonKey.into_iden(),
+                    CronSingletonSlots::Slot.into_iden(),
+                ],
+            ),
+            Query::select()
+                .column(CronSingletonSlots::FencingToken)
+                .from(CronSingletonSlots::Table)
+                .and_where(Expr::col(CronSingletonSlots::SingletonKey).eq(key))
+                .and_where(Expr::col(CronSingletonSlots::Slot).eq(i64::from(slot)))
+                .to_owned(),
+        ),
+    };
+    let (sql, values) = build_sqlx(backend, &mut update);
+    let took = tx.execute_query(&sql, values).await? > 0;
+    if !took {
+        // Either no row exists (the slot is free) or a live lease holds it.
+        // Insert-if-absent settles which, without a read.
+        if helpers::insert_if_absent_tx(tx, insert, conflict).await? == 0 {
+            return Ok(None);
+        }
+    }
+    // The token now held: what the heartbeat and the release are checked
+    // against for the rest of the attempt.
+    let (sql, values) = build_sqlx(backend, &mut token_query);
+    Ok(tx
+        .fetch_optional_as::<FencingTokenRow>(&sql, values)
+        .await?
+        .map(|row| row.fencing_token))
 }
 
 #[cfg(test)]
@@ -1440,6 +1680,16 @@ mod tests {
         claimant: &str,
         key: Option<&str>,
     ) -> AttemptStart {
+        start_slots(repo, occurrence, claimant, key, 1).await
+    }
+
+    async fn start_slots(
+        repo: &SqlCronRepository,
+        occurrence: &CronOccurrence,
+        claimant: &str,
+        key: Option<&str>,
+        slots: u32,
+    ) -> AttemptStart {
         repo.start_attempt(
             occurrence,
             claimant,
@@ -1448,11 +1698,21 @@ mod tests {
                 key,
                 holder: claimant,
                 lease_secs: 60,
+                slots,
             }),
             60,
         )
         .await
         .expect("start")
+    }
+
+    fn held(slot: u32, fencing_token: i64) -> AttemptStart {
+        AttemptStart::Started {
+            held: Some(HeldSlot {
+                slot,
+                fencing_token,
+            }),
+        }
     }
 
     /// The non-overlap guarantee, at its narrowest: two occurrences, one key,
@@ -1469,12 +1729,10 @@ mod tests {
         let claimed = repo.claim_due(claim("node-a", 60)).await.expect("claim");
         assert_eq!(claimed.len(), 2);
 
-        assert!(matches!(
+        assert_eq!(
             start(&repo, &claimed[0], "node-a", Some("key")).await,
-            AttemptStart::Started {
-                fencing_token: Some(1)
-            }
-        ));
+            held(0, 1)
+        );
         assert_eq!(
             start(&repo, &claimed[1], "node-a", Some("key")).await,
             AttemptStart::SingletonBusy,
@@ -1515,9 +1773,7 @@ mod tests {
         for occurrence in &claimed {
             assert_eq!(
                 start(&repo, occurrence, "node-a", None).await,
-                AttemptStart::Started {
-                    fencing_token: None
-                }
+                AttemptStart::Started { held: None }
             );
         }
     }
@@ -1537,9 +1793,7 @@ mod tests {
 
         assert_eq!(
             start(&repo, &claimed[0], "node-a", Some("key")).await,
-            AttemptStart::Started {
-                fencing_token: Some(1)
-            }
+            held(0, 1)
         );
 
         // node-a dies. Both its occurrence claim and its singleton lease run
@@ -1555,9 +1809,7 @@ mod tests {
 
         assert_eq!(
             start(&repo, &taken_over, "node-b", Some("key")).await,
-            AttemptStart::Started {
-                fencing_token: Some(2)
-            },
+            held(0, 2),
             "an expired key is takeable, under a higher generation"
         );
 
@@ -1566,20 +1818,20 @@ mod tests {
         // alongside it.
         assert!(
             !repo
-                .renew(&claimed[0].id, "node-a", Some(1), 60)
+                .renew(&claimed[0].id, "node-a", Some(slot0(1)), 60)
                 .await
                 .expect("renew"),
             "a superseded holder must not renew"
         );
         assert!(
             !repo
-                .release_singleton("key", &claimed[0].id, 1)
+                .release_singleton("key", &claimed[0].id, slot0(1))
                 .await
                 .expect("release"),
             "a superseded holder must not delete the new holder's row"
         );
         assert!(
-            repo.release_singleton("key", &taken_over.id, 2)
+            repo.release_singleton("key", &taken_over.id, slot0(2))
                 .await
                 .expect("release"),
             "the real holder releases its own row"
@@ -1624,7 +1876,7 @@ mod tests {
             .expect("claim")
             .remove(0);
         let token = match start(&repo, &claimed, "node-a", Some("key")).await {
-            AttemptStart::Started { fencing_token } => fencing_token.expect("a token"),
+            AttemptStart::Started { held } => held.expect("a slot"),
             other => unreachable!("the attempt must start, got {other:?}"),
         };
 
@@ -1657,11 +1909,292 @@ mod tests {
         // A wrong token renews nothing, however live the claim is.
         assert!(
             !repo
-                .renew("occ", "node-a", Some(token + 1), 600)
+                .renew(
+                    "occ",
+                    "node-a",
+                    Some(HeldSlot {
+                        fencing_token: token.fencing_token + 1,
+                        ..token
+                    }),
+                    600
+                )
                 .await
                 .expect("renew"),
             "a superseded token must extend nothing"
         );
+    }
+
+    // ---- slots ----
+
+    fn slot0(fencing_token: i64) -> HeldSlot {
+        HeldSlot {
+            slot: 0,
+            fencing_token,
+        }
+    }
+
+    /// `n` occurrences due and claimed by `node-a`, oldest first.
+    async fn claimed_n(repo: &SqlCronRepository, n: usize) -> Vec<CronOccurrence> {
+        let now = repo.db_now().await.expect("db now");
+        for i in 0..n {
+            let id = format!("occ-{i}");
+            repo.insert_occurrence(occurrence(
+                &id,
+                "ch",
+                now - Duration::minutes(10 - i as i64),
+            ))
+            .await
+            .expect("insert");
+        }
+        let claimed = repo.claim_due(claim("node-a", 60)).await.expect("claim");
+        assert_eq!(claimed.len(), n);
+        claimed
+    }
+
+    async fn expire_slot(repo: &SqlCronRepository, key: &str, slot: u32) {
+        let past = repo.db_now().await.expect("db now") - Duration::hours(1);
+        let (sql, values) = build_sqlx(
+            repo.pool.backend(),
+            Query::update()
+                .table(CronSingletonSlots::Table)
+                .value(CronSingletonSlots::LeaseUntil, past)
+                .and_where(Expr::col(CronSingletonSlots::SingletonKey).eq(key))
+                .and_where(Expr::col(CronSingletonSlots::Slot).eq(i64::from(slot))),
+        );
+        repo.pool.execute_query(&sql, values).await.expect("expire");
+    }
+
+    async fn count_rows(repo: &SqlCronRepository, table: &str) -> i64 {
+        let (sql, values) = build_sqlx(
+            repo.pool.backend(),
+            Query::select()
+                .expr(Expr::cust("COUNT(*)"))
+                .from(sea_query::Alias::new(table)),
+        );
+        let (count,): (i64,) = repo.pool.fetch_one_as(&sql, values).await.expect("count");
+        count
+    }
+
+    /// The bound, at its narrowest: `n` slots admit `n` occurrences, each in
+    /// its own slot, and refuse the next.
+    #[tokio::test]
+    async fn n_slots_admit_n_occurrences_and_refuse_the_next() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 4).await;
+        for (slot, occurrence) in claimed[..3].iter().enumerate() {
+            assert_eq!(
+                start_slots(&repo, occurrence, "node-a", Some("worker"), 3).await,
+                held(slot as u32, 1)
+            );
+        }
+        assert_eq!(
+            start_slots(&repo, &claimed[3], "node-a", Some("worker"), 3).await,
+            AttemptStart::SingletonBusy,
+            "every slot is live, so the fourth must be refused"
+        );
+        let row = repo.get_by_id(&claimed[2].id).await.expect("get");
+        assert_eq!(row.singleton_slot, Some(2), "the ledger names the slot");
+        assert_eq!(row.fencing_token, Some(1));
+    }
+
+    /// Slot 0 is the row a single lock always used, so `slots = 1` — and every
+    /// binary that predates slots — contends on the same row.
+    #[tokio::test]
+    async fn slot_zero_is_the_legacy_row() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 2).await;
+        assert_eq!(
+            start(&repo, &claimed[0], "node-a", Some("worker")).await,
+            held(0, 1)
+        );
+        assert_eq!(count_rows(&repo, "cron_singletons").await, 1);
+        assert_eq!(count_rows(&repo, "cron_singleton_slots").await, 0);
+        assert_eq!(
+            start_slots(&repo, &claimed[1], "node-a", Some("worker"), 2).await,
+            held(1, 1)
+        );
+        assert_eq!(count_rows(&repo, "cron_singleton_slots").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_released_slot_is_reused_lowest_first() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 4).await;
+        for occurrence in &claimed[..3] {
+            start_slots(&repo, occurrence, "node-a", Some("worker"), 3).await;
+        }
+        let one = HeldSlot {
+            slot: 1,
+            fencing_token: 1,
+        };
+        assert!(
+            repo.release_singleton("worker", &claimed[1].id, one)
+                .await
+                .expect("release")
+        );
+        assert_eq!(
+            start_slots(&repo, &claimed[3], "node-a", Some("worker"), 3).await,
+            held(1, 1),
+            "the freed slot is the lowest one free"
+        );
+    }
+
+    /// Takeover works per slot, under the slot's own token.
+    #[tokio::test]
+    async fn an_expired_slot_is_taken_over_and_its_token_bumped() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 3).await;
+        for occurrence in &claimed[..2] {
+            start_slots(&repo, occurrence, "node-a", Some("worker"), 2).await;
+        }
+        expire_slot(&repo, "worker", 1).await;
+        assert_eq!(
+            start_slots(&repo, &claimed[2], "node-a", Some("worker"), 2).await,
+            held(1, 2),
+            "an expired slot is takeable, under a higher generation"
+        );
+        let superseded = HeldSlot {
+            slot: 1,
+            fencing_token: 1,
+        };
+        assert!(
+            !repo
+                .renew(&claimed[1].id, "node-a", Some(superseded), 60)
+                .await
+                .expect("renew"),
+            "a superseded holder must not renew"
+        );
+        assert!(
+            !repo
+                .release_singleton("worker", &claimed[1].id, superseded)
+                .await
+                .expect("release"),
+            "a superseded holder must not delete the new holder's row"
+        );
+    }
+
+    /// A renewal and a release name one slot, and touch no other.
+    #[tokio::test]
+    async fn renew_and_release_address_the_held_slot_only() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 2).await;
+        for occurrence in &claimed {
+            start_slots(&repo, occurrence, "node-a", Some("worker"), 2).await;
+        }
+        let wrong_slot = HeldSlot {
+            slot: 0,
+            fencing_token: 1,
+        };
+        assert!(
+            !repo
+                .renew(&claimed[1].id, "node-a", Some(wrong_slot), 60)
+                .await
+                .expect("renew"),
+            "slot 0 is the other occurrence's"
+        );
+        assert!(
+            !repo
+                .release_singleton("worker", &claimed[1].id, wrong_slot)
+                .await
+                .expect("release")
+        );
+        let right = HeldSlot {
+            slot: 1,
+            fencing_token: 1,
+        };
+        assert!(
+            repo.renew(&claimed[1].id, "node-a", Some(right), 60)
+                .await
+                .expect("renew")
+        );
+        assert!(
+            repo.release_singleton("worker", &claimed[1].id, right)
+                .await
+                .expect("release")
+        );
+        assert_eq!(
+            repo.singleton_holds(&["worker"]).await.expect("holds")["worker"],
+            1,
+            "slot 0 is still held"
+        );
+    }
+
+    /// Channels sharing a key may disagree on `slots`: each is admitted only
+    /// to the slots below its own bound, so a one-slot channel waits for slot
+    /// 0 however many higher slots are free.
+    #[tokio::test]
+    async fn a_channel_with_fewer_slots_only_sees_the_low_slots() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 3).await;
+        assert_eq!(
+            start_slots(&repo, &claimed[0], "node-a", Some("worker"), 3).await,
+            held(0, 1)
+        );
+        assert_eq!(
+            start(&repo, &claimed[1], "node-a", Some("worker")).await,
+            AttemptStart::SingletonBusy
+        );
+        assert_eq!(
+            start_slots(&repo, &claimed[2], "node-a", Some("worker"), 3).await,
+            held(1, 1)
+        );
+    }
+
+    /// A node that dies after starting an attempt leaves its slot leased; the
+    /// peer that re-claims the occurrence must re-take *that* slot — fencing
+    /// the dead holder — rather than burn a second one.
+    #[tokio::test]
+    async fn restarting_the_same_occurrence_does_not_take_a_second_slot() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 2).await;
+        for occurrence in &claimed {
+            start_slots(&repo, occurrence, "node-a", Some("worker"), 3).await;
+        }
+        // Slot 0 frees up, and the holder of slot 1 dies mid-run.
+        assert!(
+            repo.release_singleton("worker", &claimed[0].id, slot0(1))
+                .await
+                .expect("release")
+        );
+        expire_claim(&repo, &claimed[1].id).await;
+        let taken_over = repo
+            .claim_due(claim("node-b", 60))
+            .await
+            .expect("reclaim")
+            .remove(0);
+        assert_eq!(taken_over.id, claimed[1].id);
+        assert_eq!(
+            start_slots(&repo, &taken_over, "node-b", Some("worker"), 3).await,
+            held(1, 2),
+            "the occurrence re-takes its own slot under a new token"
+        );
+        assert_eq!(
+            repo.singleton_holds(&["worker"]).await.expect("holds")["worker"],
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn singleton_holds_counts_live_leases_across_both_tables() {
+        let repo = test_repo().await;
+        let claimed = claimed_n(&repo, 4).await;
+        for occurrence in &claimed[..3] {
+            start_slots(&repo, occurrence, "node-a", Some("worker"), 3).await;
+        }
+        start(&repo, &claimed[3], "node-a", Some("other")).await;
+        expire_slot(&repo, "worker", 2).await;
+        let holds = repo
+            .singleton_holds(&["worker", "other", "idle"])
+            .await
+            .expect("holds");
+        assert_eq!(
+            holds.get("worker"),
+            Some(&2),
+            "an expired lease is not held"
+        );
+        assert_eq!(holds.get("other"), Some(&1));
+        assert_eq!(holds.get("idle"), None);
+        assert!(repo.singleton_holds(&[]).await.expect("holds").is_empty());
     }
 
     /// Fail closed: when the database is gone, claiming must **error** rather
@@ -1715,6 +2248,7 @@ mod tests {
                     key: "key",
                     holder: "node-b",
                     lease_secs: 60,
+                    slots: 1,
                 }),
                 60,
             )
@@ -1743,6 +2277,7 @@ mod tests {
             claimed_until: None,
             singleton_key: None,
             fencing_token: None,
+            singleton_slot: None,
             trace_id: None,
             error_message: None,
             started_at: None,

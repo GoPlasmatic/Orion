@@ -397,6 +397,9 @@ pub struct CronOccurrence {
     pub claimed_until: Option<NaiveDateTime>,
     pub singleton_key: Option<String>,
     pub fencing_token: Option<i64>,
+    /// The slot of `singleton_key` the attempt held; `None` under `allow`
+    /// and on rows written before slots existed.
+    pub singleton_slot: Option<i64>,
     pub trace_id: Option<String>,
     pub error_message: Option<String>,
     pub started_at: Option<NaiveDateTime>,

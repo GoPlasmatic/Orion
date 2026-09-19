@@ -166,6 +166,7 @@ async fn run_attempt(deps: &WorkerDeps, occurrence: CronOccurrence) {
         attempt = occurrence.attempt,
         instance_id = %deps.instance_id,
         fencing_token = tracing::field::Empty,
+        singleton_slot = tracing::field::Empty,
     );
     run_attempt_inner(deps, occurrence).instrument(span).await
 }
@@ -219,6 +220,7 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
         key: descriptor.singleton_key.as_str(),
         holder: deps.instance_id.as_str(),
         lease_secs: 0, // replaced below; the lease is sized from the timeout
+        slots: descriptor.singleton_slots,
     });
 
     let timeout_ms = crate::channel::guards::effective_timeout_ms(
@@ -268,15 +270,16 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
         }
     };
 
-    let fencing_token = match start {
-        AttemptStart::Started { fencing_token } => {
+    let held = match start {
+        AttemptStart::Started { held } => {
             // Now that the key is held, the span can name the generation it is
             // held under — which is what makes two nodes' logs about one key
             // orderable after the fact.
-            if let Some(token) = fencing_token {
-                tracing::Span::current().record("fencing_token", token);
+            if let Some(held) = held {
+                tracing::Span::current().record("fencing_token", held.fencing_token);
+                tracing::Span::current().record("singleton_slot", held.slot);
             }
-            fencing_token
+            held
         }
         AttemptStart::Lost => return Err(Abandoned::Lost),
         AttemptStart::SingletonBusy => {
@@ -296,11 +299,19 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
                 .settle_skipped(
                     &occurrence.id,
                     &deps.instance_id,
-                    &format!(
-                        "singleton key '{}' was held by another running occurrence \
-                         (concurrency.policy = \"forbid\")",
-                        descriptor.singleton_key
-                    ),
+                    &if descriptor.singleton_slots > 1 {
+                        format!(
+                            "all {} slots of singleton key '{}' were held by running \
+                             occurrences (concurrency.policy = \"forbid\")",
+                            descriptor.singleton_slots, descriptor.singleton_key
+                        )
+                    } else {
+                        format!(
+                            "singleton key '{}' was held by another running occurrence \
+                             (concurrency.policy = \"forbid\")",
+                            descriptor.singleton_key
+                        )
+                    },
                 )
                 .await;
             return Err(Abandoned::Settled);
@@ -314,17 +325,17 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
         &runtime,
         &descriptor,
         timeout_ms,
-        fencing_token,
+        held,
         lease_secs,
     )
     .await;
 
     // 9. Release the key, conditionally. A superseded holder matches nothing
     // and leaves the new owner's row alone.
-    if let (Some(token), Some(singleton)) = (fencing_token, singleton.as_ref()) {
+    if let (Some(held), Some(singleton)) = (held, singleton.as_ref()) {
         match deps
             .repo
-            .release_singleton(singleton.key, &occurrence.id, token)
+            .release_singleton(singleton.key, &occurrence.id, held)
             .await
         {
             Ok(true) => {}
@@ -360,7 +371,7 @@ async fn execute(
     runtime: &Arc<ChannelRuntimeConfig>,
     descriptor: &Arc<crate::channel::CronDescriptor>,
     timeout_ms: u64,
-    fencing_token: Option<i64>,
+    held: Option<crate::storage::repositories::cron::HeldSlot>,
     lease_secs: u64,
 ) -> Result<(), Abandoned> {
     let channel = runtime.channel.name.as_str();
@@ -381,7 +392,8 @@ async fn execute(
             started_at,
             timezone: descriptor.timezone.name(),
             attempt: occurrence.attempt,
-            singleton_key: fencing_token.map(|_| descriptor.singleton_key.as_str()),
+            singleton_key: held.map(|_| descriptor.singleton_key.as_str()),
+            singleton_slot: held.map(|h| h.slot),
         },
         deps.vars.as_deref(),
     );
@@ -536,7 +548,7 @@ async fn execute(
         },
     );
 
-    let execution = match with_heartbeat(deps, occurrence, fencing_token, lease_secs, run).await {
+    let execution = match with_heartbeat(deps, occurrence, held, lease_secs, run).await {
         Some(execution) => execution,
         None => {
             // The lease was lost: another node owns this occurrence now, and
@@ -649,7 +661,7 @@ async fn execute(
 async fn with_heartbeat<F, T>(
     deps: &WorkerDeps,
     occurrence: &CronOccurrence,
-    fencing_token: Option<i64>,
+    held: Option<crate::storage::repositories::cron::HeldSlot>,
     lease_secs: u64,
     work: F,
 ) -> Option<T>
@@ -667,7 +679,7 @@ where
             _ = ticker.tick() => {
                 match deps
                     .repo
-                    .renew(&occurrence.id, &deps.instance_id, fencing_token, lease_secs)
+                    .renew(&occurrence.id, &deps.instance_id, held, lease_secs)
                     .await
                 {
                     Ok(true) => {}

@@ -1,6 +1,6 @@
 <!-- description: The cron ledger endpoints: listing and reading occurrences, retrying one at the same scheduled instant, the scheduler status, and manual triggers. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-20 -->
 
 # Cron occurrence endpoints
 
@@ -13,7 +13,7 @@ Every scheduled instant of a [cron channel](../channel-config/cron.md) becomes a
 | GET | `/api/v1/admin/cron/occurrences` | List occurrences, newest first, paginated (`?limit=`, `?offset=`). Filter with `?channel_id=`, `?status=`, `?since=`, `?until=`. Summaries only |
 | GET | `/api/v1/admin/cron/occurrences/{id}` | One occurrence in full: the failure reason, the trace id, the executing version and the lease detail |
 | POST | `/api/v1/admin/cron/occurrences/{id}/retry` | Another attempt at the same occurrence. `409` unless it is `failed`, `skipped_misfire` or `skipped_singleton` |
-| GET | `/api/v1/admin/cron/status` | One row per active cron channel: its schedule, its next fire time, its last run and its backlog |
+| GET | `/api/v1/admin/cron/status` | One row per active cron channel: its schedule, its next fire time, its last run, its backlog and its slots |
 | POST | `/api/v1/admin/channels/{id}/trigger` | Run an active cron channel now. `202` with the new occurrence |
 
 ```bash
@@ -31,9 +31,13 @@ curl -X POST http://localhost:8080/api/v1/admin/channels/nightly-rollup/trigger 
 
 **Statuses.** `pending` means materialised and waiting for a worker. Then come `claimed`, `running`, `completed` and `failed`.
 
-`skipped_misfire` means its time passed while nothing was scheduling. One row summarises a run of them, with the count and range in `error_message`. `skipped_singleton` means its `concurrency.key` was held by a running occurrence under `policy: "forbid"`.
+`skipped_misfire` means its time passed while nothing was scheduling. One row summarises a run of them, with the count and range in `error_message`. `skipped_singleton` means every slot of its `concurrency.key` was held by a running occurrence under `policy: "forbid"`.
 
 The field is an open string: tolerate a value you do not know.
+
+**Slots.** A `forbid` occurrence records the key it held as `singleton_key` and the slot as `singleton_slot`, counted from `0`. Two runs of one key can share a `fencing_token` when they hold different slots, so the pair names a hold. Under `allow` both are `null`.
+
+The status row reports the lock too. `concurrency_policy` is `allow` or `forbid`. Under `forbid`, `singleton_key` and `slots` echo the channel's settings. `slots_held` counts the live leases on the key right now, across every channel sharing it. It can exceed `slots` when another channel declares more, or shortly after `slots` was lowered.
 
 **Retry keeps the identity.** The occurrence id and its `scheduled_for` are unchanged and `attempt` increments, because a retry is another attempt at the work that was due *then*. That is what lets a workflow use `metadata.trigger.scheduled_for` as an idempotency key — two attempts at one occurrence agree on it. Re-running finished work is a different thing and has a different endpoint: trigger the channel, which mints a new occurrence at the current instant.
 

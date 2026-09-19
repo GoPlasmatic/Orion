@@ -308,6 +308,10 @@ async fn the_status_endpoint_reports_the_cursor_and_the_last_run() {
         "the cursor must be visible once the reconciler has seen the channel: {row}"
     );
     assert_eq!(row["paused_at"], Value::Null);
+    // `allow` takes no lock, so there is no key and nothing to count.
+    assert_eq!(row["concurrency_policy"], "allow", "{row}");
+    assert_eq!(row["slots"], Value::Null, "{row}");
+    assert_eq!(row["slots_held"], Value::Null, "{row}");
 }
 
 // ============================================================
@@ -613,6 +617,129 @@ async fn forbid_serialises_a_key_and_records_the_skips() {
     assert!(
         running.len() <= 1,
         "two occurrences of one singleton key were running at once: {running:?}"
+    );
+}
+
+/// `forbid` with `slots: 2`: two runs of the key at once, never three, the
+/// third refused with a reason that names the bound — and each run told which
+/// slot it holds, which the ledger records and the status view counts.
+#[tokio::test]
+async fn forbid_with_slots_runs_n_and_skips_the_rest() {
+    // Runs take 2.5s on a per-second schedule: two slots admit 0.8 runs a
+    // second, so a skip is certain rather than likely.
+    let addr = common::start_slow_server(std::time::Duration::from_millis(2500)).await;
+
+    let app = common::test_app_with_config(fast_cron()).await;
+    common::create_http_connector(&app, "slow-endpoint", addr).await;
+    let mut workflow = slow_workflow("Slotted Work");
+    workflow["tasks"]
+        .as_array_mut()
+        .expect("tasks")
+        .push(json!({
+            "id": "echo",
+            "name": "Echo the slot",
+            "function": {"name": "map", "input": {"mappings": [
+                {"path": "data.saw_slot", "logic": {"var": "metadata.trigger.singleton_slot"}}
+            ]}}
+        }));
+    let channel_id = activate_cron_channel(
+        &app,
+        "slotted-ch",
+        workflow,
+        json!({
+            "schedule": "* * * * * *",
+            "concurrency": {"policy": "forbid", "key": "slotted", "slots": 2},
+        }),
+    )
+    .await;
+
+    // Several runs have to start, collide and finish, which takes longer
+    // than the default five-second wait.
+    let body = common::wait_for_body_within(
+        &app,
+        "/api/v1/admin/cron/occurrences?limit=200",
+        std::time::Duration::from_secs(20),
+        |body| {
+            body["data"].as_array().is_some_and(|rows| {
+                !with_status(rows, "skipped_singleton").is_empty()
+                    && with_status(rows, "completed").len() >= 2
+            })
+        },
+    )
+    .await;
+    let rows = body["data"].as_array().cloned().unwrap_or_default();
+    let running = with_status(&rows, "running");
+    assert!(
+        running.len() <= 2,
+        "three occurrences of a two-slot key were running at once: {running:?}"
+    );
+    let skipped = with_status(&rows, "skipped_singleton");
+    let body = common::wait_for_body(
+        &app,
+        &format!(
+            "/api/v1/admin/cron/occurrences/{}",
+            skipped[0]["id"].as_str().expect("id")
+        ),
+        |_| true,
+    )
+    .await;
+    assert!(
+        body["data"]["error_message"]
+            .as_str()
+            .expect("a reason")
+            .contains("all 2 slots of singleton key 'slotted'"),
+        "the skip must name the bound: {body}"
+    );
+
+    // The listing is a projection; the slot is on the single read. Two runs
+    // overlapped, so one of them held slot 1 — and its workflow saw the slot
+    // the ledger recorded.
+    let mut in_slot_one = None;
+    for row in with_status(&rows, "completed") {
+        let body = common::wait_for_body(
+            &app,
+            &format!(
+                "/api/v1/admin/cron/occurrences/{}",
+                row["id"].as_str().expect("id")
+            ),
+            |body| body["data"]["trace_id"].is_string(),
+        )
+        .await;
+        assert_eq!(body["data"]["singleton_key"], "slotted", "{body}");
+        if body["data"]["singleton_slot"] == 1 {
+            in_slot_one = Some(body);
+            break;
+        }
+    }
+    let body = in_slot_one.expect("a completed run held slot 1");
+    let trace_id = body["data"]["trace_id"].as_str().expect("trace id");
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .expect("trace");
+    let trace = body_json(resp).await;
+    assert_eq!(trace["data"]["message"]["saw_slot"], 1, "{trace}");
+
+    // The status view reports the bound and what is held against it.
+    let body = common::wait_for_body(&app, "/api/v1/admin/cron/status", |_| true).await;
+    let row = body["data"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| r["channel_id"] == channel_id.as_str())
+        .expect("the channel's row")
+        .clone();
+    assert_eq!(row["concurrency_policy"], "forbid", "{row}");
+    assert_eq!(row["singleton_key"], "slotted", "{row}");
+    assert_eq!(row["slots"], 2, "{row}");
+    assert!(
+        row["slots_held"].as_u64().is_some_and(|held| held <= 2),
+        "{row}"
     );
 }
 

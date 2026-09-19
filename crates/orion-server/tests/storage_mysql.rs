@@ -613,6 +613,7 @@ async fn mysql_cron_singleton_admits_one_occurrence() {
             key: "shared-key",
             holder: "node-a",
             lease_secs: 60,
+            slots: 1,
         })
     };
     let first = repo
@@ -629,5 +630,102 @@ async fn mysql_cron_singleton_admits_one_occurrence() {
         second,
         AttemptStart::SingletonBusy,
         "a live singleton key must refuse a second occurrence"
+    );
+}
+
+/// `slots` under real concurrency: six attempts race for three slots of one
+/// key. The bound and slot exclusivity must hold whatever happens. At
+/// REPEATABLE READ, InnoDB can abort one of two attempts that probed the same
+/// absent slot row (their gap locks conflict); that attempt errors, and the
+/// worker retries it when its claim expires — the same fail-safe as a single
+/// lock.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_cron_slots_admit_n_under_concurrency() {
+    use orion::storage::repositories::cron::{
+        AttemptStart, ClaimRequest, CronRepository, NewOccurrence, SingletonRequest,
+        SqlCronRepository, status, trigger,
+    };
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = std::sync::Arc::new(SqlCronRepository::new(pool.clone()));
+    let now = repo.db_now().await.expect("db now");
+    for i in 0..6i64 {
+        repo.insert_occurrence(NewOccurrence {
+            id: &format!("occ-{i}"),
+            channel_id: "ch",
+            channel_name: "workers",
+            channel_version: 1,
+            workflow_id: Some("wf"),
+            trigger: trigger::CRON,
+            scheduled_for: now - chrono::Duration::seconds(60 - i),
+            status: status::PENDING,
+            error_message: None,
+        })
+        .await
+        .expect("insert");
+    }
+    let claimed = repo
+        .claim_due(ClaimRequest {
+            claimant: "node-a",
+            limit: 10,
+            lease_secs: 60,
+        })
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 6);
+
+    let attempts = claimed.into_iter().map(|occurrence| {
+        let repo = repo.clone();
+        tokio::spawn(async move {
+            repo.start_attempt(
+                &occurrence,
+                "node-a",
+                1,
+                Some(SingletonRequest {
+                    key: "workers",
+                    holder: "node-a",
+                    lease_secs: 60,
+                    slots: 3,
+                }),
+                60,
+            )
+            .await
+        })
+    });
+    let results: Vec<_> = futures::future::join_all(attempts)
+        .await
+        .into_iter()
+        .map(|joined| joined.expect("join"))
+        .collect();
+
+    let mut slots = Vec::new();
+    let mut errors = 0;
+    for result in &results {
+        match result {
+            Ok(AttemptStart::Started { held: Some(held) }) => slots.push(held.slot),
+            Ok(AttemptStart::SingletonBusy) => {}
+            Ok(other) => panic!("unexpected outcome {other:?}"),
+            Err(_) => errors += 1,
+        }
+    }
+    slots.sort_unstable();
+    let distinct = {
+        let mut d = slots.clone();
+        d.dedup();
+        d
+    };
+    assert_eq!(distinct, slots, "no slot is held twice: {results:?}");
+    assert!(
+        slots.iter().all(|slot| *slot < 3),
+        "only slots 0..3: {results:?}"
+    );
+    assert!(
+        slots.len() <= 3,
+        "never more than three at once: {results:?}"
+    );
+    assert!(
+        slots.len() + errors <= 6 && !slots.is_empty(),
+        "at least one attempt starts: {results:?}"
     );
 }

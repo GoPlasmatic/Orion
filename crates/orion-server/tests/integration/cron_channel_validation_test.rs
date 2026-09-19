@@ -120,6 +120,56 @@ async fn a_schedule_that_does_not_compile_is_refused_at_create() {
     );
 }
 
+/// `slots` bounds a lock, so it means nothing without one, and its range is
+/// what bounds the statements a skipped attempt costs. Both refusals name the
+/// field; a valid bound is accepted and reads back.
+#[tokio::test]
+async fn concurrency_slots_are_bounded_and_forbid_only() {
+    let app = common::test_app().await;
+    let wf =
+        common::create_and_activate_workflow(&app, common::simple_log_workflow("Rollup")).await;
+
+    for (name, concurrency, refusal) in [
+        (
+            "slots-allow",
+            json!({"policy": "allow", "slots": 4}),
+            "only meaningful with policy \"forbid\"",
+        ),
+        (
+            "slots-zero",
+            json!({"policy": "forbid", "slots": 0}),
+            "between 1 and 64",
+        ),
+        (
+            "slots-many",
+            json!({"policy": "forbid", "slots": 65}),
+            "between 1 and 64",
+        ),
+    ] {
+        let mut body = cron_channel(name, &wf);
+        body["transport_config"]["concurrency"] = concurrency;
+        let (status, body) = post_channel(&app, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+        assert_eq!(
+            error_paths(&body),
+            vec!["channel.transport_config.concurrency.slots"],
+            "{name}: {body}"
+        );
+        assert!(
+            body["error"]["details"][0]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains(refusal)),
+            "{name}: {body}"
+        );
+    }
+
+    let mut body = cron_channel("slots-ok", &wf);
+    body["transport_config"]["concurrency"] = json!({"policy": "forbid", "key": "w", "slots": 4});
+    let (status, body) = post_channel(&app, body).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["data"]["transport_config"]["concurrency"]["slots"], 4);
+}
+
 #[tokio::test]
 async fn a_schedule_is_required() {
     let app = common::test_app().await;

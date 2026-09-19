@@ -142,6 +142,7 @@ pub fn check(
         &mut findings,
     );
     check_env_refs(set, &mut findings);
+    check_cron_slots(set, &mut findings);
 
     // The plugins the set carries, as inventory: which manifest, how many
     // functions, and whether the component was there to hash — the line an
@@ -648,6 +649,77 @@ fn check_channels(
     names
 }
 
+/// Cron channels that share a `concurrency.key` but declare different
+/// `slots`. Coherent — each run is admitted only to the slots below its own
+/// channel's bound, so the key's fleet-wide bound is the largest declared and
+/// a one-slot channel waits for slot 0 however many others are free — but so
+/// rarely intended that the set should say so. A warning: the runtime has a
+/// defined answer, and the admin API cannot see a channel's peers to refuse
+/// it anyway.
+fn check_cron_slots(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
+    // key -> (the first channel naming it, that channel's slots)
+    let mut seen: Vec<(String, String, u64)> = Vec::new();
+    for def in set.iter(Entity::Channel) {
+        let doc = &def.doc;
+        if doc.get("protocol").and_then(Value::as_str) != Some("cron") {
+            continue;
+        }
+        let Some(concurrency) = doc
+            .get("transport_config")
+            .and_then(|t| t.get("concurrency"))
+        else {
+            continue;
+        };
+        if concurrency.get("policy").and_then(Value::as_str) != Some("forbid") {
+            continue;
+        }
+        // The key defaults to the channel id; with neither, the id is minted
+        // at create time and so can collide with nothing.
+        let Some(key) = concurrency
+            .get("key")
+            .or_else(|| doc.get("channel_id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        // A `slots` that is not an integer is the schema check's to report.
+        let slots = match concurrency.get("slots") {
+            None | Some(Value::Null) => 1,
+            Some(value) => match value.as_u64() {
+                Some(slots) => slots,
+                None => continue,
+            },
+        };
+        let name = doc
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&def.origin);
+        match seen.iter().find(|(k, _, _)| k == key) {
+            Some((_, first, first_slots)) if *first_slots != slots => {
+                let path = "channel.transport_config.concurrency.slots";
+                findings.push(
+                    Diagnostic::warning(
+                        "cron.slots_mismatch",
+                        format!("channel '{name}'"),
+                        format!(
+                            "channels '{first}' and '{name}' share concurrency key '{key}' but \
+                             declare slots {first_slots} and {slots} — each is admitted against \
+                             its own bound"
+                        ),
+                    )
+                    .with_location(&def.origin, Some(path), def.locate(path))
+                    .with_remedy(format!(
+                        "declare the same slots on every channel naming '{key}', or give them \
+                         different keys"
+                    )),
+                );
+            }
+            Some(_) => {}
+            None => seen.push((key.to_string(), name.to_string(), slots)),
+        }
+    }
+}
+
 /// Task references that must resolve in the set or be declared on the
 /// boundary.
 fn check_closure(
@@ -1096,6 +1168,54 @@ mod tests {
             any_line,
             "at least one finding must resolve to a line:col — that is what \
              carrying the spans is for: {located:#?}"
+        );
+    }
+
+    fn cron(name: &str, concurrency: Value) -> (Entity, String, Value) {
+        (
+            Entity::Channel,
+            format!("{name}.json"),
+            json!({"channel_id": name, "name": name, "protocol": "cron", "workflow_id": "wf",
+                "transport_config": {"schedule": "0 * * * * *", "concurrency": concurrency}}),
+        )
+    }
+
+    /// Two channels on one key with different `slots` warn; agreeing ones,
+    /// different keys and `allow` do not. The default key is the channel id.
+    #[test]
+    fn a_shared_key_with_different_slots_is_a_warning() {
+        let set = DefinitionSet::from_entries([
+            workflow("wf", json!([])),
+            cron(
+                "a",
+                json!({"policy": "forbid", "key": "worker", "slots": 4}),
+            ),
+            cron("b", json!({"policy": "forbid", "key": "worker"})),
+            cron(
+                "c",
+                json!({"policy": "forbid", "key": "worker", "slots": 4}),
+            ),
+            cron("d", json!({"policy": "forbid", "key": "other", "slots": 2})),
+            cron("e", json!({"policy": "allow", "key": "worker"})),
+            cron("f", json!({"policy": "forbid", "key": "g", "slots": 2})),
+            cron("g", json!({"policy": "forbid"})),
+        ]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        let mismatches = checks(&findings, "cron.slots_mismatch");
+        let messages: Vec<&str> = mismatches.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("'a' and 'b' share concurrency key 'worker'"));
+        assert!(messages[0].contains("slots 4 and 1"));
+        assert!(messages[1].contains("'f' and 'g' share concurrency key 'g'"));
+        assert!(
+            mismatches
+                .iter()
+                .all(|d| d.severity == crate::definitions::Severity::Warning)
         );
     }
 }
