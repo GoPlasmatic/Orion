@@ -19,7 +19,7 @@ orion-server clippy --explain <rule>
 
 A set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before any rule runs. One line names the range and this version.
 
-Needs no database or server. It takes the serving config with `-c` for the two rules that read `[vars]` and `[secrets]`.
+Needs no database or server. It takes the serving config with `-c` for the three rules that read `[vars]`, `[secrets]` and the `[models]` ceilings.
 
 
 
@@ -35,7 +35,7 @@ Needs no database or server. It takes the serving config with `-c` for the two r
 | `--list` | Every rule with its level, scope and summary. |
 | `--explain RULE` | One rule's rationale, its proof and when it is silent. |
 | `--definitions`, `--requires-*`, `--plugin-dir`, `--model-dir` | As `lint` takes them. A plugin function's `template_at` fields are analysed as the server evaluates them once its manifest is in the set; a model manifest is what the `lint` gate checks literal `model_infer` references against. |
-| `-c FILE` (global) | The serving instance's config. Only a config you name counts: the defaults say nothing about `[vars]` or `[secrets]`. |
+| `-c FILE` (global) | The serving instance's config. Only a config you name counts: the defaults say nothing about `[vars]`, `[secrets]` or `[models]`. |
 
 ## Returns
 

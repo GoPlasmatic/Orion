@@ -1,6 +1,6 @@
 <!-- description: The mistakes clippy deliberately does not report, and the reason each one cannot be reported without sometimes being wrong. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # What is not a rule, and why
 
@@ -27,6 +27,10 @@ Recorded so a future addition has to argue against the reason rather than redisc
 | A cron schedule that fires faster than its work takes | knowable only at run time, and visible where it is knowable: `skipped_singleton` occurrences and `orion_cron_schedule_lag_seconds` |
 | Anything about a [plugin](../plugin-manifest.md) function beyond what its manifest declares | a plugin's writes are already proven structurally through `output`, exactly as `crypto`'s are, and its reads arrive only through declared fields — there is no second proof source to add; a plugin function no manifest covers is unverifiable, and an unverifiable fact is not a certain one |
 | A template key that names a [tensor operator](../expressions.md#tensors-tensor) (`{"shape": …}` in a `map` mapping) | whether the author meant data or a call is not provable: `{"shape": {"var": "data.dims"}}` is a call on a set being written today and a literal on one stored before 1.8. `lint` reports the constant objects that do not evaluate as a call (`logic.tensor_operator_key`), `preflight` the dynamic ones too, both as advisories with the `$` escape as the remedy |
+| A `?` placeholder count that differs from `params` | on SQLite a missing value binds as `NULL` and the statement runs, and MySQL's behaviour is not established from source here; `sql check` asks the database instead |
+| A `$n` statement that skips a number while the count matches | Orion's value-shaped fallback declares the skipped parameter's type, and the statement runs |
+| A per-item `loop` slot read before this iteration writes it | the slot may be written by an earlier iteration on purpose — a running total is the common case |
+| A cron channel's `timeout_ms` above `cron.shutdown_timeout_secs` | a long job on a node that is not shutting down is fine; only a shutdown cuts it short, which is not a property of the definition |
 
 ## Related
 

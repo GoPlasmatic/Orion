@@ -1,0 +1,37 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "at-limit",
+      "name": "At the limit",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": "ada.c4-tiny",
+          "output": "data.a",
+          "timeout_ms": 500,
+          "input": { "board": { "var": "data.board" } }
+        }
+      }
+    },
+    {
+      "id": "computed",
+      "name": "Computed",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": "ada.c4-tiny",
+          "output": "data.b",
+          "timeout_ms": { "var": "data.req.budget" },
+          "input": { "board": { "var": "data.board" } }
+        }
+      }
+    }
+  ]
+}

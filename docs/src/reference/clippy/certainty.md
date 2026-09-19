@@ -18,16 +18,18 @@ Every rule's proof is one of these, and nothing else is admitted — no patterns
   which only `parse_json` brings into `data`; `metadata.vars` is stamped
   from `[vars]` and cannot be caller-supplied; `payload` is not in the
   context at all.
-- **Engine semantics read from source.** A terminal task halts after it
-  ran; a terminal group halts when its span closes; `channel_call` fails at
-  `max_channel_call_depth`; `map` applies mappings in order; every task
-  overwrites `metadata.progress`.
+- **Engine and handler semantics read from source.** A terminal task halts
+  after it ran; a terminal group halts when its span closes; `channel_call`
+  fails at `max_channel_call_depth`; `map` applies mappings in order and
+  skips a null result; every task overwrites `metadata.progress`;
+  `model_infer` takes the shorter deadline; the SQL binder refuses a bind of
+  the wrong length.
 - **The function registry.** Which functions write only their target;
   which input fields the engine evaluates.
 - **Structural identity.** Byte-identical after ids and names are
   stripped.
 - **The config you passed with `-c`.** The `[vars]` and `[secrets]` the
-  serving instance declares.
+  serving instance declares, and its `[models]` ceilings.
 
 ## Related
 

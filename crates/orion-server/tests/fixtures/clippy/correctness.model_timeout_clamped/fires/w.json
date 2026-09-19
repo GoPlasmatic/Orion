@@ -1,0 +1,19 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "score",
+      "name": "Score",
+      "function": {
+        "name": "model_infer",
+        "input": {
+          "model": "ada.c4-tiny",
+          "output": "data.score",
+          "timeout_ms": 5000,
+          "input": { "board": { "var": "data.board" } }
+        }
+      }
+    }
+  ]
+}

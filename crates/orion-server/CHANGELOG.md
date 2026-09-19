@@ -135,7 +135,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one identifier and doubled backticks as MySQL does, where the old scanner
   opened a dollar quote and ended the identifier early.
 
+- **Three `clippy` rules** ([#334]). `correctness.mapping_always_null`
+  (deny) fires on a `map` mapping whose `logic` folds to `null`, which `map`
+  skips, so the target is never written. `correctness.sql_bind_count` (deny)
+  counts a literal `db_read`/`db_write` statement's `$n` placeholders against
+  its literal `params`, where the statement is PostgreSQL — its syntax says
+  so, or the connector's literal connection string does — since PostgreSQL
+  refuses a mismatch on every execution. `correctness.model_timeout_clamped`
+  (warn, needs `-c`) fires on a literal `model_infer` `timeout_ms` above the
+  ceiling `[models]` gives that model, which the handler clamps silently.
+
 ### Changed
+
+- **`clippy` may newly fail a set that passed.** The two deny rules above
+  exit non-zero where they fire; each fires only on a definition that fails
+  or does nothing on every execution.
 
 - **`$sql` is a reserved key.** An object with a string `$sql` anywhere in a
   workflow's tasks, condition or loop, or a connector's or channel's config,
@@ -214,6 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both rules are now silent there.
 
 [#332]: https://github.com/GoPlasmatic/Orion/issues/332
+[#334]: https://github.com/GoPlasmatic/Orion/issues/334
 [#338]: https://github.com/GoPlasmatic/Orion/issues/338
 [#339]: https://github.com/GoPlasmatic/Orion/issues/339
 [#340]: https://github.com/GoPlasmatic/Orion/issues/340

@@ -1040,3 +1040,334 @@ impl Rule for UnorderedPage {
         }
     }
 }
+
+// ============================================================
+// correctness.mapping_always_null
+// ============================================================
+
+pub struct MappingAlwaysNull;
+
+impl Rule for MappingAlwaysNull {
+    fn id(&self) -> &'static str {
+        "correctness.mapping_always_null"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Deny
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn summary(&self) -> &'static str {
+        "a `map` mapping whose `logic` is always null, so it never writes"
+    }
+    fn explain(&self) -> &'static str {
+        "`map` evaluates each mapping's `logic` and assigns the result to `path` — unless \
+         the result is `null`, in which case the assignment is skipped and the path keeps \
+         whatever it held. A mapping whose `logic` is *always* null therefore never writes. \
+         Used to \"clear\" a slot, it silently does nothing; inside a `loop` the slot still \
+         holds the previous iteration's value.\n\n\
+         Proof: engine semantics read from source — dataflow-rs `map` skips a `Null` result \
+         (\"Null results skip assignment\"); and the engine's own evaluation — the datalogic \
+         compiler folded the whole `logic` to a constant, and the evaluator returned `null` \
+         for it.\n\n\
+         Silent when: the `logic` is not a compile-time constant. `{\"var\": \
+         \"temp_data.maybe\"}` may be null only at run time, and `{\"if\": [c, x, null]}` \
+         uses null on one branch to mean \"keep the current value\", which is a legitimate \
+         reading."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                if step.function.as_deref() != Some("map") {
+                    continue;
+                }
+                for (at, expr) in &step.expressions {
+                    let Some(index) = at
+                        .strip_prefix("mappings[")
+                        .and_then(|rest| rest.strip_suffix("].logic"))
+                        .and_then(|i| i.parse::<usize>().ok())
+                    else {
+                        continue;
+                    };
+                    if !expr.compiles || expr.constant != Some(Value::Null) {
+                        continue;
+                    }
+                    let destination = step
+                        .node
+                        .pointer(&format!("/function/input/mappings/{index}/path"))
+                        .and_then(Value::as_str)
+                        .map_or_else(|| "its destination".to_string(), |p| format!("`{p}`"));
+                    let in_loop = if wf.has_loop {
+                        " — inside this workflow's `loop`, the previous iteration's"
+                    } else {
+                        ""
+                    };
+                    out.push(
+                        Diagnostic::on_workflow(
+                            self,
+                            cx,
+                            wf,
+                            Some(&format!("{}.function.input.{at}", step.path)),
+                            format!(
+                                "`logic` is always null and `map` skips a null result, so \
+                                 {destination} keeps the value it already had{in_loop}"
+                            ),
+                        )
+                        .with_remedy(
+                            "write `false` to clear a slot later steps test, or remove the mapping",
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// correctness.sql_bind_count
+// ============================================================
+
+pub struct SqlBindCount;
+
+impl SqlBindCount {
+    /// The backend a `db` connector of the set names by a literal connection
+    /// string, classified by the pool's own `detect_backend`. `None` for a
+    /// connector the set does not carry, or one resolved at load.
+    fn set_backend(cx: &Analysis<'_>, name: &str) -> Option<crate::storage::DbBackend> {
+        let connector = cx
+            .compiled
+            .iter(crate::definitions::Entity::Connector)
+            .find(|def| def.doc.get("name").and_then(Value::as_str) == Some(name))?;
+        if connector.doc.get("connector_type").and_then(Value::as_str) != Some("db") {
+            return None;
+        }
+        let url = connector
+            .doc
+            .pointer("/config/connection_string")
+            .and_then(Value::as_str)?;
+        if crate::connector::secrets::is_resolvable_reference(url)
+            || url.starts_with(crate::config::vars::VAR_SCHEME)
+            || url.contains("${")
+        {
+            return None;
+        }
+        crate::storage::detect_backend(url).ok()
+    }
+}
+
+impl Rule for SqlBindCount {
+    fn id(&self) -> &'static str {
+        "correctness.sql_bind_count"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Deny
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn summary(&self) -> &'static str {
+        "a PostgreSQL statement's `$n` placeholders and its literal `params` differ in number"
+    }
+    fn explain(&self) -> &'static str {
+        "`db_read` and `db_write` bind the `params` array positionally to the statement's \
+         placeholders. On PostgreSQL the statement's parameter count is its highest `$n`, \
+         and a bind of a different length is refused — so the task fails every time it \
+         runs, which for a scheduled workflow can be hours after deploy.\n\n\
+         Proof: the registry — `query` is a literal string and `params` a literal array; \
+         the statement lexer the handlers use, so a `$1` inside a string, a comment or a \
+         dollar-quoted body is not counted; handler semantics read from source — \
+         `connector/sql_encode.rs` refuses a bind whose length differs from what the server \
+         declared, and sqlx sends the bind with exactly the values given; and that the \
+         backend is PostgreSQL, established either by the set's own connector (a literal \
+         `postgres://` connection string, classified by the same `detect_backend` the pool \
+         uses) or by the statement itself (a `::` cast or a `$tag$` body, which neither \
+         MySQL nor SQLite can parse).\n\n\
+         Silent when: `params` is computed rather than a literal array; the statement has \
+         no `$n`; the backend cannot be established (SQLite accepts `$n` and binds a missing \
+         value as NULL, so a mismatch there is not a failure); the statement skips a number \
+         but the count matches (Orion's value-shaped fallback declares the skipped \
+         parameter's type, and the statement runs); the statement contains an `E'…'` string \
+         or a backslash inside a string, where the lexer cannot be sure where the string \
+         ends. A `?` placeholder is never counted."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                if !matches!(step.function.as_deref(), Some("db_read" | "db_write")) {
+                    continue;
+                }
+                let Some(input) = step.node.pointer("/function/input") else {
+                    continue;
+                };
+                let Some(query) = input.get("query").and_then(Value::as_str) else {
+                    continue;
+                };
+                let given = match input.get("params") {
+                    None | Some(Value::Null) => 0,
+                    Some(Value::Array(items)) => items.len(),
+                    Some(_) => continue,
+                };
+                let scan = crate::sql_lex::placeholders(query);
+                let Some(highest) = scan.max_numbered() else {
+                    continue;
+                };
+                if !scan.certain {
+                    continue;
+                }
+                let proven = scan.postgres_only_syntax
+                    || input
+                        .get("connector")
+                        .and_then(Value::as_str)
+                        .and_then(|name| Self::set_backend(cx, name))
+                        == Some(crate::storage::DbBackend::Postgres);
+                if !proven {
+                    continue;
+                }
+                let highest = highest as usize;
+                if given == highest {
+                    continue;
+                }
+                let message = if given < highest {
+                    format!(
+                        "the statement's placeholders run to ${highest} but `params` binds \
+                         {given} value(s) — PostgreSQL refuses the bind on every execution"
+                    )
+                } else {
+                    format!(
+                        "`params` binds {given} value(s) but the statement's placeholders stop \
+                         at ${highest} — Orion refuses the bind (\"the query has {highest} \
+                         placeholder(s) but {given} parameter(s) were given\"); where a \
+                         placeholder's type has no typed binding the statement runs instead \
+                         and the extra value(s) are sent and never read"
+                    )
+                };
+                let field = if input.get("params").is_some() {
+                    "params"
+                } else {
+                    "query"
+                };
+                out.push(
+                    Diagnostic::on_workflow(
+                        self,
+                        cx,
+                        wf,
+                        Some(&format!("{}.function.input.{field}", step.path)),
+                        message,
+                    )
+                    .with_remedy(format!(
+                        "make `params` one value per placeholder, $1 … ${highest}"
+                    )),
+                );
+            }
+        }
+    }
+}
+
+// ============================================================
+// correctness.model_timeout_clamped
+// ============================================================
+
+pub struct ModelTimeoutClamped;
+
+impl Rule for ModelTimeoutClamped {
+    fn id(&self) -> &'static str {
+        "correctness.model_timeout_clamped"
+    }
+    fn group(&self) -> Group {
+        Group::Correctness
+    }
+    fn level(&self) -> Level {
+        Level::Warn
+    }
+    fn scope(&self) -> Scope {
+        Scope::Workflow
+    }
+    fn needs_config(&self) -> bool {
+        true
+    }
+    fn summary(&self) -> &'static str {
+        "a literal `model_infer` `timeout_ms` above the ceiling the config gives the model"
+    }
+    fn explain(&self) -> &'static str {
+        "`model_infer` runs under the shorter of the task's `timeout_ms` and the instance's \
+         ceiling for that model. A literal `timeout_ms` above the ceiling is accepted and \
+         lowered without any report, so the deadline the author wrote is not the one that \
+         runs.\n\n\
+         Proof: the config passed with `-c` — `[models] max_timeout_ms` and the \
+         `[[models.overrides]]` row for a literal model id, resolved by the same \
+         `Limits::effective` the loader calls; and handler semantics read from source — \
+         `timeout_ms.min(limit)`. With a computed model id the host ceiling is the bound, \
+         since an override can only lower it.\n\n\
+         Silent when: no `-c` was given (the rule is skipped with a note); `[models] \
+         enabled = false` in that config; `timeout_ms` is computed; it is not a positive \
+         integer (the handler refuses that at run time — a different finding)."
+    }
+
+    fn check(&self, cx: &Analysis<'_>, out: &mut Vec<Diagnostic>) {
+        let Some(config) = cx.config.filter(|c| c.models.enabled) else {
+            return;
+        };
+        let models = &config.models;
+        for wf in &cx.workflows {
+            for step in &wf.steps {
+                if step.function.as_deref() != Some("model_infer") {
+                    continue;
+                }
+                let constant = |field: &str| {
+                    step.expressions
+                        .iter()
+                        .find(|(at, _)| at == field)
+                        .and_then(|(_, e)| e.constant.clone())
+                };
+                let Some(timeout) = constant("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .filter(|t| *t > 0)
+                else {
+                    continue;
+                };
+                let (limit, source) = match constant("model") {
+                    Some(Value::String(id)) => {
+                        let limit = crate::model::Limits::effective(models, &id)
+                            .timeout
+                            .as_millis() as u64;
+                        let source = match models.override_for(&id).and_then(|o| o.timeout_ms) {
+                            Some(_) if limit < models.max_timeout_ms => {
+                                format!("[[models.overrides]] id = \"{id}\" timeout_ms")
+                            }
+                            _ => "[models] max_timeout_ms".to_string(),
+                        };
+                        (limit, source)
+                    }
+                    _ => (models.max_timeout_ms, "[models] max_timeout_ms".to_string()),
+                };
+                if timeout <= limit {
+                    continue;
+                }
+                out.push(
+                    Diagnostic::on_workflow(
+                        self,
+                        cx,
+                        wf,
+                        Some(&format!("{}.function.input.timeout_ms", step.path)),
+                        format!(
+                            "`timeout_ms` is {timeout} but this instance allows the model \
+                             {limit} ms ({source}) — the shorter deadline applies"
+                        ),
+                    )
+                    .with_remedy(format!(
+                        "lower `timeout_ms` to at most {limit}, or raise the ceiling in the \
+                         instance config"
+                    )),
+                );
+            }
+        }
+    }
+}
