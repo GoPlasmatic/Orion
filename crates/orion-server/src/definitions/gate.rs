@@ -105,6 +105,12 @@ pub fn gate_directory(
         None
     };
     let (mut set, report) = DefinitionSet::from_directory(dir)?;
+    // The binary checks itself first: a set declaring a range this build
+    // is outside of stops here with one line, before any finding about a
+    // feature this build predates.
+    if let Some(decl) = &report.shared.package {
+        decl.check_this_binary()?;
+    }
 
     // The loader's findings first — an unresolvable `$from`, a missing
     // fragment, a name defined twice — then the check pass's. Same class,

@@ -26,6 +26,19 @@ pub(crate) fn handle_validate_config(
     config: &config::AppConfig,
     format: ConfigFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The shape of `[packages]` was checked with the rest; its files only
+    // here and at startup, where they are about to be used.
+    let problems = orion::package::boot::check_files(&config.packages);
+    if !problems.is_empty() {
+        for (_, problem) in &problems {
+            eprintln!("error: {problem}");
+        }
+        return Err(format!(
+            "{} problem(s) with the [packages] artifacts",
+            problems.len()
+        )
+        .into());
+    }
     match format {
         ConfigFormat::Summary => print_config_summary(config),
         ConfigFormat::Toml => {
@@ -168,12 +181,92 @@ fn print_config_summary(config: &config::AppConfig) {
     );
 }
 
-/// `migrate [--dry-run]` subcommand: list or apply pending DB migrations.
+/// `--wait <DURATION>`: a bare integer is seconds (`60`); otherwise `<n>s`,
+/// `<n>m`, `<n>h` or `<n>d`. Zero is one attempt.
+pub(crate) fn parse_wait(value: &str) -> Result<std::time::Duration, String> {
+    let value = value.trim();
+    let secs = match value.parse::<u64>() {
+        Ok(secs) => secs,
+        Err(_) => orion::engine::functions::connector_helpers::parse_duration_secs(value)?,
+    };
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// Open the state database for a CLI subcommand, printing a line on stderr
+/// for every retry so a wait is never silent.
+///
+/// Without `wait` the window and the retry-everything policy are the
+/// server's own (`storage.connect_retry_secs`). With it, the window is the
+/// flag's, only connection failures are retried, and giving up says how
+/// long it waited.
+async fn open_state_db(
+    config: &config::AppConfig,
+    wait: Option<std::time::Duration>,
+) -> Result<orion::storage::DbPool, Box<dyn std::error::Error>> {
+    use orion::storage::{ConnectWait, RetryReport};
+
+    let started = std::time::Instant::now();
+    let on_retry = |report: &RetryReport<'_>| {
+        eprintln!(
+            "waiting for the state database ({}) … {}s",
+            report.reason,
+            report.elapsed.as_secs()
+        );
+    };
+    let policy = ConnectWait {
+        window: wait.unwrap_or(std::time::Duration::from_secs(
+            config.storage.connect_retry_secs,
+        )),
+        transient_only: wait.is_some(),
+        on_retry: Some(&on_retry),
+    };
+    match orion::storage::init_pool_no_migrate_waiting(&config.storage, policy).await {
+        Ok(pool) => Ok(pool),
+        Err(err) if wait.is_some() && orion::storage::is_transient_connect_error(&err) => {
+            Err(Box::new(WaitExhausted {
+                what: "state database",
+                waited: started.elapsed(),
+                source: Box::new(err),
+            }))
+        }
+        Err(err) => Err(Box::new(err)),
+    }
+}
+
+/// A dependency still unreachable when `--wait` ran out. The cause chain
+/// `main` prints carries the last error's own text.
+#[derive(Debug)]
+struct WaitExhausted {
+    what: &'static str,
+    waited: std::time::Duration,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl std::fmt::Display for WaitExhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} not reachable after {}s",
+            self.what,
+            self.waited.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for WaitExhausted {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// `migrate [--dry-run] [--wait]` subcommand: list or apply pending DB
+/// migrations.
 pub(crate) async fn handle_migrate(
     config: &config::AppConfig,
     dry_run: bool,
+    wait: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
+    let pool = open_state_db(config, wait).await?;
     let backend = pool.backend();
     let pending = orion::storage::pending_migrations(&pool).await?;
 
@@ -372,21 +465,33 @@ pub(crate) fn read_expanded_workflow(
     let mut doc: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("'{path}' is not valid JSON: {e}"))?;
 
-    let Some(catalog) = definitions.filter(|c| c.dir.is_some()) else {
-        // Without a catalog an unexpanded `use` reaches validation as a task
-        // with no `name` and no `function`, and is refused for *that* — an
-        // error that describes the symptom and hides the cause. Say the cause.
-        if let Some(reference) = orion::definitions::first_reference(&doc) {
-            return Err(format!(
-                "'{path}' contains {reference}, but no --definitions directory was \
-                 given to resolve it against"
-            )
-            .into());
+    // Every document runs the pipeline, catalog or not: a `$sql` file
+    // reference resolves against the workflow's own directory and needs no
+    // `--definitions`. The set root, when one is named, bounds where it may
+    // point.
+    let catalog = definitions.filter(|c| c.dir.is_some());
+    let empty = orion::definitions::SharedDefinitions::default();
+    let base_dir = std::path::Path::new(path).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            p.to_path_buf()
         }
-        return Ok(doc);
-    };
+    });
+    let root = catalog
+        .and_then(|c| c.dir.as_deref())
+        .map(std::path::Path::new);
     let mut findings = Vec::new();
-    catalog.shared.expand(&mut doc, path, &mut findings);
+    orion::definitions::compile::compile(
+        &mut doc,
+        &orion::definitions::Cx {
+            shared: catalog.map_or(&empty, |c| &c.shared),
+            origin: path,
+            base_dir: base_dir.as_deref(),
+            root,
+        },
+        &mut findings,
+    );
 
     let errors = findings.iter().filter(|f| f.is_error()).count();
     for finding in &findings {
@@ -395,10 +500,24 @@ pub(crate) fn read_expanded_workflow(
     if errors > 0 {
         // An unresolved reference cannot be run past — the document that
         // reaches the engine would be missing whatever the reference stood for.
-        return Err(format!(
-            "{errors} unresolved reference(s) expanding '{path}' against '{}'",
-            catalog.dir.as_deref().unwrap_or_default()
-        )
+        return Err(match catalog.and_then(|c| c.dir.as_deref()) {
+            Some(dir) => {
+                format!("{errors} unresolved reference(s) expanding '{path}' against '{dir}'")
+            }
+            // Without a catalog, a fragment or shared value cannot resolve —
+            // say that, rather than leave the author reading a finding about
+            // a name that is simply not in scope.
+            None if findings
+                .iter()
+                .any(|f| matches!(f.check, "closure.fragment" | "closure.shared_value")) =>
+            {
+                format!(
+                    "{errors} unresolved reference(s) in '{path}': no --definitions directory \
+                     was given to resolve it against"
+                )
+            }
+            None => format!("{errors} unresolved reference(s) in '{path}'"),
+        }
         .into());
     }
     Ok(doc)
@@ -471,6 +590,11 @@ impl Catalog {
         if let Some(dir) = dir {
             let (loaded, shared_findings) =
                 orion::definitions::SharedDefinitions::from_directory(std::path::Path::new(dir))?;
+            // Before anything the catalog reports: a set this binary is too
+            // old for says so in one line.
+            if let Some(decl) = &loaded.package {
+                decl.check_this_binary()?;
+            }
             shared = loaded;
             findings.extend(shared_findings);
             // The manifests in the definitions tree are part of its catalog
@@ -863,7 +987,13 @@ fn load_and_gate(
     deny_warnings: bool,
     plugin_dirs: &[String],
     model_dirs: &[String],
-) -> Result<orion::definitions::DefinitionSet, Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        orion::definitions::DefinitionSet,
+        Option<orion::definitions::PackageDecl>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let report = orion::definitions::gate_directory(
         std::path::Path::new(dir),
         &boundary,
@@ -942,7 +1072,7 @@ fn load_and_gate(
     if deny_warnings && warnings > 0 {
         return Err(format!("{warnings} warning(s) in '{dir}' and --deny-warnings is set").into());
     }
-    Ok(report.set)
+    Ok((report.set, report.shared.package))
 }
 
 /// What `compile` writes.
@@ -979,6 +1109,12 @@ pub(crate) struct CompileRequest<'a> {
     /// for the other two, which emit no package envelope.
     pub(crate) name: Option<&'a str>,
     pub(crate) version: Option<&'a str>,
+    /// With `--version content`, what stands before the hex.
+    pub(crate) version_prefix: Option<&'a str>,
+    /// A directory of detached signatures to write into the entries.
+    pub(crate) signatures: Option<&'a str>,
+    /// `--requires-orion`: the range the artifact declares, over the set's.
+    pub(crate) requires_orion: Option<&'a str>,
     /// Names the set may reference without containing — the linter's boundary,
     /// and the artifact's `requires`.
     pub(crate) boundary: orion::definitions::Boundary,
@@ -1002,16 +1138,32 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
     // and letting the server derive it is an ordinary way to author a set, and
     // it is what the sets that motivated this command do.
     let requires_ids = req.format == CompileFormat::Artifact;
-    let (name, version) = match req.format {
-        CompileFormat::Artifact => match (req.name, req.version) {
-            (Some(n), Some(v)) => (n, v),
-            _ => return Err("--name and --version are required for --format artifact".into()),
+    let version = match req.format {
+        CompileFormat::Artifact => match req.version {
+            Some(v) => crate::package_cli::VersionSpec::parse(v, req.version_prefix)?,
+            None => {
+                return Err("--version is required for --format artifact (and --name, \
+                            unless the set declares package.name)"
+                    .into());
+            }
         },
-        _ => ("", ""),
+        _ => crate::package_cli::VersionSpec::Literal(""),
     };
+    if let Some(name) = req.name {
+        // Refused here rather than by the target at `apply`.
+        orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
+    }
+    let requires_orion = req
+        .requires_orion
+        .map(|range| {
+            orion::version::OrionRequirement::parse(range)
+                .map(|r| r.as_str().to_string())
+                .map_err(|e| format!("--requires-orion {e}"))
+        })
+        .transpose()?;
 
     let requires = req.boundary.clone();
-    let set = load_and_gate(
+    let (set, package) = load_and_gate(
         req.dir,
         req.boundary,
         requires_ids,
@@ -1020,14 +1172,44 @@ pub(crate) fn run_compile(req: CompileRequest<'_>) -> Result<(), Box<dyn std::er
         req.model_dirs,
     )?;
 
+    // The name: the flag, else what the set declares. The range: the flag,
+    // else the set's — carried into `requires.orion`, where `plan` and
+    // `apply` hold the target to it.
+    let declared_name = package.as_ref().and_then(|p| p.name.clone());
+    let name = match (req.name, &declared_name) {
+        (Some(flag), Some(declared)) if flag != declared => {
+            eprintln!(
+                "note: --name '{flag}' overrides package.name '{declared}' ({})",
+                package
+                    .as_ref()
+                    .map(|p| p.origin.as_str())
+                    .unwrap_or_default()
+            );
+            flag.to_string()
+        }
+        (Some(flag), _) => flag.to_string(),
+        (None, Some(declared)) => declared.clone(),
+        (None, None) if req.format == CompileFormat::Artifact => {
+            return Err(
+                "--name is required for --format artifact (or declare package.name in the set)"
+                    .into(),
+            );
+        }
+        (None, None) => String::new(),
+    };
+    let requires_orion =
+        requires_orion.or_else(|| package.as_ref().and_then(|p| p.requires_orion.clone()));
+
     match req.format {
         CompileFormat::Artifact => emit_artifact(
             &set,
             req.dir,
-            name,
+            &name,
             version,
             requires,
+            requires_orion,
             req.no_activate,
+            req.signatures,
             req.output,
         ),
         CompileFormat::Dir => emit_dir(&set, req.dir, require_output(req.output, "--format dir")?),
@@ -1050,13 +1232,16 @@ fn require_output<'a>(
 /// `artifact_content_hash`, so an artifact this command writes and one
 /// `package export` writes are the same kind of document — including the
 /// hash, which `plan`, `apply` and `diff` all verify before doing anything.
+#[allow(clippy::too_many_arguments)]
 fn emit_artifact(
     set: &orion::definitions::DefinitionSet,
     dir: &str,
     name: &str,
-    version: &str,
+    version: crate::package_cli::VersionSpec<'_>,
     requires: orion::definitions::Boundary,
+    requires_orion: Option<String>,
     no_activate: bool,
+    signatures: Option<&str>,
     output: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use orion::definitions::Entity;
@@ -1106,13 +1291,14 @@ fn emit_artifact(
     let mut artifact = crate::package_cli::PackageArtifact {
         package: crate::package_cli::PackageMeta {
             name: name.to_string(),
-            version: version.to_string(),
+            version: String::new(),
             orion: env!("CARGO_PKG_VERSION").to_string(),
             content_hash: String::new(),
             exported_from: dir.to_string(),
             exported_at: chrono::Utc::now().to_rfc3339(),
         },
         requires: crate::package_cli::Requires {
+            orion: requires_orion,
             channels: requires.channels,
             connectors: requires.connectors,
             plugins: Vec::new(),
@@ -1125,7 +1311,46 @@ fn emit_artifact(
         workflows,
         channels,
     };
+    // A build-time signer's signatures, before anything is written — an
+    // orphan or malformed `.sig` stops the compile. The set still knows each
+    // model's local artifact file, so its name is a candidate too.
+    if let Some(dir) = signatures {
+        let dir = std::path::Path::new(dir);
+        let local_name = |subject: &orion::signatures::Subject| -> Vec<String> {
+            if subject.kind != orion::signatures::Kind::Model {
+                return Vec::new();
+            }
+            set.models
+                .iter()
+                .filter(|m| m.manifest.name == subject.id)
+                .filter_map(|m| m.artifact_path.as_deref()?.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .collect()
+        };
+        let report = orion::package::sign::attach_signatures(
+            &mut artifact,
+            dir,
+            &local_name,
+            &orion::package::Console,
+        )?;
+        for (subject, outcome) in &report {
+            if let orion::signatures::Outcome::Unsigned { looked_for } = outcome {
+                eprintln!(
+                    "note: {} '{}' is unsigned (no {} in {})",
+                    subject.kind.noun(),
+                    subject.id,
+                    looked_for.join(" or "),
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    // The version is outside the hash, so it can be derived from it: hash
+    // first, name second.
     artifact.package.content_hash = crate::package_cli::artifact_content_hash(&artifact)?;
+    artifact.package.version = version.resolve(&artifact.package.content_hash)?;
+    version.note_what_the_hash_excludes(&artifact);
 
     let rendered = serde_json::to_string_pretty(&artifact)?;
     match output {
@@ -1423,6 +1648,37 @@ pub(crate) fn run_fmt(
         }
     }
 
+    // A set declaring a range this binary is outside of is not formatted at
+    // all: the style tables differ between versions, so formatting with the
+    // wrong binary is itself the failure. Only a directory's files are
+    // consulted — `fmt examples/` spans many sets, each checked on its own.
+    for path in paths {
+        let path = std::path::Path::new(path);
+        if !path.is_dir() {
+            continue;
+        }
+        for file in orion::definitions::json_files(path).unwrap_or_default() {
+            let Some(doc) = std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .filter(orion::definitions::SharedDefinitions::is_package_declaration)
+            else {
+                continue;
+            };
+            let decl = orion::definitions::PackageDecl {
+                origin: file.display().to_string(),
+                name: None,
+                requires_orion: doc["package"]["requires"]["orion"]
+                    .as_str()
+                    .map(str::to_string),
+            };
+            if let Err(e) = decl.check_this_binary() {
+                eprintln!("error: {e} — nothing was formatted");
+                return Ok(2);
+            }
+        }
+    }
+
     let mut changed = 0usize;
     let mut unchanged = 0usize;
     for file in &files {
@@ -1590,6 +1846,10 @@ pub(crate) struct ClippyRequest<'a> {
     /// The serving instance's config when `-c` named one — the rules that
     /// need it are skipped otherwise, and say so.
     pub(crate) config: Option<&'a orion::config::AppConfig>,
+    /// Apply the fixes the rules proved to the source files.
+    pub(crate) fix: bool,
+    /// With `fix`: print the diffs and write nothing.
+    pub(crate) fix_check: bool,
 }
 
 /// `clippy --list`: the registry as a table.
@@ -1619,6 +1879,20 @@ pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::
     }
 }
 
+/// How many times `clippy --fix` re-analyses after writing: one pass to fix
+/// and one to verify, normally; the cap bounds a fix that keeps exposing
+/// another.
+const MAX_FIX_PASSES: usize = 8;
+
+/// What `clippy` loaded: the source set, the compiled one, the catalog and
+/// the gate's findings.
+struct ClippyLoaded {
+    raw: orion::definitions::DefinitionSet,
+    compiled: orion::definitions::DefinitionSet,
+    shared: orion::definitions::SharedDefinitions,
+    findings: Vec<orion::definitions::clippy::Diagnostic>,
+}
+
 /// `clippy <path>`: `lint`'s gate first, then every rule over the set.
 ///
 /// Exit `1` on any error — a `lint` error or a `deny` rule — and on a
@@ -1626,12 +1900,94 @@ pub(crate) fn run_clippy_explain(rule: &str) -> Result<i32, Box<dyn std::error::
 /// set. Rules run only when `lint` is clean: a rule over a document the API
 /// would refuse produces a second finding about the same mistake, and a
 /// false one.
+///
+/// With `--fix`, the fixes the rules proved are applied to the source files
+/// — each verified by recompiling the edited file — and the set is analysed
+/// again; what is reported, and the exit code, are the last analysis. With
+/// `--fix --check` nothing is written: the diffs are printed, and exit `1`
+/// says something would change.
 pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::error::Error>> {
-    use orion::definitions::clippy::Diagnostic;
+    use orion::definitions::Entity;
+    let mut pass = 0usize;
+    let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut would_change = false;
+    loop {
+        let Some(loaded) = clippy_load(&req, pass == 0)? else {
+            return Ok(2);
+        };
+        let ClippyAnalysis {
+            diagnostics,
+            skipped,
+            lint_errors,
+        } = clippy_analyse(&req, &loaded)?;
+        let fixing = req.fix && lint_errors == 0 && pass < MAX_FIX_PASSES;
+        let changed = if fixing {
+            clippy_fix(&req, &loaded, &diagnostics, &mut reported)?
+        } else {
+            0
+        };
+        if changed > 0 && !req.fix_check {
+            pass += 1;
+            continue;
+        }
+        would_change |= changed > 0;
+
+        let errors = diagnostics.iter().filter(|d| d.is_error()).count();
+        let warnings = diagnostics.iter().filter(|d| d.is_warning()).count();
+        match req.format {
+            ClippyFormat::Json => {
+                for d in &diagnostics {
+                    println!("{}", d.render_json());
+                }
+            }
+            ClippyFormat::Text => {
+                for d in &diagnostics {
+                    eprintln!("{}", d.render_text());
+                }
+                for rule in &skipped {
+                    eprintln!(
+                        "note: [{rule}] skipped — needs the serving config (-c <config.toml>)"
+                    );
+                }
+                if lint_errors > 0 {
+                    println!(
+                        "{}: {lint_errors} lint error(s) — fix those first; clippy's rules did not \
+                         run",
+                        req.path
+                    );
+                } else {
+                    println!(
+                        "{}: {} workflow(s), {} channel(s), {} connector(s) — {errors} error(s), \
+                         {warnings} warning(s) from {} rule(s)",
+                        req.path,
+                        loaded.compiled.count(Entity::Workflow),
+                        loaded.compiled.count(Entity::Channel),
+                        loaded.compiled.count(Entity::Connector),
+                        orion::definitions::clippy::registry().len() - skipped.len()
+                    );
+                }
+            }
+        }
+        return Ok(
+            if errors > 0 || (req.deny_warnings && warnings > 0) || would_change {
+                1
+            } else {
+                0
+            },
+        );
+    }
+}
+
+/// Load the set (or the one file) `clippy` was pointed at. `None` when the
+/// path cannot be read as a set — already reported, exit `2`.
+fn clippy_load(
+    req: &ClippyRequest<'_>,
+    report_notices: bool,
+) -> Result<Option<ClippyLoaded>, Box<dyn std::error::Error>> {
     use orion::definitions::{DefinitionSet, Entity, SharedDefinitions};
 
     let path = std::path::Path::new(req.path);
-    let (raw, compiled, shared, mut findings) = if path.is_dir() {
+    if path.is_dir() {
         // The same gate `lint <dir>` runs — one sequence, so a file this
         // command cannot read is reported by both or by neither. `want_raw`
         // because the duplication rules read the *source* form: two documents
@@ -1646,121 +2002,266 @@ pub(crate) fn run_clippy(req: ClippyRequest<'_>) -> Result<i32, Box<dyn std::err
             req.plugin_dirs,
             req.model_dirs,
         )?;
-        for notice in report.notices() {
-            eprintln!("{notice}");
+        if report_notices {
+            for notice in report.notices() {
+                eprintln!("{notice}");
+            }
         }
         if report.set.is_empty() {
             eprintln!("error: no definitions found under '{}'", req.path);
-            return Ok(2);
+            return Ok(None);
         }
         let raw = report
             .raw
             .unwrap_or_else(|| DefinitionSet::from_entries([]));
-        (raw, report.set, report.shared, report.findings)
-    } else if path.is_file() {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
-        let doc: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("'{}' is not valid JSON: {e}", req.path))?;
-        let Some(entity) = Entity::classify(&doc) else {
-            eprintln!(
-                "error: '{}' is not a channel, workflow or connector (no 'tasks', 'channel_type' \
-                 or 'connector_type')",
-                req.path
-            );
-            return Ok(2);
-        };
-        let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs, req.model_dirs)?;
-        let (shared, plugins, models) = catalog
-            .map(|c| (c.shared, c.plugins, c.models))
-            .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
-        let mut findings = Vec::new();
-        let mut compiled_doc = doc.clone();
-        orion::definitions::compile::compile(
-            &mut compiled_doc,
-            &orion::definitions::Cx {
-                shared: &shared,
-                origin: req.path,
-            },
-            &mut findings,
-        );
-        let raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
-        let mut compiled =
-            DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
-        compiled.plugins = plugins;
-        compiled.models = models;
-        let registry = compiled.function_registry()?;
-        findings.extend(orion::definitions::check(
-            &compiled,
-            &req.boundary,
-            false,
-            &registry,
-        ));
-        (raw, compiled, shared, findings)
-    } else {
+        return Ok(Some(ClippyLoaded {
+            raw,
+            compiled: report.set,
+            shared: report.shared,
+            findings: report.findings,
+        }));
+    }
+    if !path.is_file() {
         eprintln!("error: '{}' is not a file or directory", req.path);
-        return Ok(2);
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("read '{}': {e}", req.path))?;
+    let doc: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("'{}' is not valid JSON: {e}", req.path))?;
+    let Some(entity) = Entity::classify(&doc) else {
+        eprintln!(
+            "error: '{}' is not a channel, workflow or connector (no 'tasks', 'channel_type' \
+             or 'connector_type')",
+            req.path
+        );
+        return Ok(None);
     };
+    let catalog = Catalog::load_opt(req.definitions, req.plugin_dirs, req.model_dirs)?;
+    let (shared, plugins, models) = catalog
+        .map(|c| (c.shared, c.plugins, c.models))
+        .unwrap_or_else(|| (SharedDefinitions::default(), Vec::new(), Vec::new()));
+    let mut findings = Vec::new();
+    let mut compiled_doc = doc.clone();
+    let base_dir = clippy_base_dir(req.path);
+    let mut provenance = orion::definitions::SourceMap::default();
+    orion::definitions::compile::compile_with_map(
+        &mut compiled_doc,
+        &orion::definitions::Cx {
+            shared: &shared,
+            origin: req.path,
+            base_dir: base_dir.as_deref(),
+            root: req.definitions.map(std::path::Path::new),
+        },
+        &mut findings,
+        &mut provenance,
+    );
+    let mut raw = DefinitionSet::from_entries([(entity, req.path.to_string(), doc)]);
+    // The source text, for `--fix` — the edit lands in it.
+    if let Some(def) = raw.definitions.first_mut() {
+        def.spans = orion::definitions::json::Document::parse(&text).ok();
+    }
+    let mut compiled = DefinitionSet::from_entries([(entity, req.path.to_string(), compiled_doc)]);
+    if let Some(def) = compiled.definitions.first_mut() {
+        def.provenance = provenance;
+    }
+    compiled.plugins = plugins;
+    compiled.models = models;
+    let registry = compiled.function_registry()?;
+    findings.extend(orion::definitions::check(
+        &compiled,
+        &req.boundary,
+        false,
+        &registry,
+    ));
+    Ok(Some(ClippyLoaded {
+        raw,
+        compiled,
+        shared,
+        findings,
+    }))
+}
 
-    // No conversion: `check` and the clippy rules now report the same type, so
-    // a clippy run is a superset of a lint run by construction rather than by
-    // an upcast that dropped the location half of every field it copied.
-    let mut diagnostics: Vec<Diagnostic> = std::mem::take(&mut findings);
+/// The directory a file's relative references resolve against.
+fn clippy_base_dir(path: &str) -> Option<std::path::PathBuf> {
+    std::path::Path::new(path).parent().map(|p| {
+        if p.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            p.to_path_buf()
+        }
+    })
+}
+
+/// What one analysis produced: every diagnostic, the rules skipped for want
+/// of `-c`, and how many of the diagnostics are `lint` errors.
+struct ClippyAnalysis {
+    diagnostics: Vec<orion::definitions::clippy::Diagnostic>,
+    skipped: Vec<&'static str>,
+    lint_errors: usize,
+}
+
+/// The gate's findings plus, when `lint` is clean, every rule's.
+fn clippy_analyse(
+    req: &ClippyRequest<'_>,
+    loaded: &ClippyLoaded,
+) -> Result<ClippyAnalysis, Box<dyn std::error::Error>> {
+    // No conversion: `check` and the clippy rules report the same type, so
+    // a clippy run is a superset of a lint run by construction.
+    let mut diagnostics = loaded.findings.clone();
     let lint_errors = diagnostics.iter().filter(|d| d.is_error()).count();
-    let mut skipped: Vec<&str> = Vec::new();
+    let mut skipped = Vec::new();
     if lint_errors == 0 {
         // The same registry the gate read: the set's own manifests join the
         // built-ins, so a plugin function's template fields are analysed
         // exactly as the server would evaluate them.
-        let registry = compiled.function_registry()?;
+        let registry = loaded.compiled.function_registry()?;
         let analysis = orion::definitions::analysis::Analysis::new(
-            &raw, &compiled, &shared, req.config, &registry,
+            &loaded.raw,
+            &loaded.compiled,
+            &loaded.shared,
+            req.config,
+            &registry,
         );
         let report = orion::definitions::clippy::run(&analysis);
         diagnostics.extend(report.diagnostics);
         skipped = report.skipped;
     }
+    Ok(ClippyAnalysis {
+        diagnostics,
+        skipped,
+        lint_errors,
+    })
+}
 
-    let errors = diagnostics.iter().filter(|d| d.is_error()).count();
-    let warnings = diagnostics.iter().filter(|d| d.is_warning()).count();
-
-    match req.format {
-        ClippyFormat::Json => {
-            for d in &diagnostics {
-                println!("{}", d.render_json());
-            }
-        }
-        ClippyFormat::Text => {
-            for d in &diagnostics {
-                eprintln!("{}", d.render_text());
-            }
-            for rule in &skipped {
-                eprintln!("note: [{rule}] skipped — needs the serving config (-c <config.toml>)");
-            }
-            if lint_errors > 0 {
-                println!(
-                    "{}: {lint_errors} lint error(s) — fix those first; clippy's rules did not run",
-                    req.path
-                );
-            } else {
-                println!(
-                    "{}: {} workflow(s), {} channel(s), {} connector(s) — {errors} error(s), \
-                     {warnings} warning(s) from {} rule(s)",
-                    req.path,
-                    compiled.count(Entity::Workflow),
-                    compiled.count(Entity::Channel),
-                    compiled.count(Entity::Connector),
-                    orion::definitions::clippy::registry().len() - skipped.len()
-                );
-            }
+/// Apply every fix the rules proved, file by file, each verified against
+/// the compiler; then re-check the whole set with the edits in place and
+/// drop the edit of any file an error names. Writes the files — or, with
+/// `--check`, prints their diffs — and returns how many changed.
+fn clippy_fix(
+    req: &ClippyRequest<'_>,
+    loaded: &ClippyLoaded,
+    diagnostics: &[orion::definitions::clippy::Diagnostic],
+    reported: &mut std::collections::BTreeSet<String>,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    use orion::definitions::fix::{Fix, Refusal};
+    let mut by_file: std::collections::BTreeMap<&str, Vec<(&'static str, Fix)>> =
+        std::collections::BTreeMap::new();
+    for d in diagnostics {
+        if let (Some(fix), Some(file)) = (&d.fix, &d.file) {
+            by_file
+                .entry(file.as_str())
+                .or_default()
+                .push((d.check, fix.clone()));
         }
     }
+    let mut note = |rule: &str, file: &str, fix: &Fix, refusal: &Refusal| {
+        let line = format!("note: [{rule}] {file}: not fixed — {refusal}");
+        if reported.insert(format!("{file}\u{1f}{fix}")) {
+            eprintln!("{line}");
+        }
+    };
+    let mut edits: Vec<(String, String, serde_json::Value, Vec<Fix>)> = Vec::new();
+    for (file, fixes) in &by_file {
+        let rule_of = |fix: &Fix| {
+            fixes
+                .iter()
+                .find(|(_, f)| f == fix)
+                .map_or("clippy", |(rule, _)| *rule)
+        };
+        let source = loaded.raw.definitions.iter().find(|d| d.origin == *file);
+        let Some(compiled) = loaded
+            .compiled
+            .definitions
+            .iter()
+            .find(|d| d.origin == *file)
+        else {
+            continue;
+        };
+        let base_dir = clippy_base_dir(file);
+        let root = if std::path::Path::new(req.path).is_dir() {
+            Some(std::path::Path::new(req.path))
+        } else {
+            req.definitions.map(std::path::Path::new)
+        };
+        let recompile = |value: &serde_json::Value| {
+            let mut doc = value.clone();
+            let mut findings = Vec::new();
+            orion::definitions::compile::compile(
+                &mut doc,
+                &orion::definitions::Cx {
+                    shared: &loaded.shared,
+                    origin: file,
+                    base_dir: base_dir.as_deref(),
+                    root,
+                },
+                &mut findings,
+            );
+            (!findings.iter().any(|f| f.is_error())).then_some(doc)
+        };
+        let only: Vec<Fix> = fixes.iter().map(|(_, fix)| fix.clone()).collect();
+        let outcome = orion::definitions::fix::apply(
+            source.and_then(|d| d.spans.as_ref()),
+            &compiled.doc,
+            &only,
+            &recompile,
+        );
+        for (fix, refusal) in &outcome.refused {
+            note(rule_of(fix), file, fix, refusal);
+        }
+        if let (Some(text), Some(folded)) = (outcome.text, outcome.compiled) {
+            edits.push((file.to_string(), text, folded, outcome.applied));
+        }
+    }
+    if edits.is_empty() {
+        return Ok(0);
+    }
 
-    Ok(if errors > 0 || (req.deny_warnings && warnings > 0) {
-        1
-    } else {
-        0
-    })
+    // The set with every edit in place: anything set-level — a duplicate id
+    // across the estate, a depth the per-file fold could not see — refuses
+    // the edit of the file it names.
+    let mut edited = loaded.compiled.clone();
+    for (file, _, folded, _) in &edits {
+        if let Some(def) = edited.definitions.iter_mut().find(|d| d.origin == *file) {
+            def.doc = folded.clone();
+        }
+    }
+    let registry = edited.function_registry()?;
+    let broken: std::collections::BTreeMap<String, String> =
+        orion::definitions::check(&edited, &req.boundary, false, &registry)
+            .into_iter()
+            .filter(|f| f.is_error())
+            .filter_map(|f| Some((f.file.clone()?, f.message.clone())))
+            .collect();
+
+    let mut changed = 0usize;
+    for (file, text, _, applied) in edits {
+        if let Some(reason) = broken.get(&file) {
+            for fix in &applied {
+                note(
+                    "clippy",
+                    &file,
+                    fix,
+                    &Refusal::Format(format!("the set would not lint afterwards: {reason}")),
+                );
+            }
+            continue;
+        }
+        let before = std::fs::read_to_string(&file).map_err(|e| format!("read '{file}': {e}"))?;
+        if before == text {
+            continue;
+        }
+        changed += 1;
+        if req.fix_check {
+            print!("{}", unified_diff(&file, &before, &text));
+            continue;
+        }
+        write_atomically(std::path::Path::new(&file), &text)
+            .map_err(|e| format!("write '{file}': {e}"))?;
+        for fix in &applied {
+            eprintln!("fixed {file}: {fix}");
+        }
+    }
+    Ok(changed)
 }
 
 /// Print the OpenAPI spec to stdout. Backs the checked-in `docs/openapi.json`
@@ -2227,9 +2728,13 @@ pub(crate) async fn run_preflight(
 /// credentials surface only at first request" footgun.
 pub(crate) async fn run_test_connectivity(
     config: &config::AppConfig,
+    wait: Option<std::time::Duration>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // One deadline for the whole command, not one per dependency: the flag
+    // answers "block until Orion's dependencies are up".
+    let started = std::time::Instant::now();
     eprintln!("Probing storage at {} ...", redacted(&config.storage.url));
-    let pool = orion::storage::init_pool_no_migrate(&config.storage)
+    let pool = open_state_db(config, wait)
         .await
         .map_err(|e| format!("storage: connection failed: {e}"))?;
     let pending = orion::storage::pending_migrations(&pool)
@@ -2242,13 +2747,41 @@ pub(crate) async fn run_test_connectivity(
     if config.kafka.enabled {
         let broker_list: Vec<String> = config.kafka.brokers.iter().map(|b| redacted(b)).collect();
         eprintln!("Probing Kafka brokers {} ...", broker_list.join(","));
-        let kafka_config = config.kafka.clone();
-        let brokers = tokio::task::spawn_blocking(move || {
-            orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
-        })
-        .await
-        .map_err(|e| format!("kafka: probe task failed: {e}"))?
-        .map_err(|e| format!("kafka: {e}"))?;
+        let deadline = wait.map(|w| started + w);
+        let mut failures = 0u32;
+        let brokers = loop {
+            let kafka_config = config.kafka.clone();
+            let probe = tokio::task::spawn_blocking(move || {
+                orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
+            })
+            .await
+            .map_err(|e| format!("kafka: probe task failed: {e}"))?;
+            match probe {
+                Ok(brokers) => break brokers,
+                Err(e) => {
+                    failures += 1;
+                    let backoff = std::time::Duration::from_millis(250u64 << failures.min(5))
+                        .min(std::time::Duration::from_secs(5));
+                    match deadline {
+                        Some(deadline) if std::time::Instant::now() + backoff <= deadline => {
+                            eprintln!(
+                                "waiting for Kafka ({e}) … {}s",
+                                (started.elapsed() + backoff).as_secs()
+                            );
+                            tokio::time::sleep(backoff).await;
+                        }
+                        Some(_) => {
+                            return Err(format!(
+                                "kafka: not reachable after {}s: {e}",
+                                started.elapsed().as_secs()
+                            )
+                            .into());
+                        }
+                        None => return Err(format!("kafka: {e}").into()),
+                    }
+                }
+            }
+        };
         println!("  kafka:           OK ({brokers} brokers visible)");
     } else {
         println!("  kafka:           disabled");
@@ -2749,5 +3282,28 @@ fn subset_mismatch(
         }
         _ if expected == actual => Vec::new(),
         _ => vec![format!("{path}: expected {expected}, got {actual}")],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn parse_wait_accepts_seconds_and_units() {
+        assert_eq!(parse_wait("60"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("60s"), Ok(Duration::from_secs(60)));
+        assert_eq!(parse_wait("5m"), Ok(Duration::from_secs(300)));
+        assert_eq!(parse_wait("1h"), Ok(Duration::from_secs(3600)));
+        assert_eq!(parse_wait("0"), Ok(Duration::ZERO));
+        assert_eq!(parse_wait("0s"), Ok(Duration::ZERO));
+    }
+
+    #[test]
+    fn parse_wait_refuses_garbage() {
+        for bad in ["", "soon", "5x", "-1", "1.5m"] {
+            assert!(parse_wait(bad).is_err(), "{bad}");
+        }
     }
 }

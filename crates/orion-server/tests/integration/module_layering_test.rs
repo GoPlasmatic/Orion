@@ -74,6 +74,44 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         "crypto.rs",
         &["crate::server::", "crate::engine::", "crate::channel::"],
     ),
+    // The one SQL lexer: read by `db_read`/`db_write` (below `definitions`),
+    // by the `$sql` pass and the clippy rules (above `engine`), and by the
+    // binary's `sql check`. None of them may reach the others for it.
+    (
+        "sql_lex.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::definitions::",
+            "crate::connector::",
+        ],
+    ),
+    // The version this build is, and the range a set may require: read by
+    // the offline commands, the package verbs and (at boot) the loader.
+    (
+        "version.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::channel::",
+            "crate::definitions::",
+            "crate::storage::",
+        ],
+    ),
+    // The detached-signature convention is read by the signing CLI, the
+    // package verbs and (at boot) the package loader: it names `crypto` and
+    // nothing that serves.
+    (
+        "signatures.rs",
+        &[
+            "crate::server::",
+            "crate::engine::",
+            "crate::channel::",
+            "crate::plugin::",
+            "crate::model::",
+            "crate::storage::",
+        ],
+    ),
     // Egress body reading is used by `engine` (http_call, Elasticsearch),
     // `connector` (OAuth2 token endpoints) and `jwt` (JWKS). None of those may
     // reach the others, which is why it is a leaf rather than living in the
@@ -123,6 +161,18 @@ const FORBIDDEN: &[(&str, &[&str])] = &[
         &["crate::runtime::reload", "crate::runtime::handler_deps"],
     ),
     ("storage", &["crate::runtime::"]),
+    // `package` is a top layer beside `bootstrap`: what an artifact carries
+    // and whether a target serves it. Nothing that serves may name it.
+    ("engine", &["crate::package::"]),
+    ("channel", &["crate::package::"]),
+    ("connector", &["crate::package::"]),
+    ("kafka", &["crate::package::"]),
+    ("queue", &["crate::package::"]),
+    ("jwt", &["crate::package::"]),
+    ("plugin", &["crate::package::"]),
+    ("model", &["crate::package::"]),
+    ("cron", &["crate::package::"]),
+    ("storage", &["crate::package::"]),
 ];
 
 /// Edges that are real, deliberate, and left alone — each with the reason.

@@ -161,9 +161,10 @@ pub fn api_routes(options: RouteOptions) -> Router<AppState> {
 Detailed health report. Always reachable, but when `admin_auth.enabled` is \
 true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, \
 the circuit-breaker map, connector load failures and quarantined channels — \
-names and failure reasons) is included only for requests presenting a valid \
-admin credential; anonymous callers get status, version, uptime and coarse \
-per-component states. Probes should use `/healthz` and `/readyz`.",
+names and failure reasons, and each `[packages] apply` entry by name, version \
+and state) is included only for requests presenting a valid admin credential; \
+anonymous callers get status, version, uptime and coarse per-component states. \
+Probes should use `/healthz` and `/readyz`.",
     responses(
         (status = 200, description = "Service healthy", body = crate::server::routes::openapi::HealthStatus),
         (status = 503, description = "Service degraded"),
@@ -189,21 +190,22 @@ pub(crate) async fn health_check(
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
 
+    // Every load issue, from the one collector `POST /engine/reload` and
+    // `GET /engine/status` answer from too, so the three surfaces cannot
+    // disagree about what is quarantined.
+    //
     // F16: enabled connectors that failed to load are absent from the
-    // registry, so every workflow using one fails at request time. Report
-    // them here rather than leaving a boot-time log line as the only signal.
-    let connector_issues = state.connector_registry.load_issues().await;
-
-    // F35: channels that failed to load are quarantined — refused at every
-    // ingress — while the rest of the instance serves normally. This is the
-    // only signal that they are not being served.
-    let quarantined_channels = generation.channels.quarantined();
-
-    // A plugin that did not load on this node — no artifact, a component
-    // that will not compile, a failed self-test, or the sandbox being off
-    // while an active row exists — quarantines the workflows naming its
-    // functions the same way; this is the signal for it.
-    let plugin_issues = &generation.plugins.issues;
+    // registry, so every workflow using one fails at request time. F35:
+    // channels that failed to load are quarantined — refused at every
+    // ingress — while the rest of the instance serves normally. A plugin that
+    // did not load on this node — no artifact, a component that will not
+    // compile, a failed self-test, or the sandbox being off while an active
+    // row exists — quarantines the workflows naming its functions the same
+    // way. Each list here is the only signal for its failure.
+    let issues = crate::runtime::load_issues::collect(&generation, &state.connector_registry).await;
+    let connector_issues = &issues.connectors;
+    let quarantined_channels = &issues.channels;
+    let plugin_issues = &issues.plugins;
 
     // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
     // 200s while no message is consumed. Absent entirely when Kafka is off.
@@ -219,7 +221,7 @@ pub(crate) async fn health_check(
     // decides whether a registration will ever get its verdict — and an
     // active model this generation could not carry quarantines the workflows
     // naming it, the same way a plugin that did not load does.
-    let model_issues = &generation.models.issues;
+    let model_issues = &issues.models;
     let models_state = models_component(&state, model_issues.is_empty());
 
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
@@ -235,9 +237,13 @@ pub(crate) async fn health_check(
         .reload_degraded
         .load(std::sync::atomic::Ordering::Acquire);
 
+    // `[packages] apply`: absent when none is configured.
+    let packages_state = state.packages.component();
+
     let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
+        && packages_state.is_none_or(|p| p == "ok")
         && kafka_state != Some("error")
         && cron_state != Some("degraded")
         && tasks_state == "ok"
@@ -299,6 +305,9 @@ pub(crate) async fn health_check(
     if let Some(cron) = cron_state {
         body["components"]["cron"] = json!(cron);
     }
+    if let Some(packages) = packages_state {
+        body["components"]["packages"] = json!(packages);
+    }
     // Cluster mode only: outside it there are no peers to propagate to.
     // `degraded`, not `error`, and absent from `/readyz` on purpose — this
     // node is serving the change correctly; it is the peers that have not
@@ -323,6 +332,11 @@ pub(crate) async fn health_check(
         body["channels"] = json!({
             "quarantined": quarantined_channels,
         });
+        // Each configured package by name, version and state — the files
+        // and versions are topology like the rest of this block.
+        if packages_state.is_some() {
+            body["packages"] = json!(state.packages.snapshot());
+        }
         body["plugins"] = json!({
             "loaded": generation.plugins.plugins.iter().map(|p| json!({
                 "plugin": p.id,
@@ -642,6 +656,9 @@ consumer, the cluster epoch watcher — has stopped for good; each of those \
 fails silently otherwise, dropping traces or audit rows while the data plane \
 keeps answering 200s. The `components.cluster_redis` field is present only in \
 cluster mode, and `components.kafka` only when `kafka.enabled` is true. \
+`components.packages` is present only when `[packages] apply` names artifacts: \
+`applying` (not ready) until every one is applied and serving, then `ok`; \
+`failed` while a node whose package failed to apply shuts down. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
         (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
@@ -661,12 +678,16 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let db_healthy = db_ping.is_ok();
     let kafka_state = kafka_component(&state);
     let (tasks_state, _) = tasks_component(&state);
+    // A startup condition: a node is not capacity until the packages it was
+    // told to apply are serving.
+    let packages_state = state.packages.component();
 
     let all_ready = db_healthy
         && initialized
         && redis_healthy.unwrap_or(true)
         && kafka_state != Some("error")
-        && tasks_state != "error";
+        && tasks_state != "error"
+        && packages_state.is_none_or(|p| p == "ok");
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -685,6 +706,9 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     }
     if let Some(kafka) = kafka_state {
         components["kafka"] = json!(kafka);
+    }
+    if let Some(packages) = packages_state {
+        components["packages"] = json!(packages);
     }
 
     let body = json!({

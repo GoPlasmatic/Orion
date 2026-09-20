@@ -217,6 +217,11 @@ where
     ov!(cron.default_timeout_ms: u64);
     ov!(cron.shutdown_timeout_secs: u64);
 
+    // Packages applied at startup
+    ov_list!(packages.apply);
+    ov_opt_str!(packages.signatures_dir);
+    ov!(packages.apply_timeout_secs: u64);
+
     ov!(cluster.enabled: bool);
     ov!(cluster.redis_url: String);
     ov!(cluster.epoch_poll_interval_ms: u64);

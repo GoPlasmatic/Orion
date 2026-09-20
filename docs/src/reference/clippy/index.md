@@ -1,6 +1,6 @@
-<!-- description: The advisory rules `orion-server clippy` runs beyond `lint`: the eighteen rules, their levels and scopes, and where each one's certainty comes from. -->
+<!-- description: The advisory rules `orion-server clippy` runs beyond `lint`: the twenty-one rules, their levels and scopes, and where each one's certainty comes from. -->
 <!-- type: hub -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Advisory checks (`clippy`)
 
@@ -20,11 +20,14 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 | [`correctness.unconditional_call_cycle`](./correctness-unconditional-call-cycle.md) | deny | set | channel_call edges that are all unconditional form a cycle, so every request into it fails at the depth limit |
 | [`correctness.payload_var`](./correctness-payload-var.md) | deny | workflow | a read of `payload` — which is not in the data context — is always null |
 | [`correctness.mapping_overwritten`](./correctness-mapping-overwritten.md) | warn | workflow | two mappings in one map write the same path with nothing reading it in between |
+| [`correctness.mapping_always_null`](./correctness-mapping-always-null.md) | deny | workflow | a `map` mapping whose `logic` is always null, so it never writes |
 | [`correctness.metadata_var_undeclared`](./correctness-metadata-var-undeclared.md) | deny | workflow | a read of `metadata.vars.<name>` that the config given with -c does not declare |
 | [`correctness.secret_undeclared`](./correctness-secret-undeclared.md) | deny | set | a {"secret": name} that the config given with -c does not declare |
 | [`correctness.response_cookie_type`](./correctness-response-cookie-type.md) | warn | workflow | a response cookie attribute is a literal of the wrong type, so the cookie is always dropped |
 | [`correctness.unknown_input_key`](./correctness-unknown-input-key.md) | deny | workflow | a task input key the function does not declare, which is silently ignored |
 | [`correctness.unordered_page`](./correctness-unordered-page.md) | deny | workflow | a read that skips rows without ordering them, so the page it skips is undefined |
+| [`correctness.sql_bind_count`](./correctness-sql-bind-count.md) | deny | workflow | a PostgreSQL statement's `$n` placeholders and its literal `params` differ in number |
+| [`correctness.model_timeout_clamped`](./correctness-model-timeout-clamped.md) | warn | workflow | a literal `model_infer` `timeout_ms` above the ceiling the config gives the model |
 | [`perf.parse_result_overwritten`](./perf-parse-result-overwritten.md) | warn | workflow | a parse/publish target is overwritten by a later unconditional task before anything reads it |
 | [`perf.redundant_step_condition`](./perf-redundant-step-condition.md) | warn | workflow | consecutive steps repeat one condition that none of them can change; a task group evaluates it once |
 | [`perf.group_condition_repeated`](./perf-group-condition-repeated.md) | warn | workflow | a group member repeats the group's own condition, which was already true on entry |
@@ -32,6 +35,8 @@ The command, its flags and exit codes are on the [CLI reference](../cli/orion-se
 | [`duplication.repeated_task_sequence`](./duplication-repeated-task-sequence.md) | warn | set | the same run of two or more steps appears three or more times across the set |
 | [`duplication.repeated_value`](./duplication-repeated-value.md) | warn | set | the same object literal appears three or more times across the set |
 | [`style.terminal_on_last_step`](./style-terminal-on-last-step.md) | warn | workflow | terminal: true on the last top-level step is a no-op |
+
+`perf.redundant_step_condition` carries an exact fix, which [`clippy --fix`](../cli/orion-server/clippy.md#fixes) applies to the source files after proving each edit.
 
 | Page | Holds |
 |---|---|

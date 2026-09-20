@@ -127,6 +127,8 @@ serde_json = "1"
 # The path of a deserialization error, for typing a definition around the
 # `var://` references it cannot resolve (`config::vars::parse_with_unresolved_vars`).
 serde_path_to_error = "0.1"
+# The Orion version range a definition set declares (`package.requires.orion`).
+semver = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # The host name a node records on a model admission verdict when no
 # `cluster.instance_id` is configured.

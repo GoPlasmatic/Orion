@@ -85,6 +85,13 @@ pub struct Diagnostic {
     pub message: String,
     /// What to change. `None` when the message already says it.
     pub remedy: Option<String>,
+    /// Where the text at `path` was authored, when not in `file` itself — the
+    /// `.sql` file a `$sql` reference inlined. Rendered `(in …)` after the
+    /// path.
+    pub via: Option<String>,
+    /// The exact rewrite the rule proved, when it can offer one —
+    /// `clippy --fix` applies it.
+    pub fix: Option<super::fix::Fix>,
 }
 
 impl Diagnostic {
@@ -98,6 +105,8 @@ impl Diagnostic {
             line: None,
             message,
             remedy: None,
+            via: None,
+            fix: None,
         }
     }
 
@@ -128,6 +137,19 @@ impl Diagnostic {
 
     pub fn with_remedy(mut self, remedy: impl Into<String>) -> Self {
         self.remedy = Some(remedy.into());
+        self
+    }
+
+    /// Offer an exact rewrite `clippy --fix` may apply.
+    pub fn with_fix(mut self, fix: super::fix::Fix) -> Self {
+        self.fix = Some(fix);
+        self
+    }
+
+    /// Say where the text at the path was authored, when that is not the
+    /// document itself.
+    pub fn with_via(mut self, via: Option<String>) -> Self {
+        self.via = via;
         self
     }
 
@@ -200,6 +222,9 @@ impl Diagnostic {
         if let Some(path) = &self.path {
             out.push_str(&format!(" at {path}"));
         }
+        if let Some(via) = &self.via {
+            out.push_str(&format!(" (in {via})"));
+        }
         out.push_str(&format!(": {}", self.message));
         if let Some(remedy) = &self.remedy {
             out.push_str(&format!("\n        fix: {remedy}"));
@@ -224,6 +249,8 @@ impl Diagnostic {
             "column": self.line.map(|(_, c)| c),
             "message": self.message,
             "remedy": self.remedy,
+            "via": self.via,
+            "fixable": self.fix.is_some(),
         })
     }
 

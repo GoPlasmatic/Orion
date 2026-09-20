@@ -1,0 +1,32 @@
+{
+  "workflow_id": "unroll",
+  "name": "Unroll",
+  "condition": { "$use": "positive", "with": { "field": "total" } },
+  "tasks": [
+    {
+      "$each": { "p": { "$from": "constants.participants" } },
+      "do": {
+        "id": "infer{{p}}",
+        "name": "infer {{p}}",
+        "function": {
+          "name": "map",
+          "input": {
+            "mappings": [
+              { "path": "data.out{{p}}", "logic": { "val": ["seats", { "$param": "p" }] } }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "m",
+      "name": "M",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [{ "$each": { "i": [1, 2] }, "do": { "path": "data.x{{i}}", "logic": 1 } }]
+        }
+      }
+    }
+  ]
+}

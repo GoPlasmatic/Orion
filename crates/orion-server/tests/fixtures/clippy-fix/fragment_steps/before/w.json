@@ -1,0 +1,15 @@
+{
+  "workflow_id": "frag",
+  "name": "Fragment",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "u",
+      "use": "pair"
+    }
+  ]
+}

@@ -424,8 +424,99 @@ pub async fn init_pool_for_startup(config: &StorageConfig) -> Result<DbPool, Ori
 
 /// Initialize the database connection pool without running migrations.
 pub async fn init_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
+    init_pool_no_migrate_waiting(
+        config,
+        ConnectWait {
+            window: Duration::from_secs(config.connect_retry_secs),
+            transient_only: false,
+            on_retry: None,
+        },
+    )
+    .await
+}
+
+/// How a caller wants the initial connection waited for.
+pub struct ConnectWait<'a> {
+    /// The total retry window. Replaces `storage.connect_retry_secs` for this
+    /// call. Ignored for SQLite, whose failures do not heal on their own.
+    pub window: Duration,
+    /// Retry only the failures that mean "not accepting connections yet"
+    /// ([`is_transient_connect_error`]); anything else — a wrong password, an
+    /// unknown database, a TLS or URL problem — fails at once.
+    pub transient_only: bool,
+    /// Called before each sleep, e.g. to print progress. `None` keeps the
+    /// tracing-only reporting.
+    pub on_retry: Option<&'a (dyn Fn(&RetryReport<'_>) + Sync)>,
+}
+
+/// One failed attempt that is about to be retried.
+pub struct RetryReport<'a> {
+    /// The attempt that just failed, from 1.
+    pub attempt: u32,
+    /// Time since the first attempt started.
+    pub elapsed: Duration,
+    /// How long until the next attempt.
+    pub retry_in: Duration,
+    /// [`connect_failure_reason`] of the failure.
+    pub reason: &'a str,
+}
+
+/// [`init_pool_no_migrate`] with the caller's own wait policy — what
+/// `migrate --wait` and `test-connectivity --wait` open the pool with.
+pub async fn init_pool_no_migrate_waiting(
+    config: &StorageConfig,
+    wait: ConnectWait<'_>,
+) -> Result<DbPool, OrionError> {
     let backend = detect_backend(&config.url)?;
-    connect_with_retry(config, backend).await
+    connect_with_retry(config, backend, wait).await
+}
+
+/// Whether a pool-open failure means the database is not reachable *yet* —
+/// starting, failing over, or not yet resolvable by name — rather than
+/// misconfigured.
+///
+/// sqlx already retries a refused connection and a server that is starting
+/// up *inside* one attempt, until `acquire_timeout_secs`; what reaches this
+/// level for those is `PoolTimedOut`. Any other I/O error — reset, aborted,
+/// unreachable, a DNS name a compose or Kubernetes service has not
+/// registered yet — is matched on the variant, since a lookup failure has no
+/// `ErrorKind` of its own. A database error is transient only for SQLSTATE
+/// class `08` (connection exception, which carries MySQL's 1040 and 1053)
+/// and PostgreSQL's shutdown, startup and too-many-connections codes; an
+/// authentication or unknown-database error will not heal by waiting.
+pub fn is_transient_connect_error(err: &OrionError) -> bool {
+    match connect_source(err) {
+        Some(sqlx::Error::PoolTimedOut | sqlx::Error::Io(_)) => true,
+        Some(sqlx::Error::Database(db)) => db.code().is_some_and(|code| {
+            code.starts_with("08") || matches!(&*code, "57P01" | "57P02" | "57P03" | "53300")
+        }),
+        _ => false,
+    }
+}
+
+/// A short reason for a failed connect, fit for a progress line. Never
+/// includes the URL.
+pub fn connect_failure_reason(err: &OrionError, acquire_timeout_secs: u64) -> String {
+    match connect_source(err) {
+        Some(sqlx::Error::PoolTimedOut) => {
+            format!("not accepting connections within {acquire_timeout_secs}s")
+        }
+        Some(sqlx::Error::Io(io)) => io.to_string(),
+        Some(sqlx::Error::Database(db)) => db.message().to_string(),
+        Some(other) => other.to_string(),
+        None => err.to_string(),
+    }
+}
+
+/// The sqlx error a pool-open failure wraps, if it is one.
+fn connect_source(err: &OrionError) -> Option<&sqlx::Error> {
+    match err {
+        OrionError::Internal {
+            source: Some(source),
+            ..
+        } => source.downcast_ref::<sqlx::Error>(),
+        _ => None,
+    }
 }
 
 // ============================================================
@@ -461,33 +552,59 @@ fn connect_backoff(failures: u32) -> Duration {
 async fn connect_with_retry(
     config: &StorageConfig,
     backend: DbBackend,
+    wait: ConnectWait<'_>,
 ) -> Result<DbPool, OrionError> {
     let window = match backend {
         DbBackend::Sqlite => Duration::ZERO,
-        _ => Duration::from_secs(config.connect_retry_secs),
+        _ => wait.window,
     };
-    retry_within(window, |attempt| async move {
-        if attempt > 1 {
-            tracing::info!(attempt, backend = %backend, "Retrying database connection");
+    let transient_only = wait.transient_only;
+    let report = wait.on_retry.map(|on_retry| {
+        move |attempt: u32, elapsed: Duration, retry_in: Duration, err: &OrionError| {
+            let reason = connect_failure_reason(err, config.acquire_timeout_secs);
+            on_retry(&RetryReport {
+                attempt,
+                elapsed,
+                retry_in,
+                reason: &reason,
+            });
         }
-        match backend {
-            DbBackend::Sqlite => init_sqlite_pool(config).await,
-            DbBackend::Postgres => init_postgres_pool(config).await,
-            DbBackend::Mysql => init_mysql_pool(config).await,
-        }
-    })
+    });
+    retry_within(
+        window,
+        |err| !transient_only || is_transient_connect_error(err),
+        report.as_ref(),
+        |attempt| async move {
+            if attempt > 1 {
+                tracing::info!(attempt, backend = %backend, "Retrying database connection");
+            }
+            match backend {
+                DbBackend::Sqlite => init_sqlite_pool(config).await,
+                DbBackend::Postgres => init_postgres_pool(config).await,
+                DbBackend::Mysql => init_mysql_pool(config).await,
+            }
+        },
+    )
     .await
 }
 
-/// Run `attempt` until it succeeds or the next backoff would land past
-/// `window`, returning the last error.
+/// Run `attempt` until it succeeds, fails with an error `should_retry`
+/// refuses, or the next backoff would land past `window`, returning the last
+/// error. `on_retry` hears about each failure that is about to be retried,
+/// with the elapsed time and the backoff ahead.
 ///
 /// Generic over the attempt so the retry *policy* is unit-testable without a
 /// database outage — see `retry_within_*` in this module's tests.
-async fn retry_within<T, F, Fut>(window: Duration, mut attempt: F) -> Result<T, OrionError>
+async fn retry_within<T, F, Fut, R>(
+    window: Duration,
+    should_retry: impl Fn(&OrionError) -> bool,
+    on_retry: Option<&R>,
+    mut attempt: F,
+) -> Result<T, OrionError>
 where
     F: FnMut(u32) -> Fut,
     Fut: std::future::Future<Output = Result<T, OrionError>>,
+    R: Fn(u32, Duration, Duration, &OrionError),
 {
     let started = tokio::time::Instant::now();
     let deadline = started + window;
@@ -506,6 +623,9 @@ where
             }
             Err(err) => {
                 failures += 1;
+                if !should_retry(&err) {
+                    return Err(err);
+                }
                 let backoff = connect_backoff(failures);
                 if tokio::time::Instant::now() + backoff > deadline {
                     if failures > 1 {
@@ -524,6 +644,9 @@ where
                     "Database unavailable at startup; retrying \
                      (bounded by storage.connect_retry_secs)"
                 );
+                if let Some(on_retry) = on_retry {
+                    on_retry(failures, started.elapsed(), backoff, &err);
+                }
                 tokio::time::sleep(backoff).await;
             }
         }
@@ -703,6 +826,157 @@ mod tests {
         }
     }
 
+    fn always(_: &OrionError) -> bool {
+        true
+    }
+
+    type Report = fn(u32, Duration, Duration, &OrionError);
+    const NO_REPORT: Option<&Report> = None;
+
+    /// The wait `init_pool_no_migrate` uses: the config's window, every
+    /// failure retried, nothing printed.
+    fn config_wait(config: &StorageConfig) -> ConnectWait<'static> {
+        ConnectWait {
+            window: Duration::from_secs(config.connect_retry_secs),
+            transient_only: false,
+            on_retry: None,
+        }
+    }
+
+    /// A pool-open failure, wrapped exactly as `init_*_pool` wraps it.
+    fn wrapped(err: sqlx::Error) -> OrionError {
+        OrionError::Internal {
+            context: "Failed to connect to database".to_string(),
+            source: Some(Box::new(err)),
+        }
+    }
+
+    /// A database error carrying only a SQLSTATE, standing in for the
+    /// Postgres and MySQL error types.
+    #[derive(Debug)]
+    struct Coded(&'static str);
+
+    impl std::fmt::Display for Coded {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "server said {}", self.0)
+        }
+    }
+
+    impl std::error::Error for Coded {}
+
+    impl sqlx::error::DatabaseError for Coded {
+        fn message(&self) -> &str {
+            "server said no"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some(std::borrow::Cow::Borrowed(self.0))
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn transient_classification_table() {
+        use std::io::{Error as IoError, ErrorKind};
+        let transient = [
+            wrapped(sqlx::Error::PoolTimedOut),
+            wrapped(sqlx::Error::Io(IoError::from(ErrorKind::ConnectionRefused))),
+            wrapped(sqlx::Error::Io(IoError::other(
+                "failed to lookup address information",
+            ))),
+            wrapped(sqlx::Error::Database(Box::new(Coded("57P03")))),
+            wrapped(sqlx::Error::Database(Box::new(Coded("08006")))),
+            wrapped(sqlx::Error::Database(Box::new(Coded("08004")))),
+            wrapped(sqlx::Error::Database(Box::new(Coded("53300")))),
+        ];
+        for err in &transient {
+            assert!(is_transient_connect_error(err), "{err:?}");
+        }
+        let permanent = [
+            wrapped(sqlx::Error::Database(Box::new(Coded("28P01")))),
+            wrapped(sqlx::Error::Database(Box::new(Coded("3D000")))),
+            wrapped(sqlx::Error::Configuration("bad url".into())),
+            wrapped(sqlx::Error::Tls("bad certificate".into())),
+            wrapped(sqlx::Error::Protocol("unexpected".into())),
+            unavailable(),
+        ];
+        for err in &permanent {
+            assert!(!is_transient_connect_error(err), "{err:?}");
+        }
+        assert_eq!(
+            connect_failure_reason(&wrapped(sqlx::Error::PoolTimedOut), 3),
+            "not accepting connections within 3s"
+        );
+        assert_eq!(
+            connect_failure_reason(&wrapped(sqlx::Error::Io(IoError::other("no such host"))), 3),
+            "no such host"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_within_stops_at_a_non_transient_error() {
+        let mut attempts = 0u32;
+        let started = tokio::time::Instant::now();
+        let result: Result<&str, OrionError> = retry_within(
+            Duration::from_secs(60),
+            |_| false,
+            NO_REPORT,
+            |_| {
+                attempts += 1;
+                async { Err(unavailable()) }
+            },
+        )
+        .await;
+        let err = result.expect_err("refused");
+        assert_eq!(attempts, 1, "a refused error must not be retried");
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(err.to_string(), unavailable().to_string());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_within_reports_each_retry() {
+        let reports = std::sync::Mutex::new(Vec::new());
+        let report = |attempt: u32, elapsed: Duration, retry_in: Duration, _: &OrionError| {
+            reports
+                .lock()
+                .expect("lock")
+                .push((attempt, elapsed, retry_in));
+        };
+        let result: Result<&str, OrionError> = retry_within(
+            Duration::from_secs(60),
+            always,
+            Some(&report),
+            |attempt| async move {
+                if attempt < 4 {
+                    Err(unavailable())
+                } else {
+                    Ok("pool")
+                }
+            },
+        )
+        .await;
+        assert_eq!(result.expect("recovers"), "pool");
+        let reports = reports.into_inner().expect("lock");
+        assert_eq!(
+            reports,
+            vec![
+                (1, Duration::ZERO, Duration::from_millis(250)),
+                (2, Duration::from_millis(250), Duration::from_millis(500)),
+                (3, Duration::from_millis(750), Duration::from_millis(1000)),
+            ]
+        );
+    }
+
     #[test]
     fn connect_backoff_doubles_then_caps() {
         assert_eq!(connect_backoff(1), Duration::from_millis(250));
@@ -718,17 +992,18 @@ mod tests {
     async fn retry_within_recovers_when_the_database_comes_back() {
         let mut seen = Vec::new();
         let started = tokio::time::Instant::now();
-        let pool: Result<&str, OrionError> = retry_within(Duration::from_secs(60), |attempt| {
-            seen.push(attempt);
-            async move {
-                if attempt < 4 {
-                    Err(unavailable())
-                } else {
-                    Ok("pool")
+        let pool: Result<&str, OrionError> =
+            retry_within(Duration::from_secs(60), always, NO_REPORT, |attempt| {
+                seen.push(attempt);
+                async move {
+                    if attempt < 4 {
+                        Err(unavailable())
+                    } else {
+                        Ok("pool")
+                    }
                 }
-            }
-        })
-        .await;
+            })
+            .await;
 
         assert_eq!(pool.expect("test"), "pool");
         assert_eq!(seen, vec![1, 2, 3, 4], "every attempt must be numbered");
@@ -740,11 +1015,12 @@ mod tests {
     async fn retry_within_gives_up_at_the_window_and_returns_the_last_error() {
         let mut attempts = 0u32;
         let started = tokio::time::Instant::now();
-        let pool: Result<&str, OrionError> = retry_within(Duration::from_secs(2), |_| {
-            attempts += 1;
-            async { Err(unavailable()) }
-        })
-        .await;
+        let pool: Result<&str, OrionError> =
+            retry_within(Duration::from_secs(2), always, NO_REPORT, |_| {
+                attempts += 1;
+                async { Err(unavailable()) }
+            })
+            .await;
 
         assert!(pool.is_err(), "an unreachable database must still fail");
         // 250 + 500 + 1000 ms fits in the 2 s window; the fourth backoff
@@ -760,11 +1036,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retry_within_zero_window_is_fail_fast() {
         let mut attempts = 0u32;
-        let pool: Result<&str, OrionError> = retry_within(Duration::ZERO, |_| {
-            attempts += 1;
-            async { Err(unavailable()) }
-        })
-        .await;
+        let pool: Result<&str, OrionError> =
+            retry_within(Duration::ZERO, always, NO_REPORT, |_| {
+                attempts += 1;
+                async { Err(unavailable()) }
+            })
+            .await;
 
         assert!(pool.is_err());
         assert_eq!(attempts, 1, "connect_retry_secs = 0 must not retry");
@@ -792,7 +1069,7 @@ mod tests {
             ..Default::default()
         };
         let started = std::time::Instant::now();
-        let err = connect_with_retry(&config, DbBackend::Postgres).await;
+        let err = connect_with_retry(&config, DbBackend::Postgres, config_wait(&config)).await;
         assert!(err.is_err(), "a closed port cannot yield a pool");
         assert!(
             started.elapsed() >= Duration::from_secs(2),
@@ -800,6 +1077,31 @@ mod tests {
              (elapsed {:?})",
             started.elapsed()
         );
+
+        // `--wait`'s policy retries only transient failures — and a closed
+        // port is one: sqlx retries the refusal inside the attempt and
+        // surfaces it as `PoolTimedOut`.
+        let started = std::time::Instant::now();
+        let reports = std::sync::atomic::AtomicU32::new(0);
+        let on_retry = |_: &RetryReport<'_>| {
+            reports.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        };
+        let wait = ConnectWait {
+            window: Duration::from_secs(2),
+            transient_only: true,
+            on_retry: Some(&on_retry),
+        };
+        assert!(
+            connect_with_retry(&config, DbBackend::Postgres, wait)
+                .await
+                .is_err()
+        );
+        assert!(
+            started.elapsed() >= Duration::from_secs(2),
+            "a refused connection is transient (elapsed {:?})",
+            started.elapsed()
+        );
+        assert!(reports.load(std::sync::atomic::Ordering::Relaxed) >= 1);
 
         // Same window, SQLite: not retried, because its failures are not
         // transient. A missing parent directory is never created for you.
@@ -813,7 +1115,7 @@ mod tests {
         };
         let started = std::time::Instant::now();
         assert!(
-            connect_with_retry(&sqlite, DbBackend::Sqlite)
+            connect_with_retry(&sqlite, DbBackend::Sqlite, config_wait(&sqlite))
                 .await
                 .is_err(),
             "an unwritable SQLite path must fail"

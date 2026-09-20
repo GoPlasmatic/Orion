@@ -1,0 +1,26 @@
+{
+  "workflow_id": "sweep",
+  "name": "sweep",
+  "loop": { "counter": "i", "init": 0, "max": 3 },
+  "tasks": [
+    {
+      "id": "reset",
+      "name": "Reset",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "temp_data.item", "logic": { "var": "temp_data.i" } },
+            { "path": "temp_data.retry", "logic": null }
+          ]
+        }
+      }
+    },
+    {
+      "id": "log",
+      "name": "Log",
+      "condition": { "var": "temp_data.retry" },
+      "function": { "name": "log", "input": { "message": "retrying" } }
+    }
+  ]
+}

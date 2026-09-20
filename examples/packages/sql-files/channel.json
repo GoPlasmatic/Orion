@@ -1,0 +1,10 @@
+{
+  "channel_id": "describe-word",
+  "name": "describe-word",
+  "tags": ["pkg:sql-files"],
+  "channel_type": "sync",
+  "protocol": "rest",
+  "methods": ["POST"],
+  "route_pattern": "/describe-word",
+  "workflow_id": "describe-word"
+}

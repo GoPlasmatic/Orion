@@ -2209,6 +2209,78 @@ async fn cron_singleton_holds_across_nodes() {
     );
 }
 
+/// The same guarantee with `slots`: two nodes, one key of two slots, and a
+/// workflow that outlasts two schedule ticks. At most two run at any instant
+/// whichever nodes run them, and the rest are recorded as skips.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn cron_slots_bound_holds_across_nodes() {
+    let addr = common::start_slow_server(std::time::Duration::from_millis(2500)).await;
+    let h = two_nodes_with(|config| {
+        config.cron.poll_interval_ms = 100;
+        config.cron.heartbeat_interval_secs = 1;
+        config.cron.claim_lease_secs = 30;
+    })
+    .await;
+
+    common::create_http_connector(&h.node_a, "slow-endpoint", addr).await;
+    activate_cluster_cron_channel(
+        &h.node_a,
+        "cluster-slots",
+        common::workflow_with_tasks(
+            "Cluster Slotted WF",
+            json!([{
+                "id": "slow",
+                "name": "A call that takes a while",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "slow-endpoint",
+                        "method": "GET",
+                        "path": "/slow",
+                        "response_path": "data.called",
+                        "timeout_ms": 5000
+                    }
+                }
+            }]),
+        ),
+        json!({
+            "schedule": "* * * * * *",
+            "concurrency": {"policy": "forbid", "slots": 2},
+        }),
+    )
+    .await;
+
+    // Two slots of 2.5s runs take several ticks to fill: ~20s of budget.
+    let mut max_running = 0usize;
+    let contended = eventually_n(h.poll, 100, async || {
+        let occurrences = cluster_occurrences(&h.node_a).await;
+        let running = occurrences
+            .iter()
+            .filter(|o| o["status"] == "running")
+            .count();
+        max_running = Ord::max(max_running, running);
+        occurrences
+            .iter()
+            .any(|o| o["status"] == "skipped_singleton")
+            && occurrences
+                .iter()
+                .filter(|o| o["status"] == "completed")
+                .count()
+                >= 2
+    })
+    .await;
+    assert!(
+        contended,
+        "a 2.5s workflow on a per-second schedule must fill two slots within the window"
+    );
+    assert!(
+        max_running <= 2,
+        "three occurrences of a two-slot key were running at once across the cluster \
+         (saw {max_running})"
+    );
+}
+
 /// A schedule change on one node reaches the other through the config epoch,
 /// like every other definition change — the reconciler has no watcher of its
 /// own and needs none.

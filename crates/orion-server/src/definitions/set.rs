@@ -112,9 +112,21 @@ pub struct Definition {
     /// parses with: a file this front end accepted and `serde_json` did not
     /// would be a set `lint` passes and the server rejects.
     pub spans: Option<Document>,
+    /// Where each part of the compiled `doc` was authored, recorded by the
+    /// authoring passes — a statement inlined by `$sql` came from its `.sql`
+    /// file. Empty when no pass rewrote anything.
+    pub provenance: super::provenance::SourceMap,
 }
 
 impl Definition {
+    /// Where the node at `compiled_path` (rooted at the entity, as a
+    /// validator's field path is) was authored.
+    pub fn source_of(&self, compiled_path: &str) -> super::provenance::SourceRef<'_> {
+        let prefix = format!("{}.", self.entity.as_str());
+        let path = compiled_path.strip_prefix(&prefix).unwrap_or(compiled_path);
+        self.provenance.resolve(&self.origin, path)
+    }
+
     /// `(line, column)` of `path` within this document, when it has spans and
     /// the path resolves.
     ///
@@ -125,11 +137,30 @@ impl Definition {
     /// coordinate for the same node is `name`. The prefix comes off before the
     /// lookup; without it every field path resolved to nothing and every
     /// schema finding came back with a file but no line.
+    ///
+    /// The compiled path is translated to the source one first: a step an
+    /// expansion shifted is located at the index it was written at, and one
+    /// a fragment brought in from another file is not located here at all —
+    /// the finding names that file instead. A `$sql` statement is the
+    /// exception: it is located at the `{"$sql": …}` reference, since the
+    /// compiled coordinate is still where the author typed that.
     pub fn locate(&self, path: &str) -> Option<(usize, usize)> {
         let doc = self.spans.as_ref()?;
         let prefix = format!("{}.", self.entity.as_str());
         let path = path.strip_prefix(&prefix).unwrap_or(path);
-        let span = doc.locate(path)?;
+        let source = self.provenance.resolve(&self.origin, path);
+        let at = if source.file == self.origin {
+            source.path?
+        } else if source
+            .via
+            .iter()
+            .all(|via| matches!(via, super::provenance::Via::Sql { .. }))
+        {
+            path.to_string()
+        } else {
+            return None;
+        };
+        let span = doc.locate(&at)?;
         Some(doc.line_col(span.start))
     }
 }
@@ -558,6 +589,7 @@ impl DefinitionSet {
                     // span — an artifact entry, or a single document a caller
                     // already parsed.
                     spans: None,
+                    provenance: Default::default(),
                 })
                 .collect(),
             plugins: Vec::new(),
@@ -630,16 +662,24 @@ impl DefinitionSet {
         for (origin, doc) in &shared_docs {
             shared.merge(doc, origin, &mut report.findings);
         }
-        if !shared.is_empty() {
-            for def in &mut set.definitions {
-                let origin = def.origin.clone();
-                let cx = super::compile::Cx {
-                    shared: &shared,
-                    origin: &origin,
-                };
-                for pass in super::compile::compile(&mut def.doc, &cx, &mut report.findings) {
-                    *report.compiled.entry(pass).or_default() += 1;
-                }
+        // Every document goes through the pipeline, catalog or not: a `$sql`
+        // file reference needs no shared document to resolve against.
+        for def in &mut set.definitions {
+            let origin = def.origin.clone();
+            let base_dir = Path::new(&origin).parent().map(Path::to_path_buf);
+            let cx = super::compile::Cx {
+                shared: &shared,
+                origin: &origin,
+                base_dir: base_dir.as_deref(),
+                root: Some(dir),
+            };
+            for pass in super::compile::compile_with_map(
+                &mut def.doc,
+                &cx,
+                &mut report.findings,
+                &mut def.provenance,
+            ) {
+                *report.compiled.entry(pass).or_default() += 1;
             }
         }
         report.shared = shared;
@@ -762,6 +802,7 @@ fn walk(
                 origin: path.display().to_string(),
                 doc,
                 spans,
+                provenance: Default::default(),
             }),
             None if super::SharedDefinitions::is_shared_document(&doc) => {
                 shared_docs.push((path.display().to_string(), doc));

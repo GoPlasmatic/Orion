@@ -686,6 +686,15 @@ pub(crate) async fn validate_connector(
         });
     }
 
+    // A reference inside a longer string is not a reference: it is sent
+    // literally. Always a bug, or a literal that wants another spelling.
+    for embedded in crate::connector::secrets::embedded_references(&req.config) {
+        warnings.push(super::ValidationIssue {
+            field: format!("config.{}", embedded.path),
+            message: format!("{} — {}", embedded.message(), embedded.remedy()),
+        });
+    }
+
     // An SMTP connector without TLS moves credentials and message content in
     // cleartext. Legitimate for a localhost/dev relay, so a warning — but a
     // loud one, per the #262 design.
@@ -786,29 +795,41 @@ pub(crate) async fn test_connector(
     let mut config_value: Value = serde_json::from_str(&connector.config_json)
         .map_err(|e| OrionError::internal_from("stored connector config is not JSON", e))?;
 
-    // `ConnectorConfig` is internally tagged on `type`, but the type lives in
-    // its own column — inject it exactly as the registry load does, so a
-    // connector authored the documented way (no redundant `"type"` inside
-    // `config`) parses here too.
-    if let Some(obj) = config_value.as_object_mut() {
-        obj.insert(
-            "type".to_string(),
-            Value::String(connector.connector_type.clone()),
-        );
-    }
+    // The type lives in its own column: the config is typed as the variant
+    // it names, exactly as the registry load types it, so a connector
+    // authored the documented way (no redundant `"type"` inside `config`)
+    // parses here too.
+    let Some(connector_type) =
+        crate::connector::ConnectorType::from_stored(&connector.connector_type)
+    else {
+        return Ok(result(
+            "config parse",
+            type_supported,
+            Err(format!(
+                "unknown connector type '{}'",
+                connector.connector_type
+            )),
+        ));
+    };
 
     // S21: shape-check *before* resolving secrets. A serde error over the
     // resolved document can quote a resolved secret verbatim (a string
     // credential in a numeric field, say) — the same detail the read API
     // masks. Over the stored document the message can only quote the
-    // operator's own references.
-    if let Err(e) = <crate::connector::ConnectorConfig as serde::Deserialize>::deserialize(
-        // Deserializing from `&Value` checks the shape without cloning the
-        // document the way `from_value` (which takes ownership) would force.
+    // operator's own references. The authoring parse, so a reference
+    // standing in a boolean (`"allow_private_urls": "env://…"`) is the
+    // shape it will be once resolved, not a type error.
+    if let Err(e) = crate::connector::ConnectorConfig::parse_variant(
+        connector_type,
         &config_value,
+        &crate::connector::secrets::UnresolvedReferences,
     ) {
-        return Ok(result("config parse", type_supported, Err(e.to_string())));
+        return Ok(result("config parse", type_supported, Err(e)));
     }
+    let sites = crate::connector::secrets::reference_sites(
+        &config_value,
+        crate::connector::secrets::default_resolvers(),
+    );
     if let Err(e) = crate::connector::secrets::resolve_in_place(
         &mut config_value,
         crate::connector::secrets::default_resolvers(),
@@ -822,8 +843,22 @@ pub(crate) async fn test_connector(
             Err(e.client_message()),
         ));
     }
-    let config = match serde_json::from_value::<crate::connector::ConnectorConfig>(config_value) {
+    let config = match crate::connector::ConnectorConfig::parse_variant(
+        connector_type,
+        &config_value,
+        &crate::connector::secrets::ResolvedReferences { sites: &sites },
+    ) {
         Ok(config) => config,
+        // A refusal at a reference site names the field and withholds the
+        // value, so it is safe to serve — and it is the answer an operator
+        // needs ("allow_private_urls: the reference resolved to something
+        // other than true or false").
+        Err(
+            e @ (crate::connector::secrets::ResolvedParseError::NotABoolean { .. }
+            | crate::connector::secrets::ResolvedParseError::ShapeAtSite { .. }),
+        ) => {
+            return Ok(result("config parse", type_supported, Err(e.to_string())));
+        }
         Err(e) => {
             // The stored shape parsed above, so only the resolved values can
             // be at fault — and the message could quote them. Log it, don't

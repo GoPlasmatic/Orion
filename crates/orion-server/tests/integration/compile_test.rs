@@ -446,6 +446,173 @@ fn compilation_is_reproducible() {
     assert_eq!(hash("a.json"), hash("b.json"));
 }
 
+/// Compile `dir` with `--version <version>` (and any extra flags) into
+/// `out`, returning the artifact and the report.
+fn compile_versioned(
+    dir: &std::path::Path,
+    out: &str,
+    extra: &[&str],
+) -> (bool, String, serde_json::Value) {
+    let target = dir.join(out);
+    let mut args = vec![
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "demo",
+        "-o",
+        target.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    let (ok, report) = run(&args);
+    let artifact = if ok {
+        serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+    } else {
+        serde_json::Value::Null
+    };
+    (ok, report, artifact)
+}
+
+/// #339: `--version content` names the package after its own content hash.
+#[test]
+fn a_content_version_is_the_hash_prefix() {
+    let scratch = sugared_set("compile-content-version");
+    let dir = scratch.path();
+    let (ok, report, artifact) = compile_versioned(dir, "a.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    let hash = artifact["package"]["content_hash"].as_str().unwrap();
+    let version = artifact["package"]["version"].as_str().unwrap();
+    assert_eq!(version, format!("content-{}", &hash[7..19]));
+    assert!(
+        report.contains(&format!("wrote demo@{version} (")),
+        "{report}"
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // A hand-edited version that names other content is caught offline.
+    let mut edited = artifact.clone();
+    edited["package"]["version"] = serde_json::json!("content-000000000000");
+    std::fs::write(dir.join("edited.json"), edited.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("edited.json").to_str().unwrap(),
+    ]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("names content the entities do not hash to") && report.contains(version),
+        "{report}"
+    );
+
+    // With a prefix.
+    let (ok, report, artifact) = compile_versioned(
+        dir,
+        "b.json",
+        &["--version", "content", "--version-prefix", "1.4.0"],
+    );
+    assert!(ok, "{report}");
+    assert_eq!(
+        artifact["package"]["version"],
+        format!("1.4.0-{}", &hash[7..19])
+    );
+}
+
+/// The version moves exactly when the content does: a second compile of the
+/// same tree, or one whose files were only reformatted, keeps it; a task
+/// edit moves it.
+#[test]
+fn a_content_version_is_stable_across_compiles_and_moves_with_content() {
+    let scratch = sugared_set("compile-content-stable");
+    let dir = scratch.path();
+    let version = |out: &str| {
+        let (ok, report, artifact) = compile_versioned(dir, out, &["--version", "content"]);
+        assert!(ok, "{report}");
+        artifact["package"]["version"].as_str().unwrap().to_string()
+    };
+    let first = version("a.json");
+    assert_eq!(version("b.json"), first);
+
+    // Whitespace and key order are not content.
+    let wf = dir.join("wf.json");
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&wf).unwrap()).unwrap();
+    std::fs::write(&wf, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    assert_eq!(version("c.json"), first);
+
+    // A task edit is.
+    let text = std::fs::read_to_string(&wf).unwrap();
+    std::fs::write(&wf, text.replace("\"users\"", "\"accounts\"")).unwrap();
+    assert_ne!(version("d.json"), first);
+}
+
+#[test]
+fn a_version_prefix_needs_the_content_keyword() {
+    let scratch = sugared_set("compile-prefix-alone");
+    let (ok, report, _) = compile_versioned(
+        scratch.path(),
+        "a.json",
+        &["--version", "1.0.0", "--version-prefix", "1.4.0"],
+    );
+    assert!(!ok);
+    assert!(
+        report.contains("--version-prefix only applies with --version content"),
+        "{report}"
+    );
+}
+
+/// A version the target would refuse with a `400` at `apply` is refused
+/// where it is chosen, before anything is written.
+#[test]
+fn a_version_the_receipt_would_refuse_is_refused_at_compile() {
+    let scratch = sugared_set("compile-bad-version");
+    let dir = scratch.path();
+    for (flags, expected) in [
+        (
+            &["--version", "1.0/rc"][..],
+            "--version contains unsupported character '/'",
+        ),
+        (
+            &["--version", "content", "--version-prefix", "1.4.0+build"][..],
+            "--version-prefix contains unsupported character '+'",
+        ),
+    ] {
+        let (ok, report, _) = compile_versioned(dir, "a.json", flags);
+        assert!(!ok, "{flags:?}");
+        assert!(report.contains(expected), "{report}");
+        assert!(!dir.join("a.json").exists());
+    }
+}
+
+/// What the hash does not see cannot move a content version: a rollout-only
+/// change keeps it, and the compile says so rather than letting a re-apply
+/// be a silent no-op.
+#[test]
+fn a_rollout_does_not_move_a_content_version() {
+    let scratch = sugared_set("compile-content-rollout");
+    let dir = scratch.path();
+    let (ok, report, artifact) = compile_versioned(dir, "a.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    assert!(!report.contains("rollout_percentage"), "{report}");
+    let wf = dir.join("wf.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&wf).unwrap()).unwrap();
+    doc["rollout_percentage"] = serde_json::json!(25);
+    std::fs::write(&wf, doc.to_string()).unwrap();
+    let (ok, report, rolled) = compile_versioned(dir, "b.json", &["--version", "content"]);
+    assert!(ok, "{report}");
+    assert_eq!(rolled["package"]["version"], artifact["package"]["version"]);
+    assert!(
+        report.contains("rollout_percentage is not part of the content hash"),
+        "{report}"
+    );
+}
+
 /// The fixture plugin's upload manifest and component, as a set carries them:
 /// `plugin.toml` beside the component it names.
 const PLUGIN_MANIFEST: &str = include_str!("../fixtures/plugins/fixture-upload.toml");
@@ -479,6 +646,301 @@ fn plugin_set(label: &str, with_component: bool) -> ScratchDir {
     )
     .unwrap();
     scratch
+}
+
+/// A set with a statement kept in a `.sql` file and no shared document —
+/// the pipeline must still run.
+fn sql_set(label: &str) -> ScratchDir {
+    let scratch = ScratchDir::new(label);
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("sql")).unwrap();
+    std::fs::create_dir_all(dir.join("orders")).unwrap();
+    std::fs::write(
+        dir.join("sql/recent.sql"),
+        "-- The customer's orders, newest first.\nSELECT id,\n       total   -- cents\n  FROM orders\n WHERE customer_id = $1\n ORDER BY created_at DESC;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name": "orders-db", "connector_type": "db",
+            "config": {"connection_string": "sqlite::memory:"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("orders/wf.json"),
+        r#"{"workflow_id": "recent", "name": "Recent", "tasks": [
+             {"id": "read", "name": "Read", "function": {"name": "db_read",
+               "input": {"connector": "orders-db", "query": {"$sql": "../sql/recent.sql"},
+                         "params": [{"var": "data.customer"}], "output": "data.rows"}}}]}"#,
+    )
+    .unwrap();
+    scratch
+}
+
+/// #332: `$sql` compiles to the inline statement, in normal form; a comment
+/// edit moves neither the text nor the hash, and `package lint` accepts the
+/// result.
+#[test]
+fn a_sql_file_compiles_to_the_inline_query() {
+    let scratch = sql_set("compile-sql");
+    let dir = scratch.path();
+    let (ok, report, first) = compile_versioned(dir, "a.json", &["--version", "1.0.0"]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("compiled: shared.sql rewrote 1 document(s)"),
+        "{report}"
+    );
+    assert_eq!(
+        first["workflows"][0]["tasks"][0]["function"]["input"]["query"],
+        "SELECT id, total FROM orders WHERE customer_id = $1 ORDER BY created_at DESC"
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    std::fs::write(
+        dir.join("sql/recent.sql"),
+        "/* reworded */ SELECT id, total FROM orders -- still\nWHERE customer_id = $1 ORDER BY created_at DESC",
+    )
+    .unwrap();
+    let (ok, report, second) = compile_versioned(dir, "b.json", &["--version", "1.0.0"]);
+    assert!(ok, "{report}");
+    assert_eq!(
+        second["package"]["content_hash"],
+        first["package"]["content_hash"]
+    );
+
+    // `--format dir` consumes the file rather than copying it.
+    let out = dir.join("out-dir");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--format",
+        "dir",
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(!out.join("sql/recent.sql").exists());
+}
+
+#[test]
+fn a_missing_or_escaping_sql_file_writes_nothing() {
+    let scratch = sql_set("compile-sql-missing");
+    let dir = scratch.path();
+    let wf = dir.join("orders/wf.json");
+    let text = std::fs::read_to_string(&wf).unwrap();
+    for (target, expected) in [
+        ("../sql/nope.sql", "closure.sql_file"),
+        ("../../outside.sql", "leaves the definition set"),
+    ] {
+        std::fs::write(&wf, text.replace("../sql/recent.sql", target)).unwrap();
+        let (ok, report, _) = compile_versioned(dir, "x.json", &["--version", "1.0.0"]);
+        assert!(!ok, "{target}: {report}");
+        assert!(report.contains(expected), "{target}: {report}");
+        assert!(!dir.join("x.json").exists());
+    }
+}
+
+/// #343: the set's `package` document names the artifact and carries its
+/// range into `requires.orion`, which is not content; `--name` and
+/// `--requires-orion` win over it.
+#[test]
+fn compile_carries_the_declared_package_into_the_artifact() {
+    let scratch = sugared_set("compile-package-decl");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"package": {"name": "orders", "requires": {"orion": ">=1.0.0, <99"}}}"#,
+    )
+    .unwrap();
+    let compile = |out: &str, extra: &[&str]| -> (bool, String, serde_json::Value) {
+        let target = dir.join(out);
+        let mut args = vec![
+            "compile",
+            dir.to_str().unwrap(),
+            "--version",
+            "1.0.0",
+            "-o",
+            target.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, report) = run(&args);
+        let artifact = if ok {
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+        } else {
+            serde_json::Value::Null
+        };
+        (ok, report, artifact)
+    };
+    let (ok, report, declared) = compile("a.json", &[]);
+    assert!(ok, "{report}");
+    assert_eq!(declared["package"]["name"], "orders");
+    assert_eq!(declared["requires"]["orion"], ">=1.0.0, <99");
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("a.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // The flags win, with a note for the name.
+    let (ok, report, flagged) = compile(
+        "b.json",
+        &["--name", "billing", "--requires-orion", ">=1.2, <99"],
+    );
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("--name 'billing' overrides package.name 'orders'"),
+        "{report}"
+    );
+    assert_eq!(flagged["package"]["name"], "billing");
+    assert_eq!(flagged["requires"]["orion"], ">=1.2, <99");
+    // A range is a gate, not content.
+    assert_eq!(
+        flagged["package"]["content_hash"],
+        declared["package"]["content_hash"]
+    );
+
+    // An artifact this binary is too old for stops `package lint` first.
+    let mut too_new = declared.clone();
+    too_new["requires"]["orion"] = serde_json::json!(">=99.0.0");
+    std::fs::write(dir.join("too-new.json"), too_new.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("too-new.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(
+        report.contains("orders@1.0.0 requires Orion >=99.0.0"),
+        "{report}"
+    );
+    too_new["requires"]["orion"] = serde_json::json!("not a range");
+    std::fs::write(dir.join("bad.json"), too_new.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("bad.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(report.contains("is not a version range"), "{report}");
+
+    // Without the document, the name is required.
+    std::fs::remove_file(dir.join("package.json")).unwrap();
+    let (ok, report, _) = compile("c.json", &[]);
+    assert!(!ok);
+    assert!(
+        report.contains("or declare package.name in the set"),
+        "{report}"
+    );
+}
+
+/// #340: a build-time signer's `.sig` files land in the artifact's entries,
+/// and — a signature not being content — the hash does not move.
+#[test]
+fn compile_signatures_lands_in_the_entries_and_package_lint_accepts_it() {
+    let scratch = plugin_set("compile-signatures", true);
+    let dir = scratch.path();
+    let sigs = ScratchDir::new("compile-signatures-sigs");
+    let key = orion::crypto::ed25519::SigningKey::generate();
+    let signature = key.sign(&orion::crypto::sha256_digest(PLUGIN_COMPONENT));
+    std::fs::write(
+        sigs.path().join("fixture.wasm.sig"),
+        format!("{signature}\n"),
+    )
+    .unwrap();
+
+    let compile = |out: &str, extra: &[&str]| -> serde_json::Value {
+        let target = dir.join(out);
+        let mut args = vec![
+            "compile",
+            dir.to_str().unwrap(),
+            "--name",
+            "codec",
+            "--version",
+            "1.0.0",
+            "-o",
+            target.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let (ok, report) = run(&args);
+        assert!(ok, "{report}");
+        serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap()
+    };
+    let unsigned = compile("unsigned.json", &[]);
+    let signed = compile(
+        "signed.json",
+        &["--signatures", sigs.path().to_str().unwrap()],
+    );
+    assert_eq!(signed["plugins"][0]["signature"], signature);
+    assert!(unsigned["plugins"][0].get("signature").is_none());
+    assert_eq!(
+        signed["package"]["content_hash"],
+        unsigned["package"]["content_hash"]
+    );
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("signed.json").to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+
+    // A carried signature that is not one is caught offline.
+    let mut garbage = signed.clone();
+    garbage["plugins"][0]["signature"] = serde_json::json!("not base64!");
+    std::fs::write(dir.join("garbage.json"), garbage.to_string()).unwrap();
+    let (ok, report) = run(&[
+        "package",
+        "lint",
+        "-f",
+        dir.join("garbage.json").to_str().unwrap(),
+    ]);
+    assert!(!ok);
+    assert!(
+        report.contains("plugins[0].signature: not base64"),
+        "{report}"
+    );
+}
+
+/// A misnamed `.sig` must not leave a plugin silently unsigned: the file no
+/// subject claims stops the compile, naming the names that would match.
+#[test]
+fn an_orphan_sig_fails_compile_and_writes_nothing() {
+    let scratch = plugin_set("compile-orphan-sig", true);
+    let dir = scratch.path();
+    let sigs = ScratchDir::new("compile-orphan-sigs");
+    let key = orion::crypto::ed25519::SigningKey::generate();
+    std::fs::write(sigs.path().join("fixtures.wasm.sig"), key.sign("sha256:00")).unwrap();
+    let out = dir.join("out.json");
+    let (ok, report) = run(&[
+        "compile",
+        dir.to_str().unwrap(),
+        "--name",
+        "codec",
+        "--version",
+        "1.0.0",
+        "--signatures",
+        sigs.path().to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("fixtures.wasm.sig matches no plugin or model")
+            && report.contains("test.fixture.sig")
+            && report.contains("fixture.wasm.sig"),
+        "{report}"
+    );
+    assert!(!out.exists());
 }
 
 /// A `plugin.toml` in the set compiles into the artifact with its component
@@ -810,4 +1272,53 @@ fn an_artifact_refuses_a_model_missing_its_reference_or_its_bytes() {
         "{report}"
     );
     assert!(!out.exists(), "nothing is written on refusal");
+}
+
+/// #333: the example package's `$each`, value fragment and `{{seat}}`
+/// compile to four ordinary steps, and the compiled workflow runs.
+#[test]
+fn the_unrolled_example_compiles_to_one_step_per_seat_and_runs() {
+    let out = ScratchDir::new("unrolled-out");
+    let example = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/packages/unrolled-seats"
+    );
+    let dir = out.path().join("compiled");
+    let (ok, report) = run(&[
+        "compile",
+        example,
+        "--format",
+        "dir",
+        "-o",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    let compiled = std::fs::read_to_string(dir.join("workflow.json")).expect("compiled workflow");
+    let workflow: serde_json::Value = serde_json::from_str(&compiled).expect("json");
+    let ids: Vec<&str> = workflow["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["parse", "score0", "score1", "score2", "score3"]);
+    assert!(
+        orion::definitions::compile::residue(&workflow, "").is_empty(),
+        "{workflow}"
+    );
+
+    let input = out.path().join("input.json");
+    std::fs::write(&input, r#"{"points": [3, 5, 0, 2]}"#).unwrap();
+    let (ok, report) = run(&[
+        "dry-run",
+        "-w",
+        dir.join("workflow.json").to_str().unwrap(),
+        "-i",
+        input.to_str().unwrap(),
+    ]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains(r#""seat1": 50"#) && report.contains(r#""seat3": 20"#),
+        "{report}"
+    );
 }

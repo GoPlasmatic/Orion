@@ -16,6 +16,8 @@ Two query parameters compose with every status and rollout transition:
 
 Every activation, archive and rollout change normally rebuilds the engine and bumps the cluster config epoch. N entities promoted means N full rebuilds on this node, and N resyncs on every peer. `?reload=defer` on the status and rollout endpoints commits the row and records the audit event. It leaves the running configuration untouched **everywhere** until `POST /api/v1/admin/engine/reload`, which rebuilds once and bumps the epoch once. Until that reload, the database and the running engine intentionally disagree — a deferred activation is not serving yet. Tooling that defers must always finish with the explicit reload; an operator making one change omits the parameter.
 
+`DELETE` on a channel, workflow, plugin or model takes the same `?reload=defer`, which is how `package apply --prune=delete` removes entities inside its one reload. A deferred delete removes the row at once, while the running engine keeps serving the entity until the reload. A connector delete never rebuilds the engine, so it takes no parameter.
+
 ## Related
 
 - [Admin API](./index.md): every admin resource, and the contracts they share.

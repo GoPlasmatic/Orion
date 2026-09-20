@@ -167,12 +167,18 @@ impl<'a> Analysis<'a> {
         //
         // The `$from`/`use` filter stays: after expansion a compiled path no
         // longer addresses source coordinates, so locating one would point at
-        // the wrong node rather than at none. Fixing *that* needs the passes to
-        // record a compiled-path → source-path remap, which is its own change.
+        // the wrong node rather than at none. A `$sql` reference is the
+        // exception — its rewrite replaces one node with a string and moves
+        // no coordinate — so a document whose only sugar is `$sql` is
+        // located (at the reference) and its provenance names the file.
         let documents = source
             .definitions
             .iter()
-            .filter(|def| crate::definitions::compile::residue(&def.doc, "").is_empty())
+            .filter(|def| {
+                crate::definitions::compile::residue(&def.doc, "")
+                    .iter()
+                    .all(|r| r.key == "$sql")
+            })
             .filter_map(|def| Some((def.origin.clone(), def.spans.clone()?)))
             .collect();
         Self {
@@ -186,6 +192,17 @@ impl<'a> Analysis<'a> {
             channels,
             documents,
         }
+    }
+
+    /// Where the text at `path` in the compiled document at `origin` was
+    /// authored, when not in that document — the `.sql` file of a `$sql`.
+    pub fn via(&self, origin: &str, path: &str) -> Option<String> {
+        self.compiled
+            .definitions
+            .iter()
+            .find(|def| def.origin == origin)?
+            .source_of(path)
+            .describe()
     }
 
     /// `(line, column)` of `path` in the source file at `origin`, when the

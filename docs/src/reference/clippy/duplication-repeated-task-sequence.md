@@ -15,7 +15,7 @@ warn[duplication.repeated_task_sequence] the same run of two or more steps appea
 
 ## Description
 
-A run of ≥ 2 steps, ids and names stripped, in ≥ 3 places. The finding is the longest such run at those places. The message states the fact and where. Whether it should be a fragment is the author's call.
+A run of ≥ 2 steps, ids and names stripped, in ≥ 3 places. The finding is the longest such run at those places. The message states the fact and where. Whether it should be a fragment is the author's call. A `use`, `$use` or `$each` step breaks a run, as a step that is already shared.
 
 ## Related
 

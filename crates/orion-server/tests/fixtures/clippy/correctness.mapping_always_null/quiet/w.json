@@ -1,0 +1,33 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "set",
+      "name": "Set",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "temp_data.a", "logic": false },
+            { "path": "temp_data.b", "logic": { "var": "data.req.maybe" } },
+            { "path": "temp_data.c", "logic": { "if": [{ "var": "data.req.c" }, 1, null] } }
+          ]
+        }
+      }
+    },
+    {
+      "id": "log",
+      "name": "Log",
+      "condition": {
+        "or": [{ "var": "temp_data.a" }, { "var": "temp_data.b" }, { "var": "temp_data.c" }]
+      },
+      "function": { "name": "log", "input": { "message": "x" } }
+    }
+  ]
+}

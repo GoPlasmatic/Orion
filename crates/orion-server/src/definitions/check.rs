@@ -68,9 +68,56 @@ fn schema_diagnostics(
             // workflow and leaving the author to find the field.
             let path = d.path.clone();
             let line = path.as_deref().and_then(|p| def.locate(p));
+            let via = path.as_deref().and_then(|p| def.source_of(p).describe());
             d.with_location(&def.origin, path.as_deref(), line)
+                .with_via(via)
         })
         .collect()
+}
+
+/// A literal `db_read` statement that is not a read — refused by the handler
+/// at run time on every execution, so certain to fail the moment it runs.
+/// Offline only: the admin API's validator is unchanged. A templated
+/// statement is skipped, since what runs is only known then.
+fn check_read_only_statements(def: &Definition, name: &str, findings: &mut Vec<Diagnostic>) {
+    use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
+    let Some(tasks) = def.doc.get("tasks") else {
+        return;
+    };
+    for (path, task) in crate::engine::walk_steps(tasks).tasks {
+        let function = task.get("function");
+        if function.and_then(|f| f.get("name")).and_then(Value::as_str) != Some("db_read") {
+            continue;
+        }
+        let Some(query) = function
+            .and_then(|f| f.get("input"))
+            .and_then(|i| i.get("query"))
+            .and_then(Value::as_str)
+            .filter(|q| !q.contains("{{"))
+        else {
+            continue;
+        };
+        let message = match crate::sql_lex::read_only_violation(query) {
+            None | Some(ReadOnlyViolation::Empty) => continue,
+            Some(ReadOnlyViolation::NotARead { keyword }) => format!(
+                "db_read runs read statements only, but this one starts with '{keyword}' — use \
+                 db_write for INSERT/UPDATE/DELETE. Reads start with {}",
+                READ_STATEMENTS.join(", ")
+            ),
+            Some(ReadOnlyViolation::ModifyingCte { keyword }) => format!(
+                "db_read runs read statements only, but this one carries a data-modifying \
+                 '{keyword}' common table expression — use db_write"
+            ),
+        };
+        let at = format!("{path}.function.input.query");
+        let line = def.locate(&at);
+        let via = def.source_of(&at).describe();
+        findings.push(
+            Diagnostic::error("sql.read_only", format!("workflow '{name}'"), message)
+                .with_location(&def.origin, Some(&at), line)
+                .with_via(via),
+        );
+    }
 }
 
 pub fn check(
@@ -95,6 +142,7 @@ pub fn check(
         &mut findings,
     );
     check_env_refs(set, &mut findings);
+    check_cron_slots(set, &mut findings);
 
     // The plugins the set carries, as inventory: which manifest, how many
     // functions, and whether the component was there to hash — the line an
@@ -280,6 +328,16 @@ fn check_connectors(
                 &e,
             ));
         }
+        for embedded in crate::connector::secrets::embedded_references(&req.config) {
+            findings.push(
+                Diagnostic::warning(
+                    "env.embedded_reference",
+                    format!("connector '{}' config.{}", req.name, embedded.path),
+                    embedded.message(),
+                )
+                .with_remedy(embedded.remedy()),
+            );
+        }
         if seen.contains(&req.name) {
             findings.push(Diagnostic::error(
                 "duplicate.connector_name",
@@ -362,6 +420,7 @@ fn check_workflows(
                 None => {}
             }
         }
+        check_read_only_statements(def, &req.name, findings);
         if let Err(e) = crate::validation::validate_create_workflow(&req, loop_cap, functions) {
             let entity = format!("workflow '{}'", req.name);
             for d in schema_diagnostics("schema.workflow", &entity, def, &e) {
@@ -588,6 +647,77 @@ fn check_channels(
         }
     }
     names
+}
+
+/// Cron channels that share a `concurrency.key` but declare different
+/// `slots`. Coherent — each run is admitted only to the slots below its own
+/// channel's bound, so the key's fleet-wide bound is the largest declared and
+/// a one-slot channel waits for slot 0 however many others are free — but so
+/// rarely intended that the set should say so. A warning: the runtime has a
+/// defined answer, and the admin API cannot see a channel's peers to refuse
+/// it anyway.
+fn check_cron_slots(set: &DefinitionSet, findings: &mut Vec<Diagnostic>) {
+    // key -> (the first channel naming it, that channel's slots)
+    let mut seen: Vec<(String, String, u64)> = Vec::new();
+    for def in set.iter(Entity::Channel) {
+        let doc = &def.doc;
+        if doc.get("protocol").and_then(Value::as_str) != Some("cron") {
+            continue;
+        }
+        let Some(concurrency) = doc
+            .get("transport_config")
+            .and_then(|t| t.get("concurrency"))
+        else {
+            continue;
+        };
+        if concurrency.get("policy").and_then(Value::as_str) != Some("forbid") {
+            continue;
+        }
+        // The key defaults to the channel id; with neither, the id is minted
+        // at create time and so can collide with nothing.
+        let Some(key) = concurrency
+            .get("key")
+            .or_else(|| doc.get("channel_id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        // A `slots` that is not an integer is the schema check's to report.
+        let slots = match concurrency.get("slots") {
+            None | Some(Value::Null) => 1,
+            Some(value) => match value.as_u64() {
+                Some(slots) => slots,
+                None => continue,
+            },
+        };
+        let name = doc
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(&def.origin);
+        match seen.iter().find(|(k, _, _)| k == key) {
+            Some((_, first, first_slots)) if *first_slots != slots => {
+                let path = "channel.transport_config.concurrency.slots";
+                findings.push(
+                    Diagnostic::warning(
+                        "cron.slots_mismatch",
+                        format!("channel '{name}'"),
+                        format!(
+                            "channels '{first}' and '{name}' share concurrency key '{key}' but \
+                             declare slots {first_slots} and {slots} — each is admitted against \
+                             its own bound"
+                        ),
+                    )
+                    .with_location(&def.origin, Some(path), def.locate(path))
+                    .with_remedy(format!(
+                        "declare the same slots on every channel naming '{key}', or give them \
+                         different keys"
+                    )),
+                );
+            }
+            Some(_) => {}
+            None => seen.push((key.to_string(), name.to_string(), slots)),
+        }
+    }
 }
 
 /// Task references that must resolve in the set or be declared on the
@@ -1038,6 +1168,54 @@ mod tests {
             any_line,
             "at least one finding must resolve to a line:col — that is what \
              carrying the spans is for: {located:#?}"
+        );
+    }
+
+    fn cron(name: &str, concurrency: Value) -> (Entity, String, Value) {
+        (
+            Entity::Channel,
+            format!("{name}.json"),
+            json!({"channel_id": name, "name": name, "protocol": "cron", "workflow_id": "wf",
+                "transport_config": {"schedule": "0 * * * * *", "concurrency": concurrency}}),
+        )
+    }
+
+    /// Two channels on one key with different `slots` warn; agreeing ones,
+    /// different keys and `allow` do not. The default key is the channel id.
+    #[test]
+    fn a_shared_key_with_different_slots_is_a_warning() {
+        let set = DefinitionSet::from_entries([
+            workflow("wf", json!([])),
+            cron(
+                "a",
+                json!({"policy": "forbid", "key": "worker", "slots": 4}),
+            ),
+            cron("b", json!({"policy": "forbid", "key": "worker"})),
+            cron(
+                "c",
+                json!({"policy": "forbid", "key": "worker", "slots": 4}),
+            ),
+            cron("d", json!({"policy": "forbid", "key": "other", "slots": 2})),
+            cron("e", json!({"policy": "allow", "key": "worker"})),
+            cron("f", json!({"policy": "forbid", "key": "g", "slots": 2})),
+            cron("g", json!({"policy": "forbid"})),
+        ]);
+        let findings = check(
+            &set,
+            &Boundary::default(),
+            false,
+            FunctionRegistry::builtin(),
+        );
+        let mismatches = checks(&findings, "cron.slots_mismatch");
+        let messages: Vec<&str> = mismatches.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("'a' and 'b' share concurrency key 'worker'"));
+        assert!(messages[0].contains("slots 4 and 1"));
+        assert!(messages[1].contains("'f' and 'g' share concurrency key 'g'"));
+        assert!(
+            mismatches
+                .iter()
+                .all(|d| d.severity == crate::definitions::Severity::Warning)
         );
     }
 }

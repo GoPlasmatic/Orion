@@ -1,0 +1,6 @@
+{
+  "name": "sql-files-db",
+  "connector_type": "db",
+  "tags": ["pkg:sql-files"],
+  "config": { "connection_string": "sqlite::memory:", "max_connections": 1 }
+}

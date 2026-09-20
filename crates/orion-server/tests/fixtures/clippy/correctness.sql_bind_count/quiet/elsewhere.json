@@ -1,0 +1,5 @@
+{
+  "name": "elsewhere",
+  "connector_type": "db",
+  "config": { "connection_string": "env://ORDERS_DB_URL" }
+}

@@ -1,6 +1,6 @@
 <!-- description: The transport_config of a cron channel: the six-field schedule, time zone and DST rules, payload, misfire policies, concurrency, and what it may not declare. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-20 -->
 
 # Cron transport
 
@@ -39,8 +39,9 @@ A cron schedule adds no new top-level field and no fourth entity. It is a channe
 | `payload` | object | no | `{}` | The run's input. Must be an object; at most 1 MB serialized. Secrets are refused; see [What a cron channel may not declare](#what-a-cron-channel-may-not-declare). |
 | `misfire_policy` | string | no | `latest` | `skip`, `latest`, or `catch_up`. What happens to occurrences whose time passed while nothing was running. |
 | `max_catch_up` | number | `catch_up` | — | Bound on a replay, 1–1000. Required when `misfire_policy` is `catch_up`. |
-| `concurrency.policy` | string | no | `allow` | `allow` (occurrences may overlap) or `forbid` (at most one per key at a time). |
-| `concurrency.key` | string | no | the channel's `channel_id` | Literal lock name, `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`. Two channels naming the same key serialise with each other. |
+| `concurrency.policy` | string | no | `allow` | `allow` (occurrences may overlap) or `forbid` (at most `slots` per key at a time). |
+| `concurrency.key` | string | no | the channel's `channel_id` | Literal lock name, `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`. Two channels naming the same key share its slots. |
+| `concurrency.slots` | integer | no | `1` | How many occurrences of the key may run at once, 1–64. `forbid` only; refused with `allow`. |
 
 Unknown keys are refused, as everywhere else in a channel definition. A misspelled `misfire_polcy` would otherwise leave the default in place forever with nothing to see.
 
@@ -65,6 +66,7 @@ Beyond the payload, a scheduled run carries a reserved `metadata.trigger` object
 | `timezone` | The channel's IANA zone, so a workflow formatting a local date need not hard-code it |
 | `attempt` | `1` for a first run |
 | `singleton_key` | The lock this run holds, when its channel takes one |
+| `singleton_slot` | Which of the key's slots it holds, from `0`, when its channel takes one |
 
 `scheduled_for` and `started_at` are different questions and both are answered: the first is what the work is *for*, the second is when it happened. Use `scheduled_for` as an idempotency key — two attempts at one occurrence agree on it, and no two occurrences of a channel share it.
 
@@ -95,9 +97,21 @@ Whatever the policy, the misses are recorded as **one** occurrence row with stat
 
 ### Concurrency
 
-`policy: "forbid"` means at most one occurrence for a `key` is admitted at a time, across the whole cluster. A contending occurrence is recorded `skipped_singleton` — visible, not dropped. `policy: "allow"` lets occurrences overlap and takes no lock at all.
+`policy: "forbid"` means at most `slots` occurrences for a `key` are admitted at a time. `slots` defaults to `1`: one at a time. A contending occurrence is recorded `skipped_singleton` — visible, not dropped. `policy: "allow"` lets occurrences overlap and takes no lock at all.
 
-The key defaults to the channel's `channel_id`, so `forbid` on its own means "one at a time, of this channel". Naming the same key on several channels deliberately serialises them with each other.
+The key defaults to the channel's `channel_id`, so `forbid` on its own means "one at a time, of this channel". Naming the same key on several channels deliberately shares its slots between them.
+
+**Slots are numbered from `0`, and a run takes the lowest free one.** It holds that slot for the whole attempt and reads it as `metadata.trigger.singleton_slot`. A workflow can partition work by it, the way a set of cloned "lane" channels once did:
+
+```json
+"concurrency": { "policy": "forbid", "key": "invoice-worker", "slots": 4 }
+```
+
+An occurrence may only take a slot below its own channel's `slots`. Channels sharing a key normally agree. When they do not, a `slots: 1` channel waits for slot `0` however many higher slots are free, and the key's bound is the largest declared. `orion-server lint` warns about the mismatch as `cron.slots_mismatch`.
+
+Lowering `slots` affects new runs only. A run already holding a higher slot finishes normally, so the status view can briefly show more held than the new bound.
+
+**The scope is the database.** On SQLite each node has its own slots. Nodes sharing PostgreSQL or MySQL share them, so the bound holds across the cluster.
 
 **Non-overlap is not exactly once.** A worker that loses its lease cancels, but it cannot prove that a connector call it already made did not land. Scheduled work that must not be applied twice needs an idempotent destination or an idempotency key, exactly as Kafka ingest does.
 

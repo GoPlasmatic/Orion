@@ -83,6 +83,8 @@ The row keeps one scope, so it describes one bump. A node that finds the epoch s
 
 A booting node reads the epoch before it loads channels and workflows. Anything committed while it was starting is picked up by its first poll rather than missed. It is at most one `epoch_poll_interval_ms` behind, exactly like every other node. What is worth knowing is that it is behind while serving. `/healthz` and `/readyz` are green as soon as the first generation is published, so a load balancer sends it traffic at once. A channel activated during that window answers `404` there and `200` on its peers until the tick lands.
 
+A node with [`[packages] apply`](../../reference/configuration/packages.md) is the exception: its `/readyz` holds until its packages serve. Every replica may list the same artifact. One applies it while the others wait on its receipt, then reload and check.
+
 That is normal eventual consistency, not a fault, and it is invisible at rest. It shows up when a deploy and a configuration change overlap. Roll a node and activate a channel in the same couple of seconds. A few requests meet the node that has not caught up yet. If that matters for a particular rollout, let the restarted node settle for one poll interval before making the change. Or make the change first and roll afterwards.
 
 ### When a change does not propagate

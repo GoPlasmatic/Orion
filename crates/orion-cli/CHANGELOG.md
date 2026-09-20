@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`engine status` and `engine reload` list load issues.** Against a server
+  that reports them, both print what the generation could not load — each
+  quarantined channel, plugin, model and connector with its reason — or
+  `none`. An older server prints what it always did.
+
 ## [1.8.2] - 2026-09-16
 
 ## [1.8.1] - 2026-09-14

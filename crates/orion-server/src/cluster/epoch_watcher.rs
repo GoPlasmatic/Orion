@@ -63,8 +63,15 @@ async fn run_epoch_watcher(state: AppState, mut shutdown: crate::runtime::Shutdo
         // The scope the resync is sized to is decided in there rather than
         // here, because it is a property of the *advance* — this node's
         // watermark and the row together — not of the row alone.
+        // The resynced generation itself is not needed here: its load
+        // issues are this node's `/health` to report.
         let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, &row, |scope| {
-            crate::runtime::resync_from_db(&state, scope)
+            let state = &state;
+            async move {
+                crate::runtime::resync_from_db(state, scope)
+                    .await
+                    .map(|_| ())
+            }
         })
         .await;
 

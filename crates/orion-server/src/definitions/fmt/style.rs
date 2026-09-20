@@ -24,10 +24,11 @@ pub const STYLE: Style = Style {
     max_scalar_inline: 8,
 };
 
-/// The key `SharedDefinitions::splice` merges from: it is the base the rest
-/// of the object overrides, so it reads first in every object it appears in,
-/// whatever the object's role.
-pub const FROM_KEY: &str = "$from";
+/// The keys an object is built from — `$from` splices a shared value, `$use`
+/// a value fragment, `$each` repeats the element — read first in every
+/// object they appear in, whatever the object's role: each is the base the
+/// rest of the object overrides or repeats.
+pub const REFERENCE_KEYS: &[&str] = &["$each", "$from", "$use"];
 
 /// Canonical order of the keys a workflow document carries — the
 /// `CreateWorkflowRequest` fields, in reading order, plus `activate`, the
@@ -108,9 +109,14 @@ pub const CONNECTOR_KEYS: &[&str] = &["id", "name", "connector_type", "enabled",
 
 /// A shared-definitions document. Any other namespace an author adds follows
 /// these in author order.
-pub const SHARED_DOC_KEYS: &[&str] = &["constants", "errors", "fragments"];
+pub const SHARED_DOC_KEYS: &[&str] = &["package", "constants", "errors", "fragments"];
 
-pub const FRAGMENT_KEYS: &[&str] = &["params", "tasks"];
+/// A set's `package` declaration.
+pub const PACKAGE_DECL_KEYS: &[&str] = &["name", "requires"];
+
+pub const FRAGMENT_KEYS: &[&str] = &["params", "tasks", "value"];
+/// An `$each` element: the binding, then the element it repeats.
+pub const EACH_KEYS: &[&str] = &["$each", "do"];
 
 /// A `*.case.json` file — the `TestCase` fields in the order `orion-server
 /// test` documents them.
@@ -172,7 +178,9 @@ pub fn all_tables() -> &'static [(&'static str, &'static [&'static str])] {
         ("channel", CHANNEL_KEYS),
         ("connector", CONNECTOR_KEYS),
         ("shared_doc", SHARED_DOC_KEYS),
+        ("package_decl", PACKAGE_DECL_KEYS),
         ("fragment", FRAGMENT_KEYS),
+        ("each", EACH_KEYS),
         ("case", CASE_KEYS),
         ("artifact", ARTIFACT_KEYS),
         ("artifact_meta", ARTIFACT_META_KEYS),

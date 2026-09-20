@@ -6,313 +6,37 @@
 //! the module boundary of Orion's modular-monolith model. One instance runs
 //! many packages; each promotes and rolls back independently.
 //!
-//! Packaging lives here, in the CLI, not in the server: the server provides
-//! per-kind primitives (upsert import, activation pre-flight, deferred
-//! reload, package receipts) and this module composes them. Everything talks
-//! to a running instance's admin API over HTTP (`--server` +
+//! The server provides per-kind primitives (upsert import, activation
+//! pre-flight, deferred reload, package receipts); the library's
+//! [`orion::package`] composes them into lint, apply and prune, and this
+//! module is the CLI shell over it: flags, the HTTP client, and the verbs
+//! only an operator runs (`export`, `plan`, `diff`). Everything talks to a
+//! running instance's admin API over HTTP (`--server` +
 //! `ORION_ADMIN_TOKEN`), except `lint`, which is fully offline.
-//!
-//! The artifact is one JSON document: a `package` header,
-//! `requires` boundaries, and the entity arrays in the exact shapes the
-//! `/import` endpoints accept — connectors, workflows and channels always,
-//! plugins and models when the package carries any. `package.content_hash`
-//! is computed over the entities' *importable content* — each entry
-//! projected through the same `storage::content` canonicalization the
-//! server hashes with (K10) — so DB-owned fields (`status`, `version`,
-//! timestamps) never make two artifacts differ.
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use orion_client::{OrionClient, StatusCode, paths, query_string};
+use orion_client::{OrionClient, paths, query_string};
 
+use orion::package::apply::{
+    ReceiptState, check_receipt, check_target_version, import_path_for, missing_storage,
+    print_prune_plan, prune_plan_for, prune_refusals, status_path_for,
+};
+use orion::package::artifact::{
+    ModelRequirement, PluginRequirement, activation_intents, literal_model_ids, members,
+    model_import_content, package_members, plugin_definition, plugin_import_content, read_artifact,
+    verify_hash,
+};
+pub(crate) use orion::package::artifact::{
+    PackageArtifact, PackageMeta, Requires, artifact_content_hash, member_counts,
+};
+use orion::package::{Console, PruneMode};
 use orion::storage::content;
 use orion::storage::repositories::channels::CreateChannelRequest;
 use orion::storage::repositories::connectors::CreateConnectorRequest;
-use orion::storage::repositories::plugins::CreatePluginRequest;
 use orion::storage::repositories::workflows::CreateWorkflowRequest;
 
 type CliError = Box<dyn std::error::Error>;
-
-/// How long `apply` waits for the target to admit a model it staged before
-/// activating it. Admission is a fetch, a parse and a probe, so it is
-/// seconds for a small model and minutes for a large one over a slow
-/// bucket; the wait is bounded so a target whose worker is down fails the
-/// apply rather than hanging it.
-const ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(900);
-
-// ============================================================
-// Artifact shapes
-// ============================================================
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct PackageArtifact {
-    pub(crate) package: PackageMeta,
-    #[serde(default)]
-    pub(crate) requires: Requires,
-    /// The fourth member: plugins, each in the shape `/plugins/import`
-    /// accepts — `plugin_id`, `manifest`, `digest`, `tags`, and the component
-    /// as base64 when the export carried it. Omitted from the document *and*
-    /// the hash when empty, so a package without plugins hashes exactly as it
-    /// did before plugins existed and every applied receipt stays valid.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) plugins: Vec<Value>,
-    /// The fifth member: models, each in the shape `/models/import` accepts
-    /// — `model_id`, `manifest`, `artifact` (`connector`, `key`, `digest`),
-    /// `tags` — and never the bytes: the target fetches them through the
-    /// connector at admission. Omitted from the document *and* the hash
-    /// when empty, for the same reason as `plugins`: a package without
-    /// models must hash exactly as it did before the member existed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) models: Vec<Value>,
-    #[serde(default)]
-    pub(crate) connectors: Vec<Value>,
-    #[serde(default)]
-    pub(crate) workflows: Vec<Value>,
-    #[serde(default)]
-    pub(crate) channels: Vec<Value>,
-}
-
-/// A plugin the package uses but does not carry: the target must hold this
-/// digest active under this id before the package can apply.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PluginRequirement {
-    pub(crate) id: String,
-    pub(crate) digest: String,
-}
-
-/// A model the package's workflows name and the artifact does not carry:
-/// the target must serve it active. `version` and `digest` are what the
-/// source held when it could say — `0` and empty when the source had no
-/// row at all — and `plan` checks the digest only when one is named.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ModelRequirement {
-    pub(crate) id: String,
-    #[serde(default)]
-    pub(crate) version: i64,
-    #[serde(default)]
-    pub(crate) digest: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct PackageMeta {
-    pub(crate) name: String,
-    pub(crate) version: String,
-    /// The Orion version that exported this artifact — informational.
-    #[serde(default)]
-    pub(crate) orion: String,
-    pub(crate) content_hash: String,
-    /// Where the artifact came from: a server URL for `export`, a directory
-    /// for `compile`. Informational.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) exported_from: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub(crate) exported_at: String,
-}
-
-/// Declared external dependencies: names this package uses but
-/// deliberately does not contain, so closures stay small. `plan` verifies
-/// they exist and are active in the target.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub(crate) struct Requires {
-    #[serde(default)]
-    pub(crate) channels: Vec<String>,
-    #[serde(default)]
-    pub(crate) connectors: Vec<String>,
-    /// Plugins the workflows call that the artifact does not carry, by id
-    /// and digest: `plan` checks the target serves exactly that digest.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) plugins: Vec<PluginRequirement>,
-    /// Models the workflows name by literal id that the artifact does not
-    /// carry: `plan` checks the target serves each one active.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) models: Vec<ModelRequirement>,
-    /// The `storage` connectors the carried models' references name and the
-    /// artifact does not carry: the target fetches every artifact through
-    /// one, and an import of a model whose connector is missing fails at
-    /// write, so `plan` and `apply` check they exist first.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) storage: Vec<String>,
-}
-
-/// The importable content of one `models[]` entry — the projection the
-/// server hashes a stored row with (`model_content`), computed here from the
-/// import item: the manifest as the server will store it (validated, so a
-/// defaulted `format` hashes the same whether or not it was spelled), the
-/// reference without its advisory `size`, and the tags.
-fn model_import_content(entry: &Value) -> Result<Value, CliError> {
-    let id = entry["model_id"].as_str().unwrap_or("?");
-    let manifest = orion::model::Manifest::validated(&entry["manifest"]).map_err(|errors| {
-        format!(
-            "model entry '{id}': {}",
-            errors
-                .iter()
-                .map(|e| format!("{}: {}", e.path, e.message))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    })?;
-    let artifact = &entry["artifact"];
-    for field in ["connector", "key", "digest"] {
-        if artifact[field].as_str().is_none_or(|v| v.trim().is_empty()) {
-            return Err(format!(
-                "model entry '{}': artifact.{field} is required",
-                manifest.name
-            )
-            .into());
-        }
-    }
-    let tags: Vec<String> = entry["tags"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|t| t.as_str().map(str::to_string))
-        .collect();
-    Ok(content::model_request_content(
-        &serde_json::to_value(&manifest)?,
-        artifact,
-        &tags,
-    ))
-}
-
-/// A `models[]` entry as the set loader sees it: the parsed manifest, with
-/// no file behind it.
-fn model_definition(
-    index: usize,
-    entry: &Value,
-) -> Result<orion::definitions::ModelDefinition, CliError> {
-    let content = model_import_content(entry)?;
-    let manifest: orion::model::Manifest = serde_json::from_value(content["manifest"].clone())?;
-    Ok(orion::definitions::ModelDefinition::from_manifest(
-        format!("models[{index}]"),
-        manifest,
-    ))
-}
-
-/// The importable content of one `plugins[]` entry — the projection the
-/// server hashes a stored row with (`plugin_content`), computed here from the
-/// import item: the manifest (TOML text or the object), the digest it names
-/// or the hash of the component it carries, and its tags.
-fn plugin_import_content(entry: &Value) -> Result<Value, CliError> {
-    let req: CreatePluginRequest = serde_json::from_value(entry.clone())
-        .map_err(|e| format!("plugin entry does not parse as an import item: {e}"))?;
-    let manifest = match &req.manifest {
-        Value::String(text) => orion::plugin::Manifest::parse(text),
-        other => serde_json::from_value::<orion::plugin::Manifest>(other.clone())
-            .map_err(|e| {
-                vec![orion::errors::FieldError::new(
-                    "manifest",
-                    "INVALID",
-                    e.to_string(),
-                )]
-            })
-            .and_then(orion::plugin::Manifest::validated),
-    }
-    .map_err(|errors| {
-        format!(
-            "plugin entry '{}': {}",
-            req.plugin_id.as_deref().unwrap_or("?"),
-            errors
-                .iter()
-                .map(|e| format!("{}: {}", e.path, e.message))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    })?;
-    let digest = match (&req.digest, &req.component) {
-        (Some(digest), _) => digest.clone(),
-        (None, Some(component)) => {
-            use base64::Engine as _;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(component.trim())
-                .map_err(|e| format!("plugin '{}': component is not base64: {e}", manifest.name))?;
-            orion::plugin::WasmRuntime::digest(&bytes)
-        }
-        (None, None) => {
-            return Err(format!(
-                "plugin '{}': the entry carries neither a component nor a digest",
-                manifest.name
-            )
-            .into());
-        }
-    };
-    Ok(content::plugin_request_content(
-        &serde_json::to_value(&manifest)?,
-        &digest,
-        &req.tags,
-    ))
-}
-
-/// A `plugins[]` entry as the set loader sees it: the parsed manifest and
-/// the digest the entry names or carries.
-fn plugin_definition(
-    index: usize,
-    entry: &Value,
-) -> Result<orion::definitions::PluginDefinition, CliError> {
-    let content = plugin_import_content(entry)?;
-    let manifest: orion::plugin::Manifest = serde_json::from_value(content["manifest"].clone())?;
-    Ok(orion::definitions::PluginDefinition {
-        origin: format!("plugins[{index}]"),
-        manifest,
-        digest: content["digest"].as_str().map(str::to_string),
-        component_path: None,
-    })
-}
-
-/// Project every entry of one entity array through its import shape. Fails on
-/// an entry that does not parse as that shape — such an artifact could not
-/// apply anyway.
-fn project_entries<T: serde::de::DeserializeOwned>(
-    entries: &[Value],
-    label: &str,
-    project: impl Fn(&T) -> Value,
-) -> Result<Vec<Value>, CliError> {
-    entries
-        .iter()
-        .map(|entry| {
-            let req: T = serde_json::from_value(entry.clone())
-                .map_err(|e| format!("{label} entry does not parse as an import item: {e}"))?;
-            Ok(project(&req))
-        })
-        .collect()
-}
-
-/// The package-level hash: each entity array projected entry-by-entry
-/// through the shared importable-content canonicalization, then hashed as
-/// one document.
-pub(crate) fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError> {
-    let mut doc = json!({
-        "connectors": project_entries::<CreateConnectorRequest>(
-            &artifact.connectors, "connector", content::connector_request_content)?,
-        "workflows": project_entries::<CreateWorkflowRequest>(
-            &artifact.workflows, "workflow", content::workflow_request_content)?,
-        "channels": project_entries::<CreateChannelRequest>(
-            &artifact.channels, "channel", content::channel_request_content)?,
-    });
-    // The key is present only when there is something under it: a package
-    // without plugins must hash exactly as it did before the member existed,
-    // or every applied receipt on every target would read as a conflict.
-    if !artifact.plugins.is_empty() {
-        doc["plugins"] = Value::Array(
-            artifact
-                .plugins
-                .iter()
-                .map(plugin_import_content)
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-    // Models the same way, for the same reason.
-    if !artifact.models.is_empty() {
-        doc["models"] = Value::Array(
-            artifact
-                .models
-                .iter()
-                .map(model_import_content)
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-    Ok(content::content_hash(&doc))
-}
 
 // ============================================================
 // Admin-API client
@@ -346,65 +70,6 @@ fn admin_client(server: &str, change_context: String) -> Result<OrionClient, Cli
     Ok(client.with_change_context(change_context))
 }
 
-fn read_artifact(path: &str) -> Result<PackageArtifact, CliError> {
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("read '{path}': {e}"))?;
-    let artifact: PackageArtifact = serde_json::from_str(&raw)
-        .map_err(|e| format!("'{path}' is not a package artifact: {e}"))?;
-    Ok(artifact)
-}
-
-/// The receipt endpoint for this artifact's package.
-fn receipt_path(artifact: &PackageArtifact) -> String {
-    paths::package(&artifact.package.name)
-}
-
-/// The `/import` endpoint for one of the five entity kinds the artifact
-/// carries. The kinds are a closed set spelled by this module's own loops.
-fn import_path_for(kind: &str) -> &'static str {
-    match kind {
-        "plugins" => paths::PLUGINS_IMPORT,
-        "models" => paths::MODELS_IMPORT,
-        "connectors" => paths::CONNECTORS_IMPORT,
-        "workflows" => paths::WORKFLOWS_IMPORT,
-        _ => paths::CHANNELS_IMPORT,
-    }
-}
-
-/// The `PATCH …/status` endpoint for an activation intent's kind.
-fn status_path_for(kind: &str, id: &str) -> String {
-    match kind {
-        "plugins" => paths::plugin_status(id),
-        "models" => paths::model_status(id),
-        "workflows" => paths::workflow_status(id),
-        _ => paths::channel_status(id),
-    }
-}
-
-/// The member arrays in the order `apply` stages them — each after what it
-/// references: plugins before the workflows that call them, connectors
-/// before the models fetched through them and the workflows that use them,
-/// workflows before the channels that name them.
-fn members(artifact: &PackageArtifact) -> [(&'static str, &Vec<Value>); 5] {
-    [
-        ("plugins", &artifact.plugins),
-        ("connectors", &artifact.connectors),
-        ("models", &artifact.models),
-        ("workflows", &artifact.workflows),
-        ("channels", &artifact.channels),
-    ]
-}
-
-/// The literal model ids a workflow entry's tasks name.
-fn literal_model_ids(workflow: &Value) -> Vec<String> {
-    workflow
-        .get("tasks")
-        .map(orion::model::literal_references)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(_, model)| model)
-        .collect()
-}
-
 /// The plugin functions an artifact's own plugins declare — what apply's
 /// ordering makes available before any workflow activates.
 fn provided_plugin_functions(artifact: &PackageArtifact) -> Vec<String> {
@@ -436,19 +101,98 @@ fn names_of(export: &Value, field: &str) -> std::collections::HashSet<String> {
 // export
 // ============================================================
 
+/// What `--version` asked for: a literal version, or the keyword `content`
+/// for one derived from the artifact's content hash.
+pub(crate) enum VersionSpec<'a> {
+    Literal(&'a str),
+    Content { prefix: Option<&'a str> },
+}
+
+impl<'a> VersionSpec<'a> {
+    /// `--version` and `--version-prefix`, checked against the receipt rule
+    /// now rather than at `apply`, where the target would refuse them.
+    pub(crate) fn parse(version: &'a str, prefix: Option<&'a str>) -> Result<Self, CliError> {
+        use orion::storage::content::{CONTENT_VERSION_KEYWORD, check_version_prefix};
+        if version == CONTENT_VERSION_KEYWORD {
+            if let Some(prefix) = prefix {
+                check_version_prefix(prefix)?;
+            }
+            return Ok(Self::Content { prefix });
+        }
+        if prefix.is_some() {
+            return Err("--version-prefix only applies with --version content".into());
+        }
+        orion::validation::package_key(
+            "--version",
+            version,
+            orion::validation::MAX_PACKAGE_VERSION_LEN,
+        )?;
+        Ok(Self::Literal(version))
+    }
+
+    /// The version for an artifact whose content hashes to `content_hash`.
+    pub(crate) fn resolve(&self, content_hash: &str) -> Result<String, CliError> {
+        Ok(match self {
+            Self::Literal(version) => (*version).to_string(),
+            Self::Content { prefix } => {
+                orion::storage::content::content_version(content_hash, *prefix)?
+            }
+        })
+    }
+
+    /// How to name the version before the hash is known.
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Literal(version) => version,
+            Self::Content { .. } => orion::storage::content::CONTENT_VERSION_KEYWORD,
+        }
+    }
+
+    /// With a derived version, say what the hash — and so the version —
+    /// does not see: a rollout-only change keeps it.
+    pub(crate) fn note_what_the_hash_excludes(&self, artifact: &PackageArtifact) {
+        if matches!(self, Self::Content { .. })
+            && artifact
+                .workflows
+                .iter()
+                .any(|w| w.get("rollout_percentage").is_some())
+        {
+            eprintln!(
+                "note: rollout_percentage is not part of the content hash — a rollout-only \
+                 change keeps this version and re-applies as a no-op; change --version-prefix \
+                 to force a new one"
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_export(
     server: &str,
     tag: Option<&str>,
     channel_ids: &[String],
     name: &str,
     version: &str,
+    version_prefix: Option<&str>,
+    requires_orion: Option<&str>,
     output: Option<&str>,
     include_artifacts: bool,
 ) -> Result<(), CliError> {
     if tag.is_none() && channel_ids.is_empty() {
         return Err("select the package's channels with --tag or --channels".into());
     }
-    let client = admin_client(server, format!("package={name}@{version} export"))?;
+    orion::validation::package_key("--name", name, orion::validation::MAX_PACKAGE_NAME_LEN)?;
+    let version = VersionSpec::parse(version, version_prefix)?;
+    // An export has no set to read a range from; the flag is the only way to
+    // declare one.
+    let requires_orion = requires_orion
+        .map(|range| {
+            orion::version::OrionRequirement::parse(range)
+                .map(|r| r.as_str().to_string())
+                .map_err(|e| format!("--requires-orion {e}"))
+        })
+        .transpose()?;
+    let client = admin_client(server, format!("package={name}@{} export", version.label()))?;
 
     // 1. The selected channels.
     let mut channels: Vec<Value> = Vec::new();
@@ -709,13 +453,14 @@ pub(crate) async fn run_export(
     let mut artifact = PackageArtifact {
         package: PackageMeta {
             name: name.to_string(),
-            version: version.to_string(),
+            version: String::new(),
             orion: env!("CARGO_PKG_VERSION").to_string(),
             content_hash: String::new(),
             exported_from: server.to_string(),
             exported_at: chrono::Utc::now().to_rfc3339(),
         },
         requires: Requires {
+            orion: requires_orion,
             channels: required_channels,
             connectors: required_connectors,
             plugins: required_plugins,
@@ -728,7 +473,10 @@ pub(crate) async fn run_export(
         workflows,
         channels,
     };
+    // The version is outside the hash, so it can be derived from it.
     artifact.package.content_hash = artifact_content_hash(&artifact)?;
+    artifact.package.version = version.resolve(&artifact.package.content_hash)?;
+    version.note_what_the_hash_excludes(&artifact);
 
     let rendered = serde_json::to_string_pretty(&artifact)?;
     match output {
@@ -746,77 +494,17 @@ pub(crate) async fn run_export(
     Ok(())
 }
 
-/// `N connectors, N workflows, N channels`, with the plugin and model
-/// counts in front only when the artifact carries any — the pre-plugin
-/// line otherwise.
-pub(crate) fn member_counts(artifact: &PackageArtifact) -> String {
-    let mut line = format!(
-        "{} connectors, {} workflows, {} channels",
-        artifact.connectors.len(),
-        artifact.workflows.len(),
-        artifact.channels.len(),
-    );
-    if !artifact.models.is_empty() {
-        line = format!("{} models, {line}", artifact.models.len());
-    }
-    if !artifact.plugins.is_empty() {
-        line = format!("{} plugins, {line}", artifact.plugins.len());
-    }
-    line
-}
-
 // ============================================================
 // lint (offline)
 // ============================================================
 
 pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
     let artifact = read_artifact(file)?;
-    let mut errors: Vec<String> = Vec::new();
-
-    if artifact.package.name.trim().is_empty() {
-        errors.push("package.name is empty".to_string());
+    let report = orion::package::lint_artifact(&artifact)?;
+    for warning in &report.warnings {
+        eprintln!("{warning}");
     }
-    if artifact.package.version.trim().is_empty() {
-        errors.push("package.version is empty".to_string());
-    }
-
-    // The hash is part of the contract: an artifact edited without
-    // re-hashing would defeat the receipt comparison downstream.
-    match artifact_content_hash(&artifact) {
-        Ok(actual) if actual != artifact.package.content_hash => errors.push(format!(
-            "package.content_hash does not match the entities — expected {actual}"
-        )),
-        Ok(_) => {}
-        Err(e) => errors.push(e.to_string()),
-    }
-
-    // Everything below the package envelope is a definition set, checked by
-    // the shared pass. `requires` is this container's boundary: names the
-    // target instance is expected to already have. The set's plugins are the
-    // artifact's own entries, so a workflow naming one of their functions is
-    // checked against the manifest that travels with it.
-    let (set, boundary, mut findings) = artifact_as_set(&artifact);
-    let registry = match set.function_registry() {
-        Ok(registry) => registry,
-        Err(reason) => {
-            errors.push(format!("plugins: {reason}"));
-            orion::engine::FunctionRegistry::builtin()
-                .with_entries(Vec::new())
-                .expect("the built-in registry extends by nothing")
-        }
-    };
-    findings.extend(orion::definitions::check(&set, &boundary, true, &registry));
-
-    for finding in findings.iter().filter(|f| !f.is_error()) {
-        eprintln!("{finding}");
-    }
-    errors.extend(findings.iter().filter(|f| f.is_error()).map(|f| {
-        // The package surface reports one flat line per problem; the
-        // structured form is what `lint <dir>` renders.
-        format!("{}: {}", f.entity, f.message)
-    }));
-
-    if errors.is_empty() {
+    if report.errors.is_empty() {
         println!(
             "'{file}' is a valid package: {}@{} — {}",
             artifact.package.name,
@@ -825,164 +513,82 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
         );
         Ok(())
     } else {
-        for error in &errors {
+        for error in &report.errors {
             eprintln!("error: {error}");
         }
-        Err(format!("{} lint error(s) in '{file}'", errors.len()).into())
+        Err(format!("{} lint error(s) in '{file}'", report.errors.len()).into())
     }
-}
-
-/// Project an artifact into the shared [`DefinitionSet`] shape, keeping the
-/// `channels[2]`-style origins the package surface has always reported.
-///
-/// The third member of the result is what the plugin entries could not
-/// give the set: an entry that does not parse as an import item is a finding
-/// here, in the same voice as an entity that does not.
-fn artifact_as_set(
-    artifact: &PackageArtifact,
-) -> (
-    orion::definitions::DefinitionSet,
-    orion::definitions::Boundary,
-    Vec<orion::definitions::Diagnostic>,
-) {
-    use orion::definitions::Entity;
-    let mut entries = Vec::new();
-    for (i, doc) in artifact.connectors.iter().enumerate() {
-        entries.push((Entity::Connector, format!("connectors[{i}]"), doc.clone()));
-    }
-    for (i, doc) in artifact.workflows.iter().enumerate() {
-        entries.push((Entity::Workflow, format!("workflows[{i}]"), doc.clone()));
-    }
-    for (i, doc) in artifact.channels.iter().enumerate() {
-        entries.push((Entity::Channel, format!("channels[{i}]"), doc.clone()));
-    }
-    let boundary = orion::definitions::Boundary {
-        channels: artifact.requires.channels.clone(),
-        connectors: artifact.requires.connectors.clone(),
-        models: artifact
-            .requires
-            .models
-            .iter()
-            .map(|m| m.id.clone())
-            .collect(),
-    };
-    let mut set = orion::definitions::DefinitionSet::from_entries(entries);
-    let mut findings = Vec::new();
-    for (i, entry) in artifact.plugins.iter().enumerate() {
-        match plugin_definition(i, entry) {
-            Ok(plugin) => set.plugins.push(plugin),
-            Err(e) => findings.push(orion::definitions::Diagnostic::error(
-                "parse.plugin",
-                format!("plugins[{i}]"),
-                e.to_string(),
-            )),
-        }
-    }
-    for (i, entry) in artifact.models.iter().enumerate() {
-        match model_definition(i, entry) {
-            Ok(model) => set.models.push(model),
-            Err(e) => findings.push(orion::definitions::Diagnostic::error(
-                "parse.model",
-                format!("models[{i}]"),
-                e.to_string(),
-            )),
-        }
-    }
-    (set, boundary, findings)
-}
-
-/// Whether the target holds every `storage` connector the carried models
-/// fetch through — `requires.storage`, checked by `plan` and again by
-/// `apply` before it stages anything, because an import of a model whose
-/// connector is missing fails at write with the receipt already claimed.
-/// One export sweep matched by `name`, as `requires.connectors` is checked:
-/// a model reference names a connector by its name, and `GET
-/// /connectors/{id}` is keyed by the row's id.
-async fn missing_storage(
-    client: &OrionClient,
-    artifact: &PackageArtifact,
-) -> Result<usize, CliError> {
-    if artifact.requires.storage.is_empty() {
-        return Ok(0);
-    }
-    let stored: Value = client.get_data(paths::CONNECTORS_EXPORT).await?;
-    let mut missing = 0usize;
-    for name in &artifact.requires.storage {
-        let row = stored
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["name"].as_str() == Some(name));
-        match row {
-            Some(row) if row["connector_type"] == "storage" => {}
-            Some(row) => {
-                eprintln!(
-                    "error: required storage connector '{name}' exists in the target but is a \
-                     '{}' connector — a model artifact is fetched through a storage connector",
-                    row["connector_type"].as_str().unwrap_or("?")
-                );
-                missing += 1;
-            }
-            None => {
-                eprintln!(
-                    "error: required storage connector '{name}' does not exist in the target — \
-                     the models this package carries are fetched through it"
-                );
-                missing += 1;
-            }
-        }
-    }
-    Ok(missing)
 }
 
 // ============================================================
 // plan
 // ============================================================
 
-/// The receipt verdict `plan` and `apply` both start from.
-enum ReceiptState {
-    Fresh,
-    Staged,
-    AppliedSame,
-    AppliedConflict,
-}
-
-async fn check_receipt(
-    client: &OrionClient,
-    artifact: &PackageArtifact,
-) -> Result<ReceiptState, CliError> {
-    let receipts: Option<Value> = client.get_data_opt(&receipt_path(artifact)).await?;
-    let Some(receipts) = receipts else {
-        return Ok(ReceiptState::Fresh);
-    };
-    let row = receipts["versions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|r| r["version"] == artifact.package.version.as_str())
-        .cloned();
-    Ok(match row {
-        None => ReceiptState::Fresh,
-        Some(row) if row["state"] == "applied" => {
-            if row["content_hash"] == artifact.package.content_hash.as_str() {
-                ReceiptState::AppliedSame
-            } else {
-                ReceiptState::AppliedConflict
+/// `plan`'s warnings about a target that would not serve part of the
+/// artifact: a capability it has switched off, or a member it already
+/// quarantines.
+fn plan_capability_warnings(artifact: &PackageArtifact, status: &orion_api::EngineStatusResponse) {
+    if let Some(caps) = &status.capabilities {
+        if !caps.cron {
+            for channel in &artifact.channels {
+                if channel["protocol"] == "cron"
+                    && channel["activate"] == true
+                    && let Some(id) = channel["channel_id"].as_str()
+                {
+                    eprintln!(
+                        "warning: target has cron.enabled = false — channels/{id} would be \
+                         refused at activation (and quarantined on any node that loads it)"
+                    );
+                }
             }
         }
-        Some(_) => ReceiptState::Staged,
-    })
+        if !caps.plugins && (!artifact.plugins.is_empty() || !artifact.requires.plugins.is_empty())
+        {
+            eprintln!(
+                "warning: target has plugins.enabled = false — the plugins this package \
+                 carries or requires cannot load there, and the workflows calling them would \
+                 be quarantined"
+            );
+        }
+        let names_models = artifact
+            .workflows
+            .iter()
+            .any(|w| !literal_model_ids(w).is_empty());
+        if !caps.models
+            && (!artifact.models.is_empty() || !artifact.requires.models.is_empty() || names_models)
+        {
+            eprintln!(
+                "warning: target has models.enabled = false — the models this package names \
+                 cannot load there, and the workflows naming them would be quarantined"
+            );
+        }
+    }
+    if let Some(issues) = &status.load_issues {
+        for entity in orion::package::quarantined_members(&package_members(artifact), issues) {
+            eprintln!("warning: {entity} (already quarantined on the target)");
+        }
+    }
 }
 
-pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
-    let artifact = read_artifact(file)?;
+pub(crate) async fn run_plan(
+    server: &str,
+    file: &str,
+    signatures: Option<&str>,
+    prune: Option<PruneMode>,
+) -> Result<(), CliError> {
+    let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
+    // Before anything is asked of the target: the dry-run imports below run
+    // the trust check, so `plan` needs the signatures as much as `apply`.
+    orion::package::sign::attach_from_dir(&mut artifact, signatures, &Console)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
     let client = admin_client(server, format!("package={package} plan"))?;
+    check_target_version(&client, server, &artifact, &package).await?;
 
     // The immutability gate first: a reused applied version is dead on
     // arrival, and nothing below can change that.
-    match check_receipt(&client, &artifact).await? {
+    let (receipt, receipts) = check_receipt(&client, &artifact).await?;
+    match &receipt {
         ReceiptState::AppliedConflict => {
             return Err(format!(
                 "{package} is already applied on {server} with different content — an \
@@ -990,8 +596,18 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             )
             .into());
         }
-        ReceiptState::AppliedSame => {
+        ReceiptState::AppliedCurrent => {
             println!("{package} is already applied with identical content — apply is a no-op");
+            if prune.is_some() {
+                println!("{package} is already applied — nothing to prune");
+            }
+        }
+        ReceiptState::AppliedSuperseded { current } => {
+            println!(
+                "{package} is applied here but superseded by {}@{current} — apply will roll \
+                 the entities back to this content",
+                artifact.package.name
+            );
         }
         ReceiptState::Staged => {
             println!("{package} is staged here; apply may update it in place");
@@ -999,10 +615,56 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         ReceiptState::Fresh => {}
     }
 
+    // What the target is configured to run, and what it already refuses: a
+    // member this node would quarantine is predictable before anything is
+    // written. Warnings — the dry-run gates below are what fail a plan, and
+    // on the node that answers they already refuse most of these.
+    if let Ok(status) = client
+        .get_data::<orion_api::EngineStatusResponse>(paths::ENGINE_STATUS)
+        .await
+    {
+        plan_capability_warnings(&artifact, &status);
+    }
+
     // `requires` boundaries must exist in the target — each set fetched once
     // (the exports are unpaginated K12 snapshots, so no listing clamp can
     // hide a boundary on a large estate).
     let mut failures = 0usize;
+
+    // What the previous applied version carried and this artifact does not.
+    // Without `--prune` it is only mentioned; with it, every removal is
+    // listed and one something else still depends on is a blocking issue.
+    let prune_plan = prune_plan_for(&client, &artifact, &receipts, &receipt).await?;
+    match prune {
+        Some(mode) => {
+            print_prune_plan(&prune_plan, mode, &Console);
+            for refusal in prune_refusals(&client, &artifact, &prune_plan).await? {
+                eprintln!("error: {refusal}");
+                failures += 1;
+            }
+        }
+        None if !prune_plan.is_empty() => {
+            let count = prune_plan.removals().count();
+            println!(
+                "note: {count} {} of {} {} not in this artifact; apply --prune would remove {}",
+                if count == 1 { "entity" } else { "entities" },
+                prune_plan
+                    .baseline
+                    .as_deref()
+                    .unwrap_or("the current version"),
+                if count == 1 { "is" } else { "are" },
+                if count == 1 { "it" } else { "them" },
+            );
+        }
+        None => {}
+    }
+    // Channels `--prune` archives before activation: a route or name gate
+    // naming one of them is resolved by the prune, not a conflict.
+    let pruned_early: Vec<&str> = if prune.is_some() {
+        prune_plan.early.iter().map(|r| r.id.as_str()).collect()
+    } else {
+        Vec::new()
+    };
     if !artifact.requires.connectors.is_empty() {
         let stored = names_of(&client.get_data(paths::CONNECTORS_EXPORT).await?, "name");
         for name in &artifact.requires.connectors {
@@ -1094,7 +756,7 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             }
         }
     }
-    failures += missing_storage(&client, &artifact).await?;
+    failures += missing_storage(&client, &artifact, &Console).await?;
 
     // A workflow's create-time gate validates function names against the
     // target's *published* registry, so one calling a function of a plugin
@@ -1246,7 +908,14 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
                     || (existence
                         && resolved_by_order
                             .iter()
-                            .any(|name| message.contains(&format!("'{name}'"))));
+                            .any(|name| message.contains(&format!("'{name}'"))))
+                    // A collision with a channel `--prune` archives first —
+                    // the two spellings of the name and route gates.
+                    || (kind == "channels"
+                        && pruned_early.iter().any(|held| {
+                            message.contains(&format!("active channel id '{held}'"))
+                                || message.contains(&format!("(id {held})"))
+                        }));
             if pending {
                 println!("  {kind:<10} {id:<28} gate pending apply order: {message}");
             } else {
@@ -1264,327 +933,55 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
     }
 }
 
-fn verify_hash(artifact: &PackageArtifact) -> Result<(), CliError> {
-    let actual = artifact_content_hash(artifact)?;
-    if actual != artifact.package.content_hash {
-        return Err(format!(
-            "package.content_hash does not match the entities (expected {actual}) — \
-             re-run `package lint` after editing an artifact"
-        )
-        .into());
-    }
-    Ok(())
+// ============================================================
+// prune
+// ============================================================
+
+/// `--prune`'s value on the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum PruneArg {
+    /// Archive what is no longer carried, and disable a connector.
+    Archive,
+    /// Delete what is no longer carried, every version of it.
+    Delete,
 }
 
-/// `(kind, id, rollout)` of every entity the artifact marks `activate: true`,
-/// in dependency order: workflows before the channels that name them. The one
-/// place the intent fields are read, so plan and apply cannot disagree on
-/// their spelling.
-fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, Option<i64>)> {
-    let mut intents = Vec::new();
-    // Plugins first: a workflow's activation gate needs every plugin
-    // function it names to be dispatchable, and only an active plugin is.
-    for entry in &artifact.plugins {
-        if entry["activate"] == true
-            && let Some(id) = entry["plugin_id"].as_str()
-        {
-            intents.push(("plugins", id.to_string(), None));
+impl From<PruneArg> for PruneMode {
+    fn from(arg: PruneArg) -> Self {
+        match arg {
+            PruneArg::Archive => PruneMode::Archive,
+            PruneArg::Delete => PruneMode::Delete,
         }
     }
-    // Models next: a workflow naming one by literal id is quarantined on
-    // the reload that follows unless the model is active by then.
-    for entry in &artifact.models {
-        if entry["activate"] == true
-            && let Some(id) = entry["model_id"].as_str()
-        {
-            intents.push(("models", id.to_string(), None));
-        }
-    }
-    for entry in &artifact.workflows {
-        if entry["activate"] == true
-            && let Some(id) = entry["workflow_id"].as_str()
-        {
-            intents.push((
-                "workflows",
-                id.to_string(),
-                entry["rollout_percentage"].as_i64(),
-            ));
-        }
-    }
-    for entry in &artifact.channels {
-        if entry["activate"] == true
-            && let Some(id) = entry["channel_id"].as_str()
-        {
-            intents.push(("channels", id.to_string(), None));
-        }
-    }
-    intents
 }
 
 // ============================================================
 // apply
 // ============================================================
 
-pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> {
-    let artifact = read_artifact(file)?;
+pub(crate) async fn run_apply(
+    server: &str,
+    file: &str,
+    signatures: Option<&str>,
+    prune: Option<PruneMode>,
+) -> Result<(), CliError> {
+    let mut artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
+    // Before anything is sent: an orphan or malformed `.sig` stops here.
+    let signed = orion::package::sign::attach_from_dir(&mut artifact, signatures, &Console)?;
     let client = admin_client(server, format!("package={package}"))?;
-
-    // Phase 1 — claim the receipt as staged. This is the atomic
-    // same-version-different-content rejection (K14), and doubles as the
-    // guard against two concurrent applies.
-    if matches!(
-        check_receipt(&client, &artifact).await?,
-        ReceiptState::AppliedSame
-    ) {
-        println!("{package} is already applied with identical content — nothing to do");
-        return Ok(());
-    }
-    // Before the claim: a model import fails at write without its storage
-    // connector, and that is better learned with nothing claimed.
-    if missing_storage(&client, &artifact).await? > 0 {
-        return Err(
-            "the target lacks a storage connector this package's models are fetched \
-             through; create it there (or carry it in the package) and re-run apply"
-                .into(),
-        );
-    }
-    client
-        .put_data::<Value>(
-            &receipt_path(&artifact),
-            &json!({
-                "version": artifact.package.version,
-                "content_hash": artifact.package.content_hash,
-                "state": "staged",
-            }),
-        )
-        .await
-        .map_err(|e| format!("could not claim the receipt: {e}"))?;
-
-    // Phase 2 — stage everything as drafts, in dependency order. Plugins
-    // first, so their components are stored before anything names their
-    // functions; connector import reloads the connector registry
-    // server-side, so a model's reference resolves and workflow
-    // activation's registry gate sees them; models before the workflows
-    // that name them.
-    for (kind, items) in members(&artifact) {
-        if items.is_empty() {
-            continue;
-        }
-        let outcome: Value = client
-            .post_data(
-                &format!("{}?on_conflict=new_version", import_path_for(kind)),
-                &Value::Array(items.to_vec()),
-            )
-            .await?;
-        let failed = outcome["failed"].as_u64().unwrap_or(0);
-        println!(
-            "staged {kind}: {} written, {} unchanged, {failed} failed",
-            outcome["imported"], outcome["unchanged"]
-        );
-        if failed > 0 {
-            for error in outcome["errors"].as_array().into_iter().flatten() {
-                eprintln!(
-                    "error: {kind}[{}]: {}",
-                    error["index"],
-                    error["error"].as_str().unwrap_or("?")
-                );
-            }
-            return Err(
-                "staging failed; nothing was activated and the receipt stays \
-                 staged — fix the artifact and re-run (a staged receipt may be re-put)"
-                    .into(),
-            );
-        }
-        // Plugins activate as soon as they are staged, reload included: a
-        // workflow's create-time gate validates every function name against
-        // the *published* registry, so a workflow calling a plugin function
-        // cannot even be staged until the plugin is active and loaded. That
-        // is one extra reload per package that carries plugins, and the one
-        // place apply activates before all staging is done — a plugin that
-        // no workflow names yet is harmless to have active.
-        if kind == "plugins" {
-            for (_, id, _) in activation_intents(&artifact)
-                .into_iter()
-                .filter(|(k, _, _)| *k == "plugins")
-            {
-                match client
-                    .patch_data::<Value>(
-                        &status_path_for("plugins", &id),
-                        &json!({"status": orion_api::STATUS_ACTIVE}),
-                    )
-                    .await
-                {
-                    Ok(_) => println!("activated plugins '{id}'"),
-                    // Staged as `unchanged`: the version is already active.
-                    Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
-                        println!("plugins '{id}' is already active (unchanged)")
-                    }
-                    Err(e) => {
-                        eprintln!("error: activating plugins '{id}': {e}");
-                        return Err(format!(
-                            "activation stopped at plugins '{id}'. Nothing else was activated; \
-                             the receipt stays staged — fix the cause and re-run apply"
-                        )
-                        .into());
-                    }
-                }
-            }
-        }
-        // A model import queues admission on the target — the fetch, the
-        // digest check, the parse and the probe — and activation is refused
-        // until the verdict is `passed`. Wait for it here, model by model,
-        // so phase 3 can activate them in order with everything else.
-        if kind == "models" {
-            for (_, id, _) in activation_intents(&artifact)
-                .into_iter()
-                .filter(|(k, _, _)| *k == "models")
-            {
-                wait_for_admission(&client, &id).await?;
-            }
-        }
-    }
-
-    // Phase 3 — activate in dependency order with the reload deferred (K4):
-    // one engine rebuild and one cluster epoch bump at the end, not one per
-    // entity. Plugins were activated in phase 2, above.
-    for (kind, id, rollout) in activation_intents(&artifact)
-        .into_iter()
-        .filter(|(k, _, _)| *k != "plugins")
-    {
-        let mut body = json!({"status": orion_api::STATUS_ACTIVE});
-        if let Some(pct) = rollout {
-            body["rollout_percentage"] = json!(pct);
-        }
-        let result = client
-            .patch_data::<Value>(
-                &format!("{}?reload=defer", status_path_for(kind, &id)),
-                &body,
-            )
-            .await;
-        match result {
-            Ok(_) => println!("activated {kind} '{id}'"),
-            // Staging just succeeded, so the entity exists; a 404 on its
-            // activation can only be "no draft version" — the `unchanged`
-            // staging left it active as-is. Matched on the status, not the
-            // message, so a rewording cannot turn this benign no-op into a
-            // mid-package abort. One thing `unchanged` does NOT cover: the
-            // content hash deliberately excludes `rollout_percentage`, so a
-            // rollout-only change hashes as unchanged and must land through
-            // the rollout endpoint or it is silently dropped while apply
-            // reports success.
-            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
-                if let Some(pct) = rollout {
-                    client
-                        .patch_data::<Value>(
-                            &format!("{}?reload=defer", paths::workflow_rollout(&id)),
-                            &json!({"rollout_percentage": pct}),
-                        )
-                        .await
-                        .map_err(|e| {
-                            format!(
-                                "setting rollout for {kind} '{id}' failed: {e}. Everything \
-                                 before it is active but the engine has NOT been reloaded; \
-                                 the receipt stays staged — fix the cause and re-run apply \
-                                 (idempotent), or run POST /engine/reload to serve what did \
-                                 activate"
-                            )
-                        })?;
-                    println!("{kind} '{id}' is already active (unchanged); rollout set to {pct}%");
-                } else {
-                    println!("{kind} '{id}' is already active (unchanged)");
-                }
-            }
-            Err(e) => {
-                eprintln!("error: activating {kind} '{id}': {e}");
-                return Err(format!(
-                    "activation stopped at {kind} '{id}'. Everything before it is \
-                     active but the engine has NOT been reloaded; everything after is \
-                     staged as drafts. The receipt stays staged — fix the cause and \
-                     re-run apply (idempotent), or run POST /engine/reload to serve \
-                     what did activate"
-                )
-                .into());
-            }
-        }
-    }
-
-    // Phase 4 — one reload, one epoch bump.
-    client
-        .post_data_empty::<Value>(paths::ENGINE_RELOAD)
-        .await
-        .map_err(|e| format!("entities are active but the engine reload failed: {e}"))?;
-
-    // Phase 5 — flip the receipt.
-    client
-        .put_data::<Value>(
-            &receipt_path(&artifact),
-            &json!({
-                "version": artifact.package.version,
-                "content_hash": artifact.package.content_hash,
-                "state": "applied",
-            }),
-        )
-        .await?;
-
-    println!("applied {package} to {server}");
+    let prune_client = match prune {
+        Some(_) => Some(admin_client(server, format!("package={package} prune"))?),
+        None => None,
+    };
+    let opts = orion::package::ApplyOptions {
+        prune: prune.zip(prune_client.as_ref()),
+        signed: &signed,
+        roll_back_superseded: true,
+    };
+    orion::package::apply(&client, server, &artifact, &opts, &Console).await?;
     Ok(())
-}
-
-/// Poll `GET /models/{id}` until the target's admission of the latest
-/// version leaves `pending` — `passed` lets phase 3 activate it, `failed`
-/// stops the apply naming the stage and reason, because activation would
-/// be refused with the same message and nothing after it could serve.
-/// Bounded by [`ADMISSION_WAIT`], with a line on stderr every few seconds
-/// so a long fetch does not read as a hang.
-async fn wait_for_admission(client: &OrionClient, id: &str) -> Result<(), CliError> {
-    let started = std::time::Instant::now();
-    let mut last_report = std::time::Instant::now();
-    loop {
-        let row: Value = client.get_data(&paths::model(id)).await?;
-        let state = row["admission"]["state"].as_str().unwrap_or("pending");
-        match state {
-            "passed" => {
-                println!(
-                    "admitted models '{id}' on the target ({} parameters, {:.1} ms probe)",
-                    row["stats"]["parameters"],
-                    row["stats"]["probe_ms"].as_f64().unwrap_or(0.0)
-                );
-                return Ok(());
-            }
-            "failed" => {
-                return Err(format!(
-                    "the target refused model '{id}' at admission stage '{}': {} — fix the \
-                     artifact or the reference (POST /models/{id}/admit retries it); the \
-                     receipt stays staged, and nothing was activated",
-                    row["admission"]["stage"].as_str().unwrap_or("unknown"),
-                    row["admission"]["reason"]
-                        .as_str()
-                        .unwrap_or("no reason recorded")
-                )
-                .into());
-            }
-            _ => {}
-        }
-        if started.elapsed() > ADMISSION_WAIT {
-            return Err(format!(
-                "model '{id}' is still pending admission on the target after {}s — is the \
-                 target's model_admission worker running (see /health)? The receipt stays \
-                 staged; re-run apply once GET /models/{id} reports admission.state 'passed'",
-                ADMISSION_WAIT.as_secs()
-            )
-            .into());
-        }
-        if last_report.elapsed() >= std::time::Duration::from_secs(5) {
-            eprintln!(
-                "waiting for the target to admit models '{id}' ({}s)",
-                started.elapsed().as_secs()
-            );
-            last_report = std::time::Instant::now();
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
 }
 
 // ============================================================
@@ -1682,166 +1079,5 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
     } else {
         println!("no drift: {package} matches {server}");
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fixture_manifest() -> Value {
-        serde_json::from_str(include_str!("../tests/fixtures/models/c4-tiny/model.json"))
-            .expect("fixture manifest")
-    }
-
-    fn model_entry() -> Value {
-        json!({
-            "model_id": "ada.c4-tiny",
-            "manifest": fixture_manifest(),
-            "artifact": {"connector": "models", "key": "c4/0.1.0.onnx", "digest": "sha256:abc"},
-            "tags": ["fixture"],
-            "activate": true,
-        })
-    }
-
-    fn artifact(models: Vec<Value>) -> PackageArtifact {
-        PackageArtifact {
-            package: PackageMeta {
-                name: "p".to_string(),
-                version: "1.0.0".to_string(),
-                orion: String::new(),
-                content_hash: String::new(),
-                exported_from: String::new(),
-                exported_at: String::new(),
-            },
-            requires: Requires::default(),
-            plugins: Vec::new(),
-            models,
-            connectors: Vec::new(),
-            workflows: vec![json!({"workflow_id": "w", "name": "w", "tasks": []})],
-            channels: Vec::new(),
-        }
-    }
-
-    /// The member is absent from the document and the hash when empty, so
-    /// every receipt applied before models existed stays valid; present, it
-    /// moves the hash and hashes as the server hashes the stored row —
-    /// manifest, reference without its size, tags — and nothing else.
-    #[test]
-    fn the_models_member_is_omitted_when_empty_and_hashed_when_not() {
-        let without = artifact(Vec::new());
-        let rendered = serde_json::to_value(&without).expect("serialises");
-        assert!(rendered.get("models").is_none(), "{rendered}");
-        assert!(rendered["requires"].get("models").is_none());
-        assert!(rendered["requires"].get("storage").is_none());
-        let empty_hash = artifact_content_hash(&without).expect("hashes");
-
-        let with = artifact(vec![model_entry()]);
-        let rendered = serde_json::to_value(&with).expect("serialises");
-        assert_eq!(rendered["models"][0]["model_id"], "ada.c4-tiny");
-        let hash = artifact_content_hash(&with).expect("hashes");
-        assert_ne!(hash, empty_hash, "a carried model is content");
-
-        // The advisory size, the activation intent and the row-owned fields
-        // an export carries are not content.
-        let mut noisy = model_entry();
-        noisy["artifact"]["size"] = json!(6171);
-        noisy["status"] = json!("active");
-        noisy["version"] = json!(3);
-        noisy["admission"] = json!({"state": "passed"});
-        noisy["activate"] = json!(false);
-        assert_eq!(
-            artifact_content_hash(&artifact(vec![noisy])).expect("hashes"),
-            hash
-        );
-        // A manifest spelling its default `format` hashes as one that does
-        // not: the server stores the validated form either way.
-        let mut spelled = model_entry();
-        spelled["manifest"]
-            .as_object_mut()
-            .expect("object")
-            .remove("format");
-        assert_eq!(
-            artifact_content_hash(&artifact(vec![spelled])).expect("hashes"),
-            hash
-        );
-        // The entry's projection is the row's: what `diff` compares.
-        let projected = model_import_content(&model_entry()).expect("projects");
-        assert_eq!(projected["artifact"]["digest"], "sha256:abc");
-        assert!(projected["artifact"].get("size").is_none());
-        assert_eq!(projected["tags"], json!(["fixture"]));
-        assert_eq!(
-            member_counts(&with),
-            "1 models, 0 connectors, 1 workflows, 0 channels"
-        );
-
-        // An entry that is not an import item cannot be hashed — such an
-        // artifact could not apply either.
-        let mut broken = model_entry();
-        broken["artifact"]["digest"] = json!("");
-        let err = artifact_content_hash(&artifact(vec![broken])).expect_err("refused");
-        assert!(err.to_string().contains("artifact.digest"), "{err}");
-    }
-
-    /// `requires.models` and `requires.storage` round-trip, tolerate an
-    /// artifact written before they existed, and make the model boundary
-    /// the set check reads.
-    #[test]
-    fn requires_carries_models_and_storage_and_bounds_the_set() {
-        let mut with = artifact(vec![model_entry()]);
-        with.requires.models.push(ModelRequirement {
-            id: "ada.other".to_string(),
-            version: 2,
-            digest: "sha256:def".to_string(),
-        });
-        with.requires.storage.push("models".to_string());
-        with.workflows[0]["tasks"] = json!([
-            {"id": "a", "name": "a", "function": {"name": "model_infer",
-                "input": {"model": "ada.c4-tiny", "input": {"var": ""}}}},
-            {"id": "b", "name": "b", "function": {"name": "model_infer",
-                "input": {"model": "ada.other", "input": {"var": ""}}}}
-        ]);
-        let text = serde_json::to_string(&with).expect("serialises");
-        let back: PackageArtifact = serde_json::from_str(&text).expect("parses");
-        assert_eq!(back.requires.models, with.requires.models);
-        assert_eq!(back.requires.storage, ["models"]);
-        assert_eq!(
-            literal_model_ids(&back.workflows[0]),
-            ["ada.c4-tiny", "ada.other"]
-        );
-
-        let (set, boundary, findings) = artifact_as_set(&back);
-        assert!(findings.is_empty(), "{findings:?}");
-        assert_eq!(set.models.len(), 1);
-        assert_eq!(set.models[0].origin, "models[0]");
-        assert!(boundary.allows_model("ada.other"));
-        assert!(
-            !boundary.allows_model("ada.c4-tiny"),
-            "carried, not required"
-        );
-        let registry = set.function_registry().expect("registry");
-        let findings = orion::definitions::check(&set, &boundary, true, &registry);
-        assert!(
-            !findings.iter().any(|f| f.check == "closure.model"),
-            "{findings:#?}"
-        );
-
-        // Written before the fields existed: both default to empty.
-        let old: PackageArtifact = serde_json::from_value(json!({
-            "package": {"name": "p", "version": "1", "content_hash": "x"},
-            "requires": {"channels": [], "connectors": []},
-        }))
-        .expect("parses");
-        assert!(old.requires.models.is_empty() && old.requires.storage.is_empty());
-        assert!(old.models.is_empty());
-
-        // The intents order models after plugins and before workflows.
-        let intents = activation_intents(&with);
-        assert_eq!(intents[0].0, "models");
-        assert_eq!(intents[0].1, "ada.c4-tiny");
-        assert_eq!(
-            members(&with).map(|(k, _)| k),
-            ["plugins", "connectors", "models", "workflows", "channels"]
-        );
     }
 }

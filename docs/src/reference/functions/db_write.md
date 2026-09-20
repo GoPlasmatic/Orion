@@ -1,6 +1,6 @@
 <!-- description: The db_write task function: run a raw INSERT, UPDATE or DELETE with bound parameters against a SQL connector and report the rows affected. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `db_write`
 
@@ -39,6 +39,10 @@ dialect-specific SQL, and a connector can disable this function entirely through
 An `INSERT` also carries `last_insert_id` on MySQL and SQLite, the same key
 [`data_write`](./data_write.md) reports. PostgreSQL does not report one; it uses `RETURNING`, which the portable dialect supports. The key appears for an `INSERT`/`REPLACE` only. SQLite's `last_insert_rowid` belongs to the *connection*, so after an `UPDATE` it would report whatever an earlier insert
 on that pooled connection left behind.
+
+**The statement can live in a file.** A long statement is easier to review as SQL than as one JSON string: write `"query": {"$sql": "sql/settle.sql"}` and keep comments and indentation in the file. [`orion-server compile`](../cli/orion-server/compile.md) inlines it in normal form, so the server only ever sees the string. See [Statements in `.sql` files](../cli/shared-definitions.md#statements-in-sql-files).
+
+**Check it before deploy.** [`orion-server sql check`](../cli/orion-server/sql-check.md) prepares every statement against a real database as the connector's role, and on PostgreSQL 16 proves its grants.
 
 ## Fields
 

@@ -1,0 +1,31 @@
+{
+  "workflow_id": "collide",
+  "name": "Collide",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "input" } }
+    },
+    {
+      "id": "claim",
+      "name": "Claim",
+      "condition": { "==": [{ "var": "data.input.kind" }, "claim"] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.claim", "logic": 1 }] } }
+    },
+    {
+      "id": "read",
+      "name": "Read",
+      "condition": { "==": [{ "var": "data.input.kind" }, "claim"] },
+      "function": { "name": "map", "input": { "mappings": [{ "path": "data.read", "logic": 1 }] } }
+    },
+    {
+      "id": "when_claim",
+      "name": "When_Claim",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [{ "path": "data.when_claim", "logic": 1 }] }
+      }
+    }
+  ]
+}

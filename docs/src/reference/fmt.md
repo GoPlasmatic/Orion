@@ -1,6 +1,6 @@
 <!-- description: The one layout `orion-server fmt` writes: the numbers, the key order of every recognised shape, and the JSONLogic inlining rules — with nothing to configure. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Definition style (`fmt`)
 
@@ -57,7 +57,7 @@ The nesting of an expression is visible in its indentation. A leaf comparison, w
 
 ## Canonical key order
 
-Known keys of known shapes are written in the order in the table. Keys not in a table follow them, in the order you wrote them. `$from` is written first in any object it appears in, because it is the base the rest of the object overrides.
+Known keys of known shapes are written in the order in the table. Keys not in a table follow them, in the order you wrote them. `$each`, `$from` and `$use` are written first in any object they appear in. Each is the base the rest of the object overrides or repeats. A `$use`'s `with` follows it.
 
 | Shape | Order |
 |---|---|
@@ -72,8 +72,10 @@ Known keys of known shapes are written in the order in the table. Keys not in a 
 | `loop` | `counter`, `init`, `max`, `increment` |
 | Channel | `channel_id`, `name`, `description`, `tags`, `channel_type`, `protocol`, `methods`, `route_pattern`, `topic`, `consumer_group`, `priority`, `workflow_id`, `activate`, `transport_config`, `config` |
 | Connector | `id`, `name`, `connector_type`, `enabled`, `tags`, `config` |
-| Shared document | `constants`, `errors`, `fragments` |
-| Fragment | `params`, `tasks` |
+| Shared document | `package`, `constants`, `errors`, `fragments` |
+| Package declaration | `name`, `requires` |
+| Fragment | `params`, `tasks`, `value` |
+| `$each` element | `$each`, `do` |
 | Case file | `name`, `workflow`, `input`, `metadata`, `secrets`, `stubs`, `stubs_file`, `expect`, `expect_errors`, `expect_calls`, `expect_tasks` |
 | Package artifact | `package`, `requires`, `connectors`, `workflows`, `channels` |
 
@@ -82,7 +84,7 @@ order.
 
 ## How a document is recognized
 
-By shape, never by file name. An object with `tasks` is a workflow, with `connector_type` a connector, and with `channel_type` or `protocol` a channel. One with `constants`, `errors` or `fragments` is a shared document. One with `workflow` + `input` + `expect` is a case file, and one with `package` + `workflows` a promotion artifact. A root array of entities (a bulk-import body) and the arrays inside an artifact are recognized the same way. A bare array of steps, which is what an editor sends through `--stdin` for a selected `tasks` array, is laid out as a task list.
+By shape, never by file name. An object with `tasks` is a workflow, with `connector_type` a connector, and with `channel_type` or `protocol` a channel. One with `constants`, `errors` or `fragments` is a shared document. So is one whose `package` object has no `content_hash`, which is the set's package declaration. One with `workflow` + `input` + `expect` is a case file, and one with `package` + `workflows` a promotion artifact. A root array of entities (a bulk-import body) and the arrays inside an artifact are recognized the same way. A bare array of steps, which is what an editor sends through `--stdin` for a selected `tasks` array, is laid out as a task list.
 
 ## Errors
 

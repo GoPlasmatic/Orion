@@ -1,0 +1,15 @@
+{
+  "fragments": {
+    "greet": {
+      "params": { "who": {} },
+      "tasks": [
+        {
+          "id": "g",
+          "name": "Greet",
+          "function": { "name": "log", "input": { "message": "hello {{who}}" } }
+        }
+      ]
+    },
+    "yes": { "value": true }
+  }
+}

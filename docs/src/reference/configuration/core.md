@@ -1,10 +1,10 @@
-<!-- description: The core orion-server settings: how settings resolve, the deployment environment, vars and secrets, the HTTP server, storage and cluster mode. -->
+<!-- description: The core orion-server settings: how settings resolve, the environment, vars and secrets, the server, storage, cluster mode and startup packages. -->
 <!-- type: hub -->
 <!-- last_verified: 2026-09-14 -->
 
 # Core settings
 
-Resolution, the deployment environment, vars and secrets, the HTTP server, storage and cluster mode. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
+Resolution, the environment, vars and secrets, the server, storage, clusters and startup packages. Every table on these pages carries the wire name, the default the code uses, and the `ORION_*` override.
 
 | Page | Holds |
 |---|---|
@@ -14,6 +14,7 @@ Resolution, the deployment environment, vars and secrets, the HTTP server, stora
 | [Server settings](./server.md) | bind address and port, shutdown timeouts, the admin body limit, data mounts, verbose errors, TLS, compression and the API docs. |
 | [Storage settings](./storage.md) | the storage.url that selects SQLite, PostgreSQL or MySQL, pool sizing, encryption at rest, backups and auto_migrate. |
 | [Cluster settings](./cluster.md) | enabling multi-replica mode, the shared Redis, the epoch poll interval and the per-replica instance_id, with their defaults. |
+| [Package settings](./packages.md) | the artifacts a node applies to itself at startup. |
 
 ## Related
 

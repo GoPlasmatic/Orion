@@ -11,6 +11,8 @@ use orion::config;
 
 mod cli;
 mod package_cli;
+mod signing_cli;
+mod sql_cli;
 
 use orion::bootstrap;
 
@@ -36,6 +38,7 @@ EXAMPLES:\n    \
     orion-server validate-config --format summary  Short human summary instead\n    \
     orion-server -c config.toml migrate       Run pending database migrations\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
+    orion-server migrate --wait 60s           Wait up to 60s for the database, then migrate\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
     orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
@@ -45,7 +48,8 @@ EXAMPLES:\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
     orion-server package export -s <url> --tag payments --name payments --version 1.0.0 -o pkg.json\n                                              \
 Export a promotion package from an instance\n    \
-    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n\n\
+    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n    \
+    orion-server plugin sign plugins/ --key signer.pem  Sign every plugin component for [plugins.trust]\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -79,6 +83,12 @@ enum Command {
         /// Preview pending migrations without applying them.
         #[arg(long)]
         dry_run: bool,
+        /// Keep retrying until the state database accepts connections, for at
+        /// most this long (`60`, `30s`, `5m`). Only connection failures are
+        /// retried; a wrong password or a failed migration stops at once.
+        /// Overrides `storage.connect_retry_secs` for this run.
+        #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
+        wait: Option<std::time::Duration>,
     },
     /// Statically validate a workflow JSON file (A6).
     ///
@@ -147,13 +157,33 @@ enum Command {
         /// What to write.
         #[arg(long, value_enum, default_value = "artifact")]
         format: cli::CompileFormat,
-        /// Package name, e.g. payments. Required for --format artifact.
+        /// Package name, e.g. payments. Required for --format artifact
+        /// unless the set declares `package.name`; the flag wins when both
+        /// are given.
         #[arg(long)]
         name: Option<String>,
-        /// Package version, e.g. 1.4.0. Required for --format artifact.
-        /// Applied versions are immutable — any content change needs a bump.
+        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
+        /// artifact's content hash (`content-<12 hex>`), so it moves exactly
+        /// when `plan`, `apply` and `diff` would see a change. Required for
+        /// --format artifact. Applied versions are immutable — any content
+        /// change needs a bump.
         #[arg(long)]
         version: Option<String>,
+        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
+        /// `content-<12 hex>`.
+        #[arg(long, value_name = "PREFIX")]
+        version_prefix: Option<String>,
+        /// Directory of detached signatures to write into the artifact's
+        /// `plugins[]` and `models[]` entries, for a build-time signer:
+        /// `<id>.sig` or `<artifact file>.sig`. Signatures are not content,
+        /// so the hash and a content version do not move.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
+        /// The Orion version range the artifact requires of a target
+        /// (`requires.orion`) over the set's own `package.requires.orion`, e.g. ">=1.8.2, <2". `plan` and `apply` refuse
+        /// a target outside it.
+        #[arg(long, value_name = "RANGE")]
+        requires_orion: Option<String>,
         /// Channel name that may be referenced without being in the set —
         /// recorded in the artifact's `requires`. Repeatable.
         #[arg(long = "requires-channel", value_name = "NAME")]
@@ -271,12 +301,30 @@ enum Command {
         #[arg(long = "model-dir", value_name = "DIR")]
         model_dirs: Vec<String>,
     },
+    /// Digest, sign and verify plugin components — what `[plugins.trust]`
+    /// checks. PATH is a `plugin.toml`, a directory of them, or any file.
+    Plugin {
+        #[command(subcommand)]
+        command: signing_cli::SigningCommand,
+    },
+    /// Digest, sign and verify model artifacts — what `[models.trust]`
+    /// checks. PATH is a model manifest, a directory of them, or any file.
+    Model {
+        #[command(subcommand)]
+        command: signing_cli::SigningCommand,
+    },
     /// Probe configured backends for reachability (A6).
     ///
     /// Opens the configured database pool (using the same `storage.url`)
     /// and runs a no-op query. Catches "DB credentials wrong / file
     /// unreadable" before the server tries to start.
-    TestConnectivity,
+    TestConnectivity {
+        /// Keep retrying until the state database (and Kafka, when enabled)
+        /// accept connections, for at most this long in total (`60`, `30s`,
+        /// `5m`). Only connection failures are retried.
+        #[arg(long, value_name = "DURATION", value_parser = cli::parse_wait)]
+        wait: Option<std::time::Duration>,
+    },
     /// Format definition files to the house style (like `cargo fmt`).
     ///
     /// Every `.json` under each PATH is rewritten in place — entities, shared
@@ -345,6 +393,21 @@ enum Command {
         /// `lint` gate that runs first. Repeatable.
         #[arg(long = "model-dir", value_name = "DIR")]
         model_dirs: Vec<String>,
+        /// Apply the fixes the rules can prove — today, folding a run of
+        /// steps that repeat one condition into a task group — to the source
+        /// files, each verified by recompiling the edited file, then report
+        /// what remains.
+        #[arg(long, conflicts_with_all = ["list", "explain"])]
+        fix: bool,
+        /// With --fix: print the diff of each file that would change, write
+        /// nothing, and exit 1 when anything would.
+        #[arg(long, requires = "fix")]
+        check: bool,
+    },
+    /// SQL tooling over a definition set.
+    Sql {
+        #[command(subcommand)]
+        command: SqlCommand,
     },
     /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
     ///
@@ -383,6 +446,56 @@ enum Command {
 }
 
 #[derive(clap::Subcommand)]
+enum SqlCommand {
+    /// Prepare every db_read/db_write statement of a definition set against
+    /// a real database, as the connector's own role. PostgreSQL 16+ also
+    /// proves the role's grants (EXPLAIN (GENERIC_PLAN)); older PostgreSQL,
+    /// MySQL and SQLite prove the schema. Nothing is executed: sessions are
+    /// read-only and rolled back.
+    Check {
+        /// A directory of definitions.
+        path: String,
+        /// Override a connector's connection string: `name=<url>`.
+        /// Repeatable.
+        #[arg(long = "connector", value_name = "NAME=URL")]
+        connectors: Vec<String>,
+        /// Do not check this connector's statements; list them as unchecked.
+        /// Repeatable.
+        #[arg(long = "skip-connector", value_name = "NAME")]
+        skip: Vec<String>,
+        /// Build a scratch schema from this directory of migrations (`*.sql`,
+        /// applied in filename order) and check against it. With no
+        /// --database, a SQLite schema in memory.
+        #[arg(long, value_name = "DIR")]
+        schema: Option<String>,
+        /// The PostgreSQL server the scratch schema is built on, in one
+        /// transaction that is always rolled back.
+        #[arg(long, value_name = "URL", requires = "schema")]
+        database: Option<String>,
+        /// With --schema: the role a connector's statements run as,
+        /// `name=<role>`. Defaults to the user of the connector's URL.
+        /// Repeatable.
+        #[arg(long = "role", value_name = "NAME=ROLE")]
+        roles: Vec<String>,
+        /// `text` (default) or `json` — one object per finding, then a summary.
+        #[arg(long, value_enum, default_value = "text")]
+        format: cli::ClippyFormat,
+        /// Channel name that may be referenced without being in the set.
+        #[arg(long = "requires-channel", value_name = "NAME")]
+        requires_channels: Vec<String>,
+        /// Connector name that may be referenced without being in the set.
+        #[arg(long = "requires-connector", value_name = "NAME")]
+        requires_connectors: Vec<String>,
+        /// Directory of plugin manifests beyond the set's own tree.
+        #[arg(long = "plugin-dir", value_name = "DIR")]
+        plugin_dirs: Vec<String>,
+        /// Directory of model manifests beyond the set's own tree.
+        #[arg(long = "model-dir", value_name = "DIR")]
+        model_dirs: Vec<String>,
+    },
+}
+
+#[derive(clap::Subcommand)]
 enum PackageCommand {
     /// Export a package artifact from a running instance: the selected
     /// channels, their workflows, and every connector those workflows
@@ -401,10 +514,20 @@ enum PackageCommand {
         /// Package name, e.g. payments.
         #[arg(long)]
         name: String,
-        /// Package version, e.g. 1.4.0. Applied versions are immutable —
-        /// any content change needs a bump.
+        /// Package version, e.g. 1.4.0 — or `content` to derive it from the
+        /// artifact's content hash (`content-<12 hex>`). Applied versions are
+        /// immutable — any content change needs a bump.
         #[arg(long)]
         version: String,
+        /// With `--version content`: `<PREFIX>-<12 hex>` instead of
+        /// `content-<12 hex>`.
+        #[arg(long, value_name = "PREFIX")]
+        version_prefix: Option<String>,
+        /// The Orion version range the artifact requires of a target
+        /// (`requires.orion`), e.g. ">=1.8.2, <2". `plan` and `apply` refuse
+        /// a target outside it.
+        #[arg(long, value_name = "RANGE")]
+        requires_orion: Option<String>,
         /// Write the artifact here instead of stdout.
         #[arg(short, long)]
         output: Option<String>,
@@ -434,11 +557,32 @@ enum PackageCommand {
         /// Path to the artifact file.
         #[arg(short, long)]
         file: String,
+        /// Directory of detached signatures to attach before anything is
+        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
+        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// `orion-server plugin sign -o <dir>` writes them. The artifact
+        /// file, its version and its hash are untouched.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
+        /// Show what `apply --prune` would remove — what the package's
+        /// current applied version carried and this artifact does not —
+        /// and any removal that would be refused.
+        #[arg(
+            long,
+            value_enum,
+            value_name = "MODE",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "archive"
+        )]
+        prune: Option<package_cli::PruneArg>,
     },
     /// Apply an artifact: claim the receipt as staged, stage all entities
     /// (connectors → workflows → channels), activate in dependency order
     /// with one engine reload at the end, then flip the receipt to applied.
-    /// Idempotent — re-running an identical artifact is a no-op.
+    /// Idempotent — re-running an identical artifact is a no-op. With
+    /// `--prune`, also remove what the previous applied version carried and
+    /// this one does not, inside the same reload.
     Apply {
         /// Base URL of the target instance.
         #[arg(short, long)]
@@ -446,6 +590,27 @@ enum PackageCommand {
         /// Path to the artifact file.
         #[arg(short, long)]
         file: String,
+        /// Directory of detached signatures to attach before anything is
+        /// sent: `<plugin or model id>.sig` or `<artifact file>.sig` per
+        /// plugin and model — base64 Ed25519 over the digest string, as
+        /// `orion-server plugin sign -o <dir>` writes them. The artifact
+        /// file, its version and its hash are untouched.
+        #[arg(long, value_name = "DIR")]
+        signatures: Option<String>,
+        /// Remove what the package's current applied version carried and
+        /// this artifact does not. `--prune` archives (reversible, and it
+        /// frees the route or schedule; a connector is disabled);
+        /// `--prune=delete` deletes. Nothing another package's current
+        /// version carries is touched.
+        #[arg(
+            long,
+            value_enum,
+            value_name = "MODE",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "archive"
+        )]
+        prune: Option<package_cli::PruneArg>,
     },
     /// Report drift between an artifact and a running instance, comparing
     /// the server's content hashes against the artifact's. Exits non-zero
@@ -474,7 +639,7 @@ async fn main() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // `fmt` reads files, not a server: no config, no "no config file" note.
     if let Some(Command::Fmt {
@@ -484,6 +649,24 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }) = &cli.command
     {
         let code = cli::run_fmt(paths, *check, *stdin)?;
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    // The signing verbs read artifacts and keys, not a server: `-c` is only
+    // consulted by `verify`, for the trust keys, and nothing else is loaded.
+    let signing = match cli.command.take() {
+        Some(Command::Plugin { command }) => Some((orion::signatures::Kind::Plugin, command)),
+        Some(Command::Model { command }) => Some((orion::signatures::Kind::Model, command)),
+        other => {
+            cli.command = other;
+            None
+        }
+    };
+    if let Some((kind, command)) = signing {
+        let code = signing_cli::run(kind, command, cli.config.as_deref())?;
         if code != 0 {
             std::process::exit(code);
         }
@@ -508,7 +691,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::ValidateConfig { format }) => {
             return cli::handle_validate_config(&config, format);
         }
-        Some(Command::Migrate { dry_run }) => return cli::handle_migrate(&config, dry_run).await,
+        Some(Command::Migrate { dry_run, wait }) => {
+            return cli::handle_migrate(&config, dry_run, wait).await;
+        }
         Some(Command::Lint {
             workflow,
             deny_warnings,
@@ -538,6 +723,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             format,
             name,
             version,
+            version_prefix,
+            signatures,
+            requires_orion,
             requires_channels,
             requires_connectors,
             deny_warnings,
@@ -556,6 +744,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 format,
                 name: name.as_deref(),
                 version: version.as_deref(),
+                version_prefix: version_prefix.as_deref(),
+                signatures: signatures.as_deref(),
+                requires_orion: requires_orion.as_deref(),
                 boundary,
                 deny_warnings,
                 no_activate,
@@ -593,7 +784,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             return cli::run_test(&path, definitions.as_deref(), &plugin_dirs, &model_dirs).await;
         }
-        Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
+        Some(Command::TestConnectivity { wait }) => {
+            return cli::run_test_connectivity(&config, wait).await;
+        }
         Some(Command::Clippy {
             path,
             deny_warnings,
@@ -605,6 +798,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             requires_connectors,
             plugin_dirs,
             model_dirs,
+            fix,
+            check,
         }) => {
             let code = if list {
                 cli::run_clippy_list()?
@@ -631,6 +826,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // Only a config the operator named counts as "the serving
                     // config": the defaults say nothing about [vars]/[secrets].
                     config: cli.config.is_some().then_some(&config),
+                    fix,
+                    fix_check: check,
                 })?
             };
             if code != 0 {
@@ -641,7 +838,47 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         // Dispatched above, before the config load.
         Some(Command::Fmt { .. }) => unreachable!("fmt returns before config is loaded"),
+        Some(Command::Plugin { .. } | Command::Model { .. }) => {
+            unreachable!("the signing verbs return before config is loaded")
+        }
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
+        Some(Command::Sql { command }) => {
+            let SqlCommand::Check {
+                path,
+                connectors,
+                skip,
+                schema,
+                database,
+                roles,
+                format,
+                requires_channels,
+                requires_connectors,
+                plugin_dirs,
+                model_dirs,
+            } = command;
+            let code = sql_cli::run_sql_check(sql_cli::SqlCheckRequest {
+                path: &path,
+                connectors: &connectors,
+                skip: &skip,
+                schema: schema.as_deref(),
+                database: database.as_deref(),
+                roles: &roles,
+                format,
+                boundary: orion::definitions::Boundary {
+                    channels: requires_channels,
+                    connectors: requires_connectors,
+                    ..orion::definitions::Boundary::default()
+                },
+                plugin_dirs: &plugin_dirs,
+                model_dirs: &model_dirs,
+                config: &config,
+            })
+            .await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            return Ok(());
+        }
         Some(Command::Package { command }) => {
             return match command {
                 PackageCommand::Export {
@@ -650,6 +887,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     channels,
                     name,
                     version,
+                    version_prefix,
+                    requires_orion,
                     output,
                     include_artifacts,
                 } => {
@@ -659,17 +898,41 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &channels,
                         &name,
                         &version,
+                        version_prefix.as_deref(),
+                        requires_orion.as_deref(),
                         output.as_deref(),
                         include_artifacts,
                     )
                     .await
                 }
                 PackageCommand::Lint { file } => package_cli::run_lint(&file),
-                PackageCommand::Plan { server, file } => {
-                    package_cli::run_plan(&server, &file).await
+                PackageCommand::Plan {
+                    server,
+                    file,
+                    signatures,
+                    prune,
+                } => {
+                    package_cli::run_plan(
+                        &server,
+                        &file,
+                        signatures.as_deref(),
+                        prune.map(Into::into),
+                    )
+                    .await
                 }
-                PackageCommand::Apply { server, file } => {
-                    package_cli::run_apply(&server, &file).await
+                PackageCommand::Apply {
+                    server,
+                    file,
+                    signatures,
+                    prune,
+                } => {
+                    package_cli::run_apply(
+                        &server,
+                        &file,
+                        signatures.as_deref(),
+                        prune.map(Into::into),
+                    )
+                    .await
                 }
                 PackageCommand::Diff { server, file } => {
                     package_cli::run_diff(&server, &file).await
@@ -864,33 +1127,51 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Cluster background tasks (epoch watcher). None when disabled.
     orion::cluster::start_cluster_tasks(&state);
 
+    // `[packages] apply`: applied now that everything an apply needs is
+    // running — the audit writer, the model admission worker, the epoch
+    // watcher — and concurrently with serving, so `/healthz` answers during
+    // a long admission while `/readyz` holds at 503 until they serve.
+    let packages = state.packages.clone();
+    tokio::spawn(orion::package::boot::run(state.clone()));
+
     let router = orion::server::build_router(state.clone());
 
     // Optional dedicated metrics listener (O12), bound before the main server
     // starts (see `bootstrap::start_metrics_listener`).
     let metrics_server = bootstrap::start_metrics_listener(&config, &state)?;
 
-    if config.server.tls.enabled {
-        let handle = axum_server::Handle::new();
-        orion::server::serve::serve_tls(
-            config.clone(),
-            ready.clone(),
-            router,
-            handle,
-            orion::server::shutdown_signal(),
-        )
-        .await?;
-    } else {
-        let addr = format!("{}:{}", config.server.host, config.server.port);
-        let listener = orion::server::serve::create_tcp_listener(&addr)?;
-        orion::server::serve::serve_plain_http(
-            listener,
-            config.clone(),
-            ready.clone(),
-            router,
-            orion::server::shutdown_signal(),
-        )
-        .await?;
+    let serve = async {
+        if config.server.tls.enabled {
+            let handle = axum_server::Handle::new();
+            orion::server::serve::serve_tls(
+                config.clone(),
+                ready.clone(),
+                router,
+                handle,
+                orion::server::shutdown_signal(),
+            )
+            .await
+        } else {
+            let addr = format!("{}:{}", config.server.host, config.server.port);
+            let listener = orion::server::serve::create_tcp_listener(&addr)?;
+            orion::server::serve::serve_plain_http(
+                listener,
+                config.clone(),
+                ready.clone(),
+                router,
+                orion::server::shutdown_signal(),
+            )
+            .await
+        }
+    };
+    tokio::select! {
+        served = serve => served?,
+        // A package that failed to apply: the node was never ready, so no
+        // load balancer routes here and the drain grace would only delay the
+        // restart. Stop serving at once and shut the rest down cleanly.
+        () = packages.failed() => {
+            ready.store(false, std::sync::atomic::Ordering::Release);
+        }
     }
 
     bootstrap::join_metrics_listener(metrics_server).await;
@@ -924,6 +1205,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(e) = provider.shutdown() {
             tracing::warn!(error = %e, "Error shutting down OTel tracer provider");
         }
+    }
+
+    // The exit status an orchestrator restarts on.
+    if let Some(failure) = packages.failure() {
+        return Err(failure.into());
     }
 
     tracing::info!("Orion shut down cleanly");

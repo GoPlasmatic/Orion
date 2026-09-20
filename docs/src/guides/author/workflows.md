@@ -104,7 +104,13 @@ A shared document is any JSON in the definition set carrying `constants`, `error
 { "id": "_session", "use": "require-session", "with": { "deny_message": "Please sign in." } }
 ```
 
-`$from` splices the named value's fields into the object around it, and siblings win. `use` expands a parameterized task sequence with its ids namespaced by the call site. Both resolve before validation, so `lint`, `dry-run` and `test` all check the expanded form. The full rules are in [Shared definitions](../../reference/cli/shared-definitions.md).
+`$from` splices the named value's fields into the object around it, and siblings win. `use` expands a parameterized task sequence with its ids namespaced by the call site. `$use` splices a parameterized value, and `$each` repeats one step or value over a list:
+
+```json
+{ "$each": { "seat": [0, 1, 2, 3] }, "do": { "id": "score{{seat}}", "name": "Score seat {{seat}}", "function": { … } } }
+```
+
+All of them resolve before validation, so `lint`, `dry-run` and `test` all check the expanded form. [`unrolled-seats`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/unrolled-seats) is a runnable package using them. The full rules are in [Shared definitions](../../reference/cli/shared-definitions.md).
 
 `orion-server lint ./definitions` resolves the catalogue automatically and reports an unresolved reference as an error. The single-file commands take `--definitions <dir>`.
 

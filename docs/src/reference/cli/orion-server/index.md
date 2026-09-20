@@ -1,10 +1,10 @@
-<!-- description: Every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, test-connectivity, preflight, dump-openapi and package. -->
+<!-- description: Every orion-server subcommand: validate-config, migrate, lint, compile, fmt, clippy, dry-run, test, preflight, package, and the plugin and model signing verbs. -->
 <!-- type: hub -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # orion-server
 
-`orion-server` is the runtime; run with no subcommand it starts the server. Its subcommands validate configuration, run migrations, check and format definition sets offline, execute workflows with no server, and promote packages. The global `-c, --config <path>` flag applies to every one of them.
+`orion-server` is the runtime; run with no subcommand it starts the server. Its subcommands validate configuration, run migrations, check and format definition sets offline, execute workflows with no server, promote packages, and sign plugins and models. The global `-c, --config <path>` flag applies to every one of them.
 
 | Command | Purpose |
 |---|---|
@@ -18,9 +18,12 @@
 | [`dry-run`](./dry-run.md) | Executes a workflow against a JSON input in an in-process engine, then prints the per-task execution trace |
 | [`test`](./test.md) | Runs a directory of offline workflow test cases |
 | [`test-connectivity`](./test-connectivity.md) | Probes the configured database with a no-op query, and Kafka when `kafka.enabled = true` |
+| [`sql check`](./sql-check.md) | Prepares every `db_read`/`db_write` statement of a set against a real database, as the connector's role |
 | [`preflight`](./preflight.md) | Scans stored channels and workflows for anything the 1.0 rules refuse: configs that no longer parse, tasks the validator rejects, and `data_query`/`data_write` tasks with no `schema` |
 | [`dump-openapi`](./dump-openapi.md) | Prints the public HTTP API's OpenAPI 3.1 spec as JSON to stdout |
 | [`package`](./package.md) | Exports a package — selected channels, their workflows, and every connector those workflows reference, and promotes it between instances |
+| [`plugin`](./plugin.md) | Digests, signs and verifies plugin components with the Ed25519 keys `[plugins.trust]` checks |
+| [`model`](./model.md) | Digests, signs and verifies model artifacts with the Ed25519 keys `[models.trust]` checks |
 
 ## Related
 

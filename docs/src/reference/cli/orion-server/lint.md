@@ -1,6 +1,6 @@
 <!-- description: orion-server lint validates one workflow or a whole definition set with the admin API's checks, resolves cross-references, and reports stable [check] ids. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-20 -->
 
 # `orion-server lint`
 
@@ -27,7 +27,7 @@ Entities are found by shape, recursively: an object with `tasks` is a workflow, 
 
 By default every reference must resolve inside the set. Use `--requires-channel` / `--requires-connector` for a set that genuinely depends on something deployed elsewhere — the directory equivalent of a package artifact's `requires`.
 
-Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `[env.unresolved]` is an error rather than an advisory. It fires when a workflow field that resolves no secret reference contains one, which the admin API refuses on the same terms. `note:` findings are exit-neutral inventory, not defects. `[env.reference]` lists each environment variable the set references through `env://`. `[secrets.reference]` lists each name it reads with `{"secret": …}`, which the serving instance's `[secrets]` section must declare. Both name the files that reference them, and neither the exit code nor `--deny-warnings` counts them.
+A set with a [`package` document](../shared-definitions.md#the-package-document) whose `requires.orion` excludes this binary stops before any finding, with one line naming the range and this version. Each finding carries a stable `[check]` id, so a pipeline can grandfather one rule without silencing the rest. `[env.unresolved]` is an error rather than an advisory. It fires when a workflow field that resolves no secret reference contains one, which the admin API refuses on the same terms. `note:` findings are exit-neutral inventory, not defects. `[env.reference]` lists each environment variable the set references through `env://`. `[secrets.reference]` lists each name it reads with `{"secret": …}`, which the serving instance's `[secrets]` section must declare. Both name the files that reference them, and neither the exit code nor `--deny-warnings` counts them. `[sql.read_only]` is an error: a literal `db_read` statement that is not a read, which the handler refuses on every run. It names the `.sql` file when the statement came from one. `[env.embedded_reference]` is a warning about a connector string with `env://` inside a longer value, such as `"Bearer env://API_KEY"`. A reference must be the whole value, so that text is sent literally. `[cron.slots_mismatch]` is a warning: two cron channels share a `concurrency.key` but declare different `slots`. Each run is admitted against its own channel's bound, which is coherent but rarely intended.
 
 Advisory findings print on stderr and do not fail the command unless `--deny-warnings` is set. There are five. The first three are Orion's own:
 

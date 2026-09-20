@@ -132,15 +132,17 @@ pub(crate) async fn update_channel(
     delete,
     path = "/api/v1/admin/channels/{id}",
     tag = "Channels",
-    params(("id" = String, Path, description = "Channel ID")),
+    params(("id" = String, Path, description = "Channel ID"), super::ReloadQuery),
     responses(
-        (status = 204, description = "Channel deleted"),
+        (status = 204, description = "Channel deleted. With `?reload=defer` the engine \
+            keeps serving it until `POST /engine/reload`"),
         (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_channel(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -151,7 +153,7 @@ pub(crate) async fn delete_channel(
     state.repos.channels.delete_tx(write.tx(), &id).await?;
     write.commit().await?;
 
-    super::reload_after_commit(&state, super::ReloadMode::Now).await?;
+    super::reload_after_commit(&state, query.reload).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

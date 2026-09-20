@@ -542,6 +542,63 @@ pub struct PackageReceiptResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required, value_type = String))]
     pub updated_at: NaiveDateTime,
+    /// What this version carried. Absent from a receipt written before
+    /// receipts recorded it, and from `GET /packages` without
+    /// `?current=true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<PackageInventory>,
+}
+
+/// The entities one package version carried, by the key each kind is
+/// matched on: `plugin_id`, `model_id`, the connector's `name`,
+/// `workflow_id`, `channel_id`. Each list is sorted and free of
+/// duplicates, so two applies of one artifact record identical JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+pub struct PackageInventory {
+    #[serde(default)]
+    pub plugins: Vec<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub connectors: Vec<String>,
+    #[serde(default)]
+    pub workflows: Vec<String>,
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+impl PackageInventory {
+    /// `(kind, ids)` for every kind, in the order a package stages them:
+    /// plugins, connectors, models, workflows, channels.
+    pub fn kinds(&self) -> [(&'static str, &Vec<String>); 5] {
+        [
+            ("plugins", &self.plugins),
+            ("connectors", &self.connectors),
+            ("models", &self.models),
+            ("workflows", &self.workflows),
+            ("channels", &self.channels),
+        ]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.kinds().iter().all(|(_, ids)| ids.is_empty())
+    }
+
+    /// Every list sorted and free of duplicates — the stored form.
+    pub fn normalized(mut self) -> Self {
+        for ids in [
+            &mut self.plugins,
+            &mut self.connectors,
+            &mut self.models,
+            &mut self.workflows,
+            &mut self.channels,
+        ] {
+            ids.sort();
+            ids.dedup();
+        }
+        self
+    }
 }
 
 /// One DLQ entry with its failed payload — `GET`/`requeue` on a single id.
@@ -720,6 +777,12 @@ pub struct CronOccurrenceResponse {
     /// own writes rather than a downstream side effect.
     #[serde(default)]
     pub fencing_token: Option<i64>,
+    /// Which of the key's `concurrency.slots` this attempt holds, from `0`.
+    /// Two occurrences of one key can share a fencing token when they hold
+    /// different slots, so the pair is what names a hold. `null` under
+    /// `allow`.
+    #[serde(default)]
+    pub singleton_slot: Option<i64>,
     /// The trace this attempt wrote, readable at
     /// `GET /api/v1/admin/traces/{id}`. `null` before admission, and when trace
     /// storage dropped the row — the occurrence is kept either way, because it
@@ -786,6 +849,21 @@ pub struct CronScheduleStatusResponse {
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub pending: i64,
+    /// `allow` or `forbid`.
+    #[serde(default)]
+    pub concurrency_policy: String,
+    /// The lock this channel's runs take. Present under `forbid`.
+    #[serde(default)]
+    pub singleton_key: Option<String>,
+    /// How many runs of `singleton_key` this channel admits at once. Present
+    /// under `forbid`.
+    #[serde(default)]
+    pub slots: Option<u32>,
+    /// Live leases on `singleton_key` right now, across every channel that
+    /// shares the key — so it can exceed this channel's `slots` when another
+    /// channel declares more, or just after `slots` was lowered.
+    #[serde(default)]
+    pub slots_held: Option<u32>,
 }
 
 /// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
@@ -904,6 +982,7 @@ mod tests {
             ChannelResponse,
             ConnectorResponse,
             PackageReceiptResponse,
+            PackageInventory,
             TraceDlqEntryResponse,
             TraceDlqSummaryResponse,
             TraceListItemResponse,

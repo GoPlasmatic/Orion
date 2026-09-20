@@ -126,6 +126,19 @@ pub(crate) async fn cron_status(State(state): State<AppState>) -> Result<Json<Va
     let generation = state.runtime.load();
     let descriptors = generation.channels.cron_descriptors();
     let cursors = state.repos.cron.schedule_states().await?;
+    let forbid = |d: &crate::channel::cron::CronDescriptor| {
+        d.concurrency == crate::channel::cron::ConcurrencyPolicy::Forbid
+    };
+    // One read for every key, rather than one per channel: channels sharing a
+    // key share its count.
+    let mut keys: Vec<&str> = descriptors
+        .iter()
+        .filter(|d| forbid(d))
+        .map(|d| d.singleton_key.as_str())
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let holds = state.repos.cron.singleton_holds(&keys).await?;
 
     let mut rows = Vec::with_capacity(descriptors.len());
     for descriptor in descriptors {
@@ -154,6 +167,11 @@ pub(crate) async fn cron_status(State(state): State<AppState>) -> Result<Json<Va
                 .cron
                 .pending_count(Some(&descriptor.channel_id))
                 .await?,
+            concurrency_policy: descriptor.concurrency.as_str().to_string(),
+            singleton_key: forbid(&descriptor).then(|| descriptor.singleton_key.clone()),
+            slots: forbid(&descriptor).then_some(descriptor.singleton_slots),
+            slots_held: forbid(&descriptor)
+                .then(|| holds.get(&descriptor.singleton_key).copied().unwrap_or(0)),
         });
     }
     Ok(data_response(rows))

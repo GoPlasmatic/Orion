@@ -194,6 +194,7 @@ async fn applied_receipts_are_immutable(backend: &str, repos: &Repositories) {
         version: version.to_string(),
         content_hash: hash.to_string(),
         state,
+        inventory: None,
     };
     use orion::storage::models::PackageState;
 
@@ -229,6 +230,51 @@ async fn applied_receipts_are_immutable(backend: &str, repos: &Repositories) {
             .is_err(),
         "{backend}: an applied version's content must be immutable"
     );
+
+    // The inventory column: written with the staged claim, kept by the flip
+    // that carries none, and read back through `list_current`.
+    let inventory = orion::storage::models::PackageInventory {
+        channels: vec!["contract-ch".to_string()],
+        ..Default::default()
+    };
+    repos
+        .packages
+        .put(
+            "contract-inv",
+            &PutPackageReceiptRequest {
+                inventory: Some(inventory.clone()),
+                ..put("1.0.0", "sha256:inv", PackageState::Staged)
+            },
+            "contract",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: staging with an inventory failed: {e}"));
+    repos
+        .packages
+        .put(
+            "contract-inv",
+            &put("1.0.0", "sha256:inv", PackageState::Applied),
+            "contract",
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: applying failed: {e}"));
+    let current = repos
+        .packages
+        .list_current(100, 0)
+        .await
+        .unwrap_or_else(|e| panic!("{backend}: list_current failed: {e}"));
+    let row = current
+        .data
+        .iter()
+        .find(|r| r.name == "contract-inv")
+        .unwrap_or_else(|| panic!("{backend}: the applied receipt is current"));
+    let stored: orion::storage::models::PackageInventory = serde_json::from_str(
+        row.inventory_json
+            .as_deref()
+            .unwrap_or_else(|| panic!("{backend}: the inventory was dropped")),
+    )
+    .expect("stored inventory parses");
+    assert_eq!(stored, inventory, "{backend}");
 }
 
 fn audit_event(action: &str, resource_id: &str) -> orion::queue::audit_queue::AuditEvent {

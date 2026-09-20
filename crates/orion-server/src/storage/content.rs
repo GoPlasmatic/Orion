@@ -243,10 +243,106 @@ pub fn content_hash(value: &Value) -> String {
     format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
+/// The `--version` keyword that asks for a content-derived package version.
+pub const CONTENT_VERSION_KEYWORD: &str = "content";
+/// Hex characters of the content hash a derived version carries (48 bits).
+pub const CONTENT_VERSION_HEX_LEN: usize = 12;
+
+/// `content-<12 hex>`, or `<prefix>-<12 hex>`: a package version that is a
+/// function of `content_hash` and nothing else, so it moves exactly when
+/// `plan`, `apply` and `diff` would see a change.
+///
+/// Package versions are opaque labels — `current` is decided by receipt
+/// time, never by comparing versions — so nothing may assume these order.
+/// Two builds colliding on 48 bits is loud rather than silent: the same
+/// version with a different full hash is the receipt's `409`.
+///
+/// # Errors
+///
+/// `content_hash` is not `sha256:<64 hex>`; or `prefix` is empty, leaves the
+/// receipt charset, or would push the version past the receipt's 64
+/// characters.
+pub fn content_version(content_hash: &str, prefix: Option<&str>) -> Result<String, String> {
+    if !crate::crypto::is_sha256_digest(content_hash) {
+        return Err(format!(
+            "'{content_hash}' is not a content hash (sha256:<64 lowercase hex>)"
+        ));
+    }
+    let prefix = prefix.unwrap_or(CONTENT_VERSION_KEYWORD);
+    check_version_prefix(prefix)?;
+    let hex = &content_hash["sha256:".len()..][..CONTENT_VERSION_HEX_LEN];
+    Ok(format!("{prefix}-{hex}"))
+}
+
+/// Whether `prefix` can start a derived version: the receipt charset, and
+/// short enough to leave room for `-<12 hex>` within 64 characters.
+///
+/// # Errors
+///
+/// The reason, naming `--version-prefix`.
+pub fn check_version_prefix(prefix: &str) -> Result<(), String> {
+    crate::validation::package_key(
+        "--version-prefix",
+        prefix,
+        crate::validation::MAX_PACKAGE_VERSION_LEN - 1 - CONTENT_VERSION_HEX_LEN,
+    )
+}
+
+/// The 12 hex of a version in the keyword form `content-<12 hex>`, or
+/// `None`. A `<prefix>-<12 hex>` version cannot be recognised reliably — an
+/// author's own pre-release tag can end the same way — so only the keyword
+/// form is.
+pub fn content_version_hex(version: &str) -> Option<&str> {
+    version
+        .strip_prefix(CONTENT_VERSION_KEYWORD)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|hex| {
+            hex.len() == CONTENT_VERSION_HEX_LEN
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    const HASH: &str = "sha256:3f9c2a1b7d04e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e";
+
+    #[test]
+    fn a_content_version_is_the_hash_prefix() {
+        assert_eq!(
+            content_version(HASH, None).expect("keyword form"),
+            "content-3f9c2a1b7d04"
+        );
+        assert_eq!(
+            content_version(HASH, Some("1.4.0")).expect("prefixed"),
+            "1.4.0-3f9c2a1b7d04"
+        );
+        assert_eq!(
+            content_version_hex("content-3f9c2a1b7d04"),
+            Some("3f9c2a1b7d04")
+        );
+        assert_eq!(content_version_hex("1.4.0-3f9c2a1b7d04"), None);
+        assert_eq!(content_version_hex("content-3F9C2A1B7D04"), None);
+        assert_eq!(content_version_hex("content-3f9c"), None);
+    }
+
+    #[test]
+    fn a_content_version_refuses_what_the_receipt_would() {
+        assert!(content_version("sha256:abc", None).is_err());
+        assert!(content_version(&HASH.to_uppercase(), None).is_err());
+        for bad in ["", "1.4/0", "1.4.0+x"] {
+            assert!(content_version(HASH, Some(bad)).is_err(), "{bad:?}");
+        }
+        let longest = "p".repeat(51);
+        let version = content_version(HASH, Some(&longest)).expect("51 fits");
+        assert_eq!(version.len(), 64);
+        crate::validation::package_key("version", &version, 64).expect("a receipt key");
+        assert!(content_version(HASH, Some(&"p".repeat(52))).is_err());
+    }
 
     /// The exact `sha256:<hex>` spelling, pinned against an outside authority.
     ///

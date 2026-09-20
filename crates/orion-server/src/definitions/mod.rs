@@ -42,19 +42,24 @@ mod check;
 pub mod clippy;
 pub mod compile;
 mod diagnostic;
+mod expand;
+pub mod fix;
 pub mod fmt;
 mod gate;
 pub mod json;
+pub mod provenance;
 mod set;
 mod shared;
+pub mod statements;
 
 pub use check::check;
 pub use compile::{Cx, Pass, Residue};
 pub use diagnostic::{Diagnostic, Severity};
 pub use gate::{GateOpts, GateReport, gate_directory};
 pub use json::{Document, Node, Span, Spanned};
+pub use provenance::{SourceMap, SourceRef, Via};
 pub use set::{
-    Boundary, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
+    Boundary, Definition, DefinitionSet, Entity, LoadReport, ModelDefinition, PluginDefinition,
     is_plugin_manifest, json_files,
 };
-pub use shared::{Fragment, SharedDefinitions, first_reference};
+pub use shared::{Fragment, FragmentBody, PackageDecl, SharedDefinitions, first_reference};

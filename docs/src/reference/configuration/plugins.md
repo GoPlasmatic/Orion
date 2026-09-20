@@ -1,6 +1,6 @@
 <!-- description: The [plugins] settings: enabling the WebAssembly sandbox, the memory, size, time and concurrency ceilings, trust keys and per-plugin overrides. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Plugin settings
 
@@ -43,7 +43,7 @@ public_keys = []
 | `plugins.max_concurrency_per_function` | `64` | `ORION_PLUGINS__MAX_CONCURRENCY_PER_FUNCTION` | Invocations of one function that may run at once; beyond it a task waits until its deadline and fails as a limit. |
 | `plugins.max_live_instances` | `256` | `ORION_PLUGINS__MAX_LIVE_INSTANCES` | The instance pool across every function. Must be at least `max_concurrency_per_function`; under-sizing surfaces as instantiation failures under load. |
 | `plugins.fuel_backstop` | `100000000000` | `ORION_PLUGINS__FUEL_BACKSTOP` | Instruction budget per invocation — a backstop against a guest that spins, not a contract, because fuel cost moves between Wasmtime versions. Reason in `max_timeout_ms`. |
-| `plugins.trust.public_keys` | `[]` | `ORION_PLUGINS__TRUST__PUBLIC_KEYS` | When set, an upload must carry a signature over the component digest by one of these keys, verified again at every load. |
+| `plugins.trust.public_keys` | `[]` | `ORION_PLUGINS__TRUST__PUBLIC_KEYS` | When set, an upload must carry a signature over the component digest by one of these keys, verified again at every load. [`orion-server plugin keygen`](../cli/orion-server/plugin.md) prints a new key's value. |
 | `plugins.overrides` | `[]` | — | Per-plugin ceilings; see [Overrides](#overrides). |
 
 ```toml

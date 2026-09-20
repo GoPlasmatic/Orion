@@ -1,0 +1,23 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "save",
+      "name": "Save",
+      "function": {
+        "name": "db_write",
+        "input": {
+          "connector": "primary",
+          "query": "INSERT INTO t (a, b, c) VALUES ($1, $2, $3)",
+          "params": [{ "var": "data.req.a" }, { "var": "data.req.b" }]
+        }
+      }
+    }
+  ]
+}

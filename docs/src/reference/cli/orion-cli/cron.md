@@ -1,6 +1,6 @@
 <!-- description: orion-cli cron shows what each cron channel has scheduled, lists and inspects durable occurrences, and retries a failed or skipped one at its instant. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-20 -->
 
 # `orion-cli cron`
 
@@ -25,9 +25,9 @@ reason.
 
 | Subcommand | Description |
 |------------|-------------|
-| `status` | What is scheduled, when it next fires, its last run and its backlog — one row per active cron channel. |
+| `status` | What is scheduled, when it next fires, its last run, its backlog and its slots, as `held/slots` — one row per active cron channel. |
 | `list` | List occurrences, newest first; filter with `--channel-id` and `--status`. |
-| `get <id>` | Show one occurrence: both instants, the attempt, the singleton it held, its trace, and why it failed. |
+| `get <id>` | Show one occurrence: both instants, the attempt, the singleton and slot it held, its trace, and why it failed. |
 | `retry <id>` | Attempt a `failed`, `skipped_misfire` or `skipped_singleton` occurrence again. |
 
 ## Examples

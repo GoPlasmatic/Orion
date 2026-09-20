@@ -929,11 +929,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Channel deleted"
+            "description": "Channel deleted. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2545,11 +2554,11 @@
         "operationId": "engine_reload",
         "responses": {
           "200": {
-            "description": "Engine reloaded",
+            "description": "Engine reloaded. `generation` is the id of the generation this reload published and `load_issues` is what *that* generation could not load — an entity quarantined by it is not serving, though the reload succeeded.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_EngineReloaded"
+                  "$ref": "#/components/schemas/DataEnvelope_EngineReloadedResponse"
                 }
               }
             }
@@ -2603,11 +2612,11 @@
         "operationId": "engine_status",
         "responses": {
           "200": {
-            "description": "Engine status",
+            "description": "Engine status: the generation this node serves, what it could not load (`load_issues` — the same lists `/health` shows an admin), and what this node is configured to run (`capabilities`). Describes the node that answered; peers reload on their own and may differ.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_EngineStatus"
+                  "$ref": "#/components/schemas/DataEnvelope_EngineStatusResponse"
                 }
               }
             }
@@ -3040,7 +3049,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently and carries a manifest and an artifact reference, never bytes — what an export produces. Every item written is queued for admission on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an active model whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently and carries a manifest and an artifact reference, never bytes — what an export produces. Every item written is queued for admission on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an active model whose content differs gets a new draft version, identical content is reported `unchanged`. A `signature` is not content, but an item whose signature differs from the stored one is not `unchanged`: it is written, so a signature attached at deploy time reaches the row.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3337,11 +3346,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Model deleted (all versions). The cached artifact, if any, stays in this node's cache until swept"
+            "description": "Model deleted (all versions). The cached artifact, if any, stays in this node's cache until swept. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -3900,11 +3918,20 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "current",
+            "in": "query",
+            "description": "When true, one row per package — its `current` receipt, the newest\napplied one — with the `inventory` it recorded. A package whose\nreceipts are all staged is left out.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Paginated receipt rows, ordered by package name, newest first within a package.",
+            "description": "Paginated receipt rows, ordered by package name, newest first within a package, without their `inventory`. With `?current=true`, each package's current receipt with its `inventory`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4050,7 +4077,7 @@
             }
           },
           "400": {
-            "description": "Invalid name, version, content hash, or state",
+            "description": "Invalid name, version, content hash, state, or inventory (more than 1000 ids in one list, or an empty or over-long id)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4459,7 +4486,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently. An item may carry its component inline (base64) or name a digest this instance already holds — what an export produces with and without `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is replaced, an active plugin whose content differs gets a new draft version, identical content is reported `unchanged`.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently. An item may carry its component inline (base64) or name a digest this instance already holds — what an export produces with and without `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is replaced, an active plugin whose content differs gets a new draft version, identical content is reported `unchanged`. A `signature` is not content, but an item whose signature differs from the stored one is not `unchanged`: it is written, so a signature attached at deploy time reaches the row.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4756,11 +4783,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Plugin deleted (all versions), and any component nothing names any more"
+            "description": "Plugin deleted (all versions), and any component nothing names any more. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -6341,11 +6377,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "responses": {
           "204": {
-            "description": "Workflow deleted"
+            "description": "Workflow deleted. With `?reload=defer` the engine keeps serving it until `POST /engine/reload`"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -7249,7 +7294,7 @@
         "tags": [
           "Operational"
         ],
-        "description": "Detailed health report. Always reachable, but when `admin_auth.enabled` is true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, the circuit-breaker map, connector load failures and quarantined channels — names and failure reasons) is included only for requests presenting a valid admin credential; anonymous callers get status, version, uptime and coarse per-component states. Probes should use `/healthz` and `/readyz`.",
+        "description": "Detailed health report. Always reachable, but when `admin_auth.enabled` is true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, the circuit-breaker map, connector load failures and quarantined channels — names and failure reasons, and each `[packages] apply` entry by name, version and state) is included only for requests presenting a valid admin credential; anonymous callers get status, version, uptime and coarse per-component states. Probes should use `/healthz` and `/readyz`.",
         "operationId": "health_check",
         "responses": {
           "200": {
@@ -7368,7 +7413,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, every background task the node cannot work without is still running, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.background_tasks` is `error` when a required task — the trace dispatcher, the persistence workers, the audit writer, the DLQ retry consumer, the cluster epoch watcher — has stopped for good; each of those fails silently otherwise, dropping traces or audit rows while the data plane keeps answering 200s. The `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. `components.packages` is present only when `[packages] apply` names artifacts: `applying` (not ready) until every one is applied and serving, then `ok`; `failed` while a node whose package failed to apply shuts down. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -7531,6 +7576,35 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "ChannelLoadIssueResponse": {
+        "type": "object",
+        "description": "A channel a generation refused to serve.",
+        "required": [
+          "channel",
+          "channel_id",
+          "reason"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "The channel's name — what the quarantine is keyed by."
+          },
+          "channel_id": {
+            "type": "string",
+            "description": "The channel's id. Empty from a server that predates it."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The workflow the channel is bound to, when it names one."
           }
         }
       },
@@ -7832,6 +7906,32 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "ConnectorLoadIssueResponse": {
+        "type": "object",
+        "description": "An enabled connector the registry could not load.",
+        "required": [
+          "connector",
+          "connector_id",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string",
+            "description": "The connector's name — what workflows reference it by."
+          },
+          "connector_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`env_substitution`, `json_parse`, `var_reference`,\n`secret_resolution`, `deserialize` or `endpoint`."
           }
         }
       },
@@ -8221,6 +8321,14 @@
               "null"
             ]
           },
+          "singleton_slot": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Which of the key's `concurrency.slots` this attempt holds, from `0`.\nTwo occurrences of one key can share a fencing token when they hold\ndifferent slots, so the pair is what names a hold. `null` under\n`allow`."
+          },
           "started_at": {
             "type": [
               "string",
@@ -8328,6 +8436,10 @@
           "channel_name": {
             "type": "string"
           },
+          "concurrency_policy": {
+            "type": "string",
+            "description": "`allow` or `forbid`."
+          },
           "last_completed_at": {
             "type": [
               "string",
@@ -8373,6 +8485,31 @@
           "schedule": {
             "type": "string",
             "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+          },
+          "singleton_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The lock this channel's runs take. Present under `forbid`."
+          },
+          "slots": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many runs of `singleton_key` this channel admits at once. Present\nunder `forbid`.",
+            "minimum": 0
+          },
+          "slots_held": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Live leases on `singleton_key` right now, across every channel that\nshares the key — so it can exceed this channel's `slots` when another\nchannel declares more, or just after `slots` was lowered.",
+            "minimum": 0
           },
           "timezone": {
             "type": "string"
@@ -8744,6 +8881,14 @@
                   "null"
                 ]
               },
+              "singleton_slot": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "Which of the key's `concurrency.slots` this attempt holds, from `0`.\nTwo occurrences of one key can share a fencing token when they hold\ndifferent slots, so the pair is what names a hold. `null` under\n`allow`."
+              },
               "started_at": {
                 "type": [
                   "string",
@@ -8807,7 +8952,7 @@
           }
         }
       },
-      "DataEnvelope_EngineReloaded": {
+      "DataEnvelope_EngineReloadedResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -8819,9 +8964,27 @@
             "description": "`POST /api/v1/admin/engine/reload`.",
             "required": [
               "reloaded",
-              "workflows_count"
+              "workflows_count",
+              "generation"
             ],
             "properties": {
+              "generation": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The id of the generation this reload published. `0` from a server\nthat predates it.",
+                "minimum": 0
+              },
+              "load_issues": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineLoadIssues",
+                    "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  }
+                ]
+              },
               "reloaded": {
                 "type": "boolean"
               },
@@ -8834,7 +8997,7 @@
           }
         }
       },
-      "DataEnvelope_EngineStatus": {
+      "DataEnvelope_EngineStatusResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -8849,7 +9012,8 @@
               "uptime_seconds",
               "workflows_count",
               "active_workflows",
-              "channels"
+              "channels",
+              "generation"
             ],
             "properties": {
               "active_workflows": {
@@ -8857,12 +9021,40 @@
                 "format": "int64",
                 "minimum": 0
               },
+              "capabilities": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineCapabilities",
+                    "description": "What this node is configured to run. `None` from a server that\npredates the field."
+                  }
+                ]
+              },
               "channels": {
                 "type": "array",
                 "items": {
                   "type": "string"
                 },
                 "description": "Distinct channel names across the loaded workflows."
+              },
+              "generation": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The id of the generation this node serves.",
+                "minimum": 0
+              },
+              "load_issues": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineLoadIssues",
+                    "description": "What that generation could not load. `None` from a server that\npredates the field."
+                  }
+                ]
               },
               "uptime_seconds": {
                 "type": "integer",
@@ -9171,6 +9363,17 @@
               },
               "created_at": {
                 "type": "string"
+              },
+              "inventory": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PackageInventory",
+                    "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -9673,6 +9876,10 @@
                 "channel_name": {
                   "type": "string"
                 },
+                "concurrency_policy": {
+                  "type": "string",
+                  "description": "`allow` or `forbid`."
+                },
                 "last_completed_at": {
                   "type": [
                     "string",
@@ -9718,6 +9925,31 @@
                 "schedule": {
                   "type": "string",
                   "description": "The authored expression and zone, echoed so a status read answers\n\"what is scheduled?\" without a second request."
+                },
+                "singleton_key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The lock this channel's runs take. Present under `forbid`."
+                },
+                "slots": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "How many runs of `singleton_key` this channel admits at once. Present\nunder `forbid`.",
+                  "minimum": 0
+                },
+                "slots_held": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32",
+                  "description": "Live leases on `singleton_key` right now, across every channel that\nshares the key — so it can exceed this channel's `slots` when another\nchannel declares more, or just after `slots` was lowered.",
+                  "minimum": 0
                 },
                 "timezone": {
                   "type": "string"
@@ -10270,14 +10502,91 @@
           }
         }
       },
-      "EngineReloaded": {
+      "EngineCapabilities": {
+        "type": "object",
+        "description": "Node capabilities a plan can predict quarantines from.",
+        "required": [
+          "cron",
+          "plugins",
+          "models"
+        ],
+        "properties": {
+          "cron": {
+            "type": "boolean",
+            "description": "`cron.enabled`: whether this node schedules cron channels."
+          },
+          "models": {
+            "type": "boolean",
+            "description": "`models.enabled`: whether this node carries the model runtime."
+          },
+          "plugins": {
+            "type": "boolean",
+            "description": "`plugins.enabled`: whether this node runs the plugin sandbox."
+          }
+        }
+      },
+      "EngineLoadIssues": {
+        "type": "object",
+        "description": "What a runtime generation could not load, on the node that answered.",
+        "required": [
+          "channels",
+          "plugins",
+          "models",
+          "connectors"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelLoadIssueResponse"
+            }
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConnectorLoadIssueResponse"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelLoadIssueResponse"
+            }
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PluginLoadIssueResponse"
+            }
+          }
+        }
+      },
+      "EngineReloadedResponse": {
         "type": "object",
         "description": "`POST /api/v1/admin/engine/reload`.",
         "required": [
           "reloaded",
-          "workflows_count"
+          "workflows_count",
+          "generation"
         ],
         "properties": {
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The id of the generation this reload published. `0` from a server\nthat predates it.",
+            "minimum": 0
+          },
+          "load_issues": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineLoadIssues",
+                "description": "What that generation could not load. `None` from a server that\npredates the field."
+              }
+            ]
+          },
           "reloaded": {
             "type": "boolean"
           },
@@ -10288,7 +10597,7 @@
           }
         }
       },
-      "EngineStatus": {
+      "EngineStatusResponse": {
         "type": "object",
         "description": "`GET /api/v1/admin/engine/status`.",
         "required": [
@@ -10296,7 +10605,8 @@
           "uptime_seconds",
           "workflows_count",
           "active_workflows",
-          "channels"
+          "channels",
+          "generation"
         ],
         "properties": {
           "active_workflows": {
@@ -10304,12 +10614,40 @@
             "format": "int64",
             "minimum": 0
           },
+          "capabilities": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineCapabilities",
+                "description": "What this node is configured to run. `None` from a server that\npredates the field."
+              }
+            ]
+          },
           "channels": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Distinct channel names across the loaded workflows."
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The id of the generation this node serves.",
+            "minimum": 0
+          },
+          "load_issues": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EngineLoadIssues",
+                "description": "What that generation could not load. `None` from a server that\npredates the field."
+              }
+            ]
           },
           "uptime_seconds": {
             "type": "integer",
@@ -10451,7 +10789,7 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in\ncluster mode."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10), `cluster_redis` in\ncluster mode, and `packages` when `[packages] apply` names artifacts."
           },
           "git_hash": {
             "type": [
@@ -10739,6 +11077,36 @@
           }
         }
       },
+      "ModelLoadIssueResponse": {
+        "type": "object",
+        "description": "A model version a generation could not carry.",
+        "required": [
+          "model",
+          "version",
+          "digest",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`disabled`, `admission`, `manifest`, `artifact` or `adapter`."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "ModelResponse": {
         "type": "object",
         "description": "One version of a model, as every model endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was registered, with\nnothing the server inferred added to it. `inputs` and `outputs` are the\ntensor names it declares, repeated at the top level so a client need not\nwalk the manifest to learn the model's signature. `artifact` is where the\nbytes are; `admission` and `stats` are what a node found when it fetched\nthem — `stats` is `null` until admission passes. `health` is present only\non the single-entity read, and only when the serving node has an opinion:\nit says whether *this node* has the version resident.",
@@ -10982,6 +11350,42 @@
           }
         }
       },
+      "PackageInventory": {
+        "type": "object",
+        "description": "The entities one package version carried, by the key each kind is\nmatched on: `plugin_id`, `model_id`, the connector's `name`,\n`workflow_id`, `channel_id`. Each list is sorted and free of\nduplicates, so two applies of one artifact record identical JSON.",
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "plugins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workflows": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "PackageReceiptResponse": {
         "type": "object",
         "description": "A package receipt as the admin API shows it (K14).",
@@ -11001,6 +11405,17 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "inventory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageInventory",
+                "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+              }
+            ]
           },
           "name": {
             "type": "string"
@@ -11576,6 +11991,17 @@
                 "created_at": {
                   "type": "string"
                 },
+                "inventory": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PackageInventory",
+                      "description": "What this version carried. Absent from a receipt written before\nreceipts recorded it, and from `GET /packages` without\n`?current=true`."
+                    }
+                  ]
+                },
                 "name": {
                   "type": "string"
                 },
@@ -11975,6 +12401,36 @@
           }
         }
       },
+      "PluginLoadIssueResponse": {
+        "type": "object",
+        "description": "A plugin version a generation could not load.",
+        "required": [
+          "plugin",
+          "version",
+          "digest",
+          "stage",
+          "reason"
+        ],
+        "properties": {
+          "digest": {
+            "type": "string"
+          },
+          "plugin": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "description": "`disabled`, `manifest`, `signature`, `artifact`, `compile`, `link`,\n`size` or `self_test`."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "PluginResponse": {
         "type": "object",
         "description": "One version of a plugin, as every plugin endpoint returns it.\n\n`manifest` is the validated manifest as JSON — what was uploaded, with\nnothing the server inferred added to it. `functions` is the list of\nnames it declares, repeated at the top level so a client need not walk\nthe manifest to learn what the plugin adds to the vocabulary. `health` is\npresent only on the single-entity read, and only when the serving node\nhas an opinion: it says whether *this node* loaded the digest.",
@@ -12201,6 +12657,17 @@
           "content_hash": {
             "type": "string",
             "description": "Canonical content hash of the artifact, e.g. `sha256:…`. Compared for\nequality against later PUTs of the same version; never parsed."
+          },
+          "inventory": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageInventory",
+                "description": "What this version carries. Stored on insert and on a staged re-put;\non an applied version it only fills a receipt recorded without one,\nsince the hash is equal and so is what the version carried."
+              }
+            ]
           },
           "state": {
             "$ref": "#/components/schemas/PackageState",

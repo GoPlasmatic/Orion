@@ -1,6 +1,6 @@
 <!-- description: The three layers an Orion setting resolves through: struct defaults, the config file with ${VAR} and env:// references, then ORION_SECTION__KEY variables. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # How settings are resolved
 
@@ -13,7 +13,7 @@ One more `ORION_*` name is read but is **not** a config setting. `ORION_ADMIN_TO
 1. **Struct defaults**: everything on this page.
 2. **The config file**, passed with `-c`. Values may reference process environment variables two ways:
 
-   - `${VAR}` (required — startup fails if unset) or `${VAR:-default}` (optional), substituted **before** parsing, so it can build a value out of parts. `$$` escapes a literal `$`. The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database.
+   - `${VAR}`, `${VAR:-default}` and `${VAR:?message}`, substituted **before** parsing, so a placeholder can build a value out of parts. Comments are skipped. The grammar is under [Placeholders](#placeholders). The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database.
    - `env://VAR_NAME` as a whole value, resolved **after** parsing — the spelling a connector's `connection_string` already uses. `[storage] url = "env://ORION_STATE_DB_URL"` names its source the way a connector does, instead of leaving the file either silent about `[storage]` or repeating a credential.
 
    Both are strict: an unset variable is a startup error naming the variable, and `orion-server validate-config` reports it the same way. `vault://` and the reserved cloud schemes are **not** available in the config file. Resolving them is a network call, and the config is what tells the process how to make one. Declare those under [`[secrets]`](./vars-and-secrets.md), which resolves at startup through every scheme.
@@ -24,6 +24,33 @@ One more `ORION_*` name is read but is **not** a config setting. `ORION_ADMIN_TO
 The two substitution syntaxes reach different surfaces, because connectors and channels live in the database, not in this file. [Environment variables](../environment-variables.md) is the one table of which resolves where.
 
 Run `orion-server validate-config` to see the merged result without starting. It prints the full effective config, every section serialized from the same structs the server runs on, as TOML; `--format json` and `--format summary` also exist. Secrets are masked with the same policy as the connector API. Values under secret-looking keys are replaced with `******`, and passwords embedded in URL-shaped values such as `storage.url` are struck out in place. Configuration is validated at startup too, and an invalid value stops the boot rather than being silently ignored.
+
+### Placeholders
+
+A placeholder is replaced by the variable's value before the file is parsed. What happens when the variable is empty or unset depends on the form:
+
+| Form | Set | Set but empty | Unset |
+|---|---|---|---|
+| `${VAR}` | the value | empty | startup error |
+| `${VAR:-default}` | the value | empty | `default` |
+| `${VAR:?message}` | the value | startup error quoting `message` | startup error quoting `message` |
+
+`:-` falls back only when the variable is **unset**, so a variable exported empty stays empty. `:?` refuses an empty value too, because a required setting that is empty is as missing as one that is not set.
+
+- **Defaults and messages nest.** `${A:-${B:-c}}` reads `B` only when `A` is unset, and `c` only when both are. The limit is eight levels.
+- **A default or a message is evaluated only when it is used.** `${A:-${B}}` does not require `B` while `A` is set.
+- **Comments are skipped.** A `#` outside a string starts a comment, and nothing after it on that line is substituted. A comment that mentions `${R2_ENDPOINT}` therefore never makes it required. A `#` inside a quoted value or a placeholder's default is text.
+- **`$$` is a literal `$`** in a value. In a comment it stays as written.
+- **A value is never re-read.** A variable whose value contains `${OTHER}` inserts those characters as they are, so one variable cannot pull in another.
+- **Only `${` opens a placeholder.** A bare `{` in a default is text, and a default cannot contain a `}`: put a brace outside the placeholder or in a variable.
+
+An error names the file, the line and the column of the placeholder:
+
+```
+Error: Configuration error: ORION_STATE_DB_URL is required: set it to the state database (config.toml:12:7)
+```
+
+Other shell forms, such as `${VAR:+x}` and `${VAR-x}`, are refused with an error that lists the three supported forms.
 
 ### Misspellings are startup errors, not silent no-ops
 

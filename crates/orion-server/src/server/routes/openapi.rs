@@ -402,6 +402,7 @@ validation failures.",
             super::admin::trace_dlq::PurgeTraceDlqRequest,
             super::admin::ValidationEnvelope,
             crate::storage::models::PackageReceiptResponse,
+            crate::storage::models::PackageInventory,
             crate::storage::models::PackageState,
             super::admin::workflows::WorkflowDependencies,
             super::admin::workflows::ConnectorDependency,
@@ -778,26 +779,6 @@ pub(crate) struct ConnectorExportItem {
 // referencing it by its old path.
 pub(crate) use orion_api::ImportResult;
 
-/// `GET /api/v1/admin/engine/status`.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct EngineStatus {
-    version: String,
-    uptime_seconds: i64,
-    workflows_count: u64,
-    active_workflows: u64,
-    /// Distinct channel names across the loaded workflows.
-    channels: Vec<String>,
-}
-
-/// `POST /api/v1/admin/engine/reload`.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct EngineReloaded {
-    reloaded: bool,
-    workflows_count: u64,
-}
-
 /// `GET /api/v1/admin/connectors/circuit-breakers`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
@@ -963,8 +944,8 @@ pub(crate) struct HealthStatus {
     version: String,
     uptime_seconds: i64,
     /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`,
-    /// plus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in
-    /// cluster mode.
+    /// plus `kafka` when `kafka.enabled` (O10), `cluster_redis` in
+    /// cluster mode, and `packages` when `[packages] apply` names artifacts.
     components: Value,
     /// Build provenance and detail, served only to an admin caller (O9).
     #[serde(skip_serializing_if = "Option::is_none")]

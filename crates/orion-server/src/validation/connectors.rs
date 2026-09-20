@@ -39,7 +39,17 @@ pub fn validate_connector_config(
         ));
     }
 
-    let parsed: ConnectorConfig = serde_json::from_value(config_with_type).map_err(|e| {
+    // Typed as the load path will type it once references resolve: a
+    // reference standing in a field that is not a string (`"allow_private_urls":
+    // "env://PEER_PRIVATE"`) gets a placeholder of the kind the field wants.
+    // Nothing below branches on a boolean, so no check reads a placeholder;
+    // one that starts to must say what it does with one.
+    let parsed = ConnectorConfig::parse_variant(
+        connector_type,
+        &config_with_type,
+        &crate::connector::secrets::UnresolvedReferences,
+    )
+    .map_err(|e| {
         OrionError::validation(format!(
             "Invalid connector config for type '{type_str}': {e}"
         ))
@@ -52,7 +62,10 @@ pub fn validate_connector_config(
     // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
     // Schemes only — the private-address check runs on the pool-open paths,
     // because storing a connector must not depend on DNS.
-    super::endpoints::validate_endpoint_schemes(&parsed)?;
+    super::endpoints::validate_endpoint_schemes(
+        &parsed,
+        super::endpoints::EndpointPhase::Authoring,
+    )?;
 
     // Per-type rules, and exhaustive on purpose.
     //
@@ -83,20 +96,10 @@ pub fn validate_connector_config(
     Ok(())
 }
 
-/// HTTP: URL scheme, retry bound, managed OAuth2, and the method allow-list.
+/// HTTP: retry bound, managed OAuth2, and the method allow-list. The URL
+/// and an OAuth2 `token_url` are endpoints, judged with every other
+/// connector's by `validate_endpoint_schemes`.
 fn validate_http(http_config: &crate::connector::HttpConnectorConfig) -> Result<(), OrionError> {
-    if !http_config.url.is_empty() {
-        let parsed_url = url::Url::parse(&http_config.url).map_err(|e| {
-            OrionError::validation(format!("Invalid connector URL '{}': {e}", http_config.url))
-        })?;
-        let scheme = parsed_url.scheme();
-        if scheme != "http" && scheme != "https" {
-            return Err(OrionError::validation(format!(
-                "Connector URL must use http or https scheme, got '{scheme}'"
-            )));
-        }
-    }
-
     // Retry counts are exponents in the backoff schedule (2^attempt), so an
     // unbounded value is a config-reachable multi-hour stall, and arithmetic
     // on it has to stay overflow-safe. Same bound Q4 put on dlq_max_retries.
@@ -229,15 +232,6 @@ fn validate_oauth2(o: &crate::connector::OAuth2Config) -> Result<(), OrionError>
         )));
     }
 
-    let token_url = url::Url::parse(&o.token_url).map_err(|e| {
-        OrionError::validation(format!("Invalid OAuth2 token_url '{}': {e}", o.token_url))
-    })?;
-    let scheme = token_url.scheme();
-    if scheme != "http" && scheme != "https" {
-        return Err(OrionError::validation(format!(
-            "OAuth2 token_url must use http or https scheme, got '{scheme}'"
-        )));
-    }
     if o.client_id.trim().is_empty() {
         return Err(OrionError::validation(
             "OAuth2 auth requires a non-empty 'client_id'".to_string(),
@@ -529,6 +523,48 @@ pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), Ori
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #338: the issue's own connector — a reference in `url` and in the
+    /// boolean opt-out — is accepted at authoring, on a host holding neither.
+    #[test]
+    fn an_http_url_and_a_boolean_may_be_references() {
+        for private in ["env://PEER_API_PRIVATE", "var://peer_private"] {
+            validate_connector_config(
+                ConnectorType::Http,
+                &serde_json::json!({
+                    "url": "env://PEER_API_URL",
+                    "allow_private_urls": private,
+                    "timeout_ms": 5000,
+                }),
+            )
+            .expect("a reference in a boolean field is accepted");
+        }
+        validate_connector_config(
+            ConnectorType::Db,
+            &serde_json::json!({
+                "connection_string": "env://ORDERS_DB_URL",
+                "allow_private_urls": "env://ORDERS_DB_PRIVATE",
+                "operations": {"delete": "var://orders_delete"},
+            }),
+        )
+        .expect("any boolean, any connector");
+    }
+
+    #[test]
+    fn a_wrong_literal_or_an_unknown_key_beside_a_reference_is_still_refused() {
+        let err = validate_connector_config(
+            ConnectorType::Http,
+            &serde_json::json!({"url": "env://URL", "allow_private_urls": "yes"}),
+        )
+        .expect_err("a literal that is not a boolean");
+        assert!(err.to_string().contains("allow_private_urls"), "{err}");
+        let err = validate_connector_config(
+            ConnectorType::Http,
+            &serde_json::json!({"url": "env://URL", "operations": {"verbs": "env://V"}}),
+        )
+        .expect_err("an unknown gate key");
+        assert!(err.to_string().contains("verbs"), "{err}");
+    }
     use serde_json::json;
 
     // Note: connector_type string validation (rejecting "grpc", "" etc.) is

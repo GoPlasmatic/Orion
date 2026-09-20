@@ -94,22 +94,43 @@ fn scheme_error(field: &str, conn: &str, allowed: &[&str]) -> OrionError {
     ))
 }
 
-fn require_scheme(field: &str, conn: &str, allowed: &[&str]) -> Result<(), OrionError> {
-    // The stored value may not be the endpoint itself. A resolvable secret
-    // reference (`env://…`, `vault://…`) resolves at load, so its scheme is
-    // the reference's, not the endpoint's; and `${VAR}` placeholders are
-    // substituted by the load path before anything parses the string. Judge
-    // what load will see: substitute when possible, and when the value cannot
-    // be resolved on this host (a reference, or an unset variable with no
-    // default) leave enforcement to the load path, which reports it as a
-    // load issue on the host that matters. Refusing here would reject every
-    // connector authored the documented way (`${ORDERS_DB_URL:-postgres://…}`).
-    if crate::connector::secrets::is_resolvable_reference(conn) {
-        return Ok(());
+/// When an endpoint is judged, which decides what may still be unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointPhase {
+    /// Create, update, validate, `lint`: a reference, or a `${VAR}` this host
+    /// cannot substitute, is deferred to load.
+    Authoring,
+    /// Registry load, after every reference resolved: the value is final.
+    /// Errors name the scheme only, never the value, which may carry
+    /// userinfo a reference was hiding.
+    Load,
+}
+
+/// What load will see of `conn`, or `None` when this host cannot know: a
+/// resolvable secret reference (`env://…`, `vault://…`) resolves at load, so
+/// its scheme is the reference's, not the endpoint's; and `${VAR}`
+/// placeholders are substituted by the load path before anything parses the
+/// string. Refusing those at authoring would reject every connector authored
+/// the documented way (`${ORDERS_DB_URL:-postgres://…}`); the load path judges
+/// the resolved value, on the host that matters.
+fn effective_endpoint(field: &str, conn: &str, phase: EndpointPhase) -> Option<String> {
+    if phase == EndpointPhase::Load {
+        return Some(conn.to_string());
     }
-    let effective = match crate::config::env_substitute::substitute(conn, field) {
-        Ok(s) => s,
-        Err(_) => return Ok(()),
+    if crate::connector::secrets::is_resolvable_reference(conn) {
+        return None;
+    }
+    crate::config::env_substitute::substitute(conn, field).ok()
+}
+
+fn require_scheme(
+    field: &str,
+    conn: &str,
+    allowed: &[&str],
+    phase: EndpointPhase,
+) -> Result<(), OrionError> {
+    let Some(effective) = effective_endpoint(field, conn, phase) else {
+        return Ok(());
     };
     let scheme = scheme_of(&effective).ok_or_else(|| scheme_error(field, &effective, allowed))?;
     if !allowed.contains(&scheme.as_str()) {
@@ -118,17 +139,65 @@ fn require_scheme(field: &str, conn: &str, allowed: &[&str]) -> Result<(), Orion
     Ok(())
 }
 
+/// An HTTP endpoint (`http.url`, an OAuth2 `token_url`): the same deferral
+/// as [`require_scheme`], then the stricter check the HTTP connector always
+/// had — a URL that parses, with scheme `http` or `https`. `label` names the
+/// field in the messages (`connector URL`, `OAuth2 token_url`), which read as
+/// they did when each field had its own check. An empty `url` is allowed, as
+/// it always was: a task may supply the whole URL.
+fn require_http_url(label: &str, value: &str, phase: EndpointPhase) -> Result<(), OrionError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let Some(effective) = effective_endpoint(label, value, phase) else {
+        return Ok(());
+    };
+    let resolved = if phase == EndpointPhase::Load {
+        " (resolved from a reference)"
+    } else {
+        ""
+    };
+    let parsed = url::Url::parse(&effective).map_err(|e| {
+        OrionError::validation(match phase {
+            EndpointPhase::Authoring => format!("Invalid {label} '{effective}': {e}"),
+            EndpointPhase::Load => format!("Invalid {label}: {e}{resolved}"),
+        })
+    })?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        let mut subject = label.to_string();
+        if let Some(first) = subject.get_mut(..1) {
+            first.make_ascii_uppercase();
+        }
+        return Err(OrionError::validation(format!(
+            "{subject} must use http or https scheme, got '{scheme}'{resolved}"
+        )));
+    }
+    Ok(())
+}
+
 /// Refuse a connector whose endpoint uses a scheme its backend cannot serve.
 ///
-/// Called from `validate_connector_config`, so it runs on both create and
-/// update. Schemes only — no DNS, no sockets.
-pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionError> {
+/// Called from `validate_connector_config` at [`EndpointPhase::Authoring`],
+/// so it runs on create, update, validate and `lint`; and from the registry
+/// load at [`EndpointPhase::Load`], on the value every reference resolved to.
+/// Schemes only — no DNS, no sockets: the private-address check needs DNS
+/// and must see every redirect, so it stays on the request and pool-open
+/// paths.
+pub fn validate_endpoint_schemes(
+    parsed: &ConnectorConfig,
+    phase: EndpointPhase,
+) -> Result<(), OrionError> {
     match parsed {
-        // The HTTP connector's URL is scheme-checked by its own branch in
-        // `validate_connector_config`, which predates this module.
-        ConnectorConfig::Http(_) => Ok(()),
+        ConnectorConfig::Http(http) => {
+            require_http_url("connector URL", &http.url, phase)?;
+            if let Some(crate::connector::AuthConfig::OAuth2(o)) = &http.auth {
+                require_http_url("OAuth2 token_url", &o.token_url, phase)?;
+            }
+            Ok(())
+        }
         ConnectorConfig::Storage(storage) => {
-            require_scheme("endpoint", &storage.endpoint, &["http", "https"])?;
+            require_scheme("endpoint", &storage.endpoint, &["http", "https"], phase)?;
             Ok(())
         }
         ConnectorConfig::Smtp(smtp) => {
@@ -150,7 +219,7 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
             Ok(())
         }
         ConnectorConfig::Es(es) => {
-            require_scheme("URL", &es.url, ES_SCHEMES)?;
+            require_scheme("URL", &es.url, ES_SCHEMES, phase)?;
             Ok(())
         }
         ConnectorConfig::Db(db) => {
@@ -159,7 +228,7 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
                 .chain(DB_MONGO_SCHEMES.iter())
                 .copied()
                 .collect();
-            require_scheme("connection_string", &db.connection_string, &allowed)?;
+            require_scheme("connection_string", &db.connection_string, &allowed, phase)?;
             Ok(())
         }
         ConnectorConfig::Cache(cache) => {
@@ -169,7 +238,7 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
                 && let Some(url) = cache.url.as_deref()
                 && !url.trim().is_empty()
             {
-                require_scheme("cache URL", url, CACHE_SCHEMES)?;
+                require_scheme("cache URL", url, CACHE_SCHEMES, phase)?;
             }
             Ok(())
         }
@@ -348,6 +417,85 @@ mod tests {
     use super::*;
     use crate::connector::{CacheConnectorConfig, KafkaConnectorConfig, is_mongo_url};
 
+    fn validate_endpoint_schemes_at_authoring(parsed: &ConnectorConfig) -> Result<(), OrionError> {
+        validate_endpoint_schemes(parsed, EndpointPhase::Authoring)
+    }
+
+    fn http(url: &str, token_url: Option<&str>) -> ConnectorConfig {
+        let mut doc = serde_json::json!({"type": "http", "url": url});
+        if let Some(token_url) = token_url {
+            doc["auth"] = serde_json::json!({
+                "type": "oauth2", "grant": "client_credentials", "token_url": token_url,
+                "client_id": "id", "client_secret": "env://SECRET",
+            });
+        }
+        serde_json::from_value(doc).expect("http config")
+    }
+
+    /// #338: an HTTP URL follows the rule every other endpoint does — a
+    /// reference defers to load — and a literal keeps its old check and its
+    /// old words.
+    #[test]
+    fn an_http_url_may_be_a_reference_and_a_literal_is_still_checked() {
+        validate_endpoint_schemes_at_authoring(&http("env://PEER_API_URL", None))
+            .expect("a reference defers");
+        validate_endpoint_schemes_at_authoring(&http("", None)).expect("empty is allowed");
+        let err = validate_endpoint_schemes_at_authoring(&http("ftp://example.com", None))
+            .expect_err("ftp");
+        assert!(
+            err.to_string()
+                .contains("Connector URL must use http or https scheme, got 'ftp'"),
+            "{err}"
+        );
+        let err =
+            validate_endpoint_schemes_at_authoring(&http("not a url", None)).expect_err("garbage");
+        assert!(
+            err.to_string()
+                .contains("Invalid connector URL 'not a url'"),
+            "{err}"
+        );
+
+        validate_endpoint_schemes_at_authoring(&http(
+            "https://api.example.com",
+            Some("env://TOKEN_URL"),
+        ))
+        .expect("a token_url reference defers");
+        let err = validate_endpoint_schemes_at_authoring(&http(
+            "https://api.example.com",
+            Some("ftp://idp.example.com/token"),
+        ))
+        .expect_err("ftp token_url");
+        assert!(
+            err.to_string()
+                .contains("OAuth2 token_url must use http or https scheme, got 'ftp'"),
+            "{err}"
+        );
+    }
+
+    /// At load the value is final: nothing defers, and the message names the
+    /// scheme and never the value, which may carry userinfo.
+    #[test]
+    fn at_load_a_resolved_endpoint_is_judged_without_being_quoted() {
+        let err = validate_endpoint_schemes(
+            &http("ftp://user:hunter2@example.com", None),
+            EndpointPhase::Load,
+        )
+        .expect_err("ftp at load");
+        let message = err.to_string();
+        assert!(
+            message.contains("got 'ftp' (resolved from a reference)"),
+            "{message}"
+        );
+        assert!(!message.contains("hunter2"), "{message}");
+        let err =
+            validate_endpoint_schemes(&http("env://NEVER_RESOLVED", None), EndpointPhase::Load)
+                .expect_err("a reference left at load");
+        assert!(!err.to_string().contains("NEVER_RESOLVED"), "{err}");
+        let err = validate_endpoint_schemes(&db("mongo+x://u:hunter2@h/d"), EndpointPhase::Load)
+            .expect_err("db at load");
+        assert!(!err.to_string().contains("hunter2"), "{err}");
+    }
+
     fn db(conn: &str) -> ConnectorConfig {
         ConnectorConfig::Db(DbConnectorConfig {
             connection_string: conn.to_string(),
@@ -373,7 +521,7 @@ mod tests {
             "mongodb://m.example.com:27017/orion",
             "mongodb+srv://cluster.example.com/orion",
         ] {
-            let result = validate_endpoint_schemes(&db(conn));
+            let result = validate_endpoint_schemes_at_authoring(&db(conn));
             assert!(result.is_ok(), "{conn} must be accepted: {result:?}");
         }
     }
@@ -388,24 +536,27 @@ mod tests {
     fn db_placeholders_and_references_are_judged_after_resolution() {
         // A default makes the placeholder substitutable anywhere: the check
         // sees the substituted string, so a good default passes…
-        validate_endpoint_schemes(&db(
+        validate_endpoint_schemes_at_authoring(&db(
             "${ORION_TEST_UNSET_DB_URL:-postgres://db.example.com/x}",
         ))
         .expect("placeholder with a valid default");
         // …and a bad one is still caught at the door.
-        let err =
-            validate_endpoint_schemes(&db("${ORION_TEST_UNSET_DB_URL:-redis://not-a-db:6379}"))
-                .expect_err("placeholder with a foreign-scheme default");
+        let err = validate_endpoint_schemes_at_authoring(&db(
+            "${ORION_TEST_UNSET_DB_URL:-redis://not-a-db:6379}",
+        ))
+        .expect_err("placeholder with a foreign-scheme default");
         assert!(err.to_string().contains("Allowed:"), "{err}");
 
         // No default and unset here: only the load host can judge it.
-        validate_endpoint_schemes(&db("${ORION_TEST_UNSET_DB_URL}"))
+        validate_endpoint_schemes_at_authoring(&db("${ORION_TEST_UNSET_DB_URL}"))
             .expect("unresolvable placeholder is the load path's to enforce");
 
         // Secret references resolve at load; their scheme is the reference's,
         // not the endpoint's.
-        validate_endpoint_schemes(&db("env://ORDERS_DB_URL")).expect("env:// reference");
-        validate_endpoint_schemes(&db("vault://secret/data/db#url")).expect("vault:// reference");
+        validate_endpoint_schemes_at_authoring(&db("env://ORDERS_DB_URL"))
+            .expect("env:// reference");
+        validate_endpoint_schemes_at_authoring(&db("vault://secret/data/db#url"))
+            .expect("vault:// reference");
     }
 
     /// The S6 headline: a scheme the db pool would happily dial but that is
@@ -419,8 +570,8 @@ mod tests {
             "gopher://example.com:70/",
             "/app/data/orion.db",
         ] {
-            let err =
-                validate_endpoint_schemes(&db(conn)).expect_err(&format!("{conn} must be refused"));
+            let err = validate_endpoint_schemes_at_authoring(&db(conn))
+                .expect_err(&format!("{conn} must be refused"));
             assert!(
                 err.to_string().contains("Allowed:"),
                 "{conn}: unexpected error {err}"
@@ -438,12 +589,17 @@ mod tests {
                 operations: Default::default(),
             })
         };
-        validate_endpoint_schemes(&redis(Some("redis://cache.example.com:6379"))).expect("test");
-        validate_endpoint_schemes(&redis(Some("rediss://cache.example.com:6379"))).expect("test");
-        assert!(validate_endpoint_schemes(&redis(Some("http://cache.example.com"))).is_err());
+        validate_endpoint_schemes_at_authoring(&redis(Some("redis://cache.example.com:6379")))
+            .expect("test");
+        validate_endpoint_schemes_at_authoring(&redis(Some("rediss://cache.example.com:6379")))
+            .expect("test");
+        assert!(
+            validate_endpoint_schemes_at_authoring(&redis(Some("http://cache.example.com")))
+                .is_err()
+        );
 
         // memory backend: no URL to judge.
-        validate_endpoint_schemes(&ConnectorConfig::Cache(CacheConnectorConfig {
+        validate_endpoint_schemes_at_authoring(&ConnectorConfig::Cache(CacheConnectorConfig {
             backend: "memory".to_string(),
             url: None,
             allow_private_urls: false,
@@ -462,14 +618,18 @@ mod tests {
                 operations: Default::default(),
             })
         };
-        validate_endpoint_schemes(&kafka(vec!["b1.example.com:9092", "b2.example.com:9092"]))
-            .expect("test");
-        validate_endpoint_schemes(&kafka(vec!["b.example.com"]))
+        validate_endpoint_schemes_at_authoring(&kafka(vec![
+            "b1.example.com:9092",
+            "b2.example.com:9092",
+        ]))
+        .expect("test");
+        validate_endpoint_schemes_at_authoring(&kafka(vec!["b.example.com"]))
             .expect("bare host defaults to 9092");
-        validate_endpoint_schemes(&kafka(vec!["[2600::1]:9092"])).expect("bracketed ipv6");
-        assert!(validate_endpoint_schemes(&kafka(vec!["http://b:9092"])).is_err());
-        assert!(validate_endpoint_schemes(&kafka(vec!["b:not-a-port"])).is_err());
-        assert!(validate_endpoint_schemes(&kafka(vec![""])).is_err());
+        validate_endpoint_schemes_at_authoring(&kafka(vec!["[2600::1]:9092"]))
+            .expect("bracketed ipv6");
+        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec!["http://b:9092"])).is_err());
+        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec!["b:not-a-port"])).is_err());
+        assert!(validate_endpoint_schemes_at_authoring(&kafka(vec![""])).is_err());
     }
 
     #[test]

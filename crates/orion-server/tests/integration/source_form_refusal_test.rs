@@ -267,9 +267,61 @@ async fn a_payload_that_merely_resembles_a_reference_still_creates() {
                 "input": {"mappings": [
                     {"path": "data.a", "logic": {"use": "cache"}},
                     {"path": "data.b", "logic": {"tasks": [{"use": "nested"}]}},
-                    {"path": "data.c", "logic": {"$from": 5}}]}}}]
+                    {"path": "data.c", "logic": {"$from": 5}},
+                    {"path": "data.d", "logic": {"$sql": 5}},
+                    {"path": "data.e", "logic": {"$use": 5}},
+                    {"path": "data.f", "logic": {"$each": "x"}}]}}}]
         }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// #332: a `$sql` file reference is compiled by `compile`, not the API — so
+/// the API names it rather than refusing the statement's absence.
+#[tokio::test]
+async fn a_sql_reference_is_named_by_uncompiled_source() {
+    let (status, body) = post(
+        "/api/v1/admin/workflows",
+        json!({
+            "workflow_id": "sqlref", "name": "SQL ref",
+            "tasks": [{"id": "r", "name": "R", "function": {"name": "db_read",
+                "input": {"connector": "db", "query": {"$sql": "sql/read.sql"}}}}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let d = detail(&body, "tasks[0].function.input.query");
+    assert_eq!(d["code"], "UNCOMPILED_SOURCE");
+    let message = d["message"].as_str().unwrap();
+    assert!(message.contains("sql/read.sql"), "{message}");
+}
+
+/// #333: a `$use` and an `$each` are compiled by `compile`, not the API —
+/// each is named, where it sits, rather than stored as a literal key.
+#[tokio::test]
+async fn a_value_fragment_and_a_repetition_are_named() {
+    let (status, body) = post(
+        "/api/v1/admin/workflows",
+        json!({
+            "workflow_id": "sugar", "name": "Sugar",
+            "condition": {"$use": "positive", "with": {"field": "total"}},
+            "tasks": [{"$each": {"p": [0, 1]}, "do": {"id": "t{{p}}", "name": "T",
+                "function": {"name": "map", "input": {"mappings": []}}}}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let condition = detail(&body, "condition");
+    assert_eq!(condition["code"], "UNCOMPILED_SOURCE");
+    assert!(
+        condition["message"].as_str().unwrap().contains("positive"),
+        "{condition}"
+    );
+    let each = detail(&body, "tasks[0]");
+    assert_eq!(each["code"], "UNCOMPILED_SOURCE", "{body}");
+    assert!(
+        each["message"].as_str().unwrap().contains("$each"),
+        "{each}"
+    );
 }

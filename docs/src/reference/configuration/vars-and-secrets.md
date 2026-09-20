@@ -1,6 +1,6 @@
 <!-- description: The [vars] and [secrets] sections: the per-environment values a workflow reads by name, which is recorded in traces, and which value shapes each refuses. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Vars and secrets
 
@@ -15,7 +15,7 @@ Which section a value belongs in is decided by one question: **should it appear 
 | `[vars]` | `{"var": "metadata.vars.<name>"}` | **Yes**, deliberately | Literals |
 | `[secrets]` | `{"secret": "<name>"}` | **No**, structurally | `env://` / `vault://` references |
 
-Neither section has an environment-variable override: the names are the operator's own, so they do not fit the `ORION_SECTION__KEY` scheme. `${VAR}` in the value covers reading from the environment, and it runs on both.
+Neither section has an environment-variable override: the names are the operator's own, so they do not fit the `ORION_SECTION__KEY` scheme. `${VAR}` in the value covers reading from the environment, and it runs on both. `${VAR:?message}` makes an input mandatory and says why when it is missing.
 
 ```toml
 [vars]

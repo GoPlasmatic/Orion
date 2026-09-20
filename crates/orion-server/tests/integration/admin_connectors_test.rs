@@ -1873,3 +1873,67 @@ async fn test_storage_presign_workflow_validation_at_create() {
         );
     }
 }
+
+/// #338: the issue's own connector — `url` and `allow_private_urls` both
+/// references — is accepted by create and `validate`, and a reference sitting
+/// inside a longer string draws the warning that it will be sent literally.
+#[tokio::test]
+async fn an_http_connector_may_reference_its_url_and_its_private_opt_out() {
+    let app = common::test_app().await;
+    let peer = json!({
+        "name": "peer-api",
+        "connector_type": "http",
+        "config": {
+            "url": "env://PEER_API_URL",
+            "allow_private_urls": "env://PEER_API_PRIVATE",
+            "timeout_ms": 10000,
+        },
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/validate",
+            Some(peer.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], json!(true), "{body}");
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/connectors", Some(peer)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/validate",
+            Some(json!({
+                "name": "bearer-in-header",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://api.example.com",
+                    "headers": {"Authorization": "Bearer env://API_KEY"},
+                },
+            })),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["valid"], json!(true), "{body}");
+    let warning = &body["data"]["warnings"][0];
+    assert_eq!(warning["field"], "config.headers.Authorization", "{body}");
+    assert!(
+        warning["message"]
+            .as_str()
+            .unwrap()
+            .contains("sent literally")
+            && warning["message"].as_str().unwrap().contains("\"auth\""),
+        "{body}"
+    );
+}

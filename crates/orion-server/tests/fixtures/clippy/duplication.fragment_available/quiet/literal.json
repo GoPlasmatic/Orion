@@ -1,0 +1,11 @@
+{
+  "workflow_id": "literal",
+  "name": "literal",
+  "tasks": [
+    {
+      "id": "said",
+      "name": "Greet",
+      "function": { "name": "log", "input": { "message": "hello {{who}}" } }
+    }
+  ]
+}

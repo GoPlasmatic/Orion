@@ -7,6 +7,366 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`${VAR:?message}` and nested defaults in the config file** ([#344]). A
+  placeholder may now say why a variable is required — `${DB_URL:?set it to
+  the state database}` stops the boot with `DB_URL is required: set it to the
+  state database (config.toml:12:7)` when the variable is unset *or empty* —
+  and a default or a message may nest another placeholder, `${A:-${B:-c}}`,
+  up to eight levels. Both are evaluated only when used, so `${A:-${B}}`
+  requires `B` only while `A` is unset, and a name read only through a nested
+  default passes the unknown-`ORION_*` guard. Other shell forms (`${VAR:+x}`,
+  `${VAR-x}`) are refused with an error listing the three supported ones,
+  where they used to be reported as an invalid name. `:-` still falls back
+  only when the variable is unset.
+
+- **`migrate --wait <duration>` and `test-connectivity --wait <duration>`**
+  ([#346]). A deploy step no longer needs a shell loop around `migrate`: the
+  flag keeps retrying the state database connection for at most the given
+  time (`60`, `30s`, `5m`), retrying only failures that mean the database is
+  not accepting connections yet — a refused or reset connection, an
+  unresolvable host, a server starting up or out of connections — and
+  stopping at once on a wrong password, an unknown database, a TLS or URL
+  problem. Past the window it exits 1 with `state database not reachable
+  after <n>s` and the last error. `test-connectivity --wait` applies one
+  deadline to the database and Kafka together. A failed migration is never
+  retried, and SQLite ignores the flag.
+
+- **`orion-server plugin` and `orion-server model`: `digest`, `keygen`,
+  `pubkey`, `sign` and `verify`** ([#347]). What `[plugins.trust]` and
+  `[models.trust]` check no longer needs a hand-rolled OpenSSL pipeline — the
+  step such a pipeline gets wrong is *what* is signed (the ASCII digest string
+  `sha256:<64 hex>`, not the bytes) and `base64` wrapping the 88-character
+  signature onto two lines. The verbs take a manifest, a directory of
+  manifests or a bare file, sign the component a `plugin.toml` names (or the
+  artifact a model manifest names) and write `<artifact>.sig` beside it or
+  into `-o <dir>` (`--by-id` names files `<id>.sig`). `keygen` writes an
+  unencrypted PKCS#8 PEM, owner-only, in the form `openssl genpkey
+  -algorithm ed25519` writes, so keys and signatures interoperate with the
+  OpenSSL recipe both ways; `sign` also reads the key from
+  `ORION_SIGNING_KEY`. `verify` checks against `--public-key` or the `-c`
+  config's own trust keys, and having no key is an error rather than a false
+  `ok`.
+
+- **`compile --version content`** ([#339]). A package deployed from every
+  image build needs a version that moves exactly when its content does:
+  `content` derives it from the artifact's own `content_hash` —
+  `content-<12 hex>`, or `<prefix>-<12 hex>` with `--version-prefix`. A
+  rebuild of unchanged definitions compiles to the version already applied,
+  so the apply is the no-op, and a revert compiles to the earlier version and
+  rolls back to it. `package export` takes the same two flags, and `package
+  lint` refuses a `content-<12 hex>` version that names other content. What
+  the hash does not cover — activation, `rollout_percentage`, `requires`,
+  signatures — does not move the version; `compile` notes it when a workflow
+  carries a rollout.
+
+- **An `http` connector's `url`, and any connector boolean, may be a
+  reference** ([#338]). Every other endpoint already deferred an `env://`
+  reference to load; `http.url` (and an OAuth2 `token_url`) was parsed raw
+  and refused with `must use http or https scheme, got 'env'`. It now follows
+  the same rule. A reference also stands in a field that is not a string —
+  `"allow_private_urls": "env://PEER_API_PRIVATE"` — through the placeholder
+  parse channel configs already use for `var://`: authoring accepts it, and
+  at load a reference that resolved to `true` or `false` becomes the boolean.
+  Anything else there is a `deserialize` load issue naming the field, never
+  the resolved value. `var://` works in the same fields, typed.
+- **`env.embedded_reference`**: `lint`, `package lint` and `POST
+  /connectors/validate` warn on a connector string with a reference *inside*
+  it — `"Bearer env://API_KEY"` — which is not a reference and is sent
+  literally; the remedy names the `auth` block.
+
+- **`package plan|apply --signatures <dir>` and `compile --signatures
+  <dir>`** ([#340]). A signature belongs to the deployment that holds the
+  key, not to the package, so packages patched `signature` into a compiled
+  artifact with inline scripts before `apply`. The flag reads detached
+  `.sig` files — `<id>.sig` or `<artifact file>.sig`, as `orion-server plugin
+  sign -o <dir>` writes them — and attaches them in memory: the artifact, its
+  version and its hash do not move. Each plugin and model is reported as
+  `signed`, `carried` or `unsigned` before anything is sent; a file that
+  matches nothing, one claimed twice and one that is not a signature are all
+  errors. A re-apply of the applied version with a rotated key's signatures
+  re-signs just those members and reloads, leaving the receipt alone.
+  `package lint` shape-checks a signature an artifact carries.
+
+- **`POST /engine/reload` and `GET /engine/status` report what the
+  generation could not load** ([#342]). Both answers gain `generation` (the
+  id published) and `load_issues` — the quarantined channels (now with their
+  `channel_id` and `workflow_id`), plugins, models and connectors, from the
+  same collector `/health` uses. The reload describes the generation *it*
+  published; status adds `capabilities` (`cron`, `plugins`, `models`).
+  `orion-cli engine status|reload` lists them.
+
+- **A definition set can declare the Orion it needs** ([#343]). A shared
+  document `{"package": {"name": "orders", "requires": {"orion": ">=1.8.2,
+  <2"}}}` — one per set, closed shape, not a `$from` namespace, told apart
+  from a promotion artifact's `package` block by its `content_hash`. `lint`,
+  `clippy`, `compile`, `fmt`, and `dry-run`/`test` with `--definitions` check
+  the running binary against the range first and stop with one line naming
+  both, instead of reporting the schema errors of features the binary
+  predates; `fmt` then formats nothing. `compile` carries the range into the
+  artifact's `requires.orion` (not content — the hash does not move) and
+  takes `package.name` when `--name` is absent; `compile` and `package
+  export` gain `--requires-orion`. `package lint` checks the binary, and
+  `plan`/`apply` read the target's version from `GET /engine/status` and
+  refuse one outside the range with zero writes. A pre-release binary is
+  judged as its release. `package` is a newly reserved shared-document key.
+
+- **Statements in `.sql` files: `{"$sql": "sql/settle.sql"}`** ([#332]). A
+  `db_read`/`db_write` statement no longer has to be one unreviewable JSON
+  string. A third authoring pass, `shared.sql`, inlines the file at compile
+  time in a normal form — comments and whitespace collapse to single
+  spaces, strings, quoted identifiers, dollar bodies and optimizer hints stay
+  byte-exact, one trailing `;` is dropped — so a comment edit moves neither
+  the statement nor the content hash. The path is relative to the file the
+  reference sits in (re-anchored when it comes through a fragment or a
+  shared constant), must end in `.sql` and may not leave the set; files are
+  capped at 1 MiB. The lexer refuses the two constructs PostgreSQL and MySQL
+  read differently — a backslash before a closing quote, and `--` glued to
+  the next character — naming the line in the `.sql` file. Single-file
+  `lint`, `dry-run` and `test` resolve `$sql` without `--definitions`, a set
+  with no shared document now runs the pipeline, and findings about a
+  statement say `(in sql/settle.sql)`. The admin API refuses an uncompiled
+  `$sql` with `UNCOMPILED_SOURCE`; see the reserved-key note below.
+- **`sql.read_only`**: `lint` refuses a literal `db_read` statement that is
+  not a read — which the handler refuses on every execution — offline.
+- **`orion::sql_lex`**, the one SQL lexer. `db_read`'s run-time read-only
+  check and `db_write`'s leading keyword now use it; it also reads `a$b$` as
+  one identifier and doubled backticks as MySQL does, where the old scanner
+  opened a dollar quote and ended the identifier early.
+
+- **Three `clippy` rules** ([#334]). `correctness.mapping_always_null`
+  (deny) fires on a `map` mapping whose `logic` folds to `null`, which `map`
+  skips, so the target is never written. `correctness.sql_bind_count` (deny)
+  counts a literal `db_read`/`db_write` statement's `$n` placeholders against
+  its literal `params`, where the statement is PostgreSQL — its syntax says
+  so, or the connector's literal connection string does — since PostgreSQL
+  refuses a mismatch on every execution. `correctness.model_timeout_clamped`
+  (warn, needs `-c`) fires on a literal `model_infer` `timeout_ms` above the
+  ceiling `[models]` gives that model, which the handler clamps silently.
+
+- **`package apply --prune`** ([#341]). `apply` only ever added and updated,
+  so a channel dropped from a package kept its route or schedule until a
+  sweep script removed it. Each receipt now records its version's
+  **inventory** — the ids it carried, per kind — and `--prune` removes what
+  the package's current version carried and the artifact does not:
+  archived by default (a connector is disabled), deleted with
+  `--prune=delete`. Removed channels go before activation, so a route can
+  move to a new channel id in one apply; workflows, plugins, models and
+  connectors go after it; all of it inside the apply's one reload. What
+  another package's current version carries is kept, a workflow or
+  connector something outside the prune still uses is refused before
+  anything is written, and a receipt from before inventories prunes
+  nothing and says so. `plan --prune` lists every decision; `plan` without
+  it notes what `--prune` would remove. The inventory is one nullable
+  column (migration `package_receipt_inventory`), expand-only.
+- **`GET /packages?current=true`** lists each package's current receipt
+  with its `inventory`, and a receipt PUT may carry one.
+- **`DELETE ?reload=defer`** on channels, workflows, plugins and models,
+  like the status endpoints: the row goes at once and the engine keeps
+  serving it until `POST /engine/reload`.
+
+- **`orion-server sql check <dir>`** ([#335]). A schema change that broke
+  a `db_read`/`db_write` statement, or a connector role without the grant a
+  statement needs, passed every gate and failed on the next request. `sql
+  check` prepares every statement of a set — task groups included — on the
+  database it runs on, as the role its connector connects as, resolving the
+  connector exactly as the server does. PostgreSQL 16+ also proves the
+  role's table and column grants with `EXPLAIN (GENERIC_PLAN)`; earlier
+  PostgreSQL, MySQL and SQLite prove the schema, and the report says which.
+  Nothing is executed: PostgreSQL sessions are `READ ONLY`, each statement
+  in its own savepoint and all of it rolled back, and a SQLite file is
+  opened read-only. Every failure is reported, a `params` count mismatch is
+  an error (a warning on SQLite), and a type PostgreSQL cannot infer is a
+  warning naming the run-time fallback. `--connector NAME=URL` overrides a
+  connection string, `--skip-connector` lists a connector's statements as
+  unchecked, and `--schema DIR --database URL [--role NAME=ROLE]` builds a
+  scratch schema from migrations in one transaction that is always rolled
+  back — refusing, before anything is sent, a migration that would leave
+  it. `connector::resolve_connector_config` is the registry's resolution
+  sequence, now callable on its own.
+
+- **`clippy --fix`** ([#337]). `perf.redundant_step_condition` proved a
+  run of steps repeats one condition none of them can change, and then only
+  suggested the task group. `--fix` now writes it: the run becomes
+  `{"id": "when_<first>", "condition": …, "tasks": [ … ]}` in the source
+  file, each member keeping everything but its condition (its own
+  `terminal` included), the condition moved as written (a `$from` stays a
+  reference), and the file formatted. Every edit is proven before it is
+  written — the edited file is recompiled and must equal the folded
+  compiled workflow, and the set is linted with it in place — and a run a
+  fragment or an `$each` produced is reported, not edited. The exit code is
+  the analysis after fixing, so a refused fix still fails
+  `--deny-warnings`. `--fix --check` prints the diffs and writes nothing.
+  `clippy --format json` gains `"fixable"`.
+
+- **Value fragments, `$each`, `{{name}}`, and composition** ([#333]). A
+  fragment may hold one `value` instead of `tasks`, spliced anywhere a value
+  goes by `{"$use": "name", "with": {…}}` under `$from`'s rule (siblings
+  win). `{"$each": {"p": [..]}, "do": <element>}` repeats one element of any
+  array — a step, a mapping, an operator argument — once per value; the
+  list may be a `$from` constant or a `$param`, and nesting gives a product
+  in written order. Inside a fragment or an `$each`, `"{{name}}"` in a
+  string interpolates a bound scalar, while `$param` keeps inserting the
+  value typed. Fragments may now use fragments (ids carry both call sites,
+  `outer.inner.id`) and constants may reference constants and value
+  fragments, grounded once when the set loads so one `compile` resolves
+  them. Cycles are named once; nesting is capped at 16 and one document at
+  4096 `$each` copies. All of it is compiled away by the `shared.fragments`
+  pass; the admin API refuses an uncompiled `$use` or `$each` with
+  `UNCOMPILED_SOURCE`. New checks: `shared.fragment_kind`,
+  `shared.param_unbound` (a warning), `shared.interpolate_non_scalar`,
+  `shared.each_shape`, `shared.each_list`, `shared.each_position`,
+  `shared.each_limit`, `shared.binding_shadowed`, `shared.cycle`,
+  `shared.depth`. A lint finding inside an expansion names its trail, such
+  as `(fragment 'guard' › $each p = 3)`, and is located at the source line
+  even after an expansion shifted the steps. Example:
+  `examples/packages/unrolled-seats`.
+
+- **`[packages] apply`: a node applies its own packages at startup**
+  ([#345]). An image that carries its definitions no longer needs an
+  entrypoint that forks the server, polls `/readyz`, applies over HTTP and
+  kills the process on failure. The node applies each listed artifact once
+  its first generation is published — through the same sequence as
+  `package apply`, in-process through its own admin routes, with receipts
+  and audit rows naming `system:boot-packages` — and `/readyz` answers
+  `503` (`components.packages: "applying"`) until every one is applied and
+  serving. Any failure — a file that does not exist, hash or lint, a
+  refused import, a member the reload quarantines, or
+  `apply_timeout_secs` (default 1800) — stops the server and exits
+  non-zero. A restart with the same artifact writes nothing; a version a
+  later one superseded is left as it is rather than rolled back; in a
+  cluster one node per package applies while the others wait on its
+  receipt. `signatures_dir` attaches `.sig` files as `--signatures` does.
+  `validate-config` checks every listed file; `/health` lists each package
+  with admin detail.
+
+- **Bounded concurrency for cron channels: `concurrency.slots`** ([#336]).
+  `"concurrency": {"policy": "forbid", "key": "worker", "slots": 4}` admits
+  up to four runs of the key at once, where `forbid` used to mean exactly
+  one — so a queue-draining worker no longer needs N cloned channels that
+  differ only in their key. The default, `1`, is today's `forbid`. A run
+  takes the lowest free slot (`0..slots`), holds it for the attempt and
+  reads it as `metadata.trigger.singleton_slot`; the occurrence records it
+  as `singleton_slot`, and a skip says `all 4 slots of singleton key
+  'worker' were held …`. Channels naming one key share its slots, each run
+  admitted only below its own channel's bound; `lint` warns
+  (`cron.slots_mismatch`) when they disagree. `slots` is 1–64 and refused
+  without `forbid`. `GET /cron/status` gains `concurrency_policy`,
+  `singleton_key`, `slots` and `slots_held`, and `orion-cli cron status` a
+  `Slots` column. Slot 0 is the existing `cron_singletons` row, addressed
+  as before, so a one-slot key behaves identically in any mix of versions;
+  slots 1 and up are a new table (migration `cron_singleton_slots`,
+  expand-only). **Upgrade every node before activating a channel that sets
+  `slots`**: an older node refuses the field and quarantines the channel.
+  To roll back, remove `slots` first.
+
+### Changed
+
+- **A fragment may include a fragment** ([#333]). `shared.fragment_nested`
+  is retired: a `use` inside a fragment, at any depth, now expands. Inside a
+  task fragment, text `{{x}}` where `x` is one of its parameters is now
+  interpolated, which can move a recompiled package's content hash. A
+  string-valued `$use` and an object-valued `$each` are newly reserved at
+  the admin API.
+
+- **`clippy` may newly fail a set that passed.** The two deny rules above
+  exit non-zero where they fire; each fires only on a definition that fails
+  or does nothing on every execution.
+
+- **`$sql` is a reserved key.** An object with a string `$sql` anywhere in a
+  workflow's tasks, condition or loop, or a connector's or channel's config,
+  is refused at create and update with `UNCOMPILED_SOURCE`, as `$from` is.
+  Stored rows keep running; `preflight` reports a stored workflow holding
+  one as `source.sql_key`, since its next update would be refused.
+
+- **`package apply` fails when the reload quarantines what it carries**
+  ([#342]). A reload succeeds when an entity does not load, so `apply` used
+  to print `applied` — and flip the receipt — while the node served the
+  package without a channel, a plugin or a connector. Apply now reads the
+  reloaded generation's load issues and fails naming each member it
+  quarantined (`connectors/crm: secret_resolution: …`), before the receipt
+  flip, so the receipt stays `staged` and a re-run after the fix completes
+  it. Re-applying the version a node already runs reads `GET
+  /engine/status` and fails the same way rather than reporting "nothing to
+  do". `plan` warns when the target has cron, plugins or models off for
+  something the package needs. An older server that cannot say produces a
+  warning, not a failure.
+
+- **An import item whose signature differs is no longer `unchanged`**
+  ([#340]). `POST /plugins/import` and `POST /models/import` under
+  `on_conflict=new_version` compared content only, and the signature is not
+  content, so a signature attached at deploy time never reached a row stored
+  unsigned or signed by another key. A differing signature now writes —
+  `updated_draft`, or `new_version` over an active row. An item with no
+  signature, or the same one, is still `unchanged` and keeps what is stored.
+
+- **A connector's endpoint is scheme-checked again after its references
+  resolve** ([#338]). Nothing judged a resolved endpoint, so an `env://` URL
+  that resolved to `ftp://…` reached the client unjudged and failed late. It
+  is now an `endpoint` load issue naming the scheme (never the value, which
+  may carry userinfo). Any connector this refuses was already
+  non-functional.
+
+- **`compile` and `package export` refuse a package name or version the
+  target would refuse.** A version outside letters, digits, `.`, `_` and `-`,
+  or longer than 64 characters, was only caught by the receipt route with a
+  `400` at `apply` phase 1; it is now refused before an artifact is written.
+  `content` is a reserved `--version` value.
+
+- **`migrate` and `test-connectivity` say what they are waiting for.**
+  Without `--wait` they already retried an unreachable database for
+  `storage.connect_retry_secs` (60 s), silently, because the CLI never
+  initialises tracing. Each retry now prints `waiting for the state database
+  (<reason>) … <n>s` on stderr; the URL is never printed. The window and the
+  retry-everything policy are unchanged.
+
+- **Placeholders in config-file comments are no longer substituted**
+  ([#344]). Substitution ran over the raw text, so a comment mentioning
+  `${R2_ENDPOINT}` made that variable required at boot, and the shipped
+  `config.toml.example` wrote its comments with `$${…}` to survive it. The
+  file's `#` comments are now skipped — a `#` inside a quoted value or a
+  placeholder's default is still text — and `$$` in a comment stays as
+  written. Every substitution error now names the file, line and column
+  instead of a byte offset. Connector `config_json` and connection strings
+  keep treating `#` as data.
+
+### Fixed
+
+- **`package apply` of a superseded version is a rollback again.** Re-applying
+  an artifact whose version is applied on the target with the same content
+  printed `already applied with identical content — nothing to do` even when a
+  later version had been applied since, so the documented rollback — "re-apply
+  the previous artifact" — left the newer content serving. `apply` now tells
+  the package's `current` version apart from a superseded one: the current
+  version is still the no-op, and a superseded one is staged, activated and
+  reloaded like any apply, after which its receipt is `current` again. `plan`
+  names the version that superseded it.
+
+- **`perf.redundant_step_condition` and `perf.group_condition_repeated` no
+  longer fire on a condition that reads `metadata.progress`.** The engine
+  overwrites that path after every task, so a run of steps conditioned on
+  `metadata.progress.status_code` is not a run whose condition none of them
+  can change — wrapping it in a task group would change which steps run.
+  Both rules are now silent there.
+
+[#332]: https://github.com/GoPlasmatic/Orion/issues/332
+[#333]: https://github.com/GoPlasmatic/Orion/issues/333
+[#334]: https://github.com/GoPlasmatic/Orion/issues/334
+[#335]: https://github.com/GoPlasmatic/Orion/issues/335
+[#336]: https://github.com/GoPlasmatic/Orion/issues/336
+[#337]: https://github.com/GoPlasmatic/Orion/issues/337
+[#338]: https://github.com/GoPlasmatic/Orion/issues/338
+[#339]: https://github.com/GoPlasmatic/Orion/issues/339
+[#341]: https://github.com/GoPlasmatic/Orion/issues/341
+[#340]: https://github.com/GoPlasmatic/Orion/issues/340
+[#342]: https://github.com/GoPlasmatic/Orion/issues/342
+[#343]: https://github.com/GoPlasmatic/Orion/issues/343
+[#344]: https://github.com/GoPlasmatic/Orion/issues/344
+[#345]: https://github.com/GoPlasmatic/Orion/issues/345
+[#346]: https://github.com/GoPlasmatic/Orion/issues/346
+[#347]: https://github.com/GoPlasmatic/Orion/issues/347
+
 ## [1.8.2] - 2026-09-16
 
 ### Changed

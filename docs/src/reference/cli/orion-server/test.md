@@ -1,6 +1,6 @@
 <!-- description: orion-server test runs a directory of *.case.json workflow regression cases offline, with shared definitions, plugin components and model artifacts. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server test`
 
@@ -13,6 +13,8 @@ orion-server test <path>
 ```
 
 ## Description
+
+With `--definitions`, a set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before any case runs. One line names the range and this version.
 
 A case expects output values (`expect`), task-error codes (`expect_errors`), connector calls (`expect_calls`) and executed task ids (`expect_tasks`). See [Test a workflow offline](../../../guides/author/testing.md) for the case format.
 

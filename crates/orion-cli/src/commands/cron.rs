@@ -72,6 +72,8 @@ struct ScheduleRow {
     last: String,
     #[tabled(rename = "Pending")]
     pending: String,
+    #[tabled(rename = "Slots")]
+    slots: String,
 }
 
 #[derive(Tabled)]
@@ -92,6 +94,15 @@ struct OccurrenceRow {
 
 fn text(value: &Value, key: &str) -> String {
     value[key].as_str().unwrap_or("-").to_string()
+}
+
+/// `held/slots` for a `forbid` channel, `-` for one that takes no lock (or a
+/// server too old to report it).
+fn slots_cell(schedule: &Value) -> String {
+    match (schedule["slots_held"].as_u64(), schedule["slots"].as_u64()) {
+        (Some(held), Some(slots)) => format!("{held}/{slots}"),
+        _ => "-".to_string(),
+    }
 }
 
 impl CronCmd {
@@ -153,6 +164,7 @@ async fn status(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Res
             next_fire: text(r, "next_fire_at"),
             last: text(r, "last_status"),
             pending: r["pending"].as_i64().unwrap_or(0).to_string(),
+            slots: slots_cell(r),
         })
         .collect();
     output::print_table(rows);
@@ -226,7 +238,10 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         occurrence["attempt"].as_i64().unwrap_or(0)
     );
     if let Some(key) = occurrence["singleton_key"].as_str() {
-        println!("  Singleton:     {key}");
+        match occurrence["singleton_slot"].as_i64() {
+            Some(slot) => println!("  Singleton:     {key} (slot {slot})"),
+            None => println!("  Singleton:     {key}"),
+        }
     }
     if let Some(trace) = occurrence["trace_id"].as_str() {
         println!("  Trace:         {trace}");
@@ -256,4 +271,24 @@ async fn retry(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &st
         text(&resp["data"], "scheduled_for")
     );
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_slots_cell_reads_held_over_bound() {
+        assert_eq!(
+            slots_cell(&json!({"concurrency_policy": "forbid", "slots": 4, "slots_held": 3})),
+            "3/4"
+        );
+        assert_eq!(slots_cell(&json!({"concurrency_policy": "allow"})), "-");
+        assert_eq!(
+            slots_cell(&json!({})),
+            "-",
+            "an older server reports nothing"
+        );
+    }
 }

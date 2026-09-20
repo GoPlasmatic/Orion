@@ -308,194 +308,34 @@ pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
 // property an operator can rely on rather than a convention authors are asked
 // to keep.
 
-/// The statement kinds that return rows without modifying them.
-///
-/// Deliberately short. `EXPLAIN` is **not** here: `EXPLAIN ANALYZE DELETE …`
-/// executes the delete on PostgreSQL. Neither is `PRAGMA`, which writes on
-/// SQLite (`PRAGMA journal_mode = WAL`). A statement that needs to write
-/// belongs in `db_write`, which has its own `raw_write` gate.
-const READ_STATEMENTS: [&str; 4] = ["SELECT", "WITH", "VALUES", "TABLE"];
-
-/// The keywords that make a CTE data-modifying.
-const MODIFYING_STATEMENTS: [&str; 4] = ["INSERT", "UPDATE", "DELETE", "MERGE"];
-
-/// The only two token shapes this check needs: a bare word, and an opening
-/// parenthesis (which is what separates a data-modifying CTE from a column
-/// alias — `AS (INSERT …` versus `AS total`).
-#[derive(Debug, PartialEq, Eq)]
-enum Token {
-    Word(String),
-    Open,
-}
-
-/// Split a statement into significant tokens, with comments and every quoted
-/// form removed.
-///
-/// Stripping quoted text first is what keeps the check from reading data as
-/// syntax: `WHERE note = 'delete me'` contains the word `delete` and is a
-/// perfectly ordinary read. Handled: `--` line comments, `/* */` block comments
-/// (nested, as PostgreSQL allows), `'…'` strings with `''` escapes, `"…"` and
-/// `` `…` `` quoted identifiers, and PostgreSQL `$tag$…$tag$` dollar quoting.
-/// A `$1` placeholder is not a dollar quote — a tag may not start with a digit —
-/// so bind parameters survive untouched.
-fn scan(sql: &str) -> Vec<Token> {
-    let c: Vec<char> = sql.chars().collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < c.len() {
-        match c[i] {
-            '-' if c.get(i + 1) == Some(&'-') => {
-                while i < c.len() && c[i] != '\n' {
-                    i += 1;
-                }
-            }
-            '/' if c.get(i + 1) == Some(&'*') => {
-                let mut depth = 1usize;
-                i += 2;
-                while i < c.len() && depth > 0 {
-                    if c[i] == '/' && c.get(i + 1) == Some(&'*') {
-                        depth += 1;
-                        i += 2;
-                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-            }
-            '\'' => i = skip_quoted(&c, i, '\'', true),
-            '"' => i = skip_quoted(&c, i, '"', true),
-            '`' => i = skip_quoted(&c, i, '`', false),
-            '$' => match dollar_tag(&c, i) {
-                Some(tag) => i = skip_dollar_quoted(&c, i, &tag),
-                None => i += 1,
-            },
-            '(' => {
-                out.push(Token::Open);
-                i += 1;
-            }
-            ch if ch.is_alphanumeric() || ch == '_' => {
-                let start = i;
-                while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_') {
-                    i += 1;
-                }
-                out.push(Token::Word(
-                    c[start..i].iter().collect::<String>().to_uppercase(),
-                ));
-            }
-            _ => i += 1,
-        }
-    }
-    out
-}
-
-/// Advance past a `quote`-delimited run starting at `i`. When `doubled` is set,
-/// two quote characters in a row are an escaped quote rather than the end.
-fn skip_quoted(c: &[char], mut i: usize, quote: char, doubled: bool) -> usize {
-    i += 1;
-    while i < c.len() {
-        if c[i] == quote {
-            if doubled && c.get(i + 1) == Some(&quote) {
-                i += 2;
-            } else {
-                return i + 1;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    i
-}
-
-/// The tag of a PostgreSQL dollar quote opening at `i` (`""` for `$$`), or
-/// `None` when this `$` starts something else — a `$1` bind placeholder, say.
-fn dollar_tag(c: &[char], i: usize) -> Option<String> {
-    let mut j = i + 1;
-    while j < c.len() && (c[j].is_alphabetic() || c[j] == '_' || (j > i + 1 && c[j].is_numeric())) {
-        j += 1;
-    }
-    (c.get(j) == Some(&'$')).then(|| c[i + 1..j].iter().collect())
-}
-
-/// Advance past a dollar-quoted block to just after its closing `$tag$`.
-fn skip_dollar_quoted(c: &[char], i: usize, tag: &str) -> usize {
-    let close: Vec<char> = format!("${tag}$").chars().collect();
-    let mut j = i + close.len();
-    while j + close.len() <= c.len() {
-        if c[j..j + close.len()] == close[..] {
-            return j + close.len();
-        }
-        j += 1;
-    }
-    c.len()
-}
-
-/// The statement's leading keyword, upper-cased, with comments and quoted text
-/// ignored — `None` for a statement with no keyword at all.
-///
-/// Shared with `db_write`, which needs to know whether the statement is an
-/// `INSERT` before it reports a `last_insert_id`.
-pub(super) fn leading_keyword(sql: &str) -> Option<String> {
-    scan(sql).into_iter().find_map(|t| match t {
-        // Leading `(` is ordinary — `(SELECT 1) UNION (SELECT 2)`.
-        Token::Word(w) => Some(w),
-        Token::Open => None,
-    })
-}
-
-/// Refuse a `db_read` statement that is not a read.
+/// Refuse a `db_read` statement that is not a read, in the words the
+/// handler has always used. The judgement is [`crate::sql_lex`]'s — the one
+/// lexer every surface reads SQL with — read lossily, as the run-time check
+/// always has been.
 ///
 /// # Errors
 ///
 /// [`DataflowError::Validation`] when the statement does not open with one of
-/// [`READ_STATEMENTS`], or when it carries a data-modifying CTE.
+/// [`crate::sql_lex::READ_STATEMENTS`], or when it carries a data-modifying
+/// CTE.
 fn require_read_only(query: &str, handler_name: &str) -> Result<(), HandlerError> {
-    let tokens = scan(query);
-    let Some(first) = leading_keyword(query) else {
-        return Err(DataflowError::Validation(format!(
-            "{handler_name} 'query' has no statement to run"
-        ))
-        .into());
-    };
-    if !READ_STATEMENTS.contains(&first.as_str()) {
-        return Err(DataflowError::Validation(format!(
+    use crate::sql_lex::{READ_STATEMENTS, ReadOnlyViolation};
+    let message = match crate::sql_lex::read_only_violation(query) {
+        None => return Ok(()),
+        Some(ReadOnlyViolation::Empty) => format!("{handler_name} 'query' has no statement to run"),
+        Some(ReadOnlyViolation::NotARead { keyword }) => format!(
             "{handler_name} runs read statements only, but this one starts with \
-             '{first}' — use db_write for INSERT/UPDATE/DELETE (it has its own \
+             '{keyword}' — use db_write for INSERT/UPDATE/DELETE (it has its own \
              'raw_write' connector gate). Reads start with {}",
             READ_STATEMENTS.join(", ")
-        ))
-        .into());
-    }
-    // A data-modifying CTE — `WITH moved AS (DELETE … RETURNING …) SELECT …` —
-    // opens with `WITH` and writes. It is the one way a statement that passes
-    // the check above can still mutate, and it is recognisable by shape: `AS`,
-    // an optional `[NOT] MATERIALIZED`, `(`, then the modifying keyword. A
-    // column alias (`AS total`) and an ordinary CTE (`AS (SELECT …)`) both fail
-    // to match, so neither is caught.
-    for (n, token) in tokens.iter().enumerate() {
-        if !matches!(token, Token::Word(w) if w == "AS") {
-            continue;
-        }
-        let mut j = n + 1;
-        while matches!(tokens.get(j), Some(Token::Word(w)) if w == "NOT" || w == "MATERIALIZED") {
-            j += 1;
-        }
-        if tokens.get(j) != Some(&Token::Open) {
-            continue;
-        }
-        if let Some(Token::Word(w)) = tokens.get(j + 1)
-            && MODIFYING_STATEMENTS.contains(&w.as_str())
-        {
-            return Err(DataflowError::Validation(format!(
-                "{handler_name} runs read statements only, but this one carries a \
-                 data-modifying '{w}' common table expression — use db_write \
-                 (it has its own 'raw_write' connector gate)"
-            ))
-            .into());
-        }
-    }
-    Ok(())
+        ),
+        Some(ReadOnlyViolation::ModifyingCte { keyword }) => format!(
+            "{handler_name} runs read statements only, but this one carries a \
+             data-modifying '{keyword}' common table expression — use db_write \
+             (it has its own 'raw_write' connector gate)"
+        ),
+    };
+    Err(DataflowError::Validation(message).into())
 }
 
 #[cfg(test)]

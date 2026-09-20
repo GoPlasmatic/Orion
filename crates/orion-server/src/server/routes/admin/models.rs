@@ -309,10 +309,11 @@ pub(crate) async fn update_model(
     delete,
     path = "/api/v1/admin/models/{id}",
     tag = "Models",
-    params(("id" = String, Path, description = "Model ID")),
+    params(("id" = String, Path, description = "Model ID"), super::ReloadQuery),
     responses(
         (status = 204, description = "Model deleted (all versions). The cached artifact, if any, \
-            stays in this node's cache until swept"),
+            stays in this node's cache until swept. With `?reload=defer` the engine keeps \
+            serving it until `POST /engine/reload`"),
         (status = 404, description = "Model not found"),
         (status = 409, description = "An active workflow still names it"),
     )
@@ -320,6 +321,7 @@ pub(crate) async fn update_model(
 #[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_model(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -330,12 +332,8 @@ pub(crate) async fn delete_model(
     state.repos.models.delete_tx(write.tx(), &id).await?;
     write.commit().await?;
 
-    super::reload_after_commit_scoped(
-        &state,
-        super::ReloadMode::Now,
-        crate::cluster::EpochScope::Models,
-    )
-    .await?;
+    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Models)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -649,7 +647,9 @@ pub(crate) async fn model_dependencies(
             never bytes — what an export produces. Every item written is queued for admission \
             on this node. `?on_conflict=new_version` upserts: an existing draft is replaced, an \
             active model whose content differs gets a new draft version, identical content is \
-            reported `unchanged`.", body = DataEnvelope<orion_api::ImportResult>),
+            reported `unchanged`. A `signature` is not content, but an item whose signature \
+            differs from the stored one is not `unchanged`: it is written, so a signature \
+            attached at deploy time reaches the row.", body = DataEnvelope<orion_api::ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -746,12 +746,20 @@ impl super::VersionedUpsert for ModelUpsert<'_> {
             req.signature.as_deref(),
             &req.tags,
         )?;
-        Ok(crate::storage::content::model_content(row)?
-            == crate::storage::content::model_request_content(
-                &prepared.manifest_json,
-                &serde_json::to_value(&prepared.artifact)?,
-                &prepared.tags,
-            ))
+        // A different signature is not `unchanged` — see the plugin import:
+        // the one attached at deploy time must reach the row. None keeps the
+        // stored one.
+        let same_signature = prepared
+            .signature
+            .as_deref()
+            .is_none_or(|s| row.signature.as_deref() == Some(s));
+        Ok(same_signature
+            && crate::storage::content::model_content(row)?
+                == crate::storage::content::model_request_content(
+                    &prepared.manifest_json,
+                    &serde_json::to_value(&prepared.artifact)?,
+                    &prepared.tags,
+                ))
     }
 
     async fn create(&self, req: &Self::Request) -> Result<(), OrionError> {

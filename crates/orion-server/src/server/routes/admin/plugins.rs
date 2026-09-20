@@ -300,9 +300,11 @@ pub(crate) async fn update_plugin(
     delete,
     path = "/api/v1/admin/plugins/{id}",
     tag = "Plugins",
-    params(("id" = String, Path, description = "Plugin ID")),
+    params(("id" = String, Path, description = "Plugin ID"), super::ReloadQuery),
     responses(
-        (status = 204, description = "Plugin deleted (all versions), and any component nothing names any more"),
+        (status = 204, description = "Plugin deleted (all versions), and any component nothing \
+            names any more. With `?reload=defer` the engine keeps serving it until \
+            `POST /engine/reload`"),
         (status = 404, description = "Plugin not found"),
         (status = 409, description = "An active workflow still calls one of its functions"),
     )
@@ -310,6 +312,7 @@ pub(crate) async fn update_plugin(
 #[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_plugin(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -326,12 +329,8 @@ pub(crate) async fn delete_plugin(
     state.repos.plugins.delete_tx(write.tx(), &id).await?;
     write.commit().await?;
 
-    super::reload_after_commit_scoped(
-        &state,
-        super::ReloadMode::Now,
-        crate::cluster::EpochScope::Plugins,
-    )
-    .await?;
+    super::reload_after_commit_scoped(&state, query.reload, crate::cluster::EpochScope::Plugins)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -586,7 +585,9 @@ pub(crate) async fn plugin_dependencies(
             name a digest this instance already holds — what an export produces with and without \
             `?include_artifacts=true`. `?on_conflict=new_version` upserts: an existing draft is \
             replaced, an active plugin whose content differs gets a new draft version, identical \
-            content is reported `unchanged`.", body = DataEnvelope<orion_api::ImportResult>),
+            content is reported `unchanged`. A `signature` is not content, but an item whose \
+            signature differs from the stored one is not `unchanged`: it is written, so a \
+            signature attached at deploy time reaches the row.", body = DataEnvelope<orion_api::ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -695,12 +696,23 @@ impl super::VersionedUpsert for PluginUpsert<'_> {
             req.signature.as_deref(),
             &req.tags,
         )?;
-        Ok(crate::storage::content::plugin_content(row)?
-            == crate::storage::content::plugin_request_content(
-                &prepared.manifest_json,
-                &prepared.digest,
-                &prepared.tags,
-            ))
+        // The signature is not content, but an item that carries a different
+        // one is not unchanged either: `unchanged` writes nothing, so a
+        // signature attached at deploy time (`package apply --signatures`)
+        // would never reach a row stored unsigned or signed by another key.
+        // An item carrying none keeps the stored one, as `PUT` does; Ed25519
+        // is deterministic, so re-signing with the same key still matches.
+        let same_signature = prepared
+            .signature
+            .as_deref()
+            .is_none_or(|s| row.signature.as_deref() == Some(s));
+        Ok(same_signature
+            && crate::storage::content::plugin_content(row)?
+                == crate::storage::content::plugin_request_content(
+                    &prepared.manifest_json,
+                    &prepared.digest,
+                    &prepared.tags,
+                ))
     }
 
     async fn create(&self, req: &Self::Request) -> Result<(), OrionError> {

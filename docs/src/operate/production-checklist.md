@@ -1,6 +1,6 @@
 <!-- description: Everything in Orion is off or permissive by default because the defaults serve a laptop. Work through this before an instance takes traffic you did not send. -->
 <!-- type: guide -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Production checklist
 
@@ -32,7 +32,7 @@ Setting `environment = "production"` makes exactly five things fatal at startup 
 | **Observability** | `metrics.enabled = true` with a dedicated `bind_addr`, `logging.format = "json"`, `tracing.enabled = true` pointed at a collector. | [Monitor and alert](./run/monitoring.md) |
 | **Alerts** | The seven silent signals, not only error rate and latency. | [What to alert on](./run/monitoring.md#what-to-alert-on) |
 | **Kafka** | Managed broker? `[kafka.auth]` with `sasl_ssl`, and `kafka.dlq.enabled = true` so a poison message cannot stall a partition. | [Configuration › Kafka](../reference/configuration/kafka.md) |
-| **Plugins** | Leave `plugins.enabled = false` unless you run one. If you do, name signing keys in `[plugins.trust]` and size the ceilings. The pooling allocator reserves `max_live_instances × max_memory_bytes` of virtual address space at startup, 16 GiB by default; count it where a container limits virtual memory. | [Bound what a plugin can do](./run/security.md#bound-what-a-plugin-can-do) · [Configuration › Plugins](../reference/configuration/plugins.md) |
+| **Plugins** | Leave `plugins.enabled = false` unless you run one. If you do, name signing keys in `[plugins.trust]` (`orion-server plugin keygen` creates one) and size the ceilings. The pooling allocator reserves `max_live_instances × max_memory_bytes` of virtual address space at startup, 16 GiB by default; count it where a container limits virtual memory. | [Bound what a plugin can do](./run/security.md#bound-what-a-plugin-can-do) · [Configuration › Plugins](../reference/configuration/plugins.md) |
 | **Expression budget** | `engine.ops_budget` whenever expressions come from someone other than the operator: tenant rules, competitor-written model adapters. Size it from the heaviest legitimate expression; a condition that crosses it fails closed to `false`, silently. | [Configuration › Engine](../reference/configuration/engine.md) |
 | **Shutdown** | Keep `shutdown_drain_secs + shutdown_force_timeout_secs` under your orchestrator's termination grace period. | [Shut down without dropping requests](./run/failure-handling.md#shut-down-without-dropping-requests) |
 | **Backups** | A backup that leaves the host, and a restore you have run once. | [Back up and restore](./maintain/backup-restore.md) |

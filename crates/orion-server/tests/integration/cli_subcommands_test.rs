@@ -235,6 +235,44 @@ fn validate_config_layering_env_beats_file_beats_default() {
     let _ = std::fs::remove_file(&toml);
 }
 
+/// `${VAR:?message}` stops `validate-config` with one line naming the
+/// variable, the reason and the position — and a placeholder that only a
+/// comment mentions requires nothing.
+#[test]
+fn validate_config_reports_a_required_with_message_failure() {
+    let toml = write_temp_toml(
+        "# the url below reads ${ORION_TEST_ONLY_IN_A_COMMENT}\n\
+         [storage]\n\
+         url = \"${ORION_TEST_STATE_DB:?set it to the state database}\"\n",
+        "required-message",
+    );
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env_remove("ORION_TEST_STATE_DB")
+        .output()
+        .expect("invoke validate-config");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.contains("ORION_TEST_STATE_DB is required: set it to the state database"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(":3:8)"), "{stderr}");
+    assert!(!stderr.contains("ORION_TEST_ONLY_IN_A_COMMENT"), "{stderr}");
+
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env("ORION_TEST_STATE_DB", "sqlite::memory:")
+        .output()
+        .expect("invoke validate-config");
+    assert!(
+        out.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_file(&toml);
+}
+
 /// O15: the default TOML dump is serialized from the config structs, so it
 /// carries the whole surface — including the sections the hand-maintained
 /// summary silently omitted (`[cluster]`, the DLQ knobs, `[trace_storage]`)
@@ -469,6 +507,87 @@ fn migrate_applies_then_reports_nothing_pending() {
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// A Postgres URL on a port nothing listens on: every attempt is refused,
+/// which sqlx reports as a pool timeout after `acquire_timeout_secs`.
+fn closed_postgres_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe port");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+    format!("postgres://orion:orion@127.0.0.1:{port}/orion")
+}
+
+/// #346: `--wait` retries a database that is not accepting connections,
+/// says so on stderr each time, and gives up past the window naming how
+/// long it waited and the last error.
+#[test]
+fn migrate_wait_gives_up_with_the_last_connection_error() {
+    let started = std::time::Instant::now();
+    let out = Command::new(orion_bin())
+        .args(["migrate", "--wait", "2s"])
+        .env("ORION_STORAGE__URL", closed_postgres_url())
+        .env("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", "1")
+        .output()
+        .expect("invoke orion-server migrate");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(2),
+        "the window must be waited out (elapsed {:?}): {stderr}",
+        started.elapsed()
+    );
+    assert!(
+        stderr.contains("waiting for the state database (not accepting connections within 1s)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("state database not reachable after"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("orion:orion@"),
+        "a progress line must never print the URL: {stderr}"
+    );
+}
+
+/// SQLite's failures do not heal by waiting, so `--wait` changes nothing
+/// there: a healthy file migrates at once, with no progress line.
+#[test]
+fn migrate_wait_is_a_no_op_on_sqlite() {
+    let (url, path) = temp_db_url();
+    let started = std::time::Instant::now();
+    let (ok, out) = run_migrate(&url, &["--wait", "30s"]);
+    assert!(ok, "{out}");
+    assert!(out.contains("Migrations applied successfully"), "{out}");
+    assert!(!out.contains("waiting for"), "{out}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn test_connectivity_accepts_wait() {
+    let (url, path) = temp_db_url();
+    let out = Command::new(orion_bin())
+        .args(["test-connectivity", "--wait", "5s"])
+        .env("ORION_STORAGE__URL", &url)
+        .env("ORION_KAFKA__ENABLED", "false")
+        .output()
+        .expect("invoke orion-server test-connectivity");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("storage:         OK"), "{stdout}");
+    let _ = std::fs::remove_file(&path);
+
+    let out = Command::new(orion_bin())
+        .args(["test-connectivity", "--wait", "soon"])
+        .output()
+        .expect("invoke orion-server test-connectivity");
+    assert!(!out.status.success(), "an unparseable duration is refused");
 }
 
 // ============================================================
@@ -2031,6 +2150,47 @@ fn an_env_reference_is_reported_without_failing_deny_warnings() {
     );
 }
 
+/// #338: a connector whose URL and private-address opt-out are references
+/// lints clean, each reference inventoried; a reference inside a longer
+/// string is a warning — it would be sent literally — and gates
+/// `--deny-warnings`.
+#[test]
+fn a_referenced_url_lints_clean_and_an_embedded_reference_warns() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("peer.json"),
+        r#"{"name":"peer-api","connector_type":"http","config":{
+             "url":"env://PEER_API_URL",
+             "allow_private_urls":"env://PEER_API_PRIVATE","timeout_ms":10000}}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(ok, "{report}");
+    assert!(
+        report.contains("PEER_API_URL") && report.contains("PEER_API_PRIVATE"),
+        "{report}"
+    );
+
+    std::fs::write(
+        dir.join("crm.json"),
+        r#"{"name":"crm","connector_type":"http","config":{
+             "url":"https://example.com",
+             "headers":{"Authorization":"Bearer env://CRM_TOKEN"}}}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "a warning alone does not fail: {report}");
+    assert!(
+        report.contains("[env.embedded_reference]")
+            && report.contains("config.headers.Authorization")
+            && report.contains("\"type\": \"bearer\""),
+        "{report}"
+    );
+    let (ok, report) = lint_dir(dir, &["--deny-warnings"]);
+    assert!(!ok, "{report}");
+}
+
 /// The other half of the deployment checklist: a `{"secret": …}` node names an
 /// entry the serving instance must declare in `[secrets]`, and an instance
 /// that lacks one quarantines the channel. A separate check id, because the
@@ -2263,12 +2423,12 @@ fn a_fragments_nested_ids_are_namespaced_by_the_call_site() {
     let _ = std::fs::remove_file(&input);
 }
 
-/// The other half of #294. The no-nested-fragments rule read only a
-/// fragment's top-level steps, so a `use` inside a group was neither refused
-/// nor expanded: it survived into the host workflow, where it is a step the
-/// engine cannot parse. The restriction must hold at every depth.
+/// #333: a fragment may use a fragment, inside a group as at its top level
+/// (#294 was the same shape surviving expansion unrefused). The nested step
+/// carries both call sites, and a single-file `lint` sees the whole thing
+/// compiled. A cycle is named rather than expanded for ever.
 #[test]
-fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
+fn a_fragment_may_use_a_fragment_and_a_cycle_is_named() {
     let scratch = temp_defs();
     let dir = scratch.path();
     std::fs::write(
@@ -2278,7 +2438,9 @@ fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
                  "input": { "mappings": [ { "path": "temp_data.l", "logic": 1 } ] } } } ] },
              "outer": { "tasks": [
                  { "id": "span", "condition": true, "tasks": [
-                     { "id": "nested", "use": "leaf" } ] } ] } } }"#,
+                     { "id": "nested", "use": "leaf" } ] } ] },
+             "ping": { "tasks": [ { "id": "p", "use": "pong" } ] },
+             "pong": { "tasks": [ { "id": "q", "use": "ping" } ] } } }"#,
     )
     .unwrap();
     std::fs::write(
@@ -2286,14 +2448,19 @@ fn a_fragment_including_a_fragment_inside_a_group_is_refused() {
         r#"{ "workflow_id": "nest", "name": "Nest", "tasks": [ { "id": "a", "use": "outer" } ] }"#,
     )
     .unwrap();
+    let (ok, report) = lint_with_definitions(dir);
+    assert!(ok, "{report}");
 
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{ "workflow_id": "nest", "name": "Nest", "tasks": [ { "id": "a", "use": "ping" } ] }"#,
+    )
+    .unwrap();
     let (ok, report) = lint_with_definitions(dir);
     assert!(!ok, "{report}");
     assert!(
-        report.contains("shared.fragment_nested")
-            && report.contains("a fragment cannot include another fragment"),
-        "the restriction must be reported where it bites, rather than surfacing \
-         as an uncompiled reference against a set that can actually resolve it: {report}"
+        report.contains("shared.cycle") && report.contains("'ping' → 'pong' → 'ping'"),
+        "{report}"
     );
 }
 
@@ -3140,4 +3307,202 @@ fn the_test_runner_executes_a_model_case_with_a_model_dir() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!out.status.success(), "{stdout}");
     assert!(stdout.contains("MODEL_ARTIFACT_UNAVAILABLE"), "{stdout}");
+}
+
+// ============================================================
+// #343: `package.requires.orion` — the binary checks itself first
+// ============================================================
+
+/// A set that declares `range`, with a workflow carrying a schema error the
+/// version line must stand in front of (and a case file for `test`).
+fn versioned_set(range: &str) -> ScratchDir {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("package.json"),
+        serde_json::json!({"package": {"name": "orders", "requires": {"orion": range}}})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"wf","name":"wf","tasks":[
+             {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[]}}},
+             {"id":"broken","name":"broken","function":{"name":"no_such_function_x","input":{}}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("in.json"), r#"{"data": {}}"#).unwrap();
+    std::fs::write(
+        dir.join("wf.case.json"),
+        r#"{"workflow": "wf.json", "input": {}, "expect": {}}"#,
+    )
+    .unwrap();
+    scratch
+}
+
+fn run_bin(args: &[&str]) -> (bool, String, String) {
+    let out = Command::new(orion_bin())
+        .args(args)
+        .output()
+        .expect("run orion-server");
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn a_set_this_binary_is_too_old_for_stops_with_one_line() {
+    let scratch = versioned_set(">=99.0.0");
+    let dir = scratch.path().to_str().unwrap().to_string();
+    let wf = format!("{dir}/wf.json");
+    let input = format!("{dir}/in.json");
+    let out = format!("{dir}/out.json");
+    for args in [
+        vec!["lint", dir.as_str()],
+        vec!["clippy", dir.as_str()],
+        vec![
+            "compile",
+            dir.as_str(),
+            "--version",
+            "1.0.0",
+            "-o",
+            out.as_str(),
+        ],
+        vec!["lint", wf.as_str(), "--definitions", dir.as_str()],
+        vec![
+            "dry-run",
+            "-w",
+            wf.as_str(),
+            "-i",
+            input.as_str(),
+            "--definitions",
+            dir.as_str(),
+        ],
+        vec!["test", dir.as_str(), "--definitions", dir.as_str()],
+    ] {
+        let (ok, stdout, stderr) = run_bin(&args);
+        assert!(!ok, "{args:?}: {stdout}{stderr}");
+        assert!(
+            stderr.contains("requires Orion >=99.0.0; this is orion-server"),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("no_such_function_x"),
+            "{args:?}: the version line must come before any schema error: {stderr}"
+        );
+    }
+    assert!(!std::path::Path::new(&out).exists());
+
+    // `fmt` formats nothing with the wrong binary.
+    let before = std::fs::read_to_string(&wf).unwrap();
+    let (ok, _, stderr) = run_bin(&["fmt", dir.as_str()]);
+    assert!(!ok);
+    assert!(stderr.contains("requires Orion >=99.0.0") && stderr.contains("nothing was formatted"));
+    assert_eq!(std::fs::read_to_string(&wf).unwrap(), before);
+}
+
+#[test]
+fn a_satisfied_range_changes_nothing() {
+    let scratch = versioned_set(">=1.0.0, <99");
+    let dir = scratch.path();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"wf","name":"wf","tasks":[
+             {"id":"t","name":"t","function":{"name":"map","input":{"mappings":[]}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(ok, "{report}");
+    assert!(
+        !report.contains("package.json is not a channel"),
+        "a package document is part of the set: {report}"
+    );
+
+    // A malformed range is refused, naming how to write one.
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"package": {"requires": {"orion": ">=1.8.x <"}}}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(!ok);
+    assert!(report.contains("is not a version range"), "{report}");
+}
+
+// ============================================================
+// #332: `$sql` — statements kept in `.sql` files
+// ============================================================
+
+#[test]
+fn single_file_commands_resolve_sql_without_definitions() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("sql")).unwrap();
+    std::fs::write(dir.join("sql/one.sql"), "SELECT 1 AS one -- a constant\n").unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"wf","name":"wf","condition":true,"tasks":[
+             {"id":"r","name":"r","function":{"name":"db_read","input":{
+               "connector":"db","query":{"$sql":"sql/one.sql"},"output":"data.rows"}}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("in.json"), r#"{"data": {}}"#).unwrap();
+    let wf = dir.join("wf.json");
+    let (ok, stdout, stderr) = run_bin(&["lint", wf.to_str().unwrap()]);
+    assert!(ok, "{stdout}{stderr}");
+
+    // dry-run runs what the file says — the stub answers the call, and the
+    // call log carries the inlined statement.
+    let stubs = dir.join("stubs.json");
+    std::fs::write(&stubs, r#"{"db_read": {"db": [{"one": 1}]}}"#).unwrap();
+    let (ok, stdout, stderr) = run_bin(&[
+        "dry-run",
+        "-w",
+        wf.to_str().unwrap(),
+        "-i",
+        dir.join("in.json").to_str().unwrap(),
+        "--stubs",
+        stubs.to_str().unwrap(),
+    ]);
+    assert!(ok, "{stdout}{stderr}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(
+        parsed["calls"]["db_read"][0]["input"]["query"], "SELECT 1 AS one",
+        "{stdout}"
+    );
+}
+
+/// A finding about the statement names the `.sql` file it came from.
+#[test]
+fn a_statement_finding_names_its_sql_file() {
+    let scratch = temp_defs();
+    let dir = scratch.path();
+    std::fs::create_dir_all(dir.join("sql")).unwrap();
+    std::fs::write(
+        dir.join("sql/purge.sql"),
+        "DELETE FROM sessions WHERE expired\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("conn.json"),
+        r#"{"name":"db","connector_type":"db","config":{"connection_string":"sqlite::memory:"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("wf.json"),
+        r#"{"workflow_id":"wf","name":"wf","tasks":[
+             {"id":"p","name":"p","function":{"name":"db_read","input":{
+               "connector":"db","query":{"$sql":"sql/purge.sql"},"output":"data.rows"}}}]}"#,
+    )
+    .unwrap();
+    let (ok, report) = lint_dir(dir, &[]);
+    assert!(!ok, "{report}");
+    assert!(
+        report.contains("[sql.read_only]")
+            && report.contains("(in ")
+            && report.contains("sql/purge.sql"),
+        "{report}"
+    );
 }

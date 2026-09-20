@@ -69,9 +69,10 @@ pub struct ConnectorRegistry {
 pub struct ConnectorLoadIssue {
     pub connector: String,
     pub connector_id: String,
-    /// Which step failed: `env_substitution`, `json_parse`,
-    /// `secret_resolution` or `deserialize`. A bounded set, so it is safe as
-    /// a metric or log label.
+    /// Which step failed: `env_substitution`, `json_parse`, `var_reference`,
+    /// `secret_resolution`, `deserialize` or `endpoint` (a resolved endpoint
+    /// whose scheme its backend cannot serve). A bounded set, so it is safe
+    /// as a metric or log label.
     pub stage: &'static str,
     pub reason: String,
 }
@@ -258,144 +259,25 @@ impl ConnectorRegistry {
         // per connector.
         let resolvers = super::secrets::default_resolvers();
         for connector in &connectors {
-            // Every issue below carries this connector's identity; only the
-            // stage and the reason differ.
-            let issue = |stage: &'static str, reason: String| ConnectorLoadIssue {
-                connector: connector.name.clone(),
-                connector_id: connector.id.clone(),
-                stage,
-                reason,
-            };
-            // Resolve ${VAR} / ${VAR:-default} placeholders against the process
-            // environment so connector configs can reference secrets without
-            // storing them in the database. Substitution failures (missing
-            // required var, malformed syntax) skip the connector and log —
-            // matching how an unparseable config_json is handled below.
-            // `storage` spent the 0.x line as an accepted type with no handler
-            // (F15) and was removed in 1.0; #265 reinstates the name *with* a
-            // handler and a real config shape. A stored 0.x row now parses
-            // against that shape like any other connector — and reports a
-            // config-parse load issue if it doesn't fit, which names exactly
-            // what to fix.
-            let source_label = format!("connector '{}' config_json", connector.name);
-            // §3.7: `${VAR}` in a *stored* connector config is deprecated. It
-            // predates `env://` and overlaps it, but resolves at a different
-            // layer — textually, before the JSON is parsed — so it can inject
-            // structure rather than a value, it is invisible to the masking
-            // policy (`is_resolvable_reference` sees `${VAR}` as an ordinary
-            // string, so an export carries the placeholder while a real
-            // credential would be masked), and it is unreachable from the
-            // offline surfaces, which have no process environment to read.
-            // `env://` and `vault://` have none of those properties. Warned
-            // here rather than refused: a stored connector cannot be edited by
-            // an upgrade, and expand/contract gives the operator a release to
-            // move before the placeholder stops resolving.
-            let placeholders =
-                crate::config::env_substitute::referenced_vars(&connector.config_json);
-            if !placeholders.is_empty() {
-                tracing::warn!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    variables = %placeholders.iter().cloned().collect::<Vec<_>>().join(", "),
-                    "DEPRECATED: this connector's config uses ${{VAR}} placeholders. \
-                     Replace each with an env:// reference (\"env://VAR\") — ${{VAR}} in \
-                     stored connector configs will stop resolving in a future release"
-                );
-            }
-            let resolved = match crate::config::env_substitute::substitute(
+            match resolve_connector_config(
+                &connector.name,
+                &connector.id,
+                &connector.connector_type,
                 &connector.config_json,
-                &source_label,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        connector_id = %connector.id,
-                        connector_name = %connector.name,
-                        error = %e,
-                        "Failed to resolve env vars in connector config, skipping"
-                    );
-                    issues.push(issue("env_substitution", e.to_string()));
-                    continue;
-                }
-            };
-            // Parse to Value, walk and resolve any `scheme://reference`
-            // secret references (B5), then deserialize into the typed
-            // `ConnectorConfig`. Errors at this stage skip the connector
-            // and warn — matching how unparseable config_json is handled.
-            let mut value: serde_json::Value = match serde_json::from_str(&resolved) {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::warn!(
-                        connector_id = %connector.id,
-                        connector_name = %connector.name,
-                        error = %e,
-                        "Failed to parse connector config JSON, skipping"
-                    );
-                    issues.push(issue("json_parse", e.to_string()));
-                    continue;
-                }
-            };
-            // `var://` first, and typed: a var keeps the type it was declared
-            // with, so a numeric knob stays a number. Nothing walks into an
-            // expression here — a connector config has none.
-            if let Err(e) = crate::config::vars::resolve_var_references(
-                &mut value,
                 self.vars.as_deref(),
-                &|_| false,
-            ) {
-                tracing::error!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    error = %e,
-                    "Refusing to load connector: unresolved var reference"
-                );
-                issues.push(issue("var_reference", e));
-                continue;
-            }
-            if let Err(e) =
-                super::secrets::resolve_in_place(&mut value, resolvers, &source_label).await
+                resolvers,
+            )
+            .await
             {
-                // Logged at ERROR, not WARN: an unresolved secret means the
-                // connector is absent at request time with no other signal
-                // (making the degraded set visible on /health is F16).
-                tracing::error!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    error = %e,
-                    "Failed to resolve secret reference in connector config, skipping"
-                );
-                issues.push(issue("secret_resolution", e.to_string()));
-                continue;
-            }
-            // `ConnectorConfig` is internally tagged on `type`, but the type
-            // lives in its own column and the create/update API takes it as
-            // `connector_type` alongside the config. Inject it, exactly as
-            // `validate_connector_config` does, so the column is the single
-            // source of truth.
-            //
-            // Without this, a connector authored the documented way — with no
-            // redundant `"type"` inside `config` — failed to deserialize with
-            // "missing field `type`" and silently never loaded, which is the
-            // shape every example and every admin UI produces.
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert(
-                    "type".to_string(),
-                    serde_json::Value::String(connector.connector_type.clone()),
-                );
-            }
-            match serde_json::from_value::<ConnectorConfig>(value) {
                 Ok(config) => {
                     new_configs.insert(connector.name.clone(), Arc::new(config));
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        connector_id = %connector.id,
-                        connector_name = %connector.name,
-                        error = %e,
-                        "Failed to parse connector config, skipping"
-                    );
-                    issues.push(issue("deserialize", e.to_string()));
-                }
+                Err(e) => issues.push(ConnectorLoadIssue {
+                    connector: connector.name.clone(),
+                    connector_id: connector.id.clone(),
+                    stage: e.stage,
+                    reason: e.reason,
+                }),
             }
         }
 
@@ -466,6 +348,190 @@ impl ConnectorRegistry {
     pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
         self.load_from_repo(repo).await
     }
+}
+
+/// Why a stored connector did not resolve: the `ConnectorLoadIssue` fields
+/// without the identity.
+#[derive(Debug, Clone)]
+pub struct ResolveIssue {
+    /// `env_substitution`, `json_parse`, `var_reference`,
+    /// `secret_resolution`, `deserialize` or `endpoint`.
+    pub stage: &'static str,
+    pub reason: String,
+}
+
+impl ResolveIssue {
+    fn new(stage: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            stage,
+            reason: reason.into(),
+        }
+    }
+}
+
+/// A stored connector's config, resolved exactly as the registry loads it:
+/// `${VAR}` placeholders (deprecated), the JSON parse, `var://` against
+/// `[vars]`, secret references, the typed parse by `connector_type`, then
+/// the endpoint's scheme. One sequence for the server and for the offline
+/// tools that dial a connector (`sql check`), so "resolved the way the
+/// server resolves it" holds by construction.
+pub async fn resolve_connector_config(
+    name: &str,
+    id: &str,
+    connector_type: &str,
+    config_json: &str,
+    vars: Option<&serde_json::Value>,
+    resolvers: &[Box<dyn super::secrets::SecretResolver>],
+) -> Result<ConnectorConfig, ResolveIssue> {
+    // Resolve ${VAR} / ${VAR:-default} placeholders against the process
+    // environment so connector configs can reference secrets without
+    // storing them in the database. Substitution failures (missing
+    // required var, malformed syntax) skip the connector and log —
+    // matching how an unparseable config_json is handled below.
+    // `storage` spent the 0.x line as an accepted type with no handler
+    // (F15) and was removed in 1.0; #265 reinstates the name *with* a
+    // handler and a real config shape. A stored 0.x row now parses
+    // against that shape like any other connector — and reports a
+    // config-parse load issue if it doesn't fit, which names exactly
+    // what to fix.
+    let source_label = format!("connector '{}' config_json", name);
+    // §3.7: `${VAR}` in a *stored* connector config is deprecated. It
+    // predates `env://` and overlaps it, but resolves at a different
+    // layer — textually, before the JSON is parsed — so it can inject
+    // structure rather than a value, it is invisible to the masking
+    // policy (`is_resolvable_reference` sees `${VAR}` as an ordinary
+    // string, so an export carries the placeholder while a real
+    // credential would be masked), and it is unreachable from the
+    // offline surfaces, which have no process environment to read.
+    // `env://` and `vault://` have none of those properties. Warned
+    // here rather than refused: a stored connector cannot be edited by
+    // an upgrade, and expand/contract gives the operator a release to
+    // move before the placeholder stops resolving.
+    let placeholders = crate::config::env_substitute::referenced_vars(config_json);
+    if !placeholders.is_empty() {
+        tracing::warn!(
+            connector_id = %id,
+            connector_name = %name,
+            variables = %placeholders.iter().cloned().collect::<Vec<_>>().join(", "),
+            "DEPRECATED: this connector's config uses ${{VAR}} placeholders. \
+             Replace each with an env:// reference (\"env://VAR\") — ${{VAR}} in \
+             stored connector configs will stop resolving in a future release"
+        );
+    }
+    let resolved = match crate::config::env_substitute::substitute(config_json, &source_label) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                connector_id = %id,
+                connector_name = %name,
+                error = %e,
+                "Failed to resolve env vars in connector config, skipping"
+            );
+            return Err(ResolveIssue::new("env_substitution", e.to_string()));
+        }
+    };
+    // Parse to Value, walk and resolve any `scheme://reference`
+    // secret references (B5), then deserialize into the typed
+    // `ConnectorConfig`. Errors at this stage skip the connector
+    // and warn — matching how unparseable config_json is handled.
+    let mut value: serde_json::Value = match serde_json::from_str(&resolved) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                connector_id = %id,
+                connector_name = %name,
+                error = %e,
+                "Failed to parse connector config JSON, skipping"
+            );
+            return Err(ResolveIssue::new("json_parse", e.to_string()));
+        }
+    };
+    // `var://` first, and typed: a var keeps the type it was declared
+    // with, so a numeric knob stays a number. Nothing walks into an
+    // expression here — a connector config has none.
+    if let Err(e) = crate::config::vars::resolve_var_references(&mut value, vars, &|_| false) {
+        tracing::error!(
+            connector_id = %id,
+            connector_name = %name,
+            error = %e,
+            "Refusing to load connector: unresolved var reference"
+        );
+        return Err(ResolveIssue::new("var_reference", e));
+    }
+    // Where the references are, before they are replaced: the typed
+    // parse below coerces a resolved `true`/`false` to a boolean at
+    // these paths, and nowhere else.
+    let sites = super::secrets::reference_sites(&value, resolvers);
+    if let Err(e) = super::secrets::resolve_in_place(&mut value, resolvers, &source_label).await {
+        // Logged at ERROR, not WARN: an unresolved secret means the
+        // connector is absent at request time with no other signal
+        // (making the degraded set visible on /health is F16).
+        tracing::error!(
+            connector_id = %id,
+            connector_name = %name,
+            error = %e,
+            "Failed to resolve secret reference in connector config, skipping"
+        );
+        return Err(ResolveIssue::new("secret_resolution", e.to_string()));
+    }
+    // The type lives in its own column, and the create/update API
+    // takes it as `connector_type` alongside the config, so the column
+    // is the single source of truth: the config is typed as the
+    // variant it names, whatever `"type"` the stored document carries
+    // or lacks. (Deserializing the tagged enum needed a `type`
+    // injected first — a connector authored the documented way, with
+    // none inside `config`, once failed with "missing field `type`"
+    // and silently never loaded.)
+    //
+    // Typed per variant, through the resolved-reference parse, so a
+    // boolean field whose reference resolved to `true` or `false`
+    // takes the boolean — and anything else there is refused naming
+    // the field, never the value.
+    let Some(connector_type) = super::ConnectorType::from_stored(connector_type) else {
+        return Err(ResolveIssue::new(
+            "deserialize",
+            format!(
+                "unknown connector type '{}', expected one of {}",
+                connector_type,
+                super::VALID_CONNECTOR_TYPES.join(", ")
+            ),
+        ));
+    };
+    let config = match ConnectorConfig::parse_variant(
+        connector_type,
+        &value,
+        &super::secrets::ResolvedReferences { sites: &sites },
+    ) {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::warn!(
+                connector_id = %id,
+                connector_name = %name,
+                error = %e,
+                "Failed to parse connector config, skipping"
+            );
+            return Err(ResolveIssue::new("deserialize", e.to_string()));
+        }
+    };
+    // Nothing judged the endpoint after its references resolved: a
+    // stored `env://` URL that resolves to `ftp://…` reached the
+    // client unjudged and failed late and obscurely. The scheme is
+    // checked here, on the final value; the private-address check
+    // stays on the request and pool-open paths, which resolve DNS
+    // and see every redirect.
+    if let Err(e) = crate::validation::endpoints::validate_endpoint_schemes(
+        &config,
+        crate::validation::endpoints::EndpointPhase::Load,
+    ) {
+        tracing::warn!(
+            connector_id = %id,
+            connector_name = %name,
+            error = %e.client_message(),
+            "Connector endpoint refused at load, skipping"
+        );
+        return Err(ResolveIssue::new("endpoint", e.client_message()));
+    }
+    Ok(config)
 }
 
 /// A repository that returns whatever connector rows a test hands it.

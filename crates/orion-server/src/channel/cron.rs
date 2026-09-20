@@ -88,6 +88,11 @@ const MAX_PAYLOAD_BYTES: usize = 1_048_576;
 /// enough to be a primary key on MySQL without an index-length prefix.
 const MAX_SINGLETON_KEY_LEN: usize = 128;
 
+/// Ceiling on `concurrency.slots`. Acquisition probes slots in ascending
+/// order inside one transaction, so this bounds the statements a *skip*
+/// costs.
+pub const MAX_SINGLETON_SLOTS: u32 = 64;
+
 /// Defensive bound on one [`CronDescriptor::fires_in`] walk.
 ///
 /// The walk is over *matching* instants, so a sane window costs one iteration
@@ -132,8 +137,9 @@ pub enum ConcurrencyPolicy {
     /// Occurrences may overlap. No singleton row is taken at all.
     #[default]
     Allow,
-    /// At most one occurrence per key runs at a time; a contending occurrence
-    /// is recorded `skipped_singleton` rather than deferred or dropped.
+    /// At most `slots` (default one) occurrences per key run at a time; a
+    /// contending occurrence is recorded `skipped_singleton` rather than
+    /// deferred or dropped.
     Forbid,
     /// At most one running and at most one deferred. Not implemented yet —
     /// validation refuses it, and the storage model already supports it.
@@ -166,6 +172,11 @@ pub struct ConcurrencyConfig {
     /// only cross-channel coordination this needs to express.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// How many occurrences of `key` may run at once, under `forbid`. Default
+    /// one. Literal and bounded for the reason `key` is: lock cardinality is
+    /// decided at authoring time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<u32>,
 }
 
 /// A cron channel's authored `transport_config`.
@@ -240,6 +251,9 @@ pub struct CronDescriptor {
     pub max_catch_up: u32,
     pub concurrency: ConcurrencyPolicy,
     pub singleton_key: String,
+    /// How many occurrences of `singleton_key` this channel may run beside
+    /// each other — slots `0..singleton_slots`. One unless `forbid` sets more.
+    pub singleton_slots: u32,
     /// SHA-256 over the *scheduling* fields — expression, zone, misfire policy
     /// and catch-up bound — and nothing else.
     ///
@@ -258,6 +272,7 @@ impl std::fmt::Debug for CronDescriptor {
             .field("misfire", &self.misfire)
             .field("concurrency", &self.concurrency)
             .field("singleton_key", &self.singleton_key)
+            .field("singleton_slots", &self.singleton_slots)
             .field("config_hash", &self.config_hash)
             .finish_non_exhaustive()
     }
@@ -294,7 +309,7 @@ impl CronTransportConfig {
         let timezone = compile_timezone(self.timezone.as_deref(), &mut errors);
         let payload = compile_payload(self.payload.as_ref(), &mut errors);
         let max_catch_up = compile_catch_up(self.max_catch_up, self.misfire_policy, &mut errors);
-        let (concurrency, singleton_key) =
+        let (concurrency, singleton_key, singleton_slots) =
             compile_concurrency(self.concurrency.as_ref(), &identity.channel_id, &mut errors);
 
         // The horizon check needs both halves, so it runs only once both
@@ -323,6 +338,7 @@ impl CronTransportConfig {
             max_catch_up,
             concurrency,
             singleton_key,
+            singleton_slots,
             config_hash,
         })
     }
@@ -457,9 +473,33 @@ fn compile_concurrency(
     concurrency: Option<&ConcurrencyConfig>,
     channel_id: &str,
     errors: &mut Vec<FieldError>,
-) -> (ConcurrencyPolicy, String) {
+) -> (ConcurrencyPolicy, String, u32) {
     let Some(concurrency) = concurrency else {
-        return (ConcurrencyPolicy::default(), channel_id.to_string());
+        return (ConcurrencyPolicy::default(), channel_id.to_string(), 1);
+    };
+    let slots = match concurrency.slots {
+        None => 1,
+        // A setting Orion accepted and never applied is the failure
+        // `deny_unknown_fields` exists to prevent.
+        Some(_) if concurrency.policy != ConcurrencyPolicy::Forbid => {
+            errors.push(invalid(
+                "channel.transport_config.concurrency.slots",
+                format!(
+                    "concurrency.slots is only meaningful with policy \"forbid\" — \"{}\" \
+                     takes no lock at all",
+                    concurrency.policy.as_str()
+                ),
+            ));
+            1
+        }
+        Some(slots) if slots == 0 || slots > MAX_SINGLETON_SLOTS => {
+            errors.push(invalid(
+                "channel.transport_config.concurrency.slots",
+                format!("concurrency.slots must be between 1 and {MAX_SINGLETON_SLOTS}"),
+            ));
+            1
+        }
+        Some(slots) => slots,
     };
     if concurrency.policy == ConcurrencyPolicy::QueueOne {
         errors.push(invalid(
@@ -491,7 +531,7 @@ fn compile_concurrency(
             key.to_string()
         }
     };
-    (concurrency.policy, key)
+    (concurrency.policy, key, slots)
 }
 
 fn is_valid_singleton_key(key: &str) -> bool {
@@ -935,6 +975,7 @@ mod tests {
             concurrency: Some(ConcurrencyConfig {
                 policy: ConcurrencyPolicy::Forbid,
                 key: Some("not a key!".to_string()),
+                slots: None,
             }),
         };
         let errors = cfg.compile(identity()).expect_err("five problems");
@@ -959,6 +1000,7 @@ mod tests {
             concurrency: Some(ConcurrencyConfig {
                 policy: ConcurrencyPolicy::QueueOne,
                 key: None,
+                slots: None,
             }),
             ..config("0 15 2 * * *", None)
         };
@@ -988,12 +1030,59 @@ mod tests {
             concurrency: Some(ConcurrencyConfig {
                 policy: ConcurrencyPolicy::Forbid,
                 key: Some("order-pipeline".to_string()),
+                slots: None,
             }),
             ..config("0 15 2 * * *", None)
         };
         assert_eq!(
             cfg.compile(identity()).expect("compiles").singleton_key,
             "order-pipeline"
+        );
+    }
+
+    #[test]
+    fn slots_default_to_one_and_are_bounded_and_forbid_only() {
+        assert_eq!(descriptor("0 15 2 * * *", None).singleton_slots, 1);
+        let with = |policy, slots| CronTransportConfig {
+            concurrency: Some(ConcurrencyConfig {
+                policy,
+                key: Some("worker".to_string()),
+                slots,
+            }),
+            ..config("0 15 2 * * *", None)
+        };
+        let four = with(ConcurrencyPolicy::Forbid, Some(4))
+            .compile(identity())
+            .expect("compiles");
+        assert_eq!(
+            (four.singleton_key.as_str(), four.singleton_slots),
+            ("worker", 4)
+        );
+        for bad in [Some(0), Some(MAX_SINGLETON_SLOTS + 1)] {
+            let errors = with(ConcurrencyPolicy::Forbid, bad)
+                .compile(identity())
+                .expect_err("out of range");
+            assert_eq!(errors[0].path, "channel.transport_config.concurrency.slots");
+            assert!(
+                errors[0].message.contains("between 1 and 64"),
+                "{:?}",
+                errors[0]
+            );
+        }
+        let errors = with(ConcurrencyPolicy::Allow, Some(2))
+            .compile(identity())
+            .expect_err("allow takes no lock");
+        assert!(
+            errors[0].message.contains("only meaningful with policy"),
+            "{:?}",
+            errors[0]
+        );
+        // A non-integer never reaches the compiler.
+        assert!(
+            serde_json::from_value::<ConcurrencyConfig>(
+                serde_json::json!({"policy": "forbid", "slots": "4"})
+            )
+            .is_err()
         );
     }
 
@@ -1010,6 +1099,7 @@ mod tests {
             concurrency: Some(ConcurrencyConfig {
                 policy: ConcurrencyPolicy::Forbid,
                 key: None,
+                slots: Some(4),
             }),
             ..config("0 15 2 * * *", Some("UTC"))
         };

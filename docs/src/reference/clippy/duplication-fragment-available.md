@@ -17,6 +17,8 @@ warn[duplication.fragment_available] a run of steps is exactly what an existing 
 
 A run of steps that is exactly an existing fragment's `tasks`, ids aside, with `$param` holes bound consistently. The message prints the `use` step that replaces them. It is not applied, because the expanded ids change.
 
+Silent for a value fragment. Silent for a task fragment whose steps use a fragment, splice one with `$use`, repeat, or interpolate a parameter with `{{name}}`. Its expansion is not what it says, so it does not compare step for step. Silent for a run that holds a `use`, a `$use` or an `$each` step.
+
 ## Related
 
 - [Advisory checks](./index.md): every rule, the levels, and where certainty comes from.

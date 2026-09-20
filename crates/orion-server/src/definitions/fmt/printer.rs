@@ -172,6 +172,7 @@ fn layout_object(
         | Role::Channel
         | Role::Connector
         | Role::SharedDoc
+        | Role::PackageDecl
         | Role::NamedValues
         | Role::FragmentMap
         | Role::Fragment
@@ -182,6 +183,8 @@ fn layout_object(
         | Role::Group
         | Role::UseStep
         | Role::PathMap => Mode::AlwaysBreak,
+        // An `$each` repeating a step breaks as the step would.
+        Role::Each(super::roles::EachOf::Step) => Mode::AlwaysBreak,
         _ => Mode::InlineIfFits,
     };
     container('{', '}', children, mode)

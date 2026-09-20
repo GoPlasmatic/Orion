@@ -1,0 +1,19 @@
+{
+  "workflow_id": "w2",
+  "name": "w2",
+  "tasks": [
+    {
+      "$each": { "p": [1, 2] },
+      "do": {
+        "id": "a{{p}}",
+        "name": "A",
+        "function": { "name": "log", "input": { "message": "step a" } }
+      }
+    },
+    {
+      "id": "b",
+      "name": "B",
+      "function": { "name": "log", "input": { "message": "step b" } }
+    }
+  ]
+}

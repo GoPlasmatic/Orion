@@ -1,0 +1,88 @@
+{
+  "workflow_id": "w",
+  "name": "w",
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "match",
+      "name": "Match",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT * FROM t WHERE a = $1 AND b = $2",
+          "params": [{ "var": "data.req.a" }, { "var": "data.req.b" }],
+          "output": "data.m"
+        }
+      }
+    },
+    {
+      "id": "computed",
+      "name": "Computed",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT * FROM t WHERE a = $1",
+          "params": { "var": "data.req.binds" },
+          "output": "data.c"
+        }
+      }
+    },
+    {
+      "id": "positional",
+      "name": "Positional",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT * FROM t WHERE a = ?",
+          "output": "data.p"
+        }
+      }
+    },
+    {
+      "id": "quoted",
+      "name": "Quoted",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT $1, '$3' -- $4\n FROM t /* $5 */ WHERE x = $body$ $6 $body$",
+          "params": [{ "var": "data.req.a" }],
+          "output": "data.q"
+        }
+      }
+    },
+    {
+      "id": "gap",
+      "name": "Gap",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "primary",
+          "query": "SELECT * FROM t WHERE a = $1 AND b = $3",
+          "params": [1, 2, 3],
+          "output": "data.g"
+        }
+      }
+    },
+    {
+      "id": "unknown",
+      "name": "Unknown backend",
+      "function": {
+        "name": "db_read",
+        "input": {
+          "connector": "elsewhere",
+          "query": "SELECT * FROM t WHERE a = $1 AND b = $2",
+          "params": [1],
+          "output": "data.u"
+        }
+      }
+    }
+  ]
+}

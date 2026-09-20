@@ -1,6 +1,6 @@
 <!-- description: The auth block on http and es connectors: the bearer, basic and apikey schemes, and the managed oauth2 grant Orion acquires and refreshes itself. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Connector authentication
 
@@ -15,6 +15,8 @@ The `auth` object an `http` or `es` connector carries, and the one scheme Orion 
 | `apikey` | `header`, `key` | `{ "type": "apikey", "header": "X-API-Key", "key": "env://API_KEY" }` |
 
 The fourth, [`oauth2`](#managed-oauth2), is **managed**: Orion acquires, caches, refreshes, and (under rotation) persists the token itself. `http` connectors only.
+
+Put a token here rather than in an `Authorization` header: `"Bearer env://API_TOKEN"` in `headers` is sent as written, because a reference must be the whole value. See [A reference is the whole value](./secrets.md#a-reference-is-the-whole-value).
 
 `db` and `cache` connectors carry credentials inside their connection URL instead. The `kafka` connector has no credential field; broker authentication is server configuration ([Kafka settings](../configuration/kafka.md)).
 

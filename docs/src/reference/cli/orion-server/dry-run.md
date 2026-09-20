@@ -1,6 +1,6 @@
 <!-- description: orion-server dry-run executes a workflow offline against a JSON input with canned connector stubs, real plugin and model execution, and prints the trace. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-server dry-run`
 
@@ -13,6 +13,8 @@ orion-server dry-run -w <workflow.json> -i <input.json> [--stubs <stubs.json>] [
 ```
 
 ## Description
+
+With `--definitions`, a set whose [`package` document](../shared-definitions.md#the-package-document) declares a `requires.orion` range excluding this binary stops before anything runs. One line names the range and this version.
 
 The printed document carries `data`, `metadata`, `temp_data`, `audit_trail` and `calls`. Those are the same five documents, in the same shape, that a case's `expect` roots address. It also carries `output` (an alias of `data`, kept for existing `jq` filters), `trace`, `matched` and `errors`.
 

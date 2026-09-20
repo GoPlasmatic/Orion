@@ -1,6 +1,6 @@
 <!-- description: The map task function: an ordered list of JSONLogic mappings, each writing its result to a dotted path in the data context, for reshaping and enriching. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `map`
 
@@ -32,6 +32,8 @@ enriching data.
 | `mappings` | array | yes | — | Ordered list of `{ "path", "logic" }` entries |
 | `mappings[].path` | string | yes | — | Dotted target path, for example `"data.order.total"` |
 | `mappings[].logic` | JSONLogic | yes | — | Expression whose result is written to `path` |
+
+A mapping whose result is `null` writes nothing: the path keeps the value it had. So `"logic": null` cannot clear a slot. Write `false` instead. [`correctness.mapping_always_null`](../clippy/correctness-mapping-always-null.md) reports a mapping that is always null.
 
 ## Examples
 

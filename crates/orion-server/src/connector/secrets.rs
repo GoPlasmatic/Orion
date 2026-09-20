@@ -452,6 +452,253 @@ fn substitute(value: &mut Value, resolved: &std::collections::HashMap<String, St
     }
 }
 
+/// A reference that sits *inside* a longer string — `"Bearer env://API_KEY"`
+/// — and is therefore not a reference at all: a reference is the whole
+/// value, so this text is sent literally. `Some(scheme)` names the scheme
+/// that was meant.
+///
+/// A scheme only counts where it starts a word (`someenv://k` is not a hit)
+/// and is followed by a name. A string that is one `${…}` placeholder is
+/// skipped: `${X:-env://Y}` becomes a whole-string reference after
+/// substitution.
+pub fn embedded_reference(s: &str) -> Option<&'static str> {
+    if s.starts_with("${") && s.ends_with('}') {
+        return None;
+    }
+    std::iter::once("env")
+        .chain(RESERVED_SCHEMES.iter().copied())
+        .find(|scheme| {
+            let needle = format!("{scheme}://");
+            s.match_indices(&needle).any(|(at, _)| {
+                at > 0
+                    && !s[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-'))
+                    && !s[at + needle.len()..].trim().is_empty()
+            })
+        })
+}
+
+/// One string in a connector config with a reference inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddedReference {
+    /// Dotted path from the config root, e.g. `headers.Authorization`.
+    pub path: String,
+    /// The scheme that was meant, e.g. `env`.
+    pub scheme: &'static str,
+    /// The string sits under `headers` as an `Authorization` header, where
+    /// `auth` is the field that takes a reference.
+    pub authorization_header: bool,
+}
+
+impl EmbeddedReference {
+    /// What an author should do instead.
+    pub fn remedy(&self) -> &'static str {
+        if self.authorization_header {
+            "use \"auth\": {\"type\": \"bearer\", \"token\": \"env://API_KEY\"} instead of an \
+             Authorization header"
+        } else {
+            "make the reference the whole value, or build the string in the deployment \
+             environment"
+        }
+    }
+
+    /// The finding, in one sentence.
+    pub fn message(&self) -> String {
+        format!(
+            "`{}://…` sits inside a longer string, so it is not a reference: a reference must be \
+             the whole value, and this text will be sent literally",
+            self.scheme
+        )
+    }
+}
+
+/// Every string in `config` with [`embedded_reference`] in it.
+pub fn embedded_references(config: &Value) -> Vec<EmbeddedReference> {
+    fn walk(value: &Value, path: &mut Vec<String>, out: &mut Vec<EmbeddedReference>) {
+        match value {
+            Value::String(s) => {
+                if let Some(scheme) = embedded_reference(s) {
+                    out.push(EmbeddedReference {
+                        path: path.join("."),
+                        scheme,
+                        authorization_header: matches!(
+                            path.as_slice(),
+                            [headers, name] if headers == "headers"
+                                && name.eq_ignore_ascii_case("authorization")
+                        ),
+                    });
+                }
+            }
+            Value::Object(map) => {
+                for (key, v) in map {
+                    path.push(key.clone());
+                    walk(v, path, out);
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (index, v) in items.iter().enumerate() {
+                    path.push(index.to_string());
+                    walk(v, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(config, &mut Vec::new(), &mut out);
+    out
+}
+
+/// Whether `s` stands for a value resolved at load — a `var://` or a
+/// resolvable secret reference — and so may sit in a field of any type in an
+/// authored connector config.
+pub fn is_load_time_reference(s: &str) -> bool {
+    s.starts_with(crate::config::vars::VAR_SCHEME) || is_resolvable_reference(s)
+}
+
+/// The authoring parse of a connector config: a reference standing in a
+/// field that is not a string is replaced by a placeholder of the kind the
+/// field wants, so a document the load path can type types here too — on a
+/// host that holds none of the deployment's values. A check that reads such
+/// a field reads the placeholder; see
+/// [`crate::config::vars::parse_with_unresolved_vars`].
+pub struct UnresolvedReferences;
+
+impl super::VariantParse for UnresolvedReferences {
+    type Error = String;
+    fn parse<T: serde::de::DeserializeOwned>(&self, value: &Value) -> Result<T, String> {
+        crate::config::vars::parse_with_unresolved_refs(value, &|_| false, &is_load_time_reference)
+    }
+}
+
+/// Paths of every string [`resolve_in_place`] will replace, collected before
+/// it runs — so the typed parse after it knows which values came from a
+/// reference.
+pub(crate) fn reference_sites(
+    value: &Value,
+    resolvers: &[Box<dyn SecretResolver>],
+) -> Vec<Vec<crate::config::vars::Seg>> {
+    use crate::config::vars::Seg;
+    fn walk(
+        value: &Value,
+        resolvers: &[Box<dyn SecretResolver>],
+        path: &mut Vec<Seg>,
+        out: &mut Vec<Vec<Seg>>,
+    ) {
+        match value {
+            Value::String(s) => {
+                if let Some((scheme, _)) = parse_reference(s)
+                    && resolvers.iter().any(|r| r.scheme() == scheme)
+                {
+                    out.push(path.clone());
+                }
+            }
+            Value::Object(map) => {
+                for (key, v) in map {
+                    path.push(Seg::Key(key.clone()));
+                    walk(v, resolvers, path, out);
+                    path.pop();
+                }
+            }
+            Value::Array(items) => {
+                for (index, v) in items.iter().enumerate() {
+                    path.push(Seg::Index(index));
+                    walk(v, resolvers, path, out);
+                    path.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(value, resolvers, &mut Vec::new(), &mut out);
+    out
+}
+
+/// Why a resolved connector config did not type. None of these quotes a
+/// resolved value: a mis-pointed reference may hold a credential (S21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedParseError {
+    /// A boolean field's reference resolved to text other than `true` or
+    /// `false`. `field` is the dotted path.
+    NotABoolean { field: String },
+    /// Any other refusal at a reference site; the value is withheld.
+    ShapeAtSite { field: String },
+    /// A refusal away from every reference site — the author's own value,
+    /// safe to show.
+    Shape(String),
+}
+
+impl std::fmt::Display for ResolvedParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotABoolean { field } => write!(
+                f,
+                "{field}: the reference resolved to something other than true or false"
+            ),
+            Self::ShapeAtSite { field } => write!(
+                f,
+                "{field}: the reference resolved to a value this field cannot take (the value \
+                 is withheld: it may be a secret)"
+            ),
+            Self::Shape(message) => f.write_str(message),
+        }
+    }
+}
+
+/// The load parse of a connector config whose references [`resolve_in_place`]
+/// has replaced. A reference resolves to a string, always; where the shape
+/// wants a boolean, exactly `true` or `false` (trimmed, any case) at a
+/// reference site becomes that boolean. Nothing else is coerced, and nothing
+/// away from a site is — a literal `"true"` the author wrote in a boolean
+/// field is still their error.
+pub struct ResolvedReferences<'a> {
+    pub(crate) sites: &'a [Vec<crate::config::vars::Seg>],
+}
+
+impl super::VariantParse for ResolvedReferences<'_> {
+    type Error = ResolvedParseError;
+    fn parse<T: serde::de::DeserializeOwned>(
+        &self,
+        value: &Value,
+    ) -> Result<T, ResolvedParseError> {
+        use crate::config::vars::{Seg, display_path, slot_at};
+        let mut doc = value.clone();
+        // Each site is coerced at most once, so the loop is bounded.
+        let mut coerced: Vec<Vec<Seg>> = Vec::new();
+        loop {
+            let err = match serde_path_to_error::deserialize::<_, T>(doc.clone()) {
+                Ok(typed) => return Ok(typed),
+                Err(err) => err,
+            };
+            let at: Option<Vec<Seg>> = err.path().iter().map(Seg::from_segment).collect();
+            let Some(at) = at.filter(|at| self.sites.contains(at)) else {
+                return Err(ResolvedParseError::Shape(err.to_string()));
+            };
+            let field = display_path(&at);
+            let text = slot_at(&mut doc, &at)
+                .and_then(|slot| slot.as_str())
+                .map(|s| s.trim().to_ascii_lowercase());
+            let wants_bool = err.inner().to_string().contains("expected a boolean");
+            match text.as_deref() {
+                Some(b @ ("true" | "false")) if !coerced.contains(&at) => {
+                    let b = b == "true";
+                    if let Some(slot) = slot_at(&mut doc, &at) {
+                        *slot = Value::Bool(b);
+                    }
+                    coerced.push(at);
+                }
+                _ if wants_bool => return Err(ResolvedParseError::NotABoolean { field }),
+                _ => return Err(ResolvedParseError::ShapeAtSite { field }),
+            }
+        }
+    }
+}
+
 /// Extract `(scheme, reference)` from a string of the form `scheme://reference`.
 /// The scheme must be lowercase alphanumeric (`+` allowed for future
 /// composite schemes like `aws-sm`). Returns `None` for anything that
@@ -781,5 +1028,87 @@ mod vault_tests {
             .expect("resolves");
         assert_eq!(v["auth"]["password"], "hunter2");
         assert_eq!(v["url"], "https://db.example.com");
+    }
+}
+
+#[cfg(test)]
+mod reference_parse_tests {
+    use super::*;
+    use crate::connector::{ConnectorConfig, ConnectorType};
+    use serde_json::json;
+
+    fn env_resolvers() -> Vec<Box<dyn SecretResolver>> {
+        vec![Box::new(EnvSecretResolver)]
+    }
+
+    fn load(stored: Value, resolved: Value) -> Result<ConnectorConfig, ResolvedParseError> {
+        let sites = reference_sites(&stored, &env_resolvers());
+        ConnectorConfig::parse_variant(
+            ConnectorType::Http,
+            &resolved,
+            &ResolvedReferences { sites: &sites },
+        )
+    }
+
+    #[test]
+    fn parse_resolved_coerces_true_and_false_at_sites_only() {
+        let stored = json!({"url": "env://URL", "allow_private_urls": "env://PRIVATE"});
+        for (text, expected) in [("true", true), (" FALSE\n", false), ("True", true)] {
+            let resolved = json!({"url": "http://peer:8080", "allow_private_urls": text});
+            match load(stored.clone(), resolved).expect("coerced") {
+                ConnectorConfig::Http(http) => {
+                    assert_eq!(http.allow_private_urls, expected, "{text:?}");
+                    assert_eq!(http.url, "http://peer:8080");
+                }
+                other => unreachable!("{other:?}"),
+            }
+        }
+        // A literal the author wrote as a string is theirs, not a reference.
+        let literal = json!({"url": "http://peer", "allow_private_urls": "true"});
+        let err = load(literal.clone(), literal).expect_err("not a site");
+        assert!(matches!(err, ResolvedParseError::Shape(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_non_boolean_resolution_names_the_field_and_not_the_value() {
+        let stored = json!({"url": "http://peer", "allow_private_urls": "env://PRIVATE"});
+        let resolved = json!({"url": "http://peer", "allow_private_urls": "s3cr3t-token"});
+        let err = load(stored, resolved).expect_err("garbage");
+        assert_eq!(
+            err,
+            ResolvedParseError::NotABoolean {
+                field: "allow_private_urls".to_string()
+            }
+        );
+        let message = err.to_string();
+        assert!(message.contains("allow_private_urls"), "{message}");
+        assert!(!message.contains("s3cr3t"), "{message}");
+    }
+
+    #[test]
+    fn embedded_references_are_found_and_whole_ones_are_not() {
+        for (text, expected) in [
+            ("Bearer env://API_KEY", Some("env")),
+            ("x vault://secret/a#b", Some("vault")),
+            ("token=(env://K)", Some("env")),
+            ("env://API_KEY", None),
+            ("someenv://k", None),
+            ("${X:-env://Y}", None),
+            ("https://h/p", None),
+            ("see env:// ", None),
+        ] {
+            assert_eq!(embedded_reference(text), expected, "{text:?}");
+        }
+        let found = embedded_references(&json!({
+            "url": "https://api.example.com",
+            "headers": {"Authorization": "Bearer env://API_KEY", "X-Other": "k env://K"},
+            "auth": {"type": "bearer", "token": "env://API_KEY"},
+        }));
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].path, "headers.Authorization");
+        assert!(found[0].authorization_header);
+        assert!(found[0].remedy().contains("\"auth\""));
+        assert_eq!(found[1].path, "headers.X-Other");
+        assert!(!found[1].authorization_header);
     }
 }

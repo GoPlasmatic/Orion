@@ -5,6 +5,8 @@
 //! the per-edit relink cost dramatically. Add new test files under
 //! `tests/integration/` and declare them below.
 
+mod boot_packages_test;
+mod clippy_fix_test;
 mod common;
 
 mod admin_channels_test;
@@ -55,6 +57,7 @@ mod data_query_test;
 mod data_roundtrip_test;
 mod data_write_test;
 mod db_column_types_test;
+mod delete_reload_defer_test;
 mod dialect_schema_test;
 mod docs_link_test;
 mod docs_routes_drift_test;
@@ -94,6 +97,7 @@ mod output_field_test;
 mod p1_promotion_test;
 mod p2_api_test;
 mod package_cli_e2e_test;
+mod package_in_process_test;
 mod packages_test;
 mod pagination_contract_test;
 mod pipeline_test;
@@ -119,7 +123,10 @@ mod secret_references_test;
 mod secrets_and_vars_test;
 mod security_test;
 mod shutdown_test;
+mod signing_cli_test;
 mod source_form_refusal_test;
+mod sql_check_cli_test;
+mod sql_check_test;
 mod sqlite_busy_snapshot_test;
 mod sqlite_upgrade_test;
 mod status_dry_run_test;

@@ -44,6 +44,10 @@ pub struct TriggerFacts<'a> {
     pub attempt: i64,
     /// The lock this run holds, when its channel takes one.
     pub singleton_key: Option<&'a str>,
+    /// Which of the key's slots it holds — `0..slots`, stable for the
+    /// attempt, so a workflow can partition work by it the way one channel
+    /// per lane used to.
+    pub singleton_slot: Option<u32>,
 }
 
 /// Build the message metadata for one attempt.
@@ -65,6 +69,9 @@ pub fn occurrence_metadata(facts: TriggerFacts<'_>, vars: Option<&Value>) -> Val
     });
     if let Some(key) = facts.singleton_key {
         metadata[TRIGGER_KEY]["singleton_key"] = json!(key);
+    }
+    if let Some(slot) = facts.singleton_slot {
+        metadata[TRIGGER_KEY]["singleton_slot"] = json!(slot);
     }
     // Nothing here was ever supplied by a caller, so there is no inherited
     // error context to clear — but the call stays, because "every ingress
@@ -97,6 +104,7 @@ mod tests {
             timezone: "Asia/Kolkata",
             attempt: 1,
             singleton_key: None,
+            singleton_slot: None,
         }
     }
 
@@ -124,6 +132,7 @@ mod tests {
                 started_at: at(6, 30),
                 attempt: 3,
                 singleton_key: Some("order-pipeline"),
+                singleton_slot: Some(2),
                 ..facts()
             },
             None,
@@ -138,6 +147,7 @@ mod tests {
         );
         assert_eq!(metadata["trigger"]["attempt"], 3);
         assert_eq!(metadata["trigger"]["singleton_key"], "order-pipeline");
+        assert_eq!(metadata["trigger"]["singleton_slot"], 2);
     }
 
     #[test]

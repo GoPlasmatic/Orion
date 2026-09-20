@@ -49,6 +49,7 @@
 
 pub mod content;
 pub mod dto;
+pub mod engine;
 pub mod enums;
 pub mod envelope;
 pub mod error;
@@ -56,8 +57,13 @@ pub mod import;
 
 pub use dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, CronOccurrenceResponse,
-    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageReceiptResponse,
-    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    CronOccurrenceSummaryResponse, CronScheduleStatusResponse, PackageInventory,
+    PackageReceiptResponse, TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse,
+    WorkflowResponse,
+};
+pub use engine::{
+    ChannelLoadIssueResponse, ConnectorLoadIssueResponse, EngineCapabilities, EngineLoadIssues,
+    EngineReloadedResponse, EngineStatusResponse, ModelLoadIssueResponse, PluginLoadIssueResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,

@@ -134,6 +134,18 @@ The pods run under a restricted security posture by default: non-root (UID 10001
 
 The metrics listener is dedicated and unauthenticated by design. On the main listener `/metrics` sits behind admin auth, and a scraper should not hold a credential that can also rewrite workflows. Keep it cluster-internal, or turn it off with `metrics.enabled=false`; the alerts in [What to alert on](../run/monitoring.md#what-to-alert-on) then have no scrape target.
 
+### Packages baked into the image
+
+An image can carry its own definitions. Compile them into an artifact at build time, and name it in `ORION_PACKAGES__APPLY`:
+
+```yaml
+extraEnv:
+  - name: ORION_PACKAGES__APPLY
+    value: "/pkg/orders/orders.json"
+```
+
+Each replica applies it at startup and holds `/readyz` at `503` until it serves, so no entrypoint script is needed. A failed apply exits the pod non-zero. Size a `startupProbe` on `/readyz` to [`packages.apply_timeout_secs`](../../reference/configuration/packages.md), 30 minutes by default. A model admission can take that long, and the liveness probe on `/healthz` answers throughout.
+
 ### Plugins and schedules
 
 Neither has a chart value. Both are `ORION_*` overrides through `extraEnv`, which every replica shares, and each has one consequence worth planning for:

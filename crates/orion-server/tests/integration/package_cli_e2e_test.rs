@@ -40,12 +40,30 @@ struct Server {
     port: u16,
     label: &'static str,
     log: std::path::PathBuf,
-    _dir: ScratchDir,
+    /// Holds the database; `None` only while a restart moves it on.
+    dir: Option<ScratchDir>,
 }
 
 impl Server {
     fn start(label: &'static str) -> Self {
-        let dir = ScratchDir::new("db");
+        Self::start_with(label, &[])
+    }
+
+    /// A server with extra `ORION_*` settings in its environment.
+    fn start_with(label: &'static str, envs: &[(&str, &str)]) -> Self {
+        Self::spawn(label, ScratchDir::new("db"), envs)
+    }
+
+    /// Stop this server and start another on the same database, with
+    /// `envs` — a node whose configuration changed under a stored estate.
+    fn restart_with(mut self, envs: &[(&str, &str)]) -> Self {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let dir = self.dir.take().expect("the database dir");
+        Self::spawn(self.label, dir, envs)
+    }
+
+    fn spawn(label: &'static str, dir: ScratchDir, envs: &[(&str, &str)]) -> Self {
         // Bind-then-drop to pick a free port; the tiny race is acceptable in
         // a test that retries readiness anyway.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
@@ -81,6 +99,7 @@ impl Server {
                 dir.path().join("models-cache").display().to_string(),
             )
             .env("ORION_LOGGING__LEVEL", "warn")
+            .envs(envs.iter().copied())
             .stdout(std::process::Stdio::from(out))
             .stderr(std::process::Stdio::from(err))
             .spawn()
@@ -90,7 +109,7 @@ impl Server {
             port,
             label,
             log,
-            _dir: dir,
+            dir: Some(dir),
         }
     }
 
@@ -117,7 +136,7 @@ impl Drop for Server {
         let _ = self.child.wait();
         // Only on the way out of a failing test: replay what the server logged
         // so the panic message and the cause land in the same CI output. This
-        // runs before `_dir` is dropped (Rust runs a type's own Drop before its
+        // runs before `dir` is dropped (Rust runs a type's own Drop before its
         // fields'), so the scratch dir still exists to read from.
         if std::thread::panicking()
             && let Ok(text) = std::fs::read_to_string(&self.log)
@@ -363,6 +382,629 @@ async fn package_promotes_between_real_instances() {
         !out.status.success(),
         "the superseded artifact must show drift"
     );
+
+    // Rollback is a re-apply: 1.0.0's receipt is applied with this very
+    // content, but 1.1.0 superseded it, so apply must put 1.0.0's content
+    // back rather than stop at the receipt. SQLite timestamps are
+    // second-granular; the touch must land strictly after 1.1.0's for
+    // `current` to move back.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stdout = assert_ok(
+        &package_cmd(&["plan", "-s", &target.url(), "-f", artifact]),
+        "plan the rollback",
+    );
+    assert!(stdout.contains("superseded by e2e@1.1.0"), "{stdout}");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", artifact]),
+        "apply the rollback",
+    );
+    assert!(!stdout.contains("nothing to do"), "{stdout}");
+    assert!(stdout.contains("applied e2e@1.0.0"), "{stdout}");
+    assert_ok(
+        &package_cmd(&["diff", "-s", &target.url(), "-f", artifact]),
+        "diff after the rollback",
+    );
+    let receipt: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/e2e", target.url()))
+        .send()
+        .await
+        .expect("receipt")
+        .json()
+        .await
+        .expect("receipt json");
+    assert_eq!(receipt["data"]["current"]["version"], "1.0.0", "{receipt}");
+    // …and once it is current again, applying it is the no-op.
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", artifact]),
+        "re-apply the current version",
+    );
+    assert!(stdout.contains("nothing to do"), "{stdout}");
+}
+
+/// #339's motivating case: a package compiled with `--version content`
+/// goes A → B → (revert) → A. The revert compiles to A's own version, whose
+/// receipt is applied with that content — and superseded — so the third
+/// apply must put A's content back rather than report "nothing to do".
+#[tokio::test]
+async fn a_content_versioned_revert_rolls_back() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("content-defs");
+    let write_workflow = |message: &str| {
+        std::fs::write(
+            defs.path().join("wf.json"),
+            serde_json::json!({
+                "workflow_id": "cv-flow", "name": "CV Flow",
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": message}}}],
+            })
+            .to_string(),
+        )
+        .expect("write workflow");
+    };
+    std::fs::write(
+        defs.path().join("ch.json"),
+        serde_json::json!({
+            "channel_id": "cv-intake", "name": "cv-intake", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/cv",
+            "workflow_id": "cv-flow",
+        })
+        .to_string(),
+    )
+    .expect("write channel");
+    let out = ScratchDir::new("content-artifacts");
+    let compile = |file: &str| -> (String, String) {
+        let path = out.path().join(file);
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                defs.path().to_str().expect("utf8"),
+                "--name",
+                "cv",
+                "--version",
+                "content",
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("artifact")).expect("json");
+        let version = artifact["package"]["version"]
+            .as_str()
+            .expect("version")
+            .to_string();
+        (path, version)
+    };
+    let current = || async {
+        let receipt: serde_json::Value = client
+            .get(format!("{}/api/v1/admin/packages/cv", target.url()))
+            .send()
+            .await
+            .expect("receipt")
+            .json()
+            .await
+            .expect("receipt json");
+        receipt["data"]["current"]["version"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    write_workflow("a");
+    let (a, version_a) = compile("a.json");
+    assert!(version_a.starts_with("content-"), "{version_a}");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &a]),
+        "apply A",
+    );
+
+    write_workflow("b");
+    let (b, version_b) = compile("b.json");
+    assert_ne!(version_a, version_b);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &b]),
+        "apply B",
+    );
+    assert_eq!(current().await, version_b);
+
+    // The revert: same content as A, so the same version.
+    write_workflow("a");
+    let (reverted, version_reverted) = compile("reverted.json");
+    assert_eq!(version_reverted, version_a);
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &reverted]),
+        "apply the revert",
+    );
+    assert!(!stdout.contains("nothing to do"), "{stdout}");
+    assert_ok(
+        &package_cmd(&["diff", "-s", &target.url(), "-f", &reverted]),
+        "no drift after the revert",
+    );
+    assert_eq!(current().await, version_a);
+}
+
+/// #340: a target whose `[plugins.trust]` names keys refuses an unsigned
+/// plugin; `--signatures <dir>` attaches the deployment's signatures at
+/// plan and apply without touching the artifact, and a re-apply with a
+/// rotated key's signatures re-signs the applied plugin.
+#[tokio::test]
+async fn package_apply_attaches_signatures_from_a_directory() {
+    use orion::crypto::ed25519::SigningKey;
+    let first = SigningKey::generate();
+    let second = SigningKey::generate();
+    let keys = format!(
+        "{},{}",
+        first.public_key_base64(),
+        second.public_key_base64()
+    );
+    let client = reqwest::Client::new();
+    let target = Server::start_with(
+        "trust-target",
+        &[("ORION_PLUGINS__TRUST__PUBLIC_KEYS", keys.as_str())],
+    );
+    target.wait_ready(&client).await;
+
+    // A set with a plugin, compiled without signatures: the build does not
+    // hold the deployment's key.
+    let defs = ScratchDir::new("sig-defs");
+    let dir = defs.path();
+    std::fs::create_dir_all(dir.join("codec")).expect("dir");
+    std::fs::write(
+        dir.join("codec/plugin.toml"),
+        include_str!("../fixtures/plugins/fixture-upload.toml"),
+    )
+    .expect("manifest");
+    let component = include_bytes!("../fixtures/plugins/fixture.wasm");
+    std::fs::write(dir.join("codec/fixture.wasm"), component).expect("component");
+    std::fs::write(
+        dir.join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "wrap", "name": "Wrap",
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {"name": "parse_json",
+                    "input": {"source": "payload", "target": "input"}}},
+                {"id": "wrap", "name": "Wrap", "function": {"name": "test.fixture.wrap",
+                    "input": {"message": {"var": "data.input.msg"}, "output": "data.result"}}}
+            ],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    std::fs::write(
+        dir.join("ch.json"),
+        serde_json::json!({
+            "channel_id": "wrap-api", "name": "wrap-api", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/wrap",
+            "workflow_id": "wrap",
+        })
+        .to_string(),
+    )
+    .expect("channel");
+    let out = ScratchDir::new("sig-out");
+    let artifact = out.path().join("codec.json");
+    let artifact = artifact.to_str().expect("utf8");
+    let compiled = Command::new(orion_bin())
+        .args([
+            "compile",
+            dir.to_str().expect("utf8"),
+            "--name",
+            "codec",
+            "--version",
+            "1.0.0",
+            "-o",
+            artifact,
+        ])
+        .output()
+        .expect("compile");
+    assert_ok(&compiled, "compile");
+    let before = std::fs::read_to_string(artifact).expect("artifact");
+
+    let digest = orion::crypto::sha256_digest(component);
+    let sign_into = |key: &SigningKey, label: &str| {
+        let sigs = ScratchDir::new(label);
+        std::fs::write(
+            sigs.path().join("fixture.wasm.sig"),
+            format!("{}\n", key.sign(&digest)),
+        )
+        .expect("sig");
+        sigs
+    };
+    let stored_signature = || async {
+        let row: serde_json::Value = client
+            .get(format!(
+                "{}/api/v1/admin/plugins/test.fixture",
+                target.url()
+            ))
+            .send()
+            .await
+            .expect("plugin")
+            .json()
+            .await
+            .expect("json");
+        row["data"]["signature"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    // Unsigned, the target refuses at plan.
+    let out = package_cmd(&["plan", "-s", &target.url(), "-f", artifact]);
+    assert!(!out.status.success(), "an unsigned plugin must be refused");
+
+    let sigs = sign_into(&first, "sigs-first");
+    let sigs_path = sigs.path().to_str().expect("utf8");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "plan",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "plan with signatures",
+    );
+    assert!(stdout.contains("signed    test.fixture"), "{stdout}");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "apply with signatures",
+    );
+    assert!(stdout.contains("applied codec@1.0.0"), "{stdout}");
+    assert_eq!(stored_signature().await, first.sign(&digest));
+    assert_eq!(
+        std::fs::read_to_string(artifact).expect("artifact"),
+        before,
+        "the artifact file is untouched"
+    );
+    let resp = client
+        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .json(&serde_json::json!({"data": {"msg": "hi"}}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+
+    // The same signatures again: nothing to do.
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            sigs_path,
+        ]),
+        "re-apply",
+    );
+    assert!(stdout.contains("nothing to do"), "{stdout}");
+
+    // A rotated key's signatures re-sign the applied plugin; the content,
+    // and so the receipt, does not move.
+    let rotated = sign_into(&second, "sigs-second");
+    let stdout = assert_ok(
+        &package_cmd(&[
+            "apply",
+            "-s",
+            &target.url(),
+            "-f",
+            artifact,
+            "--signatures",
+            rotated.path().to_str().expect("utf8"),
+        ]),
+        "apply a rotated key",
+    );
+    assert!(
+        stdout.contains("re-signed plugins 'test.fixture'"),
+        "{stdout}"
+    );
+    assert_eq!(stored_signature().await, second.sign(&digest));
+    let resp = client
+        .post(format!("{}/api/v1/data/wrap", target.url()))
+        .json(&serde_json::json!({"data": {"msg": "hi"}}))
+        .send()
+        .await
+        .expect("data-plane request");
+    assert_eq!(
+        resp.status(),
+        200,
+        "{}",
+        resp.text().await.unwrap_or_default()
+    );
+}
+
+/// #342: "applied" must mean serving. A node restarted with the scheduler
+/// off quarantines the cron channel an applied package carries: re-applying
+/// the same version fails naming it (instead of "nothing to do"), and a new
+/// version's apply fails after the reload with its receipt left `staged`.
+/// Turn the scheduler back on and the same apply completes.
+#[tokio::test]
+async fn apply_fails_when_the_reload_quarantines_what_it_carries() {
+    let client = reqwest::Client::new();
+    let target = Server::start("cron-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("cron-defs");
+    let dir = defs.path();
+    let write_workflow = |message: &str| {
+        std::fs::write(
+            dir.join("wf.json"),
+            serde_json::json!({
+                "workflow_id": "nightly", "name": "Nightly",
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": message}}}],
+            })
+            .to_string(),
+        )
+        .expect("workflow");
+    };
+    write_workflow("v1");
+    std::fs::write(
+        dir.join("ch.json"),
+        serde_json::json!({
+            "channel_id": "nightly-sweep", "name": "nightly-sweep", "channel_type": "async",
+            "protocol": "cron", "workflow_id": "nightly",
+            "transport_config": {"schedule": "0 15 2 * * *", "timezone": "UTC", "payload": {}},
+        })
+        .to_string(),
+    )
+    .expect("channel");
+    let out = ScratchDir::new("cron-out");
+    let compile = |version: &str| -> String {
+        let path = out.path().join(format!("{version}.json"));
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                dir.to_str().expect("utf8"),
+                "--name",
+                "nightly",
+                "--version",
+                version,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    };
+    let v1 = compile("1.0.0");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &v1]),
+        "apply with the scheduler on",
+    );
+
+    // The same database, the scheduler off.
+    let target = target.restart_with(&[("ORION_CRON__ENABLED", "false")]);
+    target.wait_ready(&client).await;
+
+    // (a) The applied version is not "nothing to do" any more.
+    let out_a = package_cmd(&["apply", "-s", &target.url(), "-f", &v1]);
+    let stderr = String::from_utf8_lossy(&out_a.stderr);
+    assert!(!out_a.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("channels/nightly-sweep") && stderr.contains("cron.enabled = false"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("already applied and stays so"), "{stderr}");
+
+    // plan predicts it.
+    write_workflow("v2");
+    let v2 = compile("2.0.0");
+    let planned = package_cmd(&["plan", "-s", &target.url(), "-f", &v2]);
+    let stderr = String::from_utf8_lossy(&planned.stderr);
+    assert!(
+        stderr.contains("target has cron.enabled = false")
+            || stderr.contains("already quarantined on the target"),
+        "{stderr}"
+    );
+
+    // (b) A new version fails — on the node that answers, the channel's
+    // activation gate refuses it before the reload — and its receipt stays
+    // staged.
+    let out_b = package_cmd(&["apply", "-s", &target.url(), "-f", &v2]);
+    let stderr = String::from_utf8_lossy(&out_b.stderr);
+    assert!(!out_b.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("nightly-sweep") && stderr.contains("cron.enabled = false"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("the receipt stays staged"),
+        "{stderr}"
+    );
+    let receipts: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/nightly", target.url()))
+        .send()
+        .await
+        .expect("receipts")
+        .json()
+        .await
+        .expect("json");
+    let v2_state = receipts["data"]["versions"]
+        .as_array()
+        .expect("versions")
+        .iter()
+        .find(|r| r["version"] == "2.0.0")
+        .map(|r| r["state"].clone());
+    assert_eq!(v2_state, Some(serde_json::json!("staged")), "{receipts}");
+    assert_eq!(receipts["data"]["current"]["version"], "1.0.0");
+
+    // (c) With the scheduler back on, the same apply completes.
+    let target = target.restart_with(&[]);
+    target.wait_ready(&client).await;
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &v2]),
+        "apply with the scheduler back on",
+    );
+    assert!(stdout.contains("applied nightly@2.0.0"), "{stdout}");
+}
+
+/// #342, phase 4b: a member nothing refuses at activation — a connector,
+/// which has none — can still fail to load at the reload. Apply reads the
+/// reload's own answer, fails naming it, and leaves the receipt staged.
+#[tokio::test]
+async fn apply_fails_when_a_carried_connector_does_not_load() {
+    let client = reqwest::Client::new();
+    let target = Server::start("connector-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("connector-defs");
+    let dir = defs.path();
+    std::fs::write(
+        dir.join("conn.json"),
+        serde_json::json!({
+            "name": "crm", "connector_type": "http",
+            "config": {"url": "https://crm.example.com",
+                       "auth": {"type": "bearer", "token": "env://ORION_T342_NEVER_SET"}},
+        })
+        .to_string(),
+    )
+    .expect("connector");
+    std::fs::write(
+        dir.join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "crm-flow", "name": "CRM",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": "hi"}}}],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    let out = ScratchDir::new("connector-out");
+    let artifact = out.path().join("crm.json");
+    let artifact = artifact.to_str().expect("utf8");
+    let compiled = Command::new(orion_bin())
+        .args([
+            "compile",
+            dir.to_str().expect("utf8"),
+            "--name",
+            "crm",
+            "--version",
+            "1.0.0",
+            "-o",
+            artifact,
+        ])
+        .output()
+        .expect("compile");
+    assert_ok(&compiled, "compile");
+
+    let applied = package_cmd(&["apply", "-s", &target.url(), "-f", artifact]);
+    let stderr = String::from_utf8_lossy(&applied.stderr);
+    assert!(!applied.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("connectors/crm: secret_resolution")
+            && stderr.contains("ORION_T342_NEVER_SET"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("the receipt stays staged"), "{stderr}");
+    let receipts: serde_json::Value = client
+        .get(format!("{}/api/v1/admin/packages/crm", target.url()))
+        .send()
+        .await
+        .expect("receipts")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        receipts["data"]["versions"][0]["state"], "staged",
+        "{receipts}"
+    );
+    assert!(receipts["data"]["current"].is_null(), "{receipts}");
+}
+
+/// #343: an artifact's `requires.orion` holds the target to a range —
+/// `plan` and `apply` refuse one outside it, naming both, before anything is
+/// written; a satisfied range applies as before.
+#[tokio::test]
+async fn plan_and_apply_refuse_a_target_outside_the_declared_range() {
+    let client = reqwest::Client::new();
+    let target = Server::start("range-target");
+    target.wait_ready(&client).await;
+
+    let defs = ScratchDir::new("range-defs");
+    std::fs::write(
+        defs.path().join("wf.json"),
+        serde_json::json!({
+            "workflow_id": "ranged", "name": "Ranged",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": "hi"}}}],
+        })
+        .to_string(),
+    )
+    .expect("workflow");
+    let out = ScratchDir::new("range-out");
+    let compile = |file: &str, range: &str| -> String {
+        let path = out.path().join(file);
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                defs.path().to_str().expect("utf8"),
+                "--name",
+                "ranged",
+                "--version",
+                "1.0.0",
+                "--requires-orion",
+                range,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    };
+
+    let too_new = compile("too-new.json", ">=99.0.0");
+    for verb in ["plan", "apply"] {
+        let result = package_cmd(&[verb, "-s", &target.url(), "-f", &too_new]);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "{verb}: {stderr}");
+        assert!(
+            stderr.contains("ranged@1.0.0 requires Orion >=99.0.0; the target")
+                && stderr.contains(&format!("runs {}", env!("CARGO_PKG_VERSION"))),
+            "{verb}: {stderr}"
+        );
+    }
+    let receipt = client
+        .get(format!("{}/api/v1/admin/packages/ranged", target.url()))
+        .send()
+        .await
+        .expect("receipt");
+    assert_eq!(receipt.status(), 404, "no receipt may have been claimed");
+
+    let satisfied = compile(
+        "satisfied.json",
+        &format!(">={}", env!("CARGO_PKG_VERSION")),
+    );
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &target.url(), "-f", &satisfied]),
+        "apply within range",
+    );
+    assert!(stdout.contains("applied ranged@1.0.0"), "{stdout}");
 }
 
 /// A package with a plugin in it: the fourth member travels with its
@@ -842,4 +1484,392 @@ async fn package_promotes_a_model_by_reference_and_waits_for_admission() {
         "re-apply",
     );
     assert!(stdout.contains("nothing to do"), "{stdout}");
+}
+
+/// A definition set on disk, compiled at an explicit version: the shape a
+/// deploy pipeline feeds `apply` from.
+struct DefinitionSet {
+    defs: ScratchDir,
+    out: ScratchDir,
+    name: &'static str,
+}
+
+impl DefinitionSet {
+    fn new(name: &'static str) -> Self {
+        Self {
+            defs: ScratchDir::new("prune-defs"),
+            out: ScratchDir::new("prune-artifacts"),
+            name,
+        }
+    }
+
+    fn write(&self, file: &str, value: serde_json::Value) {
+        std::fs::write(self.defs.path().join(file), value.to_string()).expect("write definition");
+    }
+
+    fn remove(&self, file: &str) {
+        std::fs::remove_file(self.defs.path().join(file)).expect("remove definition");
+    }
+
+    fn workflow(&self, id: &str) {
+        self.write(
+            &format!("wf-{id}.json"),
+            serde_json::json!({
+                "workflow_id": id, "name": id,
+                "tasks": [{"id": "t1", "name": "log",
+                           "function": {"name": "log", "input": {"message": id}}}],
+            }),
+        );
+    }
+
+    fn channel(&self, id: &str, route: &str, workflow: &str) {
+        self.write(
+            &format!("ch-{id}.json"),
+            serde_json::json!({
+                "channel_id": id, "name": id, "channel_type": "sync", "protocol": "rest",
+                "methods": ["POST"], "route_pattern": route, "workflow_id": workflow,
+            }),
+        );
+    }
+
+    fn connector(&self, name: &str) {
+        self.write(
+            &format!("conn-{name}.json"),
+            serde_json::json!({
+                "name": name, "connector_type": "http",
+                "config": {"type": "http", "url": "https://example.com"},
+            }),
+        );
+    }
+
+    /// Compile the set as `version` and return the artifact's path.
+    fn compile(&self, version: &str) -> String {
+        let path = self.out.path().join(format!("{version}.json"));
+        let path = path.to_str().expect("utf8").to_string();
+        let result = Command::new(orion_bin())
+            .args([
+                "compile",
+                self.defs.path().to_str().expect("utf8"),
+                "--name",
+                self.name,
+                "--version",
+                version,
+                "-o",
+                &path,
+            ])
+            .output()
+            .expect("compile");
+        assert_ok(&result, "compile");
+        path
+    }
+}
+
+async fn get_json(client: &reqwest::Client, url: String) -> (u16, serde_json::Value) {
+    let resp = client.get(url).send().await.expect("GET");
+    let status = resp.status().as_u16();
+    (status, resp.json().await.unwrap_or_default())
+}
+
+#[track_caller]
+fn assert_fails(out: &std::process::Output, what: &str) -> (String, String) {
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !out.status.success(),
+        "{what} should have failed\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    (stdout, stderr)
+}
+
+/// #341: `--prune` removes what the previous applied version carried and
+/// this one does not — a dropped channel archived before activation, so its
+/// route can move to a new channel id in the same apply, and a dropped
+/// connector disabled — and `--prune=delete` deletes.
+#[tokio::test]
+async fn prune_removes_what_the_previous_version_held() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+    let base = target.url();
+
+    let set = DefinitionSet::new("orders");
+    set.workflow("wf-a");
+    set.workflow("wf-b");
+    set.channel("ch-a", "/prune-a", "wf-a");
+    set.channel("ch-old", "/prune-moved", "wf-b");
+    set.connector("spare");
+    let v1 = set.compile("1.0.0");
+    assert_ok(&package_cmd(&["apply", "-s", &base, "-f", &v1]), "apply v1");
+    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    assert_eq!(
+        receipt["data"]["current"]["inventory"]["channels"],
+        serde_json::json!(["ch-a", "ch-old"]),
+        "{receipt}"
+    );
+
+    // v2 moves ch-old's route to a new channel id and drops the connector.
+    set.remove("ch-ch-old.json");
+    set.channel("ch-new", "/prune-moved", "wf-b");
+    set.remove("conn-spare.json");
+    let v2 = set.compile("1.1.0");
+
+    let stdout = assert_ok(&package_cmd(&["plan", "-s", &base, "-f", &v2]), "plan v2");
+    assert!(
+        stdout.contains("note: 2 entities of orders@1.0.0 are not in this artifact"),
+        "{stdout}"
+    );
+    let stdout = assert_ok(
+        &package_cmd(&["plan", "-s", &base, "-f", &v2, "--prune"]),
+        "plan v2 --prune",
+    );
+    assert!(
+        stdout.contains("prune: archive (in orders@1.0.0, not in this artifact)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("prune: disable"), "{stdout}");
+    assert!(
+        stdout.contains("gate pending apply order"),
+        "the route collision with ch-old is resolved by the prune: {stdout}"
+    );
+
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(
+        stdout.contains("pruned channels 'ch-old' (archived)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("pruned connectors 'spare' (disabled)"),
+        "{stdout}"
+    );
+    let (_, old) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-old")).await;
+    assert_eq!(old["data"]["status"], "archived", "{old}");
+    let (_, connectors) = get_json(&client, format!("{base}/api/v1/admin/connectors")).await;
+    let spare = connectors["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["name"] == "spare")
+        .expect("the connector is disabled, not deleted");
+    assert_eq!(spare["enabled"], false, "{spare}");
+    // The route is served by the new channel.
+    let resp = client
+        .post(format!("{base}/api/v1/data/prune-moved"))
+        .json(&serde_json::json!({"data": {}}))
+        .send()
+        .await
+        .expect("data call");
+    assert_eq!(resp.status(), 200);
+    let (_, status) = get_json(&client, format!("{base}/api/v1/admin/engine/status")).await;
+    assert!(
+        status["data"]["load_issues"]["channels"]
+            .as_array()
+            .is_none_or(|c| c.is_empty()),
+        "{status}"
+    );
+
+    // Re-running the same deploy prunes nothing.
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "re-apply v2 --prune",
+    );
+    assert!(stdout.contains("nothing to prune"), "{stdout}");
+
+    // v3 drops wf-b and its channel, deleted this time.
+    set.remove("wf-wf-b.json");
+    set.remove("ch-ch-new.json");
+    let v3 = set.compile("1.2.0");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v3, "--prune=delete"]),
+        "apply v3 --prune=delete",
+    );
+    assert!(
+        stdout.contains("pruned channels 'ch-new' (deleted)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("pruned workflows 'wf-b' (deleted)"),
+        "{stdout}"
+    );
+    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-b")).await;
+    assert_eq!(code, 404);
+    let (code, _) = get_json(&client, format!("{base}/api/v1/admin/channels/ch-new")).await;
+    assert_eq!(code, 404);
+}
+
+/// #341: a removal something outside the prune depends on is refused with
+/// nothing written; an entity another package now carries is kept; and a
+/// receipt from before inventories prunes nothing and says so.
+#[tokio::test]
+async fn prune_refuses_keeps_and_explains() {
+    let client = reqwest::Client::new();
+    let target = Server::start("target");
+    target.wait_ready(&client).await;
+    let base = target.url();
+
+    let set = DefinitionSet::new("orders");
+    set.workflow("wf-x");
+    set.workflow("wf-y");
+    set.channel("ch-x", "/refuse-x", "wf-x");
+    set.connector("shared");
+    let v1 = set.compile("1.0.0");
+    assert_ok(&package_cmd(&["apply", "-s", &base, "-f", &v1]), "apply v1");
+
+    // Another package takes over the connector.
+    let billing = DefinitionSet::new("billing");
+    billing.connector("shared");
+    let billing_v1 = billing.compile("2.1.0");
+    assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &billing_v1]),
+        "apply billing",
+    );
+
+    // A channel outside any package routes to wf-y.
+    let resp = client
+        .post(format!("{base}/api/v1/admin/channels"))
+        .json(&serde_json::json!({
+            "channel_id": "outside", "name": "outside", "channel_type": "sync",
+            "protocol": "rest", "methods": ["POST"], "route_pattern": "/outside",
+            "workflow_id": "wf-y",
+        }))
+        .send()
+        .await
+        .expect("create outside channel");
+    assert_eq!(resp.status(), 201);
+    let resp = client
+        .patch(format!("{base}/api/v1/admin/channels/outside/status"))
+        .json(&serde_json::json!({"status": "active"}))
+        .send()
+        .await
+        .expect("activate outside channel");
+    assert_eq!(resp.status(), 200);
+
+    set.remove("wf-wf-y.json");
+    set.remove("conn-shared.json");
+    let v2 = set.compile("1.1.0");
+    let (_, stderr) = assert_fails(
+        &package_cmd(&["plan", "-s", &base, "-f", &v2, "--prune"]),
+        "plan v2 --prune",
+    );
+    assert!(
+        stderr.contains(
+            "cannot prune workflows/wf-y: active channel 'outside' (not in this package) still \
+             routes to it"
+        ),
+        "{stderr}"
+    );
+    let (stdout, stderr) = assert_fails(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(stderr.contains("nothing was written"), "{stderr}");
+    assert!(
+        stdout.contains("keep: now carried by billing@2.1.0"),
+        "{stdout}"
+    );
+    let (_, receipt) = get_json(&client, format!("{base}/api/v1/admin/packages/orders")).await;
+    assert_eq!(
+        receipt["data"]["versions"].as_array().map(Vec::len),
+        Some(1),
+        "the refused apply claimed no receipt: {receipt}"
+    );
+    let (_, wf) = get_json(&client, format!("{base}/api/v1/admin/workflows/wf-y")).await;
+    assert_eq!(wf["data"]["status"], "active", "{wf}");
+
+    // Once the outside channel is gone, the prune goes through and keeps
+    // the connector billing carries.
+    let resp = client
+        .delete(format!("{base}/api/v1/admin/channels/outside"))
+        .send()
+        .await
+        .expect("delete outside channel");
+    assert_eq!(resp.status(), 204);
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &v2, "--prune"]),
+        "apply v2 --prune",
+    );
+    assert!(
+        stdout.contains("pruned workflows 'wf-y' (archived)"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("pruned connectors"), "{stdout}");
+
+    // A receipt recorded before inventories: nothing to measure from.
+    let resp = client
+        .put(format!("{base}/api/v1/admin/packages/legacy"))
+        .json(&serde_json::json!({
+            "version": "0.9.0", "content_hash": "sha256:old", "state": "applied",
+        }))
+        .send()
+        .await
+        .expect("legacy receipt");
+    assert_eq!(resp.status(), 200);
+    let legacy = DefinitionSet::new("legacy");
+    legacy.workflow("wf-legacy");
+    let legacy_v1 = legacy.compile("1.0.0");
+    let stdout = assert_ok(
+        &package_cmd(&["apply", "-s", &base, "-f", &legacy_v1, "--prune"]),
+        "apply legacy --prune",
+    );
+    assert!(
+        stdout.contains("legacy@0.9.0 was applied before receipts recorded what they carried"),
+        "{stdout}"
+    );
+}
+
+/// #345: `[packages] apply` on a real process — `/readyz` turns green only
+/// once the package serves; a tampered artifact makes the process exit
+/// non-zero; `validate-config` names a missing file.
+#[tokio::test]
+async fn a_node_applies_its_configured_packages_at_startup() {
+    let client = reqwest::Client::new();
+    let set = DefinitionSet::new("bootpkg");
+    set.workflow("wf-boot");
+    set.channel("ch-boot", "/boot-e2e", "wf-boot");
+    let artifact = set.compile("1.0.0");
+
+    let node = Server::start_with("boot", &[("ORION_PACKAGES__APPLY", &artifact)]);
+    node.wait_ready(&client).await;
+    let resp = client
+        .post(format!("{}/api/v1/data/boot-e2e", node.url()))
+        .json(&serde_json::json!({"data": {}}))
+        .send()
+        .await
+        .expect("data call");
+    assert_eq!(resp.status(), 200);
+    let (_, ready) = get_json(&client, format!("{}/readyz", node.url())).await;
+    assert_eq!(ready["components"]["packages"], "ok", "{ready}");
+
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&artifact).expect("artifact")).expect("json");
+    doc["package"]["content_hash"] = serde_json::json!("sha256:00");
+    let tampered = set.out.path().join("tampered.json");
+    std::fs::write(&tampered, doc.to_string()).expect("write");
+    let tampered = tampered.to_str().expect("utf8").to_string();
+    let mut bad = Server::start_with("bad-boot", &[("ORION_PACKAGES__APPLY", &tampered)]);
+    let status = {
+        let mut waited = 0;
+        loop {
+            if let Some(status) = bad.child.try_wait().expect("try_wait") {
+                break status;
+            }
+            assert!(waited < 120, "a node whose package failed must exit");
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            waited += 1;
+        }
+    };
+    assert!(!status.success());
+    let log = std::fs::read_to_string(&bad.log).expect("log");
+    assert!(log.contains("failed to apply at startup"), "{log}");
+
+    let out = Command::new(orion_bin())
+        .arg("validate-config")
+        .env("ORION_PACKAGES__APPLY", "/nonexistent/orders.json")
+        .output()
+        .expect("validate-config");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("packages.apply[0]"), "{stderr}");
 }

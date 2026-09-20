@@ -1,6 +1,6 @@
 <!-- description: orion-cli models registers, admits, activates, versions and exports ONNX models by artifact reference, with --wait polling for the admission verdict. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # `orion-cli models`
 
@@ -31,7 +31,7 @@ admission fails, `2` on timeout. `--interval` sets the poll period (default
 |------------|-------------|
 | `list` | List models; filter with `--status`, `--tag`, `--admission` (`pending`, `passed`, `failed`). Sorts by `model_id`, `status`, `created_at`, `updated_at`. |
 | `get <id>` | Show a model with its admission verdict and this node's residency; `--verbose` includes the manifest. |
-| `create` | Register a draft: `-f <manifest.json>` plus `--connector`, `--key` and `--digest` naming the artifact. `--signature <path>` supplies the Ed25519 signature over the digest that `[models.trust]` requires; `--tag` is repeatable; `--wait` polls until the verdict lands. |
+| `create` | Register a draft: `-f <manifest.json>` plus `--connector`, `--key` and `--digest` naming the artifact. `--signature <path>` supplies the Ed25519 signature over the digest that `[models.trust]` requires, as [`orion-server model sign`](../orion-server/model.md) writes it; `--tag` is repeatable; `--wait` polls until the verdict lands. |
 | `update <id>` | Replace the draft's manifest, artifact reference, signature or tags. |
 | `delete <id>` | Delete every version; prompts unless `--yes`. |
 | `activate <id>` | Activate a draft. `--dry-run` pre-flights; `--defer-reload` batches. Refused with `409` until the admission verdict is `passed`. |

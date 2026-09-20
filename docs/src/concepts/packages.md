@@ -1,6 +1,6 @@
 <!-- description: A package is one Orion service versioned as a unit — its channels, workflows, connectors, plugins and models — and the boundary along which a service ships. -->
 <!-- type: concept -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-19 -->
 
 # Packages
 
@@ -69,8 +69,12 @@ The hash is computed over importable content only. Versions, statuses and timest
 
 A target instance remembers what was applied to it: one *receipt* per package version. Receipts make two guarantees mechanical rather than procedural:
 
-- **An applied version is content-immutable.** Re-applying an identical artifact is a no-op; a changed artifact reusing an applied version is refused. Content changes ride a version bump.
+- **An applied version is content-immutable.** Re-applying the version a target currently runs is a no-op; a changed artifact reusing an applied version is refused. Content changes ride a version bump. [`compile --version content`](../reference/cli/orion-server/compile.md#content-versions) makes that bump automatic by naming the version after the content hash.
+- **A package can require an Orion version.** A set's [`package` document](../reference/cli/shared-definitions.md#the-package-document) declares a range such as `>=1.8.2, <2`. Offline commands check the running binary against it, and `plan` and `apply` check the target.
+- **Applied means serving.** `apply` records a version as applied only after the reload it caused serves every member of the package. A member the reload quarantined fails the apply and leaves the receipt `staged`.
 - **Rollback is a re-apply.** Applying the previous version makes it current again. Entities roll forward carrying the old content, and the receipt history records both moves.
+- **A node can apply its own packages.** [`[packages] apply`](../reference/configuration/packages.md) names artifacts a node applies at startup, before it reports ready. A restart is a no-op, and a version a later one superseded is left as it is.
+- **A receipt records what its version carried.** That inventory is what [`apply --prune`](../reference/cli/orion-server/package.md#prune-what-a-version-dropped) measures from. It removes what the previous version carried and the new one does not, and never touches what another package carries.
 
 ## Next steps
 

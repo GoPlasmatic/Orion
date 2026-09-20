@@ -12,16 +12,19 @@
 #      levels): ORION_SERVER__PORT=3000, ORION_STORAGE__URL=..., and so on.
 #      Env vars win over this file. Every setting's variable is listed in
 #      docs/src/configuration/reference.md.
-#   2. Placeholders inside this file: `$${VAR}` (required — startup fails if
-#      unset) or `$${VAR:-default}` (optional). `$$` escapes a literal `$`,
-#      which is why the two names above are written with a doubled `$`:
-#      substitution runs over the raw file text, comments included.
+#   2. Placeholders inside this file: `${VAR}` (required — startup fails if
+#      unset), `${VAR:-default}` (optional; the default applies when VAR is
+#      unset) or `${VAR:?message}` (required — startup fails, quoting the
+#      message, when VAR is unset or empty). A default or a message may nest
+#      another placeholder: `${A:-${B:-c}}`. `$$` escapes a literal `$` in a
+#      value. Comments are skipped, so a placeholder mentioned in one is
+#      never required.
 #      The same substitution runs on connector `config_json` blobs at startup,
 #      so secrets stay out of the database:
 #         [storage]
 #         url = "${ORION_DB_URL:-sqlite:orion.db}"
 #         url = "env://ORION_STATE_DB_URL"
-#      Two ways to keep a credential out of this file. `$${VAR}` is textual and
+#      Two ways to keep a credential out of this file. `${VAR}` is textual and
 #      runs before parsing, so it can build a value out of parts; `env://NAME`
 #      replaces a whole value after parsing, which is the spelling a
 #      connector's `connection_string` already uses. Both are strict: an unset
@@ -32,7 +35,7 @@
 #      file and knows it reads it. A placeholder in a connector `config_json`
 #      cannot be seen while the config loads, so if you point one at a name
 #      shaped like a setting (`ORION_` with a `__` in it), use the reserved
-#      `ORION_SECRET_*` namespace (`$${ORION_SECRET_DB_PASSWORD}`) — a name
+#      `ORION_SECRET_*` namespace (`${ORION_SECRET_DB_PASSWORD}`) — a name
 #      that looks like a setting and is not one stops the boot.
 #
 # Convention in this file: a comment indented two or more spaces past the `#`
@@ -314,7 +317,7 @@
 # security_protocol = "sasl_ssl"     # plaintext | ssl | sasl_plaintext | sasl_ssl
 # sasl_mechanism = "SCRAM-SHA-256"   # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
 # sasl_username = "orion"
-# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or $${KAFKA_PASSWORD}
+# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or ${KAFKA_PASSWORD}
 # ssl_ca_location = ""               # CA bundle for broker verification, e.g. "/etc/kafka/ca.pem";
                                      # unset uses the system trust store
 #
@@ -326,8 +329,8 @@
 #   [kafka.auth]
 #   security_protocol = "sasl_ssl"
 #   sasl_mechanism = "PLAIN"
-#   sasl_username = "$${CONFLUENT_API_KEY}"
-#   sasl_password = "$${CONFLUENT_API_SECRET}"
+#   sasl_username = "${CONFLUENT_API_KEY}"
+#   sasl_password = "${CONFLUENT_API_SECRET}"
 #
 # AWS MSK with IAM is not supported; use MSK's SCRAM-SHA-512 credentials:
 #   security_protocol = "sasl_ssl"
@@ -504,6 +507,21 @@
 #                                   # 45k rows/s. Capped at 1000 by SQLite's bind limit.
 # batch_flush_interval_ms = 100     # Flush a partial batch after this long
 # batch_workers = 4                 # Each worker owns an independent batch
+
+# ============================================================
+# Packages — artifacts this node applies to itself at startup
+# ============================================================
+
+# [packages]
+# Compiled package artifacts (what `orion-server compile` or `package export`
+# writes), applied in order once the first generation is published, through
+# the same sequence `orion-server package apply` runs. /readyz answers 503
+# until every one is applied and serving; a package that fails to apply
+# stops the process with a non-zero exit. A restart with the same artifacts
+# is a no-op, and a version a later one superseded is left as it is.
+# apply = []                         # e.g. ["/pkg/orders/orders.json"]
+# signatures_dir = "/run/plugin-signatures"   # .sig files attached to plugins and models
+# apply_timeout_secs = 1800          # Whole startup apply, admission included; 0 = no limit
 
 # ============================================================
 # Plugins — custom task functions as sandboxed WebAssembly
