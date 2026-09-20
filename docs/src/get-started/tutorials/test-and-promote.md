@@ -15,7 +15,7 @@ A service you can call is not yet a service you can ship. This tutorial takes a 
 
 ## Before you start
 
-Tested with Orion 1.8.2. You need:
+Tested with Orion 1.9.0. You need:
 
 - `orion-server`, `curl`, `jq` and Git
 - one Orion instance on `http://localhost:8080`; the promotion steps start a second one on port `9090`

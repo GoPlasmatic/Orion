@@ -15,7 +15,7 @@ This tutorial follows one orders service from source files to a safe update. It 
 
 ## Before you start
 
-Tested with Orion 1.8.2. You need:
+Tested with Orion 1.9.0. You need:
 
 - Git, and Docker with Compose
 - `curl`, `jq`, `orion-server` and `orion-cli`

@@ -8,7 +8,7 @@ A Kafka channel runs a workflow for every record on a topic, and the workflow is
 
 ## Before you start
 
-Tested with Orion 1.8.2. You need an Orion server, access to a Kafka broker, and permission to create or use a topic and a consumer group. The runnable example also needs Git, Docker with Compose, `curl`, Python 3 and a POSIX shell. Do not reuse a production consumer group while following the guide.
+Tested with Orion 1.9.0. You need an Orion server, access to a Kafka broker, and permission to create or use a topic and a consumer group. The runnable example also needs Git, Docker with Compose, `curl`, Python 3 and a POSIX shell. Do not reuse a production consumer group while following the guide.
 
 ## 1. Enable the consumer
 

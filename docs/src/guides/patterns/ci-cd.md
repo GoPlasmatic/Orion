@@ -10,7 +10,7 @@ The artifact is the deployable. `orion-server package export` produces one versi
 
 ## Before you start
 
-Tested with Orion 1.8.2. You need Git, `orion-server`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin token from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
+Tested with Orion 1.9.0. You need Git, `orion-server`, a repository for the definitions, and a CI system that can run shell commands. Planning and applying also need network access to the target instance and an admin token from the CI secret store. The GitHub Actions YAML below is an example; adapt its secret names and installation policy for your provider.
 
 ## Lay out the repository
 

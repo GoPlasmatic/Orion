@@ -15,7 +15,7 @@ An Orion service is a workflow that says what to do and a channel that says wher
 
 ## Before you start
 
-Tested with Orion 1.8.2. You need:
+Tested with Orion 1.9.0. You need:
 
 - an Orion server on `http://localhost:8080`, from [Install and run Orion](../install.md)
 - `curl` and a POSIX shell (on Windows, WSL)

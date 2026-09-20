@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-20
+
 ### Added
 
 - **`${VAR:?message}` and nested defaults in the config file** ([#344]). A
@@ -5804,7 +5806,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/GoPlasmatic/Orion/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/GoPlasmatic/Orion/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/GoPlasmatic/Orion/compare/v1.7.0...v1.8.0
