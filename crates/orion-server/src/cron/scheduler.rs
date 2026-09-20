@@ -294,6 +294,7 @@ mod tests {
     use super::*;
     use crate::storage::repositories::cron::{CronOccurrenceFilter, SqlCronRepository};
     use chrono::Duration;
+    use chrono::Timelike;
 
     fn descriptor_at(channel_id: &str, schedule: &str, version: i64) -> CronDescriptor {
         serde_json::from_value::<crate::channel::CronTransportConfig>(serde_json::json!({
@@ -413,7 +414,17 @@ mod tests {
     async fn downtime_runs_the_newest_and_summarises_the_rest() {
         let repo = repo().await;
         let d = descriptor("ch", "0 0 * * * *"); // hourly
-        let start = repo.db_now().await.expect("db now");
+        // Half past an hour, seven hours back. Both halves matter: mid-hour
+        // keeps the first pass out of the misfire grace around a boundary —
+        // run at 02:00:01 it would materialise the 02:00 occurrence itself,
+        // correctly, and the count below would be two — and backdating keeps
+        // every instant the passes plan in the past whatever the clock says.
+        let now = repo.db_now().await.expect("db now");
+        let start = now
+            .date()
+            .and_hms_opt(now.hour(), 30, 0)
+            .expect("a valid wall-clock instant")
+            - Duration::hours(7);
         pass(&repo, &d, start).await;
 
         // Six hours later, having scheduled nothing in between.
