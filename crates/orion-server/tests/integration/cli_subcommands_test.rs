@@ -2887,14 +2887,16 @@ fn lint_reports_a_broken_model_manifest_rather_than_calling_it_nothing() {
 }
 
 /// A workflow that computes a deadline and hands it to `model_infer`.
-/// `temp_data.ms` is 50 by the time the inference runs.
+/// `temp_data.ms` is 5000 by the time the inference runs — a budget wide
+/// enough that a loaded CI runner cannot miss it, since what is under test
+/// is that the deadline is *computed*, never that the model is fast.
 fn computed_timeout_workflow(timeout: &str) -> String {
     format!(
         r#"{{"workflow_id":"deadline","name":"deadline","condition":true,"tasks":[
             {{"id":"parse","name":"Parse","function":{{"name":"parse_json",
                 "input":{{"source":"payload","target":"board"}}}}}},
             {{"id":"ms","name":"Budget","function":{{"name":"map",
-                "input":{{"mappings":[{{"path":"temp_data.ms","logic":{{"+":[40,10]}}}}]}}}}}},
+                "input":{{"mappings":[{{"path":"temp_data.ms","logic":{{"+":[4000,1000]}}}}]}}}}}},
             {{"id":"infer","name":"Infer","function":{{"name":"model_infer",
                 "input":{{"model":"ada.c4-tiny","input":{{"var":""}},
                           "timeout_ms":{timeout},"output":"data.policy"}}}}}}]}}"#
@@ -2953,7 +2955,7 @@ fn dry_run_takes_a_deadline_the_workflow_computes() {
 
     // The sign check did not go away with the literal — it moved to the one
     // moment the value is a number, which is the call.
-    let out = run(r#"{"-":[{"var":"temp_data.ms"},50]}"#, "deadline-zero-wf");
+    let out = run(r#"{"-":[{"var":"temp_data.ms"},5000]}"#, "deadline-zero-wf");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "a zero deadline is refused");
     assert!(
