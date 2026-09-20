@@ -1,4 +1,5 @@
 {
+  "id": "sql-files-db",
   "name": "sql-files-db",
   "connector_type": "db",
   "tags": ["pkg:sql-files"],

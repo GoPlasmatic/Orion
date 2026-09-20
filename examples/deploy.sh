@@ -52,6 +52,39 @@ if [[ -z "$DIR" || ! -d "$DIR" ]]; then
   echo "example: ./deploy.sh high-value-order" >&2
   exit 1
 fi
+# A package written in source form — `$sql`, `$from`, `$use`, `$each`, or a
+# `shared.json` beside the definitions — is compiled before anything is sent.
+# The admin API is canonical-only by design and refuses source form with
+# `UNCOMPILED_SOURCE`, so this is the same `compile` step a promotion does,
+# run into a scratch directory whose file names are the ones below.
+if grep -qlE '"\$(sql|from|use|each|param)"' "$DIR"/*.json 2>/dev/null || [[ -f "$DIR/shared.json" ]]; then
+  ORION_BIN="${ORION_BIN:-}"
+  if [[ -z "$ORION_BIN" ]]; then
+    for candidate in ../target/debug/orion-server ../target/release/orion-server "$(command -v orion-server || true)"; do
+      [[ -x "$candidate" ]] && { ORION_BIN="$candidate"; break; }
+    done
+  fi
+  if [[ -z "$ORION_BIN" ]]; then
+    echo "$DIR is written in source form and needs 'orion-server compile' first." >&2
+    echo "Build it (cargo build) or set ORION_BIN=<path to orion-server>." >&2
+    exit 1
+  fi
+  COMPILED="$(mktemp -d)"
+  trap 'rm -rf "$COMPILED"' EXIT
+  echo "==> Compile '$DIR' (source form) -> canonical definitions"
+  "$ORION_BIN" compile "$DIR" --name "$(basename "$DIR")" --version 0.0.0 \
+    --format dir -o "$COMPILED" > /dev/null
+  # Everything the deploy reads that compile does not emit: the sample
+  # request, a plugin and its component, a model entrant.
+  for extra in request.json plugin.toml; do
+    [[ -e "$DIR/$extra" ]] && cp -R "$DIR/$extra" "$COMPILED/"
+  done
+  [[ -d "$DIR/entrant" ]] && cp -R "$DIR/entrant" "$COMPILED/"
+  PLUGIN_COMPONENT_FILE="$(ls "$DIR"/*.wasm 2>/dev/null | head -1 || true)"
+  [[ -n "$PLUGIN_COMPONENT_FILE" ]] && cp "$PLUGIN_COMPONENT_FILE" "$COMPILED/"
+  DIR="$COMPILED"
+fi
+
 WF_FILE="$DIR/workflow.json"
 CH_FILE="$DIR/channel.json"
 REQ_FILE="$DIR/request.json"
