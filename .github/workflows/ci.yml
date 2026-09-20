@@ -231,8 +231,12 @@ jobs:
         run: |
           # workflow*.json, not workflow.json: channel-composition ships a
           # second workflow (workflow-lookup.json) the narrower glob skipped.
+          #
+          # --definitions: a workflow written in source form resolves its
+          # `$from`, `$use` and `$each` against the package's own shared
+          # document, which a per-file lint does not otherwise load.
           for f in examples/packages/*/workflow*.json; do
-            ./target/debug/orion-server lint "$f"
+            ./target/debug/orion-server lint "$f" --definitions "$(dirname "$f")"
           done
 
       # `--plugin-dir`: the fixed-width-statement cases run the example's
