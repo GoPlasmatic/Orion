@@ -15,7 +15,7 @@
 
 ## Before you start
 
-Tested with Orion 1.9.0. You need:
+Tested with Orion 1.9.1. You need:
 
 - an Orion server on `http://localhost:8080`, and [Build your first service](./first-service.md) behind you
 - Git, and Docker with Compose

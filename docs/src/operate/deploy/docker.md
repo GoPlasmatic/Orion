@@ -29,7 +29,7 @@ Both halves are needed. The volume gives the file somewhere durable to live, and
 ```yaml
 services:
   orion:
-    image: ghcr.io/goplasmatic/orion:1.9.0
+    image: ghcr.io/goplasmatic/orion:1.9.1
     ports: ["8080:8080"]
     environment:
       ORION_STORAGE__URL: sqlite:/app/data/orion.db

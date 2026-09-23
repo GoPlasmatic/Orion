@@ -3782,7 +3782,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orion-api"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "chrono",
  "serde",
@@ -3792,7 +3792,7 @@ dependencies = [
 
 [[package]]
 name = "orion-cli"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -3814,7 +3814,7 @@ dependencies = [
 
 [[package]]
 name = "orion-client"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "bytes",
  "orion-api",
@@ -3828,7 +3828,7 @@ dependencies = [
 
 [[package]]
 name = "orion-plugin-sdk"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -3837,7 +3837,7 @@ dependencies = [
 
 [[package]]
 name = "orion-server"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "aes-gcm",
  "arc-swap",

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-09-23
+
+### Changed
+
+- **dataflow-rs 3.14** (with datalogic-rs 5.6), **tract 0.23.8** and
+  **jsonwebtoken 11.1**, plus a semver-compatible `cargo update`. ONNX model
+  support is unchanged, Metal included: tract 0.23.8 made its ONNX loader and
+  Metal runtime optional features, and the server now enables them by name.
+
+- **Workflow syntax new in dataflow-rs 3.14 is accepted but not yet
+  supported by Orion's tooling.** `loop.setup`, `loop.over`, `loop.as`,
+  `loop.scratch`, a task's `for_each`, and a `map` mapping's `unset` and
+  `on_null` pass `orion-server lint`, and the engine runs them as authored.
+  Orion's own loop checks, `clippy`, `fmt` and the docs do not cover them
+  yet, so a finding about a slot one of them writes (for example
+  `temp_data.<as>`) may be missing or wrong. They are to be adopted properly
+  in a later minor release; until then, treat them as unsupported.
+
 ### Fixed
 
 - **A looping workflow no longer holds a copy of every write until its run
@@ -5823,7 +5841,8 @@ Initial release.
 [#280]: https://github.com/GoPlasmatic/Orion/issues/280
 [#281]: https://github.com/GoPlasmatic/Orion/issues/281
 
-[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/GoPlasmatic/Orion/compare/v1.9.1...HEAD
+[1.9.1]: https://github.com/GoPlasmatic/Orion/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/GoPlasmatic/Orion/compare/v1.8.2...v1.9.0
 [1.8.2]: https://github.com/GoPlasmatic/Orion/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/GoPlasmatic/Orion/compare/v1.8.0...v1.8.1
