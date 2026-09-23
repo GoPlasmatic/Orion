@@ -86,7 +86,8 @@ pub struct ExecOpts<'a> {
     /// Deadline for the whole call. `None` runs untimed.
     pub timeout_ms: Option<u64>,
     /// Per-task trace capture, when the channel opted in via
-    /// `config.tracing.task_details`.
+    /// `config.tracing.task_details`. Also decides the message's
+    /// `capture_changes`: only a traced run pays for the per-write value copies.
     pub capture: Option<TraceCapture>,
     /// The rollout bucket to stamp on the message, from
     /// [`crate::engine::utils::rollout_bucket_for_identity`].
@@ -133,9 +134,18 @@ pub async fn execute_admitted(
     metadata: &Value,
     opts: ExecOpts<'_>,
 ) -> Execution {
+    // Per-write capture is on only for a traced run. With it on, every write
+    // deep-copies its old and new value into the audit trail, and those copies
+    // stay on the message until the run returns — so a looping workflow holds
+    // sweeps × writes × value size (#350; about 65 bytes per number written).
+    // Nothing on this path reads `AuditTrail::changes`; the trace's per-step
+    // diff does, and `TraceOptions { changes: true }` only reports what was
+    // captured, it never turns capture on. The audit entries themselves are
+    // recorded either way.
     let mut builder = dataflow_rs::Message::builder()
         .payload_json(data)
-        .metadata_json(metadata);
+        .metadata_json(metadata)
+        .capture_changes(opts.capture.is_some());
     if let Some(bucket) = opts.routing_bucket {
         builder = builder.routing_bucket(bucket);
     }
@@ -205,6 +215,67 @@ mod tests {
         assert_eq!(
             RunOutcome::EngineError(dataflow_rs::DataflowError::Unknown("x".into())).status_label(),
             "error"
+        );
+    }
+
+    /// #350: a looping workflow run without a trace keeps one audit entry per
+    /// task per sweep but no value copies, so its memory does not grow with the
+    /// sweeps. A traced run still captures them — its per-step diff is built
+    /// from them.
+    #[tokio::test]
+    async fn only_a_traced_run_captures_per_write_changes() {
+        let workflow = dataflow_rs::Workflow::from_json(
+            r#"{"id":"w","name":"w","channel":"c","priority":0,"condition":true,
+                "loop":{"counter":"i","max":3},
+                "tasks":[{"id":"m","name":"m","function":{"name":"map","input":
+                  {"mappings":[{"path":"temp_data.seen","logic":{"var":"temp_data.i"}}]}}}]}"#,
+        )
+        .expect("workflow parses");
+        let engine = Arc::new(
+            dataflow_rs::Engine::new(vec![workflow], std::collections::HashMap::new())
+                .expect("engine builds"),
+        );
+        let data = serde_json::json!({"xs": [1, 2, 3]});
+        let metadata = serde_json::json!({});
+
+        let untraced = execute_admitted(&engine, "c", &data, &metadata, ExecOpts::default()).await;
+        assert!(untraced.outcome.is_ok());
+        let trail = untraced.message.audit_trail();
+        assert_eq!(trail.len(), 3, "one entry per sweep is still recorded");
+        assert!(
+            trail.iter().all(|entry| entry.changes.is_empty()),
+            "an untraced run holds no value copies"
+        );
+
+        let traced = execute_admitted(
+            &engine,
+            "c",
+            &data,
+            &metadata,
+            ExecOpts {
+                capture: Some(TraceCapture {
+                    max_snapshot_bytes: 0,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(traced.outcome.is_ok());
+        assert!(
+            traced
+                .message
+                .audit_trail()
+                .iter()
+                .all(|entry| entry.changes.len() == 1),
+            "a traced run captures each write"
+        );
+        let trace = traced.task_trace.expect("a traced run returns its trace");
+        assert!(
+            trace
+                .steps
+                .iter()
+                .all(|step| step.changes.as_ref().is_some_and(|c| c.len() == 1)),
+            "the trace's per-step diff is still populated"
         );
     }
 }

@@ -86,7 +86,10 @@ where
 ///   nowhere.
 /// - `changes` — the per-task diff, which is what `task_details` is *for*
 ///   ("inspect intermediate inputs/outputs for each task"). Correctly attributed
-///   on a `Skip`, unlike reading `audit_trail.last()`.
+///   on a `Skip`, unlike reading `audit_trail.last()`. This reports the diff
+///   the message captured and does not turn capture on, which is why
+///   `execute_admitted` enables `capture_changes` exactly when it asks for a
+///   trace.
 /// - `redact_paths: ["metadata.headers", "metadata.cookies"]` — a pruning
 ///   clone, so neither map is cloned into a step in the first place.
 ///   `context.metadata` is stripped from `result_json` on read (S14) but

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A looping workflow no longer holds a copy of every write until its run
+  ends** ([#350]). Every execution was built with dataflow-rs's
+  `capture_changes` on, its default, so each write deep-copied its old and new
+  value into the message's audit trail, and a `loop` kept those copies for
+  every sweep: about 65 bytes per number written, several GB per run for a
+  cron workflow writing large arrays over a thousand sweeps. Nothing on the
+  execution path reads them, so capture is now on only for a run that records
+  a trace (`config.tracing.task_details = true`), whose per-step `changes` are
+  built from it. The audit entries are still recorded without values. On a
+  2,000-sweep loop writing three 2,000-number arrays per sweep, memory held
+  during the run drops from 734 MiB to 1 MiB, and the run takes about 40%
+  less time. `task_details` traces are unchanged.
+
+[#350]: https://github.com/GoPlasmatic/Orion/issues/350
+
 ## [1.9.0] - 2026-09-20
 
 ### Added
