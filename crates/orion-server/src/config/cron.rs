@@ -45,12 +45,15 @@ pub struct CronConfig {
     /// database chatter against how quickly a backlog drains.
     pub claim_batch_size: i64,
 
-    /// How long a claim is good for before another node may take the
-    /// occurrence over.
+    /// How long a claim, and a singleton slot, is good for before another
+    /// node may take the occurrence over.
     ///
-    /// The floor, not the whole story: a running attempt extends its claim to
-    /// cover its own timeout (see `default_timeout_ms`), so this is what
-    /// governs the window between a node dying and its work being recovered.
+    /// A running attempt renews both every `heartbeat_interval_secs`, however
+    /// long its channel's timeout, and stops itself if it cannot renew for
+    /// most of a lease. So this is the window between a node dying (or being
+    /// drained past `shutdown_timeout_secs`) and its work and its slots being
+    /// recovered, and also how long a database outage a running attempt
+    /// survives.
     pub claim_lease_secs: u64,
 
     /// How often a running attempt renews its claim and its singleton.
@@ -76,8 +79,9 @@ pub struct CronConfig {
     /// A *default*, not a ceiling — unlike Kafka's and the trace queue's, which
     /// protect a shared poll loop and a shared worker pool. A cron worker holds
     /// nothing but its own slot, so a channel that genuinely needs six hours
-    /// may say so. The default is finite because the singleton lease is sized
-    /// from it: an untimed workflow would hold its key until the process died.
+    /// may say so. The default is finite because a run holds its singleton
+    /// slot for as long as it runs: an untimed workflow that never returned
+    /// would hold its key until the process died.
     pub default_timeout_ms: u64,
 
     /// How long shutdown waits for in-flight occurrences before cancelling them

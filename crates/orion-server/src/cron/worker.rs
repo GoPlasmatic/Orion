@@ -219,7 +219,7 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
     .then(|| SingletonRequest {
         key: descriptor.singleton_key.as_str(),
         holder: deps.instance_id.as_str(),
-        lease_secs: 0, // replaced below; the lease is sized from the timeout
+        lease_secs: 0, // replaced below, with the claim's lease
         slots: descriptor.singleton_slots,
     });
 
@@ -234,16 +234,19 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
     )
     .unwrap_or(deps.config.default_timeout_ms);
 
-    // The lease has to outlast the work, or a healthy attempt loses its own
-    // occurrence to a peer partway through. Heartbeats extend it, but the
-    // *initial* value must already cover the run, so that a single slow
-    // heartbeat is not enough to lose it.
-    let lease_secs = Ord::max(
-        deps.config.claim_lease_secs,
-        timeout_ms / 1000 + deps.config.heartbeat_interval_secs,
-    );
+    // The claim and the singleton are held for one lease at a time, renewed
+    // every heartbeat, however long the channel's timeout. The lease is what
+    // a dead node leaves behind: sized to the timeout, a crashed or drained
+    // node held its slots for the whole of it (#352, forty minutes for a
+    // 2400-second channel). A live attempt that cannot renew stops itself
+    // before its lease can end (`with_heartbeat`), so a peer never starts
+    // beside it.
+    let lease_secs = deps.config.claim_lease_secs;
     let singleton = singleton.map(|s| SingletonRequest { lease_secs, ..s });
 
+    // Before the call, so it is no later than the database's own `now` the
+    // lease is written from: every deadline measured from it is early.
+    let acquired = tokio::time::Instant::now();
     let start = match deps
         .repo
         .start_attempt(
@@ -326,7 +329,10 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
         &descriptor,
         timeout_ms,
         held,
-        lease_secs,
+        Lease {
+            secs: lease_secs,
+            acquired,
+        },
     )
     .await;
 
@@ -354,10 +360,15 @@ async fn attempt(deps: &WorkerDeps, occurrence: &CronOccurrence) -> Result<(), A
     outcome
 }
 
+/// The lease an attempt holds its claim and singleton under.
+#[derive(Clone, Copy)]
+struct Lease {
+    secs: u64,
+    /// No later than the moment the database wrote it.
+    acquired: tokio::time::Instant,
+}
+
 /// Steps 4 through 8: trace, guards, execute, settle.
-///
-/// `lease_secs` is what the attempt acquired under, carried so the heartbeat
-/// extends the same lease rather than computing a fresh, shorter one.
 ///
 /// `generation` is the one step 1 loaded, passed rather than re-loaded: one
 /// attempt, one generation, from the channel resolution through to the engine
@@ -372,7 +383,7 @@ async fn execute(
     descriptor: &Arc<crate::channel::CronDescriptor>,
     timeout_ms: u64,
     held: Option<crate::storage::repositories::cron::HeldSlot>,
-    lease_secs: u64,
+    lease: Lease,
 ) -> Result<(), Abandoned> {
     let channel = runtime.channel.name.as_str();
     let started_at = Utc::now().naive_utc();
@@ -548,18 +559,19 @@ async fn execute(
         },
     );
 
-    let execution = match with_heartbeat(deps, occurrence, held, lease_secs, run).await {
+    let execution = match with_heartbeat(deps, occurrence, held, lease, run).await {
         Some(execution) => execution,
         None => {
-            // The lease was lost: another node owns this occurrence now, and
-            // the engine future was dropped. Write nothing — the new owner's
-            // record is the true one.
+            // The claim was lost: another node owns this occurrence now, or
+            // an operator cancelled it, and the engine future was dropped.
+            // Write nothing — the record belongs to whoever took it.
             crate::metrics::record_cron_lease_renewal_failure();
             deps.status.record_renewal_failure();
             tracing::warn!(
                 occurrence_id = %occurrence.id,
                 channel_id = %occurrence.channel_id,
-                "Cron attempt lost its lease and was cancelled mid-run; a peer owns it now"
+                "Cron attempt lost its claim and was cancelled mid-run: a peer took it over, \
+                 or an operator cancelled it"
             );
             return Err(Abandoned::Lost);
         }
@@ -648,57 +660,126 @@ async fn execute(
 
 /// Run `work` while renewing the lease, cancelling it if ownership is lost.
 ///
-/// `None` means the lease was lost and `work` was dropped. Dropping the future
-/// cancels it at its next await point — which does *not* unwind a connector
-/// call that has already been sent, and is why the exactly-once caveat exists.
-///
-/// `lease_secs` is the value the attempt *acquired* under, not a fresh one.
-/// Recomputing it here from `claim_lease_secs` alone would have each beat
-/// silently shorten a lease that was deliberately sized to outlast the
-/// channel's timeout — so a long-running occurrence would go from "protected
-/// for its whole allowed run" to "protected for one claim lease" the moment
-/// its first heartbeat landed, which is the opposite of what the beat is for.
+/// `None` means `work` was dropped: ownership was lost, or the lease could not
+/// be renewed in time to be sure of it. Dropping the future cancels it at its
+/// next await point, which does *not* unwind a connector call that has
+/// already been sent, and is why the exactly-once caveat exists.
 async fn with_heartbeat<F, T>(
     deps: &WorkerDeps,
     occurrence: &CronOccurrence,
     held: Option<crate::storage::repositories::cron::HeldSlot>,
-    lease_secs: u64,
+    lease: Lease,
     work: F,
 ) -> Option<T>
 where
     F: std::future::Future<Output = T>,
 {
-    let interval = std::time::Duration::from_secs(deps.config.heartbeat_interval_secs);
-    let mut ticker = tokio::time::interval(interval);
-    ticker.tick().await; // the first tick is immediate
+    let beat = std::time::Duration::from_secs(deps.config.heartbeat_interval_secs);
+    let outcome = heartbeat(
+        beat,
+        fence_after(lease.secs, deps.config.heartbeat_interval_secs),
+        lease.acquired,
+        || {
+            deps.repo
+                .renew(&occurrence.id, &deps.instance_id, held, lease.secs)
+        },
+        |e| {
+            crate::metrics::record_error("cron_renew");
+            tracing::warn!(
+                occurrence_id = %occurrence.id,
+                error = %e,
+                "Cron lease renewal failed; retrying on the next beat"
+            );
+        },
+        work,
+    )
+    .await;
+    match outcome {
+        Beat::Done(result) => Some(result),
+        Beat::Lost => None,
+        Beat::Fenced => {
+            tracing::warn!(
+                occurrence_id = %occurrence.id,
+                lease_secs = lease.secs,
+                "Cron attempt could not renew its lease in time and stopped itself \
+                 before the lease could run out"
+            );
+            None
+        }
+    }
+}
 
+/// How an attempt under [`heartbeat`] ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Beat<T> {
+    Done(T),
+    /// A renewal matched nothing: a peer took the occurrence over, or an
+    /// operator cancelled it.
+    Lost,
+    /// No renewal succeeded for [`fence_after`]. The lease may still be held,
+    /// but there is no longer room to be sure of it.
+    Fenced,
+}
+
+/// How long an attempt may go without a successful renewal before it stops.
+///
+/// Short of the lease by a margin, so the work is dropped while the lease is
+/// still certainly held. The margin is one heartbeat, or half the gap between
+/// beat and lease when that is smaller, so every configuration validation
+/// accepts (`heartbeat < lease`) still renews before its deadline.
+fn fence_after(lease_secs: u64, heartbeat_secs: u64) -> std::time::Duration {
+    let lease = std::time::Duration::from_secs(lease_secs);
+    let beat = std::time::Duration::from_secs(heartbeat_secs);
+    let margin = Ord::min(beat, lease.saturating_sub(beat) / 2);
+    lease.saturating_sub(margin)
+}
+
+/// Race `work` against the lease: renew every `beat`, stop on a renewal that
+/// matches nothing, and stop once `fence_after` has passed since the last
+/// renewal known to have landed.
+///
+/// A failed renewal *call* is not lost ownership, and one blip must not
+/// abandon healthy work, so it is retried on the next beat. What bounds the
+/// retries is the lease: the lease is short (#352), so a node whose database
+/// is unreachable must stop its own work before a peer is entitled to start
+/// it. Each renewal is timed from when it was sent, which is no later than
+/// when the database wrote it, so every deadline here is early, never late.
+async fn heartbeat<F, T, R, RF>(
+    beat: std::time::Duration,
+    fence_after: std::time::Duration,
+    acquired: tokio::time::Instant,
+    mut renew: R,
+    on_error: impl Fn(&crate::errors::OrionError),
+    work: F,
+) -> Beat<T>
+where
+    F: std::future::Future<Output = T>,
+    R: FnMut() -> RF,
+    RF: std::future::Future<Output = Result<bool, crate::errors::OrionError>>,
+{
+    // The first tick is immediate: the steps between acquiring the lease and
+    // starting the work (the trace row, the guards) renewed nothing.
+    let mut ticker = tokio::time::interval(beat);
+    let mut renewed = acquired;
     tokio::pin!(work);
     loop {
+        let deadline = renewed + fence_after;
+        // In this order, so a race is decided the same way every time: work
+        // that has finished is done, and past the deadline nothing more runs,
+        // even a renewal that might have landed.
         tokio::select! {
-            result = &mut work => return Some(result),
+            biased;
+            result = &mut work => return Beat::Done(result),
+            _ = tokio::time::sleep_until(deadline) => return Beat::Fenced,
             _ = ticker.tick() => {
-                match deps
-                    .repo
-                    .renew(&occurrence.id, &deps.instance_id, held, lease_secs)
-                    .await
-                {
-                    Ok(true) => {}
-                    // Ownership is gone. Returning here drops `work`.
-                    Ok(false) => return None,
-                    Err(e) => {
-                        // A failed *call* is not lost ownership: the lease is
-                        // still ours until it expires, and cancelling on a
-                        // single blip would abandon healthy work. The lease
-                        // itself is the backstop — if the database stays down,
-                        // renewal keeps failing, the lease runs out, and a peer
-                        // takes over having waited the full safety window.
-                        crate::metrics::record_error("cron_renew");
-                        tracing::warn!(
-                            occurrence_id = %occurrence.id,
-                            error = %e,
-                            "Cron lease renewal failed; retrying on the next beat"
-                        );
-                    }
+                let sent = tokio::time::Instant::now();
+                // Bounded by the deadline: a renewal hung on an unreachable
+                // database must not hold the work past it.
+                match tokio::time::timeout_at(deadline, renew()).await {
+                    Ok(Ok(true)) => renewed = sent,
+                    Ok(Ok(false)) => return Beat::Lost,
+                    Ok(Err(e)) => on_error(&e),
+                    Err(_) => return Beat::Fenced,
                 }
             }
         }
@@ -727,6 +808,141 @@ async fn settle_failed(
             occurrence_id = %occurrence.id,
             error = %e,
             "Could not record a failed cron occurrence"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    const BEAT: Duration = Duration::from_secs(15);
+    const LEASE_SECS: u64 = 60;
+
+    fn fence() -> Duration {
+        fence_after(LEASE_SECS, BEAT.as_secs())
+    }
+
+    /// Ten minutes of work: far longer than one lease.
+    async fn long_work() -> &'static str {
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        "done"
+    }
+
+    #[test]
+    fn the_fence_leaves_a_margin_and_room_for_a_renewal() {
+        assert_eq!(fence_after(60, 15), Duration::from_secs(45));
+        assert_eq!(fence_after(30, 1), Duration::from_secs(29));
+        // Every configuration validation accepts renews before its deadline,
+        // and the deadline is before the lease ends.
+        for lease in 2..=120 {
+            for beat in 1..lease {
+                let fence = fence_after(lease, beat);
+                assert!(fence > Duration::from_secs(beat), "{lease}/{beat}");
+                assert!(fence < Duration::from_secs(lease), "{lease}/{beat}");
+            }
+        }
+    }
+
+    /// Renewal keeps work alive for as long as it runs, far past one lease.
+    #[tokio::test(start_paused = true)]
+    async fn renewals_hold_the_lease_for_as_long_as_the_work_runs() {
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            tokio::time::Instant::now(),
+            || async { Ok(true) },
+            |_| {},
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Done("done"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_renewal_that_matches_nothing_stops_the_work() {
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            tokio::time::Instant::now(),
+            || async { Ok(false) },
+            |_| {},
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Lost);
+    }
+
+    /// A node that cannot reach its database stops its own work before its
+    /// lease ends, so a peer that takes the occurrence over after the lease
+    /// never runs beside it.
+    #[tokio::test(start_paused = true)]
+    async fn failing_renewals_stop_the_work_before_the_lease_ends() {
+        let started = tokio::time::Instant::now();
+        let errors = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            started,
+            || async { Err(crate::errors::OrionError::Conflict("db down".into())) },
+            |_| {
+                errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            },
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Fenced);
+        assert!(started.elapsed() < Duration::from_secs(LEASE_SECS));
+        assert!(
+            errors.load(std::sync::atomic::Ordering::Relaxed) >= 2,
+            "a failed call is retried, not taken as lost ownership"
+        );
+    }
+
+    /// A renewal that never answers cannot hold the work past the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_renewal_is_bounded_by_the_deadline() {
+        let started = tokio::time::Instant::now();
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            started,
+            std::future::pending::<Result<bool, crate::errors::OrionError>>,
+            |_| {},
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Fenced);
+        assert!(started.elapsed() <= fence());
+    }
+
+    /// The steps before the work (the trace row, the guards) are not renewed
+    /// across. If they took the whole margin, the work does not run, however
+    /// a renewal would have gone: past the deadline the lease may be gone.
+    #[tokio::test(start_paused = true)]
+    async fn a_lease_already_past_its_deadline_never_runs_the_work() {
+        let acquired = tokio::time::Instant::now();
+        tokio::time::advance(Duration::from_secs(50)).await;
+        let renewals = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = heartbeat(
+            BEAT,
+            fence(),
+            acquired,
+            || {
+                renewals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async { Ok(true) }
+            },
+            |_| {},
+            long_work(),
+        )
+        .await;
+        assert_eq!(outcome, Beat::Fenced);
+        assert_eq!(renewals.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            acquired.elapsed(),
+            Duration::from_secs(50),
+            "no further wait"
         );
     }
 }

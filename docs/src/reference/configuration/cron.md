@@ -1,6 +1,6 @@
 <!-- description: The [cron] settings: scheduler capacity on this node, poll interval, workers, claim batch and lease, heartbeat, misfire grace and catch-up ceiling. -->
 <!-- type: reference -->
-<!-- last_verified: 2026-09-14 -->
+<!-- last_verified: 2026-09-25 -->
 
 # Cron scheduler settings
 
@@ -30,7 +30,7 @@ shutdown_timeout_secs = 30
 | `cron.poll_interval_ms` | `1000` | `ORION_CRON__POLL_INTERVAL_MS` | The floor on how late a run can be. Raise to cut database chatter on an instance whose finest schedule is hourly. Minimum `100`. |
 | `cron.workers` | `4` | `ORION_CRON__WORKERS` | Occurrences this node runs at once. Deliberately separate from `trace_queue.workers` so a catch-up cannot starve `/async` work. |
 | `cron.claim_batch_size` | `20` | `ORION_CRON__CLAIM_BATCH_SIZE` | Occurrences claimed per poll. Raise to drain a backlog faster. |
-| `cron.claim_lease_secs` | `60` | `ORION_CRON__CLAIM_LEASE_SECS` | How long after a node dies before its in-flight occurrences are recovered by a peer. A running attempt extends its own claim past this to cover its timeout. |
+| `cron.claim_lease_secs` | `60` | `ORION_CRON__CLAIM_LEASE_SECS` | How long after a node dies before its in-flight occurrences, and their singleton slots, are recovered by a peer. A running attempt renews its lease every heartbeat, however long its channel's timeout. This is also how long a database outage a running attempt survives. |
 | `cron.heartbeat_interval_secs` | `15` | `ORION_CRON__HEARTBEAT_INTERVAL_SECS` | How often a running attempt renews its claim and singleton. Must be **below** `claim_lease_secs`; startup refuses otherwise. |
 | `cron.misfire_grace_secs` | `5` | `ORION_CRON__MISFIRE_GRACE_SECS` | How late is "late" rather than "missed". Must cover `poll_interval_ms`, or every occurrence reports a misfire. |
 | `cron.max_catch_up` | `100` | `ORION_CRON__MAX_CATCH_UP` | This instance's ceiling on a `catch_up` replay. The effective bound is `min(channel.max_catch_up, this)`. Maximum `1000`. |
@@ -39,7 +39,9 @@ shutdown_timeout_secs = 30
 
 **`cron.enabled = false` is not a quiet no-op.** An *active* cron channel on a node with the scheduler off is **quarantined**: refused at load, listed under `channels.quarantined` on `/health`, and reported as `components.cron: degraded`. Activating one is refused outright, naming the setting. This is deliberate — a schedule that is stored, active, and silently never fires is the one failure an operator has no way to notice. Drafts, imports, exports and reads are unaffected, so an instance with the scheduler off is still a place to author and promote schedules.
 
-**Sizing the lease.** The singleton lease is `max(claim_lease_secs, channel timeout + heartbeat_interval_secs)`. A channel with a two-hour `timeout_ms` therefore holds its key for at least two hours if its node dies mid-run. That is the trade-off the lease exists to make. Shorter, and a peer starts a second copy of work the first node may still be running. Keep `default_timeout_ms` finite for the same reason.
+**Sizing the lease.** A running attempt holds its claim and its singleton slot for `claim_lease_secs` at a time, renewed every `heartbeat_interval_secs`, whatever its channel's `timeout_ms`. If its node dies, or shutdown cancels it after `shutdown_timeout_secs`, a peer recovers the occurrence and its slot one lease later. Earlier releases sized the lease from the channel's timeout, so a two-hour channel held its key for two hours after a crash.
+
+A live attempt that cannot renew stops itself before its lease can run out, so a peer that takes over never runs beside it. It stops after `claim_lease_secs` minus one heartbeat without a successful renewal: 45 seconds at the defaults. A database outage longer than that cancels running attempts, and they are attempted again once the database is back. Raise `claim_lease_secs` to ride out longer outages, at the cost of slower recovery from a dead node. To free a dead node's slots at once, cancel its occurrences: `POST /api/v1/admin/cron/occurrences/{id}/cancel`.
 
 ## Related
 
