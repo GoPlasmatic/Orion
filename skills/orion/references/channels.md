@@ -87,7 +87,8 @@ To cache until the data changes rather than for a fixed TTL, declare
 `cache.namespaces: ["ladder"]` and call `cache_invalidate` with
 `{"namespaces": ["ladder"]}` from the workflow that writes the data (or
 `POST /api/v1/admin/cache/namespaces/ladder/invalidate`). Keep `ttl_secs` as the
-staleness ceiling.
+staleness ceiling. `cache.coalesce_misses: true` makes concurrent misses for one key
+cost one workflow run per node.
 
 ## Request body and metadata
 

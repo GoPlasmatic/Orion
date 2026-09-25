@@ -166,6 +166,11 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel response cache backend.
     /// When set, sync responses are cached with a configurable TTL.
     pub response_cache: Option<Arc<dyn CacheBackend>>,
+    /// In-flight response-cache misses, by key, when the channel sets
+    /// `cache.coalesce_misses`. Built per load: a reload that changes the
+    /// channel starts an empty table, and a request already waiting on the
+    /// old one still holds what it waits on.
+    pub cache_flights: Option<Arc<crate::channel::guards::CacheFlights>>,
     /// Trace storage policy after merging the global and per-channel config.
     pub trace_storage: EffectiveTraceConfig,
     /// Compiled `auth` policy: secrets resolved and keys pre-hashed once at
@@ -1182,6 +1187,12 @@ impl ChannelLoader {
             _ => None,
         };
 
+        let cache_flights = parsed_config
+            .cache
+            .as_ref()
+            .filter(|c| c.enabled && c.coalesce_misses)
+            .map(|_| Arc::new(crate::channel::guards::CacheFlights::default()));
+
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
             parsed_config,
@@ -1194,6 +1205,7 @@ impl ChannelLoader {
             validation_logic,
             backpressure_semaphore,
             dedup_store,
+            cache_flights,
             response_cache,
             trace_storage,
             auth,

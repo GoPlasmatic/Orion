@@ -80,7 +80,7 @@ mod response_cache;
 
 pub use dedup::DedupClaim;
 pub(crate) use rate_limit::{COMMON_KEY_HEADERS, key_logic_header_paths};
-pub use response_cache::CacheStoreCtx;
+pub use response_cache::{CacheFlights, CacheStoreCtx};
 
 use admission::{acquire_backpressure, check_allowed_origin, check_auth, validate_input};
 use dedup::check_deduplication;
@@ -1084,8 +1084,17 @@ mod tests {
                 key_logic: None,
                 connector: None,
                 namespaces: None,
+                coalesce_misses: false,
             });
             self.response_cache = Some(backend);
+            self
+        }
+
+        /// Turn on `cache.coalesce_misses` for a cache added by [`Self::cache`].
+        fn coalesce(mut self) -> Self {
+            if let Some(ref mut cache) = self.parsed_config.cache {
+                cache.coalesce_misses = true;
+            }
             self
         }
 
@@ -1122,6 +1131,12 @@ mod tests {
 
         fn build(self) -> Option<Arc<ChannelRuntimeConfig>> {
             let now = chrono::Utc::now().naive_utc();
+            let cache_flights = self
+                .parsed_config
+                .cache
+                .as_ref()
+                .filter(|c| c.coalesce_misses)
+                .map(|_| Arc::new(super::response_cache::CacheFlights::default()));
             Some(Arc::new(ChannelRuntimeConfig {
                 channel: Channel {
                     tags_json: "[]".to_string(),
@@ -1154,6 +1169,7 @@ mod tests {
                 validation_logic: self.validation_logic,
                 backpressure_semaphore: self.backpressure_semaphore,
                 dedup_store: self.dedup_store,
+                cache_flights,
                 response_cache: self.response_cache,
                 trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
                 auth: self.auth,
@@ -2537,6 +2553,85 @@ mod tests {
         );
     }
 
+    /// #354: with `coalesce_misses`, the first miss runs the workflow and the
+    /// concurrent ones wait for it, holding nothing, and are served its entry.
+    #[tokio::test]
+    async fn coalesced_misses_wait_for_the_leader_and_share_its_entry() {
+        use crate::connector::cache_backend::MemoryCacheBackend;
+        let dl = engine();
+        let store: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
+        let runtime = Runtime::new()
+            .cache(store)
+            .coalesce()
+            .backpressure(1)
+            .build();
+        let (data, meta) = (json!({"q": 1}), json!({}));
+        let lookup = || async {
+            apply_guards(request(Transport::HttpSync, &runtime, &dl, &data, &meta))
+                .await
+                .expect("guards pass")
+        };
+
+        let leader = admitted(lookup().await).expect("the first miss leads");
+        assert!(leader.cache_store.is_some());
+        let flights = runtime
+            .as_ref()
+            .and_then(|r| r.cache_flights.clone())
+            .expect("coalescing builds a flight table");
+        assert_eq!(flights.in_flight(), 1);
+
+        let lead = async move {
+            // The followers are parked by now; none has run, and none holds
+            // the one backpressure permit, which the leader has.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let ctx = leader.cache_store.as_ref().expect("ctx");
+            ctx.store("{\"run\":1}").await.expect("store");
+            drop(leader);
+        };
+        let (a, b, c, ()) = tokio::join!(lookup(), lookup(), lookup(), lead);
+        for verdict in [a, b, c] {
+            assert!(
+                matches!(verdict, GuardVerdict::CacheHit(ref body) if body == "{\"run\":1}"),
+                "a follower is served the leader's entry"
+            );
+        }
+        assert_eq!(flights.in_flight(), 0, "the flight ends with its leader");
+    }
+
+    /// A leader that stores nothing — its workflow failed — releases the
+    /// followers to run the workflow themselves rather than hold them.
+    #[tokio::test]
+    async fn a_leader_that_stores_nothing_releases_its_followers() {
+        use crate::connector::cache_backend::MemoryCacheBackend;
+        let dl = engine();
+        let store: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
+        let runtime = Runtime::new().cache(store).coalesce().build();
+        let (data, meta) = (json!({}), json!({}));
+        let lookup = || async {
+            apply_guards(request(Transport::HttpSync, &runtime, &dl, &data, &meta))
+                .await
+                .expect("guards pass")
+        };
+        let leader = admitted(lookup().await).expect("leads");
+        let lead = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            drop(leader);
+        };
+        let started = std::time::Instant::now();
+        let (a, b, ()) = tokio::join!(lookup(), lookup(), lead);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "released, not timed out"
+        );
+        for verdict in [a, b] {
+            let admission = admitted(verdict).expect("a miss, run by the follower");
+            assert!(
+                admission.cache_store.is_some(),
+                "and it may store its own result"
+            );
+        }
+    }
+
     /// A counter that is not an integer cannot judge an entry, so the request
     /// bypasses the cache and nothing is stored.
     #[tokio::test]
@@ -2623,6 +2718,7 @@ mod tests {
             key_logic: None,
             connector: None,
             namespaces: None,
+            coalesce_misses: false,
         }
     }
 

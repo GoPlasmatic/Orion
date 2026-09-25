@@ -655,6 +655,17 @@ pub struct ChannelCacheConfig {
     /// same `MGET` as the entry, so a lookup still costs one round trip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub namespaces: Option<Vec<String>>,
+    /// Coalesce concurrent misses for one key on this node.
+    ///
+    /// Off, every request that misses before the first run stores its answer
+    /// runs the workflow, so an expiry under load costs one run per request in
+    /// flight. On, the first miss runs it and the rest wait — holding no
+    /// backpressure permit — for its stored entry, then are served it. A wait
+    /// is bounded (the channel's `timeout_ms`, capped at 5 s), and a leader
+    /// that stores nothing releases its followers to run the workflow
+    /// themselves. Per node: replicas each run their own leader.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coalesce_misses: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

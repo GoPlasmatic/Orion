@@ -28,6 +28,7 @@
 | `key_logic` | JSONLogic | no | — | Computes the cache key over `{data, metadata}`. Takes precedence over `cache_key_fields`. |
 | `connector` | string | no | in-memory | Name of a [cache connector](../connectors/index.md) backing the cache. In cluster mode the default is the shared cluster Redis. |
 | `namespaces` | array of strings | no | — | 1 to 8 [invalidation namespaces](#invalidation) the channel's entries belong to. Each name is 1–64 of `a-z 0-9 _ - . :`. |
+| `coalesce_misses` | boolean | no | `false` | [Coalesce concurrent misses](#coalescing-misses) for one key on this node, so an expiry under load costs one workflow run. |
 
 **The cache key** is derived from exactly these parts: the channel name, the HTTP method, the route parameters, the query string, and the request payload. Parameters and query string are order-independent. The payload part is the whole payload, the subset named by `cache_key_fields`, or the result of `key_logic`.
 
@@ -79,6 +80,22 @@ Behaviour:
 - A lookup that cannot read the counters, or finds one holding something other than an integer, bypasses the cache for that request and stores nothing.
 
 A namespaced entry is stored under a key prefix of its own, so an older binary never reads one as a response body. An older binary also refuses the `namespaces` field and quarantines the channel, so during a rolling upgrade such a channel is served only by nodes that understand it.
+
+## Coalescing misses
+
+When an entry expires under load, every request that arrives before the refill misses, and each one runs the workflow and its queries. `coalesce_misses: true` makes that one run per key on each node:
+
+```json
+"cache": { "enabled": true, "ttl_secs": 30, "coalesce_misses": true }
+```
+
+- The first request to miss a key runs the workflow. Requests that miss the same key while it runs wait, then are served the entry it stores. They count in `orion_response_cache_coalesced_total`.
+- A waiting request holds no [backpressure](./backpressure.md) permit, because it does no work.
+- The wait is bounded by the channel's `timeout_ms`, capped at 5 seconds. A request that waits that long runs the workflow itself.
+- A first run that stores nothing, because its workflow failed or its response carried task errors, releases the waiting requests at once, and each runs the workflow itself.
+- Coalescing is per node. Replicas sharing a Redis cache each run one workflow per key, not one between them.
+
+It combines with `namespaces`: a request waiting on a run that an invalidation overtook finds that run's entry already stale, and runs the workflow itself.
 
 **Cluster mode.** With the shared cluster Redis, hits are shared across replicas. A channel whose cache connector is missing, broken, or explicitly in-memory refuses to load. On a single node it falls back to process memory with a warning.
 

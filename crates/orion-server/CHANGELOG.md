@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ttl_secs` stays the ceiling if a store cannot be reached. New metric:
   `orion_response_cache_invalidations_total{source}`.
 
+- **`cache.coalesce_misses`** ([#354]). With it on, concurrent misses for one
+  response-cache key cost one workflow run per node instead of one per
+  request. The first miss runs the workflow, and the rest wait, holding no
+  backpressure permit, to be served the entry it stores. The wait is bounded
+  by `timeout_ms`, capped at 5 s, and a run that stores nothing releases the
+  waiters to run the workflow themselves. Off by default. New metric:
+  `orion_response_cache_coalesced_total{channel}`.
+
 ### Security
 
 - **A caller can no longer supply `metadata.auth` or `metadata.trigger`**

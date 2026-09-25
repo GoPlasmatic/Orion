@@ -200,6 +200,12 @@ pub struct CacheStoreCtx {
     /// `cache.namespaces`; `None` otherwise. Captured before the workflow ran,
     /// on purpose — see `channel::cache_namespace`.
     versions: Option<Vec<i64>>,
+    /// Held by the one request running the workflow for this key while
+    /// others wait (`cache.coalesce_misses`). Dropped with this context —
+    /// after the store, or without one when the run failed — which is what
+    /// releases the waiters. Boxed: this context rides inside every
+    /// `Admission`, and most channels never coalesce.
+    _flight: Option<Box<FlightGuard>>,
 }
 
 impl CacheStoreCtx {
@@ -277,8 +283,58 @@ pub(super) async fn check_response_cache(
         return CacheLookup::Miss(None);
     };
     let ttl_secs = cache_cfg.ttl_secs.unwrap_or(300);
-
     let namespaces = cache_cfg.namespaces.as_deref().unwrap_or(&[]);
+
+    let first = lookup_once(channel, cache, key, ttl_secs, namespaces).await;
+    let Some(flights) = cfg.cache_flights.as_ref() else {
+        return first;
+    };
+    let CacheLookup::Miss(Some(mut ctx)) = first else {
+        return first;
+    };
+    match flights.join(&ctx.key) {
+        Flight::Leader(guard) => {
+            ctx._flight = Some(Box::new(guard));
+            CacheLookup::Miss(Some(ctx))
+        }
+        Flight::Follower(mut done) => {
+            // Wait for the leader's context to drop — after its store, or
+            // without one. `changed` errors as soon as the sender is gone,
+            // including when it went before this call.
+            let wait = cfg
+                .parsed_config
+                .timeout_ms
+                .map_or(MAX_COALESCE_WAIT, |ms| {
+                    std::time::Duration::from_millis(ms).min(MAX_COALESCE_WAIT)
+                });
+            let _ = tokio::time::timeout(wait, done.changed()).await;
+            let key = ctx.key.clone();
+            // The same lookup again, uncoalesced: a hit is the leader's entry;
+            // anything else and this request runs the workflow itself.
+            let retry = lookup_once(channel, cache, key, ttl_secs, namespaces).await;
+            if matches!(retry, CacheLookup::Hit(_)) {
+                metrics::record_cache_coalesced(channel);
+            }
+            retry
+        }
+    }
+}
+
+/// Longest a coalesced miss waits for its leader before running the workflow
+/// itself.
+const MAX_COALESCE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// One lookup of `key`: a hit, or the context to store under.
+///
+/// `key` is the plain key `compute_cache_key` built. A namespaced channel reads
+/// its counters and its entry in one `MGET`, under the namespaced entry key.
+async fn lookup_once(
+    channel: &str,
+    cache: &Arc<dyn CacheBackend>,
+    key: String,
+    ttl_secs: u64,
+    namespaces: &[String],
+) -> CacheLookup {
     if namespaces.is_empty() {
         return match cache.get(&key).await {
             Ok(Some(cached)) => {
@@ -292,13 +348,19 @@ pub(super) async fn check_response_cache(
                     backend: cache.clone(),
                     ttl_secs,
                     versions: None,
+                    _flight: None,
                 }))
             }
         };
     }
 
-    // One round trip: every namespace's version, then the entry.
-    let key = cache_namespace::entry_key(&key);
+    // One round trip: every namespace's version, then the entry. A key that
+    // already carries the namespaced prefix (a coalesced retry) keeps it.
+    let key = if key.starts_with("cache-ns:") {
+        key
+    } else {
+        cache_namespace::entry_key(&key)
+    };
     let mut keys: Vec<String> = namespaces
         .iter()
         .map(|ns| cache_namespace::version_key(ns))
@@ -343,5 +405,61 @@ pub(super) async fn check_response_cache(
         backend: cache.clone(),
         ttl_secs,
         versions: Some(versions),
+        _flight: None,
     }))
+}
+
+/// The misses in flight on one channel, by storage key (`coalesce_misses`).
+///
+/// An entry exists while one request — the leader — is running the workflow
+/// for that key. It maps to a receiver whose sender the leader holds, so every
+/// follower learns the leader is done the moment its `FlightGuard` drops,
+/// whatever the reason: the entry stored, the workflow failed, the request was
+/// cancelled. Nothing is ever sent; the drop is the signal.
+#[derive(Default)]
+pub struct CacheFlights(dashmap::DashMap<String, tokio::sync::watch::Receiver<()>>);
+
+/// Held by a flight's leader. Dropping it ends the flight.
+pub struct FlightGuard {
+    flights: Arc<CacheFlights>,
+    key: String,
+    _done: tokio::sync::watch::Sender<()>,
+}
+
+impl Drop for FlightGuard {
+    fn drop(&mut self) {
+        // Out of the table first, then `_done` drops with the struct and wakes
+        // the followers — so a request arriving after the wake cannot join a
+        // flight that has already ended.
+        self.flights.0.remove(&self.key);
+    }
+}
+
+enum Flight {
+    Leader(FlightGuard),
+    Follower(tokio::sync::watch::Receiver<()>),
+}
+
+impl CacheFlights {
+    fn join(self: &Arc<Self>, key: &str) -> Flight {
+        use dashmap::mapref::entry::Entry;
+        match self.0.entry(key.to_string()) {
+            Entry::Occupied(flight) => Flight::Follower(flight.get().clone()),
+            Entry::Vacant(slot) => {
+                let (done, waiting) = tokio::sync::watch::channel(());
+                slot.insert(waiting);
+                Flight::Leader(FlightGuard {
+                    flights: self.clone(),
+                    key: key.to_string(),
+                    _done: done,
+                })
+            }
+        }
+    }
+
+    /// Misses currently being run by a leader, for tests.
+    #[cfg(test)]
+    pub(crate) fn in_flight(&self) -> usize {
+        self.0.len()
+    }
 }

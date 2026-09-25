@@ -741,6 +741,15 @@ pub fn record_cache_invalidations(source: &'static str, namespaces: u64) {
     counter!("orion_response_cache_invalidations_total", "source" => source).increment(namespaces);
 }
 
+/// Record a coalesced miss: a request that waited for another's run and was
+/// served the entry it stored.
+pub fn record_cache_coalesced(channel: &str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("orion_response_cache_coalesced_total", "channel" => channel.to_owned()).increment(1);
+}
+
 /// Record a response cache miss.
 pub fn record_cache_miss(channel: &str) {
     if !is_enabled() {
