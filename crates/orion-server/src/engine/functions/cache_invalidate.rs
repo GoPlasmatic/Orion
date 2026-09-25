@@ -22,7 +22,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::json;
 
 use super::connector_helpers::{
-    apply_output, resolve_output_path, resolve_required_str_list, to_exec_error,
+    apply_output, output_declared, resolve_output_path, resolve_required_str_list, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -82,25 +82,24 @@ impl CacheInvalidateHandler {
         }
         // Resolved before anything is bumped, so a bad `output` does not leave
         // an invalidation behind a failed task.
-        let output = match input.get("output") {
-            Some(v) if !v.is_null() => Some(resolve_output_path(input, NAME, ctx)?),
-            _ => None,
+        let output = if output_declared(input) {
+            Some(resolve_output_path(input, NAME, ctx)?)
+        } else {
+            None
         };
 
-        let targets = self
+        let stores = self
             .channel_loader
-            .response_cache_targets(&self.registry, &self.cache_pool)
-            .await;
-        let bumped = cache_namespace::invalidate(&targets, &namespaces, "workflow")
+            .invalidate_namespaces(&self.registry, &self.cache_pool, &namespaces, "workflow")
             .await
             .map_err(to_exec_error)?;
-        tracing::debug!(namespaces = ?namespaces, stores = targets.len(), bumped, "Invalidated response-cache namespaces");
+        tracing::debug!(namespaces = ?namespaces, stores, "Invalidated response-cache namespaces");
 
         if let Some(path) = output {
             apply_output(
                 ctx,
                 &path,
-                json!({ "namespaces": namespaces.len(), "stores": targets.len() }),
+                json!({ "namespaces": namespaces.len(), "stores": stores }),
             );
         }
         Ok(TaskOutcome::Success)

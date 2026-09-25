@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
 use super::cache_write::resolve_ttl_secs;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, json_type_name, require_op, resolve_required_str, to_connect_error,
-    to_exec_error,
+    ConnectorCall, output_declared, require_op, resolve_optional_i64, resolve_required_str,
+    to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -53,23 +52,7 @@ impl ConnectorHandler for CacheIncrHandler {
         ctx: &TaskContext<'_>,
     ) -> Result<Self::Parsed, HandlerError> {
         let key = resolve_required_str(input, "key", call.name, ctx)?;
-        let by = match input.value_of("by", call.name, ctx).transpose()? {
-            None | Some(Value::Null) => 1,
-            Some(Value::Number(n)) => n.as_i64().ok_or_else(|| {
-                DataflowError::Validation(format!(
-                    "{} 'by' must be a whole number that fits in 64 bits, got {n}",
-                    call.name
-                ))
-            })?,
-            Some(other) => {
-                return Err(DataflowError::Validation(format!(
-                    "{} 'by' must resolve to a number, got {}",
-                    call.name,
-                    json_type_name(&other)
-                ))
-                .into());
-            }
-        };
+        let by = resolve_optional_i64(input, "by", call.name, ctx)?.unwrap_or(1);
         Ok(CacheIncr {
             key,
             by,
@@ -106,7 +89,7 @@ impl ConnectorHandler for CacheIncrHandler {
 
         // As `cache_delete`: recorded only where the task asks, so a bare
         // counter bump never overwrites `data` with a number.
-        Ok(if input.get("output").is_some_and(|v| !v.is_null()) {
+        Ok(if output_declared(input) {
             Value::from(value).into()
         } else {
             Produced::nothing()

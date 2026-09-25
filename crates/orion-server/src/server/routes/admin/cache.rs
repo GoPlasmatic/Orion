@@ -38,16 +38,15 @@ pub(crate) async fn invalidate_namespace(
     Path(namespace): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
     crate::channel::cache_namespace::check_name(&namespace).map_err(OrionError::validation)?;
-    let targets = state
+    let stores = state
         .channel_loader
-        .response_cache_targets(&state.connector_registry, &state.caches.cache_pool)
-        .await;
-    crate::channel::cache_namespace::invalidate(
-        &targets,
-        std::slice::from_ref(&namespace),
-        "admin",
-    )
-    .await?;
+        .invalidate_namespaces(
+            &state.connector_registry,
+            &state.caches.cache_pool,
+            std::slice::from_ref(&namespace),
+            "admin",
+        )
+        .await?;
     audit_log(
         &state.audit_queue,
         &principal,
@@ -57,6 +56,6 @@ pub(crate) async fn invalidate_namespace(
     );
     Ok(data_response(orion_api::CacheInvalidatedResponse {
         namespace,
-        stores: targets.len() as u64,
+        stores: stores as u64,
     }))
 }

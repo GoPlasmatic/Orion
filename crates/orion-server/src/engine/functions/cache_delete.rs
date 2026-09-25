@@ -7,7 +7,8 @@ use serde_json::json;
 use super::cache_read::MAX_KEYS;
 use super::connector_handler::{ConnectorHandler, Produced};
 use super::connector_helpers::{
-    ConnectorCall, require_op, resolve_required_str_list, to_connect_error, to_exec_error,
+    ConnectorCall, output_declared, require_op, resolve_required_str_list, to_connect_error,
+    to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use super::templated_input::TemplatedInput;
@@ -81,7 +82,7 @@ impl ConnectorHandler for CacheDeleteHandler {
 
         // Recorded only where the task asks: the delete is the effect, and a
         // default of `data` would overwrite the message with a count.
-        Ok(if input.get("output").is_some_and(|v| !v.is_null()) {
+        Ok(if output_declared(input) {
             json!({ "deleted": deleted }).into()
         } else {
             Produced::nothing()

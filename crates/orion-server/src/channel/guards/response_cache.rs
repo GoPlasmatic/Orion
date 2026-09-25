@@ -214,19 +214,25 @@ impl CacheStoreCtx {
         match &self.versions {
             None => self.backend.set_ex(&self.key, body, self.ttl_secs).await,
             Some(versions) => {
-                let envelope = cache_namespace::Envelope {
-                    v: versions.clone(),
-                    b: std::borrow::Cow::Borrowed(body),
-                };
-                let stored = serde_json::to_string(&envelope).map_err(|e| {
-                    crate::errors::OrionError::Internal {
-                        context: "serializing a namespaced cache entry".to_string(),
-                        source: Some(Box::new(e)),
-                    }
-                })?;
+                let stored = cache_namespace::encode_entry(versions, body);
                 self.backend.set_ex(&self.key, &stored, self.ttl_secs).await
             }
         }
+    }
+
+    fn miss(
+        key: String,
+        backend: &Arc<dyn CacheBackend>,
+        ttl_secs: u64,
+        versions: Option<Vec<i64>>,
+    ) -> CacheLookup {
+        CacheLookup::Miss(Some(Self {
+            key,
+            backend: backend.clone(),
+            ttl_secs,
+            versions,
+            _flight: None,
+        }))
     }
 }
 
@@ -284,6 +290,13 @@ pub(super) async fn check_response_cache(
     };
     let ttl_secs = cache_cfg.ttl_secs.unwrap_or(300);
     let namespaces = cache_cfg.namespaces.as_deref().unwrap_or(&[]);
+    // The storage key, decided once: a namespaced entry lives under a prefix
+    // of its own.
+    let key = if namespaces.is_empty() {
+        key
+    } else {
+        cache_namespace::entry_key(&key)
+    };
 
     let first = lookup_once(channel, cache, key, ttl_secs, namespaces).await;
     let Some(flights) = cfg.cache_flights.as_ref() else {
@@ -308,10 +321,9 @@ pub(super) async fn check_response_cache(
                     std::time::Duration::from_millis(ms).min(MAX_COALESCE_WAIT)
                 });
             let _ = tokio::time::timeout(wait, done.changed()).await;
-            let key = ctx.key.clone();
             // The same lookup again, uncoalesced: a hit is the leader's entry;
             // anything else and this request runs the workflow itself.
-            let retry = lookup_once(channel, cache, key, ttl_secs, namespaces).await;
+            let retry = lookup_once(channel, cache, ctx.key, ttl_secs, namespaces).await;
             if matches!(retry, CacheLookup::Hit(_)) {
                 metrics::record_cache_coalesced(channel);
             }
@@ -324,10 +336,8 @@ pub(super) async fn check_response_cache(
 /// itself.
 const MAX_COALESCE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// One lookup of `key`: a hit, or the context to store under.
-///
-/// `key` is the plain key `compute_cache_key` built. A namespaced channel reads
-/// its counters and its entry in one `MGET`, under the namespaced entry key.
+/// One lookup of `key`, the storage key: a hit, or the context to store
+/// under. A namespaced channel reads its counters and its entry in one `MGET`.
 async fn lookup_once(
     channel: &str,
     cache: &Arc<dyn CacheBackend>,
@@ -343,31 +353,21 @@ async fn lookup_once(
             }
             _ => {
                 metrics::record_cache_miss(channel);
-                CacheLookup::Miss(Some(CacheStoreCtx {
-                    key,
-                    backend: cache.clone(),
-                    ttl_secs,
-                    versions: None,
-                    _flight: None,
-                }))
+                CacheStoreCtx::miss(key, cache, ttl_secs, None)
             }
         };
     }
 
-    // One round trip: every namespace's version, then the entry. A key that
-    // already carries the namespaced prefix (a coalesced retry) keeps it.
-    let key = if key.starts_with("cache-ns:") {
-        key
-    } else {
-        cache_namespace::entry_key(&key)
-    };
+    // One round trip: every namespace's version, then the entry.
     let mut keys: Vec<String> = namespaces
         .iter()
         .map(|ns| cache_namespace::version_key(ns))
         .collect();
-    keys.push(key.clone());
-    let mut values = match cache.get_many(&keys).await {
-        Ok(values) if values.len() == keys.len() => values,
+    keys.push(key);
+    let result = cache.get_many(&keys).await;
+    let key = keys.pop().unwrap_or_default();
+    let mut values = match result {
+        Ok(values) if values.len() == keys.len() + 1 => values,
         other => {
             // Without the versions nothing can be judged fresh, and nothing
             // stored could be tagged honestly: run the workflow, store nothing.
@@ -392,21 +392,12 @@ async fn lookup_once(
         metrics::record_cache_miss(channel);
         return CacheLookup::Miss(None);
     };
-    if let Some(stored) = entry
-        && let Ok(envelope) = serde_json::from_str::<cache_namespace::Envelope<'_>>(&stored)
-        && envelope.v == versions
-    {
+    if let Some(body) = entry.and_then(|stored| cache_namespace::decode_entry(stored, &versions)) {
         metrics::record_cache_hit(channel);
-        return CacheLookup::Hit(envelope.b.into_owned());
+        return CacheLookup::Hit(body);
     }
     metrics::record_cache_miss(channel);
-    CacheLookup::Miss(Some(CacheStoreCtx {
-        key,
-        backend: cache.clone(),
-        ttl_secs,
-        versions: Some(versions),
-        _flight: None,
-    }))
+    CacheStoreCtx::miss(key, cache, ttl_secs, Some(versions))
 }
 
 /// The misses in flight on one channel, by storage key (`coalesce_misses`).
@@ -443,6 +434,11 @@ enum Flight {
 impl CacheFlights {
     fn join(self: &Arc<Self>, key: &str) -> Flight {
         use dashmap::mapref::entry::Entry;
+        // Most joins under load are followers: answer those without
+        // allocating a key.
+        if let Some(flight) = self.0.get(key) {
+            return Flight::Follower(flight.clone());
+        }
         match self.0.entry(key.to_string()) {
             Entry::Occupied(flight) => Flight::Follower(flight.get().clone()),
             Entry::Vacant(slot) => {

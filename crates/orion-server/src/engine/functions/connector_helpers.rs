@@ -717,15 +717,31 @@ pub fn resolve_required_str(
             "{handler_name} requires '{field}' field"
         )));
     };
-    match value? {
+    scalar_to_key(value?).map_err(|other| {
+        DataflowError::Validation(format!(
+            "{handler_name} '{field}' must resolve to a string or number, got {}",
+            json_type_name(&other)
+        ))
+    })
+}
+
+/// One key from a resolved value: a string as itself, a number or bool
+/// spelled out. Anything else is handed back for the caller's error.
+fn scalar_to_key(value: Value) -> Result<String, Value> {
+    match value {
         Value::String(s) => Ok(s),
         Value::Number(n) => Ok(n.to_string()),
         Value::Bool(b) => Ok(b.to_string()),
-        other => Err(DataflowError::Validation(format!(
-            "{handler_name} '{field}' must resolve to a string or number, got {}",
-            json_type_name(&other)
-        ))),
+        other => Err(other),
     }
+}
+
+/// Whether the task declares an `output`. For the handlers whose result is
+/// recorded only where asked (`cache_delete`, `cache_incr`,
+/// `cache_invalidate`): the connector default of `data` would otherwise
+/// overwrite the message with a count.
+pub fn output_declared(input: &TemplatedInput) -> bool {
+    input.get("output").is_some_and(|v| !v.is_null())
 }
 
 /// Resolve a field that names several keys — `cache_read.keys`,
@@ -763,14 +779,13 @@ pub fn resolve_required_str_list(
     items
         .into_iter()
         .enumerate()
-        .map(|(i, item)| match item {
-            Value::String(s) => Ok(s),
-            Value::Number(n) => Ok(n.to_string()),
-            Value::Bool(b) => Ok(b.to_string()),
-            other => Err(DataflowError::Validation(format!(
-                "{handler_name} '{field}[{i}]' must resolve to a string or number, got {}",
-                json_type_name(&other)
-            ))),
+        .map(|(i, item)| {
+            scalar_to_key(item).map_err(|other| {
+                DataflowError::Validation(format!(
+                    "{handler_name} '{field}[{i}]' must resolve to a string or number, got {}",
+                    json_type_name(&other)
+                ))
+            })
         })
         .collect()
 }
@@ -915,6 +930,35 @@ pub fn resolve_optional_u64(
             Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
                 DataflowError::Validation(format!(
                     "{handler_name} '{field}' must resolve to a non-negative integer"
+                ))
+            }),
+            other => Err(DataflowError::Validation(format!(
+                "{handler_name} '{field}' must resolve to a number, got {}",
+                json_type_name(&other)
+            ))),
+        },
+    }
+}
+
+/// Resolve an optional signed-integer field — [`resolve_optional_u64`]'s
+/// twin, for a value that may be negative (`cache_incr.by`).
+///
+/// # Errors
+///
+/// [`DataflowError`] when the field resolves to a non-integer.
+pub fn resolve_optional_i64(
+    input: &TemplatedInput,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Option<i64>, DataflowError> {
+    match input.value_of(field, handler_name, ctx) {
+        None => Ok(None),
+        Some(value) => match value? {
+            Value::Null => Ok(None),
+            Value::Number(n) => n.as_i64().map(Some).ok_or_else(|| {
+                DataflowError::Validation(format!(
+                    "{handler_name} '{field}' must resolve to a whole number that fits in 64 bits"
                 ))
             }),
             other => Err(DataflowError::Validation(format!(

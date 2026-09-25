@@ -65,6 +65,14 @@ pub fn clear_error_context(metadata: &mut serde_json::Value) {
 /// nothing else may supply it. See `cron::metadata` for the object's shape.
 pub const TRIGGER_KEY: &str = "trigger";
 
+/// The metadata key verified `jwt` claims are stamped under, as
+/// `{"claims": …}`.
+///
+/// Platform-reserved: the guard chain writes it only when a token verified,
+/// and the HTTP ingress strips any caller-supplied value first, so a workflow
+/// never reads an identity the caller wrote.
+pub const AUTH_KEY: &str = "auth";
+
 /// The metadata key the `[vars]` config section is stamped under.
 ///
 /// Platform-reserved, in the same sense as `channel` and `cookies`: an

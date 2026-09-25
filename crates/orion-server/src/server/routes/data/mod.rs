@@ -637,7 +637,7 @@ fn build_request_metadata(parts: RequestMetadataParts<'_>) -> Value {
         // untouched. Left in place, a caller's `{"auth": {"claims": {"sub":
         // "admin"}}}` read to the workflow as a verified identity, and to a
         // response cache keyed on the subject as someone else's entry.
-        map.remove("auth");
+        map.remove(crate::engine::AUTH_KEY);
         // A cron occurrence's `trigger` is stamped only by the cron worker;
         // an HTTP caller must not be able to make a run look scheduled.
         map.remove(crate::engine::TRIGGER_KEY);

@@ -416,7 +416,7 @@ impl StubHandler {
         if matches!(
             self.function,
             "cache_delete" | "cache_incr" | "cache_invalidate"
-        ) && input.get("output").is_none_or(serde_json::Value::is_null)
+        ) && !super::connector_helpers::output_declared(input)
         {
             return Ok(None);
         }

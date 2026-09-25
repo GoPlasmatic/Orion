@@ -771,6 +771,24 @@ impl ChannelLoader {
         targets
     }
 
+    /// Invalidate `namespaces` in every [`Self::response_cache_targets`] store,
+    /// answering how many stores the bump was sent to. The one path behind
+    /// both `cache_invalidate` and the admin route, so the two cannot come to
+    /// disagree about which stores an invalidation reaches.
+    pub async fn invalidate_namespaces(
+        &self,
+        connector_registry: &ConnectorRegistry,
+        cache_pool: &CachePool,
+        namespaces: &[String],
+        source: &'static str,
+    ) -> Result<usize, crate::errors::OrionError> {
+        let targets = self
+            .response_cache_targets(connector_registry, cache_pool)
+            .await;
+        crate::channel::cache_namespace::invalidate(&targets, namespaces, source).await?;
+        Ok(targets.len())
+    }
+
     /// Build one channel's runtime config, or the [`ChannelLoadIssue`] that
     /// keeps it out of the registry.
     ///

@@ -26,8 +26,6 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use crate::connector::cache_backend::CacheBackend;
 use crate::errors::OrionError;
 
@@ -47,9 +45,9 @@ pub fn version_key(namespace: &str) -> String {
 
 /// The key a namespaced channel's entry is stored under.
 ///
-/// A prefix of its own rather than `cache:`: the stored value is an
-/// [`Envelope`], not a body, and nothing that reads `cache:` keys as bodies
-/// may ever be handed one.
+/// A prefix of its own rather than `cache:`: the stored value carries a
+/// version header ([`encode_entry`]), and nothing that reads `cache:` keys as
+/// bodies may ever be handed one.
 pub fn entry_key(plain_key: &str) -> String {
     match plain_key.strip_prefix("cache:") {
         Some(rest) => format!("cache-ns:{rest}"),
@@ -78,15 +76,40 @@ pub fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A namespaced entry as stored: the versions it was looked up under, and
-/// the pre-serialized response body.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Envelope<'a> {
-    /// One version per declared namespace, in declaration order.
-    pub v: Vec<i64>,
-    /// The body, exactly as an un-namespaced entry stores it.
-    #[serde(borrow)]
-    pub b: std::borrow::Cow<'a, str>,
+/// Encode a namespaced entry: the versions it was looked up under, a newline,
+/// then the body exactly as an un-namespaced entry stores it.
+///
+/// A header rather than a JSON envelope: a body is JSON, and embedding it in a
+/// JSON string would escape every quote on the way in and unescape the whole
+/// body into a fresh allocation on every hit.
+pub fn encode_entry(versions: &[i64], body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + versions.len() * 4 + 1);
+    for (i, v) in versions.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&v.to_string());
+    }
+    out.push('\n');
+    out.push_str(body);
+    out
+}
+
+/// The body of a stored entry, if it was stored under exactly `versions`.
+/// The header is drained off in place, so a hit costs no second allocation.
+pub fn decode_entry(mut stored: String, versions: &[i64]) -> Option<String> {
+    let newline = stored.find('\n')?;
+    let header = &stored[..newline];
+    let mut stored_versions = header.split(',').map(|v| v.parse::<i64>());
+    let current = versions
+        .iter()
+        .all(|v| stored_versions.next().and_then(Result::ok) == Some(*v))
+        && stored_versions.next().is_none();
+    if !current {
+        return None;
+    }
+    stored.drain(..=newline);
+    Some(stored)
 }
 
 /// Parse a counter as stored. A missing key is version `0` — nothing has
@@ -99,42 +122,43 @@ pub fn parse_version(raw: Option<&str>) -> Option<i64> {
     }
 }
 
-/// Bump every namespace in every store, answering how many counters moved.
-/// `source` labels the metric: `workflow` or `admin`.
+/// Bump every namespace in every store. `source` labels the metric:
+/// `workflow` or `admin`.
 ///
 /// Every store rather than only those a channel declaring the namespace uses
 /// today: a channel archived while its entries were live, and reactivated
 /// later, reads its old entries against the counter in its own store, which
-/// must have moved too. A store that fails is logged and skipped, and the
-/// error is returned once the rest have been bumped, so one unreachable
-/// connector does not leave every other store stale.
+/// must have moved too. The stores are bumped concurrently. One that fails is
+/// logged, and its error returned after every other store has been bumped, so
+/// one unreachable connector does not leave the rest stale.
 pub async fn invalidate(
     targets: &[Arc<dyn CacheBackend>],
     namespaces: &[String],
     source: &'static str,
-) -> Result<u64, OrionError> {
-    let mut bumped = 0;
-    let mut first_error = None;
-    for backend in targets {
-        for namespace in namespaces {
-            match backend.incr_by(&version_key(namespace), 1, None).await {
-                Ok(_) => bumped += 1,
-                Err(e) => {
-                    tracing::warn!(
-                        namespace = %namespace,
-                        error = %e,
-                        "Failed to bump a response-cache namespace version"
-                    );
-                    first_error.get_or_insert(e);
-                }
+) -> Result<(), OrionError> {
+    let keys: Vec<String> = namespaces.iter().map(|ns| version_key(ns)).collect();
+    let bumps = targets.iter().map(|backend| {
+        let keys = &keys;
+        async move {
+            for key in keys {
+                backend.incr_by(key, 1, None).await?;
             }
+            Ok::<(), OrionError>(())
+        }
+    });
+    let mut first_error = None;
+    for result in futures::future::join_all(bumps).await {
+        if let Err(e) = result {
+            tracing::warn!(
+                namespaces = ?namespaces,
+                error = %e,
+                "Failed to bump a response-cache namespace version"
+            );
+            first_error.get_or_insert(e);
         }
     }
     crate::metrics::record_cache_invalidations(source, namespaces.len() as u64);
-    match first_error {
-        Some(e) => Err(e),
-        None => Ok(bumped),
-    }
+    first_error.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -158,6 +182,17 @@ mod tests {
     }
 
     #[test]
+    fn entries_round_trip_only_under_their_own_versions() {
+        let body = r#"{"data":{"q":"a\nb"}}"#;
+        let stored = encode_entry(&[3, 0], body);
+        assert_eq!(decode_entry(stored.clone(), &[3, 0]).as_deref(), Some(body));
+        assert_eq!(decode_entry(stored.clone(), &[4, 0]), None);
+        assert_eq!(decode_entry(stored.clone(), &[3]), None);
+        assert_eq!(decode_entry(stored, &[3, 0, 1]), None);
+        assert_eq!(decode_entry("no header".to_string(), &[0]), None);
+    }
+
+    #[test]
     fn versions_parse() {
         assert_eq!(parse_version(None), Some(0));
         assert_eq!(parse_version(Some("7")), Some(7));
@@ -170,12 +205,9 @@ mod tests {
         let a: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
         let b: Arc<dyn CacheBackend> = MemoryCacheBackend::new(60, 0);
         let ns = vec!["ladder".to_string(), "season".to_string()];
-        assert_eq!(
-            invalidate(&[a.clone(), b.clone()], &ns, "workflow")
-                .await
-                .expect("test"),
-            4
-        );
+        invalidate(&[a.clone(), b.clone()], &ns, "workflow")
+            .await
+            .expect("test");
         assert_eq!(
             a.get(&version_key("ladder")).await.expect("test"),
             Some("1".to_string())

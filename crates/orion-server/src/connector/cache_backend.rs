@@ -37,8 +37,8 @@ pub trait CacheBackend: Send + Sync {
     /// Read several keys at once, answering in the order asked, `None` for a
     /// miss. One `MGET` on Redis.
     ///
-    /// The default is a loop over [`Self::get`], for test doubles; both real
-    /// backends override it.
+    /// The default is a loop over [`Self::get`], which is what the in-memory
+    /// backend wants; Redis overrides it with one round trip.
     async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
@@ -271,13 +271,8 @@ impl CacheBackend for MemoryCacheBackend {
         Ok(())
     }
 
-    async fn get_many(&self, keys: &[String]) -> Result<Vec<Option<String>>, OrionError> {
-        let mut out = Vec::with_capacity(keys.len());
-        for key in keys {
-            out.push(self.get(key).await?);
-        }
-        Ok(out)
-    }
+    // `get_many` is the trait default: a loop over `get` is exactly what a
+    // map lookup per key costs here.
 
     async fn remove_many(&self, keys: &[String]) -> Result<u64, OrionError> {
         let now = Instant::now();
@@ -487,16 +482,29 @@ impl CacheBackend for RedisCacheBackend {
 
     async fn incr_by(&self, key: &str, by: i64, ttl_secs: Option<u64>) -> Result<i64, OrionError> {
         let mut conn = self.conn.clone();
-        INCR_SCRIPT
-            .key(key)
-            .arg(by)
-            .arg(ttl_secs.unwrap_or(0))
-            .invoke_async(&mut conn)
-            .await
-            .map_err(|e| OrionError::Internal {
-                context: format!("Redis INCRBY failed for key '{key}'"),
-                source: Some(Box::new(e)),
-            })
+        // Without a TTL there is nothing to make atomic with the increment, so
+        // a bare `INCRBY` skips the script's `EXISTS`.
+        let result = match ttl_secs.filter(|t| *t > 0) {
+            None => {
+                redis::cmd("INCRBY")
+                    .arg(key)
+                    .arg(by)
+                    .query_async(&mut conn)
+                    .await
+            }
+            Some(ttl) => {
+                INCR_SCRIPT
+                    .key(key)
+                    .arg(by)
+                    .arg(ttl)
+                    .invoke_async(&mut conn)
+                    .await
+            }
+        };
+        result.map_err(|e| OrionError::Internal {
+            context: format!("Redis INCRBY failed for key '{key}'"),
+            source: Some(Box::new(e)),
+        })
     }
 
     async fn claim_dedup_key(

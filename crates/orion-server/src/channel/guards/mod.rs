@@ -521,9 +521,17 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
     // The cache key must read this view and never `req.metadata` — keyed on
     // the subject before the merge, it read whatever the caller wrote at
     // `metadata.auth` and stored one caller's body under another's key (#354).
+    // Only a channel with an expression to read the claims pays for the
+    // copy: `validate_input` returns before looking without `validation_logic`,
+    // and the cache key reads metadata beyond params and query only through
+    // `key_logic`.
+    let reads_claims = req.runtime.as_ref().is_some_and(|rt| {
+        (set.validation && rt.validation_logic.is_some())
+            || (set.response_cache && rt.cache_key_logic.is_some())
+    });
     let metadata_with_auth = auth_claims
         .as_ref()
-        .filter(|_| set.validation || set.response_cache)
+        .filter(|_| reads_claims)
         .map(|claims| merge_auth_claims(req.metadata.clone(), claims.clone()));
     let guard_metadata = metadata_with_auth.as_ref().unwrap_or(req.metadata);
     if set.validation {
@@ -727,7 +735,10 @@ pub fn merge_auth_claims(
     if let Some(obj) = metadata.as_object_mut() {
         let mut auth = serde_json::Map::with_capacity(1);
         auth.insert("claims".to_string(), claims);
-        obj.insert("auth".to_string(), serde_json::Value::Object(auth));
+        obj.insert(
+            crate::engine::AUTH_KEY.to_string(),
+            serde_json::Value::Object(auth),
+        );
     }
     metadata
 }
